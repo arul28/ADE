@@ -32,6 +32,8 @@ import {
   validateHandoffLaneTarget,
 } from "./automationService";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { codexConfigApprovalPolicy } from "../../../shared/codexApprovalPolicy";
+import type { AgentChatCodexApprovalPolicy } from "../../../shared/types/chat";
 import { codexReasoningEffortFlags, resolveCodexCliModelForLaunch } from "../../../shared/cliLaunch";
 import { getModelById } from "../../../shared/modelRegistry";
 import {
@@ -445,7 +447,7 @@ async function runCodexExec(args: {
   schema: Record<string, unknown>;
   logger: Logger;
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
-  askForApproval: "untrusted" | "on-failure" | "on-request" | "never";
+  askForApproval: AgentChatCodexApprovalPolicy;
   webSearch: boolean;
   additionalWritableDirs: string[];
   model?: string | null;
@@ -469,13 +471,10 @@ async function runCodexExec(args: {
     outPath,
     "--sandbox",
     args.sandbox,
-    // `codex exec` has no `--ask-for-approval` (nor `--search`, below): the
-    // pinned 0.164.0 answers "unexpected argument" and exits, so every Codex
-    // planner run failed before it read the prompt. Both are config keys.
-    // The config refuses `untrusted` ("no longer supported"), and a run with
-    // nobody to ask treats it as `on-request` anyway.
+    // `codex exec` has neither `--ask-for-approval` nor `--search` (it exits
+    // with "unexpected argument"); both are config keys.
     "-c",
-    `approval_policy=${args.askForApproval === "untrusted" ? "on-request" : args.askForApproval}`,
+    `approval_policy=${codexConfigApprovalPolicy(args.askForApproval)}`,
     "--cd",
     args.cwd,
     "--skip-git-repo-check"

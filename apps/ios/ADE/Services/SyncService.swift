@@ -10117,6 +10117,11 @@ final class SyncService: ObservableObject {
         } catch {
           syncConnectLog.info("ADE_SYNC_TRACE pair failure host=\(attempt.address, privacy: .public) port=\(attempt.port) error=\(syncLogErrorSummary(error), privacy: .public)")
           lastOpenError = error
+          // A newer attempt may own the socket by now (`openSocket` waits
+          // before it opens one): only the current attempt may close it.
+          guard isCurrentConnectAttempt(connectAttemptGeneration) else {
+            throw CancellationError()
+          }
           teardownSocket()
           continue
         }

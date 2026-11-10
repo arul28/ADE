@@ -25,6 +25,7 @@ import {
   droidPermissionModeFromLegacyPermissionMode,
   museCliApprovalFlag,
 } from "./types/chat";
+import { codexCliApprovalFlagValue } from "./codexApprovalPolicy";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   filterAdeAgentSkillRoots,
@@ -2059,22 +2060,12 @@ function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | nu
   return ["--permission-mode", "plan"];
 }
 
-/**
- * An approval policy as the Codex CLI's `--ask-for-approval` accepts it. The
- * flag takes only `on-request` and `never` (pinned 0.162.1 and 0.164.0, read
- * off the binaries); `untrusted` and `on-failure` make Codex exit at once with
- * "invalid value", so a CLI session started on the edit level, or resumed
- * from a chat that held either policy, never opened. The sandbox flag beside
- * it still bounds what runs without a question.
- */
-export function codexCliApprovalFlagValue(approvalPolicy: AgentChatCodexApprovalPolicy): "on-request" | "never" {
-  return approvalPolicy === "never" ? "never" : "on-request";
-}
-
 function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   if (permissionMode === "full-auto") return ["--dangerously-bypass-approvals-and-sandbox"];
-  if (permissionMode === "default") return ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"];
-  if (permissionMode === "edit") return ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"];
+  // The CLI flag has no value between "ask" and "never", so both rungs match.
+  if (permissionMode === "default" || permissionMode === "edit") {
+    return ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"];
+  }
   if (permissionMode === "plan") return ["--sandbox", "read-only", "--ask-for-approval", "on-request"];
   return [];
 }

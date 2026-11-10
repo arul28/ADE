@@ -15,7 +15,7 @@ import {
 } from "../../../shared/types/productSurveys";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
 import { resolveProductAnalyticsEndpoint } from "./productAnalyticsService";
-import { scrubSurveyText } from "./productAnalyticsPolicy";
+import { scrubSurveyText } from "./surveyAnalyticsPolicy";
 
 /**
  * In-app surveys without posthog-js.
@@ -57,7 +57,7 @@ const FETCH_TIMEOUT_MS = 5_000;
  * property `is_internal`). An install cannot know that its account is a team
  * account; PostHog does. Its only use; `docs/analytics/README.md` lists it.
  */
-export const SURVEY_REAL_USER_FLAG = "surveys-real-users";
+const SURVEY_REAL_USER_FLAG = "surveys-real-users";
 const SURVEY_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SURVEY_NAME_KEY = /^\s*\[ade:([a-z]+)\]/i;
 /** `returning` is only true on the launch that ends the gap, so it goes first. */
@@ -498,30 +498,52 @@ export function createSurveyService(args: {
     update((state) => addActiveDay(state, now()));
   };
 
+  /**
+   * One bounded request to PostHog, with no cookie and no referrer. Null when
+   * it could not be made (offline, blocked, timed out); that is logged as
+   * `failureEvent`.
+   */
+  const postHogRequest = async (url: string, init: RequestInit, failureEvent: string): Promise<Response | null> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    timeout.unref?.();
+    try {
+      return await fetchImpl(url, {
+        ...init,
+        signal: controller.signal,
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+      });
+    } catch (error) {
+      args.logger.warn(failureEvent, { errorKind: error instanceof Error ? error.name : "unknown" });
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  /** A response's JSON, or null when the body is not JSON. */
+  const readJson = async (response: Response, failureEvent: string): Promise<unknown> => {
+    try {
+      return await response.json();
+    } catch (error) {
+      args.logger.warn(failureEvent, { errorKind: error instanceof Error ? error.name : "unknown" });
+      return null;
+    }
+  };
+
   const fetchSurveys = async (target: { token: string; host: string }): Promise<unknown> => {
     // PostHog's own SDK path first; the slashless spelling is its documented alias.
     for (const route of ["/api/surveys/", "/api/surveys"]) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-      timeout.unref?.();
-      try {
-        const response = await fetchImpl(`${target.host}${route}?token=${encodeURIComponent(target.token)}`, {
-          method: "GET",
-          headers: { Accept: "application/json" },
-          signal: controller.signal,
-          credentials: "omit",
-          referrerPolicy: "no-referrer",
-        });
-        if (response.ok) return await response.json();
-        if (response.status !== 404) return null;
-      } catch (error) {
-        // Offline or blocked: try again tomorrow with whatever was cached.
-        args.logger.warn("product_surveys.fetch_failed", {
-          errorKind: error instanceof Error ? error.name : "unknown",
-        });
-      } finally {
-        clearTimeout(timeout);
-      }
+      // Offline or blocked: try again tomorrow with whatever was cached.
+      const response = await postHogRequest(
+        `${target.host}${route}?token=${encodeURIComponent(target.token)}`,
+        { method: "GET", headers: { Accept: "application/json" } },
+        "product_surveys.fetch_failed",
+      );
+      if (!response) continue;
+      if (response.ok) return await readJson(response, "product_surveys.fetch_failed");
+      if (response.status !== 404) return null;
     }
     return null;
   };
@@ -531,34 +553,35 @@ export function createSurveyService(args: {
    * asked with the id this install's events carry. Anything but a clear yes
    * (offline, a refused request, no flag) is a no: a survey that cannot ask
    * could not send its answer either, and a team account must never see one.
+   * Each no that is not PostHog's own answer is logged, because it turns
+   * surveys off for everyone and nothing else would show it.
    */
   const isRealUser = async (): Promise<boolean> => {
     const target = endpoint();
     const distinctId = args.analytics.getDistinctId();
     if (!target || !distinctId) return false;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    timeout.unref?.();
-    try {
-      const response = await fetchImpl(`${target.host}/flags/?v=2`, {
+    const response = await postHogRequest(
+      `${target.host}/flags/?v=2`,
+      {
         method: "POST",
         headers: { Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({ api_key: target.token, distinct_id: distinctId, geoip_disable: true }),
-        signal: controller.signal,
-        credentials: "omit",
-        referrerPolicy: "no-referrer",
-      });
-      if (!response.ok) return false;
-      const body = await response.json() as { flags?: Record<string, { enabled?: unknown } | undefined> } | null;
-      return body?.flags?.[SURVEY_REAL_USER_FLAG]?.enabled === true;
-    } catch (error) {
-      args.logger.warn("product_surveys.flag_failed", {
-        errorKind: error instanceof Error ? error.name : "unknown",
-      });
+      },
+      "product_surveys.flag_failed",
+    );
+    if (!response) return false;
+    if (!response.ok) {
+      args.logger.warn("product_surveys.flag_failed", { status: response.status });
       return false;
-    } finally {
-      clearTimeout(timeout);
     }
+    const body = await readJson(response, "product_surveys.flag_failed") as
+      { flags?: Record<string, { enabled?: unknown } | undefined> } | null;
+    const flag = body?.flags?.[SURVEY_REAL_USER_FLAG];
+    if (!flag) {
+      args.logger.warn("product_surveys.flag_failed", { errorKind: "flag_missing" });
+      return false;
+    }
+    return flag.enabled === true;
   };
 
   const refreshCache = (): Promise<void> => {
@@ -598,7 +621,7 @@ export function createSurveyService(args: {
     });
     if (!survey || offeredThisLaunch) return null;
     // Asked last, and only for an install that would otherwise see a survey:
-    // at most one request per launch, and none inside the cooldown.
+    // at most one request per window that asks, and none inside the cooldown.
     if (!(await isRealUser()) || !analyticsOn() || offeredThisLaunch) return null;
     // A survey whose showing could not be saved would come back next launch.
     if (!update(() => undefined)) return null;

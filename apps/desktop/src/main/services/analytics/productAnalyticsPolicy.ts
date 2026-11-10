@@ -10,12 +10,6 @@ import { JEV_FEATURES, JEV_KEY_SKIP_REASONS } from "../../../shared/types/jev";
 import { ADE_ACTION_DOMAIN_NAMES } from "../adeActions/domains";
 import { APPLE_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/iosSimulator";
 import { ANDROID_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/androidEmulator";
-import { scrubFreeText } from "../../../shared/sentry/scrub";
-import {
-  PRODUCT_SURVEY_EVENTS,
-  SURVEY_RESPONSE_MAX_LENGTH,
-  type ProductSurveyEventPayload,
-} from "../../../shared/types/productSurveys";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsEventName,
@@ -532,8 +526,8 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_brain_action_failed: new Set(["action_domain", "error_code", "brain_action", "expected_kind"]),
   // What ran short, how badly, how many Android emulators were up, whether a
   // developer's brain ran beside the installed one, and which of ADE's own
-  // tables took the most writes in the five minutes before. Group names and
-  // buckets only: no process names, paths or sizes.
+  // tables took the most writes in the five minutes before. Group names,
+  // buckets and ADE's own total only: no process names or paths.
   ade_resource_pressure: new Set([
     "kind", "severity", "emulator_count", "dev_brain_running", "top_table",
     // How much memory the machine has (a bucket), what share was available,
@@ -582,6 +576,10 @@ const ADE_ACTION_DOMAIN_ALLOWLIST: ReadonlySet<string> = new Set(ADE_ACTION_DOMA
  * even narrower charset, so nothing hyphenated can be scraped out of prose.
  */
 const ERROR_CODE_VALUE = /^[a-z][a-z0-9_-]{0,47}$/;
+
+/** Installed RAM as closed buckets (`ram_gb_bucket`): the event never carries the exact size. */
+export const RAM_GB_BUCKETS = ["le_8", "9_16", "17_32", "33_64", "gt_64"] as const;
+export type RamGbBucket = (typeof RAM_GB_BUCKETS)[number];
 
 /** The closed provider family list every event's `provider` is checked against. */
 export const PROVIDER_VALUES: ReadonlySet<string> = new Set([
@@ -813,7 +811,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   kind: new Set<string>(["memory", "swap", "wal", "cpu"]),
   severity: new Set<string>(["warn", "critical"]),
   emulator_count: new Set<string>(["0", "1", "2", "3_4", "5_plus"]),
-  ram_gb_bucket: new Set<string>(["le_8", "9_16", "17_32", "33_64", "gt_64"]),
+  ram_gb_bucket: new Set<string>(RAM_GB_BUCKETS),
 };
 
 export function safeProductAnalyticsString(value: ProductAnalyticsPropertyValue): string | null {
@@ -934,95 +932,4 @@ export function sanitizeProductAnalyticsProperties(
     }
   }
   return sanitized;
-}
-
-const SURVEY_EVENT_SET: ReadonlySet<string> = new Set(PRODUCT_SURVEY_EVENTS);
-const SURVEY_ID_VALUE = /^[A-Za-z0-9-]{1,64}$/;
-const SURVEY_NAME_PREFIX = /^\[ade:[a-z]+\]/i;
-const MAX_SURVEY_QUESTIONS = 10;
-const MAX_SURVEY_CHOICES = 20;
-
-export function isSurveyAnalyticsEvent(event: ProductAnalyticsEventName): boolean {
-  return SURVEY_EVENT_SET.has(event);
-}
-
-/**
- * The person's own words, which they chose to send. Secrets, email addresses
- * and absolute paths are removed ({@link scrubFreeText}), and the text is cut
- * at {@link SURVEY_RESPONSE_MAX_LENGTH}.
- */
-export function scrubSurveyText(value: unknown, maxLength = SURVEY_RESPONSE_MAX_LENGTH): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim().slice(0, maxLength);
-  if (!trimmed) return null;
-  return scrubFreeText(trimmed, { maxLength }).slice(0, maxLength);
-}
-
-/**
- * PostHog's survey properties (`$survey_id`, `$survey_name`,
- * `$survey_response_<question id>`, `$survey_questions`, ...), rebuilt from a
- * main-process payload. Anything malformed is left out; a payload without a
- * survey id or an ADE survey name yields null and the event is dropped.
- */
-export function sanitizeSurveyEventProperties(
-  event: ProductAnalyticsEventName,
-  payload: ProductSurveyEventPayload | undefined,
-): Record<string, unknown> | null {
-  if (!isSurveyAnalyticsEvent(event) || !payload || typeof payload !== "object") return null;
-  if (typeof payload.surveyId !== "string" || !SURVEY_ID_VALUE.test(payload.surveyId)) return null;
-  const name = scrubSurveyText(payload.surveyName, 200);
-  if (!name || !SURVEY_NAME_PREFIX.test(name)) return null;
-  const properties: Record<string, unknown> = {
-    $survey_id: payload.surveyId,
-    $survey_name: name,
-  };
-  if (typeof payload.iteration === "number" && Number.isInteger(payload.iteration) && payload.iteration > 0) {
-    properties.$survey_iteration = Math.min(payload.iteration, 10_000);
-  }
-  if (event === "survey shown") return properties;
-
-  const questions = (Array.isArray(payload.questions) ? payload.questions : [])
-    .slice(0, MAX_SURVEY_QUESTIONS)
-    .flatMap((question) => {
-      const text = scrubSurveyText(question?.question, 500);
-      return typeof question?.id === "string" && SURVEY_ID_VALUE.test(question.id) && text
-        ? [{ id: question.id, question: text }]
-        : [];
-    });
-  properties.$survey_questions = questions;
-  // Measured by the window, so it does not depend on when main got each call:
-  // a "shown" and a "dismissed" one millisecond apart (2026-11-09) could not
-  // be told from a stalled main process delivering both at once.
-  if (typeof payload.shownForMs === "number" && Number.isFinite(payload.shownForMs) && payload.shownForMs >= 0) {
-    properties.shown_for_ms = Math.min(Math.round(payload.shownForMs), 24 * 60 * 60 * 1_000);
-  }
-  if (event === "survey dismissed") {
-    properties.$survey_partially_completed = payload.partiallyCompleted === true;
-    return properties;
-  }
-
-  if (typeof payload.submissionId !== "string" || !/^[0-9a-f-]{36}$/i.test(payload.submissionId)) return null;
-  properties.$survey_submission_id = payload.submissionId.toLowerCase();
-  properties.$survey_completed = payload.completed !== false;
-  const responses = payload.responses && typeof payload.responses === "object" ? payload.responses : {};
-  questions.forEach((question, index) => {
-    if (!Object.prototype.hasOwnProperty.call(responses, question.id)) return;
-    const raw = responses[question.id];
-    let value: string | string[] | null = null;
-    if (Array.isArray(raw)) {
-      const items = raw.slice(0, MAX_SURVEY_CHOICES).flatMap((item) => {
-        const safe = scrubSurveyText(item, 500);
-        return safe ? [safe] : [];
-      });
-      value = items.length > 0 ? items : null;
-    } else {
-      value = scrubSurveyText(raw);
-    }
-    if (value == null) return;
-    properties[`$survey_response_${question.id}`] = value;
-    // PostHog's index-based key for the first question: dashboards break a
-    // survey down by it without knowing the question's id.
-    if (index === 0) properties.$survey_response = value;
-  });
-  return properties;
 }

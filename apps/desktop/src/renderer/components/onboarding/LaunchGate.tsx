@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
 import { GlassSignInCard } from "./GlassSignInCard";
 import { GateBackdrop } from "./GateBackdrop";
@@ -34,34 +34,43 @@ function WebLaunchGate({ children }: LaunchGateProps) {
 
 type GateStep = FirstRunStepId | "sign-in";
 
-type OnboardingFact =
-  | { action: "onboarding_welcome_shown" | "onboarding_sign_in_shown" | "onboarding_agents_shown" | "onboarding_projects_shown"; outcome: "opened" }
-  | { action: "onboarding_completed"; outcome: "completed" }
-  | { action: "onboarding_skipped"; outcome: "cancelled" };
+type OnboardingAction =
+  | "onboarding_welcome_shown"
+  | "onboarding_sign_in_shown"
+  | "onboarding_agents_shown"
+  | "onboarding_projects_shown"
+  | "onboarding_completed"
+  | "onboarding_skipped";
 
-const STEP_SHOWN: Record<GateStep, OnboardingFact> = {
-  welcome: { action: "onboarding_welcome_shown", outcome: "opened" },
-  "sign-in": { action: "onboarding_sign_in_shown", outcome: "opened" },
-  agents: { action: "onboarding_agents_shown", outcome: "opened" },
-  projects: { action: "onboarding_projects_shown", outcome: "opened" },
+const STEP_SHOWN: Record<GateStep, OnboardingAction> = {
+  welcome: "onboarding_welcome_shown",
+  "sign-in": "onboarding_sign_in_shown",
+  agents: "onboarding_agents_shown",
+  projects: "onboarding_projects_shown",
 };
+
+function onboardingOutcome(action: OnboardingAction): "opened" | "completed" | "cancelled" {
+  if (action === "onboarding_completed") return "completed";
+  return action === "onboarding_skipped" ? "cancelled" : "opened";
+}
 
 /**
  * One fact per first-run card, so the funnel says which card people leave on.
- * Until 2026-11 only the sign-in card was reported (as the `onboarding`
- * screen), and "left during onboarding" could not be split further. At most
- * one of each a day per install; analytics never changes what the gate does.
+ * At most one of each a day per install; analytics never changes what the
+ * gate does.
  */
-function captureOnboarding(fact: OnboardingFact): void {
+function captureOnboarding(action: OnboardingAction): void {
+  const reportFailed = () => console.warn("[onboarding] step could not be reported", action);
   try {
     void window.ade?.analytics?.capture({
       event: "ade_feature_used",
-      properties: { feature: "onboarding", ...fact, source: "renderer_route" },
-      dedupeKey: `onboarding:${fact.action}`,
+      properties: { feature: "onboarding", action, outcome: onboardingOutcome(action), source: "renderer_route" },
+      dedupeKey: `onboarding:${action}`,
       minimumIntervalMs: 24 * 60 * 60_000,
-    }).catch(() => undefined);
+    }).catch(reportFailed);
   } catch {
     // Reporting must never block setup.
+    reportFailed();
   }
 }
 
@@ -86,21 +95,11 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
   const setupResultRef = useRef<FirstRunResult | null>(null);
   // The projects setup added open from Home once the gate opens.
   const keepSetupResult = useCallback((result: FirstRunResult) => {
+    captureOnboarding("onboarding_completed");
     setupResultRef.current = result;
   }, []);
-  const rawSteps = useFirstRunSteps({ onFinish: keepSetupResult });
-  // The same machine, with the two ways setup ends reported.
-  const steps = useMemo(() => ({
-    ...rawSteps,
-    skip: () => {
-      captureOnboarding({ action: "onboarding_skipped", outcome: "cancelled" });
-      rawSteps.skip();
-    },
-    finish: (result: FirstRunResult) => {
-      captureOnboarding({ action: "onboarding_completed", outcome: "completed" });
-      rawSteps.finish(result);
-    },
-  }), [rawSteps]);
+  const reportSkipped = useCallback(() => captureOnboarding("onboarding_skipped"), []);
+  const steps = useFirstRunSteps({ onFinish: keepSetupResult, onSkip: reportSkipped });
   const firstRun = steps.phase;
   /** Whether this launch showed a first-run card: a computer set up before reports no onboarding. */
   const firstRunSeenRef = useRef(false);

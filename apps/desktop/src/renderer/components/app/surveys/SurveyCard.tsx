@@ -49,9 +49,15 @@ export default function SurveyCard({
   const texts = useRef<Record<string, string>>({});
   const otherTexts = useRef<Record<string, string>>({});
   const shownRef = useRef(false);
-  const shownAtRef = useRef<number | null>(null);
-  const shownForMs = (): number | undefined =>
-    (shownAtRef.current == null ? undefined : Math.round(performance.now() - shownAtRef.current));
+  // Time on screen only: a suggestion with a higher priority can take the
+  // corner for a while, and that time is not time the person had the card.
+  const onScreenSinceRef = useRef<number | null>(null);
+  const onScreenMsRef = useRef(0);
+  const shownForMs = (): number | undefined => {
+    if (!shownRef.current) return undefined;
+    const current = onScreenSinceRef.current == null ? 0 : performance.now() - onScreenSinceRef.current;
+    return Math.round(onScreenMsRef.current + current);
+  };
   const doneRef = useRef(false);
   const sendingRef = useRef(false);
   const question = survey.questions[step];
@@ -60,10 +66,16 @@ export default function SurveyCard({
   const visible = useVisibleAppSuggestion();
   const onScreen = visible?.model.id === BANNER_ID;
   useEffect(() => {
-    if (!onScreen || shownRef.current) return;
-    shownRef.current = true;
-    shownAtRef.current = performance.now();
-    void bridge?.record({ kind: "shown", surveyId: survey.id }).catch(() => undefined);
+    if (!onScreen) return undefined;
+    onScreenSinceRef.current = performance.now();
+    if (!shownRef.current) {
+      shownRef.current = true;
+      void bridge?.record({ kind: "shown", surveyId: survey.id }).catch(() => undefined);
+    }
+    return () => {
+      if (onScreenSinceRef.current != null) onScreenMsRef.current += performance.now() - onScreenSinceRef.current;
+      onScreenSinceRef.current = null;
+    };
   }, [bridge, onScreen, survey.id]);
 
   const setFilledFor = useCallback((id: string, value: boolean) => {

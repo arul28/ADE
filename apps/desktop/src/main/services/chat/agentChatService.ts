@@ -1053,6 +1053,7 @@ import {
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
 import { piSdkToolPolicyForPermissionMode, piThinkingLevel, type PiSdkMcpPolicy } from "../../../shared/cliLaunch";
+import { codexAppServerApprovalPolicy } from "../../../shared/codexApprovalPolicy";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
 import { stripHostRuntimeEnv, userProcessEnv } from "../shared/hostRuntimeEnv";
 import { isProviderDisabled } from "../../../shared/providerEnablement";
@@ -9899,24 +9900,11 @@ function codexSandboxPolicyType(sandbox: AgentChatCodexSandbox): string {
   }
 }
 
-/**
- * The approval policy as the Codex app-server accepts it. Its protocol has no
- * `on-failure` any more (`AskForApproval` is `untrusted`, `on-request`, `never`
- * or a `granular` object; checked against the schema of the pinned 0.162.1 and
- * 0.164.0), and it refuses the whole request: a chat on the "auto-edit" level
- * failed every thread start and turn with "unknown variant `on-failure`"
- * (Sentry Logs, 2026-11). `on-request` is what Codex itself moved that mode
- * to: the sandbox still bounds the writes, and the model asks to go past it.
- */
-function codexApprovalPolicyWireValue(approvalPolicy: AgentChatCodexApprovalPolicy): AgentChatCodexApprovalPolicy {
-  return approvalPolicy === "on-failure" ? "on-request" : approvalPolicy;
-}
-
 /** Spread-ready codex thread lifecycle policy args or empty object if null. */
 function codexPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Record<string, string> {
   return policy
     ? {
-        approvalPolicy: codexApprovalPolicyWireValue(policy.approvalPolicy),
+        approvalPolicy: codexAppServerApprovalPolicy(policy.approvalPolicy),
         // Thread lifecycle uses SandboxMode literals; turn/start uses SandboxPolicy.type.
         sandbox: policy.sandbox,
       }
@@ -9927,7 +9915,7 @@ function codexPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Recor
 function codexTurnPolicyArgs(policy: ReturnType<typeof mapPermissionToCodex>): Record<string, unknown> {
   return policy
     ? {
-        approvalPolicy: codexApprovalPolicyWireValue(policy.approvalPolicy),
+        approvalPolicy: codexAppServerApprovalPolicy(policy.approvalPolicy),
         sandboxPolicy: { type: codexSandboxPolicyType(policy.sandbox) },
       }
     : {};

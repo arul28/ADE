@@ -142,8 +142,13 @@ export function desktopLogsAttachment(env: NodeJS.ProcessEnv = process.env): Dia
  * This is their last words. Null when the file is absent or empty.
  */
 export function brainLogAttachment(env: NodeJS.ProcessEnv = process.env): DiagnosticAttachment | null {
+  const logPath = brainLogPath(resolveMachineAdeLayout(env));
+  const { dir, name, ext } = path.parse(logPath);
   return logTailsAttachment("brain-log.txt", [
-    { label: "Brain log, all brains", filePath: brainLogPath(resolveMachineAdeLayout(env)), maxBytes: 192_000 },
+    // What the logger's last rotation kept: the earlier brains' lines when the
+    // log rotated during the loop. Absent until the first rotation.
+    { label: "Brain log, before the last rotation", filePath: path.join(dir, `${name}.1${ext}`), maxBytes: 64_000 },
+    { label: "Brain log, all brains", filePath: logPath, maxBytes: 192_000 },
   ]);
 }
 

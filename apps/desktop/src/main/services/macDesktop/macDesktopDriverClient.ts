@@ -727,8 +727,10 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
         // A second ADE brain on this home (a dev brain beside the installed
         // one) loses the Windows host lock every time: the other brain's
         // driver is serving the screen, so this is a state, not a crash.
-        const hostOwnedElsewhere = stderrTail.some((line) => line.includes(WINDOWS_HOST_LOCK_HELD_TEXT));
-        deps.logger[hostOwnedElsewhere ? "warn" : "error"](hostOwnedElsewhere ? "desktop_driver.host_owned_elsewhere" : "mac_desktop.driver_crash_loop", {
+        const [level, event] = stderrTail.some((line) => line.includes(WINDOWS_HOST_LOCK_HELD_TEXT))
+          ? (["warn", "mac_desktop.driver_host_owned_elsewhere"] as const)
+          : (["error", "mac_desktop.driver_crash_loop"] as const);
+        deps.logger[level](event, {
           attempts: restartAttempts - 1,
           platform,
           lastExitCode: lastExit?.code ?? null,

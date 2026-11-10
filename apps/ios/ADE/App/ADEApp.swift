@@ -103,6 +103,9 @@ struct ADEApp: App {
           CrashReporting.watchPublishes(of: machineFleet.objectWillChange, source: "fleet")
           CrashReporting.watchPublishes(of: accountService.objectWillChange, source: "account")
           CrashReporting.breadcrumb("launch", message: "sync bootstrap started")
+          // The first keychain read can take seconds; start it now, off the
+          // main thread, so the first connection finds the key ready.
+          Task { await DpopKeyService.shared.warmKey() }
           lastActivationSyncAt = Date()
           await PushNotificationService.shared.clearAppBadge()
           // App Clip → full app handoff: adopt clip-scanned pairing

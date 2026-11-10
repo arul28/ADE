@@ -55,8 +55,16 @@ import { createTrackFeedPolicy } from "./updateTrackFeed";
 import type { LatestByTrackReader } from "./latestByTrack";
 import type { UpdateTrackSwitchResult } from "../../../shared/types";
 import { InstallOnQuitDeferredError } from "./installOnQuit";
+import { RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
+/**
+ * The prepare limit for a Windows install. Prepare removes the brain's
+ * service there: it may wait the whole install lock, then runs several
+ * PowerShell calls in a row, so it gets the lock wait twice over. The app
+ * passes this; the service's own default stays the install watchdog.
+ */
+export const WINDOWS_PREPARE_WATCHDOG_MS = 2 * RUNTIME_SERVICE_INSTALL_LOCK_WAIT_MS;
 // A download that received nothing for this long is cancelled, and the next
 // check starts over (see downloadStallWatchdog.ts). Left alone, it would stay
 // pending and every later check would wait on it until ADE restarts.
@@ -204,10 +212,9 @@ type CreateAutoUpdateServiceArgs = {
   installWatchdogMs?: number;
   /**
    * The limit for the prepare step alone; the install watchdog when not set.
-   * On Windows prepare removes the brain's service, which may wait 45 s for
-   * the service lock and then runs several PowerShell calls in a row: inside
-   * the 30 s watchdog a slow machine answered `prepare_timeout` for a step
-   * that was still working (1.2.127, 2026-11).
+   * Inside the install watchdog a slow Windows machine answered
+   * `prepare_timeout` for a step that was still working
+   * (see {@link WINDOWS_PREPARE_WATCHDOG_MS}).
    */
   prepareWatchdogMs?: number;
   downloadStallMs?: number;
@@ -1787,7 +1794,7 @@ export function createAutoUpdateService({
       timeout = setTimeout(() => {
         logger.warn("autoUpdate.install_step_timed_out", {
           phase,
-          installWatchdogMs: timeoutMs,
+          timeoutMs,
           message: timeoutMessage,
         });
         resolve({ completed: false });

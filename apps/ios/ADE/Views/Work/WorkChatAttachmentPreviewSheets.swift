@@ -122,19 +122,24 @@ enum WorkChatAttachmentPreviewFiles {
   /// Runs in `ADEApp.init`, on the main thread, so it only renames the
   /// directory there (one metadata write) and deletes the renamed copy in the
   /// background: removing a cache of previewed videos file by file was part of
-  /// a multi-second freeze at launch (ADE-IOS-1B). A copy that outlives a
-  /// killed process is in the temporary directory, which iOS empties itself.
+  /// a multi-second freeze at launch (ADE-IOS-1B). The background pass also
+  /// removes a renamed copy that an earlier, killed process left behind.
   static func sweepAtLaunch() {
     let current = directory
-    let doomed = current.deletingLastPathComponent()
-      .appendingPathComponent("\(current.lastPathComponent).sweep-\(UUID().uuidString)", isDirectory: true)
+    let parent = current.deletingLastPathComponent()
+    let sweepPrefix = "\(current.lastPathComponent).sweep-"
     do {
-      try FileManager.default.moveItem(at: current, to: doomed)
+      try FileManager.default.moveItem(at: current, to: parent.appendingPathComponent("\(sweepPrefix)\(UUID().uuidString)", isDirectory: true))
     } catch {
-      return
+      // The folder was just made, so this is a real file-system failure. The
+      // old previews stay; the pass below still clears earlier renamed copies.
+      CrashReporting.breadcrumb("launch", message: "attachment preview sweep could not rename", data: ["error": (error as NSError).domain + " \((error as NSError).code)"])
     }
     DispatchQueue.global(qos: .utility).async {
-      try? FileManager.default.removeItem(at: doomed)
+      let names = (try? FileManager.default.contentsOfDirectory(atPath: parent.path)) ?? []
+      for name in names where name.hasPrefix(sweepPrefix) {
+        try? FileManager.default.removeItem(at: parent.appendingPathComponent(name, isDirectory: true))
+      }
     }
   }
 }

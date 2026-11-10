@@ -163,7 +163,6 @@ import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLock
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { createProxyService, type ProxyService } from "../../../ade-cli/src/services/proxy/proxyService";
-import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { setHarnessProxyStarter } from "./services/chat/harnessLaunchPrepare";
 import {
   releaseLaneRuntimeResources,
@@ -515,7 +514,7 @@ import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/built
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
-import { createAutoUpdateService, shouldShowInstalledNotice } from "./services/updates/autoUpdateService";
+import { createAutoUpdateService, shouldShowInstalledNotice, WINDOWS_PREPARE_WATCHDOG_MS } from "./services/updates/autoUpdateService";
 import { createLatestByTrackReader } from "./services/updates/latestByTrack";
 import { fetchAdeLatestRelease } from "./services/github/adeReleaseFeed";
 import { fetchReleaseManifestJson } from "../../../ade-cli/src/lib/releaseAssets";
@@ -3529,9 +3528,7 @@ app.whenReady().then(async () => {
   // which its "Go back" drives; the install hook below reads it then.
   let startupRecovery: StartupRecovery | null = null;
   const autoUpdateService = createAutoUpdateService({
-    // Windows prepare removes the brain's service: a 45 s lock wait and a row
-    // of PowerShell calls do not fit the 30 s install watchdog.
-    prepareWatchdogMs: process.platform === "win32" ? RUNTIME_SERVICE_START_WAIT_MS : undefined,
+    prepareWatchdogMs: process.platform === "win32" ? WINDOWS_PREPARE_WATCHDOG_MS : undefined,
     logger: updateLogger,
     currentVersion: app.getVersion(),
     globalStatePath,

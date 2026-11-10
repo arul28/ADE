@@ -49,6 +49,7 @@ import { gitRemoteIdentity } from "../github/githubSshAlias";
 import { crossMachineMoveLock, MovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import { getModelById, resolveModelAlias, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import {
+  downgradeFamilyForProvider,
   isPermissionLevel,
   permissionFieldsForLevel,
   permissionLevelLabel,
@@ -333,10 +334,7 @@ export function crossMachineAgentTargetPermissions(
   const provider = resolveProviderGroupForModel(descriptor);
   // The source reads an unreadable posture as `ask` (sessionPermissionLevel).
   const level: PermissionLevel = isPermissionLevel(sourceLevel) ? sourceLevel : "ask";
-  let applied = resolvePermissionLevel(
-    level,
-    provider === "opencode" ? "opencode" : provider === "cursor" ? "cursor" : undefined,
-  ).level;
+  let applied = resolvePermissionLevel(level, downgradeFamilyForProvider(provider)).level;
   // Kimi refuses auto-edit at launch and Copilot quietly runs it as ask; both
   // step down to ask so the label says what the chat will actually do.
   if (applied === "auto-edit" && ACP_PROVIDERS_WITHOUT_AUTO_EDIT.has(provider)) applied = "ask";

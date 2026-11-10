@@ -737,6 +737,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `lanes` | `space_freed` | `completed`, `failed` (Free up space on an archived lane in Settings › Archive) | omitted; never the lane, its size, the machine, or the error |
 | `lanes` | `deleted_lane_restored` | `completed`, `failed` (Restore from the notice after a delete, or from Recently deleted; `failed` includes files that did not apply) | omitted; never the lane, branch, machine, or the error |
 | `star_prompt` | `star_prompt_shown`, `star_prompt_clicked`, `star_prompt_dismissed`, `repo_starred` | `prompt_first`, `prompt_second` (which showing of the pill) | omitted; never the GitHub account, a message count, or the machine |
+| `onboarding` | `onboarding_welcome_shown`, `onboarding_sign_in_shown`, `onboarding_agents_shown`, `onboarding_projects_shown`, `onboarding_completed`, `onboarding_skipped` | `opened` (a first-run card came on screen), `completed`, `cancelled` (skipped) | omitted; at most one of each a day per install; never the account, a provider, or a project |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -1883,7 +1884,8 @@ tracks which are open), the writes per table since the last tick (counted in
 `kvDb`'s statement wrapper, one map increment per write), and the brain's own
 CPU. A breach is: available memory under 10% of RAM or the OS's pressure at
 `warn` or `critical` (macOS's kernel verdict, Linux PSI, Windows commit charge
-over 90%) — kind `memory`; swap over 85% used (Linux, Windows), or on macOS,
+over 90%) — kind `memory`. On macOS a `warn` counts only with under 25% of RAM
+available, because the kernel raises it long before memory is short; swap over 85% used (Linux, Windows), or on macOS,
 whose swap grows on demand so used-of-total says nothing, more than a third of
 RAM swapped — `swap`; a write-ahead log over 2 GB or grown 1 GB in one tick —
 `wal`; the brain over 80% of a core for two ticks — `cpu`. Severity is
@@ -1898,9 +1900,12 @@ processes; one PowerShell CIM read on Windows), grouped into `installed_brain`,
 never a process name, path or argument). It sends one Sentry Log
 `machine.resource_pressure` and one `ade_resource_pressure` with `kind` (the
 first of `memory`, `swap`, `wal`, `cpu` that breached), `severity`,
-`emulator_count` (`0`, `1`, `2`, `3_4`, `5_plus`), `dev_brain_running` and
-`top_table` (ADE's own table with the most writes in the five minutes before; a
-schema name, never data). The episode closes after 30 minutes without a breach;
+`emulator_count` (`0`, `1`, `2`, `3_4`, `5_plus`), `dev_brain_running`,
+`ram_gb_bucket` (`le_8`, `9_16`, `17_32`, `33_64`, `gt_64`), `available_pct`,
+`ade_mb` and `ade_pct_of_ram` (the memory of ADE's own processes: the brains
+and the desktop app, without emulators and simulators), and, for kind `wal` or
+`cpu` only, `top_table` (ADE's own table with the most writes in the five
+minutes before; a schema name, never data). The episode closes after 30 minutes without a breach;
 only then can another open, and one open when the brain restarts stays open.
 `runtime/resource-pressure.json` keeps the open episode, the last sample and
 the last five episodes for diagnostic reports. Volume: worst case one event

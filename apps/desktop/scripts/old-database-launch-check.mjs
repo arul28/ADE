@@ -110,6 +110,8 @@ function baseEnv() {
     TMPDIR: work,
     TEMP: work,
     TMP: work,
+    // The one opt-out the workflow sets: a smoke launch is not a user.
+    ...(process.env.DO_NOT_TRACK ? { DO_NOT_TRACK: process.env.DO_NOT_TRACK } : {}),
   };
   if (isWindows) {
     env.SystemRoot = process.env.SystemRoot ?? "C:\\Windows";

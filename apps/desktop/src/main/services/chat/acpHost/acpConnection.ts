@@ -133,10 +133,11 @@ export type AcpConnectionExit = {
 };
 
 /**
- * What the agent's process did between its spawn and now, in numbers only. An
- * agent that never answered `initialize` left nothing else to read: no stderr,
- * no exit (ADE-BRAIN-6P, three Windows machines, 2026-11-09). These say whether
- * the process was still running, and whether it wrote anything at all.
+ * What the agent's process did between its spawn and now, in counts and closed
+ * values only (no text the agent wrote). An agent that never answered
+ * `initialize` left nothing else to read: no stderr, no exit (ADE-BRAIN-6P,
+ * three Windows machines, 2026-11-09). These say whether the process was still
+ * running, and whether it wrote anything at all.
  */
 export type AcpStartupTrace = {
   pid: number | null;
@@ -509,7 +510,6 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
     handleFrame(frame);
   });
 
-  child.stdout?.on("data", readStdoutLine.push);
   const spawnedAtMs = Date.now();
   let stdoutBytes = 0;
   let stderrBytes = 0;
@@ -517,9 +517,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
   child.stdout?.on("data", (chunk: Buffer | string) => {
     firstStdoutAtMs ??= Date.now();
     stdoutBytes += chunk.length;
-  });
-  child.stderr?.on("data", (chunk: Buffer | string) => {
-    stderrBytes += chunk.length;
+    readStdoutLine.push(chunk);
   });
   // The process can exit before its last output is read. Waiting for stdout to
   // end keeps a final message that has no newline; the bound covers a child
@@ -579,6 +577,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
     }
   };
   child.stderr?.on("data", (chunk: Buffer | string) => {
+    stderrBytes += chunk.length;
     readStderrText(typeof chunk === "string" ? chunk : stderrDecoder.write(chunk));
   });
   child.stderr?.once("close", () => {

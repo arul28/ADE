@@ -10,8 +10,10 @@ import {
 import {
   readProcessGroups,
   type ProcessGroupSnapshot,
+  type ProcessGroupName,
   type ProcessGroupUsage,
 } from "../../../../desktop/src/main/services/machineStats/processGroups";
+import type { RamGbBucket } from "../../../../desktop/src/main/services/analytics/productAnalyticsPolicy";
 import {
   openDatabaseWalSizesMb,
   takeDbWriteCounts,
@@ -47,14 +49,14 @@ export const RESOURCE_PRESSURE_ANALYTICS_DEDUPE_MS = 6 * 60 * 60_000;
 const MEMORY_AVAILABLE_SHARE = 0.10;
 const MEMORY_AVAILABLE_CRITICAL_SHARE = 0.05;
 /**
- * The operating system's own `warn` counts only with less than this share of
- * RAM available. macOS raises its warn level long before memory is short: in
- * the first week of this monitor every Mac report was a `warn` with 40 to 50%
- * of RAM available (16 GB with 7.4 GB free, 48 GB with 20 GB free), which is
- * not a machine in trouble. The Windows reports were real (under 2 GB of 16
- * to 63 GB) and pass either way. `critical` from the OS always counts.
+ * On macOS the operating system's own `warn` counts only with less than this
+ * share of RAM available. macOS raises its warn level long before memory is
+ * short: in the first week of this monitor every Mac report was a `warn` with
+ * 40 to 50% of RAM available (16 GB with 7.4 GB free, 48 GB with 20 GB free),
+ * which is not a machine in trouble. A `warn` on Windows (commit charge) or
+ * Linux (a measured stall) is real at any share, and `critical` always counts.
  */
-const MEMORY_OS_WARN_AVAILABLE_SHARE = 0.25;
+const DARWIN_OS_WARN_AVAILABLE_SHARE = 0.25;
 /** Linux and Windows: swap used past this share of the swap there is. */
 const SWAP_USED_SHARE = 0.85;
 /**
@@ -128,8 +130,11 @@ export const INITIAL_RESOURCE_PRESSURE_STATE: ResourcePressureState = {
   lastWalMaxMb: null,
 };
 
+/** ADE's own processes. The emulators it starts are counted apart (`emulator_count`). */
+const ADE_PROCESS_GROUPS: ReadonlySet<ProcessGroupName> = new Set(["installed_brain", "dev_brain", "desktop"]);
+
 /** Installed RAM as a closed bucket, so the event never carries the exact size. */
-function ramGbBucket(totalMb: number): "le_8" | "9_16" | "17_32" | "33_64" | "gt_64" {
+function ramGbBucket(totalMb: number): RamGbBucket {
   const gb = totalMb / 1024;
   if (gb <= 8.5) return "le_8";
   if (gb <= 16.5) return "9_16";
@@ -149,7 +154,8 @@ export function resourcePressureBreach(
   if (memory) {
     const availableShare = memory.availableMb !== null && memory.totalMb > 0 ? memory.availableMb / memory.totalMb : null;
     const pressure: HostMemoryPressure | null = memory.pressure;
-    const osWarn = pressure === "warn" && (availableShare === null || availableShare < MEMORY_OS_WARN_AVAILABLE_SHARE);
+    const osWarn = pressure === "warn"
+      && (sample.platform !== "darwin" || availableShare === null || availableShare < DARWIN_OS_WARN_AVAILABLE_SHARE);
     if ((availableShare !== null && availableShare < MEMORY_AVAILABLE_SHARE) || osWarn || pressure === "critical") {
       kinds.add("memory");
     }
@@ -355,7 +361,7 @@ export function createResourcePressureMonitor(deps: ResourcePressureMonitorDeps)
     // machine that is short of memory from one that ADE filled.
     const totalMb = sample.memory?.totalMb ?? null;
     const availableMb = sample.memory?.availableMb ?? null;
-    const adeMb = processes ? processes.groups.filter((group) => group.group !== "other").reduce((sum, group) => sum + group.mb, 0) : null;
+    const adeMb = processes ? processes.groups.filter((group) => ADE_PROCESS_GROUPS.has(group.group)).reduce((sum, group) => sum + group.mb, 0) : null;
     const memoryFacts = totalMb && totalMb > 0
       ? {
           ram_gb_bucket: ramGbBucket(totalMb),

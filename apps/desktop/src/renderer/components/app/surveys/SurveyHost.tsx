@@ -31,14 +31,23 @@ export function SurveyHost(): JSX.Element | null {
     const bridge = window.ade?.analytics?.surveys;
     if (!bridge || !onboardingSettledBeforeThisLaunch()) return undefined;
     let cancelled = false;
-    let asked = false;
     let usedMs = 0;
     let focusedAt: number | null = null;
     let timer: number | null = null;
+    const stop = () => {
+      if (focusedAt != null) usedMs += performance.now() - focusedAt;
+      focusedAt = null;
+      if (timer != null) window.clearTimeout(timer);
+      timer = null;
+    };
+    const stopCounting = () => {
+      window.removeEventListener("focus", start);
+      window.removeEventListener("blur", stop);
+      stop();
+    };
     const ask = () => {
       timer = null;
-      asked = true;
-      stop();
+      stopCounting();
       bridge.getEligible().then(
         (next) => {
           if (!cancelled && next && onboardingSettledBeforeThisLaunch()) setSurvey(next);
@@ -46,25 +55,17 @@ export function SurveyHost(): JSX.Element | null {
         () => undefined,
       );
     };
-    const start = () => {
-      if (asked || focusedAt != null) return;
+    function start() {
+      if (focusedAt != null) return;
       focusedAt = performance.now();
       timer = window.setTimeout(ask, Math.max(0, ASK_AFTER_USE_MS - usedMs));
-    };
-    function stop() {
-      if (focusedAt != null) usedMs += performance.now() - focusedAt;
-      focusedAt = null;
-      if (timer != null) window.clearTimeout(timer);
-      timer = null;
     }
     window.addEventListener("focus", start);
     window.addEventListener("blur", stop);
     if (document.hasFocus()) start();
     return () => {
       cancelled = true;
-      window.removeEventListener("focus", start);
-      window.removeEventListener("blur", stop);
-      stop();
+      stopCounting();
     };
   }, []);
 
