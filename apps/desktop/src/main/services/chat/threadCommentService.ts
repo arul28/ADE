@@ -12,10 +12,10 @@ import {
   collapseWhitespace,
   formatThreadReviewBlock,
   normalizeThreadCommentAnchor,
+  parseGuestCommentSelections,
   threadCommentRevision,
   type ChatThreadComment,
   type ChatThreadCommentCreateArgs,
-  type ChatThreadCommentSelection,
   type ChatThreadCommentDeleteArgs,
   type ChatThreadCommentUpdateArgs,
 } from "../../../shared/threadComments";
@@ -265,14 +265,16 @@ export function createThreadCommentService({
   /**
    * Removes the comments marked for the next send and returns the block they
    * make. `restore` puts them back, for a send that fails before it delivers.
-   * Held comments stay where they are.
+   * Held comments stay where they are. Every send route reaches here, so the
+   * guest picks are parsed here: a malformed value picks nothing.
    */
   const takeForSend = (
     sessionId: string,
-    options: { guestComments?: readonly ChatThreadCommentSelection[] | null } = {},
+    options: { guestComments?: unknown } = {},
   ): { block: string | null; count: number; restore: () => void } => {
     const current = read(sessionId);
-    const guestPicks = new Map((options.guestComments ?? []).map((pick) => [pick.id, pick.revision] as const));
+    const picks = parseGuestCommentSelections(options.guestComments) ?? [];
+    const guestPicks = new Map(picks.map((pick) => [pick.id, pick.revision] as const));
     const goes = (comment: ChatThreadComment) => goesWithSend(comment, guestPicks);
     const taken = current.filter(goes);
     if (!taken.length) return { block: null, count: 0, restore: () => {} };

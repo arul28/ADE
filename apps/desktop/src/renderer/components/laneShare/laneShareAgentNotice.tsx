@@ -11,9 +11,10 @@ import { onLaneSharesLoaded, openLaneShareSheet } from "./laneShareStore";
  * runs on every read of a machine's share list: a host event makes the
  * window read the list again, and so does the first read after a start, so
  * one path covers a live share, a reconnect and a share made while the app
- * was closed. A share shows its notice once on this computer: the noticed
- * grant ids and each list's last read time are kept in this viewer's
- * storage, shared by its windows. The "Made by an agent" label in the list
+ * was closed (on the first read of a list, only shares of the last day).
+ * A share shows its notice once on this computer: the noticed grant ids
+ * and each list's last read time are kept in this viewer's storage, shared
+ * by its windows. The "Made by an agent" label in the list
  * stays the durable signal.
  */
 

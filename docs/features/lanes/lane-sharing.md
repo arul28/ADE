@@ -130,9 +130,21 @@ case a share made by an agent cannot change anything on the host.
   the end date and message limits may be set. No rights means the Watch
   preset. An agent cannot confirm a high-risk share, and the host refuses an
   agent's share that does not come out low risk (`agent_watch_only`).
-- **Rate.** At most 5 shares an hour per machine from agents, counted in
-  memory by the host service (`AGENT_SHARES_PER_HOUR`), on top of the
-  directory's limits.
+- **Rate.** At most 5 shares an hour per machine from agents, on top of the
+  directory's limits (`AGENT_SHARES_PER_HOUR`). One counter in the brain
+  process serves every open project (`createLaneShareAgentRate`); a refused
+  or failed create does not count. The counter is in memory, so a restart
+  resets it; the directory's daily invite limit still holds.
+- **Privacy defaults.** An agent's share hides at least what the person's
+  saved default rights hide (`laneShare.defaultRights`: hide machines, hide
+  models). The call's own switches can only add hiding. Nothing else of the
+  defaults counts, and when they cannot be read the share hides both.
+- **No change of a share.** The host refuses an agent's share for a lane and
+  email that already have a live share, made by a person or an agent, before
+  it calls the directory ("This person already has a share of this lane.
+  Change it in the ADE app."). It checks its own rows (an end date in the
+  past ends a row), the directory's live grants, and a create of the same
+  pair still in progress.
 - **Record.** The host's rights row records `created_by` (`person` or
   `agent`; a row from before reads as `person`). `lane_share.list` returns it
   as `createdBy`, and the share sheet's guest row and Settings › Sharing show
@@ -143,16 +155,24 @@ case a share made by an agent cannot change anything on the host.
   the lane <lane> with <email>. Watch only.", with **Remove** (a revoke with
   that machine's pin) and **View** (the share sheet). The noticed grant ids
   and each list's last read time are kept in this viewer's local storage
-  (`laneShareAgentNotice.tsx`, `agentSharesToNotice`), so a share made while
-  the app was closed shows on the next read and a reconnect shows nothing
-  again. The label stays the durable signal.
+  (`laneShareAgentNotice.tsx`, `agentSharesToNotice`). A share made while
+  the app was closed shows on the next read of that list, and a reconnect
+  shows nothing again. On the first read of a list (a new project, a new
+  machine, a list the record forgot), only shares made in the last 24 hours
+  show, so an old install does not show every share at once. The label stays
+  the durable signal.
 - **The CLI.** `ade lanes share --lane <lane>` lists, `--add <email>` makes a
   Watch share (`--ends`, `--hide-machines`, `--hide-models`), and `--remove
-  <email|grant id>` stops one. `--preset` takes only `watch`.
-- **ADE MCP.** A read-only connection can list shares only: the command
-  policy refuses `lanes share --add/--remove` and `actions run` of a
-  `lane_share` write. A full-access connection can list, make a Watch share
-  and stop a share.
+  <email|grant id>` stops one. `--preset` takes only `watch`. Each meaning has
+  one flag, and the command refuses a word it does not know.
+- **ADE MCP.** A read-only connection can list shares only. The command
+  policy lets `lanes share` through only in its list form (`--lane`,
+  `--lane-id`, `--project-root`, `--text`, `--json`, `--pretty`,
+  `--compact`); any other flag or word is a write, and so is `actions run`
+  of a `lane_share` write. The runtime also refuses `lane_share.create` and
+  `revoke` for a session with an ADE MCP connection id and a role under
+  `cto`, which is how a read-only connection runs the CLI. A full-access
+  connection can list, make a Watch share and stop a share.
 - **Default rights.** `account_settings.set` or `remove` of
   `laneShare.defaultRights` is for a person only, by the same test.
 

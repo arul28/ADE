@@ -19,18 +19,23 @@ export function isLiveLaneShare(entry: Pick<LaneShareGivenEntry, "state">): bool
 /** How far a share's directory time may run behind this computer's clock and still count as new. */
 export const AGENT_SHARE_NOTICE_CLOCK_SKEW_MS = 5 * 60_000;
 
+/** On the first read of a list, how recent an agent's share must be to get the notice. */
+export const AGENT_SHARE_NOTICE_FIRST_READ_WINDOW_MS = 24 * 60 * 60_000;
+
 /**
  * The shares of one machine's list that get the owner's "An agent shared"
  * notice: made by an agent on that machine, still live, never noticed here,
  * and made after this computer last read that list (less the clock skew).
- * A first read ever (`lastListAt` null) only sets the starting point.
+ * On a first read of the list (`lastListAt` null: a new project, a new
+ * machine, a forgotten list), only shares of the last 24 hours count, so an
+ * old install does not show every share it ever made.
  */
 export function agentSharesToNotice(
   shares: readonly LaneShareGivenEntry[],
   seen: { grantIds: ReadonlySet<string>; lastListAt: number | null },
+  now: number = Date.now(),
 ): LaneShareGivenEntry[] {
-  const since = seen.lastListAt;
-  if (since == null) return [];
+  const since = seen.lastListAt ?? now - AGENT_SHARE_NOTICE_FIRST_READ_WINDOW_MS;
   return shares.filter((entry) =>
     entry.local
     && entry.createdBy === "agent"

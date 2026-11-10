@@ -109,10 +109,11 @@ import {
   type AccountAttestationConfig,
 } from "../account/sharedAccountAuthService";
 import { createLaneShareGrantService } from "./laneShareGrantService";
-import { createLaneShareHostService } from "./laneShareHostService";
+import { createLaneShareAgentRate, createLaneShareHostService } from "./laneShareHostService";
 import { createLaneShareMoveService } from "./laneShareMoveService";
 import { createLaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
-import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import { ACCOUNT_SCOPE_ALL, accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import { LANE_SHARE_DEFAULT_RIGHTS_KEY } from "../../../../desktop/src/shared/laneShareRights";
 import { readGitOriginUrl } from "../../../../desktop/src/main/services/projects/recentProjectSummary";
 import type { LaneShareHostEvent } from "./syncHostService";
 import type { SyncTunnelClientService } from "./syncTunnelClientService";
@@ -633,6 +634,12 @@ function createInactiveTailnetDiscoveryStatus(
   };
 }
 
+/**
+ * One agent share counter for this brain process: a brain serves every open
+ * project with its own sync service, and the limit is per machine.
+ */
+const brainLaneShareAgentRate = createLaneShareAgentRate();
+
 export function createSyncService(args: SyncServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
   const artifactReads = createSyncArtifactReads({
@@ -721,6 +728,12 @@ export function createSyncService(args: SyncServiceArgs) {
     getLaneLabel: (laneId) => args.laneService.findLaneIdentity(laneId)?.name ?? null,
     refreshGrants: () => laneShareGrants.refresh(),
     onEvent: (event) => args.onLaneShareEvent?.(event),
+    agentRate: brainLaneShareAgentRate,
+    readDefaultRights: () => {
+      const settings = args.accountSettingsStore;
+      if (!settings) throw new Error("Account settings are not available on this runtime.");
+      return settings.get(ACCOUNT_SCOPE_ALL, LANE_SHARE_DEFAULT_RIGHTS_KEY);
+    },
     logger: args.logger,
   });
   // Moving a chat to the other person of a share (plan Part C). Uses this

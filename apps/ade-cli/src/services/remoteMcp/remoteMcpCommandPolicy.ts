@@ -83,7 +83,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["machines", new Set(["list", "show"])],
   ["projects", new Set(["list"])],
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.
-  // `share` lists a lane's shares; `share --add` and `--remove` are refused below.
+  // `share` lists a lane's shares in its read form only (`isLaneShareListForm`).
   ["lanes", new Set(["list", "show", "actions", "reclaim-preview", "defaults", "share"])],
   ["lane", new Set(["list", "show", "actions", "reclaim-preview", "defaults", "share"])],
   // `ade lanes deleted list` reads Recently deleted; `restore` creates a lane.
@@ -495,8 +495,9 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   // `lanes defaults set` changes the project's new-lane defaults. Look past
   // the global flags (`--json`, `--pretty`) the CLI strips before it parses.
   if ((command === "lanes" || command === "lane") && sub === "defaults" && args.slice(2).includes("set")) return refuse();
-  // `lanes share --add` makes a share and `--remove` stops one: full access only.
-  if ((command === "lanes" || command === "lane") && sub === "share" && args.slice(2).some((word) => LANE_SHARE_WRITE_FLAG.test(word))) {
+  // `lanes share` lists the shares only in its read form; anything else
+  // (`--add`, `--remove`, or a flag this check does not know) is full access.
+  if ((command === "lanes" || command === "lane") && sub === "share" && !isLaneShareListForm(args.slice(2))) {
     return refuse();
   }
   // `cloud ready` alone, `status` or `list` reads the pool; `on`, `off` and
@@ -511,8 +512,40 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   return refuse();
 }
 
-/** `ade lanes share` flags that make or stop a share instead of listing them. */
-const LANE_SHARE_WRITE_FLAG = /^--(?:add|remove)(?:=|$)/;
+/** The flags of the read form of `ade lanes share`, and whether each takes a value. */
+const LANE_SHARE_LIST_FLAGS: ReadonlyMap<string, boolean> = new Map([
+  ["--lane", true],
+  ["--lane-id", true],
+  ["--project-root", true],
+  ["--text", false],
+  ["--json", false],
+  ["--pretty", false],
+  ["--compact", false],
+]);
+
+/**
+ * Whether the words after `lanes share` are the list form: an allow list, so
+ * a write flag, an alias, an abbreviation or a stray word all read as a write.
+ */
+function isLaneShareListForm(words: readonly string[]): boolean {
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index]!;
+    const equals = word.indexOf("=");
+    const name = equals > 0 ? word.slice(0, equals) : word;
+    const takesValue = LANE_SHARE_LIST_FLAGS.get(name);
+    if (takesValue === undefined) return false;
+    if (equals > 0) {
+      if (!takesValue) return false;
+      continue;
+    }
+    if (takesValue) {
+      const value = words[index + 1];
+      if (value === undefined || value.startsWith("-")) return false;
+      index += 1;
+    }
+  }
+  return true;
+}
 
 /** `ade search` flags that rebuild the index instead of reading it. */
 const SEARCH_WRITE_FLAGS: ReadonlySet<string> = new Set(["--rebuild", "--rebuild-index"]);

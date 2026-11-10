@@ -7130,12 +7130,17 @@ function formatLaneShareEnd(endsAt: unknown): string {
  */
 function buildLaneSharePlan(args: string[]): CliPlan {
   const laneId = requireValue(readLaneId(args) ?? envLaneIdForLaneCommand(), "laneId");
-  const add = readValue(args, ["--add", "--invite"]);
-  const remove = readValue(args, ["--remove", "--revoke"]);
+  const add = readValue(args, ["--add"]);
+  const remove = readValue(args, ["--remove"]);
   const preset = readValue(args, ["--preset"]);
-  const endsValue = readValue(args, ["--ends", "--ends-at"]);
+  const endsValue = readValue(args, ["--ends"]);
   const hideMachines = readFlag(args, ["--hide-machines"]);
   const hideModels = readFlag(args, ["--hide-models"]);
+  // One flag per meaning: an unknown word is refused, never read as a list.
+  const unknown = args.find((word) => !PARSED_SWITCHES.has(word));
+  if (unknown !== undefined) {
+    throw new CliUsageError(`ade lanes share does not take ${unknown}. Use --lane, --add <email>, --remove <email|grant id>, --ends, --preset watch, --hide-machines or --hide-models.`);
+  }
   if (add && remove) throw new CliUsageError("Pass --add or --remove, not both.");
   if (!add && (preset != null || endsValue != null || hideMachines || hideModels)) {
     throw new CliUsageError("--preset, --ends, --hide-machines and --hide-models go with --add <email>.");

@@ -7203,6 +7203,15 @@ async function runTool(args: {
       if (argsList || hasScalarArg) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `lane_share.${action} takes one object argument.`);
       }
+      // A read-only ADE MCP connection runs the CLI as role agent, full
+      // access as cto (remoteMcpRunner). The command policy refuses its
+      // writes first; this holds even if a flag gets past that parse.
+      if (session.identity.remoteMcpConnectionId && session.identity.role !== "cto" && action !== "list") {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          "This ADE MCP connection is read-only, so it can list a lane's shares but not make or stop one. Ask the person for full access in ADE Settings → ADE MCP.",
+        );
+      }
       const { callerClass: _callerSent, ...shareArgs } = scopedObjectArgs;
       scopedObjectArgs = { ...shareArgs, callerClass: mayUseUserOnlyActions(session) ? "person" : "agent" };
     }

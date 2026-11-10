@@ -90,7 +90,7 @@ import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingSto
 import type { SyncHostSingletonConflict } from "./syncHostSingleton";
 import { createSyncPinStore } from "./syncPinStore";
 import { createLaneShareGrantService } from "./laneShareGrantService";
-import { createLaneShareHostService } from "./laneShareHostService";
+import { createLaneShareAgentRate, createLaneShareHostService } from "./laneShareHostService";
 import { LANE_SHARE_MAX_GUEST_DRAFTS } from "./laneShareGuestPolicy";
 import { LAUNCH_PROFILES } from "../../../../desktop/src/shared/cliLaunch";
 import { createLaneShareRightsStore, ensureLaneShareRightsSchema } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
@@ -6419,6 +6419,8 @@ describe("sync host account authentication", () => {
           getRepoKey: () => "repo:github.com/acme/widgets",
           getProjectLabel: () => "widgets",
           getLaneLabel: () => "shared",
+          agentRate: createLaneShareAgentRate(),
+          readDefaultRights: () => undefined,
         });
       }
 

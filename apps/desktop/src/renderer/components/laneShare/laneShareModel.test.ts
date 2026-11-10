@@ -35,7 +35,8 @@ function share(patch: Partial<LaneShareGivenEntry>): LaneShareGivenEntry {
 
 describe("agentSharesToNotice", () => {
   // The owner's "An agent shared the lane" notice: once per share, only for
-  // a live share an agent made on that machine after the list was last read.
+  // a live share an agent made on that machine after the list was last read,
+  // or in the last day when this computer reads that list for the first time.
   it.each<[string, Partial<LaneShareGivenEntry>, { seen?: string[]; lastListAt?: number | null }, boolean]>([
     ["a new pending share an agent made", {}, {}, true],
     ["a new active share an agent made", { state: "active" }, {}, true],
@@ -44,12 +45,13 @@ describe("agentSharesToNotice", () => {
     ["a share already noticed on this computer", {}, { seen: ["grant-1"] }, false],
     ["a share that ended", { state: "revoked" }, {}, false],
     ["a share made long before the last read", { createdAt: LAST_READ - 60 * 60_000 }, {}, false],
-    ["the first read ever on this computer", {}, { lastListAt: null }, false],
+    ["a recent share on the first read of the list", {}, { lastListAt: null }, true],
+    ["a share over a day old on the first read of the list", { createdAt: LAST_READ - 25 * 60 * 60_000 }, { lastListAt: null }, false],
   ])("%s", (_label, patch, seen, shown) => {
     const result = agentSharesToNotice([share(patch)], {
       grantIds: new Set(seen.seen ?? []),
       lastListAt: seen.lastListAt === undefined ? LAST_READ : seen.lastListAt,
-    });
+    }, LAST_READ + 2_000);
     expect(result.map((entry) => entry.grantId)).toEqual(shown ? ["grant-1"] : []);
   });
 });

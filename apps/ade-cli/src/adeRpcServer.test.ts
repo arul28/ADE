@@ -6380,6 +6380,13 @@ describe("adeRpcServer", () => {
       expect(defaults.isError).toBe(true);
     }
     expect(set).not.toHaveBeenCalled();
+    // ADE MCP runs the CLI as role agent for a read-only connection and as cto
+    // for full access: the read-only one lists and is refused the rest.
+    const readOnlyMcp = await connect({ callerId: "ade-cli:4243", role: "agent", remoteMcpConnectionId: "conn-read" }, { clientInfo: { name: "ade-cli" } });
+    for (const action of ["create", "revoke"]) expect(await callerOf(readOnlyMcp, action)).toBe("refused");
+    expect(await callerOf(readOnlyMcp, "list")).not.toBe("refused");
+    const fullMcp = await connect({ callerId: "ade-cli:4244", role: "cto", remoteMcpConnectionId: "conn-full" }, { clientInfo: { name: "ade-cli" } });
+    expect(await callerOf(fullMcp, "create")).toBe("agent");
     // An agent in a chat, and another machine's brain.
     const chatAgent = await connect({ callerId: "agent-a", role: "agent", chatSessionId: "chat-a" }, { clientInfo: { name: "ade-desktop-local" } });
     expect(await callerOf(chatAgent, "create")).toBe("agent");

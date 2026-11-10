@@ -73,6 +73,60 @@ const MAX_EMAIL_CHARS = 320;
 export const AGENT_SHARES_PER_HOUR = 5;
 const HOUR_MS = 60 * 60 * 1000;
 
+/** The agent share counter of one brain process: every project's host service takes from the same one. */
+export type LaneShareAgentRate = {
+  /** Takes a slot or throws `rate_limited`. The returned call gives the slot back (a refused or failed create). */
+  take(): () => void;
+};
+
+/**
+ * When an agent made each share in the last hour, for the whole process.
+ * In memory: a restart forgets it, and the directory keeps its own limits.
+ */
+export function createLaneShareAgentRate(now: () => number = Date.now): LaneShareAgentRate {
+  let made: number[] = [];
+  return {
+    take() {
+      const at = now();
+      // A clock moved back keeps its slots counted.
+      made = made.filter((when) => at - when < HOUR_MS);
+      if (made.length >= AGENT_SHARES_PER_HOUR) {
+        throw new LaneShareHostError(
+          "rate_limited",
+          `An agent or the CLI can make at most ${AGENT_SHARES_PER_HOUR} lane shares an hour on this computer. Try again later, or share from the ADE app.`,
+        );
+      }
+      made.push(at);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        const index = made.indexOf(at);
+        if (index >= 0) made.splice(index, 1);
+      };
+    },
+  };
+}
+
+const HIDE_BOTH: LaneShareRights["privacy"] = { hideMachines: true, hideModels: true };
+
+/**
+ * The privacy switches of the person's saved default rights
+ * (`laneShare.defaultRights`), for an agent's share. None saved hides
+ * nothing; a read that throws or a value of the wrong shape hides both.
+ */
+function savedDefaultPrivacy(read: () => unknown): LaneShareRights["privacy"] {
+  try {
+    const value = read();
+    if (value === undefined || value === null) return { hideMachines: false, hideModels: false };
+    const rights = typeof value === "object" ? (value as { rights?: unknown }).rights : undefined;
+    if (!rights || typeof rights !== "object") return HIDE_BOTH;
+    return parseLaneShareRights(rights).privacy;
+  } catch {
+    return HIDE_BOTH;
+  }
+}
+
 export type LaneShareHostErrorCode =
   | "invalid_args"
   | "confirm_high_risk"
@@ -206,6 +260,13 @@ export function createLaneShareHostService(options: {
   /** A share of this machine changed; the owner's lists read it again. */
   onEvent?: (event: LaneShareEvent) => void;
   now?: () => number;
+  /** The agent share counter of this brain process, shared by every project (`createLaneShareAgentRate`). */
+  agentRate: LaneShareAgentRate;
+  /**
+   * The person's saved default rights (the account setting
+   * `laneShare.defaultRights`), raw. Throws when they cannot be read.
+   */
+  readDefaultRights: () => unknown;
   /** This machine's `process.platform`: it decides whether a guest may type into a CLI here. */
   platform?: NodeJS.Platform;
   logger?: { info(event: string, fields?: Record<string, unknown>): void; warn(event: string, fields?: Record<string, unknown>): void };
@@ -283,30 +344,22 @@ export function createLaneShareHostService(options: {
   };
 
   /**
-   * When an agent made each of its shares in the last hour (in memory; a
-   * restart forgets it, and the directory keeps its own limits). A slot is
-   * taken before the directory call and given back when the invite fails.
+   * The lane + address pairs a create is working on now. An agent's create
+   * waits on the directory between its check and its write, so a second
+   * create of the same pair in that gap is refused, not merged.
    */
-  let agentCreates: number[] = [];
-  const takeAgentCreateSlot = (): (() => void) => {
-    const at = now();
-    // A clock moved back keeps its slots counted.
-    agentCreates = agentCreates.filter((made) => at - made < HOUR_MS);
-    if (agentCreates.length >= AGENT_SHARES_PER_HOUR) {
-      throw new LaneShareHostError(
-        "rate_limited",
-        `An agent or the CLI can make at most ${AGENT_SHARES_PER_HOUR} lane shares an hour on this computer. Try again later, or share from the ADE app.`,
-      );
-    }
-    agentCreates.push(at);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      const index = agentCreates.indexOf(at);
-      if (index >= 0) agentCreates.splice(index, 1);
-    };
-  };
+  const creatingPairs = new Set<string>();
+  const AGENT_SHARE_EXISTS_MESSAGE = "This person already has a share of this lane. Change it in the ADE app.";
+
+  /**
+   * An agent never changes a share that exists: the directory would reuse its
+   * grant and the host would write Watch rights over the person's choices.
+   * A row ends with its end date; the list deletes a final grant's row.
+   */
+  const hasLocalShare = (laneId: string, address: string): boolean =>
+    options.store.list().some((record) => record.laneId === laneId
+      && record.receiverEmail?.toLowerCase() === address
+      && !(typeof record.rights.limits.endsAt === "number" && record.rights.limits.endsAt <= now()));
 
   /** The one share of `laneId` on this machine that goes to `email`, by its local row. */
   const grantIdForEmail = (laneId: unknown, email: unknown): string => {
@@ -376,25 +429,49 @@ export function createLaneShareHostService(options: {
       const receiverEmail = cleanEmail(args.receiverEmail);
       if (!receiverEmail) throw new LaneShareHostError("invalid_args", "That email address isn't valid.");
       if (createdBy === "agent" && args.shareBackOf !== undefined) requirePerson(caller);
-      const { rights: asked, risk } = checkedRights(args.rights, args.confirmHighRisk, cliTyping, caller);
+      const { rights: checked, risk } = checkedRights(args.rights, args.confirmHighRisk, cliTyping, caller);
+      // An agent's share hides at least what the person's defaults hide; its
+      // own switches only add hiding. Nothing else of the defaults counts.
+      const saved = createdBy === "agent" ? savedDefaultPrivacy(options.readDefaultRights) : null;
+      const asked = saved
+        ? { ...checked, privacy: { hideMachines: checked.privacy.hideMachines || saved.hideMachines, hideModels: checked.privacy.hideModels || saved.hideModels } }
+        : checked;
       const endsAt = cleanEndsAt(args.endsAt, now());
       // The host enforces the end date from its own rights, as an edit keeps it.
       const rights = endsAt !== undefined ? { ...asked, limits: { ...asked.limits, endsAt } } : asked;
       const shareBackOf = args.shareBackOf === undefined ? null : cleanGrantId(args.shareBackOf);
-      const releaseSlot = createdBy === "agent" ? takeAgentCreateSlot() : null;
-      let made: Awaited<ReturnType<typeof invite>>;
-      try {
-        made = await invite(laneId, receiverEmail, rights, risk.level, endsAt, shareBackOf);
-      } catch (error) {
-        releaseSlot?.();
-        throw error;
+      const address = receiverEmail.toLowerCase();
+      const pair = `${laneId}\u0000${address}`;
+      if (createdBy === "agent" && (creatingPairs.has(pair) || hasLocalShare(laneId, address))) {
+        throw new LaneShareHostError("invalid_args", AGENT_SHARE_EXISTS_MESSAGE);
       }
-      const { grantId, body } = made;
-      const record = options.store.put({ grantId, laneId, receiverEmail, rights, createdBy });
-      options.logger?.info("lane_share.host_created", { grantId, risk: risk.level, createdBy });
-      refresh();
-      changed(grantId, laneId);
-      return { grantId, rights: record.rights, risk, createdBy: record.createdBy, directory: body };
+      // Held from here, before the first await, until the rights are written.
+      const ownsPair = !creatingPairs.has(pair);
+      creatingPairs.add(pair);
+      try {
+        const releaseSlot = createdBy === "agent" ? options.agentRate.take() : null;
+        let made: Awaited<ReturnType<typeof invite>>;
+        try {
+          if (createdBy === "agent") {
+            const live = (await givenGrants()).some((grant) => (grant.state === "pending" || grant.state === "active")
+              && grant.laneId === laneId
+              && typeof grant.receiverEmail === "string" && grant.receiverEmail.toLowerCase() === address);
+            if (live) throw new LaneShareHostError("invalid_args", AGENT_SHARE_EXISTS_MESSAGE);
+          }
+          made = await invite(laneId, receiverEmail, rights, risk.level, endsAt, shareBackOf);
+        } catch (error) {
+          releaseSlot?.();
+          throw error;
+        }
+        const { grantId, body } = made;
+        const record = options.store.put({ grantId, laneId, receiverEmail, rights, createdBy });
+        options.logger?.info("lane_share.host_created", { grantId, risk: risk.level, createdBy });
+        refresh();
+        changed(grantId, laneId);
+        return { grantId, rights: record.rights, risk, createdBy: record.createdBy, directory: body };
+      } finally {
+        if (ownsPair) creatingPairs.delete(pair);
+      }
     },
 
     /**
