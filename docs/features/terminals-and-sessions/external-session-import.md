@@ -75,7 +75,7 @@ ADE first learns it.
 | `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`, `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` | Registers `work.listExternalSessions`, `work.getExternalSessionDetail` (the phone preview: the service's `getDetail` with 120-event pages, mobile-wire compacted), and `work.importExternalSession` for paired controllers. The desktop file is a re-export of the ade-cli implementation. |
 | `apps/desktop/src/shared/types/sync.ts` | Sync command DTO aliases for external-session list/detail/import payloads and results. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionBrowser.tsx` | The desktop Import session dialog: a fixed-size split view (`LaneDialogShell`, up to 1180 × 860 px). Owns the scan, the filters, the selection, the target lane, the surface choice, and the import run. Asks for 200 rows per provider to match the service's project-scope discovery window. A provider that fails its scan leaves a muted per-provider notice ("Droid CLI not found…") instead of an unexplained empty list, and only a total scan failure becomes the blocking error state. See [Desktop dialog](#desktop-dialog). |
-| `apps/desktop/src/renderer/components/terminals/importSessions/ImportTopBar.tsx` | The dialog's top bar: provider chips, the lane filter (`LaneCombobox` with per-lane counts and "Other folders"), search, refresh, and the computer (source) picker. |
+| `apps/desktop/src/renderer/components/terminals/importSessions/ImportTopBar.tsx` | The dialog's top bar: provider chips, the lane filter (`LaneCombobox` with per-lane counts and "Other folders") and the computer (source) picker side by side, search, and refresh. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionList.tsx` | The left session list, grouped by date ("Today", "Yesterday", weekday, date). Keyboard moves keep the selected row in view and move roving focus. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionPreview.tsx` | The right pane: a who/where header, then the conversation rendered read-only by `AgentChatMessageList` in its own scroll box that opens at the bottom. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/ImportActionBar.tsx` | The action bar pinned under the preview. Renders `planImport` and nothing else: the surface switch, the lane pill or locked lane pill, the model picker for a chat copy, the primary and secondary buttons, and one note line. |
@@ -739,16 +739,18 @@ Top bar (`ImportTopBar.tsx`):
 - **Provider chips.** A chip shows only for a provider that has sessions under
   the current lane filter. The chosen provider keeps its chip, so the user can
   clear the filter.
-- **Lane filter.** The shared `LaneCombobox` with an "All lanes" row. Each lane
-  row shows its session count. Only lanes with sessions are listed. The
-  pseudo-entry "Other folders" holds sessions whose folder is not a live lane.
-  The filter opens on the lane the dialog came from while the scan can still
-  find sessions there, and falls back to "All lanes" when it finds none.
+- **Lane filter and computer.** The shared `LaneCombobox` with an "All lanes"
+  row sits beside the computer (source) picker, and both menus render on top of
+  the dialog instead of behind it. Each lane row shows its session count. Only
+  lanes with sessions are listed. The pseudo-entry "Other folders" holds
+  sessions whose folder is not a live lane. The filter opens on the lane the
+  dialog came from while the scan can still find sessions there, and falls
+  back to "All lanes" when it finds none.
 - **Search.** It matches the title, the opening prompt, the lane name and
   branch, the cwd, the id, and the sampled messages. When a search finds
   nothing in the chosen lane, the empty state offers "Show N in other lanes".
-- **Refresh and computer.** A refresh swaps each provider's rows in place, so
-  the list never goes blank.
+- **Refresh.** A refresh swaps each provider's rows in place, so the list never
+  goes blank.
 
 List rows (`ImportSessionList.tsx`) are grouped by date. A row names the lane
 with its color dot, never the `…/worktrees/<folder>` path. A removed lane reads

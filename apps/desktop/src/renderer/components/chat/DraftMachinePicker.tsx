@@ -6,6 +6,7 @@ import { DevinLogo } from "../shared/ProviderLogos";
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { cn } from "../ui/cn";
 import { MENU_ITEM_CLASS, MENU_SCROLL_CLASS, POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
+import { usePortalContainer } from "../ui/portalContainer";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { Z_LAYERS } from "../ui/zLayers";
 
@@ -65,6 +66,7 @@ export function DraftMachinePicker({
   tooltipDescription,
   triggerLabel = "Choose machine",
   showWhenSingle = false,
+  side = "top",
   autoPick = null,
 }: {
   machines: readonly DraftMachineOption[];
@@ -82,6 +84,12 @@ export function DraftMachinePicker({
    */
   showWhenSingle?: boolean;
   /**
+   * Preferred side of the trigger. `"top"` suits the draft shelf at the bottom
+   * of the window; a top-bar host passes `"bottom"` so the menu does not cover
+   * the dialog header. Radix still flips when the preferred side has no room.
+   */
+  side?: "top" | "bottom";
+  /**
    * "Least loaded": the machine new work would go to by its load and its
    * placement preference (`autoLaneMachine`), offered above the machines.
    * Picking it picks that machine; nothing moves later by itself.
@@ -89,6 +97,10 @@ export function DraftMachinePicker({
   autoPick?: { machineId: string; summary: string } | null;
 }) {
   const [open, setOpen] = useState(false);
+  // Inside a modal dialog, a body portal sits under the dialog's scrim (and the
+  // dialog blocks clicks outside its content). Portal into the panel instead,
+  // the same way the lane combobox and composer chips do.
+  const portalContainer = usePortalContainer();
   const selected = machines.find((machine) => machine.id === selectedMachineId) ?? null;
   const displayed = selected ?? machines[0];
   const selectionUnavailable = selectedMachineId != null && selected == null;
@@ -187,7 +199,7 @@ export function DraftMachinePicker({
           </button>
         </DropdownMenu.Trigger>
       </SmartTooltip>
-      <DropdownMenu.Portal>
+      <DropdownMenu.Portal container={portalContainer ?? undefined}>
         <DropdownMenu.Content
           aria-label="Choose a machine"
           onFocusCapture={(event) => {
@@ -201,8 +213,8 @@ export function DraftMachinePicker({
             (selected ?? firstAvailable)?.focus();
           }}
           className={cn(POPOVER_SURFACE_CLASS, MENU_SCROLL_CLASS, "w-[220px] p-1 font-sans text-[11px] text-fg/82")}
-          style={{ zIndex: Z_LAYERS.popover }}
-          side="top"
+          style={{ zIndex: portalContainer ? Z_LAYERS.dialogPopover : Z_LAYERS.popover }}
+          side={side}
           align="start"
           sideOffset={4}
           collisionPadding={8}
