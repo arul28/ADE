@@ -15,6 +15,8 @@ import { isChatToolType } from "../../../../shared/sessionSpawnNesting";
 import { isTrackedAgentCliToolType, type TerminalToolType } from "../../../../shared/types/sessions";
 import { dpopPublicKeyThumbprint, exportPublicKeyX963Base64, generateDpopKeyPair, signDpopProof } from "../../../webclient/sync/dpop";
 import { randomHex } from "../../../webclient/sync/ids";
+import { encodeCodedErrorMessage } from "../../../../shared/codedError";
+import { logRendererDebugEvent } from "../../../lib/debugLog";
 import { relayTransportFrame, withRelayReadyNegotiation } from "../../../webclient/sync/relayReady";
 import {
   createEnvelopeChunkAssembler,
@@ -225,7 +227,7 @@ export function buildLaneShareGuestHello(input: LaneShareGuestHelloInput): SyncH
 }
 
 function codedError(code: string, message: string): Error {
-  return new Error(`${code}: ${message}`);
+  return new Error(encodeCodedErrorMessage(code, message));
 }
 
 function stringField(value: unknown, key: string): string | null {
@@ -600,7 +602,7 @@ export class LaneShareGuestConnection {
       selfUserId: typeof info?.userId === "string" ? info.userId : null,
     });
     if (changed) this.emit("accessChanged");
-    void this.refreshSessions().catch(() => undefined);
+    void this.refreshSessionsLogged();
   }
 
   private handleHelloError(payload: SyncHelloErrorPayload): void {
@@ -707,7 +709,7 @@ export class LaneShareGuestConnection {
         if (!entry.event || typeof entry.event !== "object") return;
         this.emit("chatEvent", entry);
         if (entry.event.type === "done" || (entry.event.type === "status" && entry.event.turnStatus !== "started")) {
-          void this.refreshSessions().catch(() => undefined);
+          void this.refreshSessionsLogged();
         }
         return;
       }
@@ -819,6 +821,13 @@ export class LaneShareGuestConnection {
   }
 
   /** Lists the sessions of the granted lane. Rows of any other lane are dropped. */
+  /** A background read of the session list: a failure keeps the last list and is logged. */
+  private refreshSessionsLogged(): Promise<void> {
+    return this.refreshSessions().then(() => undefined, (error: unknown) => {
+      logRendererDebugEvent("lane_share.guest_sessions_read_failed", { grantId: this.grantId, error: error instanceof Error ? error.message : String(error) });
+    });
+  }
+
   async refreshSessions(): Promise<LaneShareGuestSession[]> {
     const result = await this.call("work.listSessions", { limit: 200 });
     const next = new Map<string, LaneShareGuestSession>();

@@ -1,4 +1,13 @@
-import { encodeCodedErrorMessage } from "./codedError";
+import { encodeCodedErrorMessage, parseCodedErrorMessage } from "./codedError";
+import {
+  directoryNumber as num,
+  directoryRisk,
+  directoryString as str,
+  isLaneShareGrantRecord as isGrantRecord,
+  LANE_SHARE_GRANT_ID_PATTERN,
+  LANE_SHARE_TICKET_PATTERN as TICKET_PATTERN,
+  laneShareDirectoryError as directoryError,
+} from "./laneShareDirectory";
 import { trustedAccountRelayBaseUrls } from "./accountDirectory";
 import type {
   LaneShareAcceptResult,
@@ -9,7 +18,6 @@ import type {
   LaneShareReceivedEntry,
   LaneShareReceivedResult,
 } from "./types/laneShare";
-import type { LaneShareRiskLevel } from "./laneShareRights";
 
 /**
  * The guest's account calls to the account directory (lane sharing). Pure:
@@ -23,28 +31,16 @@ import type { LaneShareRiskLevel } from "./laneShareRights";
  * ticket are checked here before anything uses them.
  */
 
-export const LANE_SHARE_GRANT_ID_PATTERN = /^ls_[0-9a-f]{32}$/;
-/** A ticket and an RFC 7638 thumbprint: 43 base64url characters (directory contract). */
-const TICKET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const RELAY_CONNECT_PATH = /^\/connect\/[A-Za-z0-9._:-]{1,256}$/;
 
-export type LaneShareDirectorySend = (request: {
+type LaneShareDirectorySend = (request: {
   method: "GET" | "POST";
   path: string;
   body?: Record<string, unknown>;
 }) => Promise<{ status: number; body: unknown }>;
 
-const RISK_LEVELS = new Set<string>(["low", "medium", "high"]);
-const str = (value: unknown): string | null => (typeof value === "string" && value ? value : null);
-const num = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
-
-function isGrantRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object"
-    && typeof (value as { id?: unknown }).id === "string" && LANE_SHARE_GRANT_ID_PATTERN.test((value as { id: string }).id);
-}
-
 /** A received grant as the "Shared with me" list shows it. Display fields only. */
-export function laneShareReceivedEntry(grant: Record<string, unknown>): LaneShareReceivedEntry {
+function laneShareReceivedEntry(grant: Record<string, unknown>): LaneShareReceivedEntry {
   return {
     grantId: grant.id as string,
     state: str(grant.state) ?? "unknown",
@@ -53,7 +49,7 @@ export function laneShareReceivedEntry(grant: Record<string, unknown>): LaneShar
     projectLabel: str(grant.projectLabel),
     laneLabel: str(grant.laneLabel),
     preset: str(grant.preset),
-    risk: typeof grant.risk === "string" && RISK_LEVELS.has(grant.risk) ? grant.risk as LaneShareRiskLevel : null,
+    risk: directoryRisk(grant.risk),
     giverLabel: str(grant.giverLabel),
     receiverEmail: str(grant.receiverEmail),
     endsAt: num(grant.endsAt),
@@ -78,7 +74,7 @@ export function parseLaneShareReceivedResponse(body: unknown): LaneShareReceived
  * path `/connect/<key>`, no credentials, query or fragment. Null otherwise.
  * The host published this address; it is another person's data until checked.
  */
-export function trustedLaneShareRelayUrl(raw: unknown, trustedBases: readonly string[]): string | null {
+function trustedLaneShareRelayUrl(raw: unknown, trustedBases: readonly string[]): string | null {
   if (typeof raw !== "string" || raw.length > 2_048) return null;
   let url: URL;
   try {
@@ -111,43 +107,6 @@ function cleanGrantId(value: unknown): string {
   return id;
 }
 
-/** The directory has no lane share routes (an older deploy): nothing about one share. */
-export const LANE_SHARING_UNAVAILABLE = "lane_sharing_unavailable";
-export const LANE_SHARING_UNAVAILABLE_MESSAGE = "Lane sharing is not available yet.";
-/** One grant, or one action on it: `/lane-shares/<id>[/<action>]`. */
-const ONE_GRANT_PATH = /^\/lane-shares\/ls_[0-9a-f]{32}(?:\/[a-z]+)?$/;
-
-/**
- * Whether a directory 404 means "no such share for this account". Only for
- * one grant, and only with the directory's own `not_found` code
- * (`laneShares/routes.ts`). A list route's 404, or a 404 with no code (a
- * directory without the lane share routes answers plain text), means the
- * directory has no lane sharing.
- */
-export function laneShareDirectoryNotFound(path: string, body: unknown): boolean {
-  const error = body && typeof body === "object" ? (body as { error?: { code?: unknown } }).error : null;
-  return ONE_GRANT_PATH.test(path) && error?.code === "not_found";
-}
-
-/** A directory error as a coded Error (`code: message`), so IPC keeps the code. */
-function directoryError(status: number, body: unknown, path: string): Error {
-  const error = body && typeof body === "object" ? (body as { error?: { code?: unknown; message?: unknown } }).error : null;
-  const directoryCode = typeof error?.code === "string" ? error.code.slice(0, 64) : null;
-  const message = typeof error?.message === "string" && error.message.trim()
-    ? error.message.trim().slice(0, 300)
-    : `The account directory answered ${status}.`;
-  if (status === 401) return new Error(encodeCodedErrorMessage("signed_out", "Sign in to your ADE account."));
-  if (status === 404) {
-    return laneShareDirectoryNotFound(path, body)
-      ? new Error(encodeCodedErrorMessage("not_found", message))
-      : new Error(encodeCodedErrorMessage(LANE_SHARING_UNAVAILABLE, LANE_SHARING_UNAVAILABLE_MESSAGE));
-  }
-  if (status === 410) return new Error(encodeCodedErrorMessage(directoryCode === "invite_expired" ? "invite_expired" : "share_closed", message));
-  if (status === 429) return new Error(encodeCodedErrorMessage("rate_limited", message));
-  if (status >= 500) return new Error(encodeCodedErrorMessage("unavailable", message));
-  return new Error(encodeCodedErrorMessage(directoryCode && /^[a-z_]+$/.test(directoryCode) ? directoryCode : "directory_refused", message));
-}
-
 export function createLaneShareGuestDirectory(options: {
   send: LaneShareDirectorySend;
   /** Relay bases this device trusts (default: ADE's own relay). */
@@ -176,7 +135,7 @@ export function createLaneShareGuestDirectory(options: {
         body = await request("GET", `/lane-shares/${encodeURIComponent(grantId)}`);
       } catch (error) {
         // A grant this account may not see answers 404, the same as no grant.
-        if (error instanceof Error && error.message.startsWith("not_found:")) return { role: "none", grant: null };
+        if (parseCodedErrorMessage(error).code === "not_found") return { role: "none", grant: null };
         throw error;
       }
       const role = body && typeof body === "object" ? (body as { role?: unknown }).role : null;

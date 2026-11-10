@@ -25,7 +25,7 @@ export function parseMessageAuthor(value: unknown): AdeMessageAuthor | null {
 }
 
 /** Whether the row was written by a guest. Missing or malformed authors are the host. */
-export function isGuestAuthored(value: unknown): boolean {
+function isGuestAuthored(value: unknown): boolean {
   return parseMessageAuthor(value)?.kind === "guest";
 }
 
@@ -81,8 +81,10 @@ export function leadingPromptCommandCharacter(text: string, extra: readonly stri
  * Whether a message is a plain prompt: written by a guest, so the host runs
  * no command, slash command, shell draft or mention expansion on its text.
  * The author is set only by the host (`withHostMessageAuthor`), never by a
- * caller, so a client cannot turn this off.
+ * caller, so a client cannot turn this off. `plainPrompt` marks a send that
+ * is plain without a guest author: the first send of a moved chat whose
+ * brief the receiver edited. It only takes powers away, so any caller may set it.
  */
-export function isPlainPromptMessage(metadata: { author?: unknown } | null | undefined): boolean {
-  return isGuestAuthored(metadata?.author);
+export function isPlainPromptMessage(metadata: { author?: unknown; plainPrompt?: unknown } | null | undefined): boolean {
+  return isGuestAuthored(metadata?.author) || metadata?.plainPrompt === true;
 }

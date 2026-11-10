@@ -2,7 +2,9 @@ import { create } from "zustand";
 import type { LaneShareGuestState } from "../../../../shared/laneShareRights";
 import type { LaneShareReceivedEntry } from "../../../../shared/types/laneShare";
 import { parseCodedErrorMessage } from "../../../../shared/codedError";
-import { LANE_SHARING_UNAVAILABLE, LANE_SHARING_UNAVAILABLE_MESSAGE } from "../../../../shared/laneShareGuestDirectory";
+import { LANE_SHARING_UNAVAILABLE } from "../../../../shared/laneShareDirectory";
+import { LANE_SHARE_ERROR_TEXT } from "../laneShareModel";
+import { logRendererDebugEvent } from "../../../lib/debugLog";
 import {
   LaneShareGuestConnection,
   type LaneShareGuestConnectionState,
@@ -53,26 +55,19 @@ export const useLaneShareGuestStore = create<GuestStore>(() => ({
 }));
 
 const RECEIVED_TTL_MS = 5 * 60_000;
+/** After a failed read, mounts wait this long (doubling to the TTL) before they ask again. */
+const RECEIVED_RETRY_MS = 15_000;
 let receivedInFlight: Promise<void> | null = null;
+let receivedFailures = 0;
 const liveConnections = new Map<string, { connection: LaneShareGuestConnection; dispose: () => void; users: number }>();
 
 /** A plain reason for a failed guest call. */
 export function laneShareGuestProblem(error: unknown): LaneShareGuestProblem {
   const parsed = parseCodedErrorMessage(error);
   const code = parsed.code ?? null;
-  if (code === "signed_out" || code === "unauthorized") {
-    return { code: "signed_out", message: "Sign in to your ADE account to see lanes shared with you." };
-  }
-  if (code === "no_directory") {
-    return { code, message: "Shared lanes need your ADE account on this device. Sign in from Settings, then try again." };
-  }
-  if (code === LANE_SHARING_UNAVAILABLE) return { code, message: LANE_SHARING_UNAVAILABLE_MESSAGE };
-  if (code === "unavailable") return { code, message: "The ADE account directory can't be reached right now. Try again in a moment." };
-  if (code === "rate_limited") return { code, message: "Too many tries. Wait a moment, then try again." };
-  if (code === "invite_expired") return { code, message: "This invite expired. Ask the owner to send it again." };
-  if (code === "guest_limit") return { code, message: "This lane already has the most guests it can have. Ask the owner." };
-  if (code === "share_closed") return { code, message: "This share has ended." };
-  // The directory answers the same 404 for no grant and a grant of another
+  if (code === "signed_out" || code === "unauthorized") return { code: "signed_out", message: LANE_SHARE_ERROR_TEXT.signed_out! };
+  if (code && LANE_SHARE_ERROR_TEXT[code]) return { code, message: LANE_SHARE_ERROR_TEXT[code]! };
+  // Guest only. The directory answers the same 404 for no grant and a grant of another
   // account (an invite sent to another email address, too).
   if (code === "not_found") {
     return { code, message: "This share is not for this account. If the invite went to another email address, sign in with that account." };
@@ -94,6 +89,11 @@ export async function loadLaneShareReceived(options: { force?: boolean; retry?: 
   const state = useLaneShareGuestStore.getState();
   if (!options.retry && state.receivedProblem?.code === LANE_SHARING_UNAVAILABLE) return;
   if (!options.force && state.receivedStatus === "ready" && Date.now() - state.receivedAt < RECEIVED_TTL_MS) return;
+  // A failed read is cached too: a mount does not ask again until its backoff ends.
+  if (!options.force && !options.retry && state.receivedStatus === "error") {
+    const backoff = Math.min(RECEIVED_TTL_MS, RECEIVED_RETRY_MS * 2 ** Math.max(0, receivedFailures - 1));
+    if (Date.now() - state.receivedAt < backoff) return;
+  }
   if (receivedInFlight) return await receivedInFlight;
   const api = bridge();
   if (!api) {
@@ -104,6 +104,7 @@ export async function loadLaneShareReceived(options: { force?: boolean; retry?: 
   receivedInFlight = (async () => {
     try {
       const result = await api.listReceived();
+      receivedFailures = 0;
       useLaneShareGuestStore.setState({
         received: result.shares,
         pendingInvitesUnavailable: result.pendingInvitesUnavailable,
@@ -112,6 +113,7 @@ export async function loadLaneShareReceived(options: { force?: boolean; retry?: 
         receivedAt: Date.now(),
       });
     } catch (error) {
+      receivedFailures += 1;
       useLaneShareGuestStore.setState({ receivedStatus: "error", receivedProblem: laneShareGuestProblem(error), receivedAt: Date.now() });
     } finally {
       receivedInFlight = null;
@@ -146,8 +148,9 @@ export async function refreshLaneShareGuestState(grantId: string, options: { wit
     const guestState = await live.connection.getGuestState();
     useLaneShareGuestStore.setState((state) => ({ guestStates: { ...state.guestStates, [grantId]: guestState } }));
     if (options.withSessions) await live.connection.refreshSessions();
-  } catch {
+  } catch (error) {
     // The connection state shows why; the last state stays.
+    logRendererDebugEvent("lane_share.guest_state_read_failed", { error: error instanceof Error ? error.message : String(error) });
   }
 }
 

@@ -8,7 +8,6 @@ import {
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { isClaudePluginUiOnlyMetaEvent } from "../../../../desktop/src/shared/claudePluginUi";
 import { isThreadCommentsOnlyMetaEvent } from "../../../../desktop/src/shared/threadComments";
-import { isLaunchProfile, LAUNCH_PROFILE_TOOL_TYPE } from "../../../../desktop/src/shared/cliLaunch";
 import fs from "node:fs";
 import http from "node:http";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -247,52 +246,39 @@ import {
 import {
   evaluateLaneShareGuestCommand,
   filterLaneShareGuestCommandResult,
-  laneShareHideModels,
-  laneShareHideMachines,
-  laneShareEffectiveModes,
-  filterLaneShareActionHistory,
-  filterLaneShareHistory,
   LANE_SHARE_GUEST_COMMANDS,
   LANE_SHARE_GUEST_HOST_COMMANDS,
   LANE_SHARE_GUEST_INBOUND,
   LANE_SHARE_MAX_DEVICES_PER_GRANT,
-  LANE_SHARE_MAX_GUEST_COMMENTS_PER_SESSION,
-  LANE_SHARE_MAX_GUEST_DRAFTS,
-  laneShareCheckLocks,
-  laneShareCoAuthorNote,
-  laneShareEventBeforeCutoff,
   laneShareGuestFileRequest,
   laneShareGuestMayReceive,
   laneShareGuestMaySeeSession,
-  laneShareGuestMayTypeInto,
   laneShareGuestSessionInfo,
-  laneShareGuestSubagentBelongs,
   laneShareGuestTakeRate,
-  laneShareTypedLineRefusal,
-  laneShareHistoryCutoff,
-  laneShareInputKindRight,
-  laneShareScrubFileResponse,
-  laneShareScrubOwnerOnlyCards,
   laneShareSessionKind,
-  laneShareSessionWithinLocks,
-  type LaneShareGuestRefusal,
   type LaneShareGuestRole,
   type LaneShareGuestSessionInfo,
 } from "./laneShareGuestPolicy";
 import {
-  type LaneShareMessageClaim,
-  type LaneShareRightsStore,
-} from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
-import type { LaneShareGuestPresence, LaneShareGuestState, LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
-import { LaneShareMoveError, type LaneShareMoveService } from "./laneShareMoveService";
-import { MAX_DRAFTS, type AdeMessageAuthor } from "../../../../desktop/src/shared/types/chat";
+  filterLaneShareActionHistory,
+  filterLaneShareHistory,
+  laneShareEventBeforeCutoff,
+  laneShareHideMachines,
+  laneShareHideModels,
+  laneShareHistoryCutoff,
+  laneShareScrubFileResponse,
+  laneShareScrubOwnerOnlyCards,
+} from "./laneShareGuestScrub";
+import { type LaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
 import {
-  LANE_SHARE_PLAIN_TEXT_ONLY,
-  LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE,
-  leadingPromptCommandCharacter,
-  parseMessageAuthor,
-} from "../../../../desktop/src/shared/messageAuthor";
-import { isUserOnlyConsentCard } from "../../../../desktop/src/shared/types/macDesktop";
+  laneShareRightsEnded,
+  type LaneShareGuestPresence,
+  type LaneShareGuestState,
+  type LaneShareRights,
+} from "../../../../desktop/src/shared/laneShareRights";
+import { LaneShareMoveError, type LaneShareMoveService } from "./laneShareMoveService";
+import { parseMessageAuthor } from "../../../../desktop/src/shared/messageAuthor";
+import { createLaneShareGuestCommandPrep } from "./laneShareGuestCommandPrep";
 import {
   activeLaneShareGrantsFor,
   LANE_SHARE_GRANT_MAX_AGE_MS,
@@ -1376,7 +1362,7 @@ type SyncHostServiceArgs = {
   laneShareGrants?: LaneShareGrantSource | null;
   /**
    * The rights and counters of each share this machine serves (local table).
-   * Absent: every guest gets Watch rights and nothing that counts a message.
+   * Absent: no grant has rights here, so every guest hello is refused.
    */
   laneShareRights?: LaneShareRightsStore | null;
   /** Moves of a chat to or from the other person of a share (`laneShare.move` guest command). */
@@ -3102,10 +3088,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (owner && (owner.turnId == null || turnId == null || owner.turnId === turnId)) laneShareTurnOwners.delete(sessionId);
   }
 
-  function laneShareGuestOwnsRunningTurn(sessionId: string, role: LaneShareGuestRole): boolean {
-    return laneShareTurnOwners.get(sessionId)?.userId === role.userId;
-  }
-
   /** Archived lanes pause a share; a deleted lane ends it. No store: the lane is taken as active. */
   function laneShareLaneState(laneId: string | null | undefined): "active" | "archived" | "missing" {
     if (!laneId) return "missing";
@@ -3175,6 +3157,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    * keeps refusing anything still in flight toward this socket. A running
    * turn on the host is not touched.
    */
+  /** A typing refusal's code on the wire: `lane_share_*` or `forbidden_command`, and nothing else. */
+  function laneShareTerminalRefusalCode(code: string): LaneShareTerminalInputRefusalCode {
+    return code.startsWith("lane_share_") ? code as `lane_share_${string}` : "forbidden_command";
+  }
+
   function closeLaneShareGuest(peer: PeerState, reason: string): void {
     peer.authenticated = false;
     args.logger.info("sync_host.lane_share_guest_closed", {
@@ -3186,6 +3173,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     } catch {
       // ignore close failures
     }
+  }
+
+  /**
+   * The share of this guest ended (removed from the grant list, its end date
+   * passed): the connection closes, the messages it queued that have not
+   * started go, and a move of its grant is cancelled. Every path that ends a
+   * guest's share for good comes here, so none forgets a step.
+   */
+  function endLaneShareGuest(peer: PeerState, role: LaneShareGuestRole, reason: string): void {
+    closeLaneShareGuest(peer, reason);
+    dropLaneShareQueuedSteersSoon(role.grantId);
+    args.laneShareMoves?.cancelGrant(role.grantId, "The share ended.");
   }
 
   function dropLaneShareGuestSubscriptionsOutsideGrants(peer: PeerState, role: LaneShareGuestRole): void {
@@ -3244,14 +3243,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return Math.min(a, b);
   }
 
-  /** The share's own end date (`rights.limits.endsAt`) has passed. */
-  function laneShareRightsEnded(rights: LaneShareRights, nowMs: number): boolean {
-    return rights.limits.endsAt != null && nowMs >= rights.limits.endsAt;
+  /** `<prefix>:<32 hex>` from two ids: stable, and neither id can be read back from it. */
+  function laneSharePairId(prefix: string, a: string, b: string): string {
+    return `${prefix}:${createHash("sha256").update(a, "utf8").update("\0").update(b, "utf8").digest("hex").slice(0, 32)}`;
   }
 
   /** A stable id for this computer that only this share's guest sees. */
   function laneShareOpaqueHostId(deviceId: string, grantId: string): string {
-    return `shared:${createHash("sha256").update(deviceId, "utf8").update("\0").update(grantId, "utf8").digest("hex").slice(0, 32)}`;
+    return laneSharePairId("shared", deviceId, grantId);
   }
 
   /** Each good grant read: drop removed grants from every guest; close a guest left with none. */
@@ -3303,9 +3302,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const role = peer.laneShareGuest!;
       const next = laneShareGuestGrantsIn(snapshot, role, nowMs);
       if (next.length === 0) {
-        closeLaneShareGuest(peer, "Lane share ended");
-        dropLaneShareQueuedSteersSoon(role.grantId);
-        args.laneShareMoves?.cancelGrant(role.grantId, "The share ended.");
+        endLaneShareGuest(peer, role, "Lane share ended");
         continue;
       }
       const same = next.length === role.grants.length
@@ -3370,12 +3367,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   /**
-   * Ends a share on this host at once (revoke, lane deleted): closes the
-   * guest's connections, removes the messages it queued that have not
-   * started, and reports each chat where a turn it started still runs. A
-   * running turn is not stopped: the owner decides.
-   */
-  /**
    * Removes the messages a grant's guest queued that have not started. Runs
    * when the share ends, expires or is left, and when new rights take away
    * sending and steering. Returns how many it removed.
@@ -3407,6 +3398,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
   }
 
+  /**
+   * Ends a share on this host at once (revoke, lane deleted): closes the
+   * guest's connections, removes the messages it queued that have not
+   * started, and reports each chat where a turn it started still runs. A
+   * running turn is not stopped: the owner decides.
+   */
   async function closeLaneShareGrant(grantId: string, reason: string): Promise<LaneShareCloseResult> {
     // A move of this grant ends first: no chunk or landing goes on after a revoke.
     args.laneShareMoves?.cancelGrant(grantId, "The share ended.");
@@ -3498,9 +3495,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         laneShareRightsEnded(role.rights, nowMs)
         || role.grants.every((grant) => grant.endsAtMs != null && grant.endsAtMs <= nowMs)
       ) {
-        closeLaneShareGuest(peer, "Lane share ended");
-        dropLaneShareQueuedSteersSoon(role.grantId);
-        args.laneShareMoves?.cancelGrant(role.grantId, "The share ended.");
+        endLaneShareGuest(peer, role, "Lane share ended");
       }
     }
     syncLaneShareRefreshTimer();
@@ -3728,12 +3723,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // A device id the client chose must never key anything shared with the
     // owner's devices (presence, arbitration, the command cache, terminal
     // input dedupe), so a guest's peer id is derived and namespaced.
-    const guestDeviceId = `guest:${createHash("sha256")
-      .update(guestUserId, "utf8")
-      .update("\0")
-      .update(auth.deviceId, "utf8")
-      .digest("hex")
-      .slice(0, 32)}`;
+    const guestDeviceId = laneSharePairId("guest", guestUserId, auth.deviceId);
     const {
       connectionAttempt: _connectionAttempt,
       dbVersionBySite: _dbVersionBySite,
@@ -3902,8 +3892,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       reject("This is not available on a shared lane.");
       return;
     }
+    const rawArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
+      ? payload.args as Record<string, unknown>
+      : {};
+    if (action === "laneShare.move" || !LANE_SHARE_GUEST_HOST_COMMANDS.has(action)) {
+      if (laneShareRightsEnded(role.rights, Date.now())) {
+        reject("This share has ended.", "lane_share_ended");
+        endLaneShareGuest(peer, role, "Lane share ended");
+        return;
+      }
+    }
     if (action === "laneShare.move") {
-      await handleLaneShareGuestMove(peer, role, commandId, payload, reply, reject);
+      await handleLaneShareGuestMove(peer, role, commandId, rawArgs, reply, reject);
       return;
     }
     if (LANE_SHARE_GUEST_HOST_COMMANDS.has(action)) {
@@ -3922,15 +3922,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
     if (policyRejection) {
       reject(policyRejection.message, policyRejection.code);
-      return;
-    }
-    const rawArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
-      ? payload.args as Record<string, unknown>
-      : {};
-    if (laneShareRightsEnded(role.rights, Date.now())) {
-      reject("This share has ended.", "lane_share_ended");
-      closeLaneShareGuest(peer, "Lane share ended");
-      dropLaneShareQueuedSteersSoon(role.grantId);
       return;
     }
     const gate = evaluateLaneShareGuestCommand({ action, args: rawArgs, role, resolveSession: resolveLaneShareSession });
@@ -4016,7 +4007,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     peer: PeerState,
     role: LaneShareGuestRole,
     commandId: string,
-    payload: SyncCommandPayload,
+    rawArgs: Record<string, unknown>,
     reply: (result: SyncCommandResultPayload, ack: SyncCommandAckPayload) => void,
     reject: (message: string, code?: string) => void,
   ): Promise<void> {
@@ -4025,19 +4016,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       reject("This computer cannot move chats on a shared lane.", "lane_share_unavailable");
       return;
     }
-    if (laneShareRightsEnded(role.rights, Date.now())) {
-      reject("This share has ended.", "lane_share_ended");
-      closeLaneShareGuest(peer, "Lane share ended");
-      return;
-    }
     const grant = role.grants[0];
     if (!grant) {
       reject("This share has ended.", "lane_share_ended");
       return;
     }
-    const rawArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
-      ? payload.args as Record<string, unknown>
-      : {};
     try {
       const result = await moves.guestCommand(
         { grantId: role.grantId, laneId: grant.laneId, userId: role.userId, name: role.name, rights: role.rights },
@@ -4055,420 +4038,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
-  type LaneShareRun = (action: string, args: Record<string, unknown>) => Promise<unknown>;
-  type LaneSharePrepared =
-    | {
-      ok: true;
-      args: Record<string, unknown>;
-      claim: LaneShareMessageClaim | null;
-      /** A slot held under a cap (`holdItem`) for the item this command makes. */
-      hold?: { kind: "draft" | "comment"; holdId: string } | null;
-    }
-    | { ok: false; refusal: LaneShareGuestRefusal };
-
-  /** A turn runs, or the chat accepted one that has not started yet. */
-  function laneShareTurnRunning(summary: { status?: unknown; turnAcceptedAt?: unknown }): boolean {
-    return summary.status === "active" || (typeof summary.turnAcceptedAt === "string" && summary.turnAcceptedAt.length > 0);
-  }
-
-  /**
-   * The turn a guest's message or stop may act on, read from this host's own
-   * event tracking with no await before the caller uses it: the guest's own
-   * running turn (its id), "no turn" (null) when none runs, or any turn
-   * (undefined) with `speak.interruptAnyTurn`. A refusal when someone else's
-   * turn runs. The chat service checks the answer again right before it
-   * acts (`expectedTurnId`).
-   */
-  function laneShareExpectedTurn(
-    sessionId: string,
-    role: LaneShareGuestRole,
-    summary: { status?: unknown; turnAcceptedAt?: unknown },
-  ): { expected: string | null | undefined } | { refusal: LaneShareGuestRefusal } {
-    if (role.rights.speak.interruptAnyTurn) return { expected: undefined };
-    const running = laneShareTurnRunning(summary) || laneShareRunningTurns.has(sessionId);
-    if (!running) return { expected: null };
-    const turnId = laneShareRunningTurns.get(sessionId) ?? laneShareTurnOwners.get(sessionId)?.turnId ?? null;
-    if (laneShareGuestOwnsRunningTurn(sessionId, role) && turnId) return { expected: turnId };
-    return { refusal: { code: "lane_share_not_your_turn", message: "Someone else's turn is running in this chat. Wait for it to end." } };
-  }
-
-  /** A guest's text is a plain prompt: a leading command character is refused (see `leadingPromptCommandCharacter`). */
-  function laneSharePlainTextRefusal(text: string, extra: readonly string[] = []): LaneShareGuestRefusal | null {
-    return leadingPromptCommandCharacter(text, extra)
-      ? { code: LANE_SHARE_PLAIN_TEXT_ONLY, message: LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE }
-      : null;
-  }
-
-  /**
-   * The pending card a guest names, read from this host's own list. Refused
-   * under any rights: a card only the owner may answer
-   * (`isUserOnlyConsentCard`), a kind with no mapped right, and a card that
-   * is no longer open.
-   */
-  function laneShareGuestCard(
-    sessionId: string | null,
-    itemId: string | null,
-    role: LaneShareGuestRole,
-  ): { kind: string | null } | { refusal: LaneShareGuestRefusal } {
-    const chat = args.agentChatService;
-    let match: { kind?: unknown; providerMetadata?: unknown } | undefined;
-    try {
-      const pending = chat && sessionId ? chat.listPendingInputs({ sessionId }).requests : [];
-      match = itemId ? pending.find((request) => request.itemId === itemId || request.requestId === itemId) : undefined;
-    } catch {
-      match = undefined;
-    }
-    if (!match || !sessionId || !itemId) return { refusal: { code: "forbidden_command", message: "That question is no longer open." } };
-    const metadata = match.providerMetadata && typeof match.providerMetadata === "object"
-      ? match.providerMetadata as Record<string, unknown>
-      : null;
-    let ownerOnly = isUserOnlyConsentCard(metadata);
-    try {
-      ownerOnly = ownerOnly || chat?.isUserOnlyPendingInput?.({ sessionId, itemId }) === true;
-    } catch {
-      ownerOnly = true;
-    }
-    if (ownerOnly) return { refusal: { code: "lane_share_owner_only", message: "Only the owner can answer this." } };
-    const kind = typeof match.kind === "string" ? match.kind : null;
-    if (!laneShareInputKindRight(role.rights, kind)) {
-      return { refusal: { code: "lane_share_right_missing", message: "Your access to this shared lane does not include this decision." } };
-    }
-    return { kind };
-  }
-
-  /** Every free text in a guest's answer to a card: the typed reply and each answer value. */
-  function laneShareAnswerTexts(answerArgs: Record<string, unknown>): string[] {
-    const texts: string[] = [];
-    if (typeof answerArgs.responseText === "string") texts.push(answerArgs.responseText);
-    const answers = answerArgs.answers;
-    if (answers && typeof answers === "object" && !Array.isArray(answers)) {
-      for (const value of Object.values(answers as Record<string, unknown>)) {
-        for (const entry of Array.isArray(value) ? value : [value]) if (typeof entry === "string") texts.push(entry);
-      }
-    }
-    return texts;
-  }
-
-  const laneShareRefuse = (message: string, code = "forbidden_command"): LaneSharePrepared =>
-    ({ ok: false, refusal: { code, message } });
-
-  function laneShareGuestAuthor(role: LaneShareGuestRole): AdeMessageAuthor {
-    return { kind: "guest", userId: role.userId, name: role.name };
-  }
-
-  /**
-   * Why the host refuses a guest's terminal input, or null to write it. Only
-   * into a CLI session of the granted lane, with the typing right, never a
-   * shell; one plain line each time (`laneShareTypedLineRefusal`), and each
-   * line counts as one message.
-   */
-  function laneShareGuestTypingRefusal(role: LaneShareGuestRole, payload: Record<string, unknown> | null): LaneShareGuestRefusal | null {
-    const sessionId = payload?.sessionId;
-    if (typeof sessionId !== "string") return { code: "forbidden_command", message: "That session is not part of this shared lane." };
-    // On Windows a CLI starts without exec, so a shell stays when it exits,
-    // and this host cannot tell which program has the terminal.
-    if (process.platform === "win32") {
-      return { code: "lane_share_right_missing", message: "Typing into a CLI is not available on a shared lane of this computer." };
-    }
-    if (laneShareRightsEnded(role.rights, Date.now())) return { code: "lane_share_ended", message: "This share has ended." };
-    if (!laneShareGuestTakeRate(role)) return { code: "lane_share_rate_limited", message: "Too many requests at once. Wait a moment, then try again." };
-    if (!laneShareGuestMayTypeInto(role, sessionId, resolveLaneShareSession)) {
-      return { code: "lane_share_right_missing", message: "Your access to this shared lane does not include typing in this session." };
-    }
-    // Cached by the check above: no second session read per line.
-    if (laneShareLaneState(laneShareGuestSessionInfo(role, sessionId, resolveLaneShareSession)?.laneId) !== "active") {
-      return { code: "lane_share_paused", message: "The owner paused this shared lane." };
-    }
-    const line = laneShareTypedLineRefusal(payload?.data);
-    if (line) return line;
-    // Last: the line counts against the limits.
-    const claimed = claimLaneShareMessage(role);
-    return "refusal" in claimed ? claimed.refusal : null;
-  }
-
-  /** Counts one guest message, before its turn. A refusal carries the daily reset. */
-  function claimLaneShareMessage(role: LaneShareGuestRole): { claim: LaneShareMessageClaim } | { refusal: LaneShareGuestRefusal } {
-    if (!laneShareRights) {
-      return { refusal: { code: "lane_share_unavailable", message: "This computer cannot count messages on a shared lane." } };
-    }
-    const claimed = laneShareRights.claimMessage(role.grantId);
-    if (!claimed.ok) return { refusal: claimed.refusal };
-    return { claim: claimed.claim };
-  }
-
-  /**
-   * The checks a guest command needs from this host's services: the locks
-   * against the chat as it is now, the message limits (counted here, before
-   * the turn), ownership of the draft, comment or queued message it names,
-   * and the kind of the card it answers. Sets the verified author.
-   */
-  async function prepareLaneShareGuestCommand(
-    action: string,
-    gateArgs: Record<string, unknown>,
-    role: LaneShareGuestRole,
-    context: SyncRemoteCommandExecutionContext,
-    run: LaneShareRun,
-  ): Promise<LaneSharePrepared> {
-    const rights = role.rights;
-    const chat = args.agentChatService;
-    const sessionId = toOptionalString(gateArgs.sessionId);
-    const summaryOf = async () => (chat && sessionId ? await chat.getSessionSummary(sessionId).catch(() => null) : null);
-    const modelExists = async (provider: string | null | undefined, modelId: string): Promise<boolean> => {
-      if (!chat) return false;
-      try {
-        const models = await chat.getAvailableModels({ provider: (provider ?? undefined) as never });
-        return Array.isArray(models) && models.some((model) => {
-          const record = model as { id?: unknown; modelId?: unknown };
-          return record.id === modelId || record.modelId === modelId;
-        });
-      } catch {
-        return false;
-      }
-    };
-    switch (action) {
-      case "chat.send":
-      case "chat.steer": {
-        if (typeof gateArgs.text !== "string" || !gateArgs.text.trim()) return laneShareRefuse("Write a message first.", "invalid_args");
-        const plain = laneSharePlainTextRefusal(gateArgs.text);
-        if (plain) return { ok: false, refusal: plain };
-        const summary = await summaryOf();
-        if (!summary || !sessionId) return laneShareRefuse("This is not available on a shared lane.");
-        const locked = laneShareSessionWithinLocks(rights, summary);
-        if (locked) return { ok: false, refusal: locked };
-        // A message into a running turn steers it (a send is routed to a
-        // steer): only the guest's own turn, unless it may steer any turn.
-        // Read after the last await; the service checks it again.
-        const turn = laneShareExpectedTurn(sessionId, role, summary);
-        if ("refusal" in turn) return { ok: false, refusal: turn.refusal };
-        // Counted after every await and before the turn: one synchronous claim.
-        const claimed = claimLaneShareMessage(role);
-        if ("refusal" in claimed) return { ok: false, refusal: claimed.refusal };
-        // The author makes the text a plain prompt in the chat service: no
-        // slash command, shell draft or mention expansion of any provider.
-        context.author = laneShareGuestAuthor(role);
-        context.agentNote = laneShareCoAuthorNote({ userId: role.userId, name: role.name });
-        if (turn.expected !== undefined) context.expectedTurnId = turn.expected;
-        return { ok: true, args: gateArgs, claim: claimed.claim };
-      }
-      case "chat.interrupt": {
-        const summary = await summaryOf();
-        if (!summary || !sessionId) return laneShareRefuse("This is not available on a shared lane.");
-        if (rights.speak.interruptAnyTurn) return { ok: true, args: gateArgs, claim: null };
-        if (!rights.speak.steer) return laneShareRefuse("You can stop only a turn that you started.", "lane_share_not_your_turn");
-        const turn = laneShareExpectedTurn(sessionId, role, summary);
-        if ("refusal" in turn) return laneShareRefuse("You can stop only a turn that you started.", "lane_share_not_your_turn");
-        // Null: no turn runs, so the stop changes nothing, and the service
-        // refuses it if one started meanwhile. A stop of the guest's own turn
-        // keeps the chat's queue: messages queued behind it are not the
-        // guest's to cancel.
-        context.expectedTurnId = turn.expected ?? null;
-        return { ok: true, args: { ...gateArgs, mode: "stop_only" }, claim: null };
-      }
-      case "chat.cancelSteer": {
-        const steerId = toOptionalString(gateArgs.steerId);
-        if (!steerId || !laneShareRights?.hasItem(role.grantId, "steer", steerId)) return laneShareRefuse("You can remove only your own queued messages.");
-        return { ok: true, args: { ...gateArgs, requireQueued: true }, claim: null };
-      }
-      case "chat.updateSession": {
-        // Only a chat the guest created: the owner's chats keep the owner's settings.
-        if (!sessionId || !laneShareRights?.hasItem(role.grantId, "chat", sessionId)) {
-          return laneShareRefuse("You can change the settings only of a chat that you started.", "lane_share_not_your_chat");
-        }
-        const summary = await summaryOf();
-        if (!summary) return laneShareRefuse("This is not available on a shared lane.");
-        // "No change" under an empty lock means the mode the chat really runs
-        // in, not its stored legacy label, which can lag the provider's own.
-        const effective = laneShareEffectiveModes(summary);
-        const locked = laneShareCheckLocks(rights, gateArgs, {
-          ...summary,
-          permissionMode: effective?.length === 1 ? effective[0]! : null,
-        });
-        if (locked) return { ok: false, refusal: locked };
-        const modelId = toOptionalString(gateArgs.modelId);
-        if (modelId && modelId !== summary.modelId && !(await modelExists(summary.provider, modelId))) {
-          return laneShareRefuse("The model the owner allowed is not available on this computer now.", "lane_share_model_unavailable");
-        }
-        return { ok: true, args: gateArgs, claim: null };
-      }
-      case "chat.create": {
-        const provider = toOptionalString(gateArgs.provider);
-        if (!provider) return laneShareRefuse("Choose a provider.", "invalid_args");
-        // A new chat has no current model: with no model lock there is no
-        // model a guest may pick, and no provider default is used.
-        if (rights.run.models.length === 0) {
-          return laneShareRefuse("The owner has not allowed a model for new chats on this shared lane.", "lane_share_model_locked");
-        }
-        const locked = laneShareCheckLocks(rights, gateArgs, null);
-        if (locked) return { ok: false, refusal: locked };
-        const modelId = toOptionalString(gateArgs.modelId) ?? rights.run.models[0]!;
-        if (!(await modelExists(provider, modelId))) {
-          return laneShareRefuse("The model the owner allowed is not available on this computer now.", "lane_share_model_unavailable");
-        }
-        const permissionMode = toOptionalString(gateArgs.permissionMode) ?? rights.run.permissionModes[0] ?? "default";
-        return { ok: true, args: { ...gateArgs, modelId, permissionMode }, claim: null };
-      }
-      case "work.startCliSession": {
-        const provider = toOptionalString(gateArgs.provider)?.toLowerCase() ?? null;
-        // Never a shell: only a launch profile whose session tool type is an
-        // agent CLI this host tracks. An unknown provider is refused.
-        if (!isLaunchProfile(provider) || laneShareSessionKind(LAUNCH_PROFILE_TOOL_TYPE[provider]) !== "cli") {
-          return laneShareRefuse("A guest cannot start a shell.");
-        }
-        if (rights.run.models.length === 0) {
-          return laneShareRefuse("The owner has not allowed a model for new sessions on this shared lane.", "lane_share_model_locked");
-        }
-        const locked = laneShareCheckLocks(rights, gateArgs, null);
-        if (locked) return { ok: false, refusal: locked };
-        if (typeof gateArgs.initialInput === "string" && gateArgs.initialInput.trim()) {
-          if (!rights.run.typeInCliSessions) return laneShareRefuse("Your access to this shared lane does not include typing in a CLI.", "lane_share_right_missing");
-          // No line a CLI reads as a command (`/`, `!`, and `#` for Claude's
-          // memory line), and, as for typing, no Windows host.
-          for (const line of gateArgs.initialInput.split(/\r\n|\r|\n/)) {
-            const plain = laneSharePlainTextRefusal(line, ["#"]);
-            if (plain) return { ok: false, refusal: plain };
-          }
-          if (process.platform === "win32") {
-            return laneShareRefuse("Typing into a CLI is not available on a shared lane of this computer.", "lane_share_right_missing");
-          }
-          const claimed = claimLaneShareMessage(role);
-          if ("refusal" in claimed) return { ok: false, refusal: claimed.refusal };
-          return { ok: true, args: gateArgs, claim: claimed.claim };
-        }
-        const { initialInput: _initialInput, ...rest } = gateArgs;
-        return { ok: true, args: rest, claim: null };
-      }
-      case "chat.approve":
-      case "chat.respondToInput":
-      case "chat.dismissPendingInput": {
-        // "For the whole session" saves the choice: Claude writes the
-        // suggested rules to its settings, Codex keeps the grant or the MCP
-        // answer. That changes this computer's setup, so only the owner does it.
-        if (gateArgs.decision === "accept_for_session") {
-          return { ok: false, refusal: { code: "lane_share_owner_only", message: "Only the owner can allow this for the whole session." } };
-        }
-        // An answer can reach the agent as a message (a question answered by
-        // sending): it stays a plain prompt.
-        for (const text of laneShareAnswerTexts(gateArgs)) {
-          const plainText = laneSharePlainTextRefusal(text);
-          if (plainText) return { ok: false, refusal: plainText };
-        }
-        const card = laneShareGuestCard(sessionId ?? null, toOptionalString(gateArgs.itemId) ?? null, role);
-        if ("refusal" in card) return { ok: false, refusal: card.refusal };
-        // An approved plan returns the chat to its mode before the plan: that
-        // mode must be one the owner allowed.
-        if (card.kind === "plan_approval" && action !== "chat.dismissPendingInput" && gateArgs.decision !== "decline" && gateArgs.decision !== "cancel") {
-          const summary = await summaryOf();
-          if (!summary) return laneShareRefuse("This is not available on a shared lane.");
-          const locked = laneShareSessionWithinLocks(rights, summary);
-          if (locked) return { ok: false, refusal: locked };
-          // After the await: the card is still open and still the same one.
-          const again = laneShareGuestCard(sessionId ?? null, toOptionalString(gateArgs.itemId) ?? null, role);
-          if ("refusal" in again) return { ok: false, refusal: again.refusal };
-        }
-        return { ok: true, args: gateArgs, claim: null };
-      }
-      case "chat.createDraft": {
-        if (typeof gateArgs.text !== "string" || !gateArgs.text.trim()) return laneShareRefuse("A draft cannot be empty.", "invalid_args");
-        // The owner can send the draft later; it stays a plain prompt then too.
-        const plainText = laneSharePlainTextRefusal(gateArgs.text);
-        if (plainText) return { ok: false, refusal: plainText };
-        if (!laneShareRights) return laneShareRefuse("This computer cannot keep drafts for a shared lane.", "lane_share_unavailable");
-        // A new draft past the cap would push out the owner's oldest one.
-        const drafts = await run("chat.listDrafts", {}).catch(() => null);
-        const plain = Array.isArray(drafts) ? drafts.filter((draft) => (draft as { kind?: unknown })?.kind !== "scheduled").length : MAX_DRAFTS;
-        if (plain >= MAX_DRAFTS) return laneShareRefuse("The owner's drafts are full on this computer.", "lane_share_limit");
-        // After the last await: count and hold the slot in one statement.
-        const holdId = laneShareRights.holdItem(role.grantId, "draft", toOptionalString(gateArgs.originSessionId) ?? null, LANE_SHARE_MAX_GUEST_DRAFTS);
-        if (!holdId) {
-          return laneShareRefuse(`You can keep ${LANE_SHARE_MAX_GUEST_DRAFTS} drafts on a shared lane. Remove one first.`, "lane_share_limit");
-        }
-        context.author = laneShareGuestAuthor(role);
-        return { ok: true, args: gateArgs, claim: null, hold: { kind: "draft", holdId } };
-      }
-      case "chat.updateDraft":
-      case "chat.deleteDraft": {
-        const id = toOptionalString(gateArgs.id);
-        if (!id || !laneShareRights?.hasItem(role.grantId, "draft", id)) return laneShareRefuse("You can change only your own drafts.");
-        // An edit keeps the draft a plain prompt, as its first text was.
-        if (action === "chat.updateDraft" && typeof gateArgs.text === "string") {
-          const plainText = laneSharePlainTextRefusal(gateArgs.text);
-          if (plainText) return { ok: false, refusal: plainText };
-        }
-        return { ok: true, args: gateArgs, claim: null };
-      }
-      case "chat.createThreadComment": {
-        if (!laneShareRights || !sessionId) return laneShareRefuse("This computer cannot keep comments for a shared lane.", "lane_share_unavailable");
-        const holdId = laneShareRights.holdItem(role.grantId, "comment", sessionId, LANE_SHARE_MAX_GUEST_COMMENTS_PER_SESSION, true);
-        if (!holdId) {
-          return laneShareRefuse(`You can keep ${LANE_SHARE_MAX_GUEST_COMMENTS_PER_SESSION} comments on one chat.`, "lane_share_limit");
-        }
-        context.author = laneShareGuestAuthor(role);
-        return { ok: true, args: gateArgs, claim: null, hold: { kind: "comment", holdId } };
-      }
-      case "chat.updateThreadComment":
-      case "chat.deleteThreadComment": {
-        const commentId = toOptionalString(gateArgs.commentId);
-        if (!commentId || !laneShareRights?.hasItem(role.grantId, "comment", commentId)) {
-          return laneShareRefuse("You can change only your own comments.");
-        }
-        return { ok: true, args: gateArgs, claim: null };
-      }
-      case "chat.getSubagentTranscript": {
-        // A provider reads a child by the id it is given: the id must be a
-        // subagent the host itself lists for this chat.
-        let belongs = false;
-        try {
-          belongs = laneShareGuestSubagentBelongs(await run("chat.listSubagents", { sessionId }), gateArgs);
-        } catch {
-          belongs = false;
-        }
-        return belongs ? { ok: true, args: gateArgs, claim: null } : laneShareRefuse("This is not available on a shared lane.");
-      }
-      default:
-        return { ok: true, args: gateArgs, claim: null };
-    }
-  }
-
-  /** Records what the guest wrote or queued, so only it may change it and a revoke can remove it. */
-  function recordLaneShareGuestResult(action: string, gateArgs: Record<string, unknown>, role: LaneShareGuestRole, result: unknown): void {
-    if (!laneShareRights) return;
-    const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
-    const sessionId = toOptionalString(gateArgs.sessionId) ?? null;
-    try {
-      if ((action === "chat.send" || action === "chat.steer") && sessionId) {
-        laneShareRights.addItem(role.grantId, "turn", sessionId, sessionId);
-        const steerId = toOptionalString(record.steerId);
-        if (steerId && record.queued === true) laneShareRights.addItem(role.grantId, "steer", steerId, sessionId);
-      } else if (action === "chat.cancelSteer") {
-        const steerId = toOptionalString(gateArgs.steerId);
-        if (steerId) laneShareRights.removeItem(role.grantId, "steer", steerId);
-      } else if (action === "chat.create") {
-        const id = toOptionalString(record.id) ?? toOptionalString(record.sessionId);
-        if (id) laneShareRights.addItem(role.grantId, "chat", id, id);
-      } else if (action === "chat.deleteDraft") {
-        const id = toOptionalString(gateArgs.id);
-        if (id) laneShareRights.removeItem(role.grantId, "draft", id);
-      } else if (action === "chat.deleteThreadComment") {
-        const id = toOptionalString(gateArgs.commentId);
-        if (id) laneShareRights.removeItem(role.grantId, "comment", id);
-      }
-    } catch (error) {
-      args.logger.warn("sync_host.lane_share_record_failed", {
-        action,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  /** A guest's draft list holds only its own drafts. */
-  function filterLaneShareGuestOwnItems(action: string, result: unknown, role: LaneShareGuestRole): unknown {
-    if (action !== "chat.listDrafts") return result;
-    if (!Array.isArray(result) || !laneShareRights) return [];
-    return result.filter((draft) => {
-      const id = toOptionalString((draft as { id?: unknown } | null)?.id);
-      return id != null && laneShareRights.hasItem(role.grantId, "draft", id);
-    });
-  }
+  const laneShareGuestCommandPrep = createLaneShareGuestCommandPrep({
+    chat: () => args.agentChatService,
+    laneShareRights,
+    logger: args.logger,
+    runningTurns: laneShareRunningTurns,
+    turnOwners: laneShareTurnOwners,
+    resolveSession: resolveLaneShareSession,
+    laneState: laneShareLaneState,
+  });
+  const {
+    prepareLaneShareGuestCommand,
+    recordLaneShareGuestResult,
+    filterLaneShareGuestOwnItems,
+    laneShareGuestTypingRefusal,
+  } = laneShareGuestCommandPrep;
 
   /** What the guest may know of its own share: rights, limits, locks, presence, pause. */
   function laneShareGuestState(role: LaneShareGuestRole): LaneShareGuestState {
@@ -9169,8 +8753,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             inputId,
             ok: false,
             duplicate: false,
-            // Every guest typing refusal is `lane_share_*` or `forbidden_command`.
-            error: { code: refusal.code as LaneShareTerminalInputRefusalCode, message: refusal.message, retryable: false },
+            error: { code: laneShareTerminalRefusalCode(refusal.code), message: refusal.message, retryable: false },
           } satisfies SyncTerminalInputAckPayload, envelope.requestId);
         }
         return true;

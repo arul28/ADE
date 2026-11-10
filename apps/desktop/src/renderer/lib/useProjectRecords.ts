@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { logRendererDebugEvent } from "./debugLog";
 
 import {
   decodeProjectRecordName,
@@ -64,9 +65,11 @@ export function useProjectRecords(
         return next;
       });
     };
-    void load(false).catch(() => undefined);
+    // A failed read keeps the names shown now; the next change reads again.
+    const logFailure = (error: unknown) => logRendererDebugEvent("project_records.read_failed", { error: error instanceof Error ? error.message : String(error) });
+    void load(false).catch(logFailure);
     const stop = typeof api.onChanged === "function"
-      ? api.onChanged(() => void load(true).catch(() => undefined))
+      ? api.onChanged(() => void load(true).catch(logFailure))
       : null;
     return () => {
       cancelled = true;

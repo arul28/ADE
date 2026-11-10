@@ -740,6 +740,7 @@ export function createSyncService(args: SyncServiceArgs) {
     rightsStore: laneShareRights,
     share: () => ({
       create: async (createArgs) => ({ grantId: (await laneShareService.create(createArgs)).grantId }),
+      shareBackParty: (grantId) => laneShareService.shareBackParty(grantId),
       acceptShareBack: (acceptArgs) => laneShareService.acceptShareBack(acceptArgs),
     }),
     getRepoKey: () => {

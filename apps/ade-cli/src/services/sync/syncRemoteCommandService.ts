@@ -508,7 +508,7 @@ export function evaluateRemoteCommandPolicy(args: {
    * other command is refused here whatever its descriptor says. The rights,
    * lane and session checks need the host database and run in the sync host.
    */
-  peer: { pairingRecord: SyncPairingRecord | null; laneShareGuest?: unknown };
+  peer: { pairingRecord: SyncPairingRecord | null; laneShareGuest?: object | null };
   requestedProjectId: string | null;
   hostProjectId: string | null;
 }): RemoteCommandRejection | null {
@@ -5263,7 +5263,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.listDrafts", { viewerAllowed: true }, async () =>
     listDrafts(requireService(args.db, "Database not available.")));
   register("chat.createDraft", { viewerAllowed: true }, async (payload, context) =>
-    createDraft(requireService(args.db, "Database not available."), payload, ...(context.author ? [{ author: context.author }] : [])));
+    createDraft(requireService(args.db, "Database not available."), payload, { author: context.author ?? null }));
   register("chat.deleteDraft", { viewerAllowed: true }, async (payload) => {
     const id = typeof payload.id === "string" ? payload.id.trim() : "";
     if (!id) throw new Error("Missing draft id.");
@@ -5301,7 +5301,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       messageExcerpt: typeof payload.messageExcerpt === "string" ? payload.messageExcerpt : "",
       anchor,
       body: typeof payload.body === "string" ? payload.body : "",
-    }, ...(context.author ? [{ author: context.author }] : []));
+    }, { author: context.author ?? null });
   });
   register("chat.updateThreadComment", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").updateThreadComment({

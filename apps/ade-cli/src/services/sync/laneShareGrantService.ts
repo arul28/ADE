@@ -1,3 +1,4 @@
+import { LANE_SHARE_GRANT_ID_PATTERN as GRANT_ID, LANE_SHARE_TICKET_PATTERN as TICKET } from "../../../../desktop/src/shared/laneShareDirectory";
 import {
   createAccountDirectoryCorrelationId,
   readBoundedAccountDirectoryJson,
@@ -35,9 +36,6 @@ export const LANE_SHARE_GRANT_MAX_AGE_MS = 90_000;
 
 const REQUEST_TIMEOUT_MS = 8_000;
 const MAX_GRANTS = 1_000;
-const GRANT_ID = /^ls_[0-9a-f]{32}$/;
-/** A ticket and a DPoP key thumbprint: 43 base64url characters (account-directory contract). */
-const TICKET = /^[A-Za-z0-9_-]{43}$/;
 
 export type LaneShareGrantErrorCode =
   | "signed_out"
@@ -292,6 +290,7 @@ export async function sendLaneShareDirectoryRequest(
     try {
       response = await send(token);
       if (response.status === 401) {
+        // A failed cancel only leaves the body to the garbage collector.
         await response.body?.cancel().catch(() => {});
         const refreshed = (await access.getAccessToken({ forceRefresh: true }).catch(() => null))?.trim();
         if (!refreshed) throw new LaneShareGrantError("signed_out", "The account session expired.");
@@ -306,6 +305,7 @@ export async function sendLaneShareDirectoryRequest(
       body = await readBoundedAccountDirectoryJson(response);
     } catch {
       body = undefined;
+      // A failed cancel only leaves the body to the garbage collector.
       await response.body?.cancel().catch(() => {});
     }
     return { status: response.status, body };
@@ -403,6 +403,7 @@ export function createLaneShareGrantService(options: {
         },
       );
       inFlight = pending;
+      // The caller gets the failure through `pending`; this chain only clears the slot.
       void pending.finally(() => {
         if (inFlight === pending) inFlight = null;
       }).catch(() => {});

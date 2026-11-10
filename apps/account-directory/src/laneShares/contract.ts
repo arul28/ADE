@@ -47,6 +47,9 @@ export const LANE_SHARE_PATHS = {
   hostRedeem: "/lane-shares/host/redeem",
 } as const;
 
+/** A grant id: `ls_` and 32 hex characters. */
+export const LANE_SHARE_GRANT_ID_PATTERN = /^ls_[0-9a-f]{32}$/;
+
 /** A connection ticket: 32 random bytes, base64url. Also the RFC 7638 thumbprint's shape (SHA-256, base64url). */
 export const LANE_SHARE_TICKET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
@@ -117,6 +120,14 @@ export type LaneShareInviteRequest = {
   risk: LaneShareRisk;
   /** Epoch ms, in the future, at most `LANE_SHARE_MAX_DURATION_MS` away. Null = no end. */
   endsAt?: number | null;
+  /**
+   * A share back after a lane share move: the id of an ACTIVE grant between
+   * the caller and the other person. The invite is refused
+   * (`share_back_mismatch`) unless `receiverEmail` is a verified address of
+   * the other person of that grant (its receiver when the caller gave it,
+   * its giver when the caller received it), and the repository is the same.
+   */
+  shareBackOf?: string;
 };
 
 export type LaneShareEmailNotSentReason =
@@ -135,6 +146,8 @@ export type LaneShareInviteResponse = {
   emailNotSentReason: LaneShareEmailNotSentReason | null;
   /** The invite link, to copy. Same as `grant.link`. */
   link: string;
+  /** The request's `shareBackOf`, after the check passed; null for a plain invite. */
+  shareBackOf: string | null;
 };
 
 export type LaneShareEditRequest = {
@@ -312,4 +325,5 @@ export type LaneShareErrorCode =
   | "invite_expired"
   | "share_closed"
   | "rate_limited"
+  | "share_back_mismatch"
   | "origin_not_allowed";

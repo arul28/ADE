@@ -1,3 +1,4 @@
+import { encodeCodedErrorMessage } from "../../../shared/codedError";
 // Main-process bridge for the machine-owned ADE account (Clerk identity, #815).
 //
 // The renderer never holds the account bearer. This bridge owns the shared
@@ -629,7 +630,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
         const code = error instanceof LaneShareGrantError && (error.code === "signed_out" || error.code === "no_directory")
           ? error.code
           : "unavailable";
-        throw new Error(`${code}: ${error instanceof Error ? error.message : "The account directory could not be reached."}`);
+        throw new Error(encodeCodedErrorMessage(code, error instanceof Error ? error.message : "The account directory could not be reached."));
       }
     },
     // The relay this machine itself uses may be a configured one.

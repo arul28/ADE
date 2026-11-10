@@ -97,10 +97,10 @@ describe("lane share move consent", () => {
   const otherGrant = { ...guest(), grantId: `ls_${"b".repeat(32)}` };
 
   /** The move service on a real rights store; the chat side is the service's own port. */
-  function makeMoves() {
+  function makeMoves(share: Parameters<typeof createLaneShareMoveService>[0]["share"] = () => null) {
     const store = makeStore();
     store.put({ grantId, laneId, receiverEmail: "guest@example.com", rights: collaborate() });
-    const landed = vi.fn(async () => ({ laneId: "lane-new", laneName: "moved", sessionId: "chat-new", branchName: "fix/login" }));
+    const landed = vi.fn(async () => ({ laneId: "lane-new", laneName: "moved", sessionId: "chat-new", branchName: "fix/login", note: null }));
     const moves = createLaneShareMoveService({
       chat: () => ({
         getSessionSummary: async () => ({ laneId, title: "Fix", modelId: null }),
@@ -111,7 +111,7 @@ describe("lane share move consent", () => {
         discardLaneShareMoveLane: async () => {},
       }),
       rightsStore: store,
-      share: () => null,
+      share,
       getRepoKey: () => "repo:github.com/acme/widgets",
       getAccountEmail: () => "owner@example.com",
       notifyGuests: () => {},
@@ -204,6 +204,45 @@ describe("lane share move consent", () => {
     await sent.catch(() => undefined);
     await vi.waitFor(async () => expect((await moves.guestCommand(guest(), { op: "status", moveId: moveId("7") }) as { stage: string }).stage).toBe("failed"));
     expect(landed).not.toHaveBeenCalled();
+    moves.dispose();
+  });
+
+  // The share back goes only to the other person of this grant, as the
+  // directory names them to this machine's account (never the peer's word).
+  // "giver": the owner lands a guest's move; "receiver": the guest lands the
+  // owner's move on its own machine.
+  it.each<[string, "giver" | "receiver", { role: "giver" | "receiver"; userId: string; email: string | null }, string | null]>([
+    ["shares back to the guest of the grant", "giver", { role: "giver", userId: "user-guest", email: "guest@example.com" }, "guest@example.com"],
+    ["shares nothing back when the grant's guest is another user", "giver", { role: "giver", userId: "user-other", email: "other@example.com" }, null],
+    ["shares back to the owner of the grant", "receiver", { role: "receiver", userId: "user-owner", email: null }, "owner@example.com"],
+    ["shares nothing back when this account is not the grant's receiver", "receiver", { role: "giver", userId: "user-owner", email: "x@example.com" }, null],
+  ])("%s", async (_label, side, party, expectedEmail) => {
+    const create = vi.fn(async () => ({ grantId: `ls_${"e".repeat(32)}` }));
+    const { moves, landed } = makeMoves(() => ({ create, shareBackParty: async () => party, acceptShareBack: async () => {} }));
+    let result: () => Promise<{ stage: string; result: { shareBackGrantId: string | null; note: string | null } | null }>;
+    if (side === "giver") {
+      await offer(moves, "9");
+      moves.respond({ moveId: moveId("9"), accept: true });
+      await moves.guestCommand(guest(), { op: "begin", moveId: moveId("9"), payload: payload(moveId("9")) });
+      await moves.guestCommand(guest(), { op: "finish", moveId: moveId("9") });
+      result = async () => await moves.guestCommand(guest(), { op: "status", moveId: moveId("9") }) as never;
+    } else {
+      await moves.receivePrepare({ moveId: moveId("9"), grantId, repoKey: "repo:github.com/acme/widgets" });
+      moves.receiveBegin({ moveId: moveId("9"), grantId, payload: payload(moveId("9")) });
+      moves.receiveLand({ moveId: moveId("9"), grantId, fromName: "Owner", shareBack: { receiverEmail: "owner@example.com", rights: laneSharePresetRights("watch") } });
+      result = async () => moves.receiveStatus({ moveId: moveId("9"), grantId }) as never;
+    }
+    await vi.waitFor(async () => expect((await result()).stage).toBe("done"));
+    expect(landed).toHaveBeenCalledTimes(1);
+    const done = (await result()).result!;
+    if (expectedEmail) {
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ receiverEmail: expectedEmail, shareBackOf: grantId }));
+      expect(done).toMatchObject({ shareBackGrantId: `ls_${"e".repeat(32)}`, note: null });
+    } else {
+      expect(create).not.toHaveBeenCalled();
+      expect(done.shareBackGrantId).toBeNull();
+      expect(done.note).toMatch(/not shared back/);
+    }
     moves.dispose();
   });
 

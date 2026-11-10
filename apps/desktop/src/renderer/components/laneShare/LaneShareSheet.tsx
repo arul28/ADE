@@ -18,8 +18,8 @@ import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { LaneShareRightsPanel, LaneShareRiskSummary } from "./LaneShareRightsPanel";
 import { confirmHighRiskShare, useLaneShareDefaults } from "./laneShareDefaults";
 import { revokeLaneShares } from "./laneShareActions";
+import { LANE_SHARE_MAX_GUESTS } from "../../../shared/laneShareDirectory";
 import {
-  LANE_SHARE_MAX_GUESTS,
   LANE_SHARE_PRESET_LABELS,
   isLiveLaneShare,
   laneShareEmailNote,
@@ -156,7 +156,9 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
   const newTouched = React.useRef(false);
   const [edits, setEdits] = React.useState<Record<string, Draft>>({});
   const [busy, setBusy] = React.useState<string | null>(null);
-  const [formError, setFormError] = React.useState<string | null>(null);
+  const [formError, setFormErrorState] = React.useState<{ message: string; fixable: boolean } | null>(null);
+  /** A check the person can fix in the form (no report); null clears it. */
+  const setFormError = (message: string | null) => setFormErrorState(message ? { message, fixable: true } : null);
   const [notice, setNotice] = React.useState<string | null>(null);
 
   // The saved defaults are the start value until the owner changes something.
@@ -200,7 +202,11 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
     }
   };
 
-  const fail = (error: unknown) => setFormError(laneShareProblem(error, { pin, machineName }).message);
+  const fail = (error: unknown) => {
+    const problem = laneShareProblem(error, { pin, machineName });
+    // A blocking cause (signed out, sync off, an old host) is the person's to fix; the rest is reported.
+    setFormErrorState({ message: problem.message, fixable: problem.blocking });
+  };
 
   const refresh = async () => {
     setNow(Date.now());
@@ -535,7 +541,12 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
               <div className="text-[12px] text-fg/60">Rights for the new person. They start from your default rights.</div>
             )}
             <LaneShareRiskSummary rights={draft.rights} />
-            {formError ? <div className="text-[11.5px] leading-[1.4] text-[color:var(--kit-crit)]" role="alert">{formError}</div> : null}
+            {formError ? (
+              <Banner
+                layout="inline"
+                model={{ id: "lane-share-form-error", tone: "error", title: formError.message, ...(formError.fixable ? { report: false } : {}) }}
+              />
+            ) : null}
             {notice ? <div className="text-[11.5px] leading-[1.4] text-fg/70" role="status">{notice}</div> : null}
             <div className="min-h-0 overflow-y-auto pr-1" style={{ maxHeight: "48vh" }}>
               <LaneShareRightsPanel

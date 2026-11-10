@@ -4,6 +4,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import type { LaneShareGivenEntry } from "../../../shared/types/laneShare";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { laneShareProblem, type LaneShareProblem } from "./laneShareModel";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 
 /**
  * The owner's share list, read once per machine runtime and kept fresh from
@@ -52,7 +53,15 @@ export const useLaneShareStore = create<LaneShareStoreState>(() => ({ lists: {},
 const EMPTY: LaneShareGivenEntry[] = [];
 const inFlight = new Map<string, Promise<void>>();
 const retained = new Map<string, { count: number; release: () => void }>();
-const reloadTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const reloadTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; dueAt: number }>();
+/** A share changed: read soon, so a burst of events costs one read. */
+const CHANGE_RELOAD_MS = 400;
+/**
+ * A guest device came or went: the list is read for its "here now" count
+ * only, so presence waits longer and a guest that reconnects in a loop costs
+ * one directory read per window, not one per event.
+ */
+const PRESENCE_RELOAD_MS = 5_000;
 
 /** The cache key for a pin; null when there is no machine to ask (no pin, no bound tab). */
 export function laneShareListKey(pin: OpenProjectBinding | null | undefined, boundKey: string | null | undefined): string | null {
@@ -83,13 +92,19 @@ export function loadLaneShares(key: string, pin: OpenProjectBinding | null): Pro
   return request;
 }
 
-/** A reload shortly after an event, so a burst of events costs one read. */
-function scheduleReload(key: string, pin: OpenProjectBinding | null): void {
-  if (reloadTimers.has(key)) return;
-  reloadTimers.set(key, setTimeout(() => {
-    reloadTimers.delete(key);
-    void loadLaneShares(key, pin);
-  }, 400));
+/** A reload after an event; an earlier one already scheduled covers it. */
+function scheduleReload(key: string, pin: OpenProjectBinding | null, delayMs: number): void {
+  const dueAt = Date.now() + delayMs;
+  const pending = reloadTimers.get(key);
+  if (pending && pending.dueAt <= dueAt) return;
+  if (pending) clearTimeout(pending.timer);
+  reloadTimers.set(key, {
+    dueAt,
+    timer: setTimeout(() => {
+      reloadTimers.delete(key);
+      void loadLaneShares(key, pin);
+    }, delayMs),
+  });
 }
 
 /**
@@ -106,11 +121,12 @@ function retainLaneShares(key: string, pin: OpenProjectBinding | null): () => vo
     let unsubscribe: (() => void) | null = null;
     try {
       unsubscribe = window.ade?.laneShare?.onEvent((event) => {
-        if (event.type === "lane_share_changed" || event.type === "lane_share_presence_changed") {
-          scheduleReload(key, pin);
-        }
+        if (event.type === "lane_share_changed") scheduleReload(key, pin, CHANGE_RELOAD_MS);
+        else if (event.type === "lane_share_presence_changed") scheduleReload(key, pin, PRESENCE_RELOAD_MS);
       }, pin) ?? null;
-    } catch {
+    } catch (error) {
+      // No event stream (an older runtime): the list is read on mount and on actions only.
+      logRendererDebugEvent("lane_share.owner_events_unavailable", { error: error instanceof Error ? error.message : String(error) });
       unsubscribe = null;
     }
     retained.set(key, { count: 1, release: () => unsubscribe?.() });

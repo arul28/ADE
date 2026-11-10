@@ -1,45 +1,58 @@
-import { authenticate, type CallerTokenEnv } from "../callerToken";
+import { authenticate } from "../callerToken";
 import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "../cloud/http";
-import { sendLaneShareInviteEmail, type CloudEmailEnv } from "../cloud/email";
 import { boundedDisplayText } from "../displayText";
 import { logLaneShare } from "../logging";
-import { readBoundedBody, sha256Hex, utcDayKey } from "../sinkUtils";
+import { utcDayKey } from "../sinkUtils";
 import { trustedHttpsOrigin } from "../trustedOrigin";
-import { personName } from "../cloud/email";
-import { clerkAccount, normalizeEmail, type ClerkAccount, type ClerkAccountEnv } from "./clerkAccount";
+import { clerkAccount, type ClerkAccount } from "./clerkAccount";
 import {
   LANE_SHARE_CLOSED_VISIBLE_MS,
-  LANE_SHARE_DAILY_EMAILS_GLOBAL,
-  LANE_SHARE_DAILY_EMAILS_PER_RECIPIENT,
-  LANE_SHARE_DAILY_INVITES_PER_GIVER,
-  LANE_SHARE_HOST_CLOSED_WINDOW_MS,
-  LANE_SHARE_HOURLY_CLERK_READS_PER_USER,
-  LANE_SHARE_INVITE_TTL_MS,
-  LANE_SHARE_MAX_DURATION_MS,
-  LANE_SHARE_MAX_EMAILS_PER_INVITE,
-  LANE_SHARE_MAX_GUESTS_PER_LANE,
   LANE_SHARE_PATHS,
-  LANE_SHARE_PRESETS,
-  LANE_SHARE_RESEND_INTERVAL_MS,
-  LANE_SHARE_RISKS,
-  LANE_SHARE_TICKET_MINTS_PER_HOUR,
-  LANE_SHARE_TICKET_PATTERN,
-  LANE_SHARE_TICKET_TTL_MS,
-  laneShareInviteLink,
-  type LaneShareClosedReason,
-  type LaneShareConnectResponse,
-  type LaneShareEmailNotSentReason,
-  type LaneShareGiverView,
-  type LaneShareHostResponse,
-  type LaneShareInviteResponse,
   type LaneShareOpenResponse,
-  type LaneSharePreset,
   type LaneShareReceivedResponse,
-  type LaneShareReceiverView,
-  type LaneShareRedeemResponse,
-  type LaneShareRisk,
-  type LaneShareState,
 } from "./contract";
+import {
+  badRequest,
+  budgetedClerkAccount,
+  clerkBudgetSpent,
+  clerkUnavailable,
+  COLUMNS,
+  effectiveClosedAt,
+  effectiveState,
+  giverView,
+  isUniqueViolation,
+  type LaneShareEnv,
+  LIST_LIMIT,
+  LIVE_STATES,
+  loadRow,
+  MAX_EMAILS_PER_LOOKUP,
+  MAX_GIVER_LABEL,
+  notFound,
+  ownsMachine,
+  parseEndsAt,
+  parseMachineKey,
+  parsePreset,
+  parseRisk,
+  PREFIX,
+  readJsonBody,
+  receiverView,
+  reload,
+  settleLane,
+  shareClosed,
+  type ShareRow,
+} from "./shareRows";
+import {
+  alreadyShared,
+  handleInvite,
+} from "./invites";
+import {
+  handleConnect,
+  handleHostRead,
+  handleRedeem,
+  HOUR_MS,
+} from "./tickets";
+
+export type { LaneShareEnv } from "./shareRows";
 
 /**
  * Lane sharing: the account-level record of grants (README, "Lane sharing";
@@ -58,67 +71,6 @@ import {
  * visible to the next connection at once. A guest's account token comes only
  * here; the host sees the ticket, never the token.
  */
-
-export type LaneShareEnv = CallerTokenEnv & ClerkAccountEnv & CloudEmailEnv & {
-  DB: D1Database;
-  WEB_CLIENT_ORIGIN?: string;
-};
-
-const PREFIX = LANE_SHARE_PATHS.root;
-const MAX_BODY_BYTES = 16 * 1024;
-const GRANT_ID = /^ls_[0-9a-f]{32}$/;
-const LANE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const MACHINE_KEY = /^[\x21-\x7e]{1,128}$/;
-/** `accountRepoScopeKey`'s output: lowercase host (optional port), then a path, no credential, no query. */
-const REPO_KEY = /^repo:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?\/[^\s?#@\\]+$/;
-const MAX_REPO_KEY = 300;
-const MAX_EMAIL = 254;
-const EMAIL = /^[^\s@<>()",;:\\[\]]{1,64}@[^\s@<>()",;:\\[\]]+\.[^\s@<>()",;:\\[\]]+$/;
-const MAX_LABEL = 120;
-const MAX_GIVER_LABEL = 80;
-const LIST_LIMIT = 200;
-const HOST_LIMIT = 1000;
-/** At most this many verified addresses go into one `in (...)` read. */
-const MAX_EMAILS_PER_LOOKUP = 10;
-const LIVE_STATES = "('pending', 'active')";
-
-const COLUMNS = `id, giver_user_id, receiver_user_id, receiver_email, repo_key, machine_key, lane_id,
-  giver_label, project_label, lane_label, preset, risk, state, closed_reason, invite_expires_at, ends_at,
-  version, invite_email_count, last_invite_email_at, created_at, updated_at, accepted_at, closed_at, receiver_label`;
-
-type ShareRow = {
-  id: string;
-  giver_user_id: string;
-  receiver_user_id: string | null;
-  receiver_email: string;
-  repo_key: string;
-  machine_key: string;
-  lane_id: string;
-  giver_label: string | null;
-  project_label: string | null;
-  lane_label: string | null;
-  preset: LaneSharePreset;
-  risk: LaneShareRisk;
-  state: LaneShareState;
-  closed_reason: string | null;
-  invite_expires_at: number;
-  ends_at: number | null;
-  version: number;
-  invite_email_count: number;
-  last_invite_email_at: number | null;
-  created_at: number;
-  updated_at: number;
-  accepted_at: number | null;
-  closed_at: number | null;
-  receiver_label: string | null;
-};
-
-const NOT_FOUND_MESSAGE = "That lane share was not found. If it was sent to you, sign in with the email address it went to.";
-const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
-const badRequest = (message: string) => fail("bad_request", message, 400);
-const clerkUnavailable = () => fail("unavailable", "ADE can't check your email address right now. Try again soon.", 503);
-const shareClosed = () => fail("share_closed", "This lane share has ended.", 410);
-const clerkBudgetSpent = () => fail("rate_limited", "Too many lane share requests from this account. Try again later.", 429);
 
 export function isLaneShareRequest(url: URL): boolean {
   return url.pathname === PREFIX || url.pathname.startsWith(`${PREFIX}/`);
@@ -252,425 +204,6 @@ async function routeRequest(request: Request, env: LaneShareEnv, route: Route | 
 // ---------------------------------------------------------------------------
 // Rows, state and views
 
-/**
- * The state a reader sees. `ends_at` passed wins (`ended`); otherwise a
- * pending invite past its 24 h reads `expired`. Server epoch ms only.
- */
-export function effectiveState(row: Pick<ShareRow, "state" | "ends_at" | "invite_expires_at">, now: number): LaneShareState {
-  if (row.state !== "pending" && row.state !== "active") return row.state;
-  if (row.ends_at != null && now >= row.ends_at) return "ended";
-  if (row.state === "pending" && now >= row.invite_expires_at) return "expired";
-  return row.state;
-}
-
-/** When a lazily closed row closed, so a view says the same before and after the row is settled. */
-function effectiveClosedAt(row: ShareRow, now: number): number | null {
-  const state = effectiveState(row, now);
-  if (state === row.state) return row.closed_at;
-  return state === "ended" ? row.ends_at : row.invite_expires_at;
-}
-
-const closedReason = (row: ShareRow): LaneShareClosedReason => (row.closed_reason === "account_deleted" ? "account_deleted" : null);
-
-function commonView(row: ShareRow, now: number) {
-  return {
-    id: row.id,
-    state: effectiveState(row, now),
-    repoKey: row.repo_key,
-    laneId: row.lane_id,
-    projectLabel: row.project_label,
-    laneLabel: row.lane_label,
-    preset: row.preset,
-    risk: row.risk,
-    inviteExpiresAt: row.invite_expires_at,
-    endsAt: row.ends_at,
-    version: row.version,
-    createdAt: row.created_at,
-    acceptedAt: row.accepted_at,
-    closedAt: effectiveClosedAt(row, now),
-    closedReason: closedReason(row),
-  };
-}
-
-function giverView(row: ShareRow, now: number): LaneShareGiverView {
-  return {
-    ...commonView(row, now),
-    receiverEmail: row.receiver_email,
-    receiverUserId: row.receiver_user_id,
-    machineKey: row.machine_key,
-    updatedAt: row.updated_at,
-    link: laneShareInviteLink(row.id),
-  };
-}
-
-function receiverView(row: ShareRow, now: number): LaneShareReceiverView {
-  return {
-    ...commonView(row, now),
-    giverUserId: row.giver_user_id,
-    giverLabel: row.giver_label,
-    receiverEmail: row.receiver_email,
-  };
-}
-
-async function loadRow(env: LaneShareEnv, id: string): Promise<ShareRow | null> {
-  if (!GRANT_ID.test(id)) return null;
-  return env.DB.prepare(`select ${COLUMNS} from lane_shares where id = ?`).bind(id).first<ShareRow>();
-}
-
-/** A row this call just wrote. It exists: rows are only deleted by the cron, long after they close. */
-async function reload(env: LaneShareEnv, id: string): Promise<ShareRow> {
-  const row = await loadRow(env, id);
-  if (!row) throw new Error("lane_share_row_missing");
-  return row;
-}
-
-/**
- * Writes the clock-derived states of one lane, so the stored state equals
- * the derived one for the writes that follow (the guest count and the two
- * partial unique indexes read the stored state).
- */
-async function settleLane(env: LaneShareEnv, giverUserId: string, laneId: string, now: number): Promise<void> {
-  await env.DB.batch([
-    env.DB.prepare(`
-      update lane_shares set state = 'ended', closed_at = ends_at, updated_at = ?, version = version + 1
-      where giver_user_id = ? and lane_id = ? and state in ${LIVE_STATES} and ends_at is not null and ends_at <= ?
-    `).bind(now, giverUserId, laneId, now),
-    env.DB.prepare(`
-      update lane_shares set state = 'expired', closed_at = invite_expires_at, updated_at = ?, version = version + 1
-      where giver_user_id = ? and lane_id = ? and state = 'pending' and invite_expires_at <= ?
-    `).bind(now, giverUserId, laneId, now),
-  ]);
-}
-
-const isUniqueViolation = (error: unknown): boolean =>
-  error instanceof Error && /UNIQUE constraint failed/i.test(error.message);
-
-function newGrantId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return `ls_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
-}
-
-async function ownsMachine(env: LaneShareEnv, userId: string, machineKey: string): Promise<boolean> {
-  const row = await env.DB.prepare("select 1 as found from machines where user_id = ? and machine_key = ?")
-    .bind(userId, machineKey).first<{ found: number }>();
-  return Boolean(row);
-}
-
-// ---------------------------------------------------------------------------
-// Input
-
-async function readJsonBody(request: Request): Promise<Record<string, unknown> | null> {
-  let read: Awaited<ReturnType<typeof readBoundedBody>>;
-  try {
-    read = await readBoundedBody(request, MAX_BODY_BYTES);
-  } catch {
-    return null;
-  }
-  if (!read.ok) return null;
-  if (!read.text) return {};
-  try {
-    const value = JSON.parse(read.text) as unknown;
-    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseEmail(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const email = normalizeEmail(value);
-  if (email.length > MAX_EMAIL || /[\p{Cc}\p{Cf}]/u.test(email) || !EMAIL.test(email)) return null;
-  return email;
-}
-
-function parseRepoKey(value: unknown): string | null {
-  if (typeof value !== "string" || value.length > MAX_REPO_KEY || /[\p{Cc}\p{Cf}]/u.test(value)) return null;
-  return REPO_KEY.test(value) ? value : null;
-}
-
-const parseLaneId = (value: unknown): string | null => (typeof value === "string" && LANE_ID.test(value) ? value : null);
-const parseMachineKey = (value: unknown): string | null => (typeof value === "string" && MACHINE_KEY.test(value) ? value : null);
-const parsePreset = (value: unknown): LaneSharePreset | null =>
-  (LANE_SHARE_PRESETS as readonly unknown[]).includes(value) ? value as LaneSharePreset : null;
-const parseRisk = (value: unknown): LaneShareRisk | null =>
-  (LANE_SHARE_RISKS as readonly unknown[]).includes(value) ? value as LaneShareRisk : null;
-
-/** `undefined` = not given; `null` = no end; a number = epoch ms. `false` = invalid. */
-function parseEndsAt(value: unknown, now: number): number | null | undefined | false {
-  if (value === undefined) return undefined;
-  if (value === null) return null;
-  if (typeof value !== "number" || !Number.isSafeInteger(value)) return false;
-  if (value <= now || value > now + LANE_SHARE_MAX_DURATION_MS) return false;
-  return value;
-}
-
-/** An optional label: absent or null is null; anything else is cleaned display text. Wrong types are invalid. */
-function parseLabel(value: unknown): string | null | false {
-  if (value === undefined || value === null) return null;
-  if (typeof value !== "string" || value.length > 4 * MAX_LABEL) return false;
-  return boundedDisplayText(value, MAX_LABEL);
-}
-
-// ---------------------------------------------------------------------------
-// Invite budget
-
-async function claimDay(env: LaneShareEnv, day: string, subject: string, cap: number): Promise<boolean> {
-  const result = await env.DB.prepare(`
-    insert into lane_share_invite_days (day, subject, count) values (?, ?, 1)
-    on conflict(day, subject) do update set count = count + 1 where count < ?
-  `).bind(day, subject, cap).run();
-  return (result.meta?.changes ?? 0) === 1;
-}
-
-async function refundDay(env: LaneShareEnv, day: string, subject: string): Promise<void> {
-  try {
-    await env.DB.prepare("update lane_share_invite_days set count = count - 1 where day = ? and subject = ? and count > 0")
-      .bind(day, subject).run();
-  } catch {
-    // One slot lost for the day is the safe direction.
-  }
-}
-
-const giverSubject = (userId: string) => `giver:${userId}`;
-/** Every invite email of the day, from all accounts together. */
-const GLOBAL_EMAIL_SUBJECT = "all";
-
-/**
- * The address the per-recipient cap counts, so `a.b+x@gmail.com` and
- * `ab@gmail.com` share one budget: lowercase, no `+tag`, and no dots in the
- * local part at Gmail (which ignores them). Only the cap uses it: the invite
- * keeps and matches the exact address.
- */
-export function canonicalCapAddress(email: string): string {
-  const lower = email.trim().toLowerCase();
-  const at = lower.lastIndexOf("@");
-  if (at <= 0) return lower;
-  let local = lower.slice(0, at);
-  let domain = lower.slice(at + 1);
-  const plus = local.indexOf("+");
-  if (plus > 0) local = local.slice(0, plus);
-  if (domain === "googlemail.com") domain = "gmail.com";
-  if (domain === "gmail.com") local = local.replace(/\./g, "");
-  return `${local}@${domain}`;
-}
-
-const recipientSubject = async (email: string) => `to:${(await sha256Hex(canonicalCapAddress(email))).slice(0, 32)}`;
-
-/** One account's Clerk reads in one UTC hour, kept in the day's budget table. */
-const clerkSubject = (userId: string, now: number) => `clerk:${new Date(now).toISOString().slice(11, 13)}:${userId}`;
-
-/**
- * `clerkAccount` behind a per-account hourly budget, so one account cannot
- * spend the Worker's Clerk Backend API allowance. `"over_budget"` when the
- * budget is spent (the caller answers 429), null when Clerk could not be
- * asked. The claim does not depend on the row, so a 429 says nothing about
- * whether an id exists.
- */
-async function budgetedClerkAccount(env: LaneShareEnv, userId: string, now: number): Promise<ClerkAccount | null | "over_budget"> {
-  if (!env.CLERK_SECRET_KEY?.trim()) return null;
-  if (!(await claimDay(env, utcDayKey(now), clerkSubject(userId, now), LANE_SHARE_HOURLY_CLERK_READS_PER_USER))) {
-    logLaneShare({ event: "lane_share.refused", userId, code: "clerk_budget" });
-    return "over_budget";
-  }
-  return clerkAccount(env, userId);
-}
-
-/**
- * Sends the invite email when every limit allows it. `giverClaimed` is true
- * when the caller already took this invite's slot of the giver's daily budget
- * (a new invite); a re-send takes its own.
- */
-async function deliverInvite(
-  env: LaneShareEnv,
-  row: ShareRow,
-  now: number,
-  giverClaimed: boolean,
-): Promise<{ sent: boolean; reason: LaneShareEmailNotSentReason | null }> {
-  // No sender: nothing is claimed, and the invite works by its link.
-  if (!env.RESEND_API_KEY?.trim()) return { sent: false, reason: "not_configured" };
-  const day = utcDayKey(now);
-  const toSubject = await recipientSubject(row.receiver_email);
-  if (!giverClaimed && !(await claimDay(env, day, giverSubject(row.giver_user_id), LANE_SHARE_DAILY_INVITES_PER_GIVER))) {
-    return { sent: false, reason: "rate_limited" };
-  }
-  const giveBackGiver = async () => {
-    if (!giverClaimed) await refundDay(env, day, giverSubject(row.giver_user_id));
-  };
-  if (!(await claimDay(env, day, toSubject, LANE_SHARE_DAILY_EMAILS_PER_RECIPIENT))) {
-    await giveBackGiver();
-    return { sent: false, reason: "rate_limited" };
-  }
-  // The day's emails from every account together: past it the invite still works by its link.
-  if (!(await claimDay(env, day, GLOBAL_EMAIL_SUBJECT, LANE_SHARE_DAILY_EMAILS_GLOBAL))) {
-    await giveBackGiver();
-    await refundDay(env, day, toSubject);
-    logLaneShare({ event: "lane_share.refused", userId: row.giver_user_id, grantId: row.id, code: "global_email_cap" });
-    return { sent: false, reason: "rate_limited" };
-  }
-  const giveBackShared = async () => {
-    await refundDay(env, day, toSubject);
-    await refundDay(env, day, GLOBAL_EMAIL_SUBJECT);
-  };
-  // One write claims this invite's send: two re-sends at once cannot both pass the interval.
-  const claimed = await env.DB.prepare(`
-    update lane_shares set invite_email_count = invite_email_count + 1, last_invite_email_at = ?
-    where id = ? and state = 'pending' and invite_email_count < ? and (last_invite_email_at is null or last_invite_email_at <= ?)
-  `).bind(now, row.id, LANE_SHARE_MAX_EMAILS_PER_INVITE, now - LANE_SHARE_RESEND_INTERVAL_MS).run();
-  if ((claimed.meta?.changes ?? 0) !== 1) {
-    await giveBackGiver();
-    await giveBackShared();
-    return { sent: false, reason: "rate_limited" };
-  }
-  // No project or lane label: they are the giver's free text, and an email
-  // to an address the giver typed must not carry the giver's words.
-  const outcome = await sendLaneShareInviteEmail(env, {
-    to: row.receiver_email,
-    giverLabel: row.giver_label,
-    link: laneShareInviteLink(row.id),
-  });
-  if (outcome === "sent") return { sent: true, reason: null };
-  await giveBackShared();
-  return { sent: false, reason: outcome === "not_configured" ? "not_configured" : "failed" };
-}
-
-// ---------------------------------------------------------------------------
-// Handlers
-
-async function handleInvite(request: Request, env: LaneShareEnv, userId: string, now: number): Promise<Response> {
-  const body = await readJsonBody(request);
-  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  const receiverEmail = parseEmail(body.receiverEmail);
-  if (!receiverEmail) return badRequest("That email address isn't valid.");
-  const repoKey = parseRepoKey(body.repoKey);
-  if (!repoKey) return badRequest("That project can't be shared: it needs a Git remote.");
-  const machineKey = parseMachineKey(body.machineKey);
-  const laneId = parseLaneId(body.laneId);
-  if (!machineKey || !laneId) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  const preset = parsePreset(body.preset);
-  const risk = parseRisk(body.risk);
-  if (!preset || !risk) return badRequest("That access level isn't one ADE offers.");
-  const endsAt = parseEndsAt(body.endsAt, now);
-  if (endsAt === false) return badRequest("The end date must be in the future and within a year.");
-  const projectLabel = parseLabel(body.projectLabel);
-  const laneLabel = parseLabel(body.laneLabel);
-  if (projectLabel === false || laneLabel === false) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-
-  const giver = await budgetedClerkAccount(env, userId, now);
-  if (giver === "over_budget") return clerkBudgetSpent();
-  if (!giver) return clerkUnavailable();
-  if (giver.verifiedEmails.includes(receiverEmail)) {
-    logLaneShare({ event: "lane_share.refused", userId, code: "self_invite" });
-    return fail("self_invite", "That's your own email address. Invite someone else.", 400);
-  }
-  if (!(await ownsMachine(env, userId, machineKey))) {
-    logLaneShare({ event: "lane_share.refused", userId, code: "unknown_machine" });
-    return fail("unknown_machine", "That computer isn't on your ADE account.", 400);
-  }
-  const giverLabel = boundedDisplayText(giver.displayName, MAX_GIVER_LABEL);
-  const fields = { receiverEmail, repoKey, machineKey, laneId, preset, risk, endsAt: endsAt ?? null, projectLabel, laneLabel, giverLabel };
-
-  await settleLane(env, userId, laneId, now);
-  const existing = await existingForAddress(env, userId, laneId, receiverEmail);
-  if (existing?.state === "active") return alreadyShared(userId, existing.id);
-  if (existing) return refreshInvite(env, userId, existing, fields, now);
-
-  const day = utcDayKey(now);
-  if (!(await claimDay(env, day, giverSubject(userId), LANE_SHARE_DAILY_INVITES_PER_GIVER))) {
-    logLaneShare({ event: "lane_share.refused", userId, code: "invite_limit" });
-    return fail("invite_limit", `You can send ${LANE_SHARE_DAILY_INVITES_PER_GIVER} lane invites a day. Try again tomorrow.`, 429);
-  }
-  const id = newGrantId();
-  let inserted: number;
-  try {
-    // The guest count and the insert are one statement, so two invites at once cannot make a sixth guest.
-    const result = await env.DB.prepare(`
-      insert into lane_shares (id, giver_user_id, receiver_email, repo_key, machine_key, lane_id, giver_label,
-        project_label, lane_label, preset, risk, state, invite_expires_at, ends_at, version, created_at, updated_at)
-      select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 1, ?, ?
-      where (select count(*) from lane_shares where giver_user_id = ? and lane_id = ? and state in ${LIVE_STATES}) < ?
-    `).bind(
-      id, userId, receiverEmail, repoKey, machineKey, laneId, giverLabel, projectLabel, laneLabel, preset, risk,
-      now + LANE_SHARE_INVITE_TTL_MS, endsAt ?? null, now, now,
-      userId, laneId, LANE_SHARE_MAX_GUESTS_PER_LANE,
-    ).run();
-    inserted = result.meta?.changes ?? 0;
-  } catch (error) {
-    await refundDay(env, day, giverSubject(userId));
-    if (!isUniqueViolation(error)) throw error;
-    // A concurrent invite to the same address won the insert: this call refreshes it.
-    const raced = await existingForAddress(env, userId, laneId, receiverEmail);
-    if (raced?.state === "pending") return refreshInvite(env, userId, raced, fields, now);
-    return alreadyShared(userId, raced?.id ?? null);
-  }
-  if (inserted !== 1) {
-    await refundDay(env, day, giverSubject(userId));
-    logLaneShare({ event: "lane_share.refused", userId, code: "guest_limit" });
-    return fail("guest_limit", `A lane can have at most ${LANE_SHARE_MAX_GUESTS_PER_LANE} guests. Remove one to invite someone else.`, 409);
-  }
-  const row = await reload(env, id);
-  const email = await deliverInvite(env, row, now, true);
-  logLaneShare({ event: "lane_share.invited", userId, grantId: id, emailSent: email.sent });
-  return json(inviteResponse(await reload(env, id), now, false, email), 201);
-}
-
-type InviteFields = {
-  receiverEmail: string;
-  repoKey: string;
-  machineKey: string;
-  laneId: string;
-  preset: LaneSharePreset;
-  risk: LaneShareRisk;
-  endsAt: number | null;
-  projectLabel: string | null;
-  laneLabel: string | null;
-  giverLabel: string | null;
-};
-
-/** The live grant of one address on one lane, read after `settleLane`. */
-async function existingForAddress(env: LaneShareEnv, giverUserId: string, laneId: string, email: string): Promise<ShareRow | null> {
-  return env.DB.prepare(`
-    select ${COLUMNS} from lane_shares
-    where giver_user_id = ? and lane_id = ? and receiver_email = ? and state in ${LIVE_STATES}
-    order by state = 'active' desc limit 1
-  `).bind(giverUserId, laneId, email).first<ShareRow>();
-}
-
-function alreadyShared(userId: string, grantId: string | null): Response {
-  logLaneShare({ event: "lane_share.refused", userId, grantId: grantId ?? undefined, code: "already_shared" });
-  return fail("already_shared", "This lane is already shared with that person.", 409);
-}
-
-/**
- * A second invite to an address with a pending invite on the same lane: the
- * 24 h window starts again, the invite takes the new access level and end
- * date, and the email goes again when the re-send limits allow.
- */
-async function refreshInvite(env: LaneShareEnv, userId: string, row: ShareRow, fields: InviteFields, now: number): Promise<Response> {
-  const result = await env.DB.prepare(`
-    update lane_shares set invite_expires_at = ?, preset = ?, risk = ?, ends_at = ?,
-      project_label = coalesce(?, project_label), lane_label = coalesce(?, lane_label), giver_label = coalesce(?, giver_label),
-      updated_at = ?, version = version + 1
-    where id = ? and giver_user_id = ? and state = 'pending'
-  `).bind(
-    now + LANE_SHARE_INVITE_TTL_MS, fields.preset, fields.risk, fields.endsAt,
-    fields.projectLabel, fields.laneLabel, fields.giverLabel, now, row.id, userId,
-  ).run();
-  if ((result.meta?.changes ?? 0) !== 1) {
-    // Accepted, revoked or declined between the read and this write.
-    const current = await reload(env, row.id);
-    return current.state === "active" ? alreadyShared(userId, row.id) : shareClosed();
-  }
-  const refreshed = await reload(env, row.id);
-  const email = await deliverInvite(env, refreshed, now, false);
-  logLaneShare({ event: "lane_share.refreshed", userId, grantId: row.id, emailSent: email.sent });
-  return json(inviteResponse(await reload(env, row.id), now, true, email), 200);
-}
-
-function inviteResponse(row: ShareRow, now: number, refreshed: boolean, email: { sent: boolean; reason: LaneShareEmailNotSentReason | null }): LaneShareInviteResponse {
-  const grant = giverView(row, now);
-  return { grant, refreshed, emailSent: email.sent, emailNotSentReason: email.reason, link: grant.link };
-}
-
 /** Rows that closed before this are left out of the lists. */
 const listCutoff = (now: number) => now - LANE_SHARE_CLOSED_VISIBLE_MS;
 
@@ -713,201 +246,6 @@ async function handleReceived(env: LaneShareEnv, userId: string, now: number): P
     }
   }
   const response: LaneShareReceivedResponse = { grants, pendingInvitesUnavailable: account === null };
-  return json(response);
-}
-
-async function handleHostRead(request: Request, env: LaneShareEnv, userId: string, now: number): Promise<Response> {
-  const body = await readJsonBody(request);
-  const machineKey = parseMachineKey(body?.machineKey);
-  if (!machineKey) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  // A removed machine keeps a valid account token; without its machine row it reads nothing.
-  if (!(await ownsMachine(env, userId, machineKey))) return fail("unknown_machine", "That computer isn't on your ADE account.", 404);
-  return json(await hostGrantList(env, userId, machineKey, now));
-}
-
-/** The complete live grant list of one machine of `userId`, plus recently closed ones. */
-async function hostGrantList(env: LaneShareEnv, userId: string, machineKey: string, now: number): Promise<LaneShareHostResponse> {
-  const rows = await env.DB.prepare(`
-    select ${COLUMNS} from lane_shares
-    where giver_user_id = ? and machine_key = ? and (state in ${LIVE_STATES} or closed_at > ?)
-    order by created_at desc limit ?
-  `).bind(userId, machineKey, now - LANE_SHARE_HOST_CLOSED_WINDOW_MS, HOST_LIMIT).all<ShareRow>();
-  const response: LaneShareHostResponse = { serverTime: now, grants: [], closed: [] };
-  for (const row of rows.results ?? []) {
-    const state = effectiveState(row, now);
-    if (state === "pending" || state === "active") {
-      response.grants.push({
-        id: row.id,
-        receiverUserId: state === "active" ? row.receiver_user_id : null,
-        laneId: row.lane_id,
-        repoKey: row.repo_key,
-        state,
-        endsAt: row.ends_at,
-        preset: row.preset,
-        risk: row.risk,
-        version: row.version,
-        receiverName: state === "active" ? personName(row.receiver_label) : null,
-        createdAt: row.created_at,
-        acceptedAt: state === "active" ? row.accepted_at : null,
-      });
-    } else {
-      const closedAt = effectiveClosedAt(row, now);
-      if (closedAt != null && closedAt <= now - LANE_SHARE_HOST_CLOSED_WINDOW_MS) continue;
-      response.closed.push({ id: row.id, receiverUserId: row.receiver_user_id, laneId: row.lane_id, state, closedAt, version: row.version });
-    }
-  }
-  return response;
-}
-
-/** Same window as the machine list's online state (`DEFAULT_ONLINE_WINDOW_MS` in directory.ts). */
-const HOST_ONLINE_WINDOW_MS = 150_000;
-
-/**
- * The relay address a host machine published for itself: a `wss:` URL whose
- * path ends in `/connect/<machineKey>` (`ws:` only on this computer, for a
- * local relay). Anything else is not handed to a guest.
- */
-function publishedRelayUrl(endpointsJson: string | null, machineKey: string): string | null {
-  if (!endpointsJson) return null;
-  let endpoints: unknown;
-  try {
-    endpoints = JSON.parse(endpointsJson);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(endpoints)) return null;
-  for (const endpoint of endpoints) {
-    if (!endpoint || typeof endpoint !== "object") continue;
-    const { kind, url } = endpoint as { kind?: unknown; url?: unknown };
-    if (kind !== "relay" || typeof url !== "string") continue;
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      continue;
-    }
-    const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
-    if (parsed.protocol !== "wss:" && !(parsed.protocol === "ws:" && local)) continue;
-    if (parsed.username || parsed.password || parsed.search || parsed.hash) continue;
-    const tail = parsed.pathname.split("/").slice(-2);
-    if (tail[0] !== "connect" || decodeURIComponent(tail[1] ?? "") !== machineKey) continue;
-    return parsed.toString();
-  }
-  return null;
-}
-
-const HOUR_MS = 60 * 60 * 1000;
-
-/** 32 random bytes, base64url: the ticket the guest hands the host. */
-function newTicket(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-const ticketHash = (ticket: string) => sha256Hex(`lane-share-ticket:${ticket}`);
-
-/**
- * The receiver of an ACTIVE grant asks how to reach the host, and gets a
- * one-use ticket for it. Everyone else, the giver included, gets the same
- * 404 as an unknown id; a closed grant answers 410. The relay address only
- * admits a socket: the host redeems the ticket (`POST /lane-shares/host/redeem`)
- * on every connection, so the guest's account token never leaves this call.
- */
-async function handleConnect(request: Request, env: LaneShareEnv, userId: string, id: string, now: number): Promise<Response> {
-  const body = await readJsonBody(request);
-  const dpopThumbprint = typeof body?.dpopThumbprint === "string" && LANE_SHARE_TICKET_PATTERN.test(body.dpopThumbprint)
-    ? body.dpopThumbprint
-    : null;
-  const row = await loadRow(env, id);
-  if (!row || row.receiver_user_id !== userId) return notFound();
-  if (effectiveState(row, now) !== "active") return shareClosed();
-  if (!dpopThumbprint) return badRequest("Update ADE: this version can't connect to a shared lane.");
-  const machine = await env.DB.prepare(
-    "select reachable_endpoints, last_seen_at from machines where user_id = ? and machine_key = ?",
-  ).bind(row.giver_user_id, row.machine_key).first<{ reachable_endpoints: string | null; last_seen_at: number | null }>();
-  const relayUrl = machine ? publishedRelayUrl(machine.reachable_endpoints, row.machine_key) : null;
-  let ticket: string | null = null;
-  let ticketExpiresAt: number | null = null;
-  if (relayUrl) {
-    ticket = newTicket();
-    ticketExpiresAt = now + LANE_SHARE_TICKET_TTL_MS;
-    // The mint cap and the insert are one statement, so concurrent mints cannot pass it together.
-    const minted = await env.DB.prepare(`
-      insert into lane_share_tickets (ticket_hash, grant_id, receiver_user_id, machine_key, dpop_thumbprint, created_at, expires_at)
-      select ?, ?, ?, ?, ?, ?, ?
-      where (select count(*) from lane_share_tickets where grant_id = ? and created_at > ?) < ?
-    `).bind(
-      await ticketHash(ticket), row.id, userId, row.machine_key, dpopThumbprint, now, ticketExpiresAt,
-      row.id, now - HOUR_MS, LANE_SHARE_TICKET_MINTS_PER_HOUR,
-    ).run();
-    if ((minted.meta?.changes ?? 0) !== 1) {
-      logLaneShare({ event: "lane_share.refused", userId, grantId: row.id, code: "ticket_limit" });
-      return fail("rate_limited", "Too many connection attempts to this shared lane. Try again later.", 429);
-    }
-    logLaneShare({ event: "lane_share.ticket_minted", userId, grantId: row.id });
-  }
-  const response: LaneShareConnectResponse = {
-    grantId: row.id,
-    laneId: row.lane_id,
-    repoKey: row.repo_key,
-    relayUrl,
-    hostOnline: Boolean(machine?.last_seen_at != null && now - machine.last_seen_at <= HOST_ONLINE_WINDOW_MS),
-    ticket,
-    ticketExpiresAt,
-  };
-  return json(response);
-}
-
-/**
- * A host machine redeems a guest's ticket with its owner's account token.
- * One conditional UPDATE marks it used, and only when it is unused, not
- * expired, minted for this machine, and its grant is still active with the
- * same receiver and machine and the caller as the giver, on the server clock.
- * So of two redeems at once one wins, and a revoke between mint and redeem
- * refuses it. Every failure answers the same 404.
- */
-async function handleRedeem(request: Request, env: LaneShareEnv, userId: string, now: number): Promise<Response> {
-  const body = await readJsonBody(request);
-  const machineKey = parseMachineKey(body?.machineKey);
-  const ticket = typeof body?.ticket === "string" && LANE_SHARE_TICKET_PATTERN.test(body.ticket) ? body.ticket : null;
-  if (!machineKey || !ticket || !(await ownsMachine(env, userId, machineKey))) return notFound();
-  const hash = await ticketHash(ticket);
-  const used = await env.DB.prepare(`
-    update lane_share_tickets set used_at = ?
-    where ticket_hash = ? and used_at is null and expires_at > ? and machine_key = ?
-      and exists (
-        select 1 from lane_shares s
-        where s.id = lane_share_tickets.grant_id
-          and s.giver_user_id = ?
-          and s.machine_key = lane_share_tickets.machine_key
-          and s.receiver_user_id = lane_share_tickets.receiver_user_id
-          and s.state = 'active'
-          and (s.ends_at is null or s.ends_at > ?)
-      )
-  `).bind(now, hash, now, machineKey, userId, now).run();
-  if ((used.meta?.changes ?? 0) !== 1) {
-    logLaneShare({ event: "lane_share.refused", userId, code: "ticket_refused" });
-    return notFound();
-  }
-  const redeemed = await env.DB.prepare(`
-    select t.grant_id, t.receiver_user_id, t.dpop_thumbprint, s.lane_id, s.repo_key
-    from lane_share_tickets t join lane_shares s on s.id = t.grant_id
-    where t.ticket_hash = ?
-  `).bind(hash).first<{ grant_id: string; receiver_user_id: string; dpop_thumbprint: string; lane_id: string; repo_key: string }>();
-  if (!redeemed) return notFound();
-  logLaneShare({ event: "lane_share.ticket_redeemed", userId, grantId: redeemed.grant_id });
-  const response: LaneShareRedeemResponse = {
-    ...(await hostGrantList(env, userId, machineKey, now)),
-    redeemed: {
-      grantId: redeemed.grant_id,
-      receiverUserId: redeemed.receiver_user_id,
-      laneId: redeemed.lane_id,
-      repoKey: redeemed.repo_key,
-      dpopThumbprint: redeemed.dpop_thumbprint,
-    },
-  };
   return json(response);
 }
 

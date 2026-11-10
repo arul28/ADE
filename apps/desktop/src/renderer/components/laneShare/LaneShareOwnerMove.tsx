@@ -3,14 +3,15 @@ import { ArrowsLeftRight } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { LaneShareGivenEntry } from "../../../shared/types/laneShare";
 import { laneShareRiskLevel, type LaneShareRights } from "../../../shared/laneShareRights";
-import { LANE_SHARE_MOVE_FINAL_STAGES, type LaneShareMoveView } from "../../../shared/laneShareMove";
-import { parseCodedErrorMessage } from "../../../shared/codedError";
+import { LANE_SHARE_MOVE_FINAL_STAGES, moveErrorText, type LaneShareMoveView } from "../../../shared/laneShareMove";
 import { Banner } from "../ui/notice";
 import { confirmDialog } from "../ui/dialog";
 import { showToast } from "../app/toast/toastStore";
 import { LaneShareRightsPanel } from "./LaneShareRightsPanel";
 import { confirmHighRiskShare } from "./laneShareDefaults";
 import { useLaneShareList } from "./laneShareStore";
+import { laneShareProblem } from "./laneShareModel";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 
 /**
  * The owner's side of moving a chat between the two people of a share. All
@@ -52,7 +53,7 @@ export async function startLaneShareMove(args: { pin: OpenProjectBinding | null;
   try {
     await window.ade.laneShare.move("moveStart", { grantId: args.share.grantId, sessionId: args.sessionId }, args.pin);
   } catch (error) {
-    showToast({ tone: "error", title: "Couldn't start the move", message: parseCodedErrorMessage(error).message, report: false });
+    showToast({ tone: "error", title: "Couldn't start the move", message: moveErrorText(error) });
   }
 }
 
@@ -84,6 +85,7 @@ export const LaneShareOwnerMoveCard = React.memo(function LaneShareOwnerMoveCard
   const enabled = shares.length > 0;
   const pinKey = pin?.key ?? null;
   const [moves, setMoves] = React.useState<LaneShareMoveView[]>([]);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
   const [dismissed, setDismissed] = React.useState<Set<string>>(() => new Set());
   const pinRef = React.useRef(pin);
   pinRef.current = pin;
@@ -92,9 +94,13 @@ export const LaneShareOwnerMoveCard = React.memo(function LaneShareOwnerMoveCard
     try {
       const result = await window.ade.laneShare.move<{ moves?: LaneShareMoveView[] }>("moveList", {}, pinRef.current);
       setMoves(Array.isArray(result?.moves) ? result.moves : []);
-    } catch {
-      // An older host has no moves; nothing to show.
+      setLoadError(null);
+    } catch (error) {
+      const problem = laneShareProblem(error, { pin: pinRef.current });
+      logRendererDebugEvent("lane_share.move_list_failed", { code: problem.code, error: problem.message });
       setMoves([]);
+      // An older host has no moves: nothing to show, nothing to retry.
+      setLoadError(problem.code === "old_host" || problem.code === "sync_off" ? null : problem.message);
     }
   }, []);
 
@@ -117,6 +123,21 @@ export const LaneShareOwnerMoveCard = React.memo(function LaneShareOwnerMoveCard
   }, [live, reload]);
 
   if (!enabled) return null;
+  if (loadError) {
+    return (
+      <div style={style} data-testid="lane-share-owner-move-card">
+        <Banner
+          layout="inline"
+          model={{
+            id: "lane-share-owner-move-load",
+            tone: "error",
+            title: `Couldn't load the moves of this shared lane. ${loadError}`,
+            actions: [{ label: "Retry", onClick: () => { void reload(); } }],
+          }}
+        />
+      </div>
+    );
+  }
   const shown = moves.filter((move) =>
     move.laneId === laneId
     && !dismissed.has(move.moveId)
@@ -155,7 +176,7 @@ function OwnerMoveStatus({
     ? move.stage === "done"
       ? toGuest
         ? `Moved to ${who}'s computer${move.result?.laneName ? ` as the lane “${move.result.laneName}”` : ""}.`
-        : `${who}'s work is in the new lane “${move.result?.laneName ?? move.laneName ?? ""}”.`
+        : `${who}'s work is in the new lane “${move.result?.laneName ?? move.laneName ?? ""}”.${move.result?.note ? ` ${move.result.note}` : ""}`
       : move.stage === "declined"
         ? toGuest ? `${who} declined the move.` : "You declined the move."
         : move.error ?? "The move ended."
@@ -166,7 +187,7 @@ function OwnerMoveStatus({
     try {
       await window.ade.laneShare.move("moveCancel", { moveId: move.moveId }, pin);
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't cancel the move", message: parseCodedErrorMessage(error).message, report: false });
+      showToast({ tone: "error", title: "Couldn't cancel the move", message: moveErrorText(error) });
     }
     await onChanged();
   };
@@ -213,7 +234,7 @@ function OwnerConsent({
         ...(accept && rights ? { rights, endsAt, confirmHighRisk: high } : {}),
       }, pin);
     } catch (error) {
-      showToast({ tone: "error", title: accept ? "Couldn't accept the move" : "Couldn't decline the move", message: parseCodedErrorMessage(error).message, report: false });
+      showToast({ tone: "error", title: accept ? "Couldn't accept the move" : "Couldn't decline the move", message: moveErrorText(error) });
     } finally {
       setBusy(false);
     }
@@ -232,7 +253,7 @@ function OwnerConsent({
       <span className="text-[12px] leading-[1.45] text-fg/65">
         The work of {move.branchName ? <code className="font-mono">{move.branchName}</code> : "their branch"} goes into a new lane
         {move.laneName ? ` “${move.laneName}”` : ""} here, never into this shared lane. The chat continues with this computer's sign-ins. Git hooks of the arriving work do not run.
-        The new lane is shared back with {who}.
+        The new lane is shared back with {who}{guestEmail ? ` at ${guestEmail}` : ""}.
       </span>
       {rights ? (
         <div className="flex flex-col gap-1.5">

@@ -128,13 +128,7 @@ import type {
   ProjectRemovalReport,
   ProjectRemovalRequest,
 } from "../../../shared/projectRemoval";
-import {
-  decideProjectFolderDeletion,
-  decideRemovalRecheck,
-  projectCopyStateToken,
-} from "../projects/projectRemovalGuard";
-import { outsideLaneFolders, readProjectCopyState } from "../projects/projectRemovalState";
-import type { ProjectRemovalClearance } from "../../../../../ade-cli/src/services/projects/projectCopyRemoval";
+import { createDesktopProjectRemoval } from "../projects/desktopProjectRemoval";
 import { readClipboardImage, readClipboardItem, writeClipboardFlavors } from "../shared/electronClipboard";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
@@ -4909,83 +4903,25 @@ export function registerIpc({
     return listRecentProjectSummaries({ force: true });
   });
 
-  // Removing a project from this computer (the remove dialog). The background
-  // service knows what runs in the project and reads the copy's state; this
-  // process adds its own folder check (ADE itself may run from the folder)
-  // and moves the folder to the Trash, so the person can get it back.
-  const removalPool = (): LocalRuntimeConnectionPool | null =>
-    localRuntimeConnectionPool ?? projectRecoveryConnectionPool ?? null;
-  const findBrainProject = async (pool: LocalRuntimeConnectionPool | null, rootPath: string) => {
-    if (!pool) return null;
-    const projects = await pool.projects();
-    return projects.find((entry) => pathsEqual(entry.rootPath, rootPath)) ?? null;
-  };
-  const realpathOr = async (target: string): Promise<string> => {
-    try {
-      return await fs.promises.realpath(target);
-    } catch {
-      return path.resolve(target);
-    }
-  };
-  /** Why this computer never deletes the folder, or null when it may. */
-  const desktopFolderRefusal = async (rootPath: string, pool: LocalRuntimeConnectionPool | null): Promise<string | null> => {
-    try {
-      if ((await fs.promises.lstat(rootPath)).isSymbolicLink()) {
-        return `The project folder is a link to ${await realpathOr(rootPath)}. ADE doesn't delete through links.`;
-      }
-    } catch {
-      return null;
-    }
-    const brainRoots = pool ? (await pool.projects().catch(() => [])).map((entry) => entry.rootPath) : [];
-    const recentRoots = (readGlobalState(globalStatePath).recentProjects ?? [])
+  const projectRemoval = createDesktopProjectRemoval({
+    pool: () => localRuntimeConnectionPool ?? projectRecoveryConnectionPool ?? null,
+    recentLocalRoots: () => (readGlobalState(globalStatePath).recentProjects ?? [])
       .filter((entry) => !entry.remote)
-      .map((entry) => entry.rootPath);
-    const home = app.getPath("home");
-    const decision = decideProjectFolderDeletion({
-      target: await realpathOr(rootPath),
-      registeredRoots: await Promise.all([...brainRoots, ...recentRoots].map(realpathOr)),
-      homeDir: home,
-      adeHome: await realpathOr(process.env.ADE_HOME?.trim() || path.join(home, ".ade")),
-      runtimePaths: [process.cwd(), process.execPath, app.getAppPath(), app.getPath("userData")],
-    });
-    return decision.ok ? null : decision.reason;
-  };
+      .map((entry) => entry.rootPath),
+    forgetRecentProject,
+    closeProjectByPath,
+    trashItem: (folderPath) => shell.trashItem(folderPath),
+    folderExists: (folderPath) => fs.existsSync(folderPath),
+    homeDir: app.getPath("home"),
+    adeHome: process.env.ADE_HOME?.trim() || path.join(app.getPath("home"), ".ade"),
+    runtimePaths: [process.cwd(), process.execPath, app.getAppPath(), app.getPath("userData")],
+    logger: { warn: (event, fields) => getCtx().logger.warn(event, fields) },
+  });
 
   ipcMain.handle(IPC.projectInspectRemoval, async (_event, arg: { rootPath?: string }): Promise<ProjectRemovalReport> => {
     const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
     if (!rootPath) throw new Error("Project path is required.");
-    const pool = removalPool();
-    const record = await findBrainProject(pool, rootPath);
-    let report: ProjectRemovalReport;
-    if (pool && record) {
-      report = await pool.callSync<ProjectRemovalReport>(
-        "projects.inspectRemoval",
-        { projectId: record.projectId },
-        { timeoutMs: 110_000 },
-      );
-    } else {
-      // Not in the service's list: nothing of it runs there. With no service
-      // at all, what runs is unknown, and a delete is refused below.
-      const state = await readProjectCopyState(rootPath, { chats: 0, terminals: 0 });
-      if (!pool) state.unreadable.push("sessions");
-      report = {
-        projectId: rootPath,
-        rootPath,
-        displayName: path.basename(rootPath),
-        state,
-        stateToken: projectCopyStateToken(state),
-        deleteMode: "trash",
-        deleteRefusal: null,
-        outsideLaneFolders: outsideLaneFolders(state),
-      };
-    }
-    const desktopRefusal = report.state.folder === "present" ? await desktopFolderRefusal(rootPath, pool) : null;
-    return {
-      ...report,
-      rootPath,
-      deleteMode: "trash",
-      deleteRefusal: report.deleteRefusal ?? desktopRefusal,
-    };
+    return await projectRemoval.inspect(rootPath);
   });
 
   ipcMain.handle(
@@ -4993,96 +4929,11 @@ export function registerIpc({
     async (_event, arg: { rootPath?: string; request?: Partial<ProjectRemovalRequest> }): Promise<ProjectRemovalOutcome> => {
       const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       if (!rootPath) throw new Error("Project path is required.");
-      const request: ProjectRemovalRequest = {
+      return await projectRemoval.remove(rootPath, {
         deleteFolder: arg?.request?.deleteFolder === true,
         stateToken: typeof arg?.request?.stateToken === "string" ? arg.request.stateToken : null,
         acceptWork: arg?.request?.acceptWork === true,
-      };
-      if (!request.deleteFolder) {
-        await forgetRecentProject(rootPath);
-        return { status: "removed", folder: "kept", outsideLaneFolders: [] };
-      }
-      if (!request.stateToken) {
-        return { status: "refused", code: "changed", reason: "ADE hasn't checked this copy yet. Check it again." };
-      }
-      const pool = removalPool();
-      if (!pool) {
-        return {
-          status: "refused",
-          code: "work_running",
-          reason: "ADE's background service isn't running, so it can't check what runs in this project. ADE kept the folder.",
-        };
-      }
-      const record = await findBrainProject(pool, rootPath);
-      let folderPath: string;
-      let outside: string[];
-      if (record) {
-        // The service checks the copy again, checks the folder, and stops
-        // the project; the Trash move is this process's.
-        const answer = await pool.callSync<ProjectRemovalOutcome | ProjectRemovalClearance>(
-          "projects.removeCopy",
-          {
-            projectId: record.projectId,
-            deleteFolder: true,
-            stateToken: request.stateToken,
-            acceptWork: request.acceptWork,
-            folderMode: "caller",
-          },
-          { timeoutMs: 110_000 },
-        );
-        if (answer.status === "removed") {
-          // Its folder was already gone, or another window removed it first.
-          await forgetRecentProject(rootPath);
-          return answer;
-        }
-        if (answer.status !== "cleared") return answer;
-        folderPath = answer.folderPath;
-        outside = answer.outsideLaneFolders;
-      } else {
-        const state = await readProjectCopyState(rootPath, { chats: 0, terminals: 0 });
-        if (state.folder === "missing") {
-          await forgetRecentProject(rootPath);
-          return { status: "removed", folder: "missing", outsideLaneFolders: [] };
-        }
-        const decision = decideRemovalRecheck({
-          current: state,
-          currentToken: projectCopyStateToken(state),
-          shownToken: request.stateToken,
-          acceptWork: request.acceptWork,
-        });
-        if (!decision.ok) return { status: "refused", code: decision.code, reason: decision.reason };
-        folderPath = await realpathOr(rootPath);
-        outside = outsideLaneFolders(state);
-      }
-      const refusal = await desktopFolderRefusal(rootPath, pool);
-      if (refusal) return { status: "refused", code: "unsafe_path", reason: refusal };
-      try {
-        await closeProjectByPath(rootPath);
-      } catch {
-        // The service already stopped the project; this window's teardown is best effort.
-      }
-      try {
-        await shell.trashItem(folderPath);
-      } catch (error) {
-        if (fs.existsSync(folderPath)) {
-          return {
-            status: "refused",
-            code: "delete_failed",
-            reason: `ADE couldn't move the folder to the Trash (${error instanceof Error ? error.message : String(error)}). It kept the folder and the project.`,
-          };
-        }
-      }
-      await forgetRecentProject(rootPath);
-      if (record) {
-        try {
-          await pool.removeProject(rootPath, record.projectId);
-        } catch (error) {
-          getCtx().logger.warn("project.remove_copy_entry_failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-      return { status: "removed", folder: "trashed", outsideLaneFolders: outside };
+      });
     },
   );
 

@@ -1,7 +1,7 @@
 import { parseCodedErrorMessage, isUnsupportedAdeActionError } from "../../../shared/codedError";
 import type { LaneShareRights, LaneShareRiskLevel } from "../../../shared/laneShareRights";
 import type { LaneShareGivenEntry } from "../../../shared/types/laneShare";
-import { LANE_SHARING_UNAVAILABLE, LANE_SHARING_UNAVAILABLE_MESSAGE } from "../../../shared/laneShareGuestDirectory";
+import { LANE_SHARING_UNAVAILABLE, LANE_SHARING_UNAVAILABLE_MESSAGE } from "../../../shared/laneShareDirectory";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { rootAppStoreApi } from "../../state/appStore";
 
@@ -10,9 +10,6 @@ import { rootAppStoreApi } from "../../state/appStore";
  * usage text and the plain reason behind a failed call. No rights rules
  * live here; those are `shared/laneShareRights.ts`.
  */
-
-/** Most guests (pending and active) one lane may have. The directory refuses a sixth. */
-export const LANE_SHARE_MAX_GUESTS = 5;
 
 /** Shares that count toward the limit and give access (or will). */
 export function isLiveLaneShare(entry: Pick<LaneShareGivenEntry, "state">): boolean {
@@ -46,28 +43,42 @@ export function laneShareMarkSummary(shares: readonly LaneShareGivenEntry[], lan
 
 export type LaneShareStateTone = "ok" | "warn" | "crit" | null;
 
-/** The state tag of one guest row. */
-export function laneShareStateLabel(entry: LaneShareGivenEntry, now = Date.now()): { label: string; tone: LaneShareStateTone } {
-  if (entry.laneState === "missing") return { label: "Lane deleted", tone: "crit" };
-  if (entry.laneState === "archived" && isLiveLaneShare(entry)) return { label: "Paused", tone: "warn" };
-  if (entry.needsRights) return { label: "Needs rights", tone: "warn" };
+/** An invite that can no longer be accepted (the directory's `expired`, or a pending invite past its time). */
+export function laneShareInviteExpired(entry: { state: string; inviteExpiresAt: number | null }, now = Date.now()): boolean {
+  return entry.state === "expired" || (entry.state === "pending" && entry.inviteExpiresAt != null && entry.inviteExpiresAt <= now);
+}
+
+/**
+ * The state tag of a share as the directory reports it, the same for the
+ * owner and the guest. A revoked share reads "Ended" on both sides.
+ */
+export function laneShareGrantStateLabel(
+  entry: { state: string; inviteExpiresAt: number | null },
+  now = Date.now(),
+): { label: string; tone: LaneShareStateTone } {
+  if (laneShareInviteExpired(entry, now)) return { label: "Invite expired", tone: "warn" };
   switch (entry.state) {
     case "pending":
-      if (entry.inviteExpiresAt != null && entry.inviteExpiresAt <= now) return { label: "Invite expired", tone: "warn" };
-      return { label: "Pending", tone: null };
+      return { label: "Invite", tone: null };
     case "active":
-      return entry.connectedDevices > 0 ? { label: "Here now", tone: "ok" } : { label: "Active", tone: null };
-    case "expired":
-      return { label: "Invite expired", tone: "warn" };
+      return { label: "Active", tone: null };
     case "ended":
-      return { label: "Ended", tone: null };
     case "revoked":
-      return { label: "Removed", tone: null };
+      return { label: "Ended", tone: null };
     case "left":
       return { label: "Left", tone: null };
     default:
       return { label: entry.state, tone: null };
   }
+}
+
+/** The state tag of one guest row on the owner's side: the lane's own state first, then the share's. */
+export function laneShareStateLabel(entry: LaneShareGivenEntry, now = Date.now()): { label: string; tone: LaneShareStateTone } {
+  if (entry.laneState === "missing") return { label: "Lane deleted", tone: "crit" };
+  if (entry.laneState === "archived" && isLiveLaneShare(entry)) return { label: "Paused", tone: "warn" };
+  if (entry.needsRights) return { label: "Needs rights", tone: "warn" };
+  if (entry.state === "active" && entry.connectedDevices > 0) return { label: "Here now", tone: "ok" };
+  return laneShareGrantStateLabel(entry, now);
 }
 
 export type LaneShareQuickEnd = { key: "hour" | "today" | "week" | "none"; label: string; at: number | null };
@@ -135,6 +146,22 @@ export type LaneShareProblem = {
   blocking: boolean;
 };
 
+/**
+ * The sentence for each error code that means the same on the owner's and
+ * the guest's side. `laneShareProblem` (owner) and `laneShareGuestProblem`
+ * (guest) both read it.
+ */
+export const LANE_SHARE_ERROR_TEXT: Readonly<Record<string, string>> = {
+  signed_out: "Sign in to your ADE account to share lanes.",
+  no_directory: "Shared lanes need your ADE account on this device. Sign in from Settings, then try again.",
+  [LANE_SHARING_UNAVAILABLE]: LANE_SHARING_UNAVAILABLE_MESSAGE,
+  unavailable: "The ADE account directory can't be reached right now. Try again in a moment.",
+  rate_limited: "Too many tries. Wait a moment, then try again.",
+  invite_expired: "This invite expired. Ask the owner to send it again.",
+  guest_limit: "This lane already has the most guests it can have. Ask the owner.",
+  share_closed: "This share has ended.",
+};
+
 const MISSING_DOMAIN_PATTERN = /Domain ['"]lane_share['"] is unavailable in this runtime/i;
 const OFFLINE_PATTERN = /\b(offline|disconnected|not connected|unreachable|timed out|no route|could not reach|isn'?t reachable|not reachable)\b/i;
 
@@ -143,10 +170,10 @@ export function laneShareProblem(error: unknown, options: { pin?: OpenProjectBin
   const code = parsed.code ?? null;
   const message = parsed.message || "Lane sharing failed.";
   if (code === "signed_out" || code === "unauthorized") {
-    return { code, message: "Sign in to your ADE account to share lanes.", blocking: true };
+    return { code, message: LANE_SHARE_ERROR_TEXT.signed_out!, blocking: true };
   }
   if (code === "no_directory") {
-    return { code, message: "Lane sharing needs your ADE account and sync on this computer. Turn on sync in Settings, then try again.", blocking: true };
+    return { code, message: LANE_SHARE_ERROR_TEXT.no_directory!, blocking: true };
   }
   if (code === "lane_share_no_runtime" || code === "lane_share_desktop_only") {
     return { code, message, blocking: true };
@@ -173,10 +200,7 @@ export function laneShareProblem(error: unknown, options: { pin?: OpenProjectBin
     return { code: "offline", message: `${where} is offline. Sharing opens read only until it is back.`, blocking: true };
   }
   if (code === LANE_SHARING_UNAVAILABLE) return { code, message: LANE_SHARING_UNAVAILABLE_MESSAGE, blocking: true };
-  if (code === "unavailable") {
-    return { code, message: "The ADE account directory can't be reached right now. Try again in a moment.", blocking: false };
-  }
-  return { code, message, blocking: false };
+  return { code, message: (code && LANE_SHARE_ERROR_TEXT[code]) || message, blocking: false };
 }
 
 /** A short line about the invite email of a create or re-send. */

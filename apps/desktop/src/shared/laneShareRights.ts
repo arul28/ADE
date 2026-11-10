@@ -1,3 +1,4 @@
+import type { LaneSharePreset, LaneShareRisk } from "../../../account-directory/src/laneShares/contract";
 import type { LaneShareMoveView } from "./laneShareMove";
 import { AGENT_CHAT_PERMISSION_MODE_VALUES, type AgentChatPermissionMode } from "./types/chat";
 
@@ -15,7 +16,7 @@ import { AGENT_CHAT_PERMISSION_MODE_VALUES, type AgentChatPermissionMode } from 
  * this version knows and treats every other value as off.
  */
 
-export const LANE_SHARE_RIGHTS_VERSION = 1;
+const LANE_SHARE_RIGHTS_VERSION = 1;
 
 /**
  * One switch per ADE action domain (`actionPolicy.ts`). "On" means READ
@@ -129,10 +130,11 @@ export type LaneShareRights = {
   };
 };
 
-export const LANE_SHARE_PRESET_NAMES = ["watch", "comment", "suggest", "collaborate"] as const;
-export type LaneSharePresetName = (typeof LANE_SHARE_PRESET_NAMES)[number];
+/** The directory's presets (`LaneSharePreset` in the contract), in the same order. */
+export const LANE_SHARE_PRESET_NAMES = ["watch", "comment", "suggest", "collaborate"] as const satisfies readonly LaneSharePreset[];
+export type LaneSharePresetName = LaneSharePreset;
 
-export type LaneShareRiskLevel = "low" | "medium" | "high";
+export type LaneShareRiskLevel = LaneShareRisk;
 
 const MAX_LIST_ENTRIES = 32;
 const MAX_LIST_ENTRY_CHARS = 200;
@@ -143,7 +145,7 @@ function noTools(): Record<LaneShareToolDomain, boolean> {
 }
 
 /** Every right off. What an unreadable rights object becomes. */
-export function laneShareRightsNone(): LaneShareRights {
+function laneShareRightsNone(): LaneShareRights {
   return {
     version: LANE_SHARE_RIGHTS_VERSION,
     see: { chats: false, subagentChats: false, cliSessions: false, shells: false, historyBeforeShare: false },
@@ -177,7 +179,7 @@ export function laneShareRightsNone(): LaneShareRights {
  *   a limit of `LANE_SHARE_DEFAULT_MESSAGES_PER_DAY` messages a day. The
  *   share sheet can change or remove it.
  */
-export const LANE_SHARE_DEFAULT_MESSAGES_PER_DAY = 50;
+const LANE_SHARE_DEFAULT_MESSAGES_PER_DAY = 50;
 /** The longest line a guest may type into a CLI session, line end not counted. The host refuses a longer one. */
 export const LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS = 4_000;
 
@@ -280,7 +282,7 @@ export function parseLaneShareRights(value: unknown): LaneShareRights {
 const ASK_FIRST_PERMISSION_MODES = new Set<AgentChatPermissionMode>(["default", "plan"]);
 
 /** Whether a guest can make the agent act on this computer: a turn, a new chat, a new CLI session. */
-export function laneShareGuestCanRunTurns(rights: LaneShareRights): boolean {
+function laneShareGuestCanRunTurns(rights: LaneShareRights): boolean {
   return rights.speak.send || rights.speak.steer || rights.run.startChats || rights.run.startCliSessions || rights.run.typeInCliSessions;
 }
 
@@ -391,6 +393,28 @@ function covers(rights: LaneShareRights, preset: LaneShareRights): boolean {
  * The preset name the directory shows for `rights`: the largest preset whose
  * switches are all on in `rights`. A label only; the host decides by rights.
  */
+/**
+ * The high-risk rule for rights a person chose: null when they may be stored,
+ * else the sentence that asks for the confirmation. High risk needs the
+ * person's explicit confirmation (`confirmHighRisk: true`).
+ */
+export function laneShareHighRiskRefusal(rights: LaneShareRights, confirmHighRisk: unknown): string | null {
+  const risk = laneShareRiskLevel(rights);
+  return risk.level === "high" && confirmHighRisk !== true
+    ? `These rights are high risk: ${risk.reasons.join("; ")}. Confirm them to continue.`
+    : null;
+}
+
+/** Whether a guest may move work between its machine and the owner's: Collaborate (send and start chats). */
+export function laneShareMayMove(rights: Pick<LaneShareRights, "speak" | "run"> | null | undefined): boolean {
+  return Boolean(rights?.speak.send && rights.run.startChats);
+}
+
+/** The share's own end date (`rights.limits.endsAt`) has passed. */
+export function laneShareRightsEnded(rights: Pick<LaneShareRights, "limits">, nowMs: number): boolean {
+  return rights.limits.endsAt != null && nowMs >= rights.limits.endsAt;
+}
+
 export function laneSharePresetLabel(rights: LaneShareRights): LaneSharePresetName {
   for (const name of [...LANE_SHARE_PRESET_NAMES].reverse()) {
     if (covers(rights, laneSharePresetRights(name))) return name;

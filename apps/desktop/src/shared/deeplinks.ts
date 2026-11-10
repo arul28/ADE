@@ -1,3 +1,4 @@
+import { LANE_SHARE_GRANT_ID_PATTERN } from "./laneShareDirectory";
 // ---------------------------------------------------------------------------
 // ADE deeplinks — URL builder + parser shared across main / renderer / CLI.
 // ---------------------------------------------------------------------------
@@ -207,7 +208,6 @@ export type DeeplinkLaneShareTarget = {
   grantId: string;
 };
 
-const LANE_SHARE_GRANT_ID_RE = /^ls_[0-9a-f]{32}$/;
 
 export type DeeplinkTarget =
   | DeeplinkSettingsTarget
@@ -723,7 +723,7 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
 
 function buildLaneShareTarget(grantIdRaw: string, rawUrl: string): ParseResult {
   const grantId = grantIdRaw.trim();
-  if (!LANE_SHARE_GRANT_ID_RE.test(grantId)) {
+  if (!LANE_SHARE_GRANT_ID_PATTERN.test(grantId)) {
     return { ok: false, error: { kind: "malformed", reason: "invalid lane share id" }, rawUrl };
   }
   return { ok: true, target: { kind: "lane-share", grantId }, rawUrl };

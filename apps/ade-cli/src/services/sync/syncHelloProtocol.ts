@@ -1,3 +1,4 @@
+import { LANE_SHARE_TICKET_PATTERN as LANE_SHARE_TICKET } from "../../../../desktop/src/shared/laneShareDirectory";
 import {
   SYNC_PIPELINED_HELLO_MAX_ENVELOPES,
   type SyncDpopProof,
@@ -48,8 +49,6 @@ export const CONNECTION_ATTEMPT_MAX_FUTURE_MS = 5 * 60_000;
 
 /** Bearer-ish credentials carried in a hello; bounded so a socket cannot mint work. */
 const MAX_RELAY_ACCOUNT_TOKEN_CHARS = 16_384;
-/** A lane share connection ticket: 32 random bytes, base64url (account-directory contract). */
-const LANE_SHARE_TICKET = /^[A-Za-z0-9_-]{43}$/;
 
 /**
  * A peer's claimed database version, held to the same rule as the per-site map

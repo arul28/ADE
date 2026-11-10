@@ -1,3 +1,5 @@
+import { LaneShareError } from "./laneShareError";
+import { LANE_SHARE_GRANT_ID_PATTERN as GRANT_ID } from "../../../../desktop/src/shared/laneShareDirectory";
 import {
   cleanLaneShareMoveBranchName,
   cleanLaneShareMoveLaneName,
@@ -13,7 +15,7 @@ import {
   type LaneShareMoveStage,
   type LaneShareMoveView,
 } from "../../../../desktop/src/shared/laneShareMove";
-import { laneShareRiskLevel, parseLaneShareRights, type LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
+import { laneShareHighRiskRefusal, laneShareMayMove, parseLaneShareRights, type LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
 import type { LaneShareEvent } from "../../../../desktop/src/shared/types/laneShare";
 import type { AgentChatCrossMachineGitBundle } from "../../../../desktop/src/shared/types/chat";
 import {
@@ -46,14 +48,12 @@ import type { LaneShareRightsStore } from "../../../../desktop/src/main/services
  * Temp files of a move go when it ends, however it ends.
  */
 
-export class LaneShareMoveError extends Error {
-  constructor(readonly code: string, message: string) {
-    super(message);
+export class LaneShareMoveError extends LaneShareError {
+  constructor(code: string, message: string) {
+    super(code, message);
     this.name = "LaneShareMoveError";
   }
 }
-
-const GRANT_ID = /^ls_[0-9a-f]{32}$/;
 /** A final move stays readable this long, so both sides see how it ended. */
 const FINAL_KEPT_MS = 5 * 60_000;
 const SWEEP_MS = 30_000;
@@ -62,19 +62,44 @@ const STARTED_LANDING_MESSAGE = "Moving the work into a new lane…";
 export type LaneShareMoveChatPort = {
   getSessionSummary(sessionId: string): Promise<{ laneId: string; title?: string | null; modelId?: string | null } | null>;
   prepareLaneShareMove(args: { sessionId: string; moveId: string }): Promise<{ payload: LaneShareMovePayload; bundle: LaneShareMoveOutgoingBundle | null }>;
-  checkLaneShareMoveDestination(args: { repoKey: string; modelHint: string | null }): Promise<{ modelId: string }>;
-  acceptLaneShareMove(args: { payload: unknown; bundle: AgentChatCrossMachineGitBundle | null; fromName: string | null }): Promise<{
+  checkLaneShareMoveDestination(args: { repoKey: string; modelHint: string | null }): Promise<{ modelId: string | null }>;
+  acceptLaneShareMove(args: {
+    payload: unknown;
+    bundle: AgentChatCrossMachineGitBundle | null;
+    fromName: string | null;
+    fromUserId?: string | null;
+  }): Promise<{
     laneId: string;
     laneName: string;
-    sessionId: string;
+    /** Null when no read-only model is signed in here: the lane has no chat. */
+    sessionId: string | null;
     branchName: string;
+    note: string | null;
   }>;
   markLaneShareMoved(args: { sessionId: string; moveId: string; toName: string | null }): Promise<void>;
   discardLaneShareMoveLane(laneId: string): Promise<void>;
 };
 
 export type LaneShareMoveSharePort = {
-  create(args: { laneId: unknown; receiverEmail: unknown; rights: unknown; endsAt?: unknown; confirmHighRisk?: unknown }): Promise<{ grantId: string }>;
+  /**
+   * A share back: `shareBackOf` is the grant of the move, and the directory
+   * refuses an address that is not a verified address of the other person
+   * of that grant.
+   */
+  create(args: {
+    laneId: unknown;
+    receiverEmail: unknown;
+    rights: unknown;
+    endsAt?: unknown;
+    confirmHighRisk?: unknown;
+    shareBackOf: string;
+  }): Promise<{ grantId: string }>;
+  /**
+   * The other person of a live grant, read from the directory with this
+   * machine's account: the receiver (with the grant's address) when this
+   * account gave it, the giver when this account received it.
+   */
+  shareBackParty(grantId: string): Promise<{ role: "giver" | "receiver"; userId: string; email: string | null }>;
   /** Accepts a share back made for this account, only when its giver and repository are the expected ones. */
   acceptShareBack(args: { grantId: string; giverUserId: string }): Promise<void>;
 };
@@ -118,12 +143,15 @@ type MoveRecord = {
   /** Set when the move is cancelled while it lands; the landed lane is then removed. */
   cancelled: boolean;
   error: string | null;
-  result: { laneName: string | null; shareBackGrantId: string | null } | null;
+  result: LaneShareMoveResult | null;
   finishedAt: number | null;
 };
 
-function isCollaborate(rights: LaneShareRights): boolean {
-  return rights.speak.send && rights.run.startChats;
+type LaneShareMoveResult = NonNullable<LaneShareMoveView["result"]>;
+
+function joinNotes(...notes: Array<string | null>): string | null {
+  const text = notes.filter((note): note is string => Boolean(note)).join(" ");
+  return text ? text.slice(0, 600) : null;
 }
 
 function errorText(error: unknown): string {
@@ -149,10 +177,8 @@ function cleanEndsAt(value: unknown, nowMs: number): number | null {
 /** Rights for a share back: parsed, and a high risk result needs the person's confirmation. */
 function checkedShareBackRights(value: unknown, confirmHighRisk: unknown): LaneShareRights {
   const rights = parseLaneShareRights(value);
-  const risk = laneShareRiskLevel(rights);
-  if (risk.level === "high" && confirmHighRisk !== true) {
-    throw new LaneShareMoveError("confirm_high_risk", `These rights are high risk: ${risk.reasons.join("; ")}. Confirm them to continue.`);
-  }
+  const refusal = laneShareHighRiskRefusal(rights, confirmHighRisk);
+  if (refusal) throw new LaneShareMoveError("confirm_high_risk", refusal);
   return rights;
 }
 
@@ -362,7 +388,7 @@ export function createLaneShareMoveService(options: {
         const used = hostConsents.consume(record.moveId, guest.grantId);
         if (!used.ok) throw new LaneShareMoveError(used.code, used.message);
         const shareBackGrantId = typeof args.shareBackGrantId === "string" && GRANT_ID.test(args.shareBackGrantId) ? args.shareBackGrantId : null;
-        record.result = { laneName: cleanLaneShareMoveLaneName(args.laneName), shareBackGrantId };
+        record.result = { laneName: cleanLaneShareMoveLaneName(args.laneName), shareBackGrantId, note: null };
         end(record, "done");
         void requireChat().markLaneShareMoved({ sessionId: record.sessionId!, moveId: record.moveId, toName: guest.name })
           .catch((error) => options.logger?.warn("lane_share.move_mark_failed", { moveId: record.moveId, error: errorText(error) }));
@@ -406,28 +432,24 @@ export function createLaneShareMoveService(options: {
             changedFileCount: payload.bundle.changedFileCount,
           })
         : null;
-      landed = await requireChat().acceptLaneShareMove({ payload, bundle, fromName: guest.name });
+      landed = await requireChat().acceptLaneShareMove({ payload, bundle, fromName: guest.name, fromUserId: guest.userId });
       if (record.cancelled) {
-        await requireChat().discardLaneShareMoveLane(landed.laneId).catch(() => {});
+        await discardLanded(record, landed.laneId);
         return;
       }
-      let shareBackGrantId: string | null = null;
-      const receiverEmail = options.rightsStore.get(record.grantId)?.receiverEmail ?? null;
-      if (receiverEmail && record.shareBackRights) {
-        try {
-          // The owner chose (and, when high, confirmed) these rights in the card.
-          shareBackGrantId = (await options.share()?.create({
-            laneId: landed.laneId,
-            receiverEmail,
-            rights: record.shareBackRights,
-            endsAt: record.shareBackEndsAt,
-            confirmHighRisk: true,
-          }))?.grantId ?? null;
-        } catch (error) {
-          options.logger?.warn("lane_share.move_share_back_failed", { moveId: record.moveId, error: errorText(error) });
-        }
+      let shareBack: { grantId: string | null; note: string | null } = { grantId: null, note: null };
+      if (record.shareBackRights) {
+        // The owner chose (and, when high, confirmed) these rights in the card.
+        // The address is the directory's for the guest of THIS grant.
+        shareBack = await makeShareBack(record, landed.laneId, {
+          role: "giver",
+          expectedUserId: guest.userId,
+          receiverEmail: null,
+          rights: record.shareBackRights,
+          endsAt: record.shareBackEndsAt,
+        });
       }
-      record.result = { laneName: landed.laneName, shareBackGrantId };
+      record.result = { laneName: landed.laneName, shareBackGrantId: shareBack.grantId, note: joinNotes(landed.note, shareBack.note) };
       end(record, "done");
     } catch (error) {
       end(record, "failed", errorText(error));
@@ -439,7 +461,7 @@ export function createLaneShareMoveService(options: {
   const hostDestinationGuestCommand = async (record: MoveRecord, guest: LaneShareMoveGuest, op: string, args: Record<string, unknown>): Promise<unknown> => {
     const accepted = (): void => {
       // Rights can shrink while a move runs: a guest without Collaborate sends no more work.
-      if (!isCollaborate(guest.rights)) {
+      if (!laneShareMayMove(guest.rights)) {
         end(record, "cancelled", "Your access to this shared lane changed.");
         throw new LaneShareMoveError("lane_share_right_missing", "Your access to this shared lane does not include moving work here.");
       }
@@ -521,29 +543,81 @@ export function createLaneShareMoveService(options: {
             changedFileCount: payload.bundle.changedFileCount,
           })
         : null;
-      const landed = await requireChat().acceptLaneShareMove({ payload, bundle, fromName });
+      // The owner of the grant, from the directory with this machine's account.
+      let ownerUserId: string | null = null;
+      try {
+        const party = await options.share()?.shareBackParty(record.grantId);
+        ownerUserId = party?.role === "receiver" ? party.userId : null;
+      } catch (error) {
+        options.logger?.warn("lane_share.move_party_read_failed", { moveId: record.moveId, error: errorText(error) });
+      }
+      const landed = await requireChat().acceptLaneShareMove({ payload, bundle, fromName, fromUserId: ownerUserId });
       if (record.cancelled) {
-        await requireChat().discardLaneShareMoveLane(landed.laneId).catch(() => {});
+        await discardLanded(record, landed.laneId);
         return;
       }
-      let shareBackGrantId: string | null = null;
+      let made: { grantId: string | null; note: string | null } = { grantId: null, note: null };
       if (shareBack) {
-        try {
-          shareBackGrantId = (await options.share()?.create({
-            laneId: landed.laneId,
-            receiverEmail: shareBack.receiverEmail,
-            rights: shareBack.rights,
-            endsAt: shareBack.endsAt,
-            confirmHighRisk: true,
-          }))?.grantId ?? null;
-        } catch (error) {
-          options.logger?.warn("lane_share.move_share_back_failed", { moveId: record.moveId, error: errorText(error) });
-        }
+        made = await makeShareBack(record, landed.laneId, {
+          role: "receiver",
+          expectedUserId: null,
+          receiverEmail: shareBack.receiverEmail,
+          rights: shareBack.rights,
+          endsAt: shareBack.endsAt,
+        });
       }
-      record.result = { laneName: landed.laneName, shareBackGrantId };
+      record.result = { laneName: landed.laneName, shareBackGrantId: made.grantId, note: joinNotes(landed.note, made.note) };
       end(record, "done");
     } catch (error) {
       end(record, "failed", errorText(error));
+    }
+  };
+
+  /** A landed lane of a move cancelled meanwhile goes again; a failure is logged, never thrown. */
+  const discardLanded = async (record: MoveRecord, laneId: string): Promise<void> => {
+    try {
+      await requireChat().discardLaneShareMoveLane(laneId);
+    } catch (error) {
+      options.logger?.warn("lane_share.move_discard_failed", { moveId: record.moveId, laneId, error: errorText(error) });
+    }
+  };
+
+  /**
+   * Shares the landed lane back to the other person of the move's grant, and
+   * to no one else. The other person comes from the directory, read with this
+   * machine's account, never from the peer: as the giver of the grant, the
+   * address is the directory's receiver address and its user must be the
+   * guest this host admitted; as the receiver, the directory checks the
+   * address against the giver's verified addresses (`shareBackOf`).
+   */
+  const makeShareBack = async (
+    record: MoveRecord,
+    laneId: string,
+    input: { role: "giver" | "receiver"; expectedUserId: string | null; receiverEmail: string | null; rights: LaneShareRights; endsAt: number | null },
+  ): Promise<{ grantId: string | null; note: string | null }> => {
+    const failed = "The new lane was not shared back.";
+    const share = options.share();
+    if (!share) return { grantId: null, note: failed };
+    try {
+      const party = await share.shareBackParty(record.grantId);
+      if (party.role !== input.role || (input.expectedUserId && party.userId !== input.expectedUserId)) {
+        options.logger?.warn("lane_share.move_share_back_refused", { moveId: record.moveId, reason: "party_mismatch" });
+        return { grantId: null, note: `${failed} The share is not with the same person any more.` };
+      }
+      const receiverEmail = input.role === "giver" ? party.email : input.receiverEmail;
+      if (!receiverEmail) return { grantId: null, note: failed };
+      const made = await share.create({
+        laneId,
+        receiverEmail,
+        rights: input.rights,
+        endsAt: input.endsAt,
+        confirmHighRisk: true,
+        shareBackOf: record.grantId,
+      });
+      return { grantId: made.grantId, note: null };
+    } catch (error) {
+      options.logger?.warn("lane_share.move_share_back_failed", { moveId: record.moveId, error: errorText(error) });
+      return { grantId: null, note: `${failed} ${errorText(error)}` };
     }
   };
 
@@ -652,7 +726,7 @@ export function createLaneShareMoveService(options: {
       const op = typeof args.op === "string" ? args.op : "";
       if (op === "offer") {
         // The guest moves work of its own machine to this host (`to_owner`).
-        if (!isCollaborate(guest.rights)) {
+        if (!laneShareMayMove(guest.rights)) {
           throw new LaneShareMoveError("lane_share_right_missing", "Your access to this shared lane does not include moving work here.");
         }
         if (options.rightsStore.laneState(guest.laneId) !== "active") {
@@ -721,7 +795,7 @@ export function createLaneShareMoveService(options: {
 
     /** Rights changed: a guest that lost Collaborate keeps no move of its own going. */
     rightsChanged(grantId: string, rights: LaneShareRights | null): void {
-      if (rights && isCollaborate(rights)) return;
+      if (rights && laneShareMayMove(rights)) return;
       for (const record of moves.values()) {
         if (record.grantId === grantId && record.role === "host_destination" && !LANE_SHARE_MOVE_FINAL_STAGES.has(record.stage)) {
           if (record.stage === "landing") record.cancelled = true;

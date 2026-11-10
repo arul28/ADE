@@ -25,7 +25,7 @@ export const PROJECT_RECORD_NAME_KEY = "project.name";
 export const PROJECT_RECORD_ICON_MAX_VALUE_BYTES = 12_000;
 
 /** The longest shared name, in characters (code points, so emoji stay whole). */
-export const PROJECT_RECORD_NAME_MAX_CHARS = 256;
+const PROJECT_RECORD_NAME_MAX_CHARS = 256;
 
 const RECORD_VERSION = 1;
 
@@ -43,7 +43,7 @@ const ICON_DATA_URL_RE =
  *   a newer ADE). It is never overwritten from a read, so two versions cannot
  *   keep rewriting each other; the machine shows its local icon.
  */
-export type ProjectRecordIcon =
+type ProjectRecordIcon =
   | { state: "absent" }
   | { state: "invalid" }
   | { state: "none" }
@@ -87,7 +87,7 @@ export function projectRecordIconValue(dataUrl: string): ProjectRecordIconValue 
 }
 
 /** Trims and limits a display name; null when nothing is left. */
-export function normalizeProjectRecordName(name: unknown): string | null {
+function normalizeProjectRecordName(name: unknown): string | null {
   if (typeof name !== "string") return null;
   const trimmed = name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
   if (!trimmed) return null;

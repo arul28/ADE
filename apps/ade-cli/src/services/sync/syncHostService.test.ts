@@ -4801,6 +4801,8 @@ describe("sync host account authentication", () => {
         /** Native mode fields (`claudePermissionMode`, `codexSandbox`, ...) the summary carries. */
         [field: string]: unknown;
       };
+      /** The move service port, when a test reads what the host asks of it. */
+      laneShareMoves?: Record<string, unknown>;
     } = {}) {
       const { projectRoot, cleanup } = createTempProjectRoot();
       const baseArgs = createHostArgs(projectRoot, []);
@@ -4918,6 +4920,7 @@ describe("sync host account authentication", () => {
         discoveryEnabled: false,
         laneShareGrants,
         laneShareRights: store,
+        laneShareMoves: options.laneShareMoves ?? null,
         onLaneShareEvent: laneShareEvents,
         agentChatService,
         sessionService: {
@@ -5784,16 +5787,24 @@ describe("sync host account authentication", () => {
         }
       });
 
-      // A revoke made here, and one this host learns from the directory's list
-      // (made on another device, a guest who left, an expiry), both remove
-      // the guest's queued message before its records go.
-      it.each<[string, "here" | "directory"]>([
+      // A revoke made here, one this host learns from the directory's list
+      // (made on another device, a guest who left, an expiry), and an end
+      // date that passes while the guest is connected (seen on its next
+      // command or move) all remove the guest's queued message before its
+      // records go; the end date also cancels a move of the grant.
+      it.each<[string, "here" | "directory" | "command" | "move"]>([
         ["revokes at once: closes the guest, removes its queued message, and reports its running turn", "here"],
         ["a grant the directory lists as closed after its guest left: removes the queued message", "directory"],
+        ["an end date that passed before a command: closes the guest, removes its queued message, cancels its move", "command"],
+        ["an end date that passed before a move step: closes the guest, removes its queued message, cancels its move", "move"],
       ])("%s", async (_label, via) => {
         const directory = fakeDirectory(grantsBody([grant()]));
-        const env = await startGuestHost(directory, { rights: laneSharePresetRights("collaborate") });
+        const rights = laneSharePresetRights("collaborate");
+        if (via === "command" || via === "move") rights.limits.endsAt = Date.now() + 60_000;
+        const laneShareMoves = { cancelGrant: vi.fn(() => 0), rightsChanged: vi.fn(), guestView: () => null, guestCommand: vi.fn() };
+        const env = await startGuestHost(directory, { rights, laneShareMoves });
         let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        let clock: { mockRestore(): void } | null = null;
         try {
           guest = await connectGuest(env.port, env.proof, directory);
           // Its own turn starts; its next message queues behind it.
@@ -5812,16 +5823,30 @@ describe("sync host account authentication", () => {
             }));
             await waitForValue(() => guest!.client.closeEvents[0], "revoked guest close");
             expect(guest.client.closeEvents[0]).toMatchObject({ code: 4003, reason: "Lane share ended" });
-          } else {
+          } else if (via === "directory") {
             // No connection is left to close: only the closed list reaches the queue.
             guest.client.ws.close();
             await waitForValue(() => (env.host.laneShareConnectedDevices(grantId("a")) === 0 ? true : undefined), "guest gone");
             directory.answer(grantsBody([], [{ id: grantId("a"), state: "revoked" }]));
             await env.host.refreshLaneShareGrants();
             await waitForValue(() => (env.store.get(grantId("a")) ? undefined : true), "closed grant's records removed");
+          } else {
+            // The end date passes with no rights change: only the next step sees it.
+            const later = Date.now() + 120_000;
+            clock = vi.spyOn(Date, "now").mockReturnValue(later);
+            const step = via === "command"
+              ? await runCommand(guest.client, "late", "chat.getSummary", { sessionId: "session-shared" })
+              : await runCommand(guest.client, "late-move", "laneShare.move", { op: "status", moveId: `lsm_${"1".repeat(32)}` });
+            expect(step).toMatchObject({ ok: false, error: { code: "lane_share_ended" } });
+            await waitForValue(() => guest!.client.closeEvents[0], "ended guest close");
+            expect(guest.client.closeEvents[0]).toMatchObject({ code: 4003, reason: "Lane share ended" });
+            await waitForValue(() => (env.agentChatService.cancelSteer.mock.calls.length ? true : undefined), "queued message removed");
+            expect(laneShareMoves.cancelGrant).toHaveBeenCalledWith(grantId("a"), expect.any(String));
+            expect(laneShareMoves.guestCommand).not.toHaveBeenCalled();
           }
           expect(env.agentChatService.cancelSteer).toHaveBeenCalledWith({ sessionId: "session-shared", steerId: "steer-1", requireQueued: true });
         } finally {
+          clock?.mockRestore();
           await env.close([guest?.client ?? null]);
         }
       });

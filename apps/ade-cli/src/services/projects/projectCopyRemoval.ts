@@ -1,18 +1,11 @@
-import fs from "node:fs/promises";
 import os from "node:os";
-import path from "node:path";
 import type {
   ProjectCopySessions,
   ProjectRemovalOutcome,
   ProjectRemovalReport,
   ProjectRemovalRequest,
 } from "../../../../desktop/src/shared/projectRemoval";
-import {
-  decideProjectFolderDeletion,
-  decideRemovalRecheck,
-  projectCopyStateToken,
-} from "../../../../desktop/src/main/services/projects/projectRemovalGuard";
-import { outsideLaneFolders, readProjectCopyState } from "../../../../desktop/src/main/services/projects/projectRemovalState";
+import { copyFolderRefusal, inspectCopy, recheckCopy } from "../../../../desktop/src/main/services/projects/projectCopyCheck";
 import {
   LaneFolderBusyError,
   moveLaneFolderAsideWhenReleased,
@@ -58,14 +51,6 @@ const SESSION_READ_TIMEOUT_MS = 10_000;
 /** Removals running in this brain, across every connection (two windows ask the same brain). */
 const removalsInFlight = new Set<ProjectId>();
 
-async function realpathOr(target: string): Promise<string> {
-  try {
-    return await fs.realpath(target);
-  } catch {
-    return path.resolve(target);
-  }
-}
-
 /** What runs in the project now; null when the project is starting and could not be read in time. */
 async function readSessions(scopeRegistry: ProjectScopeRegistry, projectId: ProjectId): Promise<ProjectCopySessions | null> {
   const booted = scopeRegistry.getIfBooted(projectId);
@@ -89,24 +74,14 @@ async function readSessions(scopeRegistry: ProjectScopeRegistry, projectId: Proj
 }
 
 /** Why this host never deletes the project's folder, or null when it may. */
-async function folderRefusal(deps: ProjectCopyRemovalDeps, record: ProjectRecord): Promise<{ reason: string } | { folderPath: string }> {
-  try {
-    if ((await fs.lstat(record.rootPath)).isSymbolicLink()) {
-      return { reason: `The project folder is a link to ${await realpathOr(record.rootPath)}. ADE doesn't delete through links.` };
-    }
-  } catch {
-    // A folder that is gone has nothing to delete; the caller handles it.
-  }
-  const target = await realpathOr(record.rootPath);
-  const registeredRoots = await Promise.all(deps.projectRegistry.list().map((entry) => realpathOr(entry.rootPath)));
-  const decision = decideProjectFolderDeletion({
-    target,
-    registeredRoots,
+function folderRefusal(deps: ProjectCopyRemovalDeps, record: ProjectRecord): Promise<{ reason: string } | { folderPath: string }> {
+  return copyFolderRefusal({
+    rootPath: record.rootPath,
+    registeredRoots: deps.projectRegistry.list().map((entry) => entry.rootPath),
     homeDir: os.homedir(),
-    adeHome: deps.adeHome ? await realpathOr(deps.adeHome) : null,
+    adeHome: deps.adeHome,
     runtimePaths: [process.cwd(), process.execPath, process.argv[1] ?? ""].filter(Boolean),
   });
-  return decision.ok ? { folderPath: target } : { reason: decision.reason };
 }
 
 type PermanentDelete =
@@ -162,18 +137,15 @@ export function createProjectCopyRemoval(deps: ProjectCopyRemovalDeps) {
     async inspect(projectId: ProjectId): Promise<ProjectRemovalReport> {
       const record = requireRecord(projectId);
       const sessions = await readSessions(deps.scopeRegistry, projectId);
-      const state = await readProjectCopyState(record.rootPath, sessions ?? { chats: 0, terminals: 0 });
-      if (!sessions) state.unreadable.push("sessions");
-      const refusal = state.folder === "present" ? await folderRefusal(deps, record) : null;
+      const copy = await inspectCopy(record.rootPath, sessions);
+      const refusal = copy.state.folder === "present" ? await folderRefusal(deps, record) : null;
       return {
         projectId,
         rootPath: record.rootPath,
         displayName: record.displayName,
-        state,
-        stateToken: projectCopyStateToken(state),
+        ...copy,
         deleteMode: "permanent",
         deleteRefusal: refusal && "reason" in refusal ? refusal.reason : null,
-        outsideLaneFolders: outsideLaneFolders(state),
       };
     },
 
@@ -206,21 +178,15 @@ export function createProjectCopyRemoval(deps: ProjectCopyRemovalDeps) {
             reason: "The project is still starting on this machine. ADE kept the folder; try again in a moment.",
           };
         }
-        const state = await readProjectCopyState(record.rootPath, sessions);
-        if (state.folder === "missing") {
+        const recheck = await recheckCopy(record.rootPath, sessions, request);
+        if (recheck.kind === "missing") {
           await forget();
           return { status: "removed", folder: "missing", outsideLaneFolders: [] };
         }
-        const decision = decideRemovalRecheck({
-          current: state,
-          currentToken: projectCopyStateToken(state),
-          shownToken: request.stateToken,
-          acceptWork: request.acceptWork,
-        });
-        if (!decision.ok) return { status: "refused", code: decision.code, reason: decision.reason };
+        if (recheck.kind === "refused") return { status: "refused", code: recheck.code, reason: recheck.reason };
         const refusal = await folderRefusal(deps, record);
         if ("reason" in refusal) return { status: "refused", code: "unsafe_path", reason: refusal.reason };
-        const outside = outsideLaneFolders(state);
+        const outside = recheck.outsideLaneFolders;
         // Nothing may hold the folder while it goes: the project stops first.
         await deps.stopProject(projectId);
         if (folderMode === "caller") return { status: "cleared", folderPath: refusal.folderPath, outsideLaneFolders: outside };

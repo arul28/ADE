@@ -2,11 +2,11 @@ import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { UsersThree } from "@phosphor-icons/react";
 import type { LaneShareOpenResult, LaneShareReceivedEntry } from "../../../../shared/types/laneShare";
-import { LANE_SHARE_GRANT_ID_PATTERN, LANE_SHARING_UNAVAILABLE, LANE_SHARING_UNAVAILABLE_MESSAGE } from "../../../../shared/laneShareGuestDirectory";
+import { LANE_SHARE_GRANT_ID_PATTERN, LANE_SHARING_UNAVAILABLE, LANE_SHARING_UNAVAILABLE_MESSAGE } from "../../../../shared/laneShareDirectory";
 import { Banner } from "../../ui/notice";
 import { cn } from "../../ui/cn";
 import { showToast } from "../../app/toast/toastStore";
-import { formatLaneShareEnd, laneSharePresetText, LANE_SHARE_RISK_LABELS } from "../laneShareModel";
+import { formatLaneShareEnd, laneShareGrantStateLabel, laneShareInviteExpired, laneSharePresetText, LANE_SHARE_RISK_LABELS } from "../laneShareModel";
 import {
   acceptLaneShare,
   laneShareGuestProblem,
@@ -26,26 +26,6 @@ import { LANE_SHARE_GUEST_ROUTE, laneShareGuestPath } from "./laneShareGuestRout
  */
 
 
-function inviteExpired(entry: LaneShareReceivedEntry, now = Date.now()): boolean {
-  return entry.state === "expired" || (entry.state === "pending" && entry.inviteExpiresAt != null && entry.inviteExpiresAt <= now);
-}
-
-function stateText(entry: LaneShareReceivedEntry): string {
-  if (inviteExpired(entry)) return "Invite expired";
-  switch (entry.state) {
-    case "pending":
-      return "Invite";
-    case "active":
-      return "Active";
-    case "ended":
-    case "revoked":
-      return "Ended";
-    case "left":
-      return "Left";
-    default:
-      return entry.state;
-  }
-}
 
 function AcceptCard({
   entry,
@@ -56,7 +36,7 @@ function AcceptCard({
 }) {
   const [busy, setBusy] = React.useState(false);
   const [problem, setProblem] = React.useState<LaneShareGuestProblem | null>(null);
-  const expired = inviteExpired(entry);
+  const expired = laneShareInviteExpired(entry);
   const accept = async () => {
     setBusy(true);
     setProblem(null);
@@ -104,7 +84,7 @@ function AcceptCard({
           The lane stays on {entry.giverLabel ?? "the owner"}'s computer. You see and do only what the owner allows, and the owner can stop it at any time.
         </div>
       )}
-      {problem ? <Banner layout="inline" model={{ id: "lane-share-accept-problem", tone: "warning", title: problem.message, report: false }} /> : null}
+      {problem ? <Banner layout="inline" model={{ id: "lane-share-accept-problem", tone: "error", title: problem.message, report: false }} /> : null}
       {!expired ? (
         <div className="flex items-center gap-2">
           <button type="button" className="kit-btn kit-btn-primary" disabled={busy} onClick={() => { void accept(); }}>Accept</button>
@@ -226,7 +206,7 @@ export function LaneShareGuestPage() {
   } else if (grantId && link?.kind === "problem") {
     main = (
       <div className="mx-auto mt-8 w-full max-w-[520px]">
-        <Banner layout="inline" model={{ id: "lane-share-link-problem", tone: "warning", title: link.problem.message, report: false }} />
+        <Banner layout="inline" model={{ id: "lane-share-link-problem", tone: "error", title: link.problem.message, report: false }} />
       </div>
     );
   } else if (grantId && link?.kind === "result") {
@@ -291,7 +271,7 @@ export function LaneShareGuestPage() {
             >
               <span className="min-w-0 truncate text-[12.5px] text-fg/85" title={entry.laneLabel ?? undefined}>{entry.laneLabel ?? "Shared lane"}</span>
               <span className="min-w-0 truncate text-[11px] text-fg/50">
-                {entry.giverLabel ?? "Another account"} · {stateText(entry)}
+                {entry.giverLabel ?? "Another account"} · {laneShareGrantStateLabel(entry).label}
               </span>
             </button>
           ))}

@@ -1,7 +1,8 @@
 import React from "react";
+import { logRendererDebugEvent } from "../../../lib/debugLog";
 import { ArrowsClockwise, ArrowsLeftRight, ChatCircle, FolderPlus, Plus, Robot, SignOut, Terminal, TerminalWindow, X } from "@phosphor-icons/react";
 import type { LaneShareReceivedEntry } from "../../../../shared/types/laneShare";
-import type { LaneShareGuestState } from "../../../../shared/laneShareRights";
+import { laneShareMayMove, type LaneShareGuestState } from "../../../../shared/laneShareRights";
 import { parseCodedErrorMessage } from "../../../../shared/codedError";
 import { leadingPromptCommandCharacter, LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE } from "../../../../shared/messageAuthor";
 import { isLaunchProfile } from "../../../../shared/cliLaunch";
@@ -241,7 +242,10 @@ function GuestStartPanel({
       };
       const result = await connection.call<{ id?: unknown; sessionId?: unknown } | null>(kind === "chat" ? "chat.create" : "work.startCliSession", args);
       const id = typeof result?.sessionId === "string" ? result.sessionId : typeof result?.id === "string" ? result.id : null;
-      await connection.refreshSessions().catch(() => undefined);
+      await connection.refreshSessions().catch((error: unknown) => {
+        // The session list reads again on the next host event.
+        logRendererDebugEvent("lane_share.guest_sessions_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
       onStarted(id);
     } catch (error) {
       setRefusal(parseCodedErrorMessage(error).message || "The owner's computer refused this.");
@@ -352,7 +356,7 @@ export function LaneShareGuestView({
       showToast({ tone: "success", title: "You left the lane" });
       onClose?.();
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't leave the lane", message: laneShareGuestProblem(error).message, report: false });
+      showToast({ tone: "error", title: "Couldn't leave the lane", message: laneShareGuestProblem(error).message });
     }
   };
 
@@ -364,7 +368,7 @@ export function LaneShareGuestView({
   const canTypeCli = Boolean(rights?.run.typeInCliSessions) && !paused;
   const waiting = connectionState?.kind === "retrying" || connectionState?.kind === "host_offline" ? connectionState : null;
   // Moving a chat to the owner needs Collaborate (send and start chats); the host checks it again.
-  const canMoveOut = Boolean(rights?.speak.send && rights?.run.startChats) && connected && !paused;
+  const canMoveOut = laneShareMayMove(rights) && connected && !paused;
   const openAddProject = () => {
     if (!repoUrl) return;
     setCloneTarget({

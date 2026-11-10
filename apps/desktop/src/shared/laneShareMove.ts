@@ -1,3 +1,5 @@
+import { parseCodedErrorMessage } from "./codedError";
+import { LANE_SHARE_GRANT_ID_PATTERN as GRANT_ID } from "./laneShareDirectory";
 import type { LaneShareRights } from "./laneShareRights";
 
 /**
@@ -26,18 +28,17 @@ export const LANE_SHARE_MOVE_TTL_MS = 15 * 60_000;
 export const LANE_SHARE_MOVE_MAX_BUNDLE_BYTES = 50 * 1024 * 1024;
 /** Raw bytes per chunk: its base64 fits one sync frame (720 KiB) with room for the envelope. */
 export const LANE_SHARE_MOVE_CHUNK_BYTES = 384 * 1024;
-export const LANE_SHARE_MOVE_MAX_CHUNKS = Math.ceil(LANE_SHARE_MOVE_MAX_BUNDLE_BYTES / LANE_SHARE_MOVE_CHUNK_BYTES);
+const LANE_SHARE_MOVE_MAX_CHUNKS = Math.ceil(LANE_SHARE_MOVE_MAX_BUNDLE_BYTES / LANE_SHARE_MOVE_CHUNK_BYTES);
 /** Used move ids a consent store keeps, so the same id sent twice is refused. */
 const USED_MOVE_IDS_KEPT = 256;
 
-export const LANE_SHARE_MOVE_WAITING_MESSAGE = "A move is already waiting.";
-export const LANE_SHARE_MOVE_EXPIRED_MESSAGE = "This move expired. Start it again.";
-export const LANE_SHARE_MOVE_USED_MESSAGE = "This move was already handled.";
-export const LANE_SHARE_MOVE_NO_CONSENT_MESSAGE = "This move was not accepted.";
+const LANE_SHARE_MOVE_WAITING_MESSAGE = "A move is already waiting.";
+const LANE_SHARE_MOVE_EXPIRED_MESSAGE = "This move expired. Start it again.";
+const LANE_SHARE_MOVE_USED_MESSAGE = "This move was already handled.";
+const LANE_SHARE_MOVE_NO_CONSENT_MESSAGE = "This move was not accepted.";
 export const LANE_SHARE_MOVE_TOO_LARGE_MESSAGE = "This lane's changes are too large to move (over 50 MiB). Push the branch, then move again.";
 
 const MOVE_ID = /^lsm_[0-9a-f]{32}$/;
-const GRANT_ID = /^ls_[0-9a-f]{32}$/;
 const SHA = /^[0-9a-f]{40,64}$/;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const MODEL_ID = /^[A-Za-z0-9._:/@+-]{1,200}$/;
@@ -76,7 +77,7 @@ export function isLaneShareMoveId(value: unknown): value is string {
   return typeof value === "string" && MOVE_ID.test(value);
 }
 
-export function isLaneShareMoveSha256(value: unknown): value is string {
+function isLaneShareMoveSha256(value: unknown): value is string {
   return typeof value === "string" && SHA256_HEX.test(value);
 }
 
@@ -167,7 +168,8 @@ export type LaneShareMoveView = {
   /** `to_guest` only: the model the chat used; the guest's machine uses it only when its own sign-ins offer it. */
   modelHint: string | null;
   error: string | null;
-  result: { laneName: string | null; shareBackGrantId: string | null } | null;
+  /** `note`: one sentence for the receiving side when something did not happen (no chat, no share back). */
+  result: { laneName: string | null; shareBackGrantId: string | null; note: string | null } | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -243,7 +245,7 @@ function count(value: unknown, max: number): number {
   return value;
 }
 
-export function parseLaneShareMoveBundleInfo(value: unknown): LaneShareMoveBundleInfo {
+function parseLaneShareMoveBundleInfo(value: unknown): LaneShareMoveBundleInfo {
   const record = exactKeys(value, BUNDLE_KEYS, "work");
   const bytes = count(record.bytes, LANE_SHARE_MOVE_MAX_BUNDLE_BYTES);
   if (bytes <= 0) throw new Error("The moved work is empty.");
@@ -363,7 +365,7 @@ export function laneShareMovePayloadFromCapsule(
 // ---------------------------------------------------------------------------
 // Consent
 
-export type LaneShareMoveConsent = {
+type LaneShareMoveConsent = {
   moveId: string;
   grantId: string;
   laneId: string;
@@ -372,7 +374,7 @@ export type LaneShareMoveConsent = {
   expiresAt: number;
 };
 
-export type LaneShareMoveConsentRefusal = { ok: false; code: string; message: string };
+type LaneShareMoveConsentRefusal = { ok: false; code: string; message: string };
 
 /**
  * Consents on the machine that must consent. Default refuse: a move id that
@@ -500,7 +502,7 @@ export function createLaneShareMoveConsents(options: { now?: () => number; ttlMs
   };
 }
 
-export type LaneShareMoveConsents = ReturnType<typeof createLaneShareMoveConsents>;
+type LaneShareMoveConsents = ReturnType<typeof createLaneShareMoveConsents>;
 
 // ---------------------------------------------------------------------------
 // Chunks
@@ -518,4 +520,9 @@ const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 export function laneShareMoveChunkLooksRight(data: unknown, size: number): data is string {
   if (typeof data !== "string" || size <= 0 || !BASE64.test(data)) return false;
   return data.length === Math.ceil(size / 3) * 4;
+}
+
+/** The sentence of a failed move call, for a toast or a row. */
+export function moveErrorText(error: unknown): string {
+  return parseCodedErrorMessage(error).message || "The move failed.";
 }

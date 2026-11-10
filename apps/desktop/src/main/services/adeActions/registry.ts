@@ -5,6 +5,7 @@ import {
 } from "../../../../../ade-cli/src/services/runtime/continueAfterRestartStore";
 import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
 import { codedError, encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
+import { LaneShareError } from "../../../../../ade-cli/src/services/sync/laneShareError";
 import { stampedAdeVersion } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpAccount";
 import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import fs from "node:fs";
@@ -718,21 +719,16 @@ function buildRemoteMcpDomainService(runtime: AdeRuntime): OpaqueService | null 
  * a lane on another machine passes that machine's pin, so it runs there.
  */
 /**
- * The host service throws `LaneShareHostError` with a `code`. Error fields do
- * not cross IPC, so the code goes in the message (`code: sentence`), where
- * `parseCodedErrorMessage` reads it. A directory refusal carries the
- * directory's own code (`self_invite`, `guest_limit`, …).
+ * The lane share services throw `LaneShareError` with a `code`. Error fields
+ * do not cross IPC, so the code goes in the message (`code: sentence`), where
+ * `parseCodedErrorMessage` reads it.
  */
 async function withLaneShareErrorCode<T>(call: () => Promise<T>): Promise<T> {
   try {
     return await call();
   } catch (error) {
-    const coded = error as { name?: unknown; code?: unknown; directoryCode?: unknown; message?: unknown } | null;
-    if ((coded?.name === "LaneShareHostError" || coded?.name === "LaneShareMoveError") && typeof coded.code === "string") {
-      const code = coded.code === "directory_refused" && typeof coded.directoryCode === "string" && coded.directoryCode
-        ? coded.directoryCode
-        : coded.code;
-      throw codedError(encodeCodedErrorMessage(code, String(coded.message ?? "")), code);
+    if (error instanceof LaneShareError) {
+      throw codedError(encodeCodedErrorMessage(error.wireCode, error.message), error.wireCode);
     }
     throw error;
   }

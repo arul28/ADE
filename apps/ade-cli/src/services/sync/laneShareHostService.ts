@@ -1,4 +1,6 @@
+import { LaneShareError } from "./laneShareError";
 import {
+  laneShareHighRiskRefusal,
   laneSharePresetLabel,
   laneShareRiskLevel,
   parseLaneShareRights,
@@ -11,12 +13,16 @@ import type {
   LaneShareGivenEntry,
   LaneShareReceivedResult,
 } from "../../../../desktop/src/shared/types/laneShare";
+import { parseLaneShareReceivedResponse } from "../../../../desktop/src/shared/laneShareGuestDirectory";
 import {
+  directoryNumber as num,
+  directoryRisk as riskLabel,
+  directoryString as str,
+  isLaneShareGrantRecord as isGrantRecord,
+  LANE_SHARE_GRANT_ID_PATTERN as GRANT_ID,
   LANE_SHARING_UNAVAILABLE,
-  LANE_SHARING_UNAVAILABLE_MESSAGE,
-  laneShareDirectoryNotFound,
-  parseLaneShareReceivedResponse,
-} from "../../../../desktop/src/shared/laneShareGuestDirectory";
+  laneShareDirectoryProblem,
+} from "../../../../desktop/src/shared/laneShareDirectory";
 import {
   LaneShareGrantError,
   resolveLaneShareDirectoryBase,
@@ -45,7 +51,6 @@ import type { LaneShareCloseResult } from "./syncHostService";
  *     A share never stays open here because a network call failed.
  */
 
-const GRANT_ID = /^ls_[0-9a-f]{32}$/;
 const MAX_EMAIL_CHARS = 320;
 
 export type LaneShareHostErrorCode =
@@ -57,11 +62,28 @@ export type LaneShareHostErrorCode =
   | "signed_out"
   | "no_directory"
   | "unavailable"
+  | "share_closed"
+  | "invite_expired"
+  | "rate_limited"
+  | "share_back_mismatch"
   | typeof LANE_SHARING_UNAVAILABLE;
 
-export class LaneShareHostError extends Error {
-  constructor(readonly code: LaneShareHostErrorCode, message: string, readonly directoryCode: string | null = null) {
-    super(message);
+/** The directory's mapped codes this service keeps; any other refusal is `directory_refused`. */
+const HOST_DIRECTORY_CODES = new Set<string>([
+  "signed_out",
+  "not_found",
+  "unavailable",
+  "share_closed",
+  "invite_expired",
+  "rate_limited",
+  "share_back_mismatch",
+  LANE_SHARING_UNAVAILABLE,
+]);
+
+export class LaneShareHostError extends LaneShareError {
+  declare readonly code: LaneShareHostErrorCode;
+  constructor(code: LaneShareHostErrorCode, message: string, directoryCode: string | null = null) {
+    super(code, message, directoryCode);
     this.name = "LaneShareHostError";
   }
 }
@@ -101,31 +123,9 @@ function cleanEndsAt(value: unknown, nowMs: number): number | null | undefined {
 }
 
 function directoryError(status: number, body: unknown, path: string): LaneShareHostError {
-  const error = body && typeof body === "object" ? (body as { error?: { code?: unknown; message?: unknown } }).error : null;
-  const code = typeof error?.code === "string" ? error.code.slice(0, 64) : null;
-  const message = typeof error?.message === "string" && error.message.trim()
-    ? error.message.trim().slice(0, 300)
-    : `The account directory answered ${status}.`;
-  if (status === 401) return new LaneShareHostError("signed_out", "Sign in to ADE to share lanes.", code);
-  if (status === 404) {
-    return laneShareDirectoryNotFound(path, body)
-      ? new LaneShareHostError("not_found", message, code)
-      : new LaneShareHostError(LANE_SHARING_UNAVAILABLE, LANE_SHARING_UNAVAILABLE_MESSAGE, code);
-  }
-  if (status >= 500) return new LaneShareHostError("unavailable", message, code);
-  return new LaneShareHostError("directory_refused", message, code);
-}
-
-const RISK_LEVELS = new Set<string>(["low", "medium", "high"]);
-
-const str = (value: unknown): string | null => (typeof value === "string" && value ? value : null);
-const num = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
-const riskLabel = (value: unknown): LaneShareRiskLevel | null =>
-  typeof value === "string" && RISK_LEVELS.has(value) ? value as LaneShareRiskLevel : null;
-
-function isGrantRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object"
-    && typeof (value as { id?: unknown }).id === "string" && GRANT_ID.test((value as { id: string }).id);
+  const problem = laneShareDirectoryProblem(status, body, path);
+  const code = HOST_DIRECTORY_CODES.has(problem.code) ? problem.code as LaneShareHostErrorCode : "directory_refused";
+  return new LaneShareHostError(code, problem.message, problem.directoryCode);
 }
 
 function grantIdOf(body: unknown): string | null {
@@ -136,14 +136,9 @@ function grantIdOf(body: unknown): string | null {
 /** The rights to store, with the risk rule: high risk needs the owner's explicit confirmation. */
 function checkedRights(value: unknown, confirmHighRisk: unknown): { rights: LaneShareRights; risk: { level: LaneShareRiskLevel; reasons: string[] } } {
   const rights = parseLaneShareRights(value);
-  const risk = laneShareRiskLevel(rights);
-  if (risk.level === "high" && confirmHighRisk !== true) {
-    throw new LaneShareHostError(
-      "confirm_high_risk",
-      `These rights are high risk: ${risk.reasons.join("; ")}. Confirm them to continue.`,
-    );
-  }
-  return { rights, risk };
+  const refusal = laneShareHighRiskRefusal(rights, confirmHighRisk);
+  if (refusal) throw new LaneShareHostError("confirm_high_risk", refusal);
+  return { rights, risk: laneShareRiskLevel(rights) };
 }
 
 export function createLaneShareHostService(options: {
@@ -180,7 +175,10 @@ export function createLaneShareHostService(options: {
   };
 
   const refresh = (): void => {
-    void options.refreshGrants?.().catch(() => {});
+    void options.refreshGrants?.().catch((error: unknown) => {
+      // The grant timer reads the list again later.
+      options.logger?.warn("lane_share.grant_refresh_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
   };
 
   const changed = (grantId: string | null, laneId: string | null): void => {
@@ -191,7 +189,14 @@ export function createLaneShareHostService(options: {
     }
   };
 
-  const invite = async (laneId: string, receiverEmail: string, rights: LaneShareRights, risk: LaneShareRiskLevel, endsAt: number | null | undefined) => {
+  const invite = async (
+    laneId: string,
+    receiverEmail: string,
+    rights: LaneShareRights,
+    risk: LaneShareRiskLevel,
+    endsAt: number | null | undefined,
+    shareBackOf: string | null = null,
+  ) => {
     const repoKey = options.getRepoKey();
     if (!repoKey) throw new LaneShareHostError("no_repo_key", "This project can't be shared: it needs a Git remote.");
     const machineKey = options.getMachineKey().trim();
@@ -206,9 +211,18 @@ export function createLaneShareHostService(options: {
       ...(endsAt !== undefined ? { endsAt } : {}),
       projectLabel: options.getProjectLabel(),
       laneLabel: options.getLaneLabel(laneId),
+      ...(shareBackOf ? { shareBackOf } : {}),
     });
     const grantId = grantIdOf(body);
     if (!grantId) throw new LaneShareHostError("unavailable", "The account directory answer could not be read.");
+    if (shareBackOf && (body as { shareBackOf?: unknown }).shareBackOf !== shareBackOf) {
+      // A directory that did not check the address against the other person
+      // of the grant: the invite goes again at once.
+      await request("POST", `/lane-shares/${encodeURIComponent(grantId)}/revoke`).catch((error) => {
+        options.logger?.warn("lane_share.share_back_unchecked_revoke_failed", { grantId, code: (error as LaneShareHostError).code ?? null });
+      });
+      throw new LaneShareHostError("unavailable", "The account directory could not check the share back address. Share the lane by hand.");
+    }
     return { grantId, body };
   };
 
@@ -254,7 +268,7 @@ export function createLaneShareHostService(options: {
      * A new share: the directory invite first (it also emails the guest),
      * then the rights on this machine. A refused invite stores nothing.
      */
-    async create(args: { laneId: unknown; receiverEmail: unknown; rights: unknown; endsAt?: unknown; confirmHighRisk?: unknown }) {
+    async create(args: { laneId: unknown; receiverEmail: unknown; rights: unknown; endsAt?: unknown; confirmHighRisk?: unknown; shareBackOf?: unknown }) {
       const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
       if (!laneId) throw new LaneShareHostError("invalid_args", "Choose a lane to share.");
       if (options.store.laneState(laneId) !== "active") {
@@ -266,7 +280,8 @@ export function createLaneShareHostService(options: {
       const endsAt = cleanEndsAt(args.endsAt, now());
       // The host enforces the end date from its own rights, as an edit keeps it.
       const rights = endsAt !== undefined ? { ...asked, limits: { ...asked.limits, endsAt } } : asked;
-      const { grantId, body } = await invite(laneId, receiverEmail, rights, risk.level, endsAt);
+      const shareBackOf = args.shareBackOf === undefined ? null : cleanGrantId(args.shareBackOf);
+      const { grantId, body } = await invite(laneId, receiverEmail, rights, risk.level, endsAt, shareBackOf);
       const record = options.store.put({ grantId, laneId, receiverEmail, rights });
       options.logger?.info("lane_share.host_created", { grantId, risk: risk.level });
       refresh();
@@ -472,6 +487,26 @@ export function createLaneShareHostService(options: {
       }
       await request("POST", `/lane-shares/${encodeURIComponent(grantId)}/accept`);
       options.logger?.info("lane_share.share_back_accepted", { grantId });
+    },
+
+    /**
+     * The other person of a live grant, from the directory with this
+     * machine's account (never from a peer): the receiver and the grant's
+     * address when this account gave the grant, the giver when it received it.
+     */
+    async shareBackParty(grantIdArg: string): Promise<{ role: "giver" | "receiver"; userId: string; email: string | null }> {
+      const grantId = cleanGrantId(grantIdArg);
+      const opened = await request("GET", `/lane-shares/${encodeURIComponent(grantId)}`);
+      const role = opened && typeof opened === "object" ? (opened as { role?: unknown }).role : null;
+      const grant = opened && typeof opened === "object" ? (opened as { grant?: Record<string, unknown> }).grant : null;
+      if (!grant || grant.state !== "active") throw new LaneShareHostError("not_found", "This lane share is not active.");
+      if (role === "giver" && typeof grant.receiverUserId === "string" && grant.receiverUserId) {
+        return { role: "giver", userId: grant.receiverUserId, email: str(grant.receiverEmail) };
+      }
+      if (role === "receiver" && typeof grant.giverUserId === "string" && grant.giverUserId) {
+        return { role: "receiver", userId: grant.giverUserId, email: null };
+      }
+      throw new LaneShareHostError("not_found", "This lane share is not active.");
     },
 
     /** Lane archived: every share of it pauses (connections close; a hello is refused until unarchived). */

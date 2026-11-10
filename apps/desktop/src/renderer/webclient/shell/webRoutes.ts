@@ -1,3 +1,4 @@
+import { LANE_SHARE_GRANT_ID_PATTERN } from "../../../shared/laneShareDirectory";
 // ---------------------------------------------------------------------------
 // Web-shell route mapping.
 //
@@ -199,7 +200,7 @@ export function parseWebPath(pathAndQuery: string): DeeplinkTarget | null {
 
   if (pathname === "/shared") {
     const grantId = params.get("grant");
-    return grantId && /^ls_[0-9a-f]{32}$/.test(grantId) ? { kind: "lane-share", grantId } : null;
+    return grantId && LANE_SHARE_GRANT_ID_PATTERN.test(grantId) ? { kind: "lane-share", grantId } : null;
   }
 
   if (pathname === "/prs") {

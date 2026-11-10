@@ -35,23 +35,11 @@ import {
 } from "../ui/ContextMenu";
 import type { CloneLocallyTarget } from "../projects/CloneLocallyDialog";
 import { cloneTargetFor, projectMenuSections } from "../projects/projectMenuEntries";
-import { ProjectCopiesMenu, type CopiesMenuRow } from "../projects/ProjectCopiesMenu";
-import {
-  RemoveProjectDialog,
-  type RemovalCopy,
-  type RemoveProjectResult,
-  type RemoveProjectTarget,
-} from "../projects/RemoveProjectDialog";
-import {
-  copyMachines,
-  existingCopiesForRepo,
-  repoCopyMayRemain,
-  repoKeyForOriginIdentity,
-  repoKeyForUrl,
-  type CopyMachine,
-} from "../projects/projectCopies";
-import { startCopyJob, subscribeCopyJobReady } from "../projects/projectCopyJobs";
-import type { FixedAnchor } from "../../hooks/useClampedFixedPosition";
+import { ProjectCopiesMenu } from "../projects/ProjectCopiesMenu";
+import { RemoveProjectDialog, type RemoveProjectResult } from "../projects/RemoveProjectDialog";
+import { repoCopyMayRemain } from "../projects/projectCopies";
+import { subscribeCopyJobReady } from "../projects/projectCopyJobs";
+import { useProjectCopiesMenu } from "../projects/useProjectCopiesMenu";
 import { ProjectIconDialog, type ProjectIconDialogTarget } from "../projects/ProjectIconDialog";
 import {
   getProjectIconFromCache,
@@ -102,7 +90,6 @@ import { pressActivation } from "../../lib/pressActivation";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
 import {
   forgetExplicitRemotePicks,
-  rememberExplicitRemotePick,
   usePreferLocalCheckout,
 } from "./usePreferLocalCheckout";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -1903,11 +1890,6 @@ export function TopBar({
   const closeTabMenu = useCallback(() => setTabMenu(null), []);
   const [iconDialogTarget, setIconDialogTarget] = useState<ProjectIconDialogTarget | null>(null);
   const closeIconDialog = useCallback(() => setIconDialogTarget(null), []);
-  // The copies menu of one tab: under its machine mark, or where the tab's
-  // context menu was opened.
-  const [copiesMenu, setCopiesMenu] = useState<(FixedAnchor & { groupId: string }) | null>(null);
-  const closeCopiesMenu = useCallback(() => setCopiesMenu(null), []);
-
   /** The host's latest icon per project, so a changed icon shows at once. */
   const hostIconByKey = useMemo(() => {
     const byKey = new Map<string, string | null>();
@@ -1929,151 +1911,32 @@ export function TopBar({
     [remoteOriginByKey],
   );
 
-  /**
-   * Starts a copy of a tab's repository on one machine. The clone goes to
-   * that machine (this computer, or `machine.targetId`), and its retry goes
-   * there too (see projectCopyJobs). An https URL works on every machine; an
-   * ssh alias exists only in one machine's ssh config.
-   */
-  const startCopyForRepo = useCallback(
-    (repoKey: string, displayName: string, machine: CopyMachine, onReady?: Parameters<typeof startCopyJob>[1]) => {
-      const name = repoKey.split("/").pop() ?? displayName;
-      startCopyJob(
-        {
-          repoKey,
-          url: `https://${repoKey}`,
-          name,
-          parentDir: null,
-          displayName: name,
-          machine: { machineId: machine.machineId, name: machine.name, targetId: machine.targetId },
-        },
-        onReady,
-      );
-    },
-    [],
-  );
-
-  /** "Add a copy on this computer…" from a tab's context menu: the old clone-locally path. */
-  const addLocalCopyFromTab = useCallback(
-    (target: CloneLocallyTarget, anchor: FixedAnchor, groupId: string) => {
-      const repoKey = repoKeyForUrl(target.gitOriginUrl);
-      const local = copyMachines(null, { includeLocal: true })[0];
-      if (!repoKey || !local) return;
-      startCopyForRepo(repoKey, target.displayName, local, (result) => {
-        if (result.kind === "local") void handleClonedLocally(result.rootPath, target.remoteKey);
-      });
-      // The menu shows the clone's progress and its failure, with Retry.
-      setCopiesMenu({ ...anchor, groupId });
-    },
-    [handleClonedLocally, startCopyForRepo],
-  );
-
-  /** The copies of one tab's repository, one row per machine: what the copies menu and the remove dialog show. */
-  const copiesModelFor = useCallback((groupId: string) => {
-    const group = tabGroups.find((entry) => entry.id === groupId);
-    const active = group ? activeMachineForGroup(group) : null;
-    if (!group || !active) return null;
-    const repoKey = repoKeyForOriginIdentity(group.origin);
-    const machines = copyMachines(remoteSnapshot, { includeLocal: !webMode });
-    const machineFor = (machineId: string, fallbackName: string): CopyMachine =>
-      machines.find((entry) => entry.machineId === machineId)
-      ?? { machineId, name: fallbackName, targetId: machineId, isLocal: false, online: false };
-    const projectName = recordNameFor(group) ?? active.displayName;
-    if (!repoKey) {
-      // No origin: nothing joins this folder to a copy elsewhere, so the menu
-      // names the one machine it is on and offers Publish.
-      const machine = active.isLocal
-        ? (machines.find((entry) => entry.isLocal) ?? machineFor(active.machineId, active.machineName))
-        : machineFor(active.machineId, active.machineName);
-      const canPublish =
-        active.isLocal
-        && workspaceProjectOpen
-        && project?.rootPath === active.rootPath
-        && hasOrigin === false;
-      return {
-        group,
-        projectName,
-        repoKey: null,
-        rows: [{ machine, copy: { rootPath: active.rootPath, bindingKey: active.bindingKey }, inUse: true }],
-        onlyOneMachine: active.isLocal ? "This machine only" : `Only on ${active.machineName}`,
-        canPublish,
-      };
-    }
-    const existing = existingCopiesForRepo(repoKey, { recents: recentProjects, snapshot: remoteSnapshot });
-    const rows: CopiesMenuRow[] = machines.map((machine) => {
-      // The tab's own checkout of each machine wins: two checkouts on this
-      // computer are two tabs, and each menu shows its own folder.
-      const own = group.machines.find((entry) => entry.machineId === machine.machineId);
-      const known = existing.get(machine.machineId);
-      const copy = own
-        ? { rootPath: own.rootPath, bindingKey: own.bindingKey }
-        : known
-          ? {
-              rootPath: known.rootPath,
-              bindingKey: known.projectId && machine.targetId
-                ? remoteProjectBindingKey(machine.targetId, known.projectId)
-                : known.rootPath,
-            }
-          : null;
-      return { machine, copy, inUse: copy?.bindingKey === active.bindingKey };
-    });
-    if (!rows.some((row) => row.inUse)) {
-      // The machine in use is no longer saved; still show where the tab is.
-      rows.unshift({
-        machine: machineFor(active.machineId, active.machineName),
-        copy: { rootPath: active.rootPath, bindingKey: active.bindingKey },
-        inUse: true,
-      });
-    }
-    return { group, projectName, repoKey, rows, onlyOneMachine: null, canPublish: false };
-  }, [
-    hasOrigin,
-    project?.rootPath,
-    recentProjects,
-    recordNameFor,
-    remoteSnapshot,
+  const {
+    copiesMenu,
+    setCopiesMenu,
+    closeCopiesMenu,
+    copiesMenuModel,
+    startCopyForRepo,
+    addLocalCopyFromTab,
+    removeTarget,
+    openRemoveDialog,
+    closeRemoveDialog,
+    handleCopiesMenuSwitch,
+    openCopiesMenuFor,
+  } = useProjectCopiesMenu({
     tabGroups,
+    remoteSnapshot,
     webMode,
+    recordNameFor,
     workspaceProjectOpen,
-  ]);
-  const copiesMenuModel = useMemo(
-    () => (copiesMenu ? copiesModelFor(copiesMenu.groupId) : null),
-    [copiesMenu, copiesModelFor],
-  );
-
-  // The remove dialog of one tab ("Remove project…" in its copies menu and
-  // its right-click menu). The hosted web client has no remove: it cannot
-  // reach a machine's folders.
-  const [removeTarget, setRemoveTarget] = useState<
-    (RemoveProjectTarget & { groupId: string; recordScope: string | null }) | null
-  >(null);
-  const closeRemoveDialog = useCallback(() => setRemoveTarget(null), []);
-  const openRemoveDialog = useCallback((groupId: string) => {
-    const model = copiesModelFor(groupId);
-    if (!model) return;
-    const toCopy = (row: CopiesMenuRow): RemovalCopy | null => {
-      if (!row.copy) return null;
-      const prefix = row.machine.targetId ? `remote:${row.machine.targetId}:` : null;
-      return {
-        machine: row.machine,
-        rootPath: row.copy.rootPath,
-        bindingKey: row.copy.bindingKey,
-        projectId: prefix && row.copy.bindingKey.startsWith(prefix) ? row.copy.bindingKey.slice(prefix.length) : null,
-      };
-    };
-    const copies = model.rows.map(toCopy).filter((copy): copy is RemovalCopy => copy !== null);
-    const inUseKey = model.rows.find((row) => row.inUse)?.copy?.bindingKey ?? null;
-    const current = copies.find((copy) => copy.bindingKey === inUseKey) ?? copies[0];
-    if (!current) return;
-    setRemoveTarget({
-      groupId,
-      recordScope: model.repoKey ? projectRecordScope(model.group.origin ?? null) : null,
-      projectName: model.projectName,
-      repoKey: model.repoKey,
-      current,
-      copies,
-    });
-  }, [copiesModelFor]);
+    projectRootPath: project?.rootPath ?? null,
+    hasOrigin,
+    recentProjects,
+    knownRemoteProjectTabs,
+    handleClonedLocally,
+    handleSwitchProject,
+    handleSwitchRemoteProject,
+  });
 
   /**
    * After a removal: the tab moves to another copy of the repository when
@@ -2167,35 +2030,6 @@ export function TopBar({
     },
     [closeTabGroups, setOpenProjectTabRoots, setOpenRemoteProjectTabs],
   );
-
-  const handleCopiesMenuSwitch = useCallback(
-    (row: CopiesMenuRow) => {
-      const group = copiesMenuModel?.group;
-      const own = group?.machines.find((entry) => entry.bindingKey === row.copy?.bindingKey);
-      if (row.machine.isLocal) {
-        if (row.copy) handleSwitchProject(row.copy.rootPath);
-        return;
-      }
-      const binding = own?.binding?.kind === "remote"
-        ? own.binding
-        : knownRemoteProjectTabs.find((entry) => entry.key === row.copy?.bindingKey) ?? null;
-      if (!binding) return;
-      // Picking another machine's copy is a choice: this computer's copy does
-      // not take the tab back.
-      rememberExplicitRemotePick(binding.key);
-      handleSwitchRemoteProject(binding);
-    },
-    [copiesMenuModel?.group, handleSwitchProject, handleSwitchRemoteProject, knownRemoteProjectTabs],
-  );
-
-  const openCopiesMenuFor = useCallback((event: React.MouseEvent<HTMLElement>, groupId: string) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const rect = event.currentTarget.getBoundingClientRect();
-    setCopiesMenu((current) =>
-      current?.groupId === groupId ? null : { x: rect.left, y: rect.bottom + 4, groupId },
-    );
-  }, []);
 
   const recentForMachine = useCallback(
     (machine: ProjectTabMachine): RecentProjectSummary | null => {

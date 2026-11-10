@@ -1,4 +1,5 @@
 import React from "react";
+import { logRendererDebugEvent } from "../../../lib/debugLog";
 import { ChatText, Clock, Cpu, Desktop, Lock, PaperPlaneRight, ShieldCheck, Stop, Users } from "@phosphor-icons/react";
 import type { AgentChatEventEnvelope } from "../../../../shared/types/chat";
 import {
@@ -294,7 +295,10 @@ export function LaneShareGuestChat({
   const readComments = React.useCallback(() => {
     void connection.call("chat.listThreadComments", { sessionId })
       .then((result) => setComments(threadCommentsOf(result, sessionId)))
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        // The last comments stay; the next change reads them again.
+        logRendererDebugEvent("lane_share.guest_comments_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
   }, [connection, sessionId]);
 
   // Subscribe while connected; a reconnect subscribes again (the host sends a fresh tail).

@@ -1380,6 +1380,8 @@ export type AdeMessageAuthor = {
 export type AgentChatEventMetadata = Record<string, unknown> & {
   /** Set only by the host; see `AdeMessageAuthor`. Absent: the host's own user. */
   author?: AdeMessageAuthor;
+  /** A plain prompt with no guest author (`isPlainPromptMessage`). */
+  plainPrompt?: true;
   /** Identifies the outside app that sent this person-side message through ADE MCP. */
   remoteMcp?: { connectionId: string; label: string };
   /** Marks a synthetic unattended turn started by ADE's durable scheduler. */

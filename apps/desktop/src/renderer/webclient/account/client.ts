@@ -1,3 +1,4 @@
+import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
@@ -804,15 +805,16 @@ export class BrowserAccountClient {
     body?: Record<string, unknown>;
   }): Promise<{ status: number; body: unknown }> {
     const config = this.config;
-    if (!config) throw new Error("no_directory: Account sign-in isn't configured for this web client.");
+    if (!config) throw new Error(encodeCodedErrorMessage("no_directory", "Account sign-in isn't configured for this web client."));
     if (!/^\/lane-shares(\/|$)/.test(request.path) || request.path.startsWith("/lane-shares/host")) {
-      throw new Error("invalid_args: That account call is not allowed here.");
+      throw new Error(encodeCodedErrorMessage("invalid_args", "That account call is not allowed here."));
     }
+    const signedOut = () => new Error(encodeCodedErrorMessage("signed_out", "Sign in to your ADE account."));
     let token: string;
     try {
       token = await this.getAccessToken();
     } catch {
-      throw new Error("signed_out: Sign in to your ADE account.");
+      throw signedOut();
     }
     const send = async (accessToken: string): Promise<Response> => {
       const controller = new AbortController();
@@ -846,13 +848,13 @@ export class BrowserAccountClient {
         try {
           refreshed = await this.getAccessToken({ forceRefresh: true });
         } catch {
-          throw new Error("signed_out: Sign in to your ADE account.");
+          throw signedOut();
         }
         response = await send(refreshed);
       }
     } catch (cause) {
-      if (cause instanceof Error && /^signed_out:/.test(cause.message)) throw cause;
-      throw new Error("unavailable: The account directory could not be reached.");
+      if (parseCodedErrorMessage(cause).code === "signed_out") throw cause;
+      throw new Error(encodeCodedErrorMessage("unavailable", "The account directory could not be reached."));
     }
     let body: unknown;
     try {

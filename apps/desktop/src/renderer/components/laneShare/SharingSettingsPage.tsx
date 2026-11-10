@@ -8,7 +8,7 @@ import {
   type LaneSharePresetName,
 } from "../../../shared/laneShareRights";
 import type { LaneShareGivenEntry, LaneShareReceivedEntry } from "../../../shared/types/laneShare";
-import { LANE_SHARING_UNAVAILABLE } from "../../../shared/laneShareGuestDirectory";
+import { LANE_SHARING_UNAVAILABLE } from "../../../shared/laneShareDirectory";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { ModernPage, ModernRow, ModernRows, ModernSection } from "../settings/primitives";
 import { ContextMenu, type ContextMenuEntry, type ContextMenuState } from "../ui/ContextMenu";
@@ -24,6 +24,8 @@ import {
   formatLaneShareEnd,
   isLiveLaneShare,
   laneSharePresetText,
+  laneShareGrantStateLabel,
+  laneShareInviteExpired,
   laneShareProblem,
   laneShareStateLabel,
   laneShareUsageText,
@@ -138,7 +140,7 @@ function SharedByMe() {
       showToast({ tone: "success", title: "Invite sent again", message: "It works for 24 hours." });
       await load();
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't send the invite again", message: laneShareProblem(error).message, report: false });
+      showToast({ tone: "error", title: "Couldn't send the invite again", message: laneShareProblem(error).message });
     }
   };
 
@@ -276,16 +278,6 @@ function SharedByMe() {
   );
 }
 
-/** The state of one received share, as the guest reads it. */
-function receivedStateLabel(entry: LaneShareReceivedEntry, now = Date.now()): { label: string; tone: "ok" | "warn" | "crit" | undefined } {
-  if (entry.state === "pending" && entry.inviteExpiresAt != null && entry.inviteExpiresAt <= now) return { label: "Invite expired", tone: "warn" };
-  if (entry.state === "pending") return { label: "Invite pending", tone: undefined };
-  if (entry.state === "expired") return { label: "Invite expired", tone: "warn" };
-  if (entry.state === "active") return { label: "Active", tone: "ok" };
-  if (entry.state === "ended" || entry.state === "revoked") return { label: "Ended", tone: undefined };
-  return { label: entry.state, tone: undefined };
-}
-
 function SharedWithMe() {
   // Account level: the guest calls go from this device to the account
   // directory (no project and no machine needed). Opening a lane connects
@@ -308,7 +300,7 @@ function SharedWithMe() {
       await acceptLaneShare(entry.grantId);
       showToast({ tone: "success", title: "Lane added to Shared with me" });
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't accept the invite", message: laneShareGuestProblem(error).message, report: false });
+      showToast({ tone: "error", title: "Couldn't accept the invite", message: laneShareGuestProblem(error).message });
     } finally {
       setBusy(null);
     }
@@ -327,7 +319,7 @@ function SharedWithMe() {
       await leaveLaneShare(entry.grantId);
       showToast({ tone: "success", title: declining ? "Invite declined" : "You left the lane" });
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't leave the lane", message: laneShareGuestProblem(error).message, report: false });
+      showToast({ tone: "error", title: "Couldn't leave the lane", message: laneShareGuestProblem(error).message });
     }
   };
 
@@ -358,9 +350,9 @@ function SharedWithMe() {
           <span className="min-w-0 truncate text-[12.5px] font-medium text-fg/85" title={group.title}>{group.title}</span>
           <ModernRows>
             {group.rows.map((entry) => {
-              const stateLabel = receivedStateLabel(entry);
+              const stateLabel = laneShareGrantStateLabel(entry);
               const connection = connections[entry.grantId];
-              const expired = stateLabel.label === "Invite expired";
+              const expired = laneShareInviteExpired(entry);
               return (
                 <ModernRow
                   key={entry.grantId}
@@ -371,7 +363,7 @@ function SharedWithMe() {
                       <span>{laneSharePresetText(entry.preset)}</span>
                       {entry.risk ? <span className="kit-tag" data-tone={riskTone(entry.risk)}>{LANE_SHARE_RISK_LABELS[entry.risk]}</span> : null}
                       <span>{formatLaneShareEnd(entry.endsAt)}</span>
-                      <span className="kit-tag" data-tone={stateLabel.tone}>{stateLabel.label}</span>
+                      <span className="kit-tag" data-tone={stateLabel.tone ?? undefined}>{stateLabel.label}</span>
                       {connection?.kind === "host_offline" ? <span className="kit-tag" data-tone="warn">Owner offline</span> : null}
                       {connection?.kind === "stopped" && connection.reason === "paused" ? <span className="kit-tag" data-tone="warn">Paused</span> : null}
                     </span>

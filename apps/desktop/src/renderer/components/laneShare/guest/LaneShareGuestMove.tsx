@@ -4,7 +4,7 @@ import type { OpenProjectBinding, RecentProjectSummary } from "../../../../share
 import type { AgentChatSessionSummary } from "../../../../shared/types/chat";
 import type { LaneShareReceivedEntry } from "../../../../shared/types/laneShare";
 import { laneShareRiskLevel, type LaneShareGuestState, type LaneShareRights } from "../../../../shared/laneShareRights";
-import { LANE_SHARE_MOVE_FINAL_STAGES, type LaneShareMoveView } from "../../../../shared/laneShareMove";
+import { LANE_SHARE_MOVE_FINAL_STAGES, moveErrorText, type LaneShareMoveView } from "../../../../shared/laneShareMove";
 import { remoteProjectBindingKey } from "../../../../shared/projectIdentity";
 import { Banner } from "../../ui/notice";
 import { showToast } from "../../app/toast/toastStore";
@@ -15,7 +15,7 @@ import { copyMachines, existingCopiesForRepo, repoKeyForUrl } from "../../projec
 import { LaneShareRightsPanel } from "../LaneShareRightsPanel";
 import { confirmHighRiskShare } from "../laneShareDefaults";
 import type { LaneShareGuestConnection } from "./laneShareGuestConnection";
-import { moveErrorText, receiveMoveHere, sendMoveToOwner, type LaneShareMoveProgress } from "./laneShareMoveRunner";
+import { receiveMoveHere, sendMoveToOwner, type LaneShareMoveProgress } from "./laneShareMoveRunner";
 
 /**
  * The guest's side of moving a chat between the two people of a share.
@@ -145,7 +145,7 @@ export function LaneShareGuestMoveCard({
   const webMode = isWebClientMode();
   const offered = move?.stage === "offered";
   const [running, setRunning] = React.useState<LaneShareMoveProgress | null>(null);
-  const [outcome, setOutcome] = React.useState<{ tone: "success" | "warning"; text: string } | null>(null);
+  const [outcome, setOutcome] = React.useState<{ tone: "success" | "warning" | "error"; text: string } | null>(null);
   const [dismissed, setDismissed] = React.useState<string | null>(null);
   const [editRights, setEditRights] = React.useState(false);
   const [rights, setRights] = React.useState<LaneShareRights | null>(move?.rights ?? null);
@@ -172,7 +172,7 @@ export function LaneShareGuestMoveCard({
     try {
       await connection.moveStep("decline", { moveId: move.moveId });
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't decline the move", message: moveErrorText(error), report: false });
+      showToast({ tone: "error", title: "Couldn't decline the move", message: moveErrorText(error) });
     }
   };
 
@@ -200,9 +200,13 @@ export function LaneShareGuestMoveCard({
           ? { receiverEmail: move.shareBackEmail, rights: shareRights, confirmHighRisk: high, endsAt }
           : null,
       });
-      setOutcome({ tone: "success", text: `Moved to ${destination.name}${result.laneName ? ` as the lane “${result.laneName}”` : ""}. Open it there to continue.` });
+      const moved = `Moved to ${destination.name}${result.laneName ? ` as the lane “${result.laneName}”` : ""}. Open it there to continue.`;
+      setOutcome({
+        tone: result.warning ? "error" : result.note ? "warning" : "success",
+        text: [moved, result.note, result.warning].filter(Boolean).join(" "),
+      });
     } catch (error) {
-      setOutcome({ tone: "warning", text: moveErrorText(error) });
+      setOutcome({ tone: "error", text: moveErrorText(error) });
     } finally {
       abortRef.current = null;
       setRunning(null);
@@ -225,7 +229,7 @@ export function LaneShareGuestMoveCard({
           <button type="button" className="kit-btn" data-size="sm" onClick={() => abortRef.current?.abort()}>Cancel</button>
         </div>
       ) : outcome ? (
-        <Banner layout="inline" model={{ id: `lane-share-move-outcome-${move.moveId}`, tone: outcome.tone, title: outcome.text, report: false, dismiss: { onDismiss: () => setDismissed(move.moveId) } }} />
+        <Banner layout="inline" model={{ id: `lane-share-move-outcome-${move.moveId}`, tone: outcome.tone, title: outcome.text, ...(outcome.tone === "error" ? {} : { report: false as const }), dismiss: { onDismiss: () => setDismissed(move.moveId) } }} />
       ) : final ? (
         <Banner
           layout="inline"
@@ -244,7 +248,9 @@ export function LaneShareGuestMoveCard({
           <>
             <span className="text-[12px] leading-[1.45] text-fg/65">
               The work goes into a new lane of your own copy of the project. The chat continues there with your own sign-ins. No sign-in of {ownerLabel} moves.
-              After the move, the new lane is shared back with {ownerLabel}.
+              {move.shareBackEmail
+                ? ` After the move, the new lane is shared back with ${ownerLabel} at ${move.shareBackEmail}.`
+                : " The new lane is not shared back."}
             </span>
             {!loaded ? (
               <span className="text-[12px] text-fg/50">Finding your computers…</span>
@@ -305,7 +311,7 @@ export function LaneShareGuestMoveOut({
   const [chats, setChats] = React.useState<AgentChatSessionSummary[] | null>(null);
   const [sessionId, setSessionId] = React.useState("");
   const [running, setRunning] = React.useState<LaneShareMoveProgress | null>(null);
-  const [outcome, setOutcome] = React.useState<{ tone: "success" | "warning"; text: string } | null>(null);
+  const [outcome, setOutcome] = React.useState<{ tone: "success" | "error"; text: string } | null>(null);
   const abortRef = React.useRef<AbortController | null>(null);
   const ownerLabel = entry.giverLabel ?? "the owner";
   const destination = destinations.find((entry) => entry.machineId === machineId) ?? null;
@@ -346,7 +352,7 @@ export function LaneShareGuestMoveOut({
       });
       setOutcome({ tone: "success", text: `Moved to ${ownerLabel}'s computer${result.laneName ? ` as the lane “${result.laneName}”` : ""}.` });
     } catch (error) {
-      setOutcome({ tone: "warning", text: moveErrorText(error) });
+      setOutcome({ tone: "error", text: moveErrorText(error) });
     } finally {
       abortRef.current = null;
       setRunning(null);
@@ -385,7 +391,7 @@ export function LaneShareGuestMoveOut({
             </div>
           )}
           {running ? <ProgressLine progress={running} /> : null}
-          {outcome ? <Banner layout="inline" model={{ id: "lane-share-move-out", tone: outcome.tone, title: outcome.text, report: false }} /> : null}
+          {outcome ? <Banner layout="inline" model={{ id: "lane-share-move-out", tone: outcome.tone, title: outcome.text, ...(outcome.tone === "error" ? {} : { report: false as const }) }} /> : null}
         </>
       )}
       <div className="flex items-center gap-2">
