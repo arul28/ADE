@@ -29640,6 +29640,15 @@ async function runServe(
         buildSnapshot: () => activityRosterProvider.buildSnapshot(),
       },
       foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      // Terminals of open projects only: a terminal never boots a project.
+      terminalProjects: async ({ projectId, projectRootPath }) => {
+        const resolvedId = projectRegistry.get(projectId)?.projectId
+          ?? projectRegistry.resolveMovedProjectId(projectId)
+          ?? (projectRootPath ? projectRegistry.findAtRootPath(projectRootPath)?.projectId ?? null : null);
+        if (!resolvedId) return null;
+        const { resolveBootedTerminalProject } = await import("./services/sync/syncTerminalStreams");
+        return await resolveBootedTerminalProject(scopeRegistry, resolvedId);
+      },
       // A project socket served here moves to the project host once one attaches.
       projectHostAttached: () => sharedSyncListener?.hasConnectionHandler() ?? false,
       onProjectHostAttached: (listener) => sharedSyncListener?.onConnectionHandlerAttached(listener) ?? (() => {}),

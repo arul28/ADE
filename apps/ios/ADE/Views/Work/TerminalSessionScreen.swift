@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -15,8 +16,17 @@ struct TerminalSessionScreen: View {
   /// while it is away and nothing while it shows (a column has no stack to
   /// pop, so a Back there did nothing).
   var leading: TerminalLeadingControl = .back
+  /// Set for another machine's session: it opens over that machine's light
+  /// link, and every terminal action goes to that machine.
+  var remoteTerminal: WorkRemoteTerminalContext? = nil
 
   @StateObject private var controller = TerminalSessionController()
+  /// The session's machine, fixed when the screen opens. Nil for an older
+  /// pairing with no machine identity.
+  @State private var sessionMachineKey: String?
+  /// Whether the connection the screen streams over still serves the
+  /// session's machine. While false, the screen sends nothing.
+  @State private var linkLive = true
   @State private var keyboardVisible = false
   @State private var pasteboardHasStrings = false
   @State private var showReconnectingCaption = false
@@ -47,8 +57,11 @@ struct TerminalSessionScreen: View {
     chromeDecorated
       .task(id: session.id) { handleAppear() }
       .onDisappear { controller.deactivate() }
-      .onChange(of: syncService.connectionState) { (_, state: RemoteConnectionState) in
-        handleConnectionState(state)
+      .onChange(of: syncService.connectionState) { (_, _: RemoteConnectionState) in refreshLinkLive() }
+      .onChange(of: syncService.focusedMachineKey) { (_, _: String?) in refreshLinkLive() }
+      .onReceive(fleetPublisher) { _ in refreshLinkLive() }
+      .onChange(of: linkLive) { (_, live: Bool) in
+        controller.handleConnectionChange(isConnected: live)
       }
       .onChange(of: controller.bellPulse) { (_, _: Int) in flashStatusDot() }
       .onChange(of: controller.blockedInputPulse) { (_, _: Int) in showReconnectingCaption = true }
@@ -130,12 +143,58 @@ struct TerminalSessionScreen: View {
   }
 
   private func handleAppear() {
-    controller.activate(syncService: syncService, sessionId: session.id, sessionStatus: session.status)
+    if let remoteTerminal {
+      sessionMachineKey = remoteTerminal.machineKey
+      if let connection = remoteConnection {
+        connection.setTerminalScope(
+          sessionId: session.id,
+          projectId: remoteTerminal.projectId,
+          rootPath: remoteTerminal.rootPath
+        )
+        controller.activate(transport: connection, sessionId: session.id, sessionStatus: session.status)
+      }
+    } else {
+      sessionMachineKey = syncService.focusedMachineKey
+      controller.activate(transport: syncService, sessionId: session.id, sessionStatus: session.status)
+    }
     pasteboardHasStrings = controller.pasteboardHasStrings
+    refreshLinkLive()
   }
 
-  private func handleConnectionState(_ state: RemoteConnectionState) {
-    controller.handleConnectionChange(isConnected: state == .connected)
+  /// The light link of the session's machine, when the session is on another one.
+  private var remoteConnection: MachineConnection? {
+    remoteTerminal.flatMap { syncService.machineFleet?.connection(for: $0.machineKey) }
+  }
+
+  /// Fires when a machine's light link or the focused connection changes.
+  private var fleetPublisher: AnyPublisher<Void, Never> {
+    guard let fleet = syncService.machineFleet else {
+      return Empty<Void, Never>().eraseToAnyPublisher()
+    }
+    return fleet.$machines.map { _ in () }.eraseToAnyPublisher()
+  }
+
+  /// The screen's connection is live only while it still serves the
+  /// session's machine. After a focus change the focused connection serves
+  /// another machine, and the screen shows offline instead of sending there.
+  private func refreshLinkLive() {
+    let live: Bool
+    if remoteTerminal != nil {
+      live = remoteConnection?.canStreamTerminals ?? false
+    } else if let sessionMachineKey {
+      live = syncService.connectionState == .connected
+        && syncService.focusedMachineKey == sessionMachineKey
+        && syncService.focusedSocketMachineKey == sessionMachineKey
+    } else {
+      live = syncService.connectionState == .connected
+    }
+    if linkLive != live { linkLive = live }
+  }
+
+  /// The state of the connection this terminal streams over.
+  private var terminalConnectionState: RemoteConnectionState {
+    guard remoteTerminal != nil || sessionMachineKey != nil else { return syncService.connectionState }
+    return linkLive ? .connected : .disconnected
   }
 
   private func handleKeyboardWillShow() {
@@ -226,7 +285,7 @@ struct TerminalSessionScreen: View {
     if controller.hasExited {
       return ADEColor.textMuted
     }
-    switch syncService.connectionState {
+    switch terminalConnectionState {
     case .connected:
       return controller.isSubscribed ? ADEColor.success : ADEColor.warning
     case .connecting:

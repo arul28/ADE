@@ -1064,6 +1064,16 @@ export type SyncFeatureFlags = {
     enabled: true;
   };
   /**
+   * `terminal_*` envelopes may name any project that is open on this machine
+   * (the envelope's `projectId`), on a roster socket as well as a full one.
+   * The host streams that project's session without a project switch. A
+   * project that is not open, or a session it does not have, gets a
+   * `terminal_snapshot` with `error` set. Older hosts omit this field.
+   */
+  rosterTerminal?: {
+    enabled: true;
+  };
+  /**
    * Bidirectional oversized-envelope framing. The host returns this only to a
    * peer that declared the matching hello capability.
    */
@@ -2097,6 +2107,11 @@ export type SyncTerminalSubscribePayload = {
    * otherwise it falls back to the regular tail snapshot.
    */
   sinceOffset?: number;
+  /**
+   * The root of the project that the envelope's `projectId` names, so a host
+   * that knows the project under another id still finds it.
+   */
+  projectRootPath?: string | null;
 };
 
 export type SyncTerminalUnsubscribePayload = {
@@ -2136,6 +2151,22 @@ export type SyncTerminalSnapshotPayload = {
    * this field and keep replaying `transcript`. Omitted on delta resumes.
    */
   screen?: SyncTerminalScreenSnapshot | null;
+  /**
+   * Set when the host cannot serve the subscribe. The snapshot then has no
+   * transcript and no live stream follows.
+   */
+  error?: SyncTerminalSubscribeError | null;
+};
+
+export type SyncTerminalSubscribeErrorCode =
+  /** The project is not open on this machine. */
+  | "project_not_open"
+  /** The project is open, but it has no session with this id. */
+  | "session_not_found";
+
+export type SyncTerminalSubscribeError = {
+  code: SyncTerminalSubscribeErrorCode;
+  message: string;
 };
 
 export type SyncTerminalDataPayload = {

@@ -127,12 +127,19 @@ import {
   ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS,
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
+  createTerminalInputDedupeLedger,
   isRuntimeHostPairingRecord,
   isSyncHostRecoveryPairingRecord,
   type SyncForeignChatTranscriptResolver,
   type SyncProjectCatalogProvider,
 } from "./syncHostService";
 import { resolveDeviceDisplayName } from "./deviceRegistryService";
+import {
+  createSyncTerminalStreams,
+  syncTerminalProjectTarget,
+  type PendingTerminalSnapshotBarrier,
+  type SyncTerminalProjectResolver,
+} from "./syncTerminalStreams";
 import { supportedAdoptChannelAeads } from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
 import {
   issueAdoptChallenge,
@@ -205,6 +212,11 @@ type BrainProjectActionsSyncHandlerArgs = {
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   /** Runs `command` envelopes that name a registered project in that project. */
   projectCommandRouter?: BrainProjectCommandRouter;
+  /**
+   * Open projects of this machine, for `terminal_*` envelopes that name one.
+   * With it, a socket parked here streams any open project's terminals.
+   */
+  terminalProjects?: SyncTerminalProjectResolver;
   /** True while a project sync host owns new sockets on the shared listener. */
   projectHostAttached?: () => boolean;
   /** Subscribe to a project sync host attaching to the shared listener. */
@@ -251,6 +263,10 @@ type BrainPeerState = SyncRosterPeerState & {
   envelopeChunks: ReturnType<typeof createSyncEnvelopeChunkAssembler>;
   /** The sealed-adoption challenge this socket was issued, single use. */
   adoptChallenge: AdoptChallengeState | null;
+  /** Terminal streams (see `syncTerminalStreams.ts`). */
+  subscribedSessionIds: Set<string>;
+  pendingTerminalSnapshots: Map<string, PendingTerminalSnapshotBarrier>;
+  nextTerminalSnapshotGeneration: number;
 };
 
 const WS_OPEN = 1;
@@ -787,6 +803,33 @@ export function createBrainProjectActionsSyncHandler(
       handOverToProjectHost(peer);
     }
   });
+  // Terminals of every open project, routed by the project each envelope names.
+  const terminalStreams = createSyncTerminalStreams<BrainPeerState>({
+    logger: args.logger,
+    peers: () => peers,
+    isPeerReceiving: (peer) => peer.authenticated && peer.ws.readyState === WS_OPEN,
+    isPeerSocketOpen: (peer) => peer.ws.readyState === WS_OPEN,
+    isPeerLifecycleCurrent: (peer, generation) =>
+      peers.has(peer) && peer.lifecycleGeneration === generation && peer.ws.readyState === WS_OPEN,
+    isPeerConnected: (peer) => peers.has(peer) && peer.authenticated,
+    isPeerBackpressured: (peer) => isPeerBackpressured(peer.ws),
+    sendRequired: (peer, type, payload, requestId) => send(peer.ws, type, payload, requestId),
+    send: (peer, type, payload) => {
+      send(peer.ws, type, payload);
+    },
+    peerDeviceId: (peer) => optionalString(peer.metadata?.deviceId),
+    closePeer: (peer, code, reason) => {
+      try {
+        peer.ws.close(code, reason);
+      } catch {
+        // ignore close failures
+      }
+    },
+    hostedBackend: null,
+    ...(args.terminalProjects ? { resolveProject: args.terminalProjects } : {}),
+    dedupeLedger: createTerminalInputDedupeLedger(),
+    logPrefix: "sync_brain",
+  });
   const routedCommands = createBrainRoutedCommandHandler<BrainPeerState>({
     router: args.projectCommandRouter,
     send,
@@ -1253,6 +1296,28 @@ export function createBrainProjectActionsSyncHandler(
         }, envelope.requestId);
         break;
       }
+      case "terminal_subscribe":
+      case "terminal_unsubscribe":
+      case "terminal_history":
+      case "terminal_resize": {
+        // No project of its own: an envelope that names no project is refused.
+        const target = args.terminalProjects ? syncTerminalProjectTarget(envelope) : null;
+        if (!target) {
+          args.logger.warn("sync_brain.terminal_envelope_without_project", {
+            type: envelope.type,
+            peerDeviceId: peer.metadata?.deviceId ?? null,
+          });
+          break;
+        }
+        await terminalStreams.handleEnvelope(peer, envelope, target, peer.lifecycleGeneration);
+        break;
+      }
+      case "terminal_input": {
+        // A null target answers a missing project with a `project_mismatch` ack.
+        const target = args.terminalProjects ? syncTerminalProjectTarget(envelope) : null;
+        await terminalStreams.handleInput(peer, envelope, target);
+        break;
+      }
       case "changeset_batch":
       case "changeset_ack":
         // No project DB here: nothing to apply and nothing ever sent to ack.
@@ -1288,6 +1353,9 @@ export function createBrainProjectActionsSyncHandler(
       commandChain: Promise.resolve(),
       envelopeChunks: createSyncEnvelopeChunkAssembler(),
       adoptChallenge: null,
+      subscribedSessionIds: new Set(),
+      pendingTerminalSnapshots: new Map(),
+      nextTerminalSnapshotGeneration: 0,
       ...createSyncRosterPeerState(),
     };
     peers.add(peer);
@@ -1880,7 +1948,8 @@ export function createBrainProjectActionsSyncHandler(
               ? args.getCloudRelayWssUrl?.() ?? null
               : null,
             relayAuthorization: peer.relayAuthorization?.metadata() ?? null,
-            terminalInputAckEnabled: false,
+            terminalInputAckEnabled: Boolean(args.terminalProjects),
+            rosterTerminalEnabled: Boolean(args.terminalProjects),
             // Handed back only on first-time account adoption, so the device
             // can reconnect directly later with a real paired secret instead of
             // depending on the relay every time.
@@ -2060,6 +2129,8 @@ export function createBrainProjectActionsSyncHandler(
       peer.pairingRecord = null;
       clearInterval(chatSubscriptionPump);
       peer.chatSubscriptions.clear();
+      peer.pendingTerminalSnapshots.clear();
+      terminalStreams.releasePeer(peer);
       pairedChannelService.closePeer(ws, "Sync socket closed.", false);
       args.logger.info("sync_brain.peer_closed", {
         code,

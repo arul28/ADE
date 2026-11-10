@@ -516,7 +516,7 @@ struct SettingsUsagePage: View {
       }
       .buttonStyle(.plain)
     }
-    Text(breakdownView == .account ? "ADE chats on this machine." : "ADE chats in this project.")
+    Text(breakdownView == .account ? "ADE chats on \(syncService.machineDisplayName)." : "ADE chats in this project.")
       .font(.system(size: 12))
       .foregroundStyle(ADEColor.textMuted)
     if let breakdown, breakdown.by == breakdownView.rawValue {
@@ -811,7 +811,7 @@ struct SettingsUsageModelDetailScreen: View {
             priceSection(detail)
           }
         } else if failed {
-          Text("This machine can't show model detail yet. Update ADE on it and reconnect.")
+          Text("Model detail is not available from \(syncService.machineDisplayName) yet. Update ADE there and reconnect.")
             .font(ADEUsageType.detailFont())
             .foregroundStyle(ADEColor.textSecondary)
         } else {

@@ -933,8 +933,8 @@ struct LaneDeletionKept: Equatable, Identifiable {
 private let syncTerminalSubscriptionMaxBytes = 240_000
 /// Snapshot budget for the full-screen SwiftTerm session view, which renders
 /// real scrollback instead of a trimmed preview string.
-private let syncTerminalStreamMaxBytes = 512_000
-private let syncTerminalHistoryMaxBytes = 262_144
+let syncTerminalStreamMaxBytes = 512_000
+let syncTerminalHistoryMaxBytes = 262_144
 let syncChatSubscriptionMaxBytes = 256 * 1024
 let syncChatHistoryTailPageMaxBytes = 600_000
 // A bounded tail keeps chat switches instant on constrained routes. Complete
@@ -3913,6 +3913,49 @@ enum TerminalStreamEvent {
   case inputFailure(message: String)
 }
 
+/// Every attached handler for each session, in attach order. Events go to
+/// the last one only. A detach removes its own entry, and the handler
+/// before it receives events again.
+struct TerminalStreamHandlerStack {
+  private var entries: [String: [(token: UUID, handler: (TerminalStreamEvent) -> Void)]] = [:]
+
+  subscript(sessionId: String) -> ((TerminalStreamEvent) -> Void)? {
+    entries[sessionId]?.last?.handler
+  }
+
+  mutating func attach(sessionId: String, handler: @escaping (TerminalStreamEvent) -> Void) -> UUID {
+    let token = UUID()
+    entries[sessionId, default: []].append((token: token, handler: handler))
+    return token
+  }
+
+  mutating func detach(sessionId: String, token: UUID) {
+    guard var list = entries[sessionId] else { return }
+    list.removeAll { $0.token == token }
+    entries[sessionId] = list.isEmpty ? nil : list
+  }
+}
+
+/// What the full-screen terminal needs from a connection. `SyncService`
+/// serves the focused machine; a `MachineConnection` serves a terminal of
+/// another machine over its light link, without a focus switch.
+@MainActor
+protocol TerminalStreamTransport: AnyObject {
+  func attachTerminalStream(sessionId: String, handler: @escaping (TerminalStreamEvent) -> Void) -> UUID?
+  func detachTerminalStream(sessionId: String, token: UUID?)
+  func hasTerminalStream(sessionId: String) -> Bool
+  func subscribeTerminalStream(sessionId: String, sinceOffset: Int?) async throws
+  func refreshTerminalSnapshot(sessionId: String, maxBytes: Int, sinceOffset: Int?) async throws
+  func unsubscribeTerminal(sessionId: String) async throws
+  func resumeCliSession(sessionId: String, cols: Int?, rows: Int?) async throws -> StartCliSessionResult
+  func fetchTerminalHistory(sessionId: String, beforeOffset: Int, maxBytes: Int) async throws -> TerminalHistorySlice
+  func canAcceptTerminalInput(sessionId: String) -> Bool
+  func sendTerminalInput(sessionId: String, data: String) -> SyncTerminalInputSubmission
+  func sendTerminalResize(sessionId: String, cols: Int, rows: Int)
+}
+
+extension SyncService: TerminalStreamTransport {}
+
 struct WorkStartShellSessionRequest: Equatable {
   var laneId: String
   var provider = "shell"
@@ -4570,7 +4613,7 @@ final class SyncService: ObservableObject {
   /// `terminal_data.offset` and snapshot `endOffset`. Nil for hosts that do not
   /// emit offsets; all gap/dedupe logic disables itself in that case.
   private(set) var terminalEndOffsets: [String: Int] = [:]
-  private var terminalStreamHandlers: [String: (TerminalStreamEvent) -> Void] = [:]
+  private var terminalStreamHandlers = TerminalStreamHandlerStack()
   private var desiredTerminalSessionIds: Set<String> = []
   private var supportsTerminalInputAcknowledgements = false
   private var terminalInputAcknowledgementRetryWindowMilliseconds: TimeInterval = 0
@@ -5728,9 +5771,11 @@ final class SyncService: ObservableObject {
   /// an in-place project activation has actually loaded data.
   private func awaitFreshActiveProjectWorkHydration(
     selectionGeneration: UInt64,
+    // A caller that started earlier passes its own baseline. Nil means now.
+    baselineHydratedAt callerBaseline: Date?? = nil,
     timeout: TimeInterval = 6
   ) async {
-    let baselineHydratedAt = domainStatuses[.work]?.lastHydratedAt
+    let baselineHydratedAt = callerBaseline ?? domainStatuses[.work]?.lastHydratedAt
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
       guard isCurrentProjectSelection(selectionGeneration) else { return }
@@ -13247,6 +13292,12 @@ final class SyncService: ObservableObject {
         requestId: requestId,
         disconnectOnTimeout: false,
         acceptResponse: { raw in
+          // A refused subscribe (`rosterTerminal` error) must not hydrate an empty screen.
+          if let error = (raw as? [String: Any])?["error"] as? [String: Any] {
+            throw NSError(domain: "ADE", code: 7, userInfo: [
+              NSLocalizedDescriptionKey: (error["message"] as? String) ?? "That computer could not open this terminal.",
+            ])
+          }
           let snapshot = try self.decode(raw, as: TerminalSnapshot.self)
           guard self.terminalSnapshotRequestTokens[sessionId] == requestToken,
                 self.desiredTerminalSessionIds.contains(sessionId),
@@ -13369,16 +13420,21 @@ final class SyncService: ObservableObject {
 
   /// Registers the active full-screen terminal as the live delivery target for
   /// `sessionId`. One handler per session; the screen detaches on disappear.
-  func attachTerminalStream(sessionId: String, handler: @escaping (TerminalStreamEvent) -> Void) {
+  /// The last attach receives the events. The caller keeps the returned
+  /// token and gives it back to `detachTerminalStream`.
+  @discardableResult
+  func attachTerminalStream(sessionId: String, handler: @escaping (TerminalStreamEvent) -> Void) -> UUID? {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedSessionId.isEmpty else { return }
-    terminalStreamHandlers[trimmedSessionId] = handler
+    guard !trimmedSessionId.isEmpty else { return nil }
+    return terminalStreamHandlers.attach(sessionId: trimmedSessionId, handler: handler)
   }
 
-  func detachTerminalStream(sessionId: String) {
+  /// Removes only the handler that `token` attached. A screen that leaves
+  /// while another screen of the same session stays keeps that screen live.
+  func detachTerminalStream(sessionId: String, token: UUID?) {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedSessionId.isEmpty else { return }
-    terminalStreamHandlers.removeValue(forKey: trimmedSessionId)
+    guard !trimmedSessionId.isEmpty, let token else { return }
+    terminalStreamHandlers.detach(sessionId: trimmedSessionId, token: token)
   }
 
   /// Fetches transcript bytes ending at/before `beforeOffset` for on-demand
@@ -28344,6 +28400,37 @@ extension SyncService {
         || (root != nil && normalizedProjectRoot(candidate.rootPath) == root)
     }
     selectProject(match ?? project)
+  }
+
+  /// Focus another machine, open a project there, and wait until it is ready
+  /// for a session to open: the project is active and its work rows are
+  /// fresh for the new connection. A terminal that subscribes earlier loses
+  /// its snapshot while the project scope still changes. Returns false when
+  /// the focus switch or the project switch fails. Leaves the Hub open.
+  func openProjectAndWait(_ project: MobileProjectSummary, onMachine machineKey: String) async -> Bool {
+    // The last work hydration before the switch. Only a newer one belongs to
+    // the new connection.
+    let baselineHydratedAt = domainStatuses[.work]?.lastHydratedAt
+    guard await switchFocusKeepingPrevious(toMachineKey: machineKey) else { return false }
+    let root = normalizedProjectRoot(project.rootPath)
+    let target = projects.first { candidate in
+      candidate.id == project.id
+        || (root != nil && normalizedProjectRoot(candidate.rootPath) == root)
+    } ?? project
+    let wasActive = isActiveProject(target)
+    // Awaits the project switch and its fresh hydration. It returns at once
+    // when the project is already active.
+    await openProjectForHubChat(target)
+    guard focusedMachineKey == machineKey, isActiveProject(target) else { return false }
+    if wasActive {
+      // Already active after the focus switch, so nothing waited for the new
+      // connection's work rows yet.
+      await awaitFreshActiveProjectWorkHydration(
+        selectionGeneration: projectSelectionGeneration,
+        baselineHydratedAt: baselineHydratedAt
+      )
+    }
+    return focusedMachineKey == machineKey && isActiveProject(target)
   }
 
   /// Archive / unarchive / delete a chat on another machine from the Hub.
