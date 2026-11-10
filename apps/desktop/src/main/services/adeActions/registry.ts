@@ -304,6 +304,7 @@ import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
+import { observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
 import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import { cloudMachineEnv, type CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
@@ -4176,7 +4177,9 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
     machineStore: () => cloudMachineStore(),
     logger: runtime.logger,
   });
-  const machines = createCloudMachines({
+  // A good list or a finished make also tells the sign-in renewal that the
+  // account has cloud computers, with no request of its own.
+  const machines = observeCloudComputerLists(createCloudMachines({
     client: () => getCloudProvider(credentials),
     whyNoClient: () => cloudNoProviderSentence(credentials),
     removeAccountMachine: async (machineKey) => {
@@ -4187,9 +4190,9 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
       }).deleteMachine(machineKey);
     },
     logger: runtime.logger,
-  });
+  }));
   const agentChatService = runtime.agentChatService ?? null;
-  const maker = cloudBrainMakerFor(runtime, machines);
+  const maker = observeCloudComputerMakes(cloudBrainMakerFor(runtime, machines));
   const ready = buildCloudReadyActions({
     credentials,
     readSettings: async () => (await settings.read()).projects,

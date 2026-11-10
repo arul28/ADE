@@ -496,7 +496,10 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     const off = await captureOffReason();
     lastPassAt = now();
     // Capture off for any reason: no renewal ahead, and no timer for one.
-    if (off) ownerRenewal?.plan([]);
+    if (off) {
+      planGeneration += 1;
+      ownerRenewal?.plan([]);
+    }
     // The account lost ADE Cloud or signed out between two answers: stop riding the ticks.
     if (off === "no_ade_cloud" || off === "signed_out") leaveTicks();
     if (off === "all_off") {
@@ -1322,6 +1325,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       },
     })
     : null;
+  /** Bumped by each plan, so an answer that comes late never undoes a newer plan. */
+  let planGeneration = 0;
 
   /**
    * The sign-ins this computer renews ahead, and only when all hold: capture
@@ -1345,12 +1350,17 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       const expiresAt = signIn.expiresAt ? Date.parse(signIn.expiresAt) : Number.NaN;
       if (Number.isFinite(expiresAt)) targets.push({ key: signIn.key, provider: signIn.provider, expiresAt });
     }
+    const generation = ++planGeneration;
     if (!targets.length) {
       ownerRenewal.plan([]);
       return;
     }
-    const exists = await deps.cloudComputerExists?.().catch(() => null) ?? null;
-    ownerRenewal.plan(exists === true ? targets : []);
+    // Asked only now, when a sign-in is otherwise due. The pass never waits on
+    // it: a read can take seconds, and a later pass's plan wins.
+    const answer = deps.cloudComputerExists ? deps.cloudComputerExists().catch(() => null) : Promise.resolve(null);
+    void answer.then((exists) => {
+      if (generation === planGeneration) ownerRenewal.plan(exists === true ? targets : []);
+    });
   }
 
   // ── The person's Keychain read on a Mac (§3.7) ──────────────────────
@@ -1493,6 +1503,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   }
 
   function leaveTicks(): void {
+    planGeneration += 1;
     ownerRenewal?.stop();
     if (!ticks.length) return;
     for (const release of ticks.splice(0)) release();
