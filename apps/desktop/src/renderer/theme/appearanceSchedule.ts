@@ -156,11 +156,15 @@ export function activeSlotAt(slots: readonly ScheduleSlot[], now: number): Activ
   const startedToday = index >= 0;
   const slot = startedToday ? slots[index]! : slots[slots.length - 1]!;
   const slotIndex = startedToday ? index : slots.length - 1;
-  const startedAt = atMinutes(startedToday ? date : shiftDays(date, -1), slot.start);
+  const startDay = startedToday ? date : shiftDays(date, -1);
+  const startedAt = atMinutes(startDay, slot.start);
   const next = slots[(slotIndex + 1) % slots.length]!;
-  // The next start is later today, or tomorrow when the order wraps (one slot wraps to itself).
-  const nextToday = atMinutes(startedToday ? date : shiftDays(date, -1), next.start);
-  const endsAt = nextToday > startedAt ? nextToday : atMinutes(shiftDays(new Date(startedAt), 1), next.start);
+  // The next start falls on the day the slot started, or the day after when the order wraps
+  // (one slot wraps to itself). Decided by the slot order, not by comparing timestamps: on a
+  // spring-forward night a start in the skipped hour moves forward, and that shift must not
+  // push the next start into tomorrow.
+  const wraps = slotIndex === slots.length - 1;
+  const endsAt = atMinutes(wraps ? shiftDays(startDay, 1) : startDay, next.start);
   return { slot, startedAt, endsAt, next };
 }
 
