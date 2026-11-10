@@ -1,3 +1,4 @@
+import { captureError } from "../../shared/sentry/capture";
 import { normalizeScenePreferences, type ScenePreferences } from "../scene/scenePreferences";
 import {
   normalizeInterfacePreferences,
@@ -231,7 +232,8 @@ export function formatSlotClock(minutes: number): string {
   const at = new Date(2000, 0, 1, Math.floor(minutes / 60), minutes % 60);
   try {
     return at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  } catch {
+  } catch (error) {
+    reportFallback("format-clock", error);
     return formatSlotTime(minutes);
   }
 }
@@ -255,11 +257,21 @@ const listeners = new Set<() => void>();
 let cachedRaw: string | null | undefined;
 let cached: AppearanceSchedule = EMPTY_APPEARANCE_SCHEDULE;
 
+const reportedFailures = new Set<string>();
+
+/** A fallback that hides a failure is reported once per area: reads run on every render and poll. */
+function reportFallback(area: string, error: unknown): void {
+  if (reportedFailures.has(area)) return;
+  reportedFailures.add(area);
+  captureError(error, { tags: { area: `appearance-schedule.${area}` }, fingerprint: [`appearance-schedule.${area}`], handled: true });
+}
+
 function readRaw(): string | null {
   try {
     return window.localStorage.getItem(APPEARANCE_SCHEDULE_STORAGE_KEY);
-  } catch {
+  } catch (error) {
     // Unreadable storage reads as no schedule.
+    reportFallback("storage-read", error);
     return null;
   }
 }
@@ -270,7 +282,8 @@ export function readAppearanceSchedule(): AppearanceSchedule {
     cachedRaw = raw;
     try {
       cached = raw ? normalizeAppearanceSchedule(JSON.parse(raw)) : EMPTY_APPEARANCE_SCHEDULE;
-    } catch {
+    } catch (error) {
+      reportFallback("storage-parse", error);
       cached = EMPTY_APPEARANCE_SCHEDULE;
     }
   }
