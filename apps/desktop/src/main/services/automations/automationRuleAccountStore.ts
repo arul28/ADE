@@ -209,17 +209,19 @@ export function createAutomationRuleAccountStore(args: {
     }
   };
 
-  // Read on every config read (to mark which rules run here), so it is kept
-  // once known: a computer's sync device id does not change while ADE runs.
-  let knownDevice: { deviceId: string; name: string | null } | null = null;
-  const thisDevice = (): { deviceId: string | null; name: string | null } => {
-    if (knownDevice) return knownDevice;
+  // The id is read on every config read (to mark which rules run here), so
+  // it is kept once known: a computer's sync device id does not change while
+  // ADE runs. The name is read fresh when a home is written, because the
+  // device registry that knows it may start after this store.
+  let knownDeviceId: string | null = null;
+  const thisDevice = (options: { name?: boolean } = {}): { deviceId: string | null; name: string | null } => {
+    if (knownDeviceId && !options.name) return { deviceId: knownDeviceId, name: null };
     try {
       const device = args.thisComputer();
       const deviceId = device.deviceId?.trim() || null;
       const name = device.name?.trim() || null;
-      if (deviceId) knownDevice = { deviceId, name };
-      return { deviceId, name };
+      if (deviceId) knownDeviceId = deviceId;
+      return { deviceId: knownDeviceId ?? deviceId, name };
     } catch (error) {
       args.logger?.warn("automations.account_rules.device_read_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -348,7 +350,7 @@ export function createAutomationRuleAccountStore(args: {
 
     /** This computer and checkout as a rule's home, or null while the device id is not known. */
     thisComputerHome(): AutomationRuleHome | null {
-      const device = thisDevice();
+      const device = thisDevice({ name: true });
       if (!device.deviceId) return null;
       return {
         deviceId: device.deviceId,

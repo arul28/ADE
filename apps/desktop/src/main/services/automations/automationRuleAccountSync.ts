@@ -169,9 +169,14 @@ export function createAutomationRuleAccountSync(args: {
       // The checkout on another computer is that computer's to claim.
       home = { ...home, checkout: home.deviceId === store.thisDeviceId() ? store.checkout : null };
     }
-    const moved = current && current.deviceId !== home.deviceId;
+    // Choosing the same computer again keeps the home as it is, wait
+    // included: dropping an active handover would let it start before the
+    // old home's lease runs out.
+    if (current && current.deviceId === home.deviceId) {
+      return { ...current, checkout: home.checkout ?? current.checkout ?? null };
+    }
     const { previousDeviceId: _p, ...base } = home;
-    return { ...base, ...(moved ? { previousDeviceId: current.deviceId } : {}) };
+    return { ...base, ...(current ? { previousDeviceId: current.deviceId } : {}) };
   };
 
   return {
@@ -263,6 +268,7 @@ export function createAutomationRuleAccountSync(args: {
           store.addPending({ ruleId: rule.id, rule: content(rule) as ConfigAutomationRule & Record<string, unknown>, home: here });
           continue;
         }
+        store.noteOfflineSave(rule.id);
         kept.push(rule);
       }
       return kept;
@@ -318,6 +324,8 @@ export function createAutomationRuleAccountSync(args: {
             kept.push(rule);
             continue;
           }
+          // A new rule that waited here can race another computer's like any other.
+          if (!existing) store.addPending({ ruleId: rule.id, rule: content(rule) as ConfigAutomationRule & Record<string, unknown>, home: home ?? here });
           movedIds.push(rule.id);
           continue;
         }
@@ -356,12 +364,18 @@ export function createAutomationRuleAccountSync(args: {
       if (!store.scope() || !store.signedIn()) return { claimed: 0, readded: [] };
       const deviceId = store.thisDeviceId();
       let claimed = 0;
+      const ownName = store.thisComputerHome()?.name ?? null;
       for (const entry of readAccount() ?? []) {
         const home = entry.rule.home;
-        if (!deviceId || !home || home.deviceId !== deviceId || home.checkout) continue;
+        if (!deviceId || !home || home.deviceId !== deviceId) continue;
         // Two checkouts in one brain share one store, so the first to claim
         // wins and the other reads the claim straight back.
-        if (store.writeHome(entry.rule.id, { ...home, checkout: store.checkout })) claimed += 1;
+        if (!home.checkout) {
+          if (store.writeHome(entry.rule.id, { ...home, checkout: store.checkout, ...(ownName ? { name: ownName } : {}) })) claimed += 1;
+        } else if (home.checkout === store.checkout && ownName && home.name !== ownName) {
+          // Other computers show this name; keep it the registered one.
+          if (store.writeHome(entry.rule.id, { ...home, name: ownName })) claimed += 1;
+        }
       }
       if (claimed > 0) cache = null;
       // Runs counted while signed out go up now, so a later home's limit holds.
@@ -435,9 +449,18 @@ export function createAutomationRuleAccountSync(args: {
       if (!existing) {
         // A new rule, or one still waiting in the file: filed in the account
         // now when it can be, else kept in the file to move later.
-        if (!canFollow(rule) || !store.signedIn() || !store.hasSynced()) return { handled: false };
+        if (!canFollow(rule)) return { handled: false };
+        // Waiting in the file (signed out, not synced yet): record whose it
+        // is, so it never moves into another account.
+        if (!store.signedIn() || !store.hasSynced()) {
+          store.noteOfflineSave(rule.id);
+          return { handled: false };
+        }
         const home = options.home ? resolveHome(options.home, undefined) : store.thisComputerHome();
-        if (!home || !fileInAccount(rule, home)) return { handled: false };
+        if (!home || !fileInAccount(rule, home)) {
+          store.noteOfflineSave(rule.id);
+          return { handled: false };
+        }
         store.addPending({ ruleId: rule.id, rule: content(rule) as ConfigAutomationRule & Record<string, unknown>, home });
         if (fileCopy) args.writeFileRules(args.readFileRules().filter((entry) => entry.id !== rule.id));
         return { handled: true };

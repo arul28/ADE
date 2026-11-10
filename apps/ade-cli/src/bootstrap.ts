@@ -1613,6 +1613,8 @@ export async function createAdeRuntime(args: {
     if (accountSettingsStore) {
       const accountStoreForRules = accountSettingsStore;
       let ruleSyncTimer: ReturnType<typeof setTimeout> | null = null;
+      // A pending timer runs a real sync if any caller asked for one.
+      let ruleSyncTimerWantsSync = false;
       let ruleSyncRunning = false;
       let ruleSyncAgain = false;
       // `sync: false` after the store's own sync applied remote rows: its
@@ -1643,10 +1645,13 @@ export async function createAdeRuntime(args: {
         }
       };
       const scheduleAutomationRuleSync = (delayMs = 1_500, options: { sync: boolean } = { sync: true }) => {
+        ruleSyncTimerWantsSync ||= options.sync;
         if (ruleSyncTimer) return;
         ruleSyncTimer = setTimeout(() => {
           ruleSyncTimer = null;
-          void syncAutomationRules(options);
+          const sync = ruleSyncTimerWantsSync;
+          ruleSyncTimerWantsSync = false;
+          void syncAutomationRules({ sync });
         }, delayMs);
         ruleSyncTimer.unref?.();
       };

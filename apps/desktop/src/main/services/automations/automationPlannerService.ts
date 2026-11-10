@@ -1480,7 +1480,18 @@ export function createAutomationPlannerService({
       }
 
       const normalized = validation.normalized;
-      if (normalized.enabled) {
+      // Only the computer that runs the rule needs its events delivered: an
+      // edit on another computer, or a move to one, is not checked here.
+      const draftHome = req.draft.home;
+      const savedRule = safeTrim(normalized.id)
+        ? projectConfigService.get().effective.automations.find((r) => r.id === safeTrim(normalized.id)) ?? null
+        : null;
+      const runsHereAfterSave = draftHome === "this-computer"
+        ? true
+        : draftHome && typeof draftHome === "object"
+          ? false
+          : savedRule?.runsHere !== false;
+      if (normalized.enabled && runsHereAfterSave) {
         automationService.assertWebhookGatewayReadyForRule?.({
           name: normalized.name,
           triggers: normalized.triggers,

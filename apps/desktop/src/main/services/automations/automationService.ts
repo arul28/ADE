@@ -3292,14 +3292,15 @@ export function createAutomationService({
       });
       return null;
     }
+    // The attempt counts on every computer from the moment it starts, so a
+    // rule moved during a long run cannot start a second attempt on its new
+    // home. A refunded attempt stays counted there: one fewer run, never more.
+    if (rule.home) projectConfigService.recordAutomationRunCount(rule.id, runCount);
     let done = false;
     return {
       settle: (outcome) => {
         if (done) return;
         done = true;
-        // A run that happened counts on every computer, so a run limit holds
-        // when the rule moves to another one.
-        if (rule.home) projectConfigService.recordAutomationRunCount(rule.id, runCount);
         const retireForSuccess = oneShot && outcome.succeeded;
         if (!retireForSuccess && runCount < maxRuns) {
           logger.info("automations.rule_budget.retained", {
