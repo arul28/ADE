@@ -2979,7 +2979,7 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.contextRef?.path).toBeNull();
   });
 
-  it("launches default Codex spawn_agent sessions with supported sandbox flags", async () => {
+  it.each(["default", "edit"] as const)("launches %s Codex spawn_agent sessions with supported sandbox flags", async (permissionMode) => {
     const fixture = createRuntime();
     const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-spawn-codex-bin-"));
     createFakePathExecutable(binDir, "codex");
@@ -2994,7 +2994,7 @@ describe("adeRpcServer", () => {
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "codex",
-        permissionMode: "default",
+        permissionMode,
         prompt: "Check the Codex launch flags",
       });
     });

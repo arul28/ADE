@@ -80,8 +80,19 @@ describe("createResourcePressureMonitor", () => {
       event: "ade_resource_pressure",
       dedupeKey: "resource_pressure:memory",
       minimumIntervalMs: 6 * 60 * 60_000,
-      properties: { kind: "memory", severity: "critical", emulator_count: "5_plus", dev_brain_running: true, top_table: "chat_events" },
+      properties: {
+        kind: "memory",
+        severity: "critical",
+        emulator_count: "5_plus",
+        dev_brain_running: true,
+        ram_gb_bucket: "33_64",
+        available_pct: 54,
+        ade_mb: 900,
+        ade_pct_of_ram: 2,
+      },
     });
+    // The top table names a database only for a WAL or CPU breach.
+    expect(h.captures[0]?.properties).not.toHaveProperty("top_table");
     // Group names and numbers only on the way out.
     expect(JSON.stringify(h.warn.mock.calls[0]?.[1])).not.toMatch(/\/|qemu|ADE\.app/);
 
