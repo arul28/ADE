@@ -8,6 +8,8 @@ import type {
   PrSummary,
   PrWithConflicts,
   StackLinkOffer,
+  PrRepoReference,
+  SearchPrMentionablesResult,
 } from "../../../shared/types";
 import { EMPTY_PR_DETAIL_BUNDLE, settlePrDetailBundle } from "../../../shared/prDetailBundle";
 import type { PrChatWatchSummary } from "../../../shared/prWatch";
@@ -60,6 +62,9 @@ const PINNED_METHOD_ARG_INDEX: Record<string, number> = {
   addComment: 1,
   updateTitle: 1,
   updateBody: 1,
+  updateDescription: 1,
+  searchMentionables: 1,
+  getRepoReferences: 1,
   setLabels: 1,
   setAssignees: 1,
   listGitHubFilterOptions: 1,
@@ -488,6 +493,32 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     },
     setLabels: async (args: unknown) => {
       await call("prs.setLabels", args, undefined, false);
+    },
+    // The description editor. `updateDescription` also reaches a PR opened
+    // from the GitHub list with no local row; an older host has only
+    // `updateBody`, which covers every PR this project tracks.
+    updateDescription: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("prs.updateDescription", pin, infra);
+      const action = commands.hasAction("prs.updateDescription") ? "prs.updateDescription" : "prs.updateBody";
+      await commands.call(action, asRecord(args), mutation);
+      invalidatePrsReads();
+    },
+    // People and teams for the reviewer picker and the @ menu, and issues and
+    // PRs for the # menu. A host without them must say so: an empty answer
+    // would read as "nobody matches".
+    searchMentionables: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("prs.searchMentionables", pin, infra);
+      if (!commands.hasAction("prs.searchMentionables")) throw new Error("Update ADE on that computer to search for people here.");
+      return await commands.call<SearchPrMentionablesResult>("prs.searchMentionables", asRecord(args), {
+        fallback: () => {
+          throw new Error("That computer did not answer the search. Try again.");
+        },
+      });
+    },
+    getRepoReferences: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("prs.getRepoReferences", pin, infra);
+      if (!commands.hasAction("prs.getRepoReferences")) return [];
+      return await read<PrRepoReference[]>("prs.getRepoReferences", args, []);
     },
     // A host without these must say so, so the GitHub tab falls back to loaded
     // rows (and read-only assignees) instead of reading an empty answer.

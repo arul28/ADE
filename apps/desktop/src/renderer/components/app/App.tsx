@@ -212,8 +212,6 @@ const StartupSplashScreen = (
   </div>
 );
 
-/** Used by React.lazy Suspense boundaries while route chunks load. */
-const GuardLoadingFallback = StartupSplashScreen;
 
 const RouteLoadingFallback = (
   <div
@@ -251,6 +249,13 @@ const RouteLoadingFallback = (
     </div>
   </div>
 );
+
+/**
+ * Used by React.lazy Suspense boundaries while route chunks load. The web
+ * client has its own start screens, so the logo reveal (and its "local
+ * workspace" line) never plays there.
+ */
+const GuardLoadingFallback = isWebClientMode() ? RouteLoadingFallback : StartupSplashScreen;
 
 const LazyFallback = RouteLoadingFallback;
 

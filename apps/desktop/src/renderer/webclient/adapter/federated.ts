@@ -656,10 +656,19 @@ export function createFederatedWebAdapter({
     if (typeof current === "function") {
       const callDynamic = (...args: unknown[]) => {
         const pinned = bindingFromArgs(args);
-        const { parent, value } = readPath(
-          pinned ? adapterForBinding(pinned) : currentAdapter,
-          path,
-        );
+        let pinnedAdapter: AdeWebAdapter | null = null;
+        if (pinned) {
+          try {
+            pinnedAdapter = adapterForBinding(pinned);
+          } catch (error) {
+            // The pinned machine is not connected (parked at the session
+            // limit, or its connect failed). Fail the way every other call
+            // does, so a caller's `.catch` sees it and an effect that
+            // subscribes does not throw into the error boundary.
+            return isSubscriptionMember(path) ? () => {} : Promise.reject(error);
+          }
+        }
+        const { parent, value } = readPath(pinnedAdapter ?? currentAdapter, path);
         if (typeof value !== "function") return value;
         // Some adapter functions are themselves proxies so nested missing APIs
         // can keep resolving. Reflect.apply invokes the callable directly

@@ -10,6 +10,7 @@ import { isDeletedCloudRow, matchCloudBoxes } from "./cloudMachineModel";
 import type { MachineAction } from "./MachineActionsMenu";
 import type { MachineRow, MachineSection, MachineSections } from "./remoteMachineModel";
 import { cloudBoxContext, useCloudBoxActions, type CloudBoxContext } from "./useCloudBoxActions";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useCloudMachines } from "./useCloudMachines";
 
@@ -57,7 +58,7 @@ export function useCloudMachineGroup(args: {
     onOpenSettings,
   } = args;
   const cloudEnabled = useAdeCloudEnabled();
-  const cloudMachines = useCloudMachines(args.enabled && cloudEnabled && Boolean(window.ade?.cloud?.listMachines));
+  const cloudMachines = useCloudMachines(args.enabled && cloudEnabled && isAdeAvailable(window.ade?.cloud?.listMachines));
   const cloudResult = cloudMachines.result;
   const cloudBoxes = useMemo(
     () => (cloudResult?.state === "ok" ? cloudResult.machines : []),

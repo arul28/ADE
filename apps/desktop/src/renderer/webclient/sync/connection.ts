@@ -49,6 +49,15 @@ import {
 
 const SOCKET_OPEN = 1;
 const DEFAULT_TRANSPORT_OPEN_TIMEOUT_MS = 8_000;
+/**
+ * How long a route gets to open when the route that worked last time comes
+ * after it in the dial order. Direct routes are tried before ADE Relay so a
+ * browser that gains one starts to use it; a direct route that is there opens
+ * in well under a second, and one that is not (a Tailscale name from a
+ * network this browser is not on) used to hold the dial for the full timeout
+ * before the working route got its turn.
+ */
+const SPECULATIVE_TRANSPORT_OPEN_TIMEOUT_MS = 3_000;
 const DEFAULT_AUTHENTICATED_HELLO_TIMEOUT_MS = 12_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 60_000;
 const INBOUND_STALE_MS = 75_000;
@@ -519,9 +528,13 @@ export class SyncConnection {
     });
     const correlationId = browserConnectionCorrelationId();
     let lastError: Error | null = null;
-    for (const candidate of dialable) {
+    const lastGoodIndex = dialable.findIndex((candidate) => candidate.url === environment.lastGoodEndpoint);
+    for (const [index, candidate] of dialable.entries()) {
+      const openTimeoutMs = index < lastGoodIndex
+        ? Math.min(this.transportOpenTimeoutMs, SPECULATIVE_TRANSPORT_OPEN_TIMEOUT_MS)
+        : this.transportOpenTimeoutMs;
       try {
-        await this.connectEndpoint(environment, candidate, correlationId);
+        await this.connectEndpoint(environment, candidate, correlationId, openTimeoutMs);
         return;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -547,13 +560,14 @@ export class SyncConnection {
     environment: WebClientEnvironmentRecord,
     candidate: BrowserDialCandidate,
     correlationId: string,
+    openTimeoutMs: number,
   ): Promise<void> {
     const throughRelay = browserEndpointRequiresRelayAccess(candidate);
     try {
-      await this.connectEndpointAttempt(environment, candidate, throughRelay, correlationId);
+      await this.connectEndpointAttempt(environment, candidate, throughRelay, correlationId, openTimeoutMs);
     } catch (error) {
       if (!throughRelay || !(error instanceof RelayReadyNegotiationTimeoutError)) throw error;
-      await this.connectEndpointAttempt(environment, candidate, false, correlationId);
+      await this.connectEndpointAttempt(environment, candidate, false, correlationId, openTimeoutMs);
     }
   }
 
@@ -562,6 +576,7 @@ export class SyncConnection {
     candidate: BrowserDialCandidate,
     useRelayReadyV2: boolean,
     correlationId: string,
+    openTimeoutMs: number,
   ): Promise<void> {
     const generation = ++this.connectionGeneration;
     const endpoint = candidate.url;
@@ -626,7 +641,7 @@ export class SyncConnection {
       this.pendingAttemptCancel = cancelAttempt;
       const openTimeout = setTimeout(() => {
         fail(new Error(`Timed out opening ${endpoint}.`), "Transport open timeout");
-      }, this.transportOpenTimeoutMs);
+      }, openTimeoutMs);
 
       socket.onopen = () => {
         if (settled || !this.isCurrentSocket(socket, generation)) return;
