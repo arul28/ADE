@@ -30,8 +30,8 @@ import {
 } from "../../../shared/modelRegistry";
 import { CaretDown } from "@phosphor-icons/react";
 import { providerBrand } from "./providers/providerBrand";
-import { ToolLogo } from "../terminals/ToolLogos";
-import { DevinMark } from "../shared/ProviderLogos";
+import { ProviderTileView, providerListMark } from "./providers/ProviderTileView";
+import { connectionKeyFor, providerSignIn } from "./providers/providerSignInCommands";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { checkProviderSignIn } from "../../lib/providerSignInCheck";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
@@ -50,30 +50,13 @@ import { availableProviderDescriptors, providerDescriptor, providerStatusFor } f
 import { useProviderAccountCounts } from "./providers/accounts/useProviderInstances";
 import { ProviderDetailPage } from "./providers/ProviderDetailPage";
 import { CliSignInSheet, TerminalSignInSheet, agentCliSignInSupported, type CursorSignInOutcome } from "./providers/ProviderSignInSheet";
-import { useSettingsMachineScope } from "./SettingsMachineScope";
-import { acpLoginCommand, acpProviderLabel } from "./providers/acpProviders";
-import { isAgentCliLoginProvider, type AgentCliLoginProvider, type TerminalToolType } from "../../../shared/types";
-import type { AiProviderConnections } from "../../../shared/types/config";
-import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
+import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
+import { AdeCloudProvidersView } from "./providers/cloud/AdeCloudProvidersView";
+import { acpLoginCommand } from "./providers/acpProviders";
+import { isAgentCliLoginProvider, type AgentCliLoginProvider } from "../../../shared/types";
 
-/**
- * The terminal sign-in for a provider: the ACP CLIs' own login commands, and
- * Muse's `muse login`. Muse's runs as a `muse` terminal so the PTY host swaps
- * in that machine's pinned binary (ADE never runs a `muse` from PATH).
- */
-function providerSignIn(id: SettingsProviderId): { command: string; label: string; toolType: TerminalToolType } | null {
-  if (id === "muse") return { command: MUSE_LOGIN_COMMAND, label: PROVIDER_DISPLAY_NAME.muse, toolType: "muse" };
-  const command = acpLoginCommand(id);
-  return command ? { command, label: acpProviderLabel(id) ?? id, toolType: "shell" } : null;
-}
-
-/** The connection row a provider's sign-in writes. OpenCode has none of its own; its providers are inside it. */
-function connectionKeyFor(id: SettingsProviderId): keyof AiProviderConnections | null {
-  return id === "opencode" ? null : id;
-}
 import {
   AlertBanner,
-  PreviewChip,
   normalizeProviderVersion,
   prettifyProviderId,
 } from "./providers/providerUi";
@@ -210,38 +193,17 @@ function ProviderCard({
   const brand = providerBrand(descriptor.id);
 
   return (
-    <div
-      className="ade-pvl-tile"
-      data-state={status.state}
+    <ProviderTileView
+      descriptor={descriptor}
+      state={status.state}
+      chipLabel={status.label}
+      chipTone={PROVIDER_TAG_TONE[status.state]}
+      facts={fact ? [{ text: fact }] : []}
+      accent={brand.neutral ? "var(--color-fg)" : brand.accent}
       hidden={hidden}
-      style={{ "--pvl-accent": brand.neutral ? "var(--color-fg)" : brand.accent } as React.CSSProperties}
-    >
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label={`Open ${descriptor.label} settings`}
-        className="ade-pvl-open"
-      >
-        <span className="ade-pvl-logo" aria-hidden>{providerListMark(descriptor, 30)}</span>
-        <span className="ade-pvl-id">
-          <span className="ade-pvl-name-row">
-            <span className="ade-pvl-name" data-testid={`provider-tile-name-${descriptor.id}`}>
-              {descriptor.label}
-            </span>
-            {descriptor.preview ? <PreviewChip /> : null}
-          </span>
-          {fact ? <span className="ade-pvl-fact" title={fact}>{fact}</span> : null}
-        </span>
-        <span className="kit-tag ade-pvl-chip" data-tone={PROVIDER_TAG_TONE[status.state]}>
-          {status.label}
-        </span>
-      </button>
-      {action ? (
-        <button type="button" className="ade-pvl-action" aria-label={action.aria} onClick={action.run}>
-          {action.label}
-        </button>
-      ) : null}
-    </div>
+      onOpen={onOpen}
+      action={action ? { kind: "button", ...action } : null}
+    />
   );
 }
 
@@ -256,27 +218,6 @@ const PROVIDER_TAG_TONE: Record<ProviderDescriptorState, string | undefined> = {
 };
 
 type ProviderDescriptorState = ReturnType<typeof providerStatusFor>["state"];
-
-/**
- * The provider's mark with no box around it, for the list: the bare glyph in
- * its maker's colour (`ToolLogo`'s provider-mark look). The default logos are
- * app-icon avatars — a filled square or circle — which read as a box in a box
- * at this size. Devin's tool logo is its boxed app icon, so it takes the bare
- * Cognition glyph; a provider with no bare mark keeps its own logo.
- */
-// Muse and Pi are left out: their own logos are already bare images (Meta's
-// mark, the Pi glyph), and their masked provider-marks draw as a solid square.
-const BARE_MARK_TOOLS: ReadonlySet<string> = new Set([
-  "claude", "codex", "cursor", "droid", "copilot", "opencode", "qwen", "kimi", "grok",
-]);
-
-function providerListMark(descriptor: ProviderDescriptor, size: number): React.ReactNode {
-  if (descriptor.id === "devin") return <DevinMark size={size} />;
-  if (BARE_MARK_TOOLS.has(descriptor.id)) {
-    return <ToolLogo toolType={descriptor.id as TerminalToolType} size={size} appearance="provider-mark" />;
-  }
-  return descriptor.logo(size);
-}
 
 /** The order inside the one list: what works, then what asks for something, then the rest. */
 const STATE_ORDER: Record<ProviderDescriptorState, number> = {
@@ -389,18 +330,32 @@ function buildLocalProviderDrafts(
   ) as Record<LocalProviderFamily, LocalProviderDraft>;
 }
 
-export function ProvidersSection({
-  providerParam = null,
-  onProviderChange,
-  harnessesParam = false,
-}: {
+type ProvidersSectionProps = {
   /** `?provider=<id>` — which provider's page to show, if any. */
   providerParam?: string | null;
   /** Lets the settings shell keep the URL in step with the sub-view. */
   onProviderChange?: (providerId: string | null) => void;
   /** `#ai-harnesses` — scroll the Custom section into view on mount. */
   harnessesParam?: boolean;
-} = {}) {
+};
+
+/**
+ * Settings › Providers for the place the title picker names: one machine, or
+ * ADE Cloud. Two components, so switching place never changes a component's
+ * hooks (the machine scope stays This computer's on ADE Cloud, so nothing
+ * above remounts).
+ */
+export function ProvidersSection(props: ProvidersSectionProps = {}) {
+  const place = useProvidersPlace();
+  if (place.kind === "ade-cloud") return <AdeCloudProvidersView providerParam={props.providerParam ?? null} onProviderChange={props.onProviderChange} />;
+  return <MachineProvidersSection {...props} />;
+}
+
+function MachineProvidersSection({
+  providerParam = null,
+  onProviderChange,
+  harnessesParam = false,
+}: ProvidersSectionProps) {
   const usageHeaderPreferences = useUsageHeaderPreferences();
   // The machine whose providers this page shows. Every runtime call below
   // carries `pin` (null = the tab's binding); the page is

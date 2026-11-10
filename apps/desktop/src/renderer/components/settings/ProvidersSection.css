@@ -190,7 +190,7 @@
   transition: background 120ms ease, border-color 120ms ease;
 }
 .ade-pvl-tile[hidden] { display: none; }
-.ade-pvl-tile:hover {
+.ade-pvl-tile:not([data-static]):hover {
   background: var(--kit-hover);
   border-color: color-mix(in srgb, var(--pvl-accent) 30%, var(--kit-panel-edge));
 }
@@ -255,7 +255,26 @@
 .ade-pvl-tile[data-state="attention"] .ade-pvl-fact {
   color: var(--kit-text-2);
 }
+.ade-pvl-tile .ade-pvl-fact[data-tone="warn"] { color: var(--kit-warn); }
+.ade-pvl-tile .ade-pvl-fact[data-tone="crit"] { color: var(--kit-crit); }
+/* A tile with no page of its own yet: the same layout, not a button, no hover. */
+.ade-pvl-open[data-static] { cursor: default; }
+/* ADE Cloud: the last line says why or what to do, so it wraps rather than
+   being cut (two lines at most widths; the words are short for that). A
+   line marked whole wraps the same way on any tile. */
+.ade-pvl-tile[data-wrap] .ade-pvl-fact:last-child,
+.ade-pvl-tile .ade-pvl-fact[data-whole] {
+  overflow: visible;
+  white-space: normal;
+  line-height: 1.35;
+}
 .ade-pvl-chip { flex: none; }
+.ade-pvl-switch {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  margin-right: 12px;
+}
 .ade-pvl-action {
   flex: none;
   height: 28px;
@@ -271,6 +290,21 @@
   cursor: pointer;
 }
 .ade-pvl-action:hover { background: color-mix(in srgb, var(--pvl-accent) 20%, transparent); }
+.ade-pvl-action:disabled { cursor: default; opacity: 0.6; }
+/* ADE Cloud: "Checked on cloud-a ▾", the cloud computer the tiles were read on. */
+.ade-pvl-reporting {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.ade-pvl-reporting-name { color: var(--color-fg); font-weight: 500; }
+.ade-pvl-reporting:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 4px; }
 /* "Not set up": a quiet divider across the list, its logos while folded. */
 .ade-pvl-divider {
   grid-column: 1 / -1;

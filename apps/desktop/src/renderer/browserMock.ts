@@ -174,6 +174,7 @@ import { EMPTY_SUGGESTIONS_STATE, SUGGESTIONS_STORAGE_KEY, type SuggestionsState
 import { ONBOARDING_PROGRESS_STORAGE_KEY, type OnboardingProgress } from "./onboarding/onboardingProgress";
 import { resetOnboardingTiers } from "./onboarding/resetOnboardingTiers";
 import { MOCK_STREAM_URL, createMockAndroidEmulator } from "./browserMockAndroid";
+import { applyBrowserMockProviderLogins } from "./browserMockProviderLogins";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
@@ -10429,6 +10430,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   // Brain-down banner scenarios (`?adeBrainDown=<cause>`).
   applyBrowserMockBrainDown((window as any).ade);
   applyBrowserMockUpdateAndFallback((window as any).ade);
+  applyBrowserMockProviderLogins((window as any).ade); // `?mockSignIns=`: ADE Cloud sign-ins
   void attachBrowserRuntimeBridge();
   if (browserMockBrainDownScenario() === "updating") {
     // After the mock project has opened; that open clears transition errors.

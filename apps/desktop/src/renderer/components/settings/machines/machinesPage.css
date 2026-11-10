@@ -341,6 +341,20 @@
 .ade-mpick-item > svg {
   color: var(--color-accent);
 }
+/* Providers' picker: a rule, then ADE Cloud, which is not a machine. */
+.ade-mpick-rule {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--color-border);
+}
+.ade-mpick-cloud {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent);
+}
 
 button.ade-mx-hero-chip {
   font: inherit;
