@@ -694,15 +694,28 @@ export class AdeSyncClient {
     return removedIds;
   }
 
+  /**
+   * `firstEndpoint` is a route to dial before the others, for this dial only:
+   * the one a connection that was just closed on purpose was using. The usual
+   * order tries a direct route before ADE Relay, which is right for a new
+   * connection and costs up to 20 seconds per dead route on a re-dial.
+   */
   async connect(
     envId: string,
     relayAccess: WebRelayAccess = SIGNED_OUT_RELAY_ACCESS,
+    firstEndpoint: string | null = null,
   ): Promise<void> {
     const environment = await this.envStore.getEnvironment(envId);
     if (!environment) throw new AdeSyncError(`Unknown ADE web-client environment: ${envId}`, "unknown_environment");
     const originalEndpoints = deriveBrowserSyncEndpoints({ environment });
-    const endpoints = filterEnvironmentEndpoints(environment, originalEndpoints, relayAccess);
-    requireDialableAuthorizedEndpoint(originalEndpoints, endpoints);
+    const authorizedEndpoints = filterEnvironmentEndpoints(environment, originalEndpoints, relayAccess);
+    requireDialableAuthorizedEndpoint(originalEndpoints, authorizedEndpoints);
+    const endpoints = firstEndpoint
+      ? [
+          ...authorizedEndpoints.filter((candidate) => candidate.url === firstEndpoint),
+          ...authorizedEndpoints.filter((candidate) => candidate.url !== firstEndpoint),
+        ]
+      : authorizedEndpoints;
     this.relayAccess = relayAccess;
     this.selectedEnvId = envId;
     this.activeProjectId = environment.activeProjectId ?? null;
@@ -1044,6 +1057,9 @@ export class AdeSyncClient {
     const result = await promise;
     if (result.ok) {
       const envId = this.selectedEnvId;
+      // The route this connection is on works right now: the re-dial below
+      // starts with it instead of walking the direct routes again.
+      const liveEndpoint = this.connection.getStatus().endpoint ?? null;
       this.streamSubscriptionsPaused = true;
       try {
         this.activeProjectId = result.project?.id ?? projectId;
@@ -1061,7 +1077,7 @@ export class AdeSyncClient {
           activeProjectId: this.activeProjectId,
         }));
         if (envId) {
-          await this.connect(envId, this.relayAccess);
+          await this.connect(envId, this.relayAccess, liveEndpoint);
         }
       } finally {
         this.streamSubscriptionsPaused = false;

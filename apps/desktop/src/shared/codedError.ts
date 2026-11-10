@@ -72,7 +72,10 @@ export function encodeCodedErrorMessage(code: string, message: string, meta?: { 
 export function stripElectronErrorWrapper(message: string): string {
   return message
     .replace(/^Error invoking remote method '[^']+':\s*/i, "")
-    .replace(/^Error:\s*/i, "")
+    // Electron puts the error's class name before its message:
+    // "PairedRuntimeTransportUnavailableError: Can't reach …" reached the chat
+    // as written. The person needs the sentence, not the class.
+    .replace(/^(?:[A-Z][A-Za-z0-9]*)?Error:\s*/i, "")
     // The runtime RPC client wraps every daemon-side failure in "Remote ADE
     // service method <m> failed (code <n>): …". A code the brain attached is
     // behind that wrapper, and without stripping it no brain-side failure can

@@ -18,6 +18,7 @@ import {
   type CloudMachineActionKind,
   type CloudMachineActionResult,
   type CloudMachinesResult,
+  type CloudOpenCheckoutResult,
   type CloudStatus,
 } from "../../../shared/adeCloud";
 import {
@@ -54,7 +55,7 @@ import { openCloudApprovalWindow } from "./cloudApprovalWindow";
 import { createCloudMachines } from "./cloudMachines";
 import { claimCloudReadyMachine, releaseCloudReadyMachine } from "./cloudReadyClaim";
 import { createCloudReadyKeeper } from "./cloudReadyMachines";
-import { setCloudAsleepCheck, setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
+import { setCloudAsleepCheck, setCloudRestChanged, setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
 import { startCloudSleepWatch } from "./cloudSleepWatch";
 import { setCloudDesktopActions } from "./cloudDesktopActions";
 import { copyCloudMachine, moveCloudMachine, type CloudCopyDeps } from "./cloudMachineCopy";
@@ -111,6 +112,8 @@ export function registerCloudIpc(args: {
   renameMachine: (machineKey: string, name: string) => Promise<unknown>;
   /** Takes a machine off the ADE account (what Delete box does once the box is gone). */
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
+  /** Forgets this desktop's saved connections to a machine a move deleted (the remote connection service). */
+  forgetMachineConnections?: (machine: { machineKey: string | null; instanceId: string }) => void;
   /** Ready machines: the per-project switch, each prepare's outcome, picker claims (analytics; coarse outcome only). */
   recordReady?: (outcome: "enabled" | "disabled" | "completed" | "failed" | "ready_picker") => void;
   /** One coarse product fact per finished create (analytics; never the box or the error). */
@@ -311,6 +314,11 @@ export function registerCloudIpc(args: {
     });
   });
 
+  // A rest starts or ends with no cloud action and no wake, so nothing else
+  // tells the windows: a gate shown while the computer was awake kept saying
+  // "running". One event per change; the windows read the list again.
+  setCloudRestChanged(() => sendToAllWindows(IPC.cloudStatusChanged));
+
   // A computer whose ADE start script can't restart on an update would install
   // the update and keep running the old ADE. Asked before the update goes out,
   // so the card says so at once and points at Update this computer.
@@ -396,11 +404,34 @@ export function registerCloudIpc(args: {
     return account;
   });
 
-  /** Opens Stripe's checkout or billing portal in the person's browser. The plan changes reach the app on the next read. */
-  ipcMain.handle(IPC.cloudOpenCheckout, async (event): Promise<{ opened: boolean }> => {
+  // Account-level: extra disk is the account's, shared by all its computers, so no pin.
+  ipcMain.handle(IPC.cloudSetExtraDisk, async (event, arg: { enabled?: unknown; monthlyLimitUsd?: unknown }): Promise<CloudAccountState | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetExtraDisk)) return null;
+    const limit = arg?.monthlyLimitUsd;
+    const choice = arg?.enabled === true
+      ? { enabled: true as const, monthlyLimitUsd: typeof limit === "number" && Number.isInteger(limit) ? limit : 0 }
+      : { enabled: false as const };
+    const account = await billingCall(async () => (await requireCloudProvider(credentials)).setExtraDisk(choice));
+    logger.info("cloud.extra_disk_set", { enabled: choice.enabled });
+    sendToAllWindows(IPC.cloudStatusChanged);
+    return account;
+  });
+
+  /**
+   * Opens Stripe's checkout for a plan in the person's browser. On a paid
+   * account asking for its other plan, the server changes the plan itself
+   * and nothing opens. Account-level, so no pin.
+   */
+  ipcMain.handle(IPC.cloudOpenCheckout, async (event, arg?: { plan?: unknown }): Promise<CloudOpenCheckoutResult> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenCheckout)) return { opened: false };
-    const { url } = await billingCall(async () => (await requireCloudProvider(credentials)).billingCheckout());
-    await openExternalUrl(url);
+    const plan = arg?.plan === "pro" || arg?.plan === "plus" ? arg.plan : undefined;
+    const result = await billingCall(async () => (await requireCloudProvider(credentials)).billingCheckout(plan));
+    if (result.url == null) {
+      logger.info("cloud.plan_changed", { change: result.change });
+      sendToAllWindows(IPC.cloudStatusChanged);
+      return { opened: false, change: result.change };
+    }
+    await openExternalUrl(result.url);
     args.recordPlan?.("plan_checkout");
     return { opened: true };
   });
@@ -491,6 +522,9 @@ export function registerCloudIpc(args: {
   const copyDeps: CloudCopyDeps = {
     ...machineCreatorDeps,
     removeAccountMachine: args.removeAccountMachine,
+    // Every move this desktop runs (its menu, and the CLI or an agent over the
+    // desktop bridge) forgets the deleted source's connection here.
+    ...(args.forgetMachineConnections ? { forgetMachineConnections: args.forgetMachineConnections } : {}),
   };
   // The CLI and agents make, copy and move machines through this app (the
   // new machine signs in through its approval window), over the desktop bridge.

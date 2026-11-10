@@ -234,11 +234,16 @@ import { ChatTerminalRevealContext } from "./ChatCodeBlockRun";
 import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
+import { ChatMachineWakeProvider } from "./useChatMachineWake";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
-import { savedChatAwareAgentChatApi } from "../../state/cloudSavedChatsSync";
+import {
+  markCloudWakeForSend,
+  savedChatAwareAgentChatApi,
+  sendWithCloudWakeMark,
+} from "../../state/cloudSavedChatsSync";
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
 import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
@@ -428,6 +433,7 @@ import {
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
 import { chatNoticeReducer, shownChatNotice } from "./chatNotice";
+import { savedChatComputerGone } from "../../state/cloudSavedChats";
 import {
   LAUNCH_PROFILE_TITLE,
   type CliProvider,
@@ -5362,6 +5368,11 @@ export function AgentChatPane({
   const chatSelectionTransitioning = composerSessionId !== renderedSessionId;
   const renderedSessionIdRef = useRef<string | null>(renderedSessionId);
   renderedSessionIdRef.current = renderedSessionId;
+  // Set while a send wakes this chat's sleeping cloud computer (15–30 s), so
+  // the transcript shows the working indicator before any turn event arrives.
+  const cloudWakingSince = useRootAppStore((s) => (
+    renderedSessionId ? s.cloudWakingSinceBySessionId[renderedSessionId] ?? null : null
+  ));
   // A chat opened the instant a new-lane launch was sent: its session id is
   // reserved, but until the brain reports `sessionCreated` there is no summary
   // or transcript to read. The pane renders the launch instead (prompt bubble,
@@ -5484,6 +5495,10 @@ export function AgentChatPane({
   const shownNotice = shownChatNotice(
     chatNotice,
     (chatRuntimePin ?? projectBinding)?.kind === "remote",
+    // Read when the notice renders: the saved-chats read marks a chat whose
+    // cloud computer no longer exists (no connection, or gone from the list).
+    chatNotice != null && selectedSessionId != null
+      && savedChatComputerGone(chatRuntimePin, selectedSessionId),
   );
   // A project chat on another machine, shown here: this desktop runs its
   // agent's browser commands in the browser the user can see, wherever the
@@ -6742,7 +6757,9 @@ export function AgentChatPane({
   const sendClaudeGoalCommand = useCallback(async (sessionId: string, argument: string) => {
     setError(null);
     try {
-      await agentChatApiRef.current.send({ sessionId, text: `/goal ${argument}` }, chatRuntimePinRef.current);
+      await sendWithCloudWakeMark(sessionId, chatRuntimePinRef.current, () => (
+        agentChatApiRef.current.send({ sessionId, text: `/goal ${argument}` }, chatRuntimePinRef.current)
+      ));
     } catch (goalError) {
       setError(errorMessage(goalError));
     }
@@ -11477,7 +11494,9 @@ export function AgentChatPane({
       // for up to half a minute.
       if (options?.afterSignIn) await refreshAvailableModels({ force: true });
       try {
-        await agentChatApiRef.current.send({ sessionId, text, displayText, ...replayContext }, chatRuntimePinRef.current);
+        await sendWithCloudWakeMark(sessionId, chatRuntimePinRef.current, () => (
+          agentChatApiRef.current.send({ sessionId, text, displayText, ...replayContext }, chatRuntimePinRef.current)
+        ));
       } catch (sendError) {
         if (!isTurnAlreadyActiveError(sendError)) throw sendError;
         rejectAuthRetry(sessionId);
@@ -14512,7 +14531,7 @@ export function AgentChatPane({
         return true;
       }
       try {
-        await window.ade.agentChat.send({ sessionId: continuation.targetSessionId, text }, pin);
+        await sendWithCloudWakeMark(continuation.targetSessionId, pin, () => window.ade.agentChat.send({ sessionId: continuation.targetSessionId, text }, pin));
       } catch (sendError) {
         // ADE Web reaches one machine; a chat elsewhere gets the hand-over.
         if (isWebRuntimePinUnroutableError(sendError)) {
@@ -15131,11 +15150,11 @@ export function AgentChatPane({
       draftsPerSessionRef.current.delete(selectedSessionId);
       try {
         touchSession(selectedSessionId);
-        await agentChatApiRef.current.send({
+        await sendWithCloudWakeMark(selectedSessionId, chatRuntimePinRef.current, () => agentChatApiRef.current.send({
           sessionId: selectedSessionId,
           text,
           displayText: text,
-        }, chatRuntimePinRef.current);
+        }, chatRuntimePinRef.current));
         void refreshSessions().catch(() => {});
       } catch (outputStyleError) {
         setDraft((current) => (current.trim().length ? current : draft));
@@ -15214,6 +15233,10 @@ export function AgentChatPane({
     submitInFlightRef.current = true;
     setBusy(true);
     setError(null);
+    // A send to a saved chat wakes its sleeping cloud computer first. The pane
+    // and the Work row say so until the turn shows live or this submit
+    // settles (display only; `CloudWakeSendMark.settle`).
+    const cloudWake = selectedSessionId ? markCloudWakeForSend(selectedSessionId, chatRuntimePinRef.current) : null;
     if (!deferComposerClear) {
       setDraft("");
       draftsPerSessionRef.current.delete(selectedSessionId);
@@ -15507,7 +15530,11 @@ export function AgentChatPane({
       setAppControlContextItems(keepEmptyArray);
       setBuiltInBrowserContextItems(keepEmptyArray);
     } catch (submitError) {
-      const message = submitError instanceof Error ? submitError.message : String(submitError);
+      // A call that gave up after the message left keeps the mark: the wake usually still delivers it.
+      cloudWake?.settle(submitError, handedOff != null);
+      // One plain sentence: a pinned call's failure arrives inside Electron's
+      // "Error invoking remote method '…': <Class>Error:" wrapper.
+      const message = stripElectronErrorWrapper(submitError instanceof Error ? submitError.message : String(submitError));
       if (handedOff && isRuntimeTransportTimeoutError(submitError)) {
         // The call gave up, not the send: the chat's machine usually still
         // delivers it. Put the text back only if it never shows up.
@@ -15575,6 +15602,7 @@ export function AgentChatPane({
         void refreshAvailableModels().catch(() => {});
       }
     } finally {
+      cloudWake?.settle();
       submitInFlightRef.current = false;
       setBusy(false);
     }
@@ -15675,10 +15703,10 @@ export function AgentChatPane({
     setBusy(true);
     setError(null);
     try {
-      await agentChatApiRef.current.send({
+      await sendWithCloudWakeMark(sessionId, chatRuntimePinRef.current, () => agentChatApiRef.current.send({
         sessionId,
         text: "/compact",
-      }, chatRuntimePinRef.current);
+      }, chatRuntimePinRef.current));
     } catch (compactError) {
       const message = compactError instanceof Error ? compactError.message : String(compactError);
       setError(message);
@@ -19295,6 +19323,7 @@ export function AgentChatPane({
   return (
     <AgentChatApiProvider scope={chatScope}>
     <ChatRuntimeScopeProvider pin={chatRuntimePin} binding={chatEffectiveBinding} laneId={chatScopeLaneId} sessionId={renderedSessionId}>
+    <ChatMachineWakeProvider>
     <ChatWorkspacePathProvider value={chatWorkspacePaths}>
     <>
       <ComposerDraftPresencePublisher
@@ -19548,6 +19577,7 @@ export function AgentChatPane({
                           ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
                           : turnActive && selectedSession?.status !== "ended"}
                         sessionTurnActive={turnActive}
+                        wakingSinceMs={!subagentView && cloudWakingSince ? Date.parse(cloudWakingSince) : null}
                         usageLimitResumeActive={usageLimitResume != null}
                         // Only a limit ADE is waiting out reads "Paused"; one with no
                         // reset or with auto-resume off reads "Usage limit".
@@ -20043,6 +20073,7 @@ export function AgentChatPane({
       ) : null}
     </>
     </ChatWorkspacePathProvider>
+    </ChatMachineWakeProvider>
     </ChatRuntimeScopeProvider>
     </AgentChatApiProvider>
   );

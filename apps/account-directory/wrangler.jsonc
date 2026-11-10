@@ -119,7 +119,13 @@
     // creates or finds them and prints these ids.
     "STRIPE_PLAN_PRICE_ID": "price_1UZkLZBsy4QVYccDJhyDhBPZ",
     "STRIPE_EXTRA_PRICE_ID": "price_1UZkLZBsy4QVYccDDwJ33ruZ",
-    "STRIPE_METER_EVENT": "ade_cloud_small_hours"
+    "STRIPE_METER_EVENT": "ade_cloud_small_hours",
+    // Pro, extra disk (its own meter, never the hours price) and the billing
+    // portal setup (card, cancel, invoices). Same script, same sandbox.
+    "STRIPE_PRO_PRICE_ID": "price_1UaJv6Bsy4QVYccDyUbQTq6x",
+    "STRIPE_DISK_PRICE_ID": "price_1UaJujBsy4QVYccDV5I9JPx0",
+    "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
+    "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD"
   },
   // REQUIRED, not optional. Cloudflare refuses a Worker's fetch to another
   // Worker of the same account through its workers.dev URL (error 1042): the
@@ -186,10 +192,19 @@
         // secret here too: wrangler secret put MUSICKIT_PRIVATE_KEY --env production
         "MUSICKIT_KEY_ID": "3NNQ5Y43RA",
         "MUSICKIT_TEAM_ID": "VQ372F39G6",
-        "MUSICKIT_TOKEN_TTL_SECONDS": "2592000"
-        // STRIPE_PLAN_PRICE_ID, STRIPE_EXTRA_PRICE_ID and STRIPE_METER_EVENT are
-        // left out until rollout: run `scripts/stripe-setup.mjs` with the live key
-        // and put the ids it prints here. Unset, billing answers 503.
+        "MUSICKIT_TOKEN_TTL_SECONDS": "2592000",
+        // Production bills in the Stripe SANDBOX while ADE Cloud is owner-only.
+        // STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PLAN_PRICE_ID,
+        // STRIPE_EXTRA_PRICE_ID and STRIPE_METER_EVENT are Worker secrets there
+        // (never restate one here: a var and a secret can't share a name).
+        // These four are the sandbox ids for Pro, extra disk and the portal.
+        // For real money: `scripts/stripe-setup.mjs` made the live objects on
+        // 2026-11-10; swap all nine values, add a live webhook, and clear the
+        // sandbox customer and subscription ids in D1 first.
+        "STRIPE_PRO_PRICE_ID": "price_1UaJv6Bsy4QVYccDyUbQTq6x",
+        "STRIPE_DISK_PRICE_ID": "price_1UaJujBsy4QVYccDV5I9JPx0",
+        "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
+        "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD"
       },
       "services": [{ "binding": "ACTIVITY_RELAY", "service": "ade-push-relay" }],
       "d1_databases": [

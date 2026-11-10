@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SESSION_ACTIVITY_VALUES } from "./types/sessions";
-import { setAdeCloudSkillVisible } from "./agentSkillRoots";
+import { adeHostWithheldAgentSkills, setAdeCloudSkillVisible } from "./agentSkillRoots";
 import {
   adeBundledAgentSkills,
   adeOutsideClientAgentSkills,
@@ -28,10 +28,11 @@ describe("ADE CLI guidance", () => {
     // The canonical builder is a thin alias over the bootstrap.
     expect(guidance).toBe(buildAdeBootstrapGuidance(roots));
     // It still advertises the bundled skill index so the model knows what
-    // exists, minus the deprecated aliases (one name per skill) and the skills
-    // only an app outside ADE reads.
+    // exists, minus the deprecated aliases (one name per skill), the skills
+    // only an app outside ADE reads, and the skills this host cannot run.
+    const hostWithheld = new Set(adeHostWithheldAgentSkills());
     for (const skillName of adeBundledAgentSkills) {
-      if (adeDeprecatedAgentSkillAliases.has(skillName) || adeOutsideClientAgentSkills.has(skillName)) {
+      if (adeDeprecatedAgentSkillAliases.has(skillName) || adeOutsideClientAgentSkills.has(skillName) || hostWithheld.has(skillName)) {
         expect(guidance).not.toContain(`\`${skillName}\``);
       } else expect(guidance).toContain(`\`${skillName}\``);
     }
@@ -77,8 +78,9 @@ describe("ADE bootstrap guidance", () => {
     expect(bootstrap).toContain("ade chat update --title");
     expect(bootstrap).toContain("ade lanes rename");
     // The skill index is still advertised so the model knows what exists.
+    const hostWithheld = new Set(adeHostWithheldAgentSkills());
     for (const skillName of adeBundledAgentSkills) {
-      if (adeDeprecatedAgentSkillAliases.has(skillName) || adeOutsideClientAgentSkills.has(skillName)) continue;
+      if (adeDeprecatedAgentSkillAliases.has(skillName) || adeOutsideClientAgentSkills.has(skillName) || hostWithheld.has(skillName)) continue;
       expect(bootstrap).toContain(`\`${skillName}\``);
     }
     // An account off ADE Cloud's list isn't told it exists.

@@ -3705,6 +3705,13 @@ function parseSetPrAutoMergeArgs(value: Record<string, unknown>): SetPrAutoMerge
   };
 }
 
+/** The repo a PR writing helper names; neither means the project's own repo. */
+function prRepoArgs(value: Record<string, unknown>): { repoOwner?: string; repoName?: string } {
+  const repoOwner = asTrimmedString(value.repoOwner);
+  const repoName = asTrimmedString(value.repoName);
+  return repoOwner && repoName ? { repoOwner, repoName } : {};
+}
+
 function parseRequestReviewersArgs(value: Record<string, unknown>): RequestPrReviewersArgs {
   const prId = requirePrId(value, "prs.requestReviewers");
   const reviewers = asStringArray(value.reviewers);
@@ -5651,6 +5658,27 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     await requireService(args.agentChatService, "Agent chat service not available.").unarchiveSession(parseAgentChatArchiveArgs(payload, "chat.unarchive"));
     return { ok: true };
   });
+  // Recently deleted chats (Settings). Not queued: each answer is shown at once.
+  register("chat.listDeleted", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").listDeletedChats({
+      ...(typeof payload.query === "string" ? { query: payload.query } : {}),
+    }));
+  register("chat.getDeletedDetail", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getDeletedChatDetail({
+      id: requireString(payload.id, "chat.getDeletedDetail requires id."),
+      ...(typeof payload.before === "string" && payload.before ? { before: payload.before } : {}),
+    }));
+  register("chat.reopenDeleted", { viewerAllowed: true }, async (payload) => {
+    const laneId = asTrimmedString(payload.laneId);
+    return requireService(args.agentChatService, "Agent chat service not available.").reopenDeletedChat({
+      id: requireString(payload.id, "chat.reopenDeleted requires id."),
+      ...(laneId ? { laneId } : {}),
+    });
+  });
+  register("chat.removeDeleted", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").removeDeletedChats({
+      ids: asStringArray(payload.ids),
+    }));
   register("chat.delete", { viewerAllowed: true, queueable: true }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").deleteSession(parseAgentChatArchiveArgs(payload, "chat.delete"));
     // `recoverable`: whether Recently deleted holds it, so the client offers Undo.
@@ -8122,6 +8150,29 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     await args.prService.updateBody(parseUpdatePrBodyArgs(payload));
     return { ok: true };
   });
+  // The PR writing helpers the web client's PR pages use: the description
+  // editor (a PR opened from the GitHub list may have no local row, which
+  // `updateBody` needs), and the people, teams, issues and PRs behind the
+  // reviewer picker and the @ / # menus. Reads are not queued: a late answer
+  // to a search helps nobody.
+  register("prs.updateDescription", { viewerAllowed: true, queueable: true }, async (payload) => {
+    // A call without a body is a broken call, not a request to clear the
+    // description. An empty string is that request.
+    if (typeof payload.body !== "string") throw new Error("prs.updateDescription requires body.");
+    await args.prService.updateDescription({
+      prId: requirePrId(payload, "prs.updateDescription"),
+      body: payload.body,
+    });
+    return { ok: true };
+  });
+  register("prs.searchMentionables", { viewerAllowed: true }, async (payload) =>
+    args.prService.searchMentionables({
+      ...prRepoArgs(payload),
+      query: typeof payload.query === "string" ? payload.query : "",
+      ...(payload.includeTeams === true ? { includeTeams: true } : {}),
+    }));
+  register("prs.getRepoReferences", { viewerAllowed: true }, async (payload) =>
+    args.prService.getRepoReferences(prRepoArgs(payload)));
   register("prs.setLabels", { viewerAllowed: true, queueable: true }, async (payload) => {
     await args.prService.setLabels(parseSetPrLabelsArgs(payload));
     return { ok: true };

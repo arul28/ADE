@@ -9,6 +9,7 @@
  */
 
 import type { CloudAccountState } from "../../../shared/adeCloud";
+import type { CloudCheckoutResult } from "../../../../../account-directory/src/cloud/contract";
 import {
   CLOUD_ACCESS_REFUSED,
   CloudProviderError,
@@ -57,11 +58,13 @@ function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function readError(body: unknown): { code: string | null; message: string | null } {
+function readError(body: unknown): { code: string | null; message: string | null; reason: string | null } {
   const error = record(record(body)?.error);
   return {
     code: typeof error?.code === "string" ? error.code : null,
     message: typeof error?.message === "string" ? error.message : null,
+    // A disk refusal's reason; a reason this build doesn't know still comes with `message`.
+    reason: typeof error?.reason === "string" ? error.reason : null,
   };
 }
 
@@ -133,7 +136,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       init.signal?.removeEventListener("abort", onCallerAbort);
     }
     if (!response.ok) {
-      const { code, message } = readError(body);
+      const { code, message, reason } = readError(body);
       // Off the access list, the server answers every route 404. On the list route
       // that means this account, not one computer.
       const refused = response.status === 401 || code === "unauthorized"
@@ -142,6 +145,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
         message ?? (response.status >= 500 ? "ADE Cloud is having trouble right now. Try again in a moment." : `ADE Cloud answered with an error (${response.status}).`),
         refused ? CLOUD_ACCESS_REFUSED : code ?? `http_${response.status}`,
         response.status,
+        { reason },
       );
     }
     return body;
@@ -200,7 +204,11 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async resizeInstance(id, resources, options): Promise<string> {
       return statusOf(await request("POST", instancePath(id, "resize"), {
-        body: { ...resources, ...(options?.computerIdle ? { computerIdle: true } : {}) },
+        body: {
+          ...resources,
+          ...(options?.computerIdle ? { computerIdle: true } : {}),
+          ...(options?.origin === "auto" ? { origin: "auto" } : {}),
+        },
         timeoutMs: LIFECYCLE_TIMEOUT_MS,
       }), "updating");
     },
@@ -259,8 +267,9 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       };
     },
 
-    async billingCheckout(): Promise<{ url: string }> {
-      const body = record(await request("POST", "/cloud/billing/checkout"));
+    async billingCheckout(plan): Promise<CloudCheckoutResult> {
+      const body = record(await request("POST", "/cloud/billing/checkout", { body: { plan: plan ?? "plus" } }));
+      if (body?.url === null && (body.change === "now" || body.change === "next_period")) return { url: null, change: body.change };
       if (typeof body?.url !== "string" || !body.url) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
       return { url: body.url };
     },
@@ -273,6 +282,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async setExtraHours(enabled: boolean): Promise<CloudAccountState> {
       return await request("POST", "/cloud/billing/extra-hours", { body: { enabled } }) as CloudAccountState;
+    },
+
+    async setExtraDisk(choice): Promise<CloudAccountState> {
+      return await request("POST", "/cloud/billing/extra-disk", { body: choice }) as CloudAccountState;
     },
 
     async listSavedChats(args): Promise<CloudSavedChatList> {

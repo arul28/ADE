@@ -118,7 +118,8 @@ export function CloudGroupBanners({
 
 /** What a failed action blocks on, as the buttons that clear it. */
 function errorActions(error: CloudBoxActionError, onOpenSettings?: (() => void) | null): NoticeAction[] | undefined {
-  return error.blocker === "out_of_hours" && onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined;
+  const needsPlan = error.blocker === "out_of_hours" || error.blocker === "over_plan_disk";
+  return needsPlan && onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined;
 }
 
 /**
@@ -208,7 +209,19 @@ export function CloudBoxStrip({
       {box.failure ? (
         <div className="ade-cx-cloud-note">{ADE_CLOUD_NAME} couldn't run it: {box.failure}</div>
       ) : null}
-      {box.diskFull ? <Banner layout="inline" model={{ id: `cloud-disk-full-${box.instanceId}`, tone: "warning", title: box.diskFull, report: false }} /> : null}
+      {box.diskFull ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: `cloud-disk-full-${box.instanceId}`,
+            tone: "warning",
+            title: box.diskFull,
+            // Extra disk, its monthly limit and the plans all live in Settings.
+            actions: onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined,
+            report: false,
+          }}
+        />
+      ) : null}
       {error ? (
         <div ref={errorRef}>
           <Banner

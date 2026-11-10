@@ -1557,6 +1557,9 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// A Muse chat before anything is sent: the machine says Muse has no login,
   /// so the card shows before a send.
   case chatSignInBeforeSend = "chat-signin-before-send"
+  /// Settings › Account signed in, with three account machines. See
+  /// `SettingsAccountPreviewHost`.
+  case settingsAccount = "settings-account"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1805,7 +1808,69 @@ struct ADEPreviewScreenHost: View {
       WorkProviderSignInPreviewHost(recovered: true)
     case .chatSignInBeforeSend:
       WorkProviderSignInPreviewHost(beforeSend: true)
+    case .settingsAccount:
+      SettingsAccountPreviewHost()
     }
+  }
+}
+
+/// `settings-account`: seeds a signed-in account and three account machines
+/// (online, asleep, offline), then mounts the real Account page. The GitHub
+/// notice does not show: it needs a live machine with an open project.
+private struct SettingsAccountPreviewHost: View {
+  @EnvironmentObject private var fleet: MachineFleet
+  @StateObject private var machineController = SettingsMachineController()
+  @State private var seeded = false
+
+  var body: some View {
+    Group {
+      if seeded {
+        NavigationStack {
+          SettingsAccountPage(
+            syncService: WorkPreviewData.syncService,
+            machineController: machineController,
+            onSignIn: {},
+            machinesPage: { AnyView(Text("Machines")) },
+            integrationsPage: { AnyView(Text("Integrations")) }
+          )
+        }
+        .environmentObject(WorkPreviewData.syncService)
+      } else {
+        ADEColor.surfaceBackground.ignoresSafeArea()
+      }
+    }
+    .task {
+      SettingsAccountPreviewData.seed()
+      machineController.bind(syncService: WorkPreviewData.syncService, fleet: fleet)
+      seeded = true
+    }
+  }
+}
+
+private enum SettingsAccountPreviewData {
+  static let identity = AccountIdentity(
+    userId: "user_2pQx7Lm9RkVa4TfB8cZy1HnE",
+    displayName: "Sam Rivera",
+    email: "sam.rivera@example.com",
+    imageURL: nil,
+    providerLabel: "GitHub",
+    providerId: "github"
+  )
+
+  static var machines: [AccountMachine] {
+    let now = Date().timeIntervalSince1970 * 1000
+    let rows = [
+      #"{"machineKey":"preview-studio","deviceId":"preview-studio-device","name":"Mac Studio","channel":"stable","platform":"darwin","deviceType":"desktop","online":true,"lastSeenAt":\#(now),"power":{"onExternalPower":true}}"#,
+      #"{"machineKey":"preview-macbook","deviceId":"preview-macbook-device","name":"MacBook Pro","channel":"beta","platform":"darwin","deviceType":"laptop","online":false,"sleepState":"asleep","sleepStateAt":\#(now - 1_800_000),"lastSeenAt":\#(now - 1_800_000),"power":{"batteryPercent":64,"charging":false}}"#,
+      #"{"machineKey":"preview-linux","deviceId":"preview-linux-device","name":"build-box","platform":"linux","deviceType":"server","online":false,"lastSeenAt":\#(now - 259_200_000)}"#,
+    ]
+    return rows.map { try! JSONDecoder().decode(AccountMachine.self, from: Data($0.utf8)) }
+  }
+
+  @MainActor
+  static func seed() {
+    AccountService.shared.seedPreviewSignedIn(identity)
+    AccountService.shared.seedPreviewMachines(machines)
   }
 }
 

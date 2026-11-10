@@ -4,13 +4,10 @@ import {
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent,
 } from "react";
 import { confirmDialog } from "../ui/dialog/confirm";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { desktopProductName, macDesktopPaneCaption } from "../../../shared/types/macDesktop";
+import { desktopProductName, desktopSeatKind, macDesktopPaneCaption } from "../../../shared/types/macDesktop";
 import type {
   MacDesktopDisplay,
   MacDesktopLeaseState,
@@ -40,6 +37,7 @@ import {
   createMacDesktopFastInputSender,
   useMacDesktopRealInput,
 } from "./useMacDesktopRealInput";
+import { useMacDesktopTakeoverGesture } from "./useMacDesktopTakeoverGesture";
 import { useMacDesktopRecheck, useMacDesktopStatus } from "./useMacDesktopStatus";
 import { macDesktopClaimAppIcons } from "./macDesktopClaimPicker.logic";
 import { macDesktopErrorText } from "./macDesktopErrorText";
@@ -129,6 +127,12 @@ export type ChatMacDesktopPanelProps = {
    * this a Windows host read "Checking Mac Desktop…".
    */
   desktopTool?: DesktopWorkTool;
+  /**
+   * The host's platform as the Work tab knows it (the cached support read).
+   * The pane names itself from this while its own status has none, as when
+   * the host cannot be reached, so a Linux host never reads "Mac Desktop".
+   */
+  hostPlatform?: NodeJS.Platform | null;
 };
 
 export function useMacDesktopPanelController({
@@ -137,6 +141,7 @@ export function useMacDesktopPanelController({
   sessionId,
   runtimePin,
   desktopTool = "mac-desktop",
+  hostPlatform = null,
 }: ChatMacDesktopPanelProps) {
   /**
    * The hosted web client: the same pane, over the sync socket.
@@ -301,6 +306,15 @@ export function useMacDesktopPanelController({
   );
 
   const display: MacDesktopDisplay | null = status?.display ?? null;
+  // The one seat answer: the pane's controls and the takeover gesture both
+  // read it. The host's own platform, else what the Work tab knows. A Windows
+  // seat is shared (Mode B) only while a display runs.
+  const seatPlatform = status?.platform ?? hostPlatform ?? null;
+  const seatKind = desktopSeatKind({
+    platform: desktopTool === "windows-desktop" || seatPlatform === "win32" ? "win32" : seatPlatform,
+    display,
+    windowsDesktop: display ? status?.windowsDesktop : null,
+  });
   const lease: MacDesktopLeaseState | null = status?.lease ?? null;
   const windows: MacDesktopWindow[] = status?.windows ?? [];
   const supported = status?.supported ?? null;
@@ -562,8 +576,9 @@ export function useMacDesktopPanelController({
     };
   }, [heartbeat, iHaveControl, returnControl, webClient]);
 
-  const takeControl = useCallback(async () => {
-    if (takeoverBlocked) return;
+  /** Resolves true when this view holds the lease afterwards. */
+  const takeControl = useCallback(async (): Promise<boolean> => {
+    if (takeoverBlocked) return false;
     setBusy(true);
     try {
       const next = await macDesktopApi().takeControl(
@@ -577,8 +592,10 @@ export function useMacDesktopPanelController({
         discardReadsInFlight();
       }
       setStatus((current) => (current ? { ...current, lease: next } : current));
+      return Boolean(next && next.holder === "user" && (webClient || next.holderId === macDesktopControllerId()));
     } catch (error) {
       setStatusError(errorText(error));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -599,6 +616,12 @@ export function useMacDesktopPanelController({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [laneId, live.url, pinKey, webClient],
   );
+  // The host refused input because nobody holds the lease, so the lease this
+  // view shows is stale (it lapsed, or the host dropped it). Same as a lost
+  // heartbeat: back to "take control", with no error line.
+  const dropStaleLease = useCallback(() => {
+    setStatus((current) => (current?.lease ? { ...current, lease: null } : current));
+  }, [setStatus]);
   const realInput = useMacDesktopRealInput({
     laneId,
     sessionId,
@@ -617,6 +640,7 @@ export function useMacDesktopPanelController({
     // that owns the display; a remote window's screen coordinates would send
     // the host's cursor somewhere that Mac has never drawn.
     reportCursorHome: laneHostIsLocal,
+    onLeaseRequired: dropStaleLease,
   });
 
   useEffect(() => {
@@ -643,70 +667,18 @@ export function useMacDesktopPanelController({
     return () => { void window.ade?.app?.setIgnoreMenuShortcuts?.(false); };
   }, [iHaveControl]);
 
-  /*
-    Input reaches the surface as DOM events, on purpose.
-
-    The decoder's canvas is a React portal into a host node that is parked
-    inside the surface. A portal's synthetic events bubble through the React
-    tree, to the portal's owner, and never through the surface that is its DOM
-    parent. With React handlers on the surface, every click and every hover on
-    the picture itself vanished, and only the letterbox responded: the takeover
-    looked dead and the hover cursor never appeared. Native listeners follow
-    the DOM, where the canvas really is.
-  */
-  const takeControlRef = useRef(takeControl);
-  takeControlRef.current = takeControl;
-  const realInputRef = useRef(realInput);
-  realInputRef.current = realInput;
-  const controlStateRef = useRef({ iHaveControl, busy, takeoverBlocked });
-  controlStateRef.current = { iHaveControl, busy, takeoverBlocked };
-  useEffect(() => {
-    const node = surfaceNode;
-    if (!node) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const state = controlStateRef.current;
-      if (!state.iHaveControl) {
-        // The first click on the screen takes control; the strip button is
-        // the same action. Right-click is a menu, not a claim.
-        if (!state.busy && !state.takeoverBlocked && event.button !== 2) void takeControlRef.current();
-        return;
-      }
-      realInputRef.current.onPointerDown(event as unknown as ReactPointerEvent<HTMLDivElement>);
-    };
-    const onPointerMove = (event: PointerEvent) => {
-      realInputRef.current.onPointerMove(event as unknown as ReactPointerEvent<HTMLDivElement>);
-    };
-    const onPointerUp = (event: PointerEvent) => {
-      realInputRef.current.onPointerUp(event as unknown as ReactPointerEvent<HTMLDivElement>);
-    };
-    const onPointerLeave = () => realInputRef.current.onPointerLeave();
-    const onWheel = (event: WheelEvent) => {
-      realInputRef.current.onWheel(event as unknown as ReactWheelEvent<HTMLDivElement>);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      realInputRef.current.onKeyDown(event as unknown as ReactKeyboardEvent<HTMLDivElement>);
-    };
-    const onContextMenu = (event: MouseEvent) => {
-      if (controlStateRef.current.iHaveControl) event.preventDefault();
-    };
-    node.addEventListener("pointerdown", onPointerDown);
-    node.addEventListener("pointermove", onPointerMove);
-    node.addEventListener("pointerup", onPointerUp);
-    node.addEventListener("pointerleave", onPointerLeave);
-    // Non-passive: a scroll forwarded to the lane must not also scroll the pane.
-    node.addEventListener("wheel", onWheel, { passive: false });
-    node.addEventListener("keydown", onKeyDown);
-    node.addEventListener("contextmenu", onContextMenu);
-    return () => {
-      node.removeEventListener("pointerdown", onPointerDown);
-      node.removeEventListener("pointermove", onPointerMove);
-      node.removeEventListener("pointerup", onPointerUp);
-      node.removeEventListener("pointerleave", onPointerLeave);
-      node.removeEventListener("wheel", onWheel);
-      node.removeEventListener("keydown", onKeyDown);
-      node.removeEventListener("contextmenu", onContextMenu);
-    };
-  }, [surfaceNode]);
+  useMacDesktopTakeoverGesture(surfaceNode, {
+    realInput,
+    takeControl,
+    toDisplayPoint,
+    busy,
+    takeoverBlocked,
+    seat: seatKind,
+    display,
+    laneId,
+    sessionId,
+    controllerId: macDesktopControllerId(),
+  });
 
   /* ── Recording and presenting ────────────────────────────────────────── */
 
@@ -1096,6 +1068,8 @@ export function useMacDesktopPanelController({
 
   return {
     desktopTool,
+    hostPlatform,
+    seatKind,
     laneId, laneName, sessionId, runtimePin, machineFacts,
     status, setStatus, statusError, setStatusError, readError, unconfirmed, refreshStatus, stopDisplay, stopping,
     start, starting, gaveUp, cursor, notParked, dismissNotParked, appsLeftOpen, dismissAppLeftOpen,

@@ -94,10 +94,17 @@ function markdownDisplayedText(markdown: string): string {
   while (displayedTextCache.size > MAX_CACHED_TEXTS || cachedChars > MAX_CACHED_CHARS) {
     const oldest = displayedTextCache.keys().next().value;
     if (oldest === undefined) break;
-    cachedChars -= oldest.length + (displayedTextCache.get(oldest)?.length ?? 0);
-    displayedTextCache.delete(oldest);
+    forgetDisplayedText(oldest);
   }
   return text;
+}
+
+/** Drop a cached text, if it is held. */
+function forgetDisplayedText(markdown: string): void {
+  const text = displayedTextCache.get(markdown);
+  if (text === undefined) return;
+  cachedChars -= markdown.length + text.length;
+  displayedTextCache.delete(markdown);
 }
 
 type RowSource = { text: string; markdown: boolean } | null;
@@ -196,6 +203,12 @@ export class ChatFindIndex {
       this.skipReady();
       if (this.cursor >= this.order.length) return true;
       const entry = this.order[this.cursor]!;
+      // A row folded before had other text (most often a reply that is
+      // streaming). That text is not asked for again, so it leaves the cache:
+      // kept, the prefixes of one long reply would fill the cache and evict
+      // the rest of the chat.
+      const previous = this.folded.get(entry.key);
+      if (previous) forgetDisplayedText(previous.source);
       const shown = entry.markdown ? markdownDisplayedText(entry.text) : entry.text;
       this.folded.set(entry.key, { source: entry.text, folded: foldFindCase(shown) });
       this.cursor += 1;
@@ -203,12 +216,28 @@ export class ChatFindIndex {
     }
   }
 
-  /** Searchable rows in transcript order; rows not folded yet are left out. */
+  /**
+   * True when every row still to fold was folded before with older text: a
+   * streaming reply, whose count can wait for the next live recount.
+   */
+  onlyRefoldsPending(): boolean {
+    this.skipReady();
+    for (let i = this.cursor; i < this.order.length; i += 1) {
+      if (!this.folded.has(this.order[i]!.key)) return false;
+    }
+    return this.cursor < this.order.length;
+  }
+
+  /**
+   * Searchable rows in transcript order; rows never folded are left out. A row
+   * whose text changed since its last fold (a streaming reply) keeps that fold
+   * until the next one, so its matches stay in the count between folds.
+   */
   docs(): ChatFindDoc[] {
     const docs: ChatFindDoc[] = [];
     for (const entry of this.order) {
       const ready = this.folded.get(entry.key);
-      if (ready && ready.source === entry.text) docs.push({ key: entry.key, folded: ready.folded });
+      if (ready) docs.push({ key: entry.key, folded: ready.folded });
     }
     return docs;
   }

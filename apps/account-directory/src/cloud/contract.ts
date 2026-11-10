@@ -27,9 +27,10 @@
  *   PUT    /cloud/instances/:id/name           { ok: true }
  *   PUT    /cloud/instances/:id/metadata       { ok: true }
  *   POST   /cloud/instances/:id/exec           { exitCode, stdout, stderr }
- *   POST   /cloud/billing/checkout             { url }   409 `already_paid`
+ *   POST   /cloud/billing/checkout             CloudCheckoutResult   409 `already_paid`
  *   POST   /cloud/billing/portal               { url }   409 `no_billing`
  *   POST   /cloud/billing/extra-hours          CloudAccountState   403 `needs_paid_plan`
+ *   POST   /cloud/billing/extra-disk           CloudAccountState   403 `needs_paid_plan`, 409 `disk_over_plan` (404 while extra disk isn't set up)
  *   GET    /cloud/chats?machine&project&limit&cursor   { chats: CloudChatRow[], nextCursor }
  *   GET    /cloud/chats/:machine/:chat?before&limit     CloudChatTranscriptPage
  *   PUT    /cloud/chats/:machine/:chat/parts/:seq       CloudChatPartResponse   (from the computer)
@@ -37,16 +38,49 @@
  *   DELETE /cloud/chats/:machine/lanes/:lane            { deleted }
  *
  * `POST /cloud/instances/:id/start` with `{ reason: "push_work" }` is the one
- * wake allowed at 0 hours: free, short, once a day per computer.
+ * wake allowed at 0 hours, or on the free plan with more disk than it has
+ * (`over_plan_disk`): free, short, once a day per computer.
  * `DELETE /cloud/instances/:id` takes `{ who, reason }`, recorded in the log.
  * `POST /cloud/instances` with `{ moveFromInstanceId }` gives the new computer
  * that computer's disk (a move), under the same plan limits.
  * `POST /cloud/instances/:id/resize` needs `{ computerIdle: true }` to grow the
  * disk of a running computer (a disk grow restarts it).
  * `POST /cloud/billing/extra-hours` takes `{ enabled }`, on a paid plan only.
+ * `POST /cloud/billing/checkout` takes `{ plan: "plus" | "pro" }` (Plus when
+ * left out; any other value, or Pro while it isn't set up, is a 400) and
+ * answers `{ url }` to open. On a paid account asking for the
+ * other plan it changes the plan itself and answers `{ url: null, change }`:
+ * `now` for an upgrade (charged now for the rest of the period; 402
+ * `payment_failed` when the card is declined), `next_period` for a downgrade
+ * (Pro's hours and limits stay until the period ends; refused with 409
+ * `disk_over_plan` while the computers hold more than Plus's disk, unless
+ * extra disk is on and fits its limit). The billing portal can't switch plans
+ * on a subscription with more than one item.
+ * `POST /cloud/billing/extra-disk` takes `{ enabled, monthlyLimitUsd }`
+ * (`monthlyLimitUsd` a whole number from 1 to 1000, needed to turn it on).
+ * Turning it off while the computers hold more than the plan's disk is
+ * refused with `disk_over_plan`.
+ * A disk refusal is `disk_limit` (or `needs_paid_plan` on the free plan) with
+ * `error.reason` (`CloudDiskRefusalReason`).
+ * A wake, exec, update or new timed wake on the free plan (a cancelled plan
+ * included, never `past_due`) with more disk than it has is refused with 402
+ * `over_plan_disk`; timed wakes already set are deleted, as at 0 hours.
+ * Deleting a computer always works.
+ * `POST /cloud/instances/:id/resize` takes `{ origin: "auto" }` from the
+ * computer's own disk grower, so analytics can tell it from a person's grow.
  * The checkout and portal URLs open in the person's browser and come back to
  * a plain page; read `GET /cloud/account` again to see what changed.
  */
+
+/** "$1", "$2.50": cents as people read money, on the server and in ADE. */
+export function formatCloudCents(cents: number): string {
+  return `$${(cents / 100).toFixed(cents % 100 === 0 ? 0 : 2)}`;
+}
+
+/** Why no computer wakes on the free plan above its disk (`over_plan_disk`), said the same by the server and ADE. */
+export function overPlanDiskSentence(usedGb: number, freeGb: number): string {
+  return `Your computers use ${usedGb} GB and the free plan has ${freeGb} GB at one time. Delete a computer, or get Plus.`;
+}
 
 export const CLOUD_PATHS = {
   access: "/cloud/access",
@@ -56,6 +90,7 @@ export const CLOUD_PATHS = {
   billingCheckout: "/cloud/billing/checkout",
   billingPortal: "/cloud/billing/portal",
   billingExtraHours: "/cloud/billing/extra-hours",
+  billingExtraDisk: "/cloud/billing/extra-disk",
   chats: "/cloud/chats",
 } as const;
 
@@ -81,6 +116,12 @@ export type CloudInstance = {
   publicPorts: Array<{ port: number; url: string; label: string | null }>;
 };
 
+/** What `POST /cloud/billing/checkout` answers. */
+export type CloudPaidPlanId = Exclude<CloudPlanId, "free">;
+/** When a switch between Plus and Pro applies: an upgrade now, a downgrade at the period end. */
+export type CloudPlanChangeTiming = "now" | "next_period";
+export type CloudCheckoutResult = { url: string } | { url: null; change: CloudPlanChangeTiming };
+
 export type CloudExecResult = { exitCode: number; stdout: string; stderr: string };
 
 /**
@@ -89,24 +130,74 @@ export type CloudExecResult = { exitCode: number; stdout: string; stderr: string
  */
 export type CloudHoursState = "none" | "warn80" | "warn95" | "zero";
 
-/** What a plan includes. `diskGb` is per computer on free, shared across computers on paid. */
-export type CloudPlanFacts = { includedMilli: number; computerLimit: number; diskGb: number };
+export type CloudPlanId = "free" | "plus" | "pro";
+
+/** The four sizes of the main list. */
+export type CloudTierId = "small" | "medium" | "large" | "xlarge";
+
+/**
+ * What a plan includes. `diskGb` and `computerLimit` are what the account may
+ * have at one time, shared by all its computers; they are not monthly allowances.
+ */
+export type CloudPlanFacts = { includedMilli: number; computerLimit: number; diskGb: number; priceUsd: number };
 
 /** The sizes and plans, so no client carries its own copy. A rate is `multiplierMilli / 1000` of a Small computer. */
 export type CloudCatalog = {
-  sizes: Array<{ type: "default" | "vm"; cpu: number; memoryGb: number; multiplierMilli: number }>;
-  plans: { free: CloudPlanFacts; paid: CloudPlanFacts };
+  sizes: Array<{
+    type: "default" | "vm";
+    cpu: number;
+    memoryGb: number;
+    multiplierMilli: number;
+    /** One of the four sizes of the main list, or null for the other four. Older servers leave it out. */
+    tier?: CloudTierId | null;
+    label?: string;
+    /** How far the disk may grow at this size. */
+    diskMaxGb?: number;
+  }>;
+  /**
+   * `paid` is Plus, kept for builds that know only two plans. Servers before
+   * Pro send only `free` and `paid` (and no `priceUsd`): a client offers Pro
+   * only when `pro` is here, because such a server sells Plus for any plan asked.
+   */
+  plans: { free: CloudPlanFacts; paid: CloudPlanFacts; plus?: CloudPlanFacts; pro?: CloudPlanFacts };
   diskStepGb: number;
+  /** Plus's price, for builds that know only two plans. */
   paidPriceUsd: number;
   /** What one extra Small-hour costs, before the volume price. */
   extraHourCents: number;
+  /** What 10 GB of extra disk costs for a month, counted by the day. Servers before extra disk leave it out. */
+  extraDiskCentsPer10GbMonth?: number;
 };
+
+/**
+ * Extra disk (paid plans): disk above the plan's, counted by the day.
+ * - `off`: never decided. The first grow past the plan's disk is refused with reason `needs_approval`, and ADE asks once.
+ * - `asked`: the person said no. A grow past the plan's disk is refused with reason `extra_off`.
+ * - `on`: allowed while a full month of it stays inside `monthlyLimitCents`;
+ *   what is billed in a period never passes that limit.
+ */
+export type CloudExtraDiskState = "off" | "asked" | "on";
+
+/**
+ * Why a disk grow, a create or a copy was refused with code `disk_limit`
+ * (`error.reason`). A client that doesn't know a reason shows `error.message`,
+ * which is always a plain sentence.
+ * - `plan_disk`: past the free plan's disk (the code is then `needs_paid_plan`).
+ * - `needs_approval`: past a paid plan's disk with extra disk never decided.
+ * - `extra_off`: past a paid plan's disk with extra disk turned down.
+ * - `monthly_limit`: past the monthly limit the person set for extra disk.
+ * - `tier_limit`: past what this size's disk can grow to.
+ * - `unavailable`: ADE Cloud isn't growing disks right now.
+ */
+export type CloudDiskRefusalReason = "plan_disk" | "needs_approval" | "extra_off" | "monthly_limit" | "tier_limit" | "unavailable";
 
 export type CloudAccountState = {
   /** What the person pays for. A `past_due` paid account still says `paid` here. */
   plan: "free" | "paid";
   /** The rules in force: `past_due` is `free` until a paid invoice. */
   rules: "free" | "paid";
+  /** Which plan: `plus` or `pro` when `plan` is `paid` (a `past_due` one included). Older servers leave it out. */
+  planId?: CloudPlanId;
   hours: {
     /** All in integer thousandths of a Small-hour. */
     includedMilli: number;
@@ -116,6 +207,12 @@ export type CloudAccountState = {
     state: CloudHoursState;
   };
   extraHours: { available: boolean; enabled: boolean; usedMilli: number };
+  /** Absent from older servers and while extra disk isn't set up. `usedCents` is this period's billable extra disk so far. */
+  extraDisk?: { available: boolean; state: CloudExtraDiskState; monthlyLimitCents: number | null; usedCents: number };
+  /**
+   * Disk all computers hold at one time. `limitGb` is the plan's disk; null
+   * only from servers before plans, where each free computer has its own.
+   */
   disk: { usedGb: number; limitGb: number | null };
   computers: { total: number; awake: number; limit: number };
   /** Inactive computers, soonest first; each is deleted at `deletesAt` unless used. */
@@ -128,6 +225,8 @@ export type CloudAccountState = {
     periodEnd: number;
     stripeStatus: string | null;
     cancelAtPeriodEnd: boolean;
+    /** A plan that starts with the next period (a downgrade to Plus); older servers leave it out. */
+    nextPlanId?: CloudPlanId | null;
     /** Banner: a failed payment, or a plan a paid invoice just brought back. */
     notice: "past_due" | "restored" | null;
   };

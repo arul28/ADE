@@ -19,6 +19,7 @@ import {
   cloudShape,
   cloudDiskFullMessage,
   CLOUD_DISK_FULL_METADATA,
+  CLOUD_DISK_FULL_REASON_METADATA,
   cloudShapeFor,
   cloudStatusAwake,
   type CloudAccountState,
@@ -89,7 +90,7 @@ function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudMa
     createdAtMs: instance.created != null ? instance.created * 1000 : null,
     ready: readyOf(instance),
     sleep: cloudSleepPolicyOf(instance),
-    diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], catalog),
+    diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], catalog, instance.metadata[CLOUD_DISK_FULL_REASON_METADATA]),
   };
 }
 
@@ -271,8 +272,15 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         message: "ADE Cloud takes one backup of a computer every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.",
       };
     }
-    if (code === "out_of_hours") {
-      return { ok: false, blocker: "out_of_hours", message: getErrorMessage(error) };
+    if (code === "out_of_hours" || code === "over_plan_disk") {
+      return { ok: false, blocker: code, message: getErrorMessage(error) };
+    }
+    // A disk refusal keeps its reason, so a notice can offer the way out (extra disk, a bigger size).
+    const reason = error instanceof CloudProviderError && (code === "disk_limit" || code === "needs_paid_plan")
+      ? error.detail.reason ?? (code === "needs_paid_plan" ? "plan_disk" : null)
+      : null;
+    if (reason && error instanceof CloudProviderError) {
+      return { ok: false, blocker: null, message: getErrorMessage(error), diskRefusal: { reason } };
     }
     return { ok: false, blocker: null, message: getErrorMessage(error) };
   }
@@ -283,7 +291,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     const instanceId = typeof args?.instanceId === "string" ? args.instanceId.trim() : "";
     if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
     const action = args.action;
-    logger.info?.("cloud.machine_action", { instanceId, action, shape: args.shape ?? null });
+    logger.info?.("cloud.machine_action", { instanceId, action, shape: args.shape ?? null, disk: args.disk ?? null });
     try {
       switch (action) {
         case "sleep": {
@@ -299,15 +307,37 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
           };
         }
         case "resize": {
-          const shape = cloudShape(args.shape);
-          if (!shape) return { ok: false, blocker: null, message: "Pick a size." };
+          const shape = args.shape === undefined ? null : cloudShape(args.shape);
+          const disk = typeof args.disk === "number" && Number.isInteger(args.disk) && args.disk > 0 ? args.disk : null;
+          if ((args.shape !== undefined && !shape) || (!shape && disk == null)) return { ok: false, blocker: null, message: "Pick a size." };
           const instance = await client.getInstance(instanceId);
           const current = resourcesOf(instance);
           if (!current) return { ok: false, blocker: null, message: "ADE Cloud didn't say how big this computer is, so ADE can't resize it." };
-          if (current.cpu === shape.cpu && current.memoryGb === shape.memoryGb) {
+          const growDisk = disk != null && disk > current.diskGb;
+          if (!shape) {
+            if (!growDisk) return { ok: true, blocker: null, message: "The disk is already that size." };
+            // Same size, bigger disk: the server restarts the computer for it.
+            const status = await client.resizeInstance(
+              instanceId,
+              { cpu: current.cpu, memory: current.memoryGb, disk },
+              args.computerIdle === true ? { computerIdle: true } : undefined,
+            );
+            return {
+              ok: true,
+              blocker: null,
+              message: status === "running"
+                ? `The disk is ${disk} GB now. ADE on it is starting again.`
+                : `Growing the disk to ${disk} GB. The computer restarts and is back in a few minutes.`,
+            };
+          }
+          if (current.cpu === shape.cpu && current.memoryGb === shape.memoryGb && !growDisk) {
             return { ok: true, blocker: null, message: "It's already that size." };
           }
-          const status = await client.resizeInstance(instanceId, { cpu: shape.cpu, memory: shape.memoryGb });
+          const status = await client.resizeInstance(
+            instanceId,
+            { cpu: shape.cpu, memory: shape.memoryGb, ...(growDisk ? { disk } : {}) },
+            growDisk && args.computerIdle === true ? { computerIdle: true } : undefined,
+          );
           return {
             ok: true,
             blocker: null,

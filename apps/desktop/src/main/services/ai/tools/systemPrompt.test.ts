@@ -305,7 +305,8 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toMatch(/new instructions, from the user or from another agent, replaces the old ones/);
     expect(result).toContain("## ADE");
     expect(result).toContain("read the matching `ade-*` skill");
-    expect(result).toContain("ade-apple");
+    // The Apple skill is listed only where it can run: on a Mac host.
+    expect(result.includes("ade-apple")).toBe(process.platform === "darwin");
     // The deprecated alias resolves by name but is not advertised.
     expect(result).not.toContain("ade-ios-simulator");
     expect(result).toContain("ade-cli-control-plane");

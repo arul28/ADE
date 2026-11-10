@@ -1,12 +1,18 @@
 /**
- * Grows a paid cloud computer's disk when it's near full. Runs only when the
- * computer is idle (a disk grow restarts it). The server enforces the plan and
- * the shared 40 GB: a free computer stays at 4 GB, so what's refused here turns
+ * Grows a cloud computer's disk when it's near full. Runs only when the
+ * computer is idle (a disk grow restarts it). The server enforces the plan's
+ * disk at one time, extra disk and each size's limit; what it refuses turns
  * into a plain sentence on the computer's card, once the disk is truly full.
+ * The card reads the exact reason; builds before plans read the older key.
  */
 
 import fs from "node:fs";
-import { CLOUD_DISK_FULL_METADATA, cloudCatalogOf, type CloudDiskFullReason } from "../../../../desktop/src/shared/adeCloud";
+import {
+  CLOUD_DISK_FULL_METADATA,
+  CLOUD_DISK_FULL_REASON_METADATA,
+  cloudCatalogOf,
+  cloudDiskFullLegacyReason,
+} from "../../../../desktop/src/shared/adeCloud";
 import type { CloudProvider } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { CloudProviderError } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { patchCloudMetadata } from "../../../../desktop/src/main/services/adeCloud/cloudReadyClaim";
@@ -15,7 +21,7 @@ import { patchCloudMetadata } from "../../../../desktop/src/main/services/adeClo
 const NEAR_FULL = 0.85;
 /** Full: at this much used and refused a grow, the computer's card says so. */
 const FULL = 0.95;
-/** A refused grow is asked again only this often: a plan or the account's disk changes rarely. */
+/** A refused grow is asked again only this often: a plan, extra disk or the account's disk changes rarely. */
 const REFUSED_RETRY_MS = 60 * 60_000;
 
 function usedFraction(path: string): number | null {
@@ -37,12 +43,15 @@ export function createCloudDiskGrower(deps: {
 }) {
   const now = deps.now ?? (() => Date.now());
   let refusedAt: number | null = null;
-  /** The reason shown on the card, once it's been written. */
-  let shown: CloudDiskFullReason | null = null;
+  /** The exact reason shown on the card, once it's been written. */
+  let shown: string | null = null;
 
-  const setNotice = async (client: CloudProvider, reason: CloudDiskFullReason | null): Promise<void> => {
+  const setNotice = async (client: CloudProvider, reason: string | null): Promise<void> => {
     if (reason === shown) return;
-    await patchCloudMetadata(client, deps.instanceId, { [CLOUD_DISK_FULL_METADATA]: reason ?? "" });
+    await patchCloudMetadata(client, deps.instanceId, {
+      [CLOUD_DISK_FULL_METADATA]: reason ? cloudDiskFullLegacyReason(reason) : "",
+      [CLOUD_DISK_FULL_REASON_METADATA]: reason ?? "",
+    });
     shown = reason;
   };
 
@@ -73,15 +82,17 @@ export function createCloudDiskGrower(deps: {
       if (!stillIdle()) return false;
       try {
         const { cpu, memory, disk } = instance.resources;
-        await client.resizeInstance(deps.instanceId, { cpu, memory, disk: disk + diskStepGb }, { computerIdle: true });
+        await client.resizeInstance(deps.instanceId, { cpu, memory, disk: disk + diskStepGb }, { computerIdle: true, origin: "auto" });
         deps.logger?.info("cloud.disk_grown", { instanceId: deps.instanceId, toGb: disk + diskStepGb });
         await setNotice(client, null);
         return true;
       } catch (error) {
         if (error instanceof CloudProviderError && (error.code === "needs_paid_plan" || error.code === "disk_limit")) {
           refusedAt = now();
-          if (used >= FULL) await setNotice(client, error.code === "needs_paid_plan" ? "free_limit" : "account_limit");
-          deps.logger?.info("cloud.disk_grow_refused", { code: error.code });
+          // A server before plans sends no reason: its two codes map onto the nearest exact one.
+          const reason = error.detail.reason ?? (error.code === "needs_paid_plan" ? "plan_disk" : "account_limit");
+          if (used >= FULL) await setNotice(client, reason);
+          deps.logger?.info("cloud.disk_grow_refused", { code: error.code, reason });
           return false;
         }
         throw error;

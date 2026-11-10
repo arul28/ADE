@@ -1515,6 +1515,11 @@ export type CrossMachineMachineLanes = {
   /** Complete call-routing target for this checkout, even without a project tab. */
   binding?: OpenProjectBinding | null;
   online: boolean;
+  /**
+   * An ADE Cloud computer that was deleted, while its connection target is
+   * still kept: the saved-chats read sets it. Its rows look deleted, not asleep.
+   */
+  computerGone?: boolean;
   lanes: LaneSummary[];
   sessions: TerminalSessionSummary[];
   /**
@@ -1709,6 +1714,14 @@ export type AppState = {
    * own subscription or fetch.
    */
   crossMachineLanesByMachineId: Record<string, CrossMachineMachineLanes>;
+  /**
+   * Chats whose send is waking their sleeping cloud computer: session id →
+   * when the wake started (ISO). Display only. The chat pane shows its working
+   * indicator and the Work row reads "Waking" until the turn shows live or the
+   * send settles. Only the
+   * root store holds entries (`markCloudWakeForSend` in `cloudSavedChatsSync.ts`).
+   */
+  cloudWakingSinceBySessionId: Readonly<Record<string, string>>;
 
   setProject: (project: ProjectInfo | null) => void;
   setOpenRemoteProjectTabs: (
@@ -1758,6 +1771,7 @@ export type AppState = {
     projectId?: string | null;
     binding?: OpenProjectBinding | null;
     online?: boolean;
+    computerGone?: boolean;
     lanes?: LaneSummary[];
     sessions?: TerminalSessionSummary[];
     prs?: PrSummary[];
@@ -1774,6 +1788,8 @@ export type AppState = {
    * unreachable long enough that its last-known work is no longer worth showing.
    */
   dropCrossMachineLanes: (machineIds: readonly string[]) => void;
+  /** `since` starts the chat's waking mark; null ends it. */
+  setCloudSessionWaking: (sessionId: string, since: string | null) => void;
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
   clearLaneInspectorTab: (laneId: string) => void;
   focusSession: (sessionId: string | null) => void;
@@ -2298,6 +2314,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   crossMachineLaneScopeKey: null,
   crossMachineLaneIntendedMachineIds: null,
   crossMachineLanesByMachineId: {},
+  cloudWakingSinceBySessionId: {},
 
   setProject: (incomingProject) =>
     set((prev) => {
@@ -2629,6 +2646,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const reconnected = previous?.online === false && online;
       const priorError = reconnected ? null : previous?.error ?? null;
       const priorFailedReads = reconnected ? 0 : previous?.failedReads ?? 0;
+      const computerGone = entry.computerGone !== undefined ? entry.computerGone : previous?.computerGone === true;
       const next: CrossMachineMachineLanes = {
         machineId,
         machineName: entry.machineName.trim() || previous?.machineName || machineId,
@@ -2636,6 +2654,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         projectId: entry.projectId !== undefined ? entry.projectId : previous?.projectId ?? null,
         binding,
         online,
+        ...(computerGone ? { computerGone: true } : {}),
         // Retention, stated explicitly rather than left to accident: a read that
         // returned nothing must not erase what the machine last reported.
         lanes: lanes ?? previous?.lanes ?? [],
@@ -2666,6 +2685,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.projectId === next.projectId
         && previous.binding === next.binding
         && previous.online === next.online
+        && (previous.computerGone === true) === (next.computerGone === true)
         && previous.lanes === next.lanes
         && previous.sessions === next.sessions
         && previous.prs === next.prs
@@ -2737,6 +2757,16 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               : {}),
           }
         : {};
+    }),
+
+  setCloudSessionWaking: (sessionId, since) =>
+    set((prev) => {
+      const current = prev.cloudWakingSinceBySessionId[sessionId];
+      if (since ? current === since : current === undefined) return {};
+      const next = { ...prev.cloudWakingSinceBySessionId };
+      if (since) next[sessionId] = since;
+      else delete next[sessionId];
+      return { cloudWakingSinceBySessionId: next };
     }),
 
   setLaneInspectorTab: (laneId, tab) =>
@@ -3233,8 +3263,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // already have cached lanes (stale-while-revalidate after a project
     // switch), keep `lanesLoading: false` so the chat pane + lane list stay
     // visually stable while we refresh silently in the background.
+    // A retry after a failed first read keeps the reason on screen. A spinner
+    // there would hide it for as long as each attempt takes, and a machine
+    // that never answers would look like a load that never ends.
     if (get().lanes.length === 0) {
-      set({ lanesLoading: true });
+      const failed = get().lanesLoadError;
+      const retryOfFailedRead = failed != null
+        && failed.projectKey === normalizeProjectKey(selectActiveProjectStateKey(get()));
+      // Also clears a flag that a reopen of the same project set.
+      set({ lanesLoading: !retryOfFailedRead });
     }
 
     if (laneRefreshInFlight) {

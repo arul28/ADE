@@ -137,7 +137,7 @@ extension EnvironmentValues {
 }
 
 /// The width of the empty band the status bar leaves on the leading side of
-/// a tall top inset, or nil where there is none. The Duo's outer display,
+/// a tall top inset (nil where there is none), and why. The Duo's outer display,
 /// upright, draws its clock and status in a block at the top trailing corner
 /// (reported as an occlusion) under a top inset deep enough for a header row,
 /// and leaves the rest of that band empty. Every other iPhone's top occlusion
@@ -147,31 +147,68 @@ extension EnvironmentValues {
 /// leading side, so the band can be much narrower than usual. The header has
 /// tiers down to `hubStatusBandMinimumWidth` (`HubHeaderRow`); only a band
 /// narrower than that puts the header on a row of its own.
-func hubStatusBandLeadingWidth(_ proxy: GeometryProxy) -> CGFloat? {
-  guard !proxy.isLandscapeIgnoringKeyboard, proxy.safeAreaInsets.top >= 64 else { return nil }
-  #if compiler(>=6.4)
-  guard #available(iOS 27.1, *) else { return nil }
+///
+/// The reading also says, in plain words, what it saw and which check
+/// decided. Settings › Advanced shows that (`HubLayoutDiagnostics`), so a
+/// phone the simulator cannot copy can say which check failed.
+func hubStatusBandReading(_ proxy: GeometryProxy) -> HubStatusBandReading {
   let width = proxy.size.width
+  let facts = "Top space \(Int(proxy.safeAreaInsets.top)), width \(Int(width))."
+  func reading(_ band: CGFloat?, _ verdict: String, _ extra: String = "") -> HubStatusBandReading {
+    HubStatusBandReading(width: band, detail: [verdict, facts, extra].filter { !$0.isEmpty }.joined(separator: " "))
+  }
+  guard !proxy.isLandscapeIgnoringKeyboard else { return reading(nil, "Full: landscape.") }
+  guard proxy.safeAreaInsets.top >= 64 else { return reading(nil, "Full: top space under 64.") }
+  #if compiler(>=6.4)
+  guard #available(iOS 27.1, *) else { return reading(nil, "Full: iOS older than 27.1.") }
+  let regions = proxy.reservedRegions(kind: .occlusion)
+  let blocks = regions.isEmpty
+    ? "No clock block reported."
+    : "Blocks: " + regions.map { region in
+      let f = region.frame
+      return "\(region.isActive ? "" : "inactive ")x \(Int(f.minX))-\(Int(f.maxX)) y \(Int(f.minY))-\(Int(f.maxY))"
+    }.joined(separator: "; ") + "."
   // Its bottom is not checked: with the ringer silenced the phone stacks a
   // bell over the clock, and the block can reach below the inset. The header
   // only needs the band to its leading side.
-  let top = proxy.reservedRegions(kind: .occlusion).filter { region in
+  let top = regions.filter { region in
     region.isActive && region.frame.minY < 0
   }
   // A block that reaches the trailing corner, not an island in the middle.
-  guard top.contains(where: { $0.frame.maxX > width * 0.75 }) else { return nil }
+  guard top.contains(where: { $0.frame.maxX > width * 0.75 }) else {
+    return reading(nil, "Full: no block in the top trailing corner.", blocks)
+  }
   // Every pill of the block, the leading one included, ends the band.
-  guard var leading = top.map(\.frame.minX).filter({ $0 > width * 0.25 }).min() else { return nil }
+  guard var leading = top.map(\.frame.minX).filter({ $0 > width * 0.25 }).min() else {
+    return reading(nil, "Full: the block starts in the leading quarter.", blocks)
+  }
   #if DEBUG
   // `-adeHubStatusBand <points>` stands in for a call or timer pill, which a
   // simulator cannot show: it narrows the band to that width.
   if let forced = hubDebugStatusBandWidth { leading = min(leading, forced) }
   #endif
-  guard leading >= hubStatusBandMinimumWidth else { return nil }
-  return leading
+  guard leading >= hubStatusBandMinimumWidth else {
+    return reading(nil, "Full: band \(Int(leading)) is under \(Int(hubStatusBandMinimumWidth)).", blocks)
+  }
+  return reading(leading, "Compact: band \(Int(leading)).", blocks)
   #else
-  return nil
+  return reading(nil, "Full: built without Swift 6.4.")
   #endif
+}
+
+/// `hubStatusBandReading`'s result: the band's width, nil when the header
+/// takes a row of its own, and the facts it checked.
+struct HubStatusBandReading: Equatable {
+  var width: CGFloat?
+  var detail: String
+}
+
+/// The Hub header's last reading, for Settings › Advanced.
+@MainActor
+@Observable
+final class HubLayoutDiagnostics {
+  static let shared = HubLayoutDiagnostics()
+  var hubHeader: String?
 }
 
 #if DEBUG

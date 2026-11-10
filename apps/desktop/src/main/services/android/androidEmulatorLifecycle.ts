@@ -28,6 +28,7 @@ import {
 } from "./androidEmulatorProcess";
 import { ANDROID_BOOT_TIMEOUT_MS, type AndroidEmulatorServiceDeps, type AndroidLaneState as LaneState } from "./androidEmulatorServiceDeps";
 import type { AndroidEmulatorLifecycle as AndroidMachineEmulatorLifecycle } from "./androidEmulatorSweep";
+import { assertAndroidDiskForStart } from "./androidDiskGuard";
 import { reserveAndroidMemoryForStart } from "./androidMemoryGuard";
 import type { AndroidEnv, ReadyAndroidSdk } from "./androidSdk";
 
@@ -441,6 +442,10 @@ export function createAndroidEmulatorLifecycle(ctx: AndroidEmulatorLifecycleCont
   ): Promise<{ launch: AndroidEmulatorLaunch; boot: AndroidBootResult }> => {
     const force = options.force === true;
     const chatSessionId = options.chatSessionId?.trim() || null;
+    // On an ADE Cloud computer the disk is small (4 GB at first): a first start
+    // that can't make its data partition is refused here, not by the emulator.
+    // `force` passes the memory guard only; no start fits on a full disk.
+    if (process.env.ADE_CLOUD_INSTANCE_ID?.trim()) assertAndroidDiskForStart({ laneId: slot.laneId, avd, logger });
     const reservation = await reserveAndroidMemoryForStart({
       laneId: slot.laneId,
       avd,

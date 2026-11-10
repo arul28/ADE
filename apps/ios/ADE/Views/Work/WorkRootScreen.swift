@@ -124,6 +124,9 @@ struct WorkSessionRoute: Hashable {
   /// Set for a row from another machine: the chat opens through that
   /// machine's roster connection.
   var remoteChat: WorkChatCrossProjectContext? = nil
+  /// Set for another machine's CLI or shell session that streams over that
+  /// machine's light link, without a focus switch.
+  var remoteTerminal: WorkRemoteTerminalContext? = nil
   var openingPrompt: String? = nil
   var openingPromptDispatchHandled = false
   var openingDeliveryState: String? = nil
@@ -1587,11 +1590,38 @@ struct WorkRootListScreen: View, Equatable {
   /// drift on the data they hand the destination.
   @ViewBuilder
   private func sessionDestinationView(_ route: WorkSessionRoute, inColumn: Bool) -> some View {
+    if let remoteTerminal = route.remoteTerminal {
+      // Another machine's terminal: it streams from its own machine.
+      TerminalSessionScreen(
+        session: remoteTerminal.session,
+        leading: remoteTerminalLeadingControl(inColumn: inColumn),
+        remoteTerminal: remoteTerminal
+      )
+      .environmentObject(syncService)
+      .id(route.openId)
+    } else {
+      focusedSessionDestinationView(route, inColumn: inColumn)
+    }
+  }
+
+  private func remoteTerminalLeadingControl(inColumn: Bool) -> TerminalLeadingControl {
+    guard inColumn else { return .back }
+    if duoShowsSessionList { return .none }
+    return .showChats {
+      ADEHaptics.light()
+      toggleDuoSessionsColumn()
+    }
+  }
+
+  @ViewBuilder
+  private func focusedSessionDestinationView(_ route: WorkSessionRoute, inColumn: Bool) -> some View {
     let routeTransitionNamespace = route.openingPrompt == nil && selectedSessionTransitionId == route.sessionId
       ? (ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil)
       : nil
+    // Never another machine's terminal row: it is a roster stub with no PTY,
+    // and its terminal cannot stream from the focused machine.
     let initialSession = optimisticSessions[route.sessionId]
-      ?? mergedSessions.first(where: { $0.id == route.sessionId })
+      ?? mergedSessions.first(where: { $0.id == route.sessionId && !workIsRemoteMachineTerminalRow($0) })
       ?? syncService.chatLaunchEntry(sessionId: route.sessionId).map(workChatLaunchOptimisticSession)
     // A chat still being launched into a new lane shows its setup first;
     // the same session id then hands over to the ordinary destination.

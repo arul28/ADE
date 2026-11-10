@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Moon } from "@phosphor-icons/react";
-import { cloudOutOfHours, type CloudMachine } from "../../../shared/adeCloud";
+import { cloudOutOfHours, cloudOverPlanDiskMessage, type CloudMachine } from "../../../shared/adeCloud";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { openCloudPlanSettings } from "../remoteTargets/openCloudPlanSettings";
 import { PushAllWorkButton } from "../remoteTargets/PushAllWorkButton";
 import { computerIsDown, useCloudComputer } from "../remoteTargets/useCloudComputer";
-import { Banner } from "../ui/notice";
+import { Banner, type BannerModel } from "../ui/notice";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
 
 /**
@@ -90,6 +91,8 @@ export function CloudToolGate({
 
   const down = computerIsDown(box);
   const outOfHours = cloudOutOfHours(account);
+  // On the free plan with more disk than the plan has, the server refuses every wake.
+  const overPlanDisk = cloudOverPlanDiskMessage(account);
   const instanceId = box?.instanceId ?? null;
   const openedByPerson = opened != null && opened.tool === tool && Date.now() - opened.at < OPENED_BY_PERSON_WINDOW_MS;
   const [waking, setWaking] = useState(false);
@@ -116,20 +119,25 @@ export function CloudToolGate({
 
   // A click wakes once; a reopened tab shows the button instead.
   useEffect(() => {
-    if (!down || outOfHours || !openedByPerson || !instanceId || wakeTriedFor.current === instanceId) return;
+    if (!down || outOfHours || overPlanDisk || !openedByPerson || !instanceId || wakeTriedFor.current === instanceId) return;
     wakeTriedFor.current = instanceId;
     wake();
-  }, [down, instanceId, openedByPerson, outOfHours, wake]);
+  }, [down, instanceId, openedByPerson, outOfHours, overPlanDisk, wake]);
 
   if (!needsComputer || !box || (!down && !waking && box.state !== "starting")) return <>{children}</>;
   const name = box.name ?? "This computer";
+  // A computer the account can't wake: why, and its work pushed without a full wake.
+  const restingGate = (model: Pick<BannerModel, "id" | "title" | "detail" | "actions">) => (
+    <div className="flex h-full min-h-0 flex-col justify-center gap-3 px-4">
+      <Banner layout="inline" model={{ ...model, tone: "warning", report: false }} />
+      <PushAllWorkButton instanceId={box.instanceId} />
+    </div>
+  );
   if (outOfHours && down) {
-    return (
-      <div className="flex h-full min-h-0 flex-col justify-center gap-3 px-4">
-        <Banner layout="inline" model={{ id: "cloud-tool-out-of-hours", tone: "warning", title: "Out of hours", detail: `${name} needs ADE Cloud hours to wake. They come back when your hours reset.`, report: false }} />
-        <PushAllWorkButton instanceId={box.instanceId} />
-      </div>
-    );
+    return restingGate({ id: "cloud-tool-out-of-hours", title: "Out of hours", detail: `${name} needs ADE Cloud hours to wake. They come back when your hours reset.` });
+  }
+  if (overPlanDisk && down) {
+    return restingGate({ id: "cloud-tool-over-plan-disk", title: `${name} can't wake`, detail: overPlanDisk, actions: [{ label: "Plans and hours", onClick: openCloudPlanSettings }] });
   }
   const comingUp = waking || box.state === "starting";
   return (

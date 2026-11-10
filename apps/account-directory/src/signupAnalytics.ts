@@ -114,7 +114,7 @@ export async function accountDistinctId(userId: string): Promise<string> {
 }
 
 /** A stable v4-shaped uuid from a seed string. */
-async function uuidFromSeed(seed: string): Promise<string> {
+export async function uuidFromSeed(seed: string): Promise<string> {
   const chars = (await sha256Hex(seed)).slice(0, 32).split("");
   chars[12] = "4";
   chars[16] = "8";
