@@ -1,7 +1,9 @@
 import "./machines.css";
-import { useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent } from "react";
 import { AppleLogo as PhosphorAppleLogo, Desktop, LinuxLogo, WindowsLogo } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
+import { Z_LAYERS } from "../ui/zLayers";
 
 /**
  * How a machine is recognised at a glance: a drawing of the kind of computer
@@ -254,6 +256,16 @@ export function MachineAvatar({
 }) {
   const color = useMachineColor(colorKey);
   const [picking, setPicking] = useState(false);
+  const tileRef = useRef<HTMLButtonElement | null>(null);
+  // Escape closes the swatches, not the Connections sheet around them, and
+  // hands focus back to the tile.
+  const closeOnEscape = (event: KeyboardEvent) => {
+    if (event.key !== "Escape" || !picking) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setPicking(false);
+    tileRef.current?.focus();
+  };
   const tile: CSSProperties = {
     position: "relative",
     flexShrink: 0,
@@ -278,60 +290,66 @@ export function MachineAvatar({
     );
   }
   return (
-    <span style={{ position: "relative", display: "inline-flex" }}>
+    <span style={{ display: "inline-flex" }}>
       <button
+        ref={tileRef}
         type="button"
         style={tile}
         aria-label={`${name}, ${machineKindLabel(platform, formFactor)}. Change color`}
         aria-expanded={picking}
         title="Change color"
         onClick={() => setPicking((open) => !open)}
+        onKeyDown={closeOnEscape}
       >
         {drawing}
       </button>
-      {picking ? (
-        <span
-          role="group"
-          aria-label={`${name} color`}
-          onMouseLeave={() => setPicking(false)}
-          style={{
-            position: "absolute",
-            top: size + 6,
-            left: 0,
-            zIndex: 5,
-            display: "flex",
-            gap: 6,
-            padding: 8,
-            borderRadius: 10,
-            background: COLORS.cardBgSolid,
-            border: `1px solid ${COLORS.border}`,
-            boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
-          }}
-        >
-          {MACHINE_COLORS.map((swatch) => (
-            <button
-              key={swatch}
-              type="button"
-              aria-label={MACHINE_COLOR_NAMES[swatch]}
-              aria-pressed={swatch === color}
-              onClick={() => {
-                setMachineColor(colorKey, swatch);
-                setPicking(false);
-              }}
-              style={{
-                width: 18,
-                height: 18,
-                borderRadius: 999,
-                padding: 0,
-                cursor: "pointer",
-                background: swatch,
-                border: "none",
-                boxShadow: swatch === color ? `0 0 0 2px ${COLORS.cardBgSolid}, 0 0 0 4px ${swatch}` : "none",
-              }}
-            />
-          ))}
-        </span>
-      ) : null}
+      {/* Portalled: drawn inline, the scrolling Connections panel cut it off.
+          The context-menu layer, as the row's own menu uses: the popover layer
+          sits under the Connections sheet. */}
+      <AnchoredMenu
+        open={picking}
+        anchorRef={tileRef}
+        onClose={() => setPicking(false)}
+        placement="bottom-start"
+        offset={6}
+        zIndex={Z_LAYERS.contextMenu}
+        role="group"
+        aria-label={`${name} color`}
+        onMouseLeave={() => setPicking(false)}
+        onKeyDown={closeOnEscape}
+        style={{
+          display: "flex",
+          gap: 6,
+          padding: 8,
+          borderRadius: 10,
+          background: COLORS.cardBgSolid,
+          border: `1px solid ${COLORS.border}`,
+          boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+        }}
+      >
+        {MACHINE_COLORS.map((swatch) => (
+          <button
+            key={swatch}
+            type="button"
+            aria-label={MACHINE_COLOR_NAMES[swatch]}
+            aria-pressed={swatch === color}
+            onClick={() => {
+              setMachineColor(colorKey, swatch);
+              setPicking(false);
+            }}
+            style={{
+              width: 18,
+              height: 18,
+              borderRadius: 999,
+              padding: 0,
+              cursor: "pointer",
+              background: swatch,
+              border: "none",
+              boxShadow: swatch === color ? `0 0 0 2px ${COLORS.cardBgSolid}, 0 0 0 4px ${swatch}` : "none",
+            }}
+          />
+        ))}
+      </AnchoredMenu>
     </span>
   );
 }

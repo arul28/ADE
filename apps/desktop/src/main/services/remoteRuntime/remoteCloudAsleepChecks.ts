@@ -7,8 +7,11 @@
 import type { RemoteRuntimeTarget } from "../../../shared/types/remoteRuntime";
 
 export type CloudAsleepCheckCallbacks = {
-  /** Whether the machine is a cloud computer that is asleep. Null at once when it isn't a cloud computer. */
-  ask(target: RemoteRuntimeTarget): Promise<boolean> | null;
+  /**
+   * Whether the machine is a cloud computer that is asleep. Null, at once or
+   * as the answer, when it isn't a cloud computer.
+   */
+  ask(target: RemoteRuntimeTarget): Promise<boolean | null> | null;
   /** Still a saved machine the person did not disconnect. */
   stillWanted(target: RemoteRuntimeTarget): boolean;
   /** The machine's link is down with an error, so a later question still has a point. */
@@ -59,7 +62,7 @@ export class CloudAsleepChecks {
 
   /** Asks about a resting machine again. False when the question fails or the machine is no longer a cloud computer. */
   async stillAsleep(target: RemoteRuntimeTarget): Promise<boolean> {
-    return await (this.askSafely(target) ?? false);
+    return (await this.askSafely(target)) === true;
   }
 
   /**
@@ -74,6 +77,8 @@ export class CloudAsleepChecks {
     const stamp = this.aliveStamp(target.id);
     const check = asked.then((asleep) => {
       this.runningByTargetId.delete(target.id);
+      // Not a cloud computer after all: no rest and no later questions.
+      if (asleep === null) return false;
       // Woken, reconnected, removed or disconnected by hand while the question was out.
       if (this.aliveStamp(target.id) !== stamp || !this.callbacks.stillWanted(target)) return false;
       if (!asleep) {
@@ -93,7 +98,7 @@ export class CloudAsleepChecks {
     this.followUpsByTargetId.clear();
   }
 
-  private askSafely(target: RemoteRuntimeTarget): Promise<boolean> | null {
+  private askSafely(target: RemoteRuntimeTarget): Promise<boolean | null> | null {
     return this.callbacks.ask(target)?.catch(() => false) ?? null;
   }
 
@@ -113,8 +118,8 @@ export class CloudAsleepChecks {
     const timer = setTimeout(() => {
       this.followUpsByTargetId.delete(target.id);
       if (!current()) return;
-      void (this.askSafely(target) ?? Promise.resolve(false)).then((asleep) => {
-        if (!current()) return;
+      void (this.askSafely(target) ?? Promise.resolve(null)).then((asleep) => {
+        if (asleep === null || !current()) return;
         if (asleep) this.rest(target);
         else this.askAgainLater(target, stamp, asked + 1);
       });

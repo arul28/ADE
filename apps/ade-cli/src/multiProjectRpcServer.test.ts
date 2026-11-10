@@ -2298,6 +2298,77 @@ describe("multi-project RPC server", () => {
     }
   });
 
+  it("shares one clone between two requests for a folder, and reuses a checkout of the same repository", async () => {
+    const { root, registry } = createRegistry();
+    const parentDir = path.join(root, "projects");
+    fs.mkdirSync(parentDir, { recursive: true });
+    const originalGitHubToken = process.env.ADE_GITHUB_TOKEN;
+    // A token here keeps the clone from asking `gh` on this computer for one.
+    process.env.ADE_GITHUB_TOKEN = "test-token";
+    let releaseClone!: () => void;
+    const cloneGate = new Promise<void>((resolve) => { releaseClone = resolve; });
+    const writeOrigin = (folder: string) => {
+      fs.mkdirSync(path.join(folder, ".git"), { recursive: true });
+      fs.writeFileSync(
+        path.join(folder, ".git", "config"),
+        '[remote "origin"]\n\turl = git@github.com:Example/Repo.git\n',
+      );
+    };
+    const runGitSpy = vi.spyOn(gitModule, "runGit").mockImplementation(async (args, options) => {
+      // HEAD resolves only where the fake clone finished.
+      if (args[0] === "rev-parse") {
+        return { exitCode: fs.existsSync(path.join(options.cwd, ".git", "HEAD")) ? 0 : 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "clone") {
+        const target = args[args.length - 1]!;
+        // The folder fills while the clone runs; a second clone into it there
+        // is what failed with target_exists.
+        fs.mkdirSync(path.join(target, ".git"), { recursive: true });
+        await cloneGate;
+        writeOrigin(target);
+        fs.writeFileSync(path.join(target, ".git", "HEAD"), "ref: refs/heads/main\n");
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    const handler = createMultiProjectRpcRequestHandler({ serverVersion: "test", projectRegistry: registry });
+    const clone = (id: number, params: Record<string, unknown>) =>
+      handler({ jsonrpc: "2.0", id, method: "projects.clone", params: { parentDir, ...params } }) as Promise<{ rootPath: string }>;
+    const cloneCalls = () => runGitSpy.mock.calls.filter(([args]) => args[0] === "clone").length;
+
+    try {
+      await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+      const first = clone(2, { url: "https://github.com/example/repo.git" });
+      await vi.waitFor(() => expect(cloneCalls()).toBe(1));
+      // Another pane asks while the first clone runs: it waits for that one.
+      const second = clone(3, { url: "https://github.com/Example/Repo" });
+      // A different repository into the same folder is refused, not joined.
+      await expect(clone(4, { url: "https://github.com/someone/else.git", name: "repo" }))
+        .rejects.toThrow(/target_exists|already exists/);
+      releaseClone();
+      const [firstProject, secondProject] = await Promise.all([first, second]);
+      expect(secondProject.rootPath).toBe(firstProject.rootPath);
+      expect(cloneCalls()).toBe(1);
+
+      // Later: the folder holds that repository, so it is the answer, with no clone.
+      const again = await clone(5, { url: "git@github.com:example/repo.git" });
+      expect(again.rootPath).toBe(firstProject.rootPath);
+      expect(cloneCalls()).toBe(1);
+      // A folder of another repository at the path still fails.
+      await expect(clone(6, { url: "https://github.com/someone/else.git", name: "repo" }))
+        .rejects.toThrow(/target_exists|already exists/);
+      expect(cloneCalls()).toBe(1);
+      // A clone killed part-way: origin is set but HEAD has no commit. Not reused.
+      writeOrigin(path.join(parentDir, "killed"));
+      await expect(clone(7, { url: "https://github.com/example/repo.git", name: "killed" }))
+        .rejects.toThrow(/target_exists|already exists/);
+    } finally {
+      handler.dispose();
+      runGitSpy.mockRestore();
+      if (originalGitHubToken === undefined) delete process.env.ADE_GITHUB_TOKEN;
+      else process.env.ADE_GITHUB_TOKEN = originalGitHubToken;
+    }
+  });
+
   it("requires projectId for project-scoped methods", async () => {
     const { registry } = createRegistry();
     const handler = createMultiProjectRpcRequestHandler({

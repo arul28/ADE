@@ -143,10 +143,11 @@ type RemoteConnectionServiceOptions = {
    * Whether a cloud computer is asleep or stopped. Asked when a call to it
    * fails the way a sleeping computer fails (its relay tunnel looks open until
    * a call times out), so the app shows it as not connected, quietly, where it
-   * used to show a connected machine whose reads fail. Null at once for a
-   * machine that isn't a cloud computer: nothing else pays for the question.
+   * used to show a connected machine whose reads fail. Null for a machine that
+   * isn't a cloud computer: at once when that is plain, or as the answer after
+   * a bounded lookup. Such a machine then takes the normal failure path.
    */
-  asleepForUse?: (target: RemoteRuntimeTarget) => Promise<boolean> | null;
+  asleepForUse?: (target: RemoteRuntimeTarget) => Promise<boolean | null> | null;
 };
 
 /** How long a woken machine gets to come back online before the call fails as usual. */

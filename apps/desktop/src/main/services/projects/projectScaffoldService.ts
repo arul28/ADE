@@ -16,6 +16,7 @@ import { gitCommandError, runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { createGithubService } from "../github/githubService";
 import { resolveGithubRemoteRepo } from "../github/githubSshAlias";
+import type { GithubRepoSlug } from "../../../shared/githubRemote";
 import { initializeOrRepairAdeProject } from "./adeProjectService";
 import { ensureProjectLocalDatabase } from "./projectLocalDatabase";
 import { redactGitOutput } from "../../utils/redaction";
@@ -63,6 +64,36 @@ function isDirectoryNonEmpty(dirPath: string): boolean {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
+}
+
+export type CloneTarget = {
+  url: string;
+  repo: GithubRepoSlug;
+  parentDir: string;
+  rootPath: string;
+};
+
+/**
+ * Where a clone of `input` lands, with the same checks and coded errors as
+ * the clone itself. Exported so a caller can key on the folder before it
+ * clones (two clones of one folder at once share one run).
+ */
+export async function resolveCloneTarget(input: CloneProjectInput): Promise<CloneTarget> {
+  const url = (input.url ?? "").trim();
+  if (!url) {
+    throw codedError("Enter a GitHub repository URL.", "invalid_github_url");
+  }
+  const repo = await resolveGithubRemoteRepo(url);
+  if (!repo) {
+    throw codedError("Only GitHub repository URLs are supported.", "invalid_github_url");
+  }
+  const parentDir = (input.parentDir ?? "").trim();
+  if (!parentDir.length) {
+    throw new Error("Parent directory is required.");
+  }
+  const explicitName = (input.name ?? "").trim();
+  const name = validateProjectName(explicitName.length > 0 ? explicitName : repo.repo);
+  return { url, repo, parentDir, rootPath: path.join(parentDir, name) };
 }
 
 function hashToken(token: string): string {
@@ -150,23 +181,7 @@ export function createProjectScaffoldService({
   };
 
   const cloneRepository = async (input: CloneProjectInput): Promise<CloneProjectResult> => {
-    const url = (input.url ?? "").trim();
-    if (!url) {
-      throw codedError("Enter a GitHub repository URL.", "invalid_github_url");
-    }
-    const repoRef = await resolveGithubRemoteRepo(url);
-    if (!repoRef) {
-      throw codedError("Only GitHub repository URLs are supported.", "invalid_github_url");
-    }
-
-    const parentDir = (input.parentDir ?? "").trim();
-    if (!parentDir.length) {
-      throw new Error("Parent directory is required.");
-    }
-
-    const explicitName = (input.name ?? "").trim();
-    const name = validateProjectName(explicitName.length > 0 ? explicitName : repoRef.repo);
-    const rootPath = path.join(parentDir, name);
+    const { url, parentDir, rootPath } = await resolveCloneTarget(input);
 
     if (fs.existsSync(rootPath) && isDirectoryNonEmpty(rootPath)) {
       throw codedError("A folder already exists at that path.", "target_exists");

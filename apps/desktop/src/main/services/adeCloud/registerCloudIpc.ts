@@ -161,6 +161,9 @@ export function registerCloudIpc(args: {
   const leftoverCreates = pendingCreates.list();
   // Off the boot path: delete any machine a quit left half-made.
   const startupTimer = setTimeout(() => {
+    // Which machines are cloud computers, so wake and rest work before anyone
+    // opens the Connections pane. Nothing is read without ADE Cloud access.
+    void machines.loadKnownMachines();
     void (async () => {
       if (!leftoverCreates.length) return;
       const provider = await getCloudProvider(credentials);
@@ -246,17 +249,19 @@ export function registerCloudIpc(args: {
   const machines = createCloudMachines({
     whyNoClient: () => cloudNoProviderSentence(credentials),
     client: savedClient,
+    // A miss refreshes the known computers only on a known yes to access.
+    knownClient: () => knownCloudProvider(credentials),
     removeAccountMachine: args.removeAccountMachine,
     logger,
   });
   // Off the list this asks nothing: access is read at sign-in and on focus only.
   startCloudSleepWatch({ client: async () => knownCloudProvider(credentials), logger, firstPassDelayMs: STARTUP_CHECK_DELAY_MS + 30_000 });
   // Remote connections wake a sleeping box the person is about to use. Only a
-  // machine the machine list showed as a cloud box is looked up, so a
-  // Connect to a laptop never waits on the provider.
+  // machine known as a cloud box is looked up (`knowsBox`: at most one bounded
+  // read for an unknown one), so a Connect to a laptop barely waits.
   setCloudWakeForUse(async (target) => {
     const machineKey = target.pairedMachine?.machineKey?.trim();
-    if (!machineKey || !machines.isKnownBox(machineKey)) return false;
+    if (!machineKey || !(await machines.knowsBox(machineKey))) return false;
     const client = await savedClient().catch(() => null);
     if (!client) return false;
     const result = await wakeCloudMachineForUse(client, { machineKey, hostname: target.hostname }, { logger }).catch((error: unknown) => {
@@ -273,8 +278,10 @@ export function registerCloudIpc(args: {
   // open. One bounded read of the account's computers says whether that is why.
   setCloudAsleepCheck((target) => {
     const machineKey = target.pairedMachine?.machineKey?.trim();
-    if (!machineKey || !machines.isKnownBox(machineKey)) return null;
+    if (!machineKey) return null;
     return (async () => {
+      // Not a cloud computer: null, so the caller takes the normal failure path.
+      if (!(await machines.knowsBox(machineKey))) return null;
       const client = await savedClient();
       if (!client) return false;
       const instances = await Promise.race([
@@ -296,7 +303,7 @@ export function registerCloudIpc(args: {
   // so the card says so at once and points at Update this computer.
   setCloudUpdateBlocker(async (target) => {
     const machineKey = target.pairedMachine?.machineKey?.trim();
-    if (!machineKey || !machines.isKnownBox(machineKey)) return null;
+    if (!machineKey || !(await machines.knowsBox(machineKey))) return null;
     let probe: { exitCode: number } | null = null;
     let instance: ReturnType<typeof cloudInstanceForMachine> = null;
     try {
