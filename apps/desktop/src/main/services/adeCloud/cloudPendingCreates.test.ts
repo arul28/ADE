@@ -208,3 +208,59 @@ describe("ADE Cloud half-made boxes", () => {
     expect(removed).toEqual(rowsRemoved);
   });
 });
+
+describe("which machines are cloud computers", () => {
+  it("answers without the machine list read, and does not keep asking for a laptop or a failing server", async () => {
+    let nowMs = 1_000_000;
+    let reads = 0;
+    let serverDown = false;
+    let hasAccess = false;
+    const keys = ["cloud-key"];
+    const provider = {
+      listInstances: async () => {
+        reads += 1;
+        if (serverDown) throw new Error("ADE Cloud is down.");
+        return keys.map((key, index) => ({ id: `box${index}`, status: "running", metadata: { created_by: "ade", ade_machine_key: key } }));
+      },
+    } as never;
+    const machines = createCloudMachines({
+      client: async () => provider,
+      knownClient: () => (hasAccess ? provider : null),
+      removeAccountMachine: async () => {},
+      logger: quiet,
+      sleep: noWait,
+      now: () => nowMs,
+    });
+
+    // No ADE Cloud access: nothing is asked, so a laptop's connect never waits.
+    expect(await machines.knowsBox("cloud-key")).toBe(false);
+    expect(reads).toBe(0);
+
+    // Nobody opened the machine list. Two callers at once share one read.
+    hasAccess = true;
+    expect(await Promise.all([machines.knowsBox("cloud-key"), machines.knowsBox("cloud-key")])).toEqual([true, true]);
+    expect(reads).toBe(1);
+    expect(await machines.knowsBox("cloud-key")).toBe(true);
+    expect(reads).toBe(1);
+
+    // A laptop is asked about once, then not again until that answer is old.
+    expect(await machines.knowsBox("laptop-key")).toBe(false);
+    expect(reads).toBe(2);
+    expect(await machines.knowsBox("laptop-key")).toBe(false);
+    expect(reads).toBe(2);
+    nowMs += 11 * 60_000;
+    expect(await machines.knowsBox("laptop-key")).toBe(false);
+    expect(reads).toBe(3);
+
+    // A computer made since is found at once; a failing server is left alone for a minute.
+    keys.push("new-key");
+    serverDown = true;
+    expect(await machines.knowsBox("new-key")).toBe(false);
+    expect(await machines.knowsBox("new-key")).toBe(false);
+    expect(reads).toBe(4);
+    serverDown = false;
+    nowMs += 61_000;
+    expect(await machines.knowsBox("new-key")).toBe(true);
+    expect(reads).toBe(5);
+  });
+});

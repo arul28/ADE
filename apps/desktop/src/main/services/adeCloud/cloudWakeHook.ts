@@ -20,7 +20,12 @@ export async function cloudWakeForUse(target: RemoteRuntimeTarget): Promise<bool
   return hook ? await hook(target) : false;
 }
 
-type AsleepCheck = (target: RemoteRuntimeTarget) => Promise<boolean> | null;
+/**
+ * True when the machine is a cloud computer that is asleep. Null, at once or
+ * as the answer, when it isn't a cloud computer: telling may need a bounded
+ * read of the account's computers.
+ */
+type AsleepCheck = (target: RemoteRuntimeTarget) => Promise<boolean | null> | null;
 
 let asleepCheck: AsleepCheck | null = null;
 
@@ -28,8 +33,8 @@ export function setCloudAsleepCheck(next: AsleepCheck | null): void {
   asleepCheck = next;
 }
 
-/** Whether this machine is a cloud computer that is asleep or stopped. Null at once when it isn't a cloud computer. */
-export function cloudAsleepForUse(target: RemoteRuntimeTarget): Promise<boolean> | null {
+/** Whether this machine is a cloud computer that is asleep or stopped; null when it isn't a cloud computer. */
+export function cloudAsleepForUse(target: RemoteRuntimeTarget): Promise<boolean | null> | null {
   return asleepCheck ? asleepCheck(target) : null;
 }
 
