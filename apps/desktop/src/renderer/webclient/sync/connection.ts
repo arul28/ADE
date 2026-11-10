@@ -304,6 +304,8 @@ export class SyncConnection {
   private backoffMs = BACKOFF_MIN_MS;
   private backoffResetTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingAttemptCancel: (() => void) | null = null;
+  /** The route of this connection's last successful dial. */
+  private lastConnectedEndpoint: string | null = null;
   private consecutiveAuthFailures = 0;
   private lastDialStartedAtMs = 0;
   private intentionalClose = false;
@@ -528,7 +530,12 @@ export class SyncConnection {
     });
     const correlationId = browserConnectionCorrelationId();
     let lastError: Error | null = null;
-    const lastGoodIndex = dialable.findIndex((candidate) => candidate.url === environment.lastGoodEndpoint);
+    // The route this connection last used, when it has one: the stored record
+    // can still name an older route.
+    const lastGood = dialable.some((candidate) => candidate.url === this.lastConnectedEndpoint)
+      ? this.lastConnectedEndpoint
+      : environment.lastGoodEndpoint;
+    const lastGoodIndex = dialable.findIndex((candidate) => candidate.url === lastGood);
     for (const [index, candidate] of dialable.entries()) {
       // Only a direct route is a guess. ADE Relay can take longer than that to
       // open, and it is the live route a project switch dials first.
@@ -1098,6 +1105,7 @@ export class SyncConnection {
   ): boolean {
     if (!this.isCurrentSocket(socket, generation)) return false;
     this.environment = environment;
+    this.lastConnectedEndpoint = endpoint;
     const winningCandidate = this.endpoints.find(
       (candidate) => candidate.url === endpoint,
     );

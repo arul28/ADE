@@ -3240,7 +3240,8 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const failed = get().lanesLoadError;
       const retryOfFailedRead = failed != null
         && failed.projectKey === normalizeProjectKey(selectActiveProjectStateKey(get()));
-      if (!retryOfFailedRead) set({ lanesLoading: true });
+      // Also clears a flag that a reopen of the same project set.
+      set({ lanesLoading: !retryOfFailedRead });
     }
 
     if (laneRefreshInFlight) {

@@ -216,6 +216,7 @@ const RouteLoadingFallback = (
   <div
     className="flex h-full min-h-0 w-full flex-col"
     style={{ background: "var(--color-bg)" }}
+    role="status"
     aria-label="Loading tab"
   >
     <div
