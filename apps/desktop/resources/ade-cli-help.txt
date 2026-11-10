@@ -709,6 +709,10 @@ Work chats
                                                     Without --lane it starts in the project's primary lane there.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
+    $ ade chat create --machine cloud:ready --prompt "…"
+                                                    Start on this project's ready ADE Cloud machine (prepared and
+                                                    asleep): ADE wakes it, waits until it is online, then sends.
+                                                    No --lane needed; --json adds readyMachine. See ade cloud ready.
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text
@@ -1192,8 +1196,11 @@ Automations
     $ ade automations show <id> [--json]            Inspect a rule
     $ ade automations create --from-file <path>     Create from YAML (also accepts --stdin)
     $ ade automations update <id> --from-file <path>
-    $ ade automations delete <id>                   Remove a local rule
+    $ ade automations delete <id>                   Remove a rule (on every computer when it follows your account)
     $ ade automations toggle <id> --enabled true|false
+    $ ade automations run-on <id> [--device <sync-device-id> --name <computer>]
+                                                     Choose the one computer that runs a rule that
+                                                     follows your account. Default: this computer
     $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
           [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
                                                      Test a rule with an event. preview shows
