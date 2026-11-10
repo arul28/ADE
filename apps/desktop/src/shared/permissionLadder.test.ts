@@ -27,11 +27,13 @@ describe("round trip", () => {
     }
   });
 
-  it("maps every level onto Codex and back", () => {
+  it("maps every level onto Codex and back to the level it applies", () => {
     for (const level of PERMISSION_LEVELS) {
       const resolved = resolvePermissionLevel(level, "codex");
-      expect(permissionLevelForCodex(resolved.codexSandbox, resolved.codexApprovalPolicy)).toBe(level);
+      expect(permissionLevelForCodex(resolved.codexSandbox, resolved.codexApprovalPolicy)).toBe(resolved.level);
     }
+    // Codex has no auto-edit level, so it steps down to ask.
+    expect(resolvePermissionLevel("auto-edit", "codex").level).toBe("ask");
   });
 
   it("maps every level onto Droid and back", () => {

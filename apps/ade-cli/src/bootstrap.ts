@@ -81,7 +81,8 @@ import { resolveChatCreateModel } from "../../desktop/src/main/services/chat/cha
 import { fetchLaneStartBranch } from "../../desktop/src/main/services/chat/chatLaunchStartFetch";
 import { resolveGitCommit, runGit } from "../../desktop/src/main/services/git/git";
 import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
-import { createProjectNewLaneSettings } from "../../desktop/src/main/services/lanes/newLaneSettingsStore";
+import { createCachedProjectOriginReader, createProjectNewLaneSettings } from "../../desktop/src/main/services/lanes/newLaneSettingsStore";
+import { createAutomationRuleAccountStore } from "../../desktop/src/main/services/automations/automationRuleAccountStore";
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
 import { createProxyService, type ProxyService } from "./services/proxy/proxyService";
@@ -208,6 +209,7 @@ import {
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import {
+  captureAutomationRunOnChangedAnalytics,
   captureChatAccountSwitchedAnalytics,
   captureNewLaneLaunchAnalytics,
   capturePendingInputDismissedAnalytics,
@@ -1496,6 +1498,10 @@ export async function createAdeRuntime(args: {
     // account callback reaches it through this ref instead of a TDZ-prone
     // forward reference.
     let applyFastModePolicyRef: (() => void) | null = null;
+    /** Re-reads automation rules after another computer changed them; set once automations exist. */
+    let onAccountAutomationRulesChangedRef: (() => void) | null = null;
+    /** Account rows changed (another computer wrote): claim, confirm and re-read rules. */
+    let onAccountAutomationRuleRowsChangedRef: (() => void) | null = null;
     const syncDeviceIdPath = path.join(
       syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
       "sync-device-id",
@@ -1537,6 +1543,7 @@ export async function createAdeRuntime(args: {
       onAccountSettingsChanged: () => {
         pushEvent("runtime", { type: "account_settings_changed" });
         applyFastModePolicyRef?.();
+        onAccountAutomationRuleRowsChangedRef?.();
       },
       getContexts: () => [{
         project: { rootPath: projectRoot },
@@ -1596,6 +1603,86 @@ export async function createAdeRuntime(args: {
       logger,
       newLaneSettings,
     });
+
+    // Automation rules follow the account too: rows per rule under the
+    // repository, each run only by its home computer. Rules already in
+    // `.ade/local.yaml` move once the store has synced (so another computer's
+    // copy of the same rule is known) and again after a sign-in. After every
+    // sync, rules re-homed here are claimed for this checkout and writes
+    // another computer could have raced are confirmed.
+    if (accountSettingsStore) {
+      const accountStoreForRules = accountSettingsStore;
+      let ruleSyncTimer: ReturnType<typeof setTimeout> | null = null;
+      // A pending timer runs a real sync if any caller asked for one.
+      let ruleSyncTimerWantsSync = false;
+      let ruleSyncRunning = false;
+      let ruleSyncAgain = false;
+      // `sync: false` after the store's own sync applied remote rows: its
+      // health already says whether everything went up, with no second request.
+      const syncAutomationRules = async (options: { sync: boolean } = { sync: true }): Promise<void> => {
+        if (ruleSyncRunning) {
+          ruleSyncAgain = true;
+          return;
+        }
+        ruleSyncRunning = true;
+        let first = true;
+        try {
+          do {
+            ruleSyncAgain = false;
+            const confirmed = await ruleStore.syncedEverything({ sync: options.sync || !first });
+            first = false;
+            const moved = projectConfigService.migrateAutomationRulesToAccount();
+            const settled = projectConfigService.reconcileAutomationRules({ confirmed: confirmed && moved.moved === 0 });
+            if (moved.moved > 0 || settled.claimed > 0 || settled.readded.length > 0) ruleSyncAgain = true;
+            onAccountAutomationRulesChangedRef?.();
+          } while (ruleSyncAgain);
+        } catch (error) {
+          logger.warn("automations.account_rules_sync_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          ruleSyncRunning = false;
+        }
+      };
+      const scheduleAutomationRuleSync = (delayMs = 1_500, options: { sync: boolean } = { sync: true }) => {
+        ruleSyncTimerWantsSync ||= options.sync;
+        if (ruleSyncTimer) return;
+        ruleSyncTimer = setTimeout(() => {
+          ruleSyncTimer = null;
+          const sync = ruleSyncTimerWantsSync;
+          ruleSyncTimerWantsSync = false;
+          void syncAutomationRules({ sync });
+        }, delayMs);
+        ruleSyncTimer.unref?.();
+      };
+      teardown.push(() => {
+        if (ruleSyncTimer) clearTimeout(ruleSyncTimer);
+        ruleSyncTimer = null;
+      });
+      const ruleStore = createAutomationRuleAccountStore({
+        backend: accountStoreForRules,
+        readOriginUrl: createCachedProjectOriginReader(projectRoot),
+        thisComputer: () => {
+          let name: string | null = null;
+          try {
+            name = syncService?.getDeviceRegistryService().ensureLocalDevice().name ?? null;
+          } catch {
+            name = null;
+          }
+          return { deviceId: readSyncDeviceId(), name: name ?? os.hostname().replace(/\.local$/i, "") };
+        },
+        projectRoot,
+        accountUserId: () => accountAuthService.getStatus().userId ?? null,
+        statePath: path.join(paths.adeDir, "automation-rules.state.json"),
+        // A write another computer may race is confirmed after the next sync.
+        onWrite: () => scheduleAutomationRuleSync(),
+        logger,
+      });
+      projectConfigService.setAutomationRuleStore(ruleStore);
+      onAccountAutomationRuleRowsChangedRef = () => scheduleAutomationRuleSync(250, { sync: false });
+      void syncAutomationRules();
+      teardown.push(accountAuthService.onSignedIn(() => void syncAutomationRules()));
+    }
     laneService.setNewLaneSettingsStore(newLaneSettings, {
       validateTemplateId: (templateId) => {
         if (!laneTemplateService.getTemplate(templateId)) throw new Error(`Unknown lane template: ${templateId}`);
@@ -2796,7 +2883,10 @@ export async function createAdeRuntime(args: {
               provider: summary?.provider ?? null,
               model: summary?.model ?? null,
               projectKey,
-              projectId,
+              // The id a remote call names this project by (the brain's
+              // registry), not the project database's own id: a send from
+              // the saved copy is routed with it.
+              projectId: syncRuntimeOptions?.registryProjectId ?? projectId,
               projectRoot,
               lastActivityAt: row.lastActivityAt ?? row.startedAt ?? null,
             };
@@ -3210,9 +3300,42 @@ export async function createAdeRuntime(args: {
         agentChatService: agentChatService ?? undefined,
         prService: headlessLinearServices.prService,
         onEvent: (event) => pushEvent("runtime", { ...event, source: "automations" }),
+        onRunOnChanged: () => captureAutomationRunOnChangedAnalytics({ analytics: productAnalyticsService, surface: "api" }),
+        // Read when a rule is listed, after both secret services exist.
+        secretAvailable: (ref) => {
+          try {
+            if (ref.projectSecret) return Boolean(projectSecretService.get({ name: ref.projectSecret }).value);
+            if (ref.secretRef) return Boolean(automationSecretService.getSecret(ref.secretRef));
+          } catch {
+            return false;
+          }
+          return true;
+        },
       })
       : null;
     automationServiceRef = automationService;
+    if (automationService) {
+      // A rule edited, added, deleted or re-homed on another computer reaches
+      // this one through the account store; reschedule and tell the editor.
+      // The account's rows and `.ade/local.yaml` together: a move that only
+      // drops a file copy changes which rules run here without touching the account.
+      const automationRulesFingerprint = () =>
+        `${projectConfigService.accountAutomationRulesFingerprint() ?? ""}|${projectConfigService.get().trust.localHash}`;
+      let lastAccountRules = automationRulesFingerprint();
+      onAccountAutomationRulesChangedRef = () => {
+        const next = automationRulesFingerprint();
+        if (next === lastAccountRules) return;
+        lastAccountRules = next;
+        try {
+          automationService.syncFromConfig();
+        } catch (error) {
+          logger.warn("automations.account_rules_resync_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        pushEvent("runtime", { type: "runs-updated", source: "automations" });
+      };
+    }
     teardown.push(() => automationService?.dispose());
     const automationSecretService = createAutomationSecretService({
       adeDir: paths.adeDir,
@@ -3236,7 +3359,8 @@ export async function createAdeRuntime(args: {
       githubService: headlessLinearServices.githubService,
       getAccountAccessToken,
       subscribeToSignIn: (listener) => accountAuthService.onSignedIn(listener),
-      listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
+      // Only the rules this computer runs; another computer polls for its own.
+      listRules: () => (automationService ? (projectConfigService.get().effective.automations ?? []).filter((rule) => rule.runsHere !== false) : []),
       ingressCursorStore: createKvIngressCursorStore(db),
       webhooks: {
         db,

@@ -48,6 +48,7 @@ import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
+  type ProviderRuntimeFailureDetail,
 } from "./providerRuntimeHealth";
 
 /**
@@ -157,7 +158,11 @@ function loginBlocker(provider: AcpChatProvider): string {
   return `${dialect.displayName} is not signed in. Run \`${dialect.authProbe.loginCommand}\` in a terminal${keyHint}, then refresh AI settings.`;
 }
 
-function publishResult(provider: AcpChatProvider, result: AcpAuthProbeResult, stderrTail?: string | null): void {
+function publishResult(
+  provider: AcpChatProvider,
+  result: AcpAuthProbeResult,
+  detail?: ProviderRuntimeFailureDetail,
+): void {
   // A sign-in that changed state may now be a different account, whose models differ.
   const before = getProviderRuntimeHealth(provider)?.state ?? null;
   if (before !== null && before !== result.state && (before === "ready" || result.state === "ready")) {
@@ -174,7 +179,7 @@ function publishResult(provider: AcpChatProvider, result: AcpAuthProbeResult, st
       reportProviderRuntimeAuthFailure(provider, result.message);
       return;
     case "runtime-failed":
-      reportProviderRuntimeFailure(provider, result.message, stderrTail ? { stderrTail } : undefined);
+      reportProviderRuntimeFailure(provider, result.message, detail);
       return;
   }
 }
@@ -264,7 +269,7 @@ export async function probeAcpProviderAuth(
 
   // What the agent wrote to stderr before the probe gave up: the only account
   // of an agent that never answered `initialize` (Antigravity on Windows).
-  const probeOutput: { stderrTail: string | null } = { stderrTail: null };
+  const probeOutput: ProviderRuntimeFailureDetail = {};
   const probe = (async (): Promise<AcpAuthProbeResult> => {
     const dialect = acpDialectFor(provider);
     let connection: ReturnType<typeof createAcpConnection> | null = null;
@@ -358,6 +363,9 @@ export async function probeAcpProviderAuth(
       };
     } finally {
       probeOutput.stderrTail = connection?.readStderrTail().trim() || null;
+      // Before the dispose below, which would read as the process's own exit.
+      const startup = connection?.readStartupTrace();
+      probeOutput.startup = startup ? { ...startup, platform: process.platform } : null;
       connection?.dispose("auth probe finished");
     }
   })().then((result) => {
@@ -368,8 +376,8 @@ export async function probeAcpProviderAuth(
   inFlightProbes.set(key, probe);
   try {
     const result = await probe;
-    const stderrTail = result.state === "runtime-failed" ? probeOutput.stderrTail : null;
-    publishResult(provider, result, stderrTail);
+    const { stderrTail, startup } = result.state === "runtime-failed" ? probeOutput : ({} as ProviderRuntimeFailureDetail);
+    publishResult(provider, result, { stderrTail, startup });
     if (result.state === "ready") {
       args.logger?.info?.("ai.acp_auth_probe.ready", { provider, cwd });
     } else {
@@ -379,6 +387,7 @@ export async function probeAcpProviderAuth(
         state: result.state,
         message: result.message,
         ...(stderrTail ? { stderrTail: stderrTail.slice(-1_000) } : {}),
+        ...(startup ? { startup } : {}),
       });
     }
     return result;

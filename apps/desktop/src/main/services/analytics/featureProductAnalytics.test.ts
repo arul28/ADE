@@ -9,6 +9,7 @@ import {
   captureAgentCardAnalytics,
   captureSessionImportAnalytics,
   captureWebhookUrlCreatedAnalytics,
+  captureAutomationRunOnChangedAnalytics,
   captureAutomationTestAnalytics,
   captureProviderAccountSettingsChange,
   providerAccountAnalyticsCapture,
@@ -201,6 +202,7 @@ describe("captureSessionImportAnalytics", () => {
 describe("webhook, secret-card, provider CLI update, and custom notification analytics", () => {
   it.each([
     ["webhook URL", (analytics: FeatureAnalytics) => captureWebhookUrlCreatedAnalytics({ analytics, surface: "desktop" }), "automations", "webhook_url_created", "completed"],
+    ["automation moved to another computer", (analytics: FeatureAnalytics) => captureAutomationRunOnChangedAnalytics({ analytics, surface: "api" }), "automations", "run_on_changed", "completed"],
     ["safe automation test", (analytics: FeatureAnalytics) => captureAutomationTestAnalytics({ analytics, surface: "desktop", mode: "safe", outcome: "completed" }), "automations", "safe_test_started", "completed"],
     ["live automation test failed to start", (analytics: FeatureAnalytics) => captureAutomationTestAnalytics({ analytics, surface: "api", mode: "live", outcome: "failed" }), "automations", "live_test_started", "failed"],
     ["secret saved", (analytics: FeatureAnalytics) => captureSecretRequestedAnalytics({ analytics, surface: "api", outcome: "completed" }), "chat", "secret_requested", "completed"],

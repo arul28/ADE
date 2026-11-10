@@ -962,7 +962,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run automations.listRuns --input-json '{\"limit\":20}' --json",
     },
     deleteRule: {
-      description: "Delete one local automation rule. Shared rules must be removed from the shared project config.",
+      description: "Delete one automation rule. A rule that follows the ADE account is deleted on every computer.",
       input: "object { id: string }",
       example: "ade actions run automations.deleteRule --input-json '{\"id\":\"nightly-review\"}' --text",
     },
@@ -970,6 +970,13 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Enable or disable one automation rule. Reversible, and keeps the rule and its run history.",
       input: "object { id: string, enabled: boolean }",
       example: "ade actions run automations.toggleRule --input-json '{\"id\":\"nightly-review\",\"enabled\":false}' --text",
+    },
+    setRunOn: {
+      description:
+        "Choose which computer runs a rule that follows the ADE account (\"Run on\"). Every computer with the repository shows the rule; "
+        + "only this one schedules and starts it. No deviceId means the computer this runs on; another computer is named by its sync device id and name.",
+      input: "object { id: string, deviceId?: string, name?: string (required with deviceId) }",
+      example: "ade automations run-on nightly-review --text",
     },
     triggerManually: {
       description: "Fire one automation rule now, optionally against a lane or as a dry run.",

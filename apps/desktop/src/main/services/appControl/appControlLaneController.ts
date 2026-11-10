@@ -2012,7 +2012,11 @@ export function createAppControlLaneController(context: AppControlLaneController
     const cdpPort = asPositiveInt(connectArgs.cdpPort);
     if (!cdpPort) throw new Error("A valid cdpPort is required.");
     const target = pickCdpTarget(await listCdpTargets(cdpPort));
-    if (!target?.webSocketDebuggerUrl) throw new Error(`No debuggable renderer target was found on CDP port ${cdpPort}.`);
+    // The port answers but lists no page to attach to: a Node inspector (9229), or
+    // a debugger already attached. The caller picked the port, so this is its answer.
+    if (!target?.webSocketDebuggerUrl) {
+      throw new AdeExpectedError(`No debuggable renderer target was found on CDP port ${cdpPort}.`, "user");
+    }
     cdpAttachmentEpoch += 1;
     activeSession = {
       id: randomUUID(),

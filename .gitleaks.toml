@@ -51,6 +51,9 @@ regexes = [
   # generic-api-key rule flags their KEY-suffixed const names and mild entropy;
   # use a regex so rebases do not revive the finding.
   '''ade\.(suggestions(\.prompts)?|tips\.suggestions)\.v1''',
+  # The appearance schedule's localStorage key name (`ade.appearanceSchedule.v1`),
+  # not a secret. Same generic-api-key false positive: the const ends in KEY.
+  '''ade\.appearanceSchedule\.v1''',
   # Synthetic token tail in homeClipboardHistory.test.ts, used to build fake
   # ghp_/sk-proj- strings that prove clipboard history redacts them.
   '''a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8''',

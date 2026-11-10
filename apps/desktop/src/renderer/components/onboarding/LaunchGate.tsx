@@ -34,6 +34,46 @@ function WebLaunchGate({ children }: LaunchGateProps) {
 
 type GateStep = FirstRunStepId | "sign-in";
 
+type OnboardingAction =
+  | "onboarding_welcome_shown"
+  | "onboarding_sign_in_shown"
+  | "onboarding_agents_shown"
+  | "onboarding_projects_shown"
+  | "onboarding_completed"
+  | "onboarding_skipped";
+
+const STEP_SHOWN: Record<GateStep, OnboardingAction> = {
+  welcome: "onboarding_welcome_shown",
+  "sign-in": "onboarding_sign_in_shown",
+  agents: "onboarding_agents_shown",
+  projects: "onboarding_projects_shown",
+};
+
+function onboardingOutcome(action: OnboardingAction): "opened" | "completed" | "cancelled" {
+  if (action === "onboarding_completed") return "completed";
+  return action === "onboarding_skipped" ? "cancelled" : "opened";
+}
+
+/**
+ * One fact per first-run card, so the funnel says which card people leave on.
+ * At most one of each a day per install; analytics never changes what the
+ * gate does.
+ */
+function captureOnboarding(action: OnboardingAction): void {
+  const reportFailed = () => console.warn("[onboarding] step could not be reported", action);
+  try {
+    void window.ade?.analytics?.capture({
+      event: "ade_feature_used",
+      properties: { feature: "onboarding", action, outcome: onboardingOutcome(action), source: "renderer_route" },
+      dedupeKey: `onboarding:${action}`,
+      minimumIntervalMs: 24 * 60 * 60_000,
+    }).catch(reportFailed);
+  } catch {
+    // Reporting must never block setup.
+    reportFailed();
+  }
+}
+
 /** What the gate shows: the welcome before sign-in, then sign-in until signed in, then the rest of setup. */
 function gateStep(checking: boolean, firstRun: FirstRunPhase, signedIn: boolean): GateStep | null {
   if (checking) return null;
@@ -55,10 +95,14 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
   const setupResultRef = useRef<FirstRunResult | null>(null);
   // The projects setup added open from Home once the gate opens.
   const keepSetupResult = useCallback((result: FirstRunResult) => {
+    captureOnboarding("onboarding_completed");
     setupResultRef.current = result;
   }, []);
-  const steps = useFirstRunSteps({ onFinish: keepSetupResult });
+  const reportSkipped = useCallback(() => captureOnboarding("onboarding_skipped"), []);
+  const steps = useFirstRunSteps({ onFinish: keepSetupResult, onSkip: reportSkipped });
   const firstRun = steps.phase;
+  /** Whether this launch showed a first-run card: a computer set up before reports no onboarding. */
+  const firstRunSeenRef = useRef(false);
   const firstRunRef = useRef(firstRun);
   firstRunRef.current = firstRun;
 
@@ -102,6 +146,13 @@ function DesktopLaunchGate({ children }: LaunchGateProps) {
   const checking = launchStateLoading || firstRun === "checking" || accountLoading;
   const step = gateStep(checking, firstRun, status.signedIn);
   const gateMode = accountGateMode(status);
+
+  useEffect(() => {
+    if (!step || resolved) return;
+    if (step !== "sign-in") firstRunSeenRef.current = true;
+    // Sign-in alone is a signed-out return, not first run.
+    if (step !== "sign-in" || firstRunSeenRef.current) captureOnboarding(STEP_SHOWN[step]);
+  }, [resolved, step]);
 
   useEffect(() => {
     if (step !== "sign-in" || resolved) return;

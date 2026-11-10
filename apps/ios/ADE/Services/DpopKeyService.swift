@@ -29,6 +29,22 @@ final class DpopKeyService {
 
   // MARK: - Public API
 
+  /// Loads (or creates) the key off the caller's thread, so the synchronous
+  /// calls below find it cached. The first read asks the keychain daemon over
+  /// XPC and waits for the answer: on the main thread that froze the app for
+  /// 22 seconds while a connection signed in (ADE-IOS-28). Call it from an
+  /// async context before `publicKeyX963Base64` or a `build…Proof`; when the
+  /// key is cached it returns at once. False when there is no key: a caller
+  /// that would read it next must stop, or it repeats the read on its own
+  /// thread. A read that fails is tried again by the next caller, as before.
+  /// The app also calls this once at launch, so a connection rarely waits.
+  @discardableResult
+  func warmKey() async -> Bool {
+    await Task.detached(priority: .userInitiated) { [self] in
+      ensureKey() != nil
+    }.value
+  }
+
   /// Base64 X9.63 uncompressed (0x04 ‖ X ‖ Y, 65 bytes) P-256 public key, or
   /// `nil` when no key can be created (proof is then skipped — legacy path).
   func publicKeyX963Base64() -> String? {

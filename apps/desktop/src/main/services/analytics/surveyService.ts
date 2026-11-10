@@ -15,7 +15,7 @@ import {
 } from "../../../shared/types/productSurveys";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
 import { resolveProductAnalyticsEndpoint } from "./productAnalyticsService";
-import { scrubSurveyText } from "./productAnalyticsPolicy";
+import { scrubSurveyText } from "./surveyAnalyticsPolicy";
 
 /**
  * In-app surveys without posthog-js.
@@ -52,6 +52,12 @@ const MAX_SURVEYS_KEPT = 20;
 const MAX_QUESTIONS = 10;
 const MAX_CHOICES = 20;
 const FETCH_TIMEOUT_MS = 5_000;
+/**
+ * The PostHog feature flag that is on for everyone but ADE's own team (person
+ * property `is_internal`). An install cannot know that its account is a team
+ * account; PostHog does. Its only use; `docs/analytics/README.md` lists it.
+ */
+const SURVEY_REAL_USER_FLAG = "surveys-real-users";
 const SURVEY_ID = /^[A-Za-z0-9-]{1,64}$/;
 const SURVEY_NAME_KEY = /^\s*\[ade:([a-z]+)\]/i;
 /** `returning` is only true on the launch that ends the gap, so it goes first. */
@@ -395,7 +401,7 @@ export function defaultSurveyStateFile(productAnalyticsStateFile: string): strin
 
 export function createSurveyService(args: {
   stateFilePath: string;
-  analytics: Pick<ProductAnalyticsService, "getStatus" | "captureInternal" | "getInstalledAtMs">;
+  analytics: Pick<ProductAnalyticsService, "getStatus" | "captureInternal" | "getInstalledAtMs" | "getDistinctId">;
   logger: Pick<Logger, "debug" | "warn">;
   now?: () => number;
   fetchImpl?: typeof fetch;
@@ -492,32 +498,86 @@ export function createSurveyService(args: {
     update((state) => addActiveDay(state, now()));
   };
 
+  /**
+   * One request to PostHog, with no cookie and no referrer, and one time limit
+   * that covers the body too: a response whose JSON stalls must not hold the
+   * check open. `body` is the JSON of an OK response, else null. The whole
+   * result is null when the request could not be made or read (offline,
+   * blocked, timed out, not JSON); that is logged as `failureEvent`.
+   */
+  const postHogJson = async (
+    url: string,
+    init: RequestInit,
+    failureEvent: string,
+  ): Promise<{ ok: boolean; status: number; body: unknown } | null> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    timeout.unref?.();
+    try {
+      const response = await fetchImpl(url, {
+        ...init,
+        signal: controller.signal,
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+      });
+      return { ok: response.ok, status: response.status, body: response.ok ? await response.json() : null };
+    } catch (error) {
+      args.logger.warn(failureEvent, { errorKind: error instanceof Error ? error.name : "unknown" });
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
   const fetchSurveys = async (target: { token: string; host: string }): Promise<unknown> => {
     // PostHog's own SDK path first; the slashless spelling is its documented alias.
     for (const route of ["/api/surveys/", "/api/surveys"]) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-      timeout.unref?.();
-      try {
-        const response = await fetchImpl(`${target.host}${route}?token=${encodeURIComponent(target.token)}`, {
-          method: "GET",
-          headers: { Accept: "application/json" },
-          signal: controller.signal,
-          credentials: "omit",
-          referrerPolicy: "no-referrer",
-        });
-        if (response.ok) return await response.json();
-        if (response.status !== 404) return null;
-      } catch (error) {
-        // Offline or blocked: try again tomorrow with whatever was cached.
-        args.logger.warn("product_surveys.fetch_failed", {
-          errorKind: error instanceof Error ? error.name : "unknown",
-        });
-      } finally {
-        clearTimeout(timeout);
-      }
+      // Offline or blocked: try again tomorrow with whatever was cached.
+      const response = await postHogJson(
+        `${target.host}${route}?token=${encodeURIComponent(target.token)}`,
+        { method: "GET", headers: { Accept: "application/json" } },
+        "product_surveys.fetch_failed",
+      );
+      if (!response) continue;
+      if (response.ok) return response.body;
+      if (response.status !== 404) return null;
     }
     return null;
+  };
+
+  /**
+   * Whether PostHog says this person may see a survey: the real-user flag,
+   * asked with the id this install's events carry. Anything but a clear yes
+   * (offline, a refused request, no flag) is a no: a survey that cannot ask
+   * could not send its answer either, and a team account must never see one.
+   * Each no that is not PostHog's own answer is logged, because it turns
+   * surveys off for everyone and nothing else would show it.
+   */
+  const isRealUser = async (): Promise<boolean> => {
+    const target = endpoint();
+    const distinctId = args.analytics.getDistinctId();
+    if (!target || !distinctId) return false;
+    const response = await postHogJson(
+      `${target.host}/flags/?v=2`,
+      {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: target.token, distinct_id: distinctId, geoip_disable: true }),
+      },
+      "product_surveys.flag_failed",
+    );
+    if (!response) return false;
+    if (!response.ok) {
+      args.logger.warn("product_surveys.flag_failed", { status: response.status });
+      return false;
+    }
+    const body = response.body as { flags?: Record<string, { enabled?: unknown } | undefined> } | null;
+    const flag = body?.flags?.[SURVEY_REAL_USER_FLAG];
+    if (!flag) {
+      args.logger.warn("product_surveys.flag_failed", { errorKind: "flag_missing" });
+      return false;
+    }
+    return flag.enabled === true;
   };
 
   const refreshCache = (): Promise<void> => {
@@ -556,6 +616,9 @@ export function createSurveyService(args: {
       nowMs: now(),
     });
     if (!survey || offeredThisLaunch) return null;
+    // Asked last, and only for an install that would otherwise see a survey:
+    // at most one request per window that asks, and none inside the cooldown.
+    if (!(await isRealUser()) || !analyticsOn() || offeredThisLaunch) return null;
     // A survey whose showing could not be saved would come back next launch.
     if (!update(() => undefined)) return null;
     offeredThisLaunch = true;
@@ -598,7 +661,7 @@ export function createSurveyService(args: {
       const { accepted } = args.analytics.captureInternal({
         event: "survey dismissed",
         surface: "desktop",
-        survey: { ...base, partiallyCompleted: input.partiallyCompleted === true },
+        survey: { ...base, partiallyCompleted: input.partiallyCompleted === true, shownForMs: input.shownForMs },
         dedupeKey: `survey-dismissed:${survey.id}`,
         minimumIntervalMs: SURVEY_GLOBAL_COOLDOWN_MS,
       });
@@ -612,7 +675,7 @@ export function createSurveyService(args: {
     const { accepted } = args.analytics.captureInternal({
       event: "survey sent",
       surface: "desktop",
-      survey: { ...base, submissionId, completed: true, responses },
+      survey: { ...base, submissionId, completed: true, responses, shownForMs: input.shownForMs },
       clientEventId: submissionId,
       dedupeKey: `survey-sent:${survey.id}`,
       minimumIntervalMs: SURVEY_GLOBAL_COOLDOWN_MS,

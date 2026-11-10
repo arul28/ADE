@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import cron from "node-cron";
 import {
+  type ConfigAutomationRule,
   AUTOMATION_TRIGGER_TYPES,
   type AutomationAction,
   type AutomationActionType,
@@ -32,6 +33,8 @@ import {
   validateHandoffLaneTarget,
 } from "./automationService";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { codexConfigApprovalPolicy } from "../../../shared/codexApprovalPolicy";
+import type { AgentChatCodexApprovalPolicy } from "../../../shared/types/chat";
 import { codexReasoningEffortFlags, resolveCodexCliModelForLaunch } from "../../../shared/cliLaunch";
 import { getModelById } from "../../../shared/modelRegistry";
 import {
@@ -445,7 +448,7 @@ async function runCodexExec(args: {
   schema: Record<string, unknown>;
   logger: Logger;
   sandbox: "read-only" | "workspace-write" | "danger-full-access";
-  askForApproval: "untrusted" | "on-failure" | "on-request" | "never";
+  askForApproval: AgentChatCodexApprovalPolicy;
   webSearch: boolean;
   additionalWritableDirs: string[];
   model?: string | null;
@@ -469,8 +472,10 @@ async function runCodexExec(args: {
     outPath,
     "--sandbox",
     args.sandbox,
-    "--ask-for-approval",
-    args.askForApproval,
+    // `codex exec` has neither `--ask-for-approval` nor `--search` (it exits
+    // with "unexpected argument"); both are config keys.
+    "-c",
+    `approval_policy=${codexConfigApprovalPolicy(args.askForApproval)}`,
     "--cd",
     args.cwd,
     "--skip-git-repo-check"
@@ -486,7 +491,7 @@ async function runCodexExec(args: {
     ...codexReasoningEffortFlags(resolvePlannerCodexReasoningEffort(args.model, args.reasoningEffort)),
   );
 
-  if (args.webSearch) cliArgs.push("--search");
+  if (args.webSearch) cliArgs.push("-c", "web_search=live");
   for (const dir of args.additionalWritableDirs) {
     const trimmed = dir.trim();
     if (trimmed) {
@@ -1260,6 +1265,7 @@ export function createAutomationPlannerService({
     list: () => { id: string }[];
     syncFromConfig: () => void;
     assertWebhookGatewayReadyForRule?: (rule: Pick<AutomationRule, "name" | "triggers" | "trigger">) => void;
+    noteRunOnChanged?: () => void;
   };
 }) {
   const readSuites = (): TestSuiteDefinition[] => {
@@ -1474,7 +1480,18 @@ export function createAutomationPlannerService({
       }
 
       const normalized = validation.normalized;
-      if (normalized.enabled) {
+      // Only the computer that runs the rule needs its events delivered: an
+      // edit on another computer, or a move to one, is not checked here.
+      const draftHome = req.draft.home;
+      const savedRule = safeTrim(normalized.id)
+        ? projectConfigService.get().effective.automations.find((r) => r.id === safeTrim(normalized.id)) ?? null
+        : null;
+      const runsHereAfterSave = draftHome === "this-computer"
+        ? true
+        : draftHome && typeof draftHome === "object"
+          ? false
+          : savedRule?.runsHere !== false;
+      if (normalized.enabled && runsHereAfterSave) {
         automationService.assertWebhookGatewayReadyForRule?.({
           name: normalized.name,
           triggers: normalized.triggers,
@@ -1497,10 +1514,6 @@ export function createAutomationPlannerService({
         }
       }
 
-      const snapshot = projectConfigService.get();
-      const local = { ...(snapshot.local ?? {}) };
-      const rules = Array.isArray(local.automations) ? [...local.automations] : [];
-      const idx = rules.findIndex((r) => r?.id === id);
       const nextRule = {
         id,
         name: normalized.name,
@@ -1532,14 +1545,18 @@ export function createAutomationPlannerService({
         includeProjectContext: normalized.includeProjectContext,
         ...(execution.kind === "built-in" && normalized.actions.length ? { actions: normalized.actions } : {}),
       };
-      if (idx >= 0) rules[idx] = nextRule;
-      else rules.push(nextRule);
-      local.automations = rules;
-
-      projectConfigService.save({ shared: snapshot.shared, local });
+      // Filed in the account when the rule can follow it (keeping its home
+      // unless the draft names one), else in `.ade/local.yaml`.
+      const homeBefore = idRaw ? projectConfigService.get().effective.automations.find((r) => r.id === id)?.home?.deviceId ?? null : null;
+      projectConfigService.saveAutomationRule(nextRule as ConfigAutomationRule, {
+        home: req.draft.home,
+      });
       automationService.syncFromConfig();
 
       const effectiveRule = projectConfigService.get().effective.automations.find((r) => r.id === id) ?? null;
+      if (req.draft.home && idRaw && effectiveRule?.home && effectiveRule.home.deviceId !== homeBefore) {
+        automationService.noteRunOnChanged?.();
+      }
       if (!effectiveRule) {
         throw new Error("Failed to save automation rule");
       }

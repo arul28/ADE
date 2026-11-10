@@ -8661,11 +8661,11 @@ export function createPtyService({
 
     async readTerminal(args: ChatTerminalReadArgs = {}): Promise<ChatTerminalReadResult> {
       const terminalId = resolveTerminalId(args);
-      if (!terminalId) throw new Error("terminal.read requires terminalId, ptyId, or an active chat terminal.");
+      if (!terminalId) throw new AdeExpectedError("terminal.read requires terminalId, ptyId, or an active chat terminal.", "user");
       const session = sessionService.get(terminalId);
       if (!session) throw new AdeExpectedError(`Terminal session '${terminalId}' was not found.`, "user");
       if (isPersistedChatToolType(session.toolType)) {
-        throw new Error(`Session '${terminalId}' is an agent chat session, not a terminal.`);
+        throw new AdeExpectedError(`Session '${terminalId}' is an agent chat session, not a terminal.`, "user");
       }
       const maxBytes = typeof args.maxBytes === "number" && Number.isFinite(args.maxBytes)
         ? Math.max(1, Math.min(MAX_TRANSCRIPT_BYTES, Math.floor(args.maxBytes)))

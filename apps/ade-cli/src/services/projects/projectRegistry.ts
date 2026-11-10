@@ -13,7 +13,7 @@ import { markExpected } from "../../../../desktop/src/shared/expectedError";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
 import { findMoveInProgress, readMovedMarker, type MovedMarker } from "./projectMove/moveJournal";
 import { statIdentity } from "./fileIdentity";
-import { normalizeProjectRootPath, realpathIfExists } from "./projectRoots";
+import { isOtherAdeInstallHome, normalizeProjectRootPath, realpathIfExists } from "./projectRoots";
 import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { ExclusiveFileLockTimeoutError, withExclusiveFileLockSync } from "../../lib/exclusiveFileLock";
 import { forwardLogToSentry } from "../../../../desktop/src/shared/sentry/logBridge";
@@ -86,7 +86,8 @@ export function isDisallowedProjectRoot(
 ): boolean {
   const normalized = normalizeRoot(rootPath);
   if (homeDir && isSamePath(normalized, homeDir)) return true;
-  return normalized === path.parse(normalized).root;
+  if (normalized === path.parse(normalized).root) return true;
+  return isOtherAdeInstallHome(normalized);
 }
 
 export function deriveProjectId(rootPath: string): ProjectId {

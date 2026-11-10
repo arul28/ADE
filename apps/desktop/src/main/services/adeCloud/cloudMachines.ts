@@ -35,6 +35,7 @@ import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
 import { cloudSleepPolicyOf } from "./cloudSleep";
 import { wakeThroughTransition } from "./cloudReadyClaim";
 import { getErrorMessage } from "../shared/utils";
+import { withDeadline } from "../shared/withTimeout";
 
 type Logger = {
   info?(event: string, meta?: Record<string, unknown>): void;
@@ -49,6 +50,12 @@ export type CloudMachinesDeps = {
   client: () => Promise<CloudProvider | null>;
   /** The sentence for why `client` answered null. */
   whyNoClient?: () => Promise<string | null>;
+  /**
+   * ADE Cloud only when the last access answer for this account was yes,
+   * without asking the server. A miss in `knowsBox` refreshes through it, so
+   * a person who is not on ADE Cloud never waits on the provider.
+   */
+  knownClient?: () => CloudProvider | null;
   /** Removes a machine from the ADE account directory (the "Remove from ADE" half of a delete). */
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
   logger?: Logger;
@@ -96,6 +103,27 @@ function readyOf(instance: CloudInstance): CloudMachine["ready"] {
     state,
   };
 }
+
+/** The ADE machine keys of the account's computers that still exist. */
+function liveMachineKeys(instances: readonly CloudInstance[]): Set<string> {
+  return new Set(
+    instances
+      .filter((instance) => instance.status !== "deleted")
+      .map((instance) => instance.metadata[CLOUD_MACHINE_KEY_METADATA])
+      .filter((key): key is string => Boolean(key)),
+  );
+}
+
+/** One read of the computers for the known keys must not hold up a connect for long. */
+const KNOWN_KEYS_READ_TIMEOUT_MS = 5_000;
+/**
+ * A key a good read already covered and did not list (a laptop) is not read
+ * for again until the last good read is this old: a laptop's reconnects fail
+ * every couple of minutes all day.
+ */
+const KNOWN_KEYS_NOT_LISTED_TTL_MS = 10 * 60_000;
+/** After a read that failed, a miss waits this long before it reads again. */
+const KNOWN_KEYS_FAILED_READ_PAUSE_MS = 60_000;
 
 function emptyResult(state: CloudMachinesResult["state"], message: string | null): CloudMachinesResult {
   return {
@@ -147,10 +175,51 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
   const logger = deps.logger ?? {};
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  /** The ADE machines the last good list showed as cloud boxes: only those are worth a wake lookup. */
+  /**
+   * The ADE machines the last good read showed as cloud boxes: only those are
+   * worth a wake lookup. Filled by `list()`, at startup (`loadKnownMachines`)
+   * and on a miss (`knowsBox`), so it never waits for the Connections pane.
+   */
   let knownMachineKeys = new Set<string>();
+  /** The last good read: every computer and when. Stamped by every good read. */
+  let lastRead: { instances: CloudInstance[]; atMs: number } | null = null;
+  /** Keys a good read covered and did not list: not cloud computers, as of `lastRead`. */
+  const notListedKeys = new Set<string>();
+  let lastFailedReadAtMs = Number.NEGATIVE_INFINITY;
+  let knownKeysRead: Promise<boolean> | null = null;
   /** From the last account read that worked, so a failed read doesn't bring deleted computers' rows back. */
   let lastDeletedInstanceIds: string[] = [];
+
+  function recordRead(instances: CloudInstance[]): void {
+    knownMachineKeys = liveMachineKeys(instances);
+    lastRead = { instances, atMs: now() };
+  }
+
+  /** One bounded read of the account's computers, shared by concurrent callers. True when it worked. */
+  function readKnownMachineKeys(client: CloudProvider, reason: "startup" | "miss"): Promise<boolean> {
+    if (knownKeysRead) return knownKeysRead;
+    const read = (async () => {
+      try {
+        recordRead(await withDeadline(
+          client.listInstances(),
+          KNOWN_KEYS_READ_TIMEOUT_MS,
+          () => new Error(`ADE Cloud didn't answer in ${KNOWN_KEYS_READ_TIMEOUT_MS / 1000} s.`),
+        ));
+        return true;
+      } catch (error) {
+        lastFailedReadAtMs = now();
+        logger.warn?.("cloud.known_machines_refresh_failed", { reason, error: getErrorMessage(error) });
+        return false;
+      }
+    })();
+    knownKeysRead = read;
+    // Cleared after it is stored: a read that fails at once would otherwise
+    // clear first and then be stored, settled, for good.
+    void read.then(() => {
+      if (knownKeysRead === read) knownKeysRead = null;
+    });
+    return read;
+  }
 
   /** Every computer on the account (the server lists only the account's own). */
   async function list(): Promise<CloudMachinesResult> {
@@ -168,7 +237,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     if (account) lastDeletedInstanceIds = account.deletedInstanceIds;
     const catalog = cloudCatalogOf(account);
     const live = instances.filter((instance) => instance.status !== "deleted");
-    knownMachineKeys = new Set(live.map((instance) => instance.metadata[CLOUD_MACHINE_KEY_METADATA]).filter((key): key is string => Boolean(key)));
+    recordRead(instances);
     const machines = live.map((instance) => toCloudMachine(instance, catalog));
     return {
       state: "ok",
@@ -317,8 +386,44 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         return { ok: false, blocker: null, message: getErrorMessage(error) };
       }
     },
-    /** Whether the last list showed this ADE machine as a cloud box. */
-    isKnownBox: (machineKey: string): boolean => knownMachineKeys.has(machineKey),
+    /**
+     * Whether this ADE machine is a cloud box:
+     * - a key the last good read listed: yes, no call;
+     * - a key a good read covered and did not list: no, with no call until
+     *   the last good read is 10 minutes old, then one read;
+     * - a key no good read covered yet (a box made or paired since): one read
+     *   at once, joined with any read already running.
+     * No call without a known yes to ADE Cloud access, and none for 60 s
+     * after a read that failed.
+     */
+    knowsBox: async (machineKey: string): Promise<boolean> => {
+      if (knownMachineKeys.has(machineKey)) return true;
+      let read = knownKeysRead;
+      if (!read) {
+        const covered = notListedKeys.has(machineKey) && lastRead != null;
+        if (covered && now() - lastRead!.atMs < KNOWN_KEYS_NOT_LISTED_TTL_MS) return false;
+        if (now() - lastFailedReadAtMs < KNOWN_KEYS_FAILED_READ_PAUSE_MS) return false;
+        const client = deps.knownClient?.() ?? null;
+        if (!client) return false;
+        read = readKnownMachineKeys(client, "miss");
+      }
+      // A failed read covers nothing.
+      if (!(await read)) return false;
+      if (knownMachineKeys.has(machineKey)) return true;
+      notListedKeys.add(machineKey);
+      return false;
+    },
+    /** Reads the known keys once (at startup); nothing when this account has no ADE Cloud. */
+    loadKnownMachines: async (): Promise<void> => {
+      const client = await deps.client().catch((error: unknown) => {
+        logger.warn?.("cloud.known_machines_startup_client_failed", { error: getErrorMessage(error) });
+        return null;
+      });
+      if (client) await readKnownMachineKeys(client, "startup");
+    },
+    /** Every computer from the last good read, when it is at most `maxAgeMs` old; else null. */
+    recentInstances: (maxAgeMs: number): CloudInstance[] | null =>
+      lastRead && now() - lastRead.atMs <= maxAgeMs ? lastRead.instances : null,
     /** One box's metadata, read fresh. */
     instanceMetadata: async (instanceId: string): Promise<Record<string, string> | null> => {
       const client = await deps.client();

@@ -9282,8 +9282,9 @@ async function runTool(args: {
         commandArgs.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
         commandPreviewParts.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
       } else {
-        commandArgs.push("--sandbox", "workspace-write", "--ask-for-approval", "untrusted");
-        commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "untrusted");
+        // The CLI flag refuses `untrusted` and exits (see `codexApprovalPolicy.ts`).
+        commandArgs.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
+        commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
       }
     } else {
       let claudePermission: string;

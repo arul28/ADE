@@ -188,6 +188,16 @@ function makeProjectConfigHarness(rules: AutomationRuleInput[], sharedRules: Aut
         shared = next.shared ?? shared;
         return snapshot();
       },
+      // No account store here, so the rule methods edit the local file, as the real service does.
+      saveAutomationRule: (rule: any) => {
+        local = { ...local, automations: [...(local.automations ?? []).filter((entry: any) => entry.id !== rule.id), rule] };
+        return snapshot();
+      },
+      deleteAutomationRule: (id: string) => {
+        const before = (local.automations ?? []).length;
+        local = { ...local, automations: (local.automations ?? []).filter((entry: any) => entry.id !== id) };
+        return { deleted: (local.automations ?? []).length !== before };
+      },
     } as any,
     listLocalIds: () => (local.automations ?? []).map((rule: any) => rule.id),
     listSharedIds: () => (shared.automations ?? []).map((rule: any) => rule.id),

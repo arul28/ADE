@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Sentry
 
@@ -40,6 +41,8 @@ enum CrashReporting {
     guard let dsn = resolvedDSN(environment: environment) else { return }
 
     didStart = true
+    // Made now, so that its clock starts with the process and not with the first publish.
+    _ = ADEHangContext.shared
     let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
     let firstPartyTargets = firstPartyURLPatterns()
     let distribution = ADEAnalyticsDistribution.current
@@ -263,7 +266,27 @@ enum CrashReporting {
     let frames = stacktrace?.frames ?? []
     let site = innermostAppFunction(frames) ?? innermostBlockingLibrary(frames)
     event.fingerprint = ["ios", "app_hang", type] + (site.map { [$0] } ?? [])
+    // What fed the main thread before the hang. Many hangs hold no ADE frame
+    // at all: the stack is SwiftUI working through view updates (ADE-IOS-27,
+    // 8 seconds after launch) and says nothing about which state kept
+    // changing. The publish counts and the app's age do.
+    if let hang = ADEHangContext.shared.snapshot(at: event.timestamp) {
+      var context = event.context ?? [:]
+      context["ade_hang"] = hang
+      event.context = context
+    }
   }
+
+  /// Counts every `objectWillChange` of one of the app's shared models, for
+  /// `ADEHangContext`. Does nothing until crash reporting has started, so
+  /// tests and previews that build a model pay nothing. One counter per
+  /// `source`: watching a source again replaces the earlier watch.
+  static func watchPublishes<P: Publisher>(of publisher: P, source: String) where P.Failure == Never {
+    guard didStart else { return }
+    publishWatches[source] = publisher.sink { _ in ADEHangContext.shared.notePublish(source) }
+  }
+
+  private static var publishWatches: [String: AnyCancellable] = [:]
 
   /// The innermost in-app frame's function, skipping the entry point every
   /// stack has (`main`, `ADEApp.$main`). Nil when the phone sent no names.
@@ -643,5 +666,78 @@ private final class ADECrashEventLimiter {
       perFingerprint = perFingerprint.filter { ($0.value.last ?? .distantPast) >= cutoff }
     }
     return true
+  }
+}
+
+/// How often the app's shared models published in the seconds before a hang,
+/// and how old the process was then. A view update storm shows as hundreds of
+/// publishes a second from one source; a hang at launch shows as a small age.
+/// Written on the main thread on every publish (one lock, one add).
+///
+/// Sentry sends a hang's event after the hang ends, and sends a fatal hang's
+/// event from the next launch, so "now" is the wrong moment in both cases. The
+/// snapshot is taken at the event's own timestamp (the moment the hang was
+/// detected), and an event from before this process started gets none.
+final class ADEHangContext {
+  static let shared = ADEHangContext()
+
+  /// One-second buckets kept per source: the seconds reported, plus the
+  /// longest hang whose start is still in the ring when its event is sent.
+  private static let kept = 60
+  /// The seconds before the hang that a snapshot reports.
+  private static let reported = 10
+
+  private let lock = NSLock()
+  private let startedAt = ProcessInfo.processInfo.systemUptime
+  private let startedDate = Date()
+  private var counts: [String: [Int]] = [:]
+  private var newestSecond: [String: Int] = [:]
+
+  func notePublish(_ source: String, uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    let second = Int(uptime)
+    lock.lock()
+    defer { lock.unlock() }
+    var buckets = advanced(source, to: second)
+    buckets[second % Self.kept] += 1
+    counts[source] = buckets
+    newestSecond[source] = second
+  }
+
+  /// The context for a hang detected at `date`. Nil when that is before this
+  /// process started (a fatal hang, reported by the launch after it).
+  func snapshot(at date: Date?, uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) -> [String: Any]? {
+    let hangUptime = date.map { startedAt + $0.timeIntervalSince(startedDate) } ?? uptime
+    guard hangUptime >= startedAt else { return nil }
+    let hangSecond = Int(hangUptime)
+    let nowSecond = max(Int(uptime), hangSecond)
+    lock.lock()
+    defer { lock.unlock() }
+    var result: [String: Any] = ["seconds_since_launch": Int(hangUptime - startedAt)]
+    // A hang so long that its start has left the ring: the counts are gone.
+    guard nowSecond - hangSecond <= Self.kept - Self.reported else { return result }
+    var publishes: [String: Any] = [:]
+    for source in counts.keys.sorted() {
+      let buckets = advanced(source, to: nowSecond)
+      let before = (0..<Self.reported).map { buckets[((hangSecond - $0) % Self.kept + Self.kept) % Self.kept] }
+      publishes[source] = [
+        "last_\(Self.reported)s": before.reduce(0, +),
+        "peak_per_second": before.max() ?? 0,
+      ]
+    }
+    result["publishes"] = publishes
+    return result
+  }
+
+  /// The source's buckets with every second between its newest publish and
+  /// `second` emptied, so an old burst does not count as a recent one.
+  private func advanced(_ source: String, to second: Int) -> [Int] {
+    var buckets = counts[source] ?? Array(repeating: 0, count: Self.kept)
+    guard let newest = newestSecond[source] else { return buckets }
+    let elapsed = second - newest
+    if elapsed >= Self.kept { return Array(repeating: 0, count: Self.kept) }
+    if elapsed > 0 {
+      for step in 1...elapsed { buckets[(newest + step) % Self.kept] = 0 }
+    }
+    return buckets
   }
 }

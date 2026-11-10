@@ -30,6 +30,7 @@ import type {
   AttentionPreferences,
   AttentionPresence,
   CloneProjectInput,
+  CloneProjectResult,
   CreateProjectInput,
   ListMyGitHubReposInput,
   PersonalChatSubscribeEventsArgs,
@@ -1377,6 +1378,7 @@ function omitProjectId(
 async function cloneRepositoryForRemoteAgent(
   projectRegistry: ProjectRegistry,
   originUrl: string | undefined,
+  cloneIntoFolder: (input: CloneProjectInput, beforeClone?: () => Promise<void>) => Promise<CloneProjectResult>,
 ): Promise<ProjectRecord> {
   // The origin comes from another machine: never start ssh for its host.
   const identity = peerGitRemoteIdentity(originUrl);
@@ -1401,15 +1403,16 @@ async function cloneRepositoryForRemoteAgent(
   const repoName = match[2]!;
   const parentDir = await defaultParentDir(projectRegistry);
   fs.mkdirSync(parentDir, { recursive: true });
-  const preflight = await inspectHandoffStorage({ parentDir, repoName });
-  if (preflight.blockingErrors.length) {
-    throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, `Can't set up ${identity} here: ${preflight.blockingErrors.join(" ")}`);
-  }
-  const result = await (await createMachineProjectScaffoldService()).cloneRepository({
-    url: `https://github.com/${match[1]}/${repoName}.git`,
-    parentDir,
-    name: repoName,
-  });
+  const result = await cloneIntoFolder(
+    { url: `https://github.com/${match[1]}/${repoName}.git`, parentDir, name: repoName },
+    // Only a real clone needs the preflight: it refuses any folder already there.
+    async () => {
+      const preflight = await inspectHandoffStorage({ parentDir, repoName });
+      if (preflight.blockingErrors.length) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, `Can't set up ${identity} here: ${preflight.blockingErrors.join(" ")}`);
+      }
+    },
+  );
   return projectRegistry.add(result.rootPath, asked);
 }
 
@@ -1448,6 +1451,15 @@ export function createMultiProjectRpcRequestHandler(
   // a cloud computer's busy list sees it.
   const whileFirstCloneHeld = <T>(run: () => Promise<T>): Promise<T> =>
     options.holdCloudWork ? options.holdCloudWork("first_clone", 30 * 60_000, run) : run();
+  // Another machine asked: a second request for the same folder joins the
+  // first (the scaffold service), and a folder that already holds this
+  // repository is the answer. The hold wraps only a real clone.
+  const cloneIntoFolder = async (input: CloneProjectInput, beforeClone?: () => Promise<void>): Promise<CloneProjectResult> =>
+    await (await createMachineProjectScaffoldService()).cloneRepository(input, {
+      reuseExistingCheckout: true,
+      beforeClone,
+      wrapClone: whileFirstCloneHeld,
+    });
   const accountAuthService = options.accountAuthService ?? getSharedAccountAuthService({
     projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
   });
@@ -3334,7 +3346,7 @@ export function createMultiProjectRpcRequestHandler(
         throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "machines.cloneForAgent is for another machine's agents.");
       }
       return await decorateProjectWithIcon(
-        await whileFirstCloneHeld(() => cloneRepositoryForRemoteAgent(projectRegistry, readOptionalString(params.originUrl))),
+        await cloneRepositoryForRemoteAgent(projectRegistry, readOptionalString(params.originUrl), cloneIntoFolder),
       );
     }
 
@@ -3740,8 +3752,7 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.clone") {
       const input = await readCloneProjectInput(params, () => defaultParentDir(projectRegistry));
-      const result = await whileFirstCloneHeld(async () =>
-        (await createMachineProjectScaffoldService()).cloneRepository(input));
+      const result = await cloneIntoFolder(input);
       return await decorateProjectWithIcon(
         projectRegistry.add(
           result.rootPath,

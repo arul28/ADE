@@ -15,7 +15,7 @@ Never send any of the following to PostHog:
 - raw account identifiers anywhere but the person profile: `$identify` and the server-side `ade_signed_up` set the Clerk user id as the person property `clerk_user_id`, never as a distinct id or an event property;
 - raw project IDs, session IDs, or other stable local database identifiers.
 
-Events go through the Capture API directly; no PostHog SDK sends them. The desktop window and the marketing site link posthog-js for session replay only (`renderer/lib/sessionReplay.ts`, `apps/web/src/lib/marketingReplay.ts`), loaded on demand while analytics is on; a `before_send` filter drops everything but `$snapshot` (and, on the site, `$$heatmap`), so autocapture, automatic pageviews, surveys, feature flags, automatic crash capture, and SDK-managed offline queues remain absent from PostHog. The one remote call besides capture is the project's replay settings (`/array/<token>/config`). (Crash capture lives in Sentry. These boundaries are PostHog's; Sentry's are in its own section below.) Ordinary events disable person profiles and GeoIP with `$process_person_profile: false` and `$geoip_disable: true`. The sole exception is a quota-counted `$identify` call after ADE knows a signed-in account; it links the current anonymous history to a one-way hash of the account ID and sets plan, platform, app version, `clerk_user_id` (the Clerk user id, so a profile can be found in Clerk) and, on desktop, `is_internal: true` when the install is marked internal (it is never sent as `false`, so a sign-in on an unmarked machine cannot clear the flag the account directory set from Clerk). The distinct id stays the hash, so history recorded before this did not split. ADE does not send the email, name, or token.
+Events go through the Capture API directly; no PostHog SDK sends them. The desktop window and the marketing site link posthog-js for session replay only (`renderer/lib/sessionReplay.ts`, `apps/web/src/lib/marketingReplay.ts`), loaded on demand while analytics is on; a `before_send` filter drops everything but `$snapshot` (and, on the site, `$$heatmap`), so autocapture, automatic pageviews, surveys, feature flags, automatic crash capture, and SDK-managed offline queues remain absent from PostHog. The remote calls besides capture are the project's replay settings (`/array/<token>/config`), the survey list (`/api/surveys/`), and, only for an install that is about to be offered a survey, one read of the feature flag `surveys-real-users` (`POST /flags/?v=2` with the public token and the install's distinct id, GeoIP off; see [In-app surveys](#in-app-surveys)). (Crash capture lives in Sentry. These boundaries are PostHog's; Sentry's are in its own section below.) Ordinary events disable person profiles and GeoIP with `$process_person_profile: false` and `$geoip_disable: true`. The sole exception is a quota-counted `$identify` call after ADE knows a signed-in account; it links the current anonymous history to a one-way hash of the account ID and sets plan, platform, app version, `clerk_user_id` (the Clerk user id, so a profile can be found in Clerk) and, on desktop, `is_internal: true` when the install is marked internal (it is never sent as `false`, so a sign-in on an unmarked machine cannot clear the flag the account directory set from Clerk). The distinct id stays the hash, so history recorded before this did not split. ADE does not send the email, name, or token.
 
 Only closed event names, closed property keys, and coarse allowlisted values may cross the analytics boundary. Desktop/runtime raw project and session IDs are installation-salted and hashed before capture. Local deduplication keys are also hashed and are never transmitted.
 
@@ -714,6 +714,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `work` | `session_continue_chat`, `session_copy_chat`, `session_continue_cli`, `session_copy_cli` | `completed`, `failed` | coarse provider family (Qwen, Kimi, Grok and Copilot report `other`) |
 | `automations` | `webhook_url_created` | `completed` | omitted; never the URL, hook id, preset, or rule |
 | `automations` | `safe_test_started`, `live_test_started` | `completed`, `failed` | omitted; never the rule, its steps, the event, or the lanes it made |
+| `automations` | `run_on_changed` | `completed` | omitted; never the rule, either computer, or the repository |
 | `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
 | `chat` | `connect_requested` | `completed` (connected), `kept` (already connected), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the integration's account, the key, or the chat |
 | `chat` | `mcp_server_requested` | `completed` (added), `kept` (already in ADE), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, a key, or the chat |
@@ -737,6 +738,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `lanes` | `space_freed` | `completed`, `failed` (Free up space on an archived lane in Settings › Archive) | omitted; never the lane, its size, the machine, or the error |
 | `lanes` | `deleted_lane_restored` | `completed`, `failed` (Restore from the notice after a delete, or from Recently deleted; `failed` includes files that did not apply) | omitted; never the lane, branch, machine, or the error |
 | `star_prompt` | `star_prompt_shown`, `star_prompt_clicked`, `star_prompt_dismissed`, `repo_starred` | `prompt_first`, `prompt_second` (which showing of the pill) | omitted; never the GitHub account, a message count, or the machine |
+| `onboarding` | `onboarding_welcome_shown`, `onboarding_sign_in_shown`, `onboarding_agents_shown`, `onboarding_projects_shown`, `onboarding_completed`, `onboarding_skipped` | `opened` (a first-run card came on screen), `completed`, `cancelled` (skipped) | omitted; at most one of each a day per install; never the account, a provider, or a project |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -789,6 +791,14 @@ A preview records nothing. A test is a deliberate click, and the per-action
 and per-outcome dedupe holds a burst of tests to one event per outcome per
 interval, inside the existing `ade_feature_used` 140-per-day and 30-per-minute
 ceilings. What the test did stays in the local run history.
+
+Choosing another computer to run an automation that follows the account
+(**Runs on** in the builder, or `ade automations run-on`) records
+`automations/run_on_changed` in the brain where the new home is stored
+(`automationService.setRunOn`, or the planner's `saveDraft` with a new home),
+surface `api`. Saving a rule with its home unchanged records nothing. It is a
+deliberate choice, rare, and the per-action dedupe holds a burst to one event
+an hour, inside the existing `ade_feature_used` ceilings.
 
 Saving a model price or "Map to" on the Usage page (desktop, web, phone or
 `ade usage prices set`) records `model_price_changed` or
@@ -1857,7 +1867,9 @@ so two more properties say which call failed and how: `brain_action`, the
 action's code identifier inside its domain (a lower-case slug of at most 80
 characters; it names a registry entry, never anything a person typed), and
 `expected_kind`, the brain's expected-failure mark (`user`, `environment`,
-`network`) or `unexpected` when the error carries none, which is what separates
+`network`), `expected` for an answer that carries no mark but that the Sentry
+gate knows by its text or code (`shared/sentry/expectedFailure.ts`), or
+`unexpected` for everything else, which is what separates
 a bug from a refusal the person caused; `brain_action` names the first
 action of that shape in the hour. A per-domain-per-code one-hour
 deduplication key (unchanged when these two were added, so counts stay
@@ -1881,7 +1893,8 @@ tracks which are open), the writes per table since the last tick (counted in
 `kvDb`'s statement wrapper, one map increment per write), and the brain's own
 CPU. A breach is: available memory under 10% of RAM or the OS's pressure at
 `warn` or `critical` (macOS's kernel verdict, Linux PSI, Windows commit charge
-over 90%) — kind `memory`; swap over 85% used (Linux, Windows), or on macOS,
+over 90%) — kind `memory`. On macOS a `warn` counts only with under 25% of RAM
+available, because the kernel raises it long before memory is short; swap over 85% used (Linux, Windows), or on macOS,
 whose swap grows on demand so used-of-total says nothing, more than a third of
 RAM swapped — `swap`; a write-ahead log over 2 GB or grown 1 GB in one tick —
 `wal`; the brain over 80% of a core for two ticks — `cpu`. Severity is
@@ -1896,9 +1909,12 @@ processes; one PowerShell CIM read on Windows), grouped into `installed_brain`,
 never a process name, path or argument). It sends one Sentry Log
 `machine.resource_pressure` and one `ade_resource_pressure` with `kind` (the
 first of `memory`, `swap`, `wal`, `cpu` that breached), `severity`,
-`emulator_count` (`0`, `1`, `2`, `3_4`, `5_plus`), `dev_brain_running` and
-`top_table` (ADE's own table with the most writes in the five minutes before; a
-schema name, never data). The episode closes after 30 minutes without a breach;
+`emulator_count` (`0`, `1`, `2`, `3_4`, `5_plus`), `dev_brain_running`,
+`ram_gb_bucket` (`le_8`, `9_16`, `17_32`, `33_64`, `gt_64`), `available_pct`,
+`ade_mb` and `ade_pct_of_ram` (the memory of ADE's own processes: the brains
+and the desktop app, without emulators and simulators), and, for kind `wal` or
+`cpu` only, `top_table` (ADE's own table with the most writes in the five
+minutes before; a schema name, never data). The episode closes after 30 minutes without a breach;
 only then can another open, and one open when the brain restarts stays open.
 `runtime/resource-pressure.json` keeps the open episode, the last sample and
 the last five episodes for diagnostic reports. Volume: worst case one event
@@ -2241,7 +2257,7 @@ Every insight except the volume cards leaves out events with `is_internal: true`
 
 ### In-app surveys
 
-The desktop app shows PostHog **API** surveys in its own corner card (no posthog-js, no session replay). `main/services/analytics/surveyService.ts` reads the project's active surveys from PostHog's public endpoint (`GET /api/surveys/?token=<public project token>`) at most once a day, and only when this install already qualifies locally. A survey is eligible only when its name starts with `[ade:pmf]`, `[ade:returning]` or `[ade:early]`; the key's rule, a 21-day per-install cooldown, never in the first session or during onboarding, and never the same survey twice are all decided on the machine from `<ade>/secrets/product-analytics-surveys.json` (local active days, last activity, launch count, shown surveys, cached survey list). Answers go out as PostHog's `survey shown` / `survey dismissed` / `survey sent` events through the product analytics service, so consent, `DO_NOT_TRACK`, the daily budget and the dev-build gate all apply; with analytics off nothing is recorded, fetched or shown. Typed answers are scrubbed for secrets and home-folder paths and capped at 2,000 characters. The hosted web client and iOS show no surveys. How to write a survey ADE will show is in `docs/analytics/README.md`. When an event or property contract changes, update the dashboard spec and its tests in the same change. Run the provisioner in `--validate` mode locally. A live provisioning run requires the personal management key and should be idempotent: an immediate second run must report no changes.
+The desktop app shows PostHog **API** surveys in its own corner card (no posthog-js, no session replay). `main/services/analytics/surveyService.ts` reads the project's active surveys from PostHog's public endpoint (`GET /api/surveys/?token=<public project token>`) at most once a day, and only when this install already qualifies locally. A survey is eligible only when its name starts with `[ade:pmf]`, `[ade:returning]` or `[ade:early]`; the key's rule, a 21-day per-install cooldown, never in the first session or during onboarding, and never the same survey twice are all decided on the machine from `<ade>/secrets/product-analytics-surveys.json` (local active days, last activity, launch count, shown surveys, cached survey list). The window asks only after ten minutes of use in that launch (time focused). One thing the machine cannot know is whether its account is one of ADE's own: for an install that qualifies, the service asks PostHog for the flag `surveys-real-users` (false for `is_internal` people) and offers nothing unless the answer is a clear yes. `survey dismissed` and `survey sent` carry `shown_for_ms`, the time the card was on screen, measured in the window. Answers go out as PostHog's `survey shown` / `survey dismissed` / `survey sent` events through the product analytics service, so consent, `DO_NOT_TRACK`, the daily budget and the dev-build gate all apply; with analytics off nothing is recorded, fetched or shown. Typed answers are scrubbed for secrets and home-folder paths and capped at 2,000 characters. The hosted web client and iOS show no surveys. How to write a survey ADE will show is in `docs/analytics/README.md`. When an event or property contract changes, update the dashboard spec and its tests in the same change. Run the provisioner in `--validate` mode locally. A live provisioning run requires the personal management key and should be idempotent: an immediate second run must report no changes.
 
 ## How to instrument new code
 

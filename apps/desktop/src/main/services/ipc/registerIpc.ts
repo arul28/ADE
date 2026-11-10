@@ -15,6 +15,7 @@ import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../ru
 import type { IpcMainInvokeEvent } from "electron";
 import { isUnsupportedAdeActionError, stripElectronErrorWrapper } from "../../../shared/codedError";
 import { AdeExpectedError, carryExpected, expectedErrorKind } from "../../../shared/expectedError";
+import { isExpectedFailure, isExpectedOutcome } from "../../../shared/sentry/expectedFailure";
 import { withoutCrossMachineCallerFields } from "../../../shared/crossMachineHandoff";
 import {
   createEmptyAutoUpdateSnapshot,
@@ -2613,7 +2614,13 @@ export function registerIpc({
               const actionDomain = actionRequest?.domain ?? null;
               const brainAction = actionRequest?.action ?? null;
               const errorCode = brainActionErrorCode(error, didTimeout);
-              const expectedKind = expectedErrorKind(error) ?? "unexpected";
+              // The mark names the kind. An answer Sentry already keeps out of
+              // issues by its text or code alone (no GitHub sign-in, a lane whose
+              // folder is gone) carries no mark, and read as `unexpected` here:
+              // 13 of 29 installs on 1.2.129 looked broken in three days. It is
+              // `expected`, so `unexpected` means what Sentry would also report.
+              const expectedKind = expectedErrorKind(error)
+                ?? (isExpectedOutcome(error) || isExpectedFailure(error) ? "expected" : "unexpected");
               productAnalyticsService?.captureInternal({
                 event: "ade_brain_action_failed",
                 surface: "desktop",

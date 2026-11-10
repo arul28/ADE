@@ -419,6 +419,7 @@ import type { ProjectRecord } from "./services/projects/projectRegistry";
 import {
   findAdeManagedWorktreeRoot,
   findLinkedLaneWorktreeRoot,
+  isOtherAdeInstallHome,
   normalizeProjectRootPath,
   realpathIfExists,
 } from "./services/projects/projectRoots";
@@ -4868,8 +4869,11 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade automations show <id> [--json]            Inspect a rule
     $ ade automations create --from-file <path>     Create from YAML (also accepts --stdin)
     $ ade automations update <id> --from-file <path>
-    $ ade automations delete <id>                   Remove a local rule
+    $ ade automations delete <id>                   Remove a rule (on every computer when it follows your account)
     $ ade automations toggle <id> --enabled true|false
+    $ ade automations run-on <id> [--device <sync-device-id> --name <computer>]
+                                                     Choose the one computer that runs a rule that
+                                                     follows your account. Default: this computer
     $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
           [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
                                                      Test a rule with an event. preview shows
@@ -21922,6 +21926,29 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     };
   }
 
+  if (sub === "run-on") {
+    // Flags first, so their values are not taken for the rule id.
+    const deviceId = readValue(args, ["--device", "--device-id"]);
+    const name = readValue(args, ["--name"]);
+    const id = requireValue(
+      readValue(args, ["--id"]) ?? firstPositional(args),
+      "rule id",
+    );
+    if (deviceId && !name) {
+      throw new CliUsageError("automations run-on --device needs --name <computer name> too.");
+    }
+    return {
+      kind: "execute",
+      label: `automations run-on ${id}`,
+      steps: [
+        actionStep("result", "automations", "setRunOn", {
+          id,
+          ...(deviceId ? { deviceId, name } : {}),
+        }),
+      ],
+    };
+  }
+
   if (sub === "run" || sub === "trigger") {
     const id = requireValue(
       readValue(args, ["--id"]) ?? firstPositional(args),
@@ -23762,7 +23789,8 @@ function findProjectRoots(startDir: string): {
 
   let cursor = canonicalStart;
   while (true) {
-    if (fs.existsSync(path.join(cursor, ".ade"))) {
+    // A repo under a Windows profile from WSL must not resolve to the profile.
+    if (fs.existsSync(path.join(cursor, ".ade")) && !isOtherAdeInstallHome(cursor)) {
       return { projectRoot: cursor, workspaceRoot: cursor };
     }
     const parent = path.dirname(cursor);
@@ -26154,6 +26182,15 @@ async function createConnection(
   }
   if (args.needsLiveRuntime) {
     throw await liveRuntimeRequiredError(args.needsLiveRuntime);
+  }
+
+  // The brain refuses this folder, and an in-process runtime must not open it
+  // either: it would write into the other install's database.
+  if (isOtherAdeInstallHome(roots.projectRoot)) {
+    throw new CliToolError(
+      `${roots.projectRoot} is where another ADE install keeps its data, so ADE will not open it as a project. Run this from a project folder.`,
+      undefined,
+    );
   }
 
   const previousRole = process.env.ADE_DEFAULT_ROLE;

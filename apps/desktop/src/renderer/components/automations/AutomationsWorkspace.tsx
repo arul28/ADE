@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { useSearchParams } from "react-router-dom";
-import { ClockCounterClockwise, PencilSimple, Play, Trash } from "@phosphor-icons/react";
+import { ClockCounterClockwise, CloudArrowDown, PencilSimple, Play, Trash } from "@phosphor-icons/react";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import type {
   AiSettingsStatus,
@@ -30,7 +30,9 @@ import { TestRunDialog, type TestKind } from "./builder/TestRunControls";
 import { RuleHistory } from "./history/RuleHistory";
 import { TemplateGallery } from "./templates/TemplateGallery";
 import { RuleMachineField } from "./builder/RuleMachineField";
-import { machineRuleKey, useAutomationMachines, type MachineRule } from "./useAutomationMachines";
+import { machineRuleKey, ruleListKey, useAutomationMachines, type MachineRule } from "./useAutomationMachines";
+import { followsAccount, ruleElsewhereReason, ruleSyncLine } from "./ruleSync";
+import { AUTOMATION_HOME_HANDOVER_MINUTES } from "../../../shared/automationHome";
 import type { LaneMachine } from "../../state/laneMachineRouting";
 import { onMachine } from "../../state/projectMachines";
 import { parseMachineScopedId } from "../../state/foreignMachineReads";
@@ -205,6 +207,8 @@ export function AutomationsWorkspace({
   const {
     machines,
     boundMachine,
+    machineListsAccountRule,
+    machineAccountRule,
     entryByKey,
     entryByRule,
     entries,
@@ -233,7 +237,19 @@ export function AutomationsWorkspace({
    * Save moves it. Null for a new draft; a null machine is the tab's own.
    */
   const [draftOrigin, setDraftOrigin] = useState<{ machine: LaneMachine | null } | null>(null);
+  /**
+   * True once "Runs on" was picked for a rule that follows the account whose
+   * home this window cannot reach: any pick, even the machine the rule was
+   * read from, is then a change of home.
+   */
+  const [draftRehomeChosen, setDraftRehomeChosen] = useState(false);
   const loadedRuleKeyRef = useRef<string | null>(null);
+  /**
+   * The machine the loaded rule was read from. A rule that follows the
+   * account keeps one key on every machine, and its entry moves to its home
+   * when the home answers after the others; "Runs on" then follows it.
+   */
+  const loadedRuleMachineRef = useRef<string | null>(null);
   const [draftMachineSuites, setDraftMachineSuites] = useState<TestSuiteDefinition[] | null>(null);
   const [draftMachineIngress, setDraftMachineIngress] = useState<AutomationIngressStatus | null>(null);
   /** Bumped to re-read the draft machine's suites and ingress status. */
@@ -248,7 +264,9 @@ export function AutomationsWorkspace({
   foreignRuleKeyStateRef.current = foreignRuleKeyState;
 
   // A saved rule pointed at another machine is an unsaved change (a move).
-  const draftMoving = Boolean(draftOrigin && (draftOrigin.machine?.machineId ?? null) !== (draftTarget?.machineId ?? null));
+  const draftMoving = Boolean(draftOrigin && (
+    draftRehomeChosen || (draftOrigin.machine?.machineId ?? null) !== (draftTarget?.machineId ?? null)
+  ));
   const isDirty = useMemo(() => {
     if (!draft || savedSnapshotRef.current == null) return false;
     return draftMoving || JSON.stringify(draft) !== savedSnapshotRef.current;
@@ -264,7 +282,10 @@ export function AutomationsWorkspace({
       destructive: true,
     });
     // Discarding a pending move puts the rule back on its machine.
-    if (ok && draftOrigin) setDraftTarget(draftOrigin.machine);
+    if (ok && draftOrigin) {
+      setDraftTarget(draftOrigin.machine);
+      setDraftRehomeChosen(false);
+    }
     if (ok && savedSnapshotRef.current != null) {
       try {
         setDraft(JSON.parse(savedSnapshotRef.current) as AutomationRuleDraft);
@@ -346,6 +367,7 @@ export function AutomationsWorkspace({
     const only = eligible.length === 1 ? eligible[0]! : null;
     loadedRuleKeyRef.current = null;
     setDraftOrigin(null);
+    setDraftRehomeChosen(false);
     setDraftTarget(only && !only.isActiveBinding ? only : null);
     setDraftMachineChosen(Boolean(only));
   }, []);
@@ -377,13 +399,16 @@ export function AutomationsWorkspace({
     if (isDirtyRef.current) return;
     const selectedEntry = entryByKey.get(selectedRuleId);
     if (!selectedEntry) return;
-    // The machine is set when a rule is opened, not on every refresh: a
-    // pending move (the "Runs on" field changed) must survive a list refresh.
-    if (loadedRuleKeyRef.current !== selectedRuleId) {
+    // The machine is set when a rule is opened (or its entry moves to its
+    // home), not on every refresh: a pending move (the "Runs on" field
+    // changed) makes the draft dirty, and the guard above keeps it.
+    if (loadedRuleKeyRef.current !== selectedRuleId || loadedRuleMachineRef.current !== selectedEntry.machine.machineId) {
       loadedRuleKeyRef.current = selectedRuleId;
+      loadedRuleMachineRef.current = selectedEntry.machine.machineId;
       const nextTarget = selectedEntry.machine.isActiveBinding ? null : selectedEntry.machine;
       setDraftTarget(nextTarget);
       setDraftOrigin({ machine: nextTarget });
+      setDraftRehomeChosen(false);
       setDraftMachineChosen(true);
     }
     const nextDraft = toDraftFromRule(selectedEntry.rule);
@@ -527,6 +552,59 @@ export function AutomationsWorkspace({
       setError(`Can't move it: ${blockedFrom}.`);
       return;
     }
+    // A rule that follows the account is already on every machine that lists
+    // it; moving it only changes which one runs it. Machines that do not list
+    // it (an older ADE, another account) take a copy the old way below.
+    const savedRule = selectedRuleId ? entryByKey.get(selectedRuleId)?.rule ?? null : null;
+    const toMachine = to ?? boundMachine;
+    if (savedRule && followsAccount(savedRule) && toMachine && machineListsAccountRule(toMachine, ruleDraft.id)) {
+      const ok = await confirmDialog({
+        title: `Run "${ruleDraft.name || "this automation"}" on ${toName}?`,
+        message: [
+          `${toName} starts it ${AUTOMATION_HOME_HANDOVER_MINUTES} minutes after you save, once ${savedRule.home?.name ?? fromName} has surely stopped, so the two never run it at once. Run now works right away, and every computer still shows the rule.`,
+          `Its run history stays on ${savedRule.home?.name ?? fromName}.`,
+        ].join("\n\n"),
+        confirmLabel: "Change",
+      });
+      if (!ok) return;
+      setSaving(true);
+      setError(null);
+      try {
+        const validation = await validateDraft(ruleDraft);
+        if (!validation.ok) return;
+        // Saved through the new home as "this computer", so it names its own
+        // checkout; the new home waits past the old home's lease
+        // (`homeStartsAt`), so they never overlap. When only "Runs on"
+        // changed, the new home's own copy goes back, so the save writes the
+        // home alone and cannot undo a newer edit that computer already has.
+        const contentEdited = JSON.stringify(ruleDraft) !== savedSnapshotRef.current;
+        const targetCopy = contentEdited ? null : machineAccountRule(toMachine, ruleDraft.id);
+        const draftToSave = targetCopy ? toDraftFromRule(targetCopy) : ruleDraft;
+        const saved = await onMachine(
+          window.ade.automations.saveDraft(
+            { draft: { ...draftToSave, home: "this-computer" }, confirmations: [...acceptedConfirmations] },
+            to?.pin ?? null,
+          ),
+          to,
+        );
+        commitMachineRules(to, saved.rules);
+        refreshForeign();
+        loadedRuleKeyRef.current = ruleDraft.id;
+        setDraftOrigin({ machine: to });
+        setDraftRehomeChosen(false);
+        setSelectedRuleId(ruleDraft.id);
+        const nextSelected = saved.rules.find((r) => r.id === ruleDraft.id) ?? null;
+        const nextDraft = nextSelected ? toDraftFromRule(nextSelected) : ruleDraft;
+        setDraft(nextDraft);
+        savedSnapshotRef.current = JSON.stringify(nextDraft);
+        setIssues([]);
+      } catch (err) {
+        setError(explainError(err));
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     const ok = await confirmDialog({
       title: `Move "${ruleDraft.name || "this automation"}" to ${toName}?`,
       message: [
@@ -576,7 +654,10 @@ export function AutomationsWorkspace({
           setError(`Moved to ${toName}, but it is paused: ${extractError(err)}`);
         }
       }
-      const nextKey = to ? machineRuleKey(to, created.rule.id) : created.rule.id;
+      const createdSummary = finalRules.find((r) => r.id === created.rule.id);
+      const nextKey = createdSummary && followsAccount(createdSummary)
+        ? created.rule.id
+        : to ? machineRuleKey(to, created.rule.id) : created.rule.id;
       loadedRuleKeyRef.current = nextKey;
       setDraftOrigin({ machine: to });
       setSelectedRuleId(nextKey);
@@ -590,7 +671,7 @@ export function AutomationsWorkspace({
     } finally {
       setSaving(false);
     }
-  }, [acceptedConfirmations, blockedReason, boundMachine?.machineName, commitMachineRules, validateDraft]);
+  }, [acceptedConfirmations, blockedReason, boundMachine, commitMachineRules, entryByKey, machineAccountRule, machineListsAccountRule, refreshForeign, selectedRuleId, validateDraft]);
 
   const saveDraft = useCallback(async () => {
     if (!draft) return;
@@ -618,8 +699,12 @@ export function AutomationsWorkspace({
         target,
       );
       commitMachineRules(target, saved.rules);
-      setSelectedRuleId(target ? machineRuleKey(target, saved.rule.id) : saved.rule.id);
       const nextSelected = saved.rules.find((r) => r.id === saved.rule.id) ?? null;
+      // A rule that follows the account shows on the other machines too.
+      if (nextSelected && followsAccount(nextSelected)) refreshForeign();
+      setSelectedRuleId(nextSelected && followsAccount(nextSelected)
+        ? saved.rule.id
+        : target ? machineRuleKey(target, saved.rule.id) : saved.rule.id);
       const nextDraft = nextSelected ? toDraftFromRule(nextSelected) : createBlankDraft();
       setDraft(nextDraft);
       savedSnapshotRef.current = JSON.stringify(nextDraft);
@@ -629,7 +714,7 @@ export function AutomationsWorkspace({
     } finally {
       setSaving(false);
     }
-  }, [acceptedConfirmations, blockedReason, commitMachineRules, draft, draftMachineChosen, draftMoving, draftOrigin, draftTarget, moveRule, validateDraft]);
+  }, [acceptedConfirmations, blockedReason, commitMachineRules, draft, draftMachineChosen, draftMoving, draftOrigin, draftTarget, moveRule, refreshForeign, validateDraft]);
 
   const createRule = useCallback(async () => {
     if (!(await confirmDiscardIfDirty())) return;
@@ -683,7 +768,7 @@ export function AutomationsWorkspace({
     (rule: AutomationRuleSummary) => {
       const entry = entryByRule.get(rule);
       if (!entry) return;
-      const blocked = blockedReason(entry.machine);
+      const blocked = blockedReason(entry.machine) ?? ruleElsewhereReason(entry.rule);
       if (blocked) {
         setError(blocked);
         return;
@@ -715,12 +800,14 @@ export function AutomationsWorkspace({
         entry.machine,
       );
       commitMachineRules(entry.machine, next);
-      setSelectedRuleId(next[0] ? machineRuleKey(entry.machine, next[0].id) : null);
+      // Deleted on every machine when it followed the account.
+      if (followsAccount(entry.rule)) refreshForeign();
+      setSelectedRuleId(next[0] ? ruleListKey(entry.machine, next[0]) : null);
       if (!next.length) setDraft(createBlankDraft());
     } catch (err) {
       setError(explainError(err));
     }
-  }, [blockedReason, commitMachineRules, entryByKey]);
+  }, [blockedReason, commitMachineRules, entryByKey, refreshForeign]);
 
   const toggleRule = useCallback((key: string, enabled: boolean) => {
     const entry = entryByKey.get(key);
@@ -889,6 +976,37 @@ export function AutomationsWorkspace({
               }}
             />
           ) : null}
+          {draft && detailView === "builder" && selectedRule?.needsNewerAde ? (
+            <Banner
+              layout="inline"
+              testId="automation-rule-newer-ade"
+              style={{ margin: "8px 16px 0" }}
+              model={{
+                id: "automation-rule-newer-ade",
+                tone: "warning",
+                icon: <CloudArrowDown size={16} weight="duotone" />,
+                title: "Made with a newer ADE",
+                detail: "This ADE can't read all of it, so it's view-only here and left as it is in your account. Update ADE to edit or run it.",
+              }}
+            />
+          ) : null}
+          {draft && detailView === "builder" && !draftMoving && selectedRule?.homeGaps?.length ? (
+            <Banner
+              layout="inline"
+              testId="automation-home-gaps"
+              style={{ margin: "8px 16px 0" }}
+              model={{
+                id: "automation-home-gaps",
+                tone: "warning",
+                title: "This computer is missing something this automation needs",
+                detail: (
+                  <ul className="mt-0.5 space-y-0.5">
+                    {selectedRule.homeGaps.map((gap) => <li key={gap}>{gap}</li>)}
+                  </ul>
+                ),
+              }}
+            />
+          ) : null}
           {draft && detailView === "builder" && draftMachineChosen && draftMachineBlocked ? (
             <Banner
               layout="inline"
@@ -927,8 +1045,15 @@ export function AutomationsWorkspace({
                 }
                 onSave={() => void saveDraft()}
                 onTest={(kind) => setTestKind(kind)}
-                testBlockedReason={selectedRule ? null : "Save this automation to test it."}
+                testBlockedReason={
+                  !selectedRule
+                    ? "Save this automation to test it."
+                    : selectedRule.needsNewerAde
+                      ? "Made with a newer ADE. Update ADE on this computer to test it."
+                      : null
+                }
                 onRunNow={selectedRule ? () => beginRunRule(selectedRule) : undefined}
+                runBlockedReason={selectedRule ? ruleElsewhereReason(selectedRule) : null}
                 onIngressChanged={() => {
                   // The draft's machine owns its ingress status.
                   if (draftTarget?.pin) setDraftMachineReadNonce((n) => n + 1);
@@ -940,17 +1065,33 @@ export function AutomationsWorkspace({
                     machines={machines}
                     valueMachineId={draftMachineChosen ? (draftTarget?.machineId ?? boundMachine?.machineId ?? null) : null}
                     savedMachineId={draftOrigin ? (draftOrigin.machine?.machineId ?? boundMachine?.machineId ?? null) : null}
+                    followsAccount={Boolean(selectedRule && followsAccount(selectedRule))}
+                    unreachableHomeName={
+                      selectedRule && followsAccount(selectedRule) && selectedRule.runsHere === false && !draftRehomeChosen
+                        ? selectedRule.home?.name ?? null
+                        : null
+                    }
+                    homeName={selectedRule && followsAccount(selectedRule) ? selectedRule.home?.name ?? null : null}
+                    rehoming={draftRehomeChosen}
+                    sync={selectedRule && !draftMoving ? ruleSyncLine(selectedRule) : null}
                     disabled={saving}
                     onChange={(machineId) => {
                       const next = machines.find((machine) => machine.machineId === machineId);
                       if (!next) return;
+                      if (selectedRule && followsAccount(selectedRule) && selectedRule.runsHere === false) setDraftRehomeChosen(true);
                       setDraftTarget(next.isActiveBinding ? null : next);
                       setDraftMachineChosen(true);
                       setError(null);
                     }}
                   />
                 }
-                saveBlockedReason={draftMachineChosen ? null : CHOOSE_MACHINE_HINT}
+                saveBlockedReason={
+                  selectedRule?.needsNewerAde
+                    ? "Made with a newer ADE. Update ADE on this computer to change it."
+                    : draftMachineChosen || draftRehomeChosen || Boolean(selectedRule && followsAccount(selectedRule))
+                      ? null
+                      : CHOOSE_MACHINE_HINT
+                }
                 cursorCloudConnected={cursorCloudConnected}
                 saving={saving}
                 running={running}

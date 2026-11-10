@@ -380,6 +380,11 @@ describe("automation ingress enable gating", () => {
           };
           return snapshot;
         },
+        // No account store here, so the rule methods edit the local file, as the real service does.
+        saveAutomationRule(next: any) {
+          const automations = [...(snapshot.local.automations ?? []).filter((entry: any) => entry.id !== next.id), next];
+          return this.save({ shared: snapshot.shared, local: { ...snapshot.local, automations } });
+        },
       } as any,
       getSnapshot: () => snapshot,
     };

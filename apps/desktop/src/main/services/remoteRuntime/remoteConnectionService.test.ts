@@ -1848,6 +1848,58 @@ describe("RemoteConnectionService", () => {
     expect(service.snapshot().connections[0]?.state).toBe("connected");
   });
 
+  it("sends a call from a saved chat's pin to the project the machine lists", async () => {
+    // A saved chat can name its project by an id the machine never routed by.
+    const listed = { projectId: "project_registry", rootPath: "/home/node/Projects/ade", displayName: "ade" };
+    const other = { projectId: "project_other", rootPath: "/home/node/Projects/other", displayName: "other" };
+    const send = { domain: "lane", action: "create" };
+    const start = (woken: boolean) => {
+      const computer = target("cloud-computer", 1_700_000_000);
+      const registry = {
+        list: vi.fn(() => [computer]),
+        get: vi.fn((id: string) => (id === computer.id ? computer : null)),
+      } as unknown as RemoteTargetRegistry;
+      const pool = {
+        connect: vi.fn(async (target: RemoteRuntimeTarget) => ({ ...connectResult(target), projects: [other, listed] })),
+        disconnect: vi.fn(),
+        projectsForTarget: vi.fn(async () => [other, listed]),
+        callActionForTarget: vi.fn(async (_target: RemoteRuntimeTarget, _projectId: string, request: { domain: string; action: string }) =>
+          ({ domain: request.domain, action: request.action, result: { ok: true }, statusHints: {} })),
+        onHostStorageWait: vi.fn(() => () => {}),
+        onEntryConnected: vi.fn(() => () => {}),
+        onDialFailed: vi.fn(() => () => {}),
+        onEntryEvicted: vi.fn(() => () => {}),
+        ...poolConnectStateStubs(),
+      } as unknown as RemoteConnectionPool;
+      const service = new RemoteConnectionService(registry, pool, {
+        asleepForUse: () => Promise.resolve(false),
+        wakeForUse: async () => woken,
+      });
+      const sentTo = () => vi.mocked(pool.callActionForTarget).mock.calls.map((call) => call[1]);
+      return { computer, pool, service, sentTo };
+    };
+
+    // The send wakes the computer: the woken computer's own list finds the folder.
+    const asleep = start(true);
+    await asleep.service.callAction(asleep.computer.id, "database-id", send, { projectRootPath: "/home/node/Projects/ade/" });
+    expect(asleep.sentTo()).toEqual(["project_registry"]);
+    expect(asleep.pool.projectsForTarget).not.toHaveBeenCalled();
+    expect(asleep.service.snapshot().connections[0]?.projects).toEqual([other, listed]);
+
+    // Awake, but this app holds no list for it yet: it is asked first, one time.
+    const awake = start(false);
+    await awake.service.callAction(awake.computer.id, "database-id", send, { projectRootPath: "/home/node/Projects/ade" });
+    await awake.service.callAction(awake.computer.id, "database-id", send, { projectRootPath: "/home/node/Projects/ade" });
+    expect(awake.sentTo()).toEqual(["project_registry", "project_registry"]);
+    expect(awake.pool.projectsForTarget).toHaveBeenCalledTimes(1);
+
+    // An id the machine lists wins over the folder; no match and no folder go as asked.
+    await awake.service.callAction(awake.computer.id, "project_other", send, { projectRootPath: "/home/node/Projects/ade" });
+    await awake.service.callAction(awake.computer.id, "database-id", send, { projectRootPath: "/home/node/Projects/gone" });
+    await awake.service.callAction(awake.computer.id, "database-id", send);
+    expect(awake.sentTo().slice(2)).toEqual(["project_other", "database-id", "database-id"]);
+  });
+
   it("rests a cloud computer whose link drops before its status says asleep, and stops the redials", async () => {
     const computer = target("cloud-computer", 1_700_000_000);
     const registry = {

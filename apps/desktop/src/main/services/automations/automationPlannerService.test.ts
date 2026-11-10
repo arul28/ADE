@@ -54,6 +54,12 @@ function createPlannerForTests(args: {
         },
       };
     },
+    // No account store here, so a rule is saved in the local file, as the real service does.
+    saveAutomationRule: (rule: any) => {
+      const automations = [...(snapshot.local?.automations ?? []).filter((entry: any) => entry.id !== rule.id), rule];
+      projectConfigService.save({ shared: snapshot.shared, local: { ...snapshot.local, automations } });
+      return snapshot;
+    },
   } as any;
 
   const laneService = {

@@ -376,6 +376,8 @@ const RUNTIME_ENV_PASSTHROUGH = [
   "ADE_RUNTIME_NODE_MODULES",
   "ADE_DEFAULT_ROLE",
   "ADE_WINDOWS_USER_SID",
+  // The opt-out of whoever installed the service holds for its brain too.
+  "DO_NOT_TRACK",
 ] as const;
 
 /**

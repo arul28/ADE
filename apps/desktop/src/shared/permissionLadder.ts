@@ -78,10 +78,13 @@ const CLAUDE_BY_LEVEL: Record<PermissionLevel, AgentChatClaudePermissionMode> = 
   "full-auto": "bypassPermissions",
 };
 
-const CODEX_BY_LEVEL: Record<PermissionLevel, { approvalPolicy: AgentChatCodexApprovalPolicy; sandbox: AgentChatCodexSandbox }> = {
+const CODEX_BY_LEVEL: Record<PermissionLevel, { approvalPolicy: AgentChatCodexApprovalPolicy; sandbox: AgentChatCodexSandbox } | null> = {
   "plan": { approvalPolicy: "untrusted", sandbox: "read-only" },
   "ask": { approvalPolicy: "on-request", sandbox: "workspace-write" },
-  "auto-edit": { approvalPolicy: "on-failure", sandbox: "workspace-write" },
+  // Codex removed `on-failure`, the policy this rung used (see
+  // `codexApprovalPolicy.ts`). `ask` is the nearest lower rung, and on Codex it
+  // already lets the sandbox write in the workspace.
+  "auto-edit": null,
   "full-auto": { approvalPolicy: "never", sandbox: "danger-full-access" },
 };
 
@@ -147,7 +150,10 @@ export function permissionLevelForCodex(sandbox: AgentChatCodexSandbox, approval
   // module promises never to do.
   if (sandbox === "danger-full-access" && approvalPolicy === "never") return "full-auto";
   if (sandbox === "read-only" || approvalPolicy === "untrusted") return "plan";
-  if (approvalPolicy === "never" || approvalPolicy === "on-failure") return "auto-edit";
+  if (approvalPolicy === "never") return "auto-edit";
+  // `on-failure` too: a session that still stores it runs as `on-request`
+  // (`codexApprovalPolicy.ts`), so reading it as auto-edit would hand a child
+  // or a moved chat more than this session has.
   return "ask";
 }
 
@@ -264,19 +270,20 @@ export type ResolvedPermission = {
 export function resolvePermissionLevel(level: PermissionLevel, family?: PermissionLadderFamily): ResolvedPermission {
   const opencode = nearestSupported(OPENCODE_BY_LEVEL, level);
   const cursor = nearestSupported(CURSOR_BY_LEVEL, level);
+  const codex = nearestSupported(CODEX_BY_LEVEL, level);
 
   // Only the family being switched TO can be downgraded; the other tables are
   // filled in for whatever the surface reads.
-  const applied = family === "opencode" ? opencode : family === "cursor" ? cursor : { level };
-  const appliedLevel = applied.level;
+  const downgradable: Partial<Record<PermissionLadderFamily, { level: PermissionLevel }>> = { opencode, cursor, codex };
+  const appliedLevel = (family ? downgradable[family]?.level : undefined) ?? level;
   const downgraded = appliedLevel !== level;
 
   return {
     level: appliedLevel,
     downgraded,
     claudePermissionMode: CLAUDE_BY_LEVEL[level],
-    codexApprovalPolicy: CODEX_BY_LEVEL[level].approvalPolicy,
-    codexSandbox: CODEX_BY_LEVEL[level].sandbox,
+    codexApprovalPolicy: codex.value.approvalPolicy,
+    codexSandbox: codex.value.sandbox,
     opencodePermissionMode: opencode.value,
     droidPermissionMode: DROID_BY_LEVEL[level],
     acpPermissionMode: ACP_BY_LEVEL[level],
@@ -422,6 +429,15 @@ export type PermissionFieldsPatch = {
 };
 
 /**
+ * The ladder family whose missing rungs apply to `provider`, for the `family`
+ * argument of `resolvePermissionLevel`. Undefined for a provider that can
+ * express every level.
+ */
+export function downgradeFamilyForProvider(provider: string | null | undefined): PermissionLadderFamily | undefined {
+  return provider === "opencode" || provider === "cursor" || provider === "codex" ? provider : undefined;
+}
+
+/**
  * The fields that put a `provider` session at exactly `level` (or the nearest
  * lower level it can express). Only the fields that provider reads are set.
  */
@@ -429,10 +445,7 @@ export function permissionFieldsForLevel(
   provider: string | null | undefined,
   level: PermissionLevel,
 ): PermissionFieldsPatch {
-  const resolved = resolvePermissionLevel(
-    level,
-    provider === "opencode" ? "opencode" : provider === "cursor" ? "cursor" : undefined,
-  );
+  const resolved = resolvePermissionLevel(level, downgradeFamilyForProvider(provider));
   switch (provider) {
     case "claude":
       // The generic word too: Claude's normalization rebuilds the access mode
