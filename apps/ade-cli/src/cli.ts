@@ -4869,8 +4869,11 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade automations show <id> [--json]            Inspect a rule
     $ ade automations create --from-file <path>     Create from YAML (also accepts --stdin)
     $ ade automations update <id> --from-file <path>
-    $ ade automations delete <id>                   Remove a local rule
+    $ ade automations delete <id>                   Remove a rule (on every computer when it follows your account)
     $ ade automations toggle <id> --enabled true|false
+    $ ade automations run-on <id> [--device <sync-device-id> --name <computer>]
+                                                     Choose the one computer that runs a rule that
+                                                     follows your account. Default: this computer
     $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
           [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
                                                      Test a rule with an event. preview shows
@@ -21919,6 +21922,29 @@ function buildAutomationsPlan(args: string[]): CliPlan {
       label: `automations toggle ${id}`,
       steps: [
         actionStep("result", "automations", "toggleRule", { id, enabled }),
+      ],
+    };
+  }
+
+  if (sub === "run-on") {
+    // Flags first, so their values are not taken for the rule id.
+    const deviceId = readValue(args, ["--device", "--device-id"]);
+    const name = readValue(args, ["--name"]);
+    const id = requireValue(
+      readValue(args, ["--id"]) ?? firstPositional(args),
+      "rule id",
+    );
+    if (deviceId && !name) {
+      throw new CliUsageError("automations run-on --device needs --name <computer name> too.");
+    }
+    return {
+      kind: "execute",
+      label: `automations run-on ${id}`,
+      steps: [
+        actionStep("result", "automations", "setRunOn", {
+          id,
+          ...(deviceId ? { deviceId, name } : {}),
+        }),
       ],
     };
   }

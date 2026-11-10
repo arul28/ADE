@@ -693,7 +693,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   automations: {
     live: [
-      "saveRule", "deleteRule", "toggleRule", "triggerManually", "planTest", "runTest", "cleanUpTestRun",
+      "saveRule", "deleteRule", "toggleRule", "setRunOn", "triggerManually", "planTest", "runTest", "cleanUpTestRun",
       "startIngress", "cancelScheduledCleanup", "linearIngressSetup", "linearIngressTeardown",
       "linearIngressPollNow", "webhookCreateEndpoint", "webhookRotateEndpoint", "webhookReplayDelivery",
       "webhookSendTest", "webhookCreateAutomation", "webhookRetire",
@@ -705,7 +705,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
     write: [
       "webhookList",
-      "saveRule", "deleteRule", "toggleRule", "triggerManually", "planTest", "runTest",
+      "saveRule", "deleteRule", "toggleRule", "setRunOn", "triggerManually", "planTest", "runTest",
       "cleanUpTestRun", "startIngress", "refreshWebhookGatewayStatus",
       "setWebhookGatewayPublicUrl", "cancelScheduledCleanup", "linearIngressSetup",
       "linearIngressTeardown", "linearIngressPollNow", "webhookCreateEndpoint",

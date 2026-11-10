@@ -860,8 +860,12 @@ Renderer — settings:
   (`github/githubSshAlias.ts`), so every checkout of one repository shares a
   key. The `repo_scope_alias` account migration copies a project's secrets and
   settings from the alias key an older ADE used, once per project; a row
-  already under the new key wins, and the old rows stay. See
-  [Sync and multi-device](../sync-and-multi-device/README.md).
+  already under the new key wins, and the old rows stay. Automation rules use
+  the same store under the repository key, a rule row and a home row per
+  rule (`automations.rule.<id>`, `automations.home.<id>`), each run only by its
+  home computer; see
+  [Rules follow the account](../automations/README.md#rules-follow-the-account).
+  See [Sync and multi-device](../sync-and-multi-device/README.md).
 - `apps/desktop/src/renderer/scene/` and `renderer/styles/scene.css` — the
   window backdrop, configured under Settings → This computer → Appearance →
   **Background**. Modes are `plain` (the theme's flat background, no picture

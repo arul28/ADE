@@ -22,6 +22,11 @@ export type RuleMachineView = {
   chip: MachineChipModel | null;
   /** Non-null while that machine is unreachable. */
   offlineMessage: string | null;
+  /**
+   * Non-null when Run now and History cannot reach the rule from this window:
+   * it runs on a computer this window is not connected to. Editing still works.
+   */
+  elsewhereReason?: string | null;
   /** False for rules on another machine: the tab's ingress status says nothing about them. */
   isActiveBinding: boolean;
 };
@@ -260,6 +265,7 @@ export function RuleList({
                   selected={key === selectedRuleId}
                   machineChip={machine?.chip ?? null}
                   offlineMessage={machine?.offlineMessage ?? null}
+                  elsewhereReason={machine?.elsewhereReason ?? null}
                   onSelect={() => onSelect(key)}
                   onToggle={(enabled) => onToggle(key, enabled)}
                   onRunNow={() => onRunNow(rule)}

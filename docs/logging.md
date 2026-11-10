@@ -714,6 +714,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `work` | `session_continue_chat`, `session_copy_chat`, `session_continue_cli`, `session_copy_cli` | `completed`, `failed` | coarse provider family (Qwen, Kimi, Grok and Copilot report `other`) |
 | `automations` | `webhook_url_created` | `completed` | omitted; never the URL, hook id, preset, or rule |
 | `automations` | `safe_test_started`, `live_test_started` | `completed`, `failed` | omitted; never the rule, its steps, the event, or the lanes it made |
+| `automations` | `run_on_changed` | `completed` | omitted; never the rule, either computer, or the repository |
 | `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
 | `chat` | `connect_requested` | `completed` (connected), `kept` (already connected), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the integration's account, the key, or the chat |
 | `chat` | `mcp_server_requested` | `completed` (added), `kept` (already in ADE), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, a key, or the chat |
@@ -790,6 +791,14 @@ A preview records nothing. A test is a deliberate click, and the per-action
 and per-outcome dedupe holds a burst of tests to one event per outcome per
 interval, inside the existing `ade_feature_used` 140-per-day and 30-per-minute
 ceilings. What the test did stays in the local run history.
+
+Choosing another computer to run an automation that follows the account
+(**Runs on** in the builder, or `ade automations run-on`) records
+`automations/run_on_changed` in the brain where the new home is stored
+(`automationService.setRunOn`, or the planner's `saveDraft` with a new home),
+surface `api`. Saving a rule with its home unchanged records nothing. It is a
+deliberate choice, rare, and the per-action dedupe holds a burst to one event
+an hour, inside the existing `ade_feature_used` ceilings.
 
 Saving a model price or "Map to" on the Usage page (desktop, web, phone or
 `ade usage prices set`) records `model_price_changed` or

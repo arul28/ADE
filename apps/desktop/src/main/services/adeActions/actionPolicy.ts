@@ -1470,6 +1470,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "saveRule",
     "deleteRule",
     "toggleRule",
+    "setRunOn",
     "triggerManually",
     "planTest",
     "runTest",
