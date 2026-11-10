@@ -2953,6 +2953,10 @@ and merging duplicate lanes re-points them at the keeper. Chats deleted before
 this list existed appear through a Claude `claude_sessions` backfill that
 `insert or ignore`s, so a reopened or removed row never returns. The list, the
 conversation dialog, and the row actions are `RecentlyDeletedSection.tsx`.
+The hosted web client and Reopen on a Work row reach the same service through
+the `chat.listDeleted`, `chat.getDeletedDetail`, `chat.reopenDeleted` and
+`chat.removeDeleted` sync commands; a machine without them answers that the
+action is unavailable there.
 
 ## New-lane launches
 

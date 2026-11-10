@@ -14,6 +14,7 @@ import type {
 import { EMPTY_PR_DETAIL_BUNDLE, settlePrDetailBundle } from "../../../shared/prDetailBundle";
 import type { PrChatWatchSummary } from "../../../shared/prWatch";
 import type { ResolvePrMediaResult } from "../../../shared/githubMedia";
+import { markExpected } from "../../../shared/expectedError";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { unavailableOnHost } from "./misc";
@@ -508,17 +509,22 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     // would read as "nobody matches".
     searchMentionables: async (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.searchMentionables", pin, infra);
-      if (!commands.hasAction("prs.searchMentionables")) throw new Error("Update ADE on that computer to search for people here.");
+      if (!commands.hasAction("prs.searchMentionables")) throw markExpected(new Error("Update ADE on that computer to search for people here."), "environment");
       return await commands.call<SearchPrMentionablesResult>("prs.searchMentionables", asRecord(args), {
         fallback: () => {
-          throw new Error("That computer did not answer the search. Try again.");
+          throw markExpected(new Error("That computer did not answer the search. Try again."), "network");
         },
       });
     },
     getRepoReferences: async (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.getRepoReferences", pin, infra);
-      if (!commands.hasAction("prs.getRepoReferences")) throw new Error("Update ADE on that computer to search for issues and PRs here.");
-      return await read<PrRepoReference[]>("prs.getRepoReferences", args, []);
+      if (!commands.hasAction("prs.getRepoReferences")) throw markExpected(new Error("Update ADE on that computer to search for issues and PRs here."), "environment");
+      // No empty-list fallback: it would read as "nothing matches".
+      return await commands.call<PrRepoReference[]>("prs.getRepoReferences", asRecord(args), {
+        fallback: () => {
+          throw markExpected(new Error("That computer did not answer the search. Try again."), "network");
+        },
+      });
     },
     // A host without these must say so, so the GitHub tab falls back to loaded
     // rows (and read-only assignees) instead of reading an empty answer.

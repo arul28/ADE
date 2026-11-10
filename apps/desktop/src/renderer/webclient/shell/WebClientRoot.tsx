@@ -898,7 +898,10 @@ const OWNED_LINK_CHECK_MS = 6_000;
 /** The check's answer, or null (could not say) when it takes too long. */
 function answerWithin(check: Promise<boolean | null>): Promise<boolean | null> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => resolve(null), OWNED_LINK_CHECK_MS);
+    const timer = setTimeout(() => {
+      console.warn("[ade-web] the link's chat or lane check got no answer in time; opening the link anyway");
+      resolve(null);
+    }, OWNED_LINK_CHECK_MS);
     check.then(
       (answer) => {
         clearTimeout(timer);
