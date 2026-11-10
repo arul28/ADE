@@ -171,6 +171,8 @@ function fakeNetwork() {
 type Harness = ReturnType<typeof sqliteD1> & {
   env: CloudEnv;
   net: ReturnType<typeof fakeNetwork>;
+  /** What reached the push relay over the `ACTIVITY_RELAY` binding. */
+  relayCalls: Array<{ method: string; url: string; directoryAuth: string | null }>;
   send: (caller: string, method: string, url: string, body?: unknown) => Promise<Response>;
   tick: () => Promise<void>;
 };
@@ -200,6 +202,7 @@ function buildHarness(): Harness {
     ...data,
     env,
     net,
+    relayCalls: [],
     send: (caller, method, url, body) => handleCloudRequest(new Request(`https://directory.test${url}`, {
       method,
       headers: { authorization: `Bearer ${tokens[caller]}`, "content-type": "application/json" },
@@ -581,6 +584,10 @@ describe("ADE Cloud account", () => {
       expect(harness.row("select plan, stripe_subscription_id from cloud_accounts where user_id = ?", OWNER)).toEqual(expect.objectContaining({ plan: "free", stripe_subscription_id: null }));
       expect(computer(harness).deleted_at).toBe(NOW);
       expect(harness.rows("select user_id from cloud_user_keys where user_id = ?", OWNER)).toEqual([]);
+      // Its vault and settings live in the push relay's D1, so the relay is asked to remove them.
+      expect(harness.relayCalls).toEqual([
+        { method: "DELETE", url: `https://relay.test/directory/accounts/${OWNER}`, directoryAuth: "directory-secret" },
+      ]);
     }],
     ["an account deleted while its create runs still loses the computer it was making", async () => {
       harness.net.after.push({ match: /POST .*\/instances$/, run: async () => { expect((await deleteAccountOverClerk()).status).toBe(200); } });
@@ -649,7 +656,21 @@ describe("ADE Cloud account", () => {
       method: "POST",
       headers: { "svix-id": "msg_del", "svix-timestamp": timestamp, "svix-signature": `v1,${signature}` },
       body,
-    }), { DB: harness.DB, CLERK_WEBHOOK_SIGNING_SECRET: `whsec_${secret.toString("base64")}`, AGENT37_API_KEY: "provider-key", STRIPE_SECRET_KEY: "stripe-key" });
+    }), {
+      DB: harness.DB,
+      CLERK_WEBHOOK_SIGNING_SECRET: `whsec_${secret.toString("base64")}`,
+      AGENT37_API_KEY: "provider-key",
+      STRIPE_SECRET_KEY: "stripe-key",
+      PUSH_RELAY_URL: "https://relay.test",
+      DIRECTORY_AUTH_SECRET: "directory-secret",
+      ACTIVITY_RELAY: {
+        fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+          const headers = new Headers(init?.headers);
+          harness.relayCalls.push({ method: init?.method ?? "GET", url: String(input), directoryAuth: headers.get("x-ade-directory-auth") });
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        },
+      },
+    });
   }
 
   function seedRestingComputer(): void {

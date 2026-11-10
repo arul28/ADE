@@ -61,6 +61,7 @@ its own (single D1 database, no Durable Objects, no queues).
 | GET | `/attention/account/vault?since=<iso>&scope=<key>` | Read vault items changed after a cursor. Values are opened with the Worker's key; an item the key cannot open returns `value: null`. |
 | PUT | `/attention/account/vault` | Upsert a batch of credentials. Values arrive as plaintext over TLS and are sealed before storage. Same `itemResults` option as settings. |
 | DELETE | `/attention/account/vault/:scope/:kind/:key[?writtenAt=&sentAt=]` | Revoke one credential. Idempotent. A key with `/` is sent encoded (`%2F`); one a proxy decoded arrives as several segments and is joined back. With `writtenAt`, `409 stale` when a newer row exists. |
+| DELETE | `/directory/accounts/:userId` | Hard-delete a deleted account's vault items and settings in one batch. No account token: only the `x-ade-directory-auth` header (see "Directory provenance"). Idempotent. Called by the account directory on Clerk `user.deleted`. |
 
 ### Account Activity semantics
 
@@ -191,12 +192,13 @@ every machine.
 - **A caller may not supply its own ciphertext.** That would assume an
   encryption model this Worker does not implement and would store a row nothing
   here can ever open.
-- **Vendor CLI logins are deliberately absent** — Claude, Codex, Cursor. They
-  rotate their refresh tokens and their issuers rate-limit refresh storms; ADE
-  already carries a 24-hour rejection cooldown because of it. Two machines
-  holding one single-use refresh token is the bug behind every unexplained
-  sign-out in this product's history, and syncing them would reproduce it on
-  purpose. The Machines page shows a per-machine sign-in checklist instead.
+- **Provider sign-ins (`provider_login`) are opaque here.** The kind holds the
+  login a provider's CLI keeps on disk, up to 16,000 characters (every other
+  kind keeps 6,000). Some of these logins rotate their refresh tokens, and two
+  machines that spend one single-use refresh token sign each other out. So this
+  Worker never refreshes one: the brain's sign-in sync picks the renewal owner
+  on the clients, and the stale-write rule below keeps an old copy from
+  replacing a newer one.
 - **`refresh_owner` names the machine allowed to exchange a rotating
   credential** (Linear's refresh token, `linear_refresh_token`). The Worker
   stores whatever owner the writer names: a fresh sign-in on another machine
@@ -397,7 +399,7 @@ npx wrangler secret put CLERK_SECONDARY_OAUTH_CLIENT_ID
 Verified account keys are namespaced by issuer before persistence, so identical
 opaque user ids from development and production cannot collide.
 
-### Directory provenance (required for machine re-pairing)
+### Directory provenance (required for machine re-pairing and account deletion)
 
 ```bash
 npx wrangler secret put DIRECTORY_AUTH_SECRET   # same value on ade-account-directory
@@ -411,6 +413,10 @@ the relay additionally requires an `x-ade-directory-auth` header matching this
 secret; without it the route answers `403 directory_auth_required` and the
 revocation stands. Unset on the relay it fails closed with
 `503 directory_auth_unavailable`, and `npm run deploy` refuses to ship.
+
+`DELETE /directory/accounts/:userId` takes this header as its only credential:
+a deleted account has no token, and the route deletes for whichever account the
+path names. The same `403` and `503` answers apply.
 
 A Cloudflare service binding leaves no attestable marker on the inbound request,
 so the header is what proves provenance regardless of whether the directory
