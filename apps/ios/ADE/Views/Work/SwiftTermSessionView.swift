@@ -478,6 +478,9 @@ final class TerminalSessionController: NSObject, ObservableObject {
     case .subscribeFailure(let message):
       isSubscribed = false
       subscribeError = message
+    case .resumed:
+      isSubscribed = true
+      subscribeError = nil
     }
   }
 

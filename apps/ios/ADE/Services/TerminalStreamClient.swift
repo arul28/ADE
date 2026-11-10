@@ -19,6 +19,9 @@ enum TerminalStreamEvent {
   /// A resubscribe the phone started by itself (after a reconnect or a gap)
   /// failed. No stream backs the screen until the person retries.
   case subscribeFailure(message: String)
+  /// A delta snapshot with no new bytes: the stream is live again and the
+  /// screen already holds every byte.
+  case resumed
 }
 
 /// Every attached handler for each session, in attach order. Events go to
@@ -176,6 +179,8 @@ final class TerminalStreamClient {
           endOffset: snapshot.endOffset,
           paintFromScreen: false
         ))
+      } else {
+        handler?(.resumed)
       }
     } else {
       handler?(.hydrate(
