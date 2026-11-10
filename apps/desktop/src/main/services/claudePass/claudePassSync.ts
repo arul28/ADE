@@ -28,7 +28,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
-import type { ClaudePassCheck, ClaudePassState, ClaudePassUpload } from "../../../shared/cloudSignIns";
+import type { ClaudePassStatusEntry } from "../../../shared/cloudSignIns";
 import type { CloudPassAccount } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import {
   CLAUDE_PASS_LEGACY_KEY,
@@ -44,7 +44,7 @@ import {
 import { cloudSignInVaultKey } from "../adeCloud/cloudSignInStore";
 import { claudeConfigHome } from "../shared/providerConfigHomes";
 import { setClaudePassLaunchState } from "./claudePassLaunch";
-import { claudePassUseOf, flushClaudePassUse, keepClaudePassUse, type ClaudePassUseView } from "./claudePassUse";
+import { claudePassUseOf, flushClaudePassUse, keepClaudePassUse } from "./claudePassUse";
 
 const TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 /** The whole value is one Claude Code long-lived token. */
@@ -113,45 +113,7 @@ export type ClaudePassReconcileResult = {
   wrote: boolean;
 };
 
-/** One pass in `provider_logins.status` (`claudePasses`). Never the token. */
-export type ClaudePassStatusEntry =
-  | {
-    key: string;
-    unreadable: false;
-    label: string;
-    email: string | null;
-    check: ClaudePassCheck;
-    legacy: boolean;
-    /** Not in the account setting's `off` list (and ADE Cloud sign-ins are on). */
-    on: boolean;
-    /** The pass new chats on ADE Cloud use. */
-    newChats: boolean;
-    madeOnLabel: string | null;
-    createdAt: number;
-    renewedAt: number | null;
-    expiresAt: number;
-    expiresAtSource: "estimate" | "claude";
-    endsInDays: number;
-    state: ClaudePassState;
-    noticeDueAt: number;
-    upload: ClaudePassUpload;
-    /** The local Claude account (not a pass account) with the same email on the brain that answers. */
-    localInstanceId: string | null;
-    /** Cloud computer only: this pass is an account here now. */
-    appliedHere: boolean;
-    /** Cloud computer only: the pass's folder here also holds a sign-in someone made. */
-    homeHasLogin: boolean;
-    /** The account setting's Claude smart balance switch for ADE Cloud (the same on every entry). */
-    smartBalance: boolean;
-    /** When Claude refused the pass as no longer valid (`state: "ended"`), else null. */
-    endedAt: number | null;
-    /**
-     * Use from this pass's own turns, on the computer that answers (the cloud
-     * computer that ran them). `none_seen` until its first turn there: never 0 %.
-     */
-    use: ClaudePassUseView;
-  }
-  | { key: string; unreadable: true };
+export type { ClaudePassStatusEntry } from "../../../shared/cloudSignIns";
 
 /** `claude-pass/<12 hex>` → `pass-<12 hex>`; `claude-pass/legacy` → `pass-legacy`. */
 export function claudePassInstanceId(key: string): string {

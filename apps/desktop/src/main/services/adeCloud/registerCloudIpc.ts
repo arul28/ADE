@@ -183,10 +183,19 @@ export function registerCloudIpc(args: {
     if (action !== "cloud_sign_in_status") sendToAllWindows(IPC.cloudSignInChanged);
     return status;
   };
+  const shortString = (value: unknown): string | null =>
+    (typeof value === "string" && value.length <= 320 ? value : null);
   const cloudSignInHandlers: Array<[string, string, (arg: Record<string, unknown> | undefined) => Record<string, unknown> | undefined]> = [
     [IPC.cloudSignInStatus, "cloud_sign_in_status", () => undefined],
-    [IPC.cloudSignInClaudeStart, "cloud_sign_in_start", () => undefined],
+    // Only short strings pass; the action checks the email shape and that a
+    // Renew names a pass of this account.
+    [IPC.cloudSignInClaudeStart, "cloud_sign_in_start", (arg) => ({
+      forEmail: shortString(arg?.forEmail),
+      renewKey: shortString(arg?.renewKey),
+      labelEmail: shortString(arg?.labelEmail),
+    })],
     [IPC.cloudSignInClaudeCode, "cloud_sign_in_code", (arg) => ({ code: typeof arg?.code === "string" ? arg.code : "" })],
+    [IPC.cloudSignInClaudeKeep, "cloud_sign_in_keep", () => undefined],
     [IPC.cloudSignInClaudeCancel, "cloud_sign_in_cancel", () => undefined],
     [IPC.cloudSignInSaveKey, "cloud_sign_in_save_key", (arg) => ({ id: arg?.id, key: arg?.key })],
     [IPC.cloudSignInRemove, "cloud_sign_in_remove", (arg) => ({ id: arg?.id })],

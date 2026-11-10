@@ -110,7 +110,6 @@ function optionalPassKey(args: unknown): string | null {
   return raw;
 }
 
-/** The signed-in Claude accounts of this computer with an email; copies of another account are left out. */
 /** The shown usage of this computer's usage service, when it runs here. No poll, no request. */
 async function machineUsageSnapshot(): Promise<Pick<UsageSnapshot, "windows" | "accounts"> | null> {
   const [{ peekSharedUsageTrackingService }, { resolveMachineAdeLayout }] = await Promise.all([
@@ -120,6 +119,7 @@ async function machineUsageSnapshot(): Promise<Pick<UsageSnapshot, "windows" | "
   return peekSharedUsageTrackingService(resolveMachineAdeLayout().adeDir)?.getUsageSnapshot() ?? null;
 }
 
+/** The signed-in Claude accounts of this computer with an email; copies of another account are left out. */
 function machineClaudeAccounts(): CloudClaudeLocalAccount[] {
   try {
     return getMachineProviderInstanceStore().list("claude")
@@ -272,9 +272,14 @@ export function buildCloudSignInActions(deps: {
      */
     cloud_sign_in_start: async (args?: unknown) => {
       const vaults = requireVaults();
+      const renewKey = optionalPassKey(args);
+      // A Renew names a pass of THIS account, never a key a window made up.
+      if (renewKey && !(await readPasses(vaults, []))?.some((pass) => pass.key === renewKey)) {
+        throw new AdeExpectedError("ADE doesn't know that Claude pass.", "user");
+      }
       const options: ClaudeSignInStartOptions = {
         forEmail: optionalEmail(args, "forEmail"),
-        renewKey: optionalPassKey(args),
+        renewKey,
         labelEmail: optionalEmail(args, "labelEmail"),
         // Only a pass with an account label needs the check; the single item has none.
         check: Boolean(deps.passVault?.()),

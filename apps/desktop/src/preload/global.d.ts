@@ -1,7 +1,7 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
-import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
@@ -4768,7 +4768,8 @@ declare global {
          * computer's brain, so no pin: every computer answers the same.
          */
         cloudSignInStatus?: () => Promise<CloudSignInStatus | null>;
-        cloudSignInClaudeStart?: () => Promise<CloudSignInStatus | null>;
+        cloudSignInClaudeStart?: (args?: CloudSignInClaudeStartArgs) => Promise<CloudSignInStatus | null>;
+        cloudSignInClaudeKeep?: () => Promise<CloudSignInStatus | null>;
         cloudSignInClaudeCode?: (code: string) => Promise<CloudSignInStatus | null>;
         cloudSignInClaudeCancel?: () => Promise<CloudSignInStatus | null>;
         cloudSignInSaveKey?: (id: CloudSignInId, key: string) => Promise<CloudSignInStatus | null>;

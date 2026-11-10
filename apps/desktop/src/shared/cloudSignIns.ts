@@ -301,10 +301,65 @@ export type CloudClaudePass = {
 };
 
 /**
+ * One pass in `provider_logins.status` (`claudePasses`), as the brain that
+ * answers sees it (claudePassSync.ts). Never the token.
+ */
+export type ClaudePassStatusEntry =
+  | {
+    key: string;
+    unreadable: false;
+    label: string;
+    email: string | null;
+    check: ClaudePassCheck;
+    legacy: boolean;
+    /** Not in the account setting's `off` list (and ADE Cloud sign-ins are on). */
+    on: boolean;
+    /** The pass new chats on ADE Cloud use. */
+    newChats: boolean;
+    madeOnLabel: string | null;
+    createdAt: number;
+    renewedAt: number | null;
+    expiresAt: number;
+    expiresAtSource: "estimate" | "claude";
+    endsInDays: number;
+    state: ClaudePassState;
+    noticeDueAt: number;
+    upload: ClaudePassUpload;
+    /** The local Claude account (not a pass account) with the same email on the brain that answers. */
+    localInstanceId: string | null;
+    /** Cloud computer only: this pass is an account here now. */
+    appliedHere: boolean;
+    /** Cloud computer only: the pass's folder here also holds a sign-in someone made. */
+    homeHasLogin: boolean;
+    /** The account setting's Claude smart balance switch for ADE Cloud (the same on every entry). */
+    smartBalance: boolean;
+    /** When Claude refused the pass as no longer valid (`state: "ended"`), else null. */
+    endedAt: number | null;
+    /**
+     * Use from this pass's own turns, on the computer that answers (the cloud
+     * computer that ran them). `none_seen` until its first turn there: never 0 %.
+     */
+    use: ClaudePassUseView;
+  }
+  | { key: string; unreadable: true };
+
+/**
  * A pass row this computer can't read (the relay could not open it, or a
  * newer version wrote it). Shown as unknown, never hidden; Remove still works.
  */
 export type CloudClaudePassUnreadable = { key: string; unreadable: true };
+
+/**
+ * What a window passes to Claude's approve. `forEmail`: the account the
+ * person pressed (none = "Another account"). `renewKey`: the pass a Renew
+ * replaces. `labelEmail`: an email the person typed, kept only when Claude
+ * names none and nothing was pressed. The brain checks every field.
+ */
+export type CloudSignInClaudeStartArgs = {
+  forEmail?: string | null;
+  renewKey?: string | null;
+  labelEmail?: string | null;
+};
 
 /** A signed-in Claude account of the computer the approve runs on, to pick from. */
 export type CloudClaudeLocalAccount = {

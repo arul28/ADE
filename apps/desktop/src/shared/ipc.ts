@@ -1170,6 +1170,7 @@ export const IPC = {
   cloudSignInStatus: "ade.cloud.cloudSignInStatus",
   cloudSignInClaudeStart: "ade.cloud.cloudSignInClaudeStart",
   cloudSignInClaudeCode: "ade.cloud.cloudSignInClaudeCode",
+  cloudSignInClaudeKeep: "ade.cloud.cloudSignInClaudeKeep",
   cloudSignInClaudeCancel: "ade.cloud.cloudSignInClaudeCancel",
   cloudSignInSaveKey: "ade.cloud.cloudSignInSaveKey",
   cloudSignInRemove: "ade.cloud.cloudSignInRemove",

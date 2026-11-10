@@ -84,7 +84,7 @@ import type { MachineConnectionRoutes } from "../shared/types/account";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
-import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -13200,7 +13200,13 @@ const adeBridge = {
       delete: (args: CloudSavedChatDeleteArgs): Promise<void> => ipcRenderer.invoke(IPC.cloudSavedChatsDelete, args),
     },
     cloudSignInStatus: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInStatus),
-    cloudSignInClaudeStart: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInClaudeStart),
+    cloudSignInClaudeStart: (args?: CloudSignInClaudeStartArgs): Promise<CloudSignInStatus | null> =>
+      ipcRenderer.invoke(IPC.cloudSignInClaudeStart, {
+        forEmail: args?.forEmail ?? null,
+        renewKey: args?.renewKey ?? null,
+        labelEmail: args?.labelEmail ?? null,
+      }),
+    cloudSignInClaudeKeep: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInClaudeKeep),
     cloudSignInClaudeCode: (code: string): Promise<CloudSignInStatus | null> =>
       ipcRenderer.invoke(IPC.cloudSignInClaudeCode, { code }),
     cloudSignInClaudeCancel: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInClaudeCancel),
