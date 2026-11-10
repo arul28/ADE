@@ -515,12 +515,30 @@ Renderer — onboarding:
   Recents list recent local and remote projects, open or forget entries, and
   launch project creation, clone, or folder selection before a project-bound
   route is available. Each row carries the same right-click project menu as a
-  project tab — change icon, clone to this machine, pin or unpin, and copy path
-  — and a project with no checkout on this machine offers **Clone locally**.
+  project tab — change icon, pin or unpin, and copy path — and a project with
+  no checkout on this machine offers **Add a copy on this computer…**, which
+  opens the Add project form with this computer ticked.
   `projectMenuEntries.ts` holds the rows both surfaces share. A **Settings**
   button sets the app-store flag `standaloneSettingsOpen` and navigates to
   `/settings`, so a person with no project can still reach the settings that
   need none (see "Settings with no project" below).
+- `apps/desktop/src/renderer/components/projects/AddProjectForm.tsx` — **Add
+  project** from GitHub (the palette's clone flow and the start page). The
+  repository comes first, then one row per machine: this computer (not on
+  hosted web) and every saved machine. An offline machine cannot be ticked, and
+  the form never connects to or wakes one. A machine that already has a copy
+  says "already here". Each ticked machine clones on its own
+  (`projectCopyJobs.ts`, one job per repository and machine; a retry goes to
+  the same machine). **Opens on** picks where the project opens once its copy
+  is there. If the form was closed first, a notice "<repo> is ready on
+  <machine>" offers **Open** instead, and a failure shows a toast that names
+  the machine.
+- `apps/desktop/src/renderer/components/projects/ProjectCopiesMenu.tsx` — the
+  copies menu of a project tab, opened from the machine mark on a tab whose
+  work is on another machine, or from **Copies…** in the tab's right-click
+  menu. One row per machine: the copy in use, another copy (picking it moves
+  the tab there), "not here" with **Add a copy**, or offline. A project with no
+  git origin says "This machine only" and offers Publish.
 - `apps/desktop/src/renderer/components/home/` — the widget home. The user
   picks widgets (Projects, Working now, Activity, Limits, PRs, Clock & weather,
   Focus timer, Clipboard, Machine, Contributions, Shipped, Feed, Now Playing),

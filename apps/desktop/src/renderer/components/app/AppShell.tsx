@@ -690,6 +690,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const disposeProjectBindingChanged = window.ade.app.onProjectBindingChanged((binding) => {
       const state = useAppStore.getState();
       if (state.projectTransition) {
+        // A switch to a folder on this computer publishes its local binding
+        // before the project arrives. The store action that runs the switch
+        // sets the binding with the project; applied now, it would show the
+        // open project (perhaps one on another machine) as a local folder.
+        if (binding?.kind === "local" && binding.rootPath !== state.project?.rootPath) return;
         setProjectBinding(binding);
         return;
       }

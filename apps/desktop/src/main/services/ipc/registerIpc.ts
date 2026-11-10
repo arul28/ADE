@@ -4783,13 +4783,15 @@ export function registerIpc({
     IPC.projectClone,
     async (_event, arg: CloneProjectInput): Promise<CloneProjectResult> => {
       const url = typeof arg?.url === "string" ? arg.url.trim() : "";
-      const parentDir = typeof arg?.parentDir === "string" ? arg.parentDir.trim() : "";
       const name = typeof arg?.name === "string" ? arg.name.trim() : undefined;
       if (!url) throw new Error("Repository URL is required.");
-      if (!parentDir) throw new Error("Parent directory is required.");
       const ctx = getCtx();
+      // No folder: the default one, as a clone on another machine does.
+      const parentDir = (typeof arg?.parentDir === "string" ? arg.parentDir.trim() : "")
+        || ctx.projectScaffoldService.getDefaultParentDir(listLocalRecentProjectSummaries());
+      let result: CloneProjectResult;
       try {
-        return await ctx.projectScaffoldService.cloneRepository({
+        result = await ctx.projectScaffoldService.cloneRepository({
           url,
           parentDir,
           ...(name ? { name } : {}),
@@ -4797,6 +4799,23 @@ export function registerIpc({
       } catch (error) {
         return surfaceCodedError(error);
       }
+      // A new copy is one of this computer's projects at once, as a clone on
+      // another machine joins that machine's list: the tab bar and the Add
+      // project form see it without a separate open. The reopen-on-launch
+      // project stays as it was.
+      try {
+        const before = readGlobalState(globalStatePath);
+        const next = addRecentProjectsWithoutEviction(before, [
+          { rootPath: result.rootPath, displayName: path.basename(result.rootPath) },
+        ]);
+        if (next !== before) {
+          writeGlobalState(globalStatePath, next);
+          clearRecentProjectSummaryCache();
+        }
+      } catch {
+        // The clone is done; a recents write that fails leaves it to the next open.
+      }
+      return result;
     },
   );
 

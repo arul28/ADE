@@ -85,7 +85,7 @@ export function projectMenuSections(
     projectRows.push({
       kind: "item",
       key: "clone",
-      label: "Clone to this machine…",
+      label: "Add a copy on this computer…",
       icon: DownloadSimple,
       onSelect: () => actions.onClone(cloneTarget),
     });
