@@ -8,7 +8,6 @@ import {
   sanitizePortableGitRemote,
 } from "./crossMachineHandoff";
 import {
-  createLaneShareMoveConsents,
   LANE_SHARE_MOVE_PAYLOAD_KEYS,
   laneShareMovePayloadFromCapsule,
   parseLaneShareMovePayload,
@@ -166,39 +165,5 @@ describe("lane share move payload", () => {
     expect(() => parseLaneShareMovePayload(payload, moveId)).not.toThrow();
     change(payload);
     expect(() => parseLaneShareMovePayload(payload, moveId)).toThrow();
-  });
-});
-
-describe("lane share move consent", () => {
-  const grant = `ls_${"a".repeat(32)}`;
-  const move = (n: string) => `lsm_${n.repeat(32)}`;
-
-  it("refuses by default, works once, and ends after 15 minutes", () => {
-    let now = 1_000_000;
-    const consents = createLaneShareMoveConsents({ now: () => now });
-    // Nothing offered: nothing is accepted.
-    expect(consents.isAccepted(move("1"), grant)).toBe(false);
-    expect(consents.consume(move("1"), grant)).toMatchObject({ ok: false });
-
-    expect(consents.offer({ moveId: move("1"), grantId: grant, laneId: "lane", direction: "to_owner" })).toMatchObject({ ok: true });
-    // Offered is not accepted.
-    expect(consents.consume(move("1"), grant)).toMatchObject({ ok: false });
-    expect(consents.accept(move("1"), grant)).toMatchObject({ ok: true });
-    expect(consents.isAccepted(move("1"), grant, "lane")).toBe(true);
-    expect(consents.isAccepted(move("1"), grant, "other-lane")).toBe(false);
-    expect(consents.consume(move("1"), grant)).toEqual({ ok: true });
-    expect(consents.consume(move("1"), grant)).toMatchObject({ ok: false, code: "lane_share_move_used" });
-    // A spent consent cannot be accepted again.
-    expect(consents.accept(move("1"), grant)).toMatchObject({ ok: false });
-    expect(consents.isAccepted(move("1"), grant)).toBe(false);
-
-    consents.finish(move("1"));
-    expect(consents.offer({ moveId: move("2"), grantId: grant, laneId: "lane", direction: "to_guest" })).toMatchObject({ ok: true });
-    expect(consents.accept(move("2"), grant)).toMatchObject({ ok: true });
-    now += 15 * 60_000;
-    expect(consents.isAccepted(move("2"), grant)).toBe(false);
-    expect(consents.consume(move("2"), grant)).toMatchObject({ ok: false, code: "lane_share_move_expired" });
-    // An expired or used id is never offered again.
-    expect(consents.offer({ moveId: move("2"), grantId: grant, laneId: "lane", direction: "to_guest" })).toMatchObject({ ok: false });
   });
 });

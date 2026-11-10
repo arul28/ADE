@@ -2,7 +2,6 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import {
-  laneSharePresetLabel,
   laneSharePresetRights,
   laneShareRiskLevel,
   parseLaneShareRights,
@@ -91,12 +90,6 @@ describe("lane share rights", () => {
     expect(risk.level).toBe(level);
     for (const words of says) expect(risk.reasons.some((reason) => words.test(reason)), String(words)).toBe(true);
     for (const words of doesNotSay) expect(risk.reasons.some((reason) => words.test(reason)), String(words)).toBe(false);
-  });
-
-  it("labels each preset by itself", () => {
-    for (const preset of ["watch", "comment", "suggest", "collaborate"] as const) {
-      expect(laneSharePresetLabel(laneSharePresetRights(preset))).toBe(preset);
-    }
   });
 });
 

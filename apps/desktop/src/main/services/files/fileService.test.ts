@@ -508,7 +508,8 @@ describe("fileService", () => {
     ["a gitignored secret", ".env", false],
     ["a file in a gitignored folder", "secrets/key.pem", false],
     ["a file under .ade", ".ade/notes/project.md", false],
-    ["a link to a gitignored secret", "src/env-link", false],
+    // Windows makes links only with Developer Mode or admin rights.
+    ...(process.platform === "win32" ? [] : [["a link to a gitignored secret", "src/env-link", false] as [string, string, boolean]]),
   ])("refuses a guest read of %s unless git tracks it", async (_label, relPath, readable) => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-guest-"));
     execFileSync("git", ["init"], { cwd: rootPath, stdio: "ignore" });
@@ -522,8 +523,7 @@ describe("fileService", () => {
       fs.writeFileSync(path.join(rootPath, "secrets", "key.pem"), "KEY\n", "utf8");
       fs.writeFileSync(path.join(rootPath, ".ade", "notes", "project.md"), "notes\n", "utf8");
       fs.writeFileSync(path.join(rootPath, "src", "index.ts"), "export {};\n", "utf8");
-      if (process.platform !== "win32") fs.symlinkSync(path.join(rootPath, ".env"), path.join(rootPath, "src", "env-link"));
-      else if (relPath === "src/env-link") return;
+      if (relPath === "src/env-link") fs.symlinkSync(path.join(rootPath, ".env"), path.join(rootPath, "src", "env-link"));
       // Each read starts only when the one before it is awaited: a rejection never waits unhandled.
       const read = () => service.readFile({ workspaceId: "workspace-1", path: relPath, refuseIgnored: true });
       const range = () => service.readFileRange({ workspaceId: "workspace-1", path: relPath, offset: 0, refuseIgnored: true });

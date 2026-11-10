@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createLaneShareGuestDirectory } from "../../../../shared/laneShareGuestDirectory";
 import type { LaneShareConnectTicket } from "../../../../shared/types/laneShare";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../../lib/account";
 import {
@@ -31,9 +32,21 @@ class FakeSocket implements LaneShareGuestSocket {
   onclose: LaneShareGuestSocket["onclose"] = null;
   onerror: LaneShareGuestSocket["onerror"] = null;
   readonly sent: Array<Record<string, unknown>> = [];
+  private readonly waiters: Array<{ type: string; resolve: (envelope: Record<string, unknown>) => void }> = [];
   constructor(readonly url: string) {}
   send(data: string): void {
-    this.sent.push(JSON.parse(data) as Record<string, unknown>);
+    const envelope = JSON.parse(data) as Record<string, unknown>;
+    this.sent.push(envelope);
+    for (const waiter of this.waiters.splice(0)) {
+      if (waiter.type === envelope.type) waiter.resolve(envelope);
+      else this.waiters.push(waiter);
+    }
+  }
+  /** Resolves with the first envelope of this type the client sends: the send is the receipt. */
+  firstSent(type: string): Promise<Record<string, unknown>> {
+    const sent = this.sentOfType(type)[0];
+    if (sent) return Promise.resolve(sent);
+    return new Promise((resolve) => this.waiters.push({ type, resolve }));
   }
   close(): void {
     this.readyState = 3;
@@ -74,33 +87,33 @@ function ticket(): LaneShareConnectTicket {
 
 /** A guest connection through hello, with the lane's session list answered. */
 async function connectedGuest() {
-  const sockets: FakeSocket[] = [];
+  let dialed: (socket: FakeSocket) => void = () => {};
+  const socketCreated = new Promise<FakeSocket>((resolve) => { dialed = resolve; });
   const connection = new LaneShareGuestConnection({
     grantId: GRANT_ID,
     laneId: LANE_ID,
     directory: { connect: vi.fn(async () => ticket()) },
     createSocket: (url) => {
       const socket = new FakeSocket(url);
-      sockets.push(socket);
+      dialed(socket);
       return socket;
     },
   });
   connections.push(connection);
   connection.start();
-  await vi.waitFor(() => expect(sockets).toHaveLength(1));
-  const socket = sockets[0]!;
+  const socket = await socketCreated;
   socket.open();
   socket.relay({ t: "accepted", v: 2 });
   socket.relay({ t: "ready", v: 2 });
-  await vi.waitFor(() => expect(socket.sentOfType("hello")).toHaveLength(1));
+  await socket.firstSent("hello");
   socket.deliver("hello_ok", {
     peer: {},
     brain: { deviceId: "host-1", deviceName: "Owner Mac", platform: "macOS" },
     heartbeatIntervalMs: 15_000,
     laneShareGuest: { userId: "guest-user", grants: [{ grantId: GRANT_ID, laneId: LANE_ID }] },
   });
-  await vi.waitFor(() => expect(socket.sentOfType("command")).toHaveLength(1));
-  const list = socket.sentOfType("command")[0]!;
+  const list = await socket.firstSent("command");
+  const sessionsRead = new Promise<void>((resolve) => connection.on("sessions", () => resolve()));
   // The host would answer only its granted lane; a row of another lane is dropped here too.
   socket.deliver("command_result", {
     commandId: (list.payload as { commandId: string }).commandId,
@@ -111,7 +124,8 @@ async function connectedGuest() {
       { id: "chat-other", laneId: OTHER_LANE_ID, toolType: "claude-chat", title: "Other", status: "idle" },
     ],
   });
-  await vi.waitFor(() => expect(connection.listSessions().length).toBeGreaterThan(0));
+  await sessionsRead;
+  expect(socket.sentOfType("command")).toHaveLength(1);
   return { connection, socket };
 }
 
@@ -125,6 +139,9 @@ describe("LaneShareGuestConnection", () => {
     expect(auth.ticket).toBe(TICKET);
     expect(JSON.stringify(hello)).not.toMatch(/accountToken|relayAccountToken|secret|authorization/i);
     expect(hello.projectId ?? null).toBeNull();
+    // The ticket rides only in the hello, never in the address the relay sees.
+    expect(new URL(socket.url).origin + new URL(socket.url).pathname).toBe("wss://relay.example/connect/machine-1");
+    expect(socket.url).not.toContain(TICKET);
   });
 
   it("keeps only the sessions of the granted lane", async () => {
@@ -145,11 +162,12 @@ describe("LaneShareGuestConnection", () => {
     connection.on("chatSnapshot", () => seen.push("chatSnapshot"));
     connection.on("terminal", () => seen.push("terminal"));
     connection.on("sessions", () => seen.push("sessions"));
+    const grantedRead = new Promise<void>((resolve) => connection.on("chatEvent", () => resolve()));
     const sentBefore = socket.sent.length;
     socket.deliver(type, payload);
     // A message of the granted chat after it is still read, so the drop is not a stall.
     socket.deliver("chat_event", { sessionId: "chat-mine", timestamp: "t", event: { type: "text", text: "ok" } });
-    await vi.waitFor(() => expect(seen).toContain("chatEvent"));
+    await grantedRead;
     expect(seen).toEqual(["chatEvent"]);
     expect(socket.sent.length).toBe(sentBefore);
   });
@@ -165,6 +183,36 @@ describe("LaneShareGuestConnection", () => {
     expect(payload.args.laneId).toBe(LANE_ID);
     expect(payload.args.projectId).toBeUndefined();
     expect(payload.projectId ?? null).toBeNull();
+  });
+});
+
+describe("the guest directory", () => {
+  // The relay address comes from the owner's computer through the directory:
+  // another person's data. The guest dials only ADE's own relay, and a ticket
+  // with no address it trusts is dropped, so it never goes anywhere else.
+  it.each<[string, string | null, "dial" | "offline" | "untrusted_relay"]>([
+    ["ADE's relay", "wss://relay.example/connect/machine-1", "dial"],
+    ["no address (the owner's computer is offline)", null, "offline"],
+    ["a plain ws: address", "ws://relay.example/connect/machine-1", "untrusted_relay"],
+    ["another host", "wss://relay.evil.example/connect/machine-1", "untrusted_relay"],
+    ["an address with a user and password", "wss://user:pw@relay.example/connect/machine-1", "untrusted_relay"],
+    ["an address with a query", "wss://relay.example/connect/machine-1?to=evil", "untrusted_relay"],
+    ["a path outside /connect/", "wss://relay.example/admin/machine-1", "untrusted_relay"],
+  ])("reads %s", async (_label, relayUrl, expected) => {
+    const send = vi.fn(async () => ({
+      status: 200,
+      body: { grantId: GRANT_ID, laneId: LANE_ID, relayUrl, hostOnline: relayUrl != null, ticket: TICKET, ticketExpiresAt: Date.now() + 60_000 },
+    }));
+    const directory = createLaneShareGuestDirectory({ send, trustedRelayBaseUrls: () => ["https://relay.example"] });
+    const connect = directory.connect({ grantId: GRANT_ID, dpopThumbprint: "D".repeat(43) });
+    if (expected === "untrusted_relay") {
+      await expect(connect).rejects.toThrow(/^untrusted_relay:/);
+      return;
+    }
+    const ticketRead = await connect;
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ method: "POST", body: { dpopThumbprint: "D".repeat(43) } }));
+    expect(ticketRead.relayUrl).toBe(expected === "dial" ? relayUrl : null);
+    expect(ticketRead.ticket).toBe(expected === "dial" ? TICKET : null);
   });
 });
 
@@ -184,7 +232,7 @@ describe("the guest store across accounts", () => {
     try {
       publishAccountStatus(signedIn("user_a"));
       const release = retainLaneShareGuestConnection({ grantId: GRANT_ID, laneId: LANE_ID });
-      await vi.waitFor(() => expect(laneShareGuestConnection(GRANT_ID)).not.toBeNull());
+      expect(laneShareGuestConnection(GRANT_ID)).not.toBeNull();
       const opened = laneShareGuestConnection(GRANT_ID)!;
       const read = loadLaneShareReceived({ force: true });
 

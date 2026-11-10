@@ -147,7 +147,9 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
   function laneShareRightsFor(grantId: string): LaneShareRights | null {
     try {
       return laneShareRights?.get(grantId)?.rights ?? null;
-    } catch {
+    } catch (error) {
+      // Fails closed (no rights, nothing admitted), but a store that cannot be read is a defect.
+      args.logger.warn("sync_host.lane_share_rights_read_failed", { grantId, error: error instanceof Error ? error.message : String(error) });
       return null;
     }
   }
@@ -301,7 +303,8 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     let record: { laneId: string } | null = null;
     try {
       record = laneShareRights?.get(grantId) ?? null;
-    } catch {
+    } catch (error) {
+      args.logger.warn("sync_host.lane_share_rights_read_failed", { grantId, error: error instanceof Error ? error.message : String(error) });
       return false;
     }
     if (!record) return false;

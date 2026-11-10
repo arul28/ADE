@@ -104,6 +104,15 @@ const MEANINGFUL_ACTIONS = new Set([
   "lanes.delete",
   "lanes.rebaseStart",
   "lanes.rebasePush",
+  // Lane sharing decisions, from the `lane_share` runtime actions
+  // (`usageActionFromRpcDomain`): share, change rights, end, leave, and the
+  // two consents of moving a chat to the other person. No email, name or id.
+  "lanes.share",
+  "lanes.shareEditRights",
+  "lanes.shareRevoke",
+  "lanes.shareLeave",
+  "lanes.shareMoveChat",
+  "lanes.shareMoveRespond",
   "files.writeTextAtomic",
   "files.writeText",
   "files.createFile",
@@ -204,6 +213,18 @@ export function usageActionFromRpcDomain(domain: string, action: string): string
   const cursorCloudAction = CURSOR_CLOUD_USAGE_ACTIONS[`${domain}.${action}`];
   if (cursorCloudAction) return cursorCloudAction;
   if (domain === "lane") return `lanes.${action}`;
+  if (domain === "lane_share") {
+    const aliases: Record<string, string> = {
+      create: "share",
+      updateRights: "shareEditRights",
+      revoke: "shareRevoke",
+      leave: "shareLeave",
+      moveStart: "shareMoveChat",
+      moveRespond: "shareMoveRespond",
+    };
+    // Reads, invite re-sends and the transfer steps of a move are not decisions.
+    return aliases[action] ? `lanes.${aliases[action]}` : `lane_share.${action}`;
+  }
   if (domain === "pr") {
     const aliases: Record<string, string> = {
       closePr: "close",

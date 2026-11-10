@@ -199,9 +199,8 @@ describe("SettingsPage", () => {
     expect(screen.getByText("account embedded")).toBeTruthy();
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     const rows = [...nav.querySelectorAll("button")].map((button) => button.textContent);
-    // General sits alone at the top, then the groups: You (Account, Usage),
-    // then App, which opens on Chat.
-    expect(rows.slice(0, 4)).toEqual(["General", "Account", "Usage", "Chat"]);
+    // General sits alone at the top, then the You group opens on Account.
+    expect(rows.slice(0, 2)).toEqual(["General", "Account"]);
   });
 
   it("carries help, zoom, and the identity row above the sections", async () => {

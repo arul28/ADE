@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { summarizeCopyWork, type ProjectCopyCheckoutState, type ProjectCopyState } from "../../../shared/projectRemoval";
 import { decideProjectFolderDeletion, decideRemovalRecheck, projectCopyStateToken } from "./projectRemovalGuard";
 import { readProjectCopyState } from "./projectRemovalState";
+import { createProjectCopyRemoval } from "../../../../../ade-cli/src/services/projects/projectCopyRemoval";
 
 describe("decideProjectFolderDeletion", () => {
   const posix = {
@@ -154,6 +155,64 @@ describe("readProjectCopyState", () => {
       const main = state.checkouts.find((checkout) => checkout.isMain)!;
       expect([...main.ignoredEnvFiles].sort()).toEqual([".env", "config/.env.production", "config/deep/server.pem"]);
       expect(summarizeCopyWork(state).summary).toContain("config/deep/server.pem");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("removing a project copy with its folder", () => {
+  // The brain's `projects.removeCopy`: the copy is read again and checked
+  // against the report the person accepted BEFORE the project stops and the
+  // folder goes. A copy that changed since keeps its folder and its entry.
+  it.each<[string, boolean, string]>([
+    ["keeps the folder and the entry when the copy changed after the report", true, "refused:changed"],
+    ["deletes the folder, then drops the entry, when the copy is as reported", false, "removed:deleted"],
+  ])("%s", async (_label, changeAfterReport, outcome) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ade-removal-copy-")));
+    const folder = path.join(root, "app");
+    fs.mkdirSync(folder);
+    try {
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: folder, stdio: "ignore" });
+      git("init");
+      fs.writeFileSync(path.join(folder, "a.txt"), "a\n", "utf8");
+      git("add", "a.txt");
+      git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-m", "init");
+      const record = {
+        projectId: "project-1", rootPath: folder, displayName: "app", addedAt: 0, lastOpenedAt: 0,
+        gitOriginUrl: null, catalogVisibility: "visible", registrationSource: "user",
+      };
+      let entries = [record];
+      const steps: string[] = [];
+      const removal = createProjectCopyRemoval({
+        projectRegistry: {
+          get: (id: string) => entries.find((entry) => entry.projectId === id) ?? null,
+          list: () => entries,
+          remove: (id: string) => {
+            steps.push(`forget:${fs.existsSync(folder) ? "folder present" : "folder gone"}`);
+            entries = entries.filter((entry) => entry.projectId !== id);
+            return true;
+          },
+        } as never,
+        scopeRegistry: { getIfBooted: () => null } as never,
+        stopProject: async () => { steps.push("stop"); },
+        adeHome: null,
+      });
+      const report = await removal.inspect("project-1" as never);
+      if (changeAfterReport) fs.writeFileSync(path.join(folder, "a.txt"), "edited after the report\n", "utf8");
+
+      const result = await removal.remove("project-1" as never, { deleteFolder: true, stateToken: report.stateToken, acceptWork: true }, "delete");
+
+      expect(result.status === "refused" ? `refused:${result.code}` : `${result.status}:${"folder" in result ? result.folder : ""}`).toBe(outcome);
+      if (changeAfterReport) {
+        expect(fs.readFileSync(path.join(folder, "a.txt"), "utf8")).toBe("edited after the report\n");
+        expect(entries).toEqual([record]);
+        expect(steps).toEqual([]);
+      } else {
+        expect(fs.existsSync(folder)).toBe(false);
+        expect(entries).toEqual([]);
+        expect(steps).toEqual(["stop", "forget:folder gone"]);
+      }
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

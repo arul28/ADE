@@ -101,7 +101,24 @@ describe("lane share move consent", () => {
     const store = makeStore();
     store.put({ grantId, laneId, receiverEmail: "guest@example.com", rights: collaborate() });
     const landed = vi.fn(async () => ({ laneId: "lane-new", laneName: "moved", sessionId: "chat-new", branchName: "fix/login", note: null }));
-    const discarded = vi.fn(async (_laneId: string) => {});
+    let laneDiscarded: (laneId: string) => void = () => {};
+    const discardedOnce = new Promise<string>((resolve) => { laneDiscarded = resolve; });
+    const discarded = vi.fn(async (laneId: string) => { laneDiscarded(laneId); });
+    // The service logs `lane_share.move_ended` once per move, with its final stage: the receipt a test waits on.
+    const endedStages = new Map<string, string>();
+    const endedWaiters = new Map<string, (stage: string) => void>();
+    const logger = {
+      info: (event: string, fields?: Record<string, unknown>) => {
+        if (event !== "lane_share.move_ended") return;
+        const id = String(fields?.moveId);
+        endedStages.set(id, String(fields?.stage));
+        endedWaiters.get(id)?.(String(fields?.stage));
+      },
+      warn: () => {},
+    };
+    const ended = (id: string): Promise<string> => endedStages.has(id)
+      ? Promise.resolve(endedStages.get(id)!)
+      : new Promise((resolve) => endedWaiters.set(id, resolve));
     const moves = createLaneShareMoveService({
       chat: () => ({
         getSessionSummary: async () => ({ laneId, title: "Fix", modelId: null }),
@@ -116,8 +133,9 @@ describe("lane share move consent", () => {
       getRepoKey: () => "repo:github.com/acme/widgets",
       getAccountEmail: () => "owner@example.com",
       notifyGuests: () => {},
+      logger,
     });
-    return { moves, landed, discarded };
+    return { moves, landed, discarded, discardedOnce, ended };
   }
 
   const moveId = (n: string) => `lsm_${n.repeat(32)}`;
@@ -165,13 +183,14 @@ describe("lane share move consent", () => {
   it("uses a consent once, allows one move at a time, and lets it expire after 15 minutes", async () => {
     vi.useFakeTimers();
     try {
-      const { moves, landed } = makeMoves();
+      const { moves, landed, ended } = makeMoves();
       await offer(moves, "5");
       await expect(moves.start({ grantId, sessionId: "chat-1" })).rejects.toThrow(/already waiting/);
       moves.respond({ moveId: moveId("5"), accept: true });
       await moves.guestCommand(guest(), { op: "begin", moveId: moveId("5"), payload: payload(moveId("5")) });
       await moves.guestCommand(guest(), { op: "finish", moveId: moveId("5") });
-      await vi.waitFor(async () => expect((await moves.guestCommand(guest(), { op: "status", moveId: moveId("5") }) as { stage: string }).stage).toBe("done"));
+      expect(await ended(moveId("5"))).toBe("done");
+      expect((await moves.guestCommand(guest(), { op: "status", moveId: moveId("5") }) as { stage: string }).stage).toBe("done");
       // The same move id again: its consent is spent.
       await expect(moves.guestCommand(guest(), { op: "finish", moveId: moveId("5") })).rejects.toThrow(/already ended/);
       await expect(offer(moves, "5")).rejects.toThrow(/already/);
@@ -186,24 +205,20 @@ describe("lane share move consent", () => {
     }
   });
 
-  it.each<[string, (data: Buffer) => { bundle: Record<string, unknown>; chunks: Array<[number, string]> }]>([
-    ["a checksum that does not match", (data) => ({
-      bundle: { bytes: data.length, sha256: "d".repeat(64), chunkCount: 1 },
-      chunks: [[0, data.toString("base64")]],
-    })],
-  ])("never lands a bundle with %s", async (_label, make) => {
-    const { moves, landed } = makeMoves();
-    const { bundle, chunks } = make(Buffer.from("not really a bundle"));
-    const info = { ...bundle, branchHeadSha: sha, snapshotSha: null, unpushedCommitCount: 1, changedFileCount: 1 };
+  it("never lands a bundle whose checksum does not match", async () => {
+    const { moves, landed, ended } = makeMoves();
+    const data = Buffer.from("not really a bundle");
+    const info = { bytes: data.length, sha256: "d".repeat(64), chunkCount: 1, branchHeadSha: sha, snapshotSha: null, unpushedCommitCount: 1, changedFileCount: 1 };
     await offer(moves, "7");
     moves.respond({ moveId: moveId("7"), accept: true });
     await moves.guestCommand(guest(), { op: "begin", moveId: moveId("7"), payload: payload(moveId("7"), info) });
     const sent = (async () => {
-      for (const [index, data] of chunks) await moves.guestCommand(guest(), { op: "put", moveId: moveId("7"), index, data });
+      await moves.guestCommand(guest(), { op: "put", moveId: moveId("7"), index: 0, data: data.toString("base64") });
       await moves.guestCommand(guest(), { op: "finish", moveId: moveId("7") });
     })();
     await sent.catch(() => undefined);
-    await vi.waitFor(async () => expect((await moves.guestCommand(guest(), { op: "status", moveId: moveId("7") }) as { stage: string }).stage).toBe("failed"));
+    expect(await ended(moveId("7"))).toBe("failed");
+    expect((await moves.guestCommand(guest(), { op: "status", moveId: moveId("7") }) as { stage: string }).stage).toBe("failed");
     expect(landed).not.toHaveBeenCalled();
     moves.dispose();
   });
@@ -219,7 +234,7 @@ describe("lane share move consent", () => {
     ["shares nothing back when this account is not the grant's receiver", "receiver", { role: "giver", userId: "user-owner", email: "x@example.com" }, null],
   ])("%s", async (_label, side, party, expectedEmail) => {
     const create = vi.fn(async () => ({ grantId: `ls_${"e".repeat(32)}` }));
-    const { moves, landed } = makeMoves(() => ({ create, shareBackParty: async () => party, acceptShareBack: async () => {}, revoke: async () => {} }));
+    const { moves, landed, ended } = makeMoves(() => ({ create, shareBackParty: async () => party, acceptShareBack: async () => {}, revoke: async () => {} }));
     let result: () => Promise<{ stage: string; result: { shareBackGrantId: string | null; note: string | null } | null }>;
     if (side === "giver") {
       await offer(moves, "9");
@@ -233,7 +248,7 @@ describe("lane share move consent", () => {
       moves.receiveLand({ moveId: moveId("9"), grantId, fromName: "Owner", shareBack: { receiverEmail: "owner@example.com", rights: laneSharePresetRights("watch") } });
       result = async () => moves.receiveStatus({ moveId: moveId("9"), grantId }) as never;
     }
-    await vi.waitFor(async () => expect((await result()).stage).toBe("done"));
+    expect(await ended(moveId("9"))).toBe("done");
     expect(landed).toHaveBeenCalledTimes(1);
     const done = (await result()).result!;
     if (expectedEmail) {
@@ -263,7 +278,7 @@ describe("lane share move consent", () => {
     const party = side === "giver"
       ? { role: "giver" as const, userId: "user-guest", email: "guest@example.com" }
       : { role: "receiver" as const, userId: "user-owner", email: null };
-    const { moves, discarded } = makeMoves(() => ({ create, shareBackParty: async () => party, acceptShareBack: async () => {}, revoke }));
+    const { moves, discardedOnce } = makeMoves(() => ({ create, shareBackParty: async () => party, acceptShareBack: async () => {}, revoke }));
     let stage: () => Promise<string>;
     if (side === "giver") {
       await offer(moves, "a");
@@ -279,7 +294,7 @@ describe("lane share move consent", () => {
       moves.receiveLand({ moveId: moveId("a"), grantId, fromName: "Owner", shareBack: { receiverEmail: "owner@example.com", rights: laneSharePresetRights("watch") } });
       stage = async () => moves.receiveStatus({ moveId: moveId("a"), grantId }).stage;
     }
-    await vi.waitFor(() => expect(discarded).toHaveBeenCalledWith("lane-new"));
+    expect(await discardedOnce).toBe("lane-new");
     expect(create).toHaveBeenCalledTimes(1);
     expect(revoke).toHaveBeenCalledWith(madeId);
     expect(await stage()).toBe("cancelled");
@@ -287,12 +302,14 @@ describe("lane share move consent", () => {
   });
 
   it("refuses a bundle over 50 MiB before any part arrives", async () => {
-    const { moves } = makeMoves();
+    const { moves, landed } = makeMoves();
     await offer(moves, "8");
     moves.respond({ moveId: moveId("8"), accept: true });
     const bytes = 50 * 1024 * 1024 + 1;
     const info = { bytes, sha256: "d".repeat(64), chunkCount: Math.ceil(bytes / (384 * 1024)), branchHeadSha: sha, snapshotSha: null, unpushedCommitCount: 1, changedFileCount: 1 };
     await expect(moves.guestCommand(guest(), { op: "begin", moveId: moveId("8"), payload: payload(moveId("8"), info) })).rejects.toThrow();
+    await expect(moves.guestCommand(guest(), { op: "put", moveId: moveId("8"), index: 0, data: "AA==" })).rejects.toThrow();
+    expect(landed).not.toHaveBeenCalled();
     moves.dispose();
   });
 });

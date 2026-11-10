@@ -26,7 +26,8 @@ export function createLaneShareGuestQueue(deps: {
   function grantsWithQueued(): string[] {
     try {
       return store?.grantsWithItems("steer") ?? [];
-    } catch {
+    } catch (error) {
+      logger.warn("sync_host.lane_share_queue_read_failed", { error: error instanceof Error ? error.message : String(error) });
       return [];
     }
   }
@@ -42,7 +43,9 @@ export function createLaneShareGuestQueue(deps: {
     let record: ReturnType<LaneShareRightsStore["get"]> = null;
     try {
       record = store?.get(grantId) ?? null;
-    } catch {
+    } catch (error) {
+      // Fails closed: the queued message does not start.
+      logger.warn("sync_host.lane_share_queue_read_failed", { grantId, error: error instanceof Error ? error.message : String(error) });
       return false;
     }
     const rights = record?.rights ?? null;
@@ -61,7 +64,8 @@ export function createLaneShareGuestQueue(deps: {
       const grantId = store?.itemGrant("steer", steerId) ?? null;
       if (grantId) store?.removeItem(grantId, "steer", steerId);
       return grantId;
-    } catch {
+    } catch (error) {
+      logger.warn("sync_host.lane_share_queue_read_failed", { error: error instanceof Error ? error.message : String(error) });
       return null;
     }
   }

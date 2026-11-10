@@ -6444,6 +6444,15 @@ describe("ADE database usage aggregation", () => {
     expect(usageActionFromIpcChannel("ade.pty.create")).toBe("work.startCliSession");
     expect(usageActionFromRpcDomain("lane", "create")).toBe("lanes.create");
     expect(isMeaningfulUsageAction(usageActionFromRpcDomain("lane", "archiveAndReclaim"))).toBe(true);
+    // Lane sharing: share decisions count as lane mutations; reads,
+    // invite re-sends and the transfer steps of a move do not.
+    expect(usageActionFromRpcDomain("lane_share", "create")).toBe("lanes.share");
+    for (const action of ["create", "updateRights", "revoke", "leave", "moveStart", "moveRespond"]) {
+      expect(isMeaningfulUsageAction(usageActionFromRpcDomain("lane_share", action)), action).toBe(true);
+    }
+    for (const action of ["list", "resendInvite", "moveList", "movePackChunk", "moveReceiveChunk"]) {
+      expect(isMeaningfulUsageAction(usageActionFromRpcDomain("lane_share", action)), action).toBe(false);
+    }
     expect(usageActionFromRpcDomain("file", "writeWorkspaceText")).toBe("files.writeText");
     expect(usageActionFromRpcDomain("pty", "write")).toBe("pty.write");
     expect(isMeaningfulUsageAction(usageActionFromRpcDomain("pty", "write"))).toBe(false);
