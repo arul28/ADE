@@ -901,14 +901,12 @@ export function coerceAutomationRuleHome(value: unknown): AutomationRuleHome | u
   if (!deviceId || !name || !chosenAt) return undefined;
   const checkout = asString(value.checkout)?.trim();
   const previousDeviceId = asString(value.previousDeviceId)?.trim();
-  const runCount = asNumber(value.runCount);
   return {
     deviceId,
     name,
     chosenAt,
     checkout: checkout || null,
     ...(previousDeviceId ? { previousDeviceId } : {}),
-    ...(runCount != null && Number.isFinite(runCount) && runCount > 0 ? { runCount: Math.floor(runCount) } : {}),
   };
 }
 
@@ -3066,7 +3064,10 @@ function validateEffectiveConfig(
           const suiteId = (action.suiteId ?? "").trim();
           if (!suiteId) {
             issues.push({ path: `${ap}.suiteId`, message: "run-tests requires suiteId" });
-          } else if (!suiteIds.has(suiteId)) {
+          } else if (!suiteIds.has(suiteId) && !rule.home) {
+            // A rule that follows the account names its home's suites, which
+            // may not exist on this computer; its home reports a missing one
+            // (`homeGaps`) instead of failing every other computer's config.
             issues.push({ path: `${ap}.suiteId`, message: `Unknown suiteId '${suiteId}'` });
           }
         }
@@ -3442,6 +3443,9 @@ export function createProjectConfigService({
     const validation = validateEffectiveConfig(resolveEffectiveConfig(shared, local), projectRoot, shared, local);
     return validation.issues
       .filter((issue) => issue.path.includes("automations"))
+      // Judged alone there are no suites; whether this computer has the
+      // rule's suite is a machine-local gap, not a problem with the rule.
+      .filter((issue) => !issue.message.startsWith("Unknown suiteId"))
       .map((issue) => `${issue.path}: ${issue.message}`);
   };
 
@@ -3576,15 +3580,18 @@ export function createProjectConfigService({
      */
     saveAutomationRule(
       rule: ConfigAutomationRule,
-      options: { home?: AutomationRuleHome | "this-computer" | null; runCount?: number } = {},
+      options: { home?: AutomationRuleHome | "this-computer" | null } = {},
     ): ProjectConfigSnapshot {
       const id = rule.id.trim();
       if (!id) throw new Error("Automation id is required");
       const snapshot = readSnapshotFromDisk();
       const { home: _ignored, ...ruleWithoutHome } = rule;
       const next: ConfigAutomationRule = { ...ruleWithoutHome, id };
-      // Judged against the whole merged config, as a file save would be.
-      const candidate = { ...snapshot.local, automations: [...(snapshot.local.automations ?? []).filter((entry) => entry.id !== id), next] };
+      // Judged against the whole merged config, as a file save would be, and
+      // with its current home, so a synced rule is judged as one.
+      const currentHome = (snapshot.local.automations ?? []).find((entry) => entry.id === id)?.home;
+      const judged: ConfigAutomationRule = currentHome ? { ...next, home: currentHome } : next;
+      const candidate = { ...snapshot.local, automations: [...(snapshot.local.automations ?? []).filter((entry) => entry.id !== id), judged] };
       const validation = validateCandidate(emptySharedConfig(), normalizeConfigFilePaths(coerceConfigFile(candidate), projectRoot));
       if (!validation.ok) throw invalidConfigError(validation);
       const outcome = automationRuleSync?.save(next, options) ?? { handled: false as const };
@@ -3601,6 +3608,18 @@ export function createProjectConfigService({
       else rules.push(stored);
       if (keepHome) logger.warn("projectConfig.account_rule_kept_locally", { automationId: id });
       return saveCandidate({ shared: snapshot.shared, local: { ...file, automations: rules } }, { divert: false });
+    },
+
+    /** Record runs counted for a synced rule with a run limit; see `AutomationRuleAccountSync.recordRunCount`. */
+    recordAutomationRunCount(ruleId: string, count: number): void {
+      try {
+        automationRuleSync?.recordRunCount(ruleId, count);
+      } catch (error) {
+        logger.warn("projectConfig.automation_run_count_failed", {
+          automationId: ruleId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
 
     /**

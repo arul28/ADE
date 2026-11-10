@@ -1,6 +1,7 @@
 import type { Icon } from "@phosphor-icons/react";
 import { ArrowsLeftRight, ChatCircle, CloudArrowUp, CloudCheck, CloudSlash } from "@phosphor-icons/react";
 import type { AutomationRuleSummary } from "../../../shared/types";
+import { AUTOMATION_HOME_LEASE_MINUTES } from "../../../shared/automationHome";
 
 /**
  * Where a rule lives and who runs it, in one short line, for the rule row's
@@ -18,7 +19,7 @@ export type RuleSyncLine = {
   tone: "quiet" | "notice";
 };
 
-type SyncFields = Pick<AutomationRuleSummary, "source" | "home" | "localReason" | "homeStartsAt" | "runsHere">;
+type SyncFields = Pick<AutomationRuleSummary, "source" | "home" | "localReason" | "homeStartsAt" | "runsHere" | "homeOutOfTouch">;
 
 /** True for a rule that follows the account: every machine with the repository lists it. */
 export function followsAccount(rule: Pick<AutomationRuleSummary, "source" | "home">): boolean {
@@ -33,13 +34,25 @@ function shortTime(iso: string): string {
 /** The line for a saved rule, or null when there is nothing to say (an ordinary rule on a host with no account). */
 export function ruleSyncLine(rule: SyncFields, now = Date.now()): RuleSyncLine | null {
   const home = rule.runsHere ? "this computer" : rule.home?.name ?? "another computer";
+  // A copy kept here (saved while signed out, too large) says so first, even
+  // when the account holds an older version.
+  const local = rule.localReason ? localLine(rule.localReason) : null;
+  if (local) return local;
+  if (followsAccount(rule) && rule.runsHere && rule.homeOutOfTouch) {
+    return {
+      icon: CloudSlash,
+      label: "Paused here · can't reach your ADE account",
+      detail: `Synced automations start on their own only while this computer has reached your ADE account in the last ${AUTOMATION_HOME_LEASE_MINUTES} minutes, so another computer can't run them at the same time. Sign in or reconnect to resume. Run now still works.`,
+      tone: "notice",
+    };
+  }
   if (followsAccount(rule)) {
     const startsAt = rule.homeStartsAt ? Date.parse(rule.homeStartsAt) : Number.NaN;
     if (rule.runsHere && Number.isFinite(startsAt) && startsAt > now) {
       return {
         icon: ArrowsLeftRight,
         label: `Moving here · starts by ${shortTime(rule.homeStartsAt!)}`,
-        detail: "This computer waits a moment so the computer that ran it before has stopped. Run now works already.",
+        detail: "This computer waits until the computer that ran it before has surely stopped, so the two never run it at once. Run now works already.",
         tone: "quiet",
       };
     }
@@ -50,7 +63,11 @@ export function ruleSyncLine(rule: SyncFields, now = Date.now()): RuleSyncLine |
       tone: "quiet",
     };
   }
-  switch (rule.localReason) {
+  return null;
+}
+
+function localLine(reason: NonNullable<AutomationRuleSummary["localReason"]>): RuleSyncLine | null {
+  switch (reason) {
     case "chat":
       return {
         icon: ChatCircle,

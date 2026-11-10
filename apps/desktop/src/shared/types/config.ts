@@ -1008,10 +1008,8 @@ export type AutomationRuleHome = {
    * repository on one computer never both run it.
    */
   checkout?: string | null;
-  /** The computer that ran it before a change of home; the new home waits a moment so the two never overlap. */
+  /** The computer that ran it before a change of home; the new home waits so the two never overlap. */
   previousDeviceId?: string | null;
-  /** Runs the previous home had counted, so a run limit holds across a change of home. */
-  runCount?: number;
 };
 
 /**
@@ -1088,9 +1086,17 @@ export type AutomationRule = {
   runsHere?: boolean;
   /**
    * After a change of home, when the new home starts triggered runs, so the
-   * old home has synced and stopped first. Run now is not held back.
+   * old home's lease has run out first. Run now is not held back.
    */
   homeStartsAt?: string;
+  /**
+   * The home has not heard from the ADE account within its lease (offline or
+   * signed out), so it does not start triggered runs: another computer may
+   * have taken the rule over. Run now still works.
+   */
+  homeOutOfTouch?: boolean;
+  /** Runs counted in the account across every home, so a run limit holds across a change of home. */
+  accountRunCount?: number;
   /**
    * The rule was saved by a newer ADE with something this one does not know.
    * It is shown but never run or edited here, so an edit cannot strip it.

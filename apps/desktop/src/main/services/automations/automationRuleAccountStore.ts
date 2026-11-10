@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import type { AutomationRuleHome } from "../../../shared/types";
+import { AUTOMATION_HOME_LEASE_MS } from "../../../shared/automationHome";
 import type { Logger } from "../logging/logger";
 import { pathKey } from "../shared/pathCompare";
 
@@ -15,6 +16,8 @@ import { pathKey } from "../shared/pathCompare";
  *
  * - `automations.rule.<id>`: the rule itself.
  * - `automations.home.<id>`: the one computer (and checkout) that runs it.
+ * - `automations.runs.<id>`: runs counted so far, for a rule with a run limit,
+ *   so the limit holds when the rule moves to another computer.
  *
  * One row per rule, not one list: the store keeps the strictly newer stamp per
  * key, so a list saved on one computer would drop a rule another computer had
@@ -35,11 +38,14 @@ export type AutomationRuleAccountBackend = {
   deletedKeys?(scope: string): ReadonlyArray<{ key: string; updatedAt: string }>;
   /** Flush and pull. `ready` when the account answered. */
   sync?(): Promise<string>;
-  health?(): { state: string; pendingChanges: number };
+  health?(): { state: string; pendingChanges: number; lastSyncedAt: string | null };
+  /** False when no account service is configured, so no other computer can share these rows. */
+  hasRelay?(): boolean;
 };
 
 export const AUTOMATION_RULE_KEY_PREFIX = "automations.rule.";
 export const AUTOMATION_HOME_KEY_PREFIX = "automations.home.";
+export const AUTOMATION_RUNS_KEY_PREFIX = "automations.runs.";
 
 /**
  * The relay's cap on one setting's JSON (`MAX_SETTING_VALUE_BYTES` in
@@ -65,6 +71,10 @@ export function automationRuleAccountKey(ruleId: string): string {
 
 export function automationRuleHomeKey(ruleId: string): string {
   return `${AUTOMATION_HOME_KEY_PREFIX}${keySuffix(ruleId)}`;
+}
+
+export function automationRuleRunsKey(ruleId: string): string {
+  return `${AUTOMATION_RUNS_KEY_PREFIX}${keySuffix(ruleId)}`;
 }
 
 /** A rule armed from one chat (auto-handoff and the like): it stays with that chat's computer. */
@@ -95,6 +105,8 @@ export type AutomationAccountRow = {
   value: unknown;
   /** The stored home, or undefined when there is none. */
   home: unknown;
+  /** Runs counted so far across every home, when the rule has a run limit. */
+  runCount?: number;
 };
 
 /**
@@ -115,8 +127,8 @@ type LocalState = {
   copy?: { scope: string; accountUserId: string | null; fingerprint: string; rows: AutomationAccountRow[] } | null;
   /** Writes waiting for a sync to confirm them. */
   pending?: AutomationPendingConfirmation[];
-  /** Rules saved in `.ade/local.yaml` while signed out, by the account they belong to. */
-  offlineSaves?: Record<string, string | null>;
+  /** Rules saved in `.ade/local.yaml` while signed out: the account they belong to, and when. */
+  offlineSaves?: Record<string, { owner: string | null; at: string }>;
 };
 
 export type AutomationRuleAccountStore = ReturnType<typeof createAutomationRuleAccountStore>;
@@ -225,49 +237,95 @@ export function createAutomationRuleAccountStore(args: {
   const listRows = (where: string): { fingerprint: string; rows: AutomationAccountRow[] } => {
     const rules = new Map<string, unknown>();
     const homes = new Map<string, unknown>();
+    const runs = new Map<string, number>();
     let fingerprint = where;
     for (const row of args.backend.list(where)) {
       if (row.key.startsWith(AUTOMATION_RULE_KEY_PREFIX)) {
         rules.set(row.key.slice(AUTOMATION_RULE_KEY_PREFIX.length), row.value);
       } else if (row.key.startsWith(AUTOMATION_HOME_KEY_PREFIX)) {
         homes.set(row.key.slice(AUTOMATION_HOME_KEY_PREFIX.length), row.value);
+      } else if (row.key.startsWith(AUTOMATION_RUNS_KEY_PREFIX)) {
+        const count = row.value && typeof row.value === "object" ? (row.value as { count?: unknown }).count : null;
+        if (typeof count === "number" && Number.isFinite(count) && count > 0) {
+          runs.set(row.key.slice(AUTOMATION_RUNS_KEY_PREFIX.length), Math.floor(count));
+        }
       } else {
         continue;
       }
       fingerprint += `|${row.key}@${row.updatedAt}`;
     }
-    const rows = [...rules.entries()].map(([suffix, value]) => ({ value, home: homes.get(suffix) }));
+    const rows = [...rules.entries()].map(([suffix, value]) => ({
+      value,
+      home: homes.get(suffix),
+      ...(runs.has(suffix) ? { runCount: runs.get(suffix)! } : {}),
+    }));
     return { fingerprint, rows };
   };
 
   /**
    * A repository whose remote changed (renamed, moved to another owner) files
-   * its rules under a new key. The first read under the new key, when it holds
-   * no rules yet, copies them from the key this computer last read; the old
-   * rows stay for computers still on the old remote.
+   * its rules under a new key. The first reads under the new key copy every
+   * rule it lacks (and that no computer deleted there) from the key this
+   * computer last read; the old rows stay for computers still on the old
+   * remote. `complete` is false while a copy was refused, so the next read
+   * tries again rather than leaving the rest behind.
    */
-  const followRemoteChange = (where: string, current: { rows: AutomationAccountRow[] }, state: LocalState): boolean => {
+  const followRemoteChange = (
+    where: string,
+    current: { rows: AutomationAccountRow[] },
+    state: LocalState,
+  ): { copied: number; complete: boolean } => {
     const previous = state.copy?.scope;
-    if (!previous || previous === where || current.rows.length > 0) return false;
-    if (state.copy?.accountUserId && state.copy.accountUserId !== accountUserId()) return false;
+    if (!previous || previous === where) return { copied: 0, complete: true };
+    if (state.copy?.accountUserId && state.copy.accountUserId !== accountUserId()) return { copied: 0, complete: true };
     let old: AutomationAccountRow[];
     try {
       old = listRows(previous).rows;
-    } catch {
-      return false;
+    } catch (error) {
+      args.logger?.warn("automations.account_rules.remote_change_read_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { copied: 0, complete: false };
     }
-    if (old.length === 0) return false;
-    let copied = 0;
-    for (const row of old) {
+    const idOf = (row: AutomationAccountRow): string | null => {
       const id = row.value && typeof row.value === "object" ? (row.value as { id?: unknown }).id : null;
-      if (typeof id !== "string" || !id.trim()) continue;
-      if (args.backend.set(where, automationRuleAccountKey(id), row.value) === false) return false;
-      if (row.home !== undefined) args.backend.set(where, automationRuleHomeKey(id), row.home);
+      return typeof id === "string" && id.trim() ? id.trim() : null;
+    };
+    const present = new Set(current.rows.map(idOf).filter((id): id is string => Boolean(id)));
+    const deleted = new Set((args.backend.deletedKeys?.(where) ?? []).map((entry) => entry.key));
+    let copied = 0;
+    let complete = true;
+    for (const row of old) {
+      const id = idOf(row);
+      if (!id || present.has(id) || deleted.has(automationRuleAccountKey(id))) continue;
+      if (row.home !== undefined && args.backend.set(where, automationRuleHomeKey(id), row.home) === false) {
+        complete = false;
+        continue;
+      }
+      if (args.backend.set(where, automationRuleAccountKey(id), row.value) === false) {
+        complete = false;
+        continue;
+      }
+      if (row.runCount) args.backend.set(where, automationRuleRunsKey(id), { count: row.runCount });
       copied += 1;
     }
-    args.logger?.info("automations.account_rules.followed_remote_change", { from: previous, to: where, copied });
-    args.onWrite?.();
-    return copied > 0;
+    if (copied > 0) {
+      args.logger?.info("automations.account_rules.followed_remote_change", { from: previous, to: where, copied, complete });
+      args.onWrite?.();
+    }
+    return { copied, complete };
+  };
+
+  // When this computer last heard from the account. Kept here because the
+  // store reports no sync time while signed out.
+  let lastSyncedAtMs = 0;
+  const noteSyncTime = (): { lastSyncedAtMs: number; noRelay: boolean } => {
+    const health = args.backend.health?.();
+    if (!health) return { lastSyncedAtMs: Number.POSITIVE_INFINITY, noRelay: true };
+    const at = health.lastSyncedAt ? Date.parse(health.lastSyncedAt) : Number.NaN;
+    if (Number.isFinite(at) && at > lastSyncedAtMs) lastSyncedAtMs = at;
+    // With no account service there is no other computer to hand a rule to.
+    return { lastSyncedAtMs, noRelay: args.backend.hasRelay?.() === false };
   };
 
   return {
@@ -315,9 +373,12 @@ export function createAutomationRuleAccountStore(args: {
         return { fingerprint: "signed-out", rows: [], signedOut: true };
       }
       let current: { fingerprint: string; rows: AutomationAccountRow[] };
+      let copyComplete = true;
       try {
         current = listRows(where);
-        if (followRemoteChange(where, current, state)) current = listRows(where);
+        const followed = followRemoteChange(where, current, state);
+        copyComplete = followed.complete;
+        if (followed.copied > 0) current = listRows(where);
       } catch (error) {
         args.logger?.warn("automations.account_rules.read_failed", {
           error: error instanceof Error ? error.message : String(error),
@@ -325,10 +386,65 @@ export function createAutomationRuleAccountStore(args: {
         return { fingerprint: "unreadable", rows: [], signedOut: false };
       }
       const copy = state.copy;
-      if (!copy || copy.fingerprint !== current.fingerprint || copy.accountUserId !== userId || copy.scope !== where) {
+      // An unfinished copy after a remote change keeps the old scope, so the
+      // next read finishes it.
+      if (copyComplete && (!copy || copy.fingerprint !== current.fingerprint || copy.accountUserId !== userId || copy.scope !== where)) {
         writeState({ ...readState(), copy: { scope: where, accountUserId: userId, fingerprint: current.fingerprint, rows: current.rows } });
       }
       return { ...current, signedOut: false };
+    },
+
+    /**
+     * Whether this computer heard from the account within the lease, so a
+     * rule homed here may start. Past it (offline, signed out), another
+     * computer may have taken the rule over without this one seeing it.
+     */
+    leaseFresh(): boolean {
+      const { lastSyncedAtMs: at, noRelay } = noteSyncTime();
+      return noRelay || now() - at <= AUTOMATION_HOME_LEASE_MS;
+    },
+
+    /**
+     * Whether this computer has synced with the account at least once since
+     * ADE started. Until then its copy may lack another computer's rules, and
+     * a rule filed under an id it cannot see could overwrite one.
+     */
+    hasSynced(): boolean {
+      const { lastSyncedAtMs: at, noRelay } = noteSyncTime();
+      return noRelay || at > 0;
+    },
+
+    /** Rule ids whose row some computer deleted, with when, as account keys. */
+    deletedRuleStamps(): Map<string, string> {
+      const where = scope();
+      if (!where || !args.backend.deletedKeys) return new Map();
+      try {
+        return new Map(
+          args.backend.deletedKeys(where)
+            .filter((entry) => entry.key.startsWith(AUTOMATION_RULE_KEY_PREFIX))
+            .map((entry) => [entry.key, entry.updatedAt]),
+        );
+      } catch (error) {
+        args.logger?.warn("automations.account_rules.deleted_read_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return new Map();
+      }
+    },
+
+    /** Record runs counted so far for a rule with a run limit. */
+    writeRunCount(ruleId: string, count: number): boolean {
+      const where = scope();
+      if (!where || !accountUserId()) return false;
+      try {
+        return args.backend.set(where, automationRuleRunsKey(ruleId), { count: Math.floor(count), at: new Date(now()).toISOString() }) !== false;
+      } catch (error) {
+        args.logger?.warn("automations.account_rules.run_count_write_failed", {
+          automationId: ruleId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
     },
 
     /** Rule ids whose row some computer deleted, as account keys. */
@@ -391,6 +507,7 @@ export function createAutomationRuleAccountStore(args: {
         const ok = args.backend.remove(where, automationRuleAccountKey(ruleId)) !== false;
         if (ok) {
           args.backend.remove(where, automationRuleHomeKey(ruleId));
+          args.backend.remove(where, automationRuleRunsKey(ruleId));
           args.onWrite?.();
         }
         return ok;
@@ -445,15 +562,17 @@ export function createAutomationRuleAccountStore(args: {
 
     // ── Saved while signed out ─────────────────────────────────────────────
 
-    /** Remember whose rule this is: the account that was last signed in here. */
+    /** Remember whose rule this is (the account last signed in here), and when it was saved. */
     noteOfflineSave(ruleId: string): void {
-      const owner = readState().copy?.accountUserId ?? null;
-      updateState((state) => ({ ...state, offlineSaves: { ...(state.offlineSaves ?? {}), [ruleId]: owner } }));
+      const owner = accountUserId() ?? readState().copy?.accountUserId ?? null;
+      const at = new Date(now()).toISOString();
+      updateState((state) => ({ ...state, offlineSaves: { ...(state.offlineSaves ?? {}), [ruleId]: { owner, at } } }));
     },
-    /** The account a rule saved while signed out belongs to; undefined when it was not saved that way. */
-    offlineOwner(ruleId: string): string | null | undefined {
+    /** Who a rule saved while signed out belongs to, and when; undefined when it was not saved that way. */
+    offlineSave(ruleId: string): { owner: string | null; at: string } | undefined {
       const saves = readState().offlineSaves ?? {};
-      return Object.prototype.hasOwnProperty.call(saves, ruleId) ? saves[ruleId] ?? null : undefined;
+      const entry = Object.prototype.hasOwnProperty.call(saves, ruleId) ? saves[ruleId] : undefined;
+      return entry && typeof entry === "object" ? entry : undefined;
     },
     clearOfflineSave(ruleIds: readonly string[]): void {
       if (ruleIds.length === 0) return;

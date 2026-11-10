@@ -1954,13 +1954,16 @@ export function createAutomationService({
       ? `'${rule.name}' was made with a newer ADE. Update ADE on this computer to run it here.`
       : `'${rule.name}' runs on ${rule.home?.name ?? "another computer"}, not this one. Change "Runs on" to this computer to run it here.`;
   /**
-   * True while a new home waits for the old one to sync and stop, after a
-   * change of home. Only triggered runs wait; Run now does not.
+   * True while this home must not start a rule on a trigger: a new home waits
+   * past the old home's lease after a change of home, and a home that has not
+   * heard from the account within its lease (offline, signed out) may have
+   * lost the rule to another computer. Run now is never held back.
    */
-  const inHandover = (rule: AutomationRule): boolean => {
-    if (!rule.homeStartsAt) return false;
+  const holdTriggeredRuns = (rule: AutomationRule): "home-handover" | "home-out-of-touch" | null => {
+    if (rule.homeOutOfTouch) return "home-out-of-touch";
+    if (!rule.homeStartsAt) return null;
     const startsAt = Date.parse(rule.homeStartsAt);
-    return Number.isFinite(startsAt) && Date.now() < startsAt;
+    return Number.isFinite(startsAt) && Date.now() < startsAt ? "home-handover" : null;
   };
 
   const updateIngressStatus = (patch: AutomationIngressStatusPatch) => {
@@ -3265,7 +3268,8 @@ export function createAutomationService({
     if (maxRuns === null) return UNBOUNDED_RUN_BUDGET;
     let runCount: number;
     try {
-      runCount = bumpRunCount(rule.id, rule.home && ruleRunsHere(rule) ? rule.home.runCount ?? 0 : 0);
+      // A synced rule's count in the account covers its earlier homes.
+      runCount = bumpRunCount(rule.id, ruleRunsHere(rule) ? rule.accountRunCount ?? 0 : 0);
     } catch (error) {
       // Without a trustworthy count we cannot bound the retries, so let the run
       // through and keep the rule rather than refuse work — or delete a rule —
@@ -3280,6 +3284,7 @@ export function createAutomationService({
       // The ceiling was spent before this trigger arrived. Give the attempt
       // straight back — a denied run must not move the counter — and refuse.
       pinRunCountToCap(rule.id, maxRuns);
+      if (rule.home) projectConfigService.recordAutomationRunCount(rule.id, maxRuns);
       logger.info("automations.rule_budget.exhausted", {
         automationId: rule.id,
         runCount: maxRuns,
@@ -3292,6 +3297,9 @@ export function createAutomationService({
       settle: (outcome) => {
         if (done) return;
         done = true;
+        // A run that happened counts on every computer, so a run limit holds
+        // when the rule moves to another one.
+        if (rule.home) projectConfigService.recordAutomationRunCount(rule.id, runCount);
         const retireForSuccess = oneShot && outcome.succeeded;
         if (!retireForSuccess && runCount < maxRuns) {
           logger.info("automations.rule_budget.retained", {
@@ -4743,12 +4751,13 @@ export function createAutomationService({
           if (isManualTrigger) throw new Error(notHomeMessage(currentRule));
           return null;
         }
-        if (currentRule && !isManualTrigger && !runOptions.dryRun && inHandover(currentRule)) {
+        const held = currentRule && !isManualTrigger && !runOptions.dryRun ? holdTriggeredRuns(currentRule) : null;
+        if (held) {
           logger.info("automations.trigger.suppressed", {
             automationId: rule.id,
             triggerType: trigger.triggerType,
-            reason: "home-handover",
-            startsAt: currentRule.homeStartsAt ?? null,
+            reason: held,
+            startsAt: currentRule?.homeStartsAt ?? null,
           });
           return null;
         }
@@ -5589,12 +5598,6 @@ export function createAutomationService({
       });
     },
 
-    /** This computer's run count for a rule it runs; handed on with a change of home. */
-    homeRunCount(id: string): number | undefined {
-      const rule = findRule(id.trim());
-      return rule && ruleRunsHere(rule) ? readRunCount(rule.id) : undefined;
-    },
-
     /**
      * Change which computer runs a rule that follows the account ("Runs on").
      * No device id means this computer. A rule kept on this computer only
@@ -5611,8 +5614,6 @@ export function createAutomationService({
       const current = findRule(id);
       projectConfigService.saveAutomationRule(stored, {
         home: deviceId ? { deviceId, name: name!, chosenAt: nowIso() } : "this-computer",
-        // Handed on, so a run limit holds on the new home.
-        ...(current && ruleRunsHere(current) ? { runCount: readRunCount(id) } : {}),
       });
       const saved = findRule(id);
       if (!saved?.home) {

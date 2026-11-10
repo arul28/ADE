@@ -4,6 +4,7 @@ import type {
   AutomationRuleLocalReason,
   ConfigAutomationRule,
 } from "../../../shared/types";
+import { AUTOMATION_HOME_HANDOVER_MS } from "../../../shared/automationHome";
 import type { Logger } from "../logging/logger";
 import {
   automationRuleAccountKey,
@@ -30,25 +31,25 @@ import {
  *   same moment both keep theirs: a sync shows which one the account kept,
  *   and the other is filed again under a new id.
  * - **One computer runs a rule.** Only its home (device and checkout) starts
- *   it, and a new home waits `HANDOVER_MS` after a change so the old home has
- *   synced and stopped.
+ *   it, and only while it has heard from the account within its lease
+ *   (`AUTOMATION_HOME_LEASE_MS`); a new home waits past that lease after a
+ *   change (`AUTOMATION_HOME_HANDOVER_MS`), so an old home that missed the
+ *   change (offline, signed out) has stopped by then.
  * - **A stale writer cannot undo or delete.** A generic config save may only
  *   add a new rule; edits, deletes and moves go through `save`/`remove`.
  * - **An older ADE cannot strip a newer rule.** A rule this ADE cannot read
  *   whole is shown but never run or edited here.
  */
 
-/** How long a new home waits after a change of home before it starts triggered runs. */
-export const HANDOVER_MS = 2 * 60_000;
-
 /** A lost race is only a race when the two writes were this close together. */
 const RACE_WINDOW_MS = 10 * 60_000;
 
-type Note = { needsNewerAde?: true; localReason?: AutomationRuleLocalReason };
+type Note = { needsNewerAde?: true; localReason?: AutomationRuleLocalReason; accountRunCount?: number };
 
 type AccountRule = {
   rule: ConfigAutomationRule;
   needsNewerAde: boolean;
+  runCount?: number;
 };
 
 export type AutomationRuleAccountSync = ReturnType<typeof createAutomationRuleAccountSync>;
@@ -105,7 +106,7 @@ export function createAutomationRuleAccountSync(args: {
         }
       }
       seen.add(rule.id);
-      rules.push({ rule, needsNewerAde });
+      rules.push({ rule, needsNewerAde, ...(row.runCount ? { runCount: row.runCount } : {}) });
     }
     cache = { fingerprint: read.fingerprint, rules };
     return rules;
@@ -118,11 +119,17 @@ export function createAutomationRuleAccountSync(args: {
     if (isChatScopedAutomationRule(rule)) return "chat";
     if (!store.scope()) return "no-remote";
     if (!fitsInAccount(content(rule))) return "too-large";
-    const owner = store.offlineOwner(rule.id);
     const user = store.accountUserId();
     if (!user) return "signed-out";
-    if (owner !== undefined && owner !== null && owner !== user) return "other-account";
+    if (belongsToAnotherAccount(rule.id)) return "other-account";
     return "pending";
+  };
+
+  /** A rule saved here while another account was signed in: it waits for that account. */
+  const belongsToAnotherAccount = (ruleId: string): boolean => {
+    const owner = store.offlineSave(ruleId)?.owner;
+    const user = store.accountUserId();
+    return Boolean(owner && user && owner !== user);
   };
 
   /** True when a rule may be filed in the account now. */
@@ -151,7 +158,6 @@ export function createAutomationRuleAccountSync(args: {
   const resolveHome = (
     requested: AutomationRuleHome | "this-computer",
     current: AutomationRuleHome | undefined,
-    runCount: number | undefined,
   ): AutomationRuleHome => {
     let home: AutomationRuleHome | null;
     if (requested === "this-computer") {
@@ -164,12 +170,8 @@ export function createAutomationRuleAccountSync(args: {
       home = { ...home, checkout: home.deviceId === store.thisDeviceId() ? store.checkout : null };
     }
     const moved = current && current.deviceId !== home.deviceId;
-    const { previousDeviceId: _p, runCount: _r, ...base } = home;
-    return {
-      ...base,
-      ...(moved ? { previousDeviceId: current.deviceId } : {}),
-      ...(moved && runCount && runCount > 0 ? { runCount } : {}),
-    };
+    const { previousDeviceId: _p, ...base } = home;
+    return { ...base, ...(moved ? { previousDeviceId: current.deviceId } : {}) };
   };
 
   return {
@@ -188,13 +190,20 @@ export function createAutomationRuleAccountSync(args: {
       const fileIds = new Set(fileRules.map((rule) => rule.id));
       const account = readAccount() ?? [];
       const rules: ConfigAutomationRule[] = [];
+      const runCounts = new Map(account.filter((entry) => entry.runCount).map((entry) => [entry.rule.id, entry.runCount!]));
       for (const entry of account) {
         if (fileIds.has(entry.rule.id)) continue;
-        if (entry.needsNewerAde) notes.set(entry.rule.id, { needsNewerAde: true });
+        notes.set(entry.rule.id, {
+          ...(entry.needsNewerAde ? { needsNewerAde: true as const } : {}),
+          ...(entry.runCount ? { accountRunCount: entry.runCount } : {}),
+        });
         rules.push(structuredClone(entry.rule));
       }
       for (const rule of fileRules) {
-        notes.set(rule.id, { localReason: localReasonFor(rule) });
+        notes.set(rule.id, {
+          localReason: localReasonFor(rule),
+          ...(runCounts.has(rule.id) ? { accountRunCount: runCounts.get(rule.id)! } : {}),
+        });
         rules.push(rule);
       }
       return { rules, notes };
@@ -203,15 +212,21 @@ export function createAutomationRuleAccountSync(args: {
     /** Mark which rules this computer and checkout run, and why a rule stays here. */
     stamp(effective: AutomationRule[], notes: Map<string, Note>): void {
       const deviceId = store.thisDeviceId();
+      let leaseFresh: boolean | null = null;
       for (const rule of effective) {
         const note = notes.get(rule.id);
         if (note?.localReason) rule.localReason = note.localReason;
+        if (note?.accountRunCount) rule.accountRunCount = note.accountRunCount;
         if (rule.home) {
           rule.runsHere = deviceId != null
             && rule.home.deviceId === deviceId
             && rule.home.checkout === store.checkout;
+          if (rule.runsHere) {
+            leaseFresh ??= store.leaseFresh();
+            if (!leaseFresh) rule.homeOutOfTouch = true;
+          }
           if (rule.home.previousDeviceId && rule.home.previousDeviceId !== rule.home.deviceId) {
-            const startsAt = Date.parse(rule.home.chosenAt) + HANDOVER_MS;
+            const startsAt = Date.parse(rule.home.chosenAt) + AUTOMATION_HOME_HANDOVER_MS;
             if (Number.isFinite(startsAt)) rule.homeStartsAt = new Date(startsAt).toISOString();
           }
         }
@@ -242,7 +257,9 @@ export function createAutomationRuleAccountSync(args: {
           continue;
         }
         if (accountIds.has(rule.id) || deleted.has(automationRuleAccountKey(rule.id))) continue;
-        if (here && store.signedIn() && fileInAccount(rule, here)) {
+        // Before the first sync this computer may not see a rule another one
+        // filed under this id; it waits in the file and moves after the sync.
+        if (here && store.signedIn() && store.hasSynced() && fileInAccount(rule, here)) {
           store.addPending({ ruleId: rule.id, rule: content(rule) as ConfigAutomationRule & Record<string, unknown>, home: here });
           continue;
         }
@@ -264,7 +281,9 @@ export function createAutomationRuleAccountSync(args: {
     migrate(): { moved: number; renamed: string[] } {
       const here = store.thisComputerHome();
       const user = store.accountUserId();
-      if (!store.scope() || !here || !user) return { moved: 0, renamed: [] };
+      // Only once this computer has synced: an unsynced copy may lack a rule
+      // another computer filed under the same id, which this one would overwrite.
+      if (!store.scope() || !here || !user || !store.hasSynced()) return { moved: 0, renamed: [] };
       const fileRules = args.readFileRules();
       if (!fileRules.some(canFollow)) return { moved: 0, renamed: [] };
       const account = new Map((readAccount() ?? []).map((entry) => [entry.rule.id, entry]));
@@ -272,20 +291,28 @@ export function createAutomationRuleAccountSync(args: {
       const kept: ConfigAutomationRule[] = [];
       const renamed: string[] = [];
       const movedIds: string[] = [];
+      const deleted = store.deletedRuleStamps();
       for (const rule of fileRules) {
-        const owner = store.offlineOwner(rule.id);
-        if (!canFollow(rule) || (owner !== undefined && owner !== null && owner !== user)) {
+        if (!canFollow(rule) || belongsToAnotherAccount(rule.id)) {
           kept.push(rule);
           continue;
         }
+        const offline = store.offlineSave(rule.id);
         const existing = account.get(rule.id);
         if (existing?.needsNewerAde) {
           // Never overwrite what this ADE cannot read whole.
           kept.push(rule);
           continue;
         }
-        if (rule.home || owner !== undefined) {
-          // Saved while signed out: an edit of an account rule.
+        if (rule.home || offline) {
+          // Saved while signed out: an edit of an account rule. If another
+          // computer deleted the rule after this edit was made, the delete
+          // stands; an edit made after the delete brings the rule back.
+          const deletedAt = !existing ? deleted.get(automationRuleAccountKey(rule.id)) : undefined;
+          if (deletedAt && offline && Date.parse(deletedAt) > Date.parse(offline.at)) {
+            movedIds.push(rule.id);
+            continue;
+          }
           const home = existing?.rule.home ? null : rule.home ?? here;
           if (!fileInAccount(rule, home)) {
             kept.push(rule);
@@ -381,7 +408,7 @@ export function createAutomationRuleAccountSync(args: {
      */
     save(
       rule: ConfigAutomationRule,
-      options: { home?: AutomationRuleHome | "this-computer" | null; runCount?: number },
+      options: { home?: AutomationRuleHome | "this-computer" | null },
     ): { handled: true } | { handled: false; keepHome?: AutomationRuleHome } {
       const existing = accountRule(rule.id);
       if (existing?.needsNewerAde) {
@@ -389,11 +416,16 @@ export function createAutomationRuleAccountSync(args: {
       }
       if (isChatScopedAutomationRule(rule) || !store.scope()) return { handled: false };
       const fileCopy = args.readFileRules().find((entry) => entry.id === rule.id);
+      if (belongsToAnotherAccount(rule.id)) {
+        // Saved for another account: it stays here until that account is back.
+        if (options.home) throw new Error("This automation belongs to another ADE account. Sign in to that account to change which computer runs it.");
+        return { handled: false, keepHome: fileCopy?.home };
+      }
       if (!existing) {
         // A new rule, or one still waiting in the file: filed in the account
         // now when it can be, else kept in the file to move later.
-        if (!canFollow(rule) || !store.signedIn()) return { handled: false };
-        const home = options.home ? resolveHome(options.home, undefined, undefined) : store.thisComputerHome();
+        if (!canFollow(rule) || !store.signedIn() || !store.hasSynced()) return { handled: false };
+        const home = options.home ? resolveHome(options.home, undefined) : store.thisComputerHome();
         if (!home || !fileInAccount(rule, home)) return { handled: false };
         store.addPending({ ruleId: rule.id, rule: content(rule) as ConfigAutomationRule & Record<string, unknown>, home });
         if (fileCopy) args.writeFileRules(args.readFileRules().filter((entry) => entry.id !== rule.id));
@@ -404,7 +436,7 @@ export function createAutomationRuleAccountSync(args: {
         throw new Error(`This automation is too large to follow your ADE account (${size} KB; the limit is 16 KB). Shorten its prompt or steps.`);
       }
       const currentHome = existing.rule.home;
-      const requestedHome = options.home ? resolveHome(options.home, currentHome, options.runCount) : null;
+      const requestedHome = options.home ? resolveHome(options.home, currentHome) : null;
       if (!store.signedIn()) {
         if (requestedHome && requestedHome.deviceId !== currentHome?.deviceId) {
           throw new Error("Sign in to ADE to change which computer runs this automation.");
@@ -427,6 +459,16 @@ export function createAutomationRuleAccountSync(args: {
       if (fileCopy) args.writeFileRules(args.readFileRules().filter((entry) => entry.id !== rule.id));
       store.clearOfflineSave([rule.id]);
       return { handled: true };
+    },
+
+    /**
+     * Record runs counted so far for a rule with a run limit, so the limit
+     * holds when the rule moves. Only a higher count is written.
+     */
+    recordRunCount(ruleId: string, count: number): void {
+      const current = accountRule(ruleId);
+      if (!current || (current.runCount ?? 0) >= count) return;
+      store.writeRunCount(ruleId, count);
     },
 
     /** Delete a rule from the account. Undefined when the account does not hold it. */

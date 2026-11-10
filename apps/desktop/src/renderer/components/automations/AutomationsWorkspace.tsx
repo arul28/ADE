@@ -32,6 +32,7 @@ import { TemplateGallery } from "./templates/TemplateGallery";
 import { RuleMachineField } from "./builder/RuleMachineField";
 import { machineRuleKey, ruleListKey, useAutomationMachines, type MachineRule } from "./useAutomationMachines";
 import { followsAccount, ruleElsewhereReason, ruleSyncLine } from "./ruleSync";
+import { AUTOMATION_HOME_HANDOVER_MINUTES } from "../../../shared/automationHome";
 import type { LaneMachine } from "../../state/laneMachineRouting";
 import { onMachine } from "../../state/projectMachines";
 import { parseMachineScopedId } from "../../state/foreignMachineReads";
@@ -242,6 +243,12 @@ export function AutomationsWorkspace({
    */
   const [draftRehomeChosen, setDraftRehomeChosen] = useState(false);
   const loadedRuleKeyRef = useRef<string | null>(null);
+  /**
+   * The machine the loaded rule was read from. A rule that follows the
+   * account keeps one key on every machine, and its entry moves to its home
+   * when the home answers after the others; "Runs on" then follows it.
+   */
+  const loadedRuleMachineRef = useRef<string | null>(null);
   const [draftMachineSuites, setDraftMachineSuites] = useState<TestSuiteDefinition[] | null>(null);
   const [draftMachineIngress, setDraftMachineIngress] = useState<AutomationIngressStatus | null>(null);
   /** Bumped to re-read the draft machine's suites and ingress status. */
@@ -391,10 +398,12 @@ export function AutomationsWorkspace({
     if (isDirtyRef.current) return;
     const selectedEntry = entryByKey.get(selectedRuleId);
     if (!selectedEntry) return;
-    // The machine is set when a rule is opened, not on every refresh: a
-    // pending move (the "Runs on" field changed) must survive a list refresh.
-    if (loadedRuleKeyRef.current !== selectedRuleId) {
+    // The machine is set when a rule is opened (or its entry moves to its
+    // home), not on every refresh: a pending move (the "Runs on" field
+    // changed) makes the draft dirty, and the guard above keeps it.
+    if (loadedRuleKeyRef.current !== selectedRuleId || loadedRuleMachineRef.current !== selectedEntry.machine.machineId) {
       loadedRuleKeyRef.current = selectedRuleId;
+      loadedRuleMachineRef.current = selectedEntry.machine.machineId;
       const nextTarget = selectedEntry.machine.isActiveBinding ? null : selectedEntry.machine;
       setDraftTarget(nextTarget);
       setDraftOrigin({ machine: nextTarget });
@@ -551,7 +560,7 @@ export function AutomationsWorkspace({
       const ok = await confirmDialog({
         title: `Run "${ruleDraft.name || "this automation"}" on ${toName}?`,
         message: [
-          `${savedRule.home?.name ?? fromName} stops within a minute, and ${toName} starts two minutes after you save, so the two never overlap. Every computer still shows the rule.`,
+          `${toName} starts it ${AUTOMATION_HOME_HANDOVER_MINUTES} minutes after you save, once ${savedRule.home?.name ?? fromName} has surely stopped, so the two never run it at once. Run now works right away, and every computer still shows the rule.`,
           `Its run history stays on ${savedRule.home?.name ?? fromName}.`,
         ].join("\n\n"),
         confirmLabel: "Change",

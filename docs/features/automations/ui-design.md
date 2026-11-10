@@ -215,9 +215,11 @@ from `ruleSync.ts` (`ruleSyncLine`, `ruleElsewhereReason`):
   the tooltip, when the rule runs elsewhere.
 - **Runs on.** The picker names an unreachable home as "<name> (not connected
   to this window)". One line under it: "Synced · runs only on this computer",
-  "Moving here · starts by 10:23 PM", or the kept-here reason. Picking another
-  machine for a synced rule says the old one stops within a minute and the new
-  one starts two minutes after saving.
+  "Moving here · starts by 10:23 PM", "Paused here · can't reach your ADE
+  account" (the lease ran out), or the kept-here reason, which wins over the
+  synced line. Picking another machine for a synced rule says the new one
+  starts it `AUTOMATION_HOME_HANDOVER_MINUTES` (12) minutes after saving, once
+  the old one has surely stopped; the confirm dialog uses the same constant.
 - **Banners** (inline, over the builder): "Made with a newer ADE" (Save, Test
   and Run now disabled) and "This computer is missing something this
   automation needs" with each gap on its own line.

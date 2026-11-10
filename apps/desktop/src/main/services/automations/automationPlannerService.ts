@@ -1265,7 +1265,6 @@ export function createAutomationPlannerService({
     list: () => { id: string }[];
     syncFromConfig: () => void;
     assertWebhookGatewayReadyForRule?: (rule: Pick<AutomationRule, "name" | "triggers" | "trigger">) => void;
-    homeRunCount?: (id: string) => number | undefined;
     noteRunOnChanged?: () => void;
   };
 }) {
@@ -1540,8 +1539,6 @@ export function createAutomationPlannerService({
       const homeBefore = idRaw ? projectConfigService.get().effective.automations.find((r) => r.id === id)?.home?.deviceId ?? null : null;
       projectConfigService.saveAutomationRule(nextRule as ConfigAutomationRule, {
         home: req.draft.home,
-        // A change of home hands on this computer's run count, so a run limit holds.
-        ...(req.draft.home && idRaw ? { runCount: automationService.homeRunCount?.(id) } : {}),
       });
       automationService.syncFromConfig();
 

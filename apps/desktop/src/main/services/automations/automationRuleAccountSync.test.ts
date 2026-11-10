@@ -66,6 +66,7 @@ async function createComputer(args: {
   relay: ReturnType<typeof createRelay>;
   rules?: unknown[];
   user?: { id: string | null };
+  clock?: { now: number };
 }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `ade-rules-${args.name}-`));
   roots.push(root);
@@ -93,6 +94,7 @@ async function createComputer(args: {
     accountUserId: () => user.id,
     statePath: path.join(adeDir, "automation-rules.state.json"),
     logger: silent,
+    ...(args.clock ? { now: () => args.clock!.now } : {}),
   });
   config.setAutomationRuleStore(store);
   /** What the brain does after each sync: move, then claim and confirm. */
@@ -120,7 +122,14 @@ describe("automation rules that follow the account", () => {
     const a = await createComputer({ name: "mac-a", relay, rules: [rule("nightly", "A's review")] });
     const b = await createComputer({ name: "mac-b", relay, rules: [rule("nightly", "B's review")] });
 
-    // Both move their local rule before either has pulled the other's.
+    // Nothing moves before a first sync: an unsynced copy could not see a
+    // rule another computer already filed under the same id.
+    expect(a.config.migrateAutomationRulesToAccount().moved).toBe(0);
+    expect(a.fileRuleIds()).toEqual(["nightly"]);
+    // Both have synced once and move their local rule before either has
+    // pulled the other's.
+    await a.account.sync();
+    await b.account.sync();
     a.config.migrateAutomationRulesToAccount();
     b.config.migrateAutomationRulesToAccount();
     await a.account.sync();
@@ -144,7 +153,9 @@ describe("automation rules that follow the account", () => {
     const relay = createRelay();
     const a = await createComputer({ name: "mac-a", relay });
     const b = await createComputer({ name: "mac-b", relay });
+    await settleAll(a, b);
     b.config.saveAutomationRule(rule("triage", "first") as never);
+    b.config.recordAutomationRunCount("triage", 2);
     await settleAll(b, a);
     expect(a.rules().triage.runsHere).toBe(false);
 
@@ -152,7 +163,7 @@ describe("automation rules that follow the account", () => {
     // rule over from its older view. A's later write must not undo B's edit.
     b.config.saveAutomationRule({ ...b.stored("triage")!, prompt: "edited on B" });
     await b.account.sync();
-    a.config.saveAutomationRule(a.stored("triage")!, { home: "this-computer", runCount: 0 });
+    a.config.saveAutomationRule(a.stored("triage")!, { home: "this-computer" });
     await settleAll(a, b);
 
     const onA = a.rules().triage;
@@ -160,8 +171,10 @@ describe("automation rules that follow the account", () => {
     expect(onA.home?.deviceId).toBe("mac-a");
     expect(onA.runsHere).toBe(true);
     expect(b.rules().triage.runsHere).toBe(false);
-    // The new home waits for the old one to stop before triggered runs.
-    expect(Date.parse(onA.homeStartsAt!)).toBeGreaterThan(Date.now());
+    // The new home waits past the old home's lease before triggered runs,
+    // and the runs B counted still count against the rule's limit on A.
+    expect(Date.parse(onA.homeStartsAt!)).toBeGreaterThan(Date.now() + 5 * 60_000);
+    expect(onA.accountRunCount).toBe(2);
   });
 
   it("does not let a stale config save delete, undo or bring back a rule", async () => {
@@ -207,16 +220,23 @@ describe("automation rules that follow the account", () => {
     expect(a.account.get(SCOPE, "automations.rule.future")).toEqual(future);
   });
 
-  it("keeps running rules while signed out and moves an edit only into its own account", async () => {
+  it("stops starting rules once out of touch, and moves a signed-out edit only into its own account", async () => {
     const relay = createRelay();
     const user = { id: "user-1" as string | null };
-    const a = await createComputer({ name: "mac-a", relay, user });
+    const clock = { now: Date.now() };
+    const a = await createComputer({ name: "mac-a", relay, user, clock });
+    await settleAll(a);
     a.config.saveAutomationRule(rule("nightly", "first") as never);
     await settleAll(a);
     a.rules(); // A signed-in read leaves this computer's copy.
 
+    // Signed out, it keeps its rules within the lease, then stops starting
+    // them: another computer may have taken them over meanwhile.
     user.id = null;
     expect(a.rules().nightly.runsHere).toBe(true);
+    expect(a.rules().nightly.homeOutOfTouch).toBeUndefined();
+    clock.now += 11 * 60_000;
+    expect(a.rules().nightly.homeOutOfTouch).toBe(true);
     a.config.saveAutomationRule({ ...a.stored("nightly")!, prompt: "offline edit" });
     expect(a.rules().nightly.localReason).toBe("signed-out");
     expect(() => a.config.deleteAutomationRule("nightly")).toThrow(/Sign in/);

@@ -4,6 +4,7 @@ import { SmartTooltip } from "../../ui/SmartTooltip";
 import { inputCls } from "../designTokens";
 import type { LaneMachine } from "../../../state/laneMachineRouting";
 import type { RuleSyncLine } from "../ruleSync";
+import { AUTOMATION_HOME_HANDOVER_MINUTES } from "../../../../shared/automationHome";
 
 /**
  * "Runs on [machine ▾]" — the machine a rule runs on, as part of the recipe.
@@ -91,8 +92,8 @@ export function RuleMachineField({
         </div>
       ) : moving && followsAccount ? (
         <div className="text-[10.5px] text-muted-fg/60" data-testid="automation-machine-moving">
-          Saving hands it to {selected?.machineName ?? "the new machine"}. {savedName ?? "Its machine"} stops within a minute,
-          and {selected?.machineName ?? "the new machine"} starts two minutes after you save. Run history stays on {savedName ?? "the old machine"}.
+          Saving hands it to {selected?.machineName ?? "the new machine"}, which starts it {AUTOMATION_HOME_HANDOVER_MINUTES} minutes
+          after you save, once {savedName ?? "its machine"} has surely stopped. Run history stays on {savedName ?? "the old machine"}.
         </div>
       ) : moving ? (
         <div className="text-[10.5px] text-muted-fg/60" data-testid="automation-machine-moving">

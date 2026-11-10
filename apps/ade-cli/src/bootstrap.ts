@@ -3309,9 +3309,13 @@ export async function createAdeRuntime(args: {
     if (automationService) {
       // A rule edited, added, deleted or re-homed on another computer reaches
       // this one through the account store; reschedule and tell the editor.
-      let lastAccountRules = projectConfigService.accountAutomationRulesFingerprint();
+      // The account's rows and `.ade/local.yaml` together: a move that only
+      // drops a file copy changes which rules run here without touching the account.
+      const automationRulesFingerprint = () =>
+        `${projectConfigService.accountAutomationRulesFingerprint() ?? ""}|${projectConfigService.get().trust.localHash}`;
+      let lastAccountRules = automationRulesFingerprint();
       onAccountAutomationRulesChangedRef = () => {
-        const next = projectConfigService.accountAutomationRulesFingerprint();
+        const next = automationRulesFingerprint();
         if (next === lastAccountRules) return;
         lastAccountRules = next;
         try {

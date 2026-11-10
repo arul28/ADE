@@ -22,12 +22,14 @@ the machine that runs it, and **Runs on** only changes its home.
 Rules are stored in the account, per repository, so a rule made on one
 computer shows on every computer that opens the same repository. The brain's
 account settings store (`accountSettingsStore`, the store lane templates and
-the CTO home use) holds two rows per rule under `repo:<host>/<owner>/<repo>`:
-`automations.rule.<id>` (the rule) and `automations.home.<id>` (the computer
-that runs it). One row per rule rather than one list, and the home in its own
-row, because the store keeps the strictly newer stamp per key: a list saved on
-one computer would drop a rule another had just added, and a home inside the
-rule would let an edit on one computer undo a change of home on another.
+the CTO home use) holds rows per rule under `repo:<host>/<owner>/<repo>`:
+`automations.rule.<id>` (the rule), `automations.home.<id>` (the computer that
+runs it) and, for a rule with a run limit, `automations.runs.<id>` (runs
+counted so far). One row per rule rather than one list, and the home and the
+count in rows of their own, because the store keeps the strictly newer stamp
+per key: a list saved on one computer would drop a rule another had just
+added, and a home inside the rule would let an edit on one computer undo a
+change of home on another.
 
 Storage is `automations/automationRuleAccountStore.ts`; the rules' account
 side (merge with `local.yaml`, saves, moves, confirmations) is
@@ -45,6 +47,13 @@ account sync, runs `migrateAutomationRulesToAccount` then
   rules (`listRunnableRules`, plus a check in `runRule`), the ingress
   `listRules` is filtered the same way, and Run now elsewhere refuses with
   "runs on <computer>". Other computers show, edit, enable and delete it.
+- **The lease.** A home starts a synced rule on a trigger only while it has
+  synced with the account in the last `AUTOMATION_HOME_LEASE_MS` (10 minutes,
+  `shared/automationHome.ts`). A home that is offline or signed out longer
+  than that cannot know whether another computer took the rule over, so it
+  marks it `homeOutOfTouch` ("Paused here · can't reach your ADE account") and
+  stops starting it until it syncs again. Run now still works. A brain with no
+  account service (`--no-sync`) has no other computer and no lease.
 - **Changing the home.** **Runs on** in the rule editor, `saveRule` with
   `draft.home`, or `ade automations run-on <id> [--device <sync-device-id>
   --name <computer>]` (`automations.setRunOn`). Only the home row is written
@@ -52,9 +61,11 @@ account sync, runs `migrateAutomationRulesToAccount` then
   "this computer"), so the home names its own checkout; a home named for
   another computer by device id (the CLI's `--device`) has no checkout yet,
   and that computer claims it for its checkout after its next sync. The new
-  home waits `HANDOVER_MS` (2 minutes, `homeStartsAt`) before triggered runs,
-  so the old home has synced and stopped; Run now does not wait. The old
-  home's run count goes with it (`home.runCount`), so `maxRuns` holds.
+  home waits `AUTOMATION_HOME_HANDOVER_MS` (the lease plus 2 minutes, 12
+  minutes; `homeStartsAt`) before triggered runs, so the old home has either
+  seen the change or run out its lease; Run now does not wait. A rule with a
+  run limit records each run in `automations.runs.<id>`, and the new home
+  counts from there, so `maxRuns` and one-shot hold across a move.
 - **What stays on this computer** (`localReason`, shown under **Runs on** and
   on the row): rules scoped to one chat (`chat`: the chat lives here), a
   project with no remote (`no-remote`), a rule over the relay's 16 KB per
@@ -62,8 +73,10 @@ account sync, runs `migrateAutomationRulesToAccount` then
   save instead), and rules saved while signed out (`signed-out`) or under
   another account (`other-account`). A brain without the account store (the
   in-process test host) keeps everything in `local.yaml`.
-- **Moving existing rules.** Once the store has synced (and after every
-  sign-in), `local.yaml` rules move into the account and leave the file. Until
+- **Moving existing rules.** Once the store has synced in this run of ADE
+  (and after every sign-in), `local.yaml` rules move into the account and
+  leave the file; before that sync the copy may lack a rule another computer
+  filed under the same id, so nothing moves and no new rule is filed. Until
   then they show and run as before. An identical rule the account already
   holds is dropped (its home runs it); a different rule that only shares the
   id is filed as `<id>-<device>`.
@@ -81,11 +94,13 @@ account sync, runs `migrateAutomationRulesToAccount` then
 - **Signed out.** The account store hides its rows while signed out, so the
   state file keeps a copy of the account's rules, read only while signed out:
   rules keep showing and the home keeps running them. Edits made signed out
-  wait in `local.yaml` with their home and move on sign-in; changing the home
-  or deleting an account rule asks you to sign in. An edit saved under one
-  account never moves into another; switching accounts drops the store's
-  unsent writes, and confirmations bring those rules back when their account
-  signs in again.
+  wait in `local.yaml` with their home and move on sign-in, unless another
+  computer deleted the rule after the edit was made (the delete stands);
+  changing the home or deleting an account rule asks you to sign in. An edit
+  saved under one account never moves into another, by a move or by a later
+  save; switching accounts drops the store's unsent writes, and confirmations
+  bring those rules back when their account signs in again. Synced rules
+  homed here stop starting on triggers once the lease runs out.
 - **Remote changes.** When the repository's remote changes (a rename), the
   first read under the new key copies the rules from the old one; the old rows
   stay for computers still on the old remote.
@@ -97,6 +112,8 @@ account sync, runs `migrateAutomationRulesToAccount` then
 - **Machine-local gaps.** A rule homed here that names what only another
   computer has (a lane, a test suite, a folder, a webhook gateway, a webhook
   URL, a secret) lists it in `homeGaps`, shown in a banner over the editor.
+  Config validation does not reject a synced rule for a test suite this
+  computer lacks; only its home cares, and says so here.
   Secrets never move. A delivery the old home receives for a rule that moved
   is logged as "Matched '<rule>', which runs on <computer>".
 
