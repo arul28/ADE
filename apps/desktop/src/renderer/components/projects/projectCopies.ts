@@ -193,6 +193,36 @@ export function existingCopiesForRepo(
   return copies;
 }
 
+/**
+ * Whether any copy of `repoKey` may still exist on any machine once the
+ * entries in `gone` are removed. Every copy counts, not one per machine: a
+ * second copy on the same machine, a copy whose folder is missing, a copy on a
+ * machine that is offline or runs an older ADE. A machine that is not
+ * connected and whose project list ADE does not know may hold one.
+ */
+export function repoCopyMayRemain(
+  repoKey: string,
+  sources: {
+    recents: readonly RecentProjectSummary[];
+    snapshot: RemoteRuntimeConnectionSnapshot | null | undefined;
+  },
+  gone: ReadonlySet<string>,
+): boolean {
+  for (const recent of sources.recents) {
+    if (recent.kind === "remote" || recent.worktreeOf) continue;
+    if (repoKeyForUrl(recent.gitOriginUrl) === repoKey && !gone.has(recent.rootPath)) return true;
+  }
+  for (const connection of sources.snapshot?.connections ?? []) {
+    const projects = connection.projects ?? [];
+    if (connection.state !== "connected" && projects.length === 0) return true;
+    const remains = projects.some((project) =>
+      repoKeyForUrl(project.gitOriginUrl) === repoKey
+      && !gone.has(`remote:${connection.target.id}:${project.projectId}`));
+    if (remains) return true;
+  }
+  return false;
+}
+
 export type CopyFailureKind =
   | "github_sign_in"
   | "folder_exists"

@@ -78,6 +78,12 @@ import type { InstalledBrowser } from "../shared/browserTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
+import type {
+  ProjectRemovalOutcome,
+  ProjectRemovalReport,
+  ProjectRemovalRequest,
+  RemoteProjectRemovalInspection,
+} from "../shared/projectRemoval";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
@@ -5219,6 +5225,10 @@ const adeBridge = {
         }
       });
     },
+    inspectRemoval: async (rootPath: string): Promise<ProjectRemovalReport> =>
+      ipcRenderer.invoke(IPC.projectInspectRemoval, { rootPath }),
+    removeCopy: async (rootPath: string, request: ProjectRemovalRequest): Promise<ProjectRemovalOutcome> =>
+      ipcRenderer.invoke(IPC.projectRemoveCopy, { rootPath, request }),
     forgetRecent: async (keyOrRootPath: string): Promise<RecentProjectSummary[]> =>
       // For local recents the key equals the root path; for remote recents the
       // caller passes the remote key. Send both so the handler can match either.
@@ -5469,6 +5479,17 @@ const adeBridge = {
       rootPath: string,
     ): Promise<ProjectIcon | null> =>
       ipcRenderer.invoke(IPC.remoteRuntimeRemoveProjectIcon, { id, rootPath }),
+    inspectProjectRemoval: async (
+      id: string,
+      projectId: string,
+    ): Promise<RemoteProjectRemovalInspection> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeInspectProjectRemoval, { id, projectId }),
+    removeProjectCopy: async (
+      id: string,
+      projectId: string,
+      request: ProjectRemovalRequest,
+    ): Promise<ProjectRemovalOutcome> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeRemoveProjectCopy, { id, projectId, request }),
     getDefaultParentDir: async (id: string): Promise<string> =>
       ipcRenderer.invoke(IPC.remoteRuntimeGetDefaultParentDir, { id }),
     getHandoffStoragePreflight: async (
@@ -13142,6 +13163,10 @@ const adeBridge = {
       args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
     ): Promise<AccountSettingsResult<null>> =>
       ipcRenderer.invoke(IPC.accountSettingsSet, args),
+    remove: (
+      args: { scope: string; key: string } & AccountSettingsWriteOptions,
+    ): Promise<AccountSettingsResult<null>> =>
+      ipcRenderer.invoke(IPC.accountSettingsRemove, args),
     sync: (): Promise<AccountSettingsResult<null>> =>
       ipcRenderer.invoke(IPC.accountSettingsSync),
     onChanged: (cb: () => void): (() => void) =>

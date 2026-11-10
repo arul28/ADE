@@ -5,6 +5,7 @@ import {
   CircleNotch,
   Desktop,
   RadioButton,
+  Trash,
   UploadSimple,
   XCircle,
 } from "@phosphor-icons/react";
@@ -45,6 +46,7 @@ export function ProjectCopiesMenu({
   onSwitch,
   onAddCopy,
   onPublish,
+  onRemove,
   onClose,
 }: {
   menu: FixedAnchor | null;
@@ -60,6 +62,8 @@ export function ProjectCopiesMenu({
   onAddCopy: (machine: CopyMachine) => void;
   /** Offered with the "only on one machine" line when Publish can run. */
   onPublish: (() => void) | null;
+  /** Opens the remove dialog; null where removing cannot run (the hosted web client). */
+  onRemove: (() => void) | null;
   onClose: () => void;
 }) {
   const open = menu != null;
@@ -149,7 +153,23 @@ export function ProjectCopiesMenu({
           ) : null}
         </>
       ) : null}
-      {/* Package 3b adds "Remove project…" here, under its own separator. */}
+      {onRemove ? (
+        <>
+          <MenuSeparator />
+          <button
+            type="button"
+            role="menuitem"
+            className={ROW_CLASS}
+            onClick={() => {
+              onClose();
+              onRemove();
+            }}
+          >
+            <Trash size={13} weight="duotone" aria-hidden className="shrink-0 text-fg/45" />
+            Remove project…
+          </button>
+        </>
+      ) : null}
     </ContextMenuSurface>
   );
 }

@@ -37,8 +37,15 @@ import type { CloneLocallyTarget } from "../projects/CloneLocallyDialog";
 import { cloneTargetFor, projectMenuSections } from "../projects/projectMenuEntries";
 import { ProjectCopiesMenu, type CopiesMenuRow } from "../projects/ProjectCopiesMenu";
 import {
+  RemoveProjectDialog,
+  type RemovalCopy,
+  type RemoveProjectResult,
+  type RemoveProjectTarget,
+} from "../projects/RemoveProjectDialog";
+import {
   copyMachines,
   existingCopiesForRepo,
+  repoCopyMayRemain,
   repoKeyForOriginIdentity,
   repoKeyForUrl,
   type CopyMachine,
@@ -53,7 +60,11 @@ import {
   subscribeProjectIcon,
 } from "../../lib/projectIconCache";
 import { useProjectRecords } from "../../lib/useProjectRecords";
-import { projectRecordScope } from "../../../shared/projectRecord";
+import {
+  PROJECT_RECORD_ICON_KEY,
+  PROJECT_RECORD_NAME_KEY,
+  projectRecordScope,
+} from "../../../shared/projectRecord";
 
 import { useAppStore } from "../../state/appStore";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
@@ -1957,9 +1968,9 @@ export function TopBar({
     [handleClonedLocally, startCopyForRepo],
   );
 
-  const copiesMenuModel = useMemo(() => {
-    if (!copiesMenu) return null;
-    const group = tabGroups.find((entry) => entry.id === copiesMenu.groupId);
+  /** The copies of one tab's repository, one row per machine: what the copies menu and the remove dialog show. */
+  const copiesModelFor = useCallback((groupId: string) => {
+    const group = tabGroups.find((entry) => entry.id === groupId);
     const active = group ? activeMachineForGroup(group) : null;
     if (!group || !active) return null;
     const repoKey = repoKeyForOriginIdentity(group.origin);
@@ -2016,7 +2027,6 @@ export function TopBar({
     }
     return { group, projectName, repoKey, rows, onlyOneMachine: null, canPublish: false };
   }, [
-    copiesMenu,
     hasOrigin,
     project?.rootPath,
     recentProjects,
@@ -2026,6 +2036,137 @@ export function TopBar({
     webMode,
     workspaceProjectOpen,
   ]);
+  const copiesMenuModel = useMemo(
+    () => (copiesMenu ? copiesModelFor(copiesMenu.groupId) : null),
+    [copiesMenu, copiesModelFor],
+  );
+
+  // The remove dialog of one tab ("Remove project…" in its copies menu and
+  // its right-click menu). The hosted web client has no remove: it cannot
+  // reach a machine's folders.
+  const [removeTarget, setRemoveTarget] = useState<
+    (RemoveProjectTarget & { groupId: string; recordScope: string | null }) | null
+  >(null);
+  const closeRemoveDialog = useCallback(() => setRemoveTarget(null), []);
+  const openRemoveDialog = useCallback((groupId: string) => {
+    const model = copiesModelFor(groupId);
+    if (!model) return;
+    const toCopy = (row: CopiesMenuRow): RemovalCopy | null => {
+      if (!row.copy) return null;
+      const prefix = row.machine.targetId ? `remote:${row.machine.targetId}:` : null;
+      return {
+        machine: row.machine,
+        rootPath: row.copy.rootPath,
+        bindingKey: row.copy.bindingKey,
+        projectId: prefix && row.copy.bindingKey.startsWith(prefix) ? row.copy.bindingKey.slice(prefix.length) : null,
+      };
+    };
+    const copies = model.rows.map(toCopy).filter((copy): copy is RemovalCopy => copy !== null);
+    const inUseKey = model.rows.find((row) => row.inUse)?.copy?.bindingKey ?? null;
+    const current = copies.find((copy) => copy.bindingKey === inUseKey) ?? copies[0];
+    if (!current) return;
+    setRemoveTarget({
+      groupId,
+      recordScope: model.repoKey ? projectRecordScope(model.group.origin ?? null) : null,
+      projectName: model.projectName,
+      repoKey: model.repoKey,
+      current,
+      copies,
+    });
+  }, [copiesModelFor]);
+
+  /**
+   * After a removal: the tab moves to another copy of the repository when
+   * one remains (resolveProjectTabFallback), else it closes. A copy whose
+   * result is not known keeps its tab. "Remove from all my machines" also
+   * clears the repository's shared name and icon, but only when no copy of
+   * it may remain on any machine.
+   */
+  const handleProjectCopiesRemoved = useCallback(
+    async (groupId: string, recordScope: string | null, repoKey: string | null, result: RemoveProjectResult) => {
+      const removed = new Set(result.removedBindingKeys);
+      if (removed.size === 0) return;
+      // This computer's recents: the main process already forgot its own
+      // copy; another machine's copy is forgotten here.
+      for (const key of removed) {
+        if (key.startsWith("remote:")) await window.ade.project.forgetRecent(key).catch(() => null);
+      }
+      const freshRecents = await listRecentProjectsCached({ force: true }).catch(() => null);
+      if (freshRecents) setRecentProjects(freshRecents);
+      const clearRecord = result.scope === "all"
+        && recordScope !== null
+        && repoKey !== null
+        && freshRecents !== null
+        && result.unknownBindingKeys.length === 0
+        && !result.cloneRunning
+        && !repoCopyMayRemain(repoKey, { recents: freshRecents, snapshot: remoteSnapshotRef.current }, removed);
+      if (clearRecord) {
+        const removeSetting = window.ade.accountSettings?.remove;
+        for (const key of [PROJECT_RECORD_NAME_KEY, PROJECT_RECORD_ICON_KEY]) {
+          void removeSetting?.({ scope: recordScope, key }).catch(() => undefined);
+        }
+      }
+
+      const group = tabGroupsRef.current.find((entry) => entry.id === groupId);
+      if (!group) return;
+      const openLocal = openProjectTabRootsRef.current;
+      const openRemote = openRemoteProjectTabsRef.current;
+      const removedOpen = group.machines.filter((machine) =>
+        removed.has(machine.bindingKey)
+        && (openLocal.includes(machine.bindingKey) || openRemote.some((entry) => entry.key === machine.bindingKey)));
+      if (removedOpen.length === 0) return;
+      const remaining = group.machines.filter((machine) => !removed.has(machine.bindingKey));
+      const connectedTargetIds = new Set(
+        (remoteSnapshotRef.current?.connections ?? [])
+          .filter((connection) => connection.state === "connected")
+          .map((connection) => connection.target.id),
+      );
+      const fallback = resolveProjectTabFallback({
+        bindingKey: removedOpen[0]!.bindingKey,
+        groups: [{ ...group, machines: [removedOpen[0]!, ...remaining] }],
+        openLocalRoots: openLocal,
+        openRemoteBindingKeys: openRemote.map((entry) => entry.key),
+        connectedTargetIds,
+        excludeTargetId: "",
+      });
+      if (!fallback) {
+        await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+        return;
+      }
+      const state = useAppStore.getState();
+      const activeKey = state.projectBinding?.kind === "remote" ? state.projectBinding.key : state.project?.rootPath ?? null;
+      try {
+        if (activeKey && removed.has(activeKey)) {
+          if (fallback.kind === "local") await state.switchProjectToPath(fallback.rootPath);
+          else await state.switchRemoteProject(fallback.binding.targetId, fallback.binding.projectId);
+        }
+      } catch {
+        // The switch failed: the tab closes rather than pointing at a removed copy.
+        await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+        return;
+      }
+      const nextRemote = [
+        ...openRemoteProjectTabsRef.current.filter((entry) => !removed.has(entry.key)),
+        ...(fallback.kind === "remote" && !openRemoteProjectTabsRef.current.some((entry) => entry.key === fallback.binding.key)
+          ? [fallback.binding]
+          : []),
+      ];
+      openRemoteProjectTabsRef.current = nextRemote;
+      setOpenRemoteProjectTabs(nextRemote);
+      setOpenProjectTabRoots((prev) => {
+        const next = prev.filter((root) => !removed.has(root));
+        if (fallback.kind === "local" && !next.includes(fallback.rootPath)) next.push(fallback.rootPath);
+        return next;
+      });
+      const removedRemoteKeys = new Set([...removed].filter((key) => key.startsWith("remote:")));
+      forgetExplicitRemotePicks(removedRemoteKeys);
+      for (const key of removedRemoteKeys) {
+        useAppStore.getState().evictProjectState(key);
+        removeStoredProjectRoute(key);
+      }
+    },
+    [closeTabGroups, setOpenProjectTabRoots, setOpenRemoteProjectTabs],
+  );
 
   const handleCopiesMenuSwitch = useCallback(
     (row: CopiesMenuRow) => {
@@ -2148,6 +2289,16 @@ export function TopBar({
         onSelect: () => void window.ade.app.writeClipboardText(machine.displayName).catch(() => {}),
       },
       { kind: "separator", key: "sep-close" },
+      ...(!webMode
+        ? [{
+            kind: "item" as const,
+            key: "remove-project",
+            label: "Remove project…",
+            icon: Trash,
+            disabled: isProjectBusy,
+            onSelect: () => openRemoveDialog(group.id),
+          }]
+        : []),
       {
         kind: "item",
         key: "close",
@@ -2182,6 +2333,7 @@ export function TopBar({
     addLocalCopyFromTab,
     closeTabGroups,
     cloneTargetForGroup,
+    openRemoveDialog,
     handleMoveTabToNewWindow,
     hostIconByKey,
     isProjectBusy,
@@ -2971,6 +3123,19 @@ export function TopBar({
         label="Project tab"
       />
       <ProjectIconDialog target={iconDialogTarget} onClose={closeIconDialog} />
+      {removeTarget ? (
+        <RemoveProjectDialog
+          key={removeTarget.groupId}
+          target={removeTarget}
+          onClose={closeRemoveDialog}
+          onRemoved={(result) => void handleProjectCopiesRemoved(
+            removeTarget.groupId,
+            removeTarget.recordScope,
+            removeTarget.repoKey,
+            result,
+          )}
+        />
+      ) : null}
       <ProjectCopiesMenu
         menu={copiesMenuModel && copiesMenu ? { x: copiesMenu.x, y: copiesMenu.y } : null}
         projectName={copiesMenuModel?.projectName ?? ""}
@@ -2985,6 +3150,9 @@ export function TopBar({
           startCopyForRepo(copiesMenuModel.repoKey, copiesMenuModel.projectName, machine);
         }}
         onPublish={copiesMenuModel?.canPublish && !isProjectBusy ? () => setPublishOpen(true) : null}
+        onRemove={!webMode && copiesMenuModel && !isProjectBusy
+          ? () => openRemoveDialog(copiesMenuModel.group.id)
+          : null}
         onClose={closeCopiesMenu}
       />
       <PublishToGitHubDialog

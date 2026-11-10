@@ -1,4 +1,10 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
+import type {
+  ProjectRemovalOutcome,
+  ProjectRemovalReport,
+  ProjectRemovalRequest,
+  RemoteProjectRemovalInspection,
+} from "../shared/projectRemoval";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
 import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
@@ -1453,6 +1459,10 @@ declare global {
         }) => Promise<{ rootPath: string; displayName: string } | null>;
         closeCurrent: () => Promise<void>;
         switchToPath: (rootPath: string) => Promise<ProjectInfo>;
+        /** The state of this computer's copy, for the remove dialog. */
+        inspectRemoval?: (rootPath: string) => Promise<ProjectRemovalReport>;
+        /** Removes this computer's entry for a project and, when asked, moves its folder to the Trash. */
+        removeCopy?: (rootPath: string, request: ProjectRemovalRequest) => Promise<ProjectRemovalOutcome>;
         forgetRecent: (keyOrRootPath: string) => Promise<RecentProjectSummary[]>;
         reorderRecent: (
           orderedKeys: string[],
@@ -1635,6 +1645,17 @@ declare global {
           id: string,
           rootPath: string,
         ) => Promise<ProjectIcon | null>;
+        /** The state of the host's copy, for the remove dialog. Only for a connected machine; never wakes one. */
+        inspectProjectRemoval?: (
+          id: string,
+          projectId: string,
+        ) => Promise<RemoteProjectRemovalInspection>;
+        /** Removes the host's entry for a project and, when asked, deletes its folder there for good. */
+        removeProjectCopy?: (
+          id: string,
+          projectId: string,
+          request: ProjectRemovalRequest,
+        ) => Promise<ProjectRemovalOutcome>;
         getDefaultParentDir: (id: string) => Promise<string>;
         getHandoffStoragePreflight: (
           id: string,
@@ -4790,6 +4811,10 @@ declare global {
         get: (args: { scope: string; key: string }) => Promise<AccountSettingsResult<unknown>>;
         set: (
           args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
+        ) => Promise<AccountSettingsResult<null>>;
+        /** Deletes a key on every machine of the account; a reader then sees it as never set. */
+        remove?: (
+          args: { scope: string; key: string } & AccountSettingsWriteOptions,
         ) => Promise<AccountSettingsResult<null>>;
         sync: () => Promise<AccountSettingsResult<null>>;
         onChanged?: (listener: () => void) => () => void;

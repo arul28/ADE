@@ -1064,7 +1064,22 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   machine drops its own override and shows the detected icon. A record write
   the store cannot take (signed out, brain down) stays pending in
   `.ade/project-record.json`; that machine shows it, and the next record read
-  or write that reaches the store sends it first. It also serves
+  or write that reaches the store sends it first. `projects.inspectRemoval`
+  reports the state of the host's copy of a project for the remove dialog
+  (changed files and commits no remote has in the main folder and every
+  lane worktree, stashes, ignored `.env` files by name, live chats and
+  terminals). `projects.removeCopy` (cto role, never an agent; another
+  machine reaches it only over the runtime channel, which needs
+  `runtimeHostGranted`) removes the entry and, with `deleteFolder`, the
+  folder: it reads the state again, refuses when it no longer matches the
+  `stateToken` the person saw (or shows work the person did not accept, or
+  something runs), checks that the folder is exactly a registered root that
+  holds no home folder, ADE home, other project or running ADE, stops the
+  project, moves the folder aside in one rename and deletes it for good, then
+  drops the entry. Lane worktrees outside the project folder stay. The
+  desktop's own computer asks with `folderMode: "caller"` and moves the folder
+  to the Trash itself. Older hosts lack `machineProjects.removeCopy`; the
+  desktop then offers only entry removal through `projects.remove`. It also serves
   `machine.updateAndRestart` (cto role, runtime endpoint only) and hosts the
   `ProjectlessSyncControls` fallback for `sync.*` on a machine with no project —
   see [sync and multi-device](../sync-and-multi-device/README.md#sync-on-a-machine-with-no-project).

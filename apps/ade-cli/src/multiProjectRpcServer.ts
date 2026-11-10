@@ -59,6 +59,7 @@ import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFr
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { peekSharedUsageTrackingService } from "../../desktop/src/main/services/usage/sharedUsageTracking";
 import { readProjectFolderPresence, readProjectFolderStates } from "./services/projects/projectFolderPresence";
+import { createProjectCopyRemoval } from "./services/projects/projectCopyRemoval";
 import {
   clearProjectIconOverride,
   decodeProjectIconUpload,
@@ -634,6 +635,8 @@ const RUNTIME_METHODS = new Set([
   "projects.add",
   "projects.setCatalogVisibility",
   "projects.remove",
+  "projects.inspectRemoval",
+  "projects.removeCopy",
   "projects.pruneMissing",
   "projects.touch",
   "projects.setIcon",
@@ -1652,16 +1655,26 @@ export function createMultiProjectRpcRequestHandler(
     "function"
       ? scopeRegistry.onDispose(disposeProjectRuntimeCaches)
       : null;
-  /** Forgets a project: its booted scope, this connection's handler, then its registry entry. Never its folder. */
-  const removeProject = async (projectId: ProjectId): Promise<boolean> => {
+  /** Stops a project that is being removed: its booted scope and this connection's handler. Never its entry or folder. */
+  const stopProjectForRemoval = async (projectId: ProjectId): Promise<void> => {
     const rootPath = projectRegistry.get(projectId)?.rootPath ?? null;
     // Nothing will re-adopt a removed project's devices, so they stop.
     await scopeRegistry.dispose(projectId, "unregister");
     // The stop just saved its open CLIs to reopen; a removed project keeps none.
     if (rootPath) forgetCliSessionsToReopen(rootPath);
     handlers.delete(projectId);
+  };
+  /** Forgets a project: its booted scope, this connection's handler, then its registry entry. Never its folder. */
+  const removeProject = async (projectId: ProjectId): Promise<boolean> => {
+    await stopProjectForRemoval(projectId);
     return projectRegistry.remove(projectId);
   };
+  const projectCopyRemoval = createProjectCopyRemoval({
+    projectRegistry,
+    scopeRegistry,
+    stopProject: stopProjectForRemoval,
+    adeHome: resolveMachineAdeLayout().adeDir,
+  });
   let initializedParams: Record<string, unknown> | null = null;
   let notifier: JsonRpcNotifier | null = null;
   let nextSubscriptionId = 1;
@@ -2616,6 +2629,8 @@ export function createMultiProjectRpcRequestHandler(
             clone: true,
             listMyGitHubRepos: true,
             setIcon: true,
+            // `projects.inspectRemoval` + `projects.removeCopy`.
+            removeCopy: true,
           },
           ...sdkCapabilities(),
           account: true,
@@ -3722,6 +3737,45 @@ export function createMultiProjectRpcRequestHandler(
         );
       }
       return { removed: await removeProject(projectId) };
+    }
+
+    // The state of this machine's copy of a project, for the remove dialog:
+    // changes, unpushed commits, stashes and what runs in it. Read-only, the
+    // same reach as `projects.getWorkSummary`.
+    if (method === "projects.inspectRemoval") {
+      const projectId = readProjectId(params);
+      if (!projectId || !projectRegistry.get(projectId)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.inspectRemoval requires a registered projectId.");
+      }
+      return await projectCopyRemoval.inspect(projectId);
+    }
+
+    // Removes this machine's entry for a project and, when asked, its folder.
+    // Deleting files is the person's act: an agent (a chat-bound caller) never
+    // reaches it, nor anything below the cto role. Another machine reaches it
+    // only over the runtime channel, which the sync host opens only to a
+    // computer of the same account with host rights (runtimeHostGranted).
+    if (method === "projects.removeCopy") {
+      if (!callerHasRoleAtLeast(callerRole(), "cto") || callerIdentityIsAgent(callerIdentity())) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "Removing a project is up to the person: use Remove project in ADE.",
+        );
+      }
+      const projectId = readProjectId(params);
+      if (!projectId) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.removeCopy requires projectId.");
+      }
+      const deleteFolder = params.deleteFolder === true;
+      const stateToken = readOptionalString(params.stateToken) ?? null;
+      if (deleteFolder && !stateToken) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.removeCopy with deleteFolder requires stateToken.");
+      }
+      return await projectCopyRemoval.remove(
+        projectId,
+        { deleteFolder, stateToken, acceptWork: params.acceptWork === true },
+        params.folderMode === "caller" ? "caller" : "delete",
+      );
     }
 
     if (method === "projects.pruneMissing") {

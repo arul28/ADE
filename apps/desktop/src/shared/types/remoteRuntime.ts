@@ -441,7 +441,9 @@ export type RemoteRuntimeMachineProjectCapability =
   | "clone"
   | "listMyGitHubRepos"
   /** `projects.setIcon` + `projects.removeIcon`: change a project's icon on the host. */
-  | "setIcon";
+  | "setIcon"
+  /** `projects.inspectRemoval` + `projects.removeCopy`: remove a project, and its folder, on the host. */
+  | "removeCopy";
 
 /** Icon bytes a desktop uploads to the host with `projects.setIcon`. */
 export type RemoteRuntimeProjectIconUpload = {
