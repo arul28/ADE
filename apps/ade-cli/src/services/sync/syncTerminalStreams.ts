@@ -12,13 +12,28 @@ import type {
   SyncTerminalHistoryResponsePayload,
   SyncTerminalInputAckPayload,
   SyncTerminalInputPayload,
-  SyncTerminalScreenSnapshot,
   SyncTerminalSnapshotPayload,
   SyncTerminalSubscribeError,
   SyncTerminalSubscribePayload,
 } from "../../../../desktop/src/shared/types";
 import { runWithAbortSignal } from "./abortSignal";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
+import {
+  clearTerminalSnapshotBarrier,
+  dataPayload,
+  discardTrackedTerminalDataForRecapture,
+  exitPayload,
+  MAX_PENDING_TERMINAL_SNAPSHOT_BYTES,
+  MAX_PENDING_TERMINAL_SNAPSHOT_EVENTS,
+  planTerminalSnapshotFlush,
+  type PendingTerminalSnapshotBarrier,
+  type PendingTerminalSnapshotEvent,
+  replacingSnapshotPayload,
+  requireFreshTerminalSnapshot,
+  type TerminalSessionRow,
+  type TerminalTranscriptSnapshot,
+  withTerminalScreen,
+} from "./syncTerminalSnapshotBarrier";
 
 // Terminal streaming for phone sockets: the snapshot barrier, offset resume,
 // live data and exit, history pages, resize, and acknowledged input. Both
@@ -31,40 +46,19 @@ const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
 const DEFAULT_TERMINAL_HISTORY_PAGE_BYTES = 262_144;
 const MIN_TERMINAL_HISTORY_PAGE_BYTES = 4_096;
 const MAX_TERMINAL_HISTORY_PAGE_BYTES = 524_288;
-const MAX_PENDING_TERMINAL_SNAPSHOT_EVENTS = 256;
-const MAX_PENDING_TERMINAL_SNAPSHOT_BYTES = 2_000_000;
 const MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS = 4;
-const MAX_TERMINAL_SCREEN_SERIALIZED_CHARS = 256_000;
-export const TERMINAL_INPUT_ID_MAX_CHARS = 128;
+const TERMINAL_INPUT_ID_MAX_CHARS = 128;
 
-export function normalizeTerminalInputId(value: unknown): string | null {
+// Every live ingress in this process. The host and the brain keep separate peer
+// sets, so a size restore must ask each one before it snaps a PTY back.
+const liveTerminalStreamInstances = new Set<{ isWatching(sessionId: string): boolean }>();
+
+function normalizeTerminalInputId(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const inputId = value.trim();
   if (!inputId || inputId.length > TERMINAL_INPUT_ID_MAX_CHARS) return null;
   return inputId;
 }
-
-export type PendingTerminalSnapshotEvent =
-  | {
-      kind: "data";
-      payload: SyncTerminalDataPayload;
-      byteLength: number;
-    }
-  | {
-      kind: "exit";
-      payload: SyncTerminalExitPayload;
-      byteLength: 0;
-    };
-
-export type PendingTerminalSnapshotBarrier = {
-  generation: number;
-  captureAttempt: number;
-  requiredCaptureAttempt: number;
-  requiredSnapshotEndOffset: number | null;
-  events: PendingTerminalSnapshotEvent[];
-  queuedBytes: number;
-  failed: boolean;
-};
 
 /** The services that own one project's terminals. */
 export type SyncTerminalBackend = {
@@ -157,12 +151,27 @@ type RoutedTerminal = {
   stopEvents: () => void;
 };
 
-export type SyncTerminalStreams<P extends SyncTerminalStreamPeer> = ReturnType<typeof createSyncTerminalStreams<P>>;
+type SyncTerminalStreams<P extends SyncTerminalStreamPeer> = ReturnType<typeof createSyncTerminalStreams<P>>;
 
 export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx: SyncTerminalStreamsContext<P>) {
   const routesByPeer = new WeakMap<P, Map<string, RoutedTerminal>>();
+  /**
+   * The project id a project subscribe named when it resolved to this host's
+   * own runtime (no route). Later project envelopes must name the same id.
+   * Each subscribe sets or clears it; `subscribedSessionIds` gates its use.
+   */
+  const hostedProjectIdsByPeer = new WeakMap<P, Map<string, string>>();
   const terminalInputOperationQueues = new Map<string, Promise<void>>();
   const logPrefix = ctx.logPrefix;
+  const liveInstance = {
+    isWatching(sessionId: string): boolean {
+      for (const other of ctx.peers()) {
+        if (other.subscribedSessionIds.has(sessionId) && ctx.isPeerSocketOpen(other)) return true;
+      }
+      return false;
+    },
+  };
+  liveTerminalStreamInstances.add(liveInstance);
 
   function routeFor(peer: P, sessionId: string): RoutedTerminal | undefined {
     return routesByPeer.get(peer)?.get(sessionId);
@@ -188,7 +197,13 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
   function backendForTarget(peer: P, sessionId: string, target: SyncTerminalTarget): SyncTerminalBackend | null {
     const route = routeFor(peer, sessionId);
     if (target.kind === "hosted") return route ? null : ctx.hostedBackend;
-    return route && route.projectId === target.projectId ? route.backend : null;
+    if (route) return route.projectId === target.projectId ? route.backend : null;
+    // A project subscribe that resolved to this host's own runtime installs no
+    // route; it recorded the project id it named.
+    return peer.subscribedSessionIds.has(sessionId)
+      && hostedProjectIdsByPeer.get(peer)?.get(sessionId) === target.projectId
+      ? ctx.hostedBackend
+      : null;
   }
 
   /**
@@ -198,8 +213,9 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
    * driving the viewport.
    */
   function restoreDesktopTerminalSizeIfUnwatched(sessionId: string, backend: SyncTerminalBackend | null): void {
-    for (const other of ctx.peers()) {
-      if (other.subscribedSessionIds.has(sessionId) && ctx.isPeerSocketOpen(other)) return;
+    // Each ingress in this process has its own peer set, so ask all of them.
+    for (const instance of liveTerminalStreamInstances) {
+      if (instance.isWatching(sessionId)) return;
     }
     if (!backend) return;
     try {
@@ -221,74 +237,6 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
     const currentBarrier = peer.pendingTerminalSnapshots.get(sessionId);
     return ctx.isPeerLifecycleCurrent(peer, lifecycleGeneration)
       && currentBarrier === barrier;
-  }
-
-  function clearTerminalSnapshotBarrier(
-    peer: P,
-    sessionId: string,
-    barrier?: PendingTerminalSnapshotBarrier,
-  ): void {
-    const currentBarrier = peer.pendingTerminalSnapshots.get(sessionId);
-    if (barrier && currentBarrier !== barrier) return;
-    peer.pendingTerminalSnapshots.delete(sessionId);
-  }
-
-  function requireFreshTerminalSnapshot(
-    barrier: PendingTerminalSnapshotBarrier,
-    endOffset?: number | null,
-  ): void {
-    barrier.requiredCaptureAttempt = Math.max(
-      barrier.requiredCaptureAttempt,
-      barrier.captureAttempt + 1,
-    );
-    if (typeof endOffset === "number" && Number.isSafeInteger(endOffset) && endOffset >= 0) {
-      barrier.requiredSnapshotEndOffset = Math.max(
-        barrier.requiredSnapshotEndOffset ?? 0,
-        endOffset,
-      );
-    }
-  }
-
-  function discardTrackedTerminalDataForRecapture(barrier: PendingTerminalSnapshotBarrier): void {
-    const retained: PendingTerminalSnapshotEvent[] = [];
-    let queuedBytes = 0;
-    for (const event of barrier.events) {
-      if (event.kind === "data" && event.payload.offset != null) {
-        requireFreshTerminalSnapshot(barrier, event.payload.offset);
-        continue;
-      }
-      retained.push(event);
-      queuedBytes += event.byteLength;
-    }
-    barrier.events = retained;
-    barrier.queuedBytes = queuedBytes;
-  }
-
-  function readTerminalScreenSnapshot(
-    backend: SyncTerminalBackend,
-    sessionId: string,
-  ): SyncTerminalScreenSnapshot | null {
-    const screen = backend.ptyService.readScreenSnapshot?.(sessionId) ?? null;
-    if (!screen?.serialized) return null;
-    if (screen.serialized.length > MAX_TERMINAL_SCREEN_SERIALIZED_CHARS) return null;
-    if (!Number.isFinite(screen.cols) || !Number.isFinite(screen.rows)) return null;
-    if (screen.cols < 1 || screen.rows < 1) return null;
-    return {
-      cols: Math.floor(screen.cols),
-      rows: Math.floor(screen.rows),
-      bufferType: screen.bufferType === "alternate" ? "alternate" : "normal",
-      serialized: screen.serialized,
-    };
-  }
-
-  function withTerminalScreen(
-    backend: SyncTerminalBackend,
-    sessionId: string,
-    snapshot: SyncTerminalSnapshotPayload,
-  ): SyncTerminalSnapshotPayload {
-    if (snapshot.delta === true) return snapshot;
-    const screen = readTerminalScreenSnapshot(backend, sessionId);
-    return screen ? { ...snapshot, screen } : snapshot;
   }
 
   function failTerminalSnapshotBarrier(
@@ -349,93 +297,7 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
     return true;
   }
 
-  function planTerminalSnapshotFlush(
-    barrier: PendingTerminalSnapshotBarrier,
-    snapshotEndOffset: number | null,
-  ): { needsRecapture: boolean; events: PendingTerminalSnapshotEvent[] } {
-    if (
-      barrier.requiredCaptureAttempt > barrier.captureAttempt
-      || (
-        barrier.requiredSnapshotEndOffset != null
-        && (snapshotEndOffset == null || snapshotEndOffset < barrier.requiredSnapshotEndOffset)
-      )
-    ) {
-      return { needsRecapture: true, events: [] };
-    }
-
-    const planned: PendingTerminalSnapshotEvent[] = [];
-    let watermark = snapshotEndOffset;
-    let offsetsAreContinuous = watermark != null;
-    for (const event of barrier.events) {
-      if (event.kind === "exit") {
-        planned.push(event);
-        continue;
-      }
-      const endOffset = event.payload.offset;
-      const bytes = Buffer.from(event.payload.data, "utf8");
-      if (
-        !offsetsAreContinuous
-        || endOffset == null
-        || !Number.isSafeInteger(endOffset)
-        || endOffset < bytes.length
-      ) {
-        planned.push(event);
-        offsetsAreContinuous = false;
-        continue;
-      }
-      const startOffset = endOffset - bytes.length;
-      if (endOffset <= watermark!) {
-        continue;
-      }
-      if (startOffset > watermark!) {
-        requireFreshTerminalSnapshot(barrier, endOffset);
-        discardTrackedTerminalDataForRecapture(barrier);
-        return { needsRecapture: true, events: [] };
-      }
-      const overlapBytes = watermark! - startOffset;
-      if (
-        overlapBytes > 0
-        && overlapBytes < bytes.length
-        && (bytes[overlapBytes]! & 0b1100_0000) === 0b1000_0000
-      ) {
-        requireFreshTerminalSnapshot(barrier, endOffset);
-        discardTrackedTerminalDataForRecapture(barrier);
-        return { needsRecapture: true, events: [] };
-      }
-      const suffix = overlapBytes === 0 ? bytes : bytes.subarray(overlapBytes);
-      planned.push({
-        ...event,
-        payload: {
-          ...event.payload,
-          data: suffix.toString("utf8"),
-        },
-        byteLength: suffix.length,
-      });
-      watermark = endOffset;
-    }
-    return { needsRecapture: false, events: planned };
-  }
-
   // --- Live output -----------------------------------------------------------
-
-  function dataPayload(event: PtyDataEvent): SyncTerminalDataPayload {
-    return {
-      sessionId: event.sessionId,
-      ptyId: event.ptyId,
-      data: event.data,
-      at: nowIso(),
-      offset: event.offset ?? null,
-    };
-  }
-
-  function exitPayload(event: PtyExitEvent): SyncTerminalExitPayload {
-    return {
-      sessionId: event.sessionId,
-      ptyId: event.ptyId,
-      exitCode: event.exitCode,
-      at: nowIso(),
-    };
-  }
 
   function deliverData(peer: P, payload: SyncTerminalDataPayload): void {
     if (!ctx.isPeerReceiving(peer) || !peer.subscribedSessionIds.has(payload.sessionId)) return;
@@ -541,7 +403,7 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
         },
       };
     }
-    if (ctx.hostedBackend && runtime.ptyService === ctx.hostedBackend.ptyService) return { kind: "hosted" };
+    // Checked for this host's own project too: a stale row must not open blank.
     if (!runtime.sessionService.get(sessionId)) {
       return {
         kind: "refused",
@@ -551,6 +413,7 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
         },
       };
     }
+    if (ctx.hostedBackend && runtime.ptyService === ctx.hostedBackend.ptyService) return { kind: "hosted" };
     return { kind: "routed", runtime };
   }
 
@@ -569,6 +432,13 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
       const resolved = await resolveSubscribeTarget(sessionId, target);
       if (!ctx.isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       if (resolved.kind === "refused") {
+        // A refused resubscribe must not keep an earlier stream or its input.
+        const previousBackend = routeFor(peer, sessionId)?.backend
+          ?? (peer.subscribedSessionIds.has(sessionId) ? ctx.hostedBackend : null);
+        dropRoute(peer, sessionId);
+        peer.subscribedSessionIds.delete(sessionId);
+        clearTerminalSnapshotBarrier(peer.pendingTerminalSnapshots, sessionId);
+        restoreDesktopTerminalSizeIfUnwatched(sessionId, previousBackend);
         sendSubscribeError(peer, sessionId, envelope.requestId, resolved.error);
         return;
       }
@@ -587,10 +457,18 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
     };
     peer.pendingTerminalSnapshots.set(sessionId, barrier);
     peer.subscribedSessionIds.add(sessionId);
+    let hostedProjectIds = hostedProjectIdsByPeer.get(peer);
+    if (!hostedProjectIds) {
+      hostedProjectIds = new Map();
+      hostedProjectIdsByPeer.set(peer, hostedProjectIds);
+    }
     if (routedRuntime && target.kind === "project") {
+      hostedProjectIds.delete(sessionId);
       installRoute(peer, sessionId, target.projectId, routedRuntime);
     } else {
       dropRoute(peer, sessionId);
+      if (target.kind === "project") hostedProjectIds.set(sessionId, target.projectId);
+      else hostedProjectIds.delete(sessionId);
     }
     const maxBytes = Math.max(1_024, Math.min(2_000_000, Math.floor(payload?.maxBytes ?? DEFAULT_TERMINAL_SNAPSHOT_BYTES)));
     const sinceOffset = typeof payload?.sinceOffset === "number" && Number.isInteger(payload.sinceOffset)
@@ -598,32 +476,16 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
       : null;
     let forceReplacement = false;
     let barrierCompleted = false;
-    let lastCapturedTranscript: {
-      data: string;
-      startOffset: number | null;
-      endOffset: number | null;
-    } | null = null;
+    let lastCapturedTranscript: TerminalTranscriptSnapshot | null = null;
     const sendReplacingSnapshot = (
-      session: ReturnType<SyncTerminalBackend["sessionService"]["get"]>,
-      transcriptSnapshot: {
-        data: string;
-        startOffset: number | null;
-        endOffset: number | null;
-      } | null,
-    ): boolean => {
-      const snapshot = withTerminalScreen(backend, sessionId, {
-        sessionId,
-        transcript: transcriptSnapshot?.data ?? "",
-        status: session?.status ?? null,
-        runtimeState: session?.runtimeState ?? null,
-        lastOutputPreview: session?.lastOutputPreview ?? null,
-        capturedAt: nowIso(),
-        startOffset: transcriptSnapshot?.startOffset ?? null,
-        endOffset: transcriptSnapshot?.endOffset ?? null,
-        live: backend.ptyService.hasLivePty(sessionId),
-      });
-      return ctx.sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId);
-    };
+      session: TerminalSessionRow,
+      transcriptSnapshot: TerminalTranscriptSnapshot | null,
+    ): boolean => ctx.sendRequired(
+      peer,
+      "terminal_snapshot",
+      replacingSnapshotPayload(backend, sessionId, session, transcriptSnapshot),
+      envelope.requestId,
+    );
     try {
       while (barrier.captureAttempt < MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS) {
         if (!isActiveTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
@@ -702,17 +564,7 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
             });
           }
         }
-        snapshot ??= withTerminalScreen(backend, sessionId, {
-          sessionId,
-          transcript: transcriptSnapshot?.data ?? "",
-          status: session?.status ?? null,
-          runtimeState: session?.runtimeState ?? null,
-          lastOutputPreview: session?.lastOutputPreview ?? null,
-          capturedAt: nowIso(),
-          startOffset: transcriptSnapshot?.startOffset ?? null,
-          endOffset: transcriptSnapshot?.endOffset ?? null,
-          live: backend.ptyService.hasLivePty(sessionId),
-        });
+        snapshot ??= replacingSnapshotPayload(backend, sessionId, session, transcriptSnapshot);
         if (!ctx.sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId)) break;
         barrierCompleted = true;
         for (const event of flush.events) {
@@ -744,7 +596,7 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
       }
       throw error;
     } finally {
-      clearTerminalSnapshotBarrier(peer, sessionId, barrier);
+      clearTerminalSnapshotBarrier(peer.pendingTerminalSnapshots, sessionId, barrier);
     }
   }
 
@@ -759,7 +611,7 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
       ctx.logger.warn(`${logPrefix}.terminal_unsubscribe_scope_mismatch`, { sessionId });
       return;
     }
-    clearTerminalSnapshotBarrier(peer, sessionId);
+    clearTerminalSnapshotBarrier(peer.pendingTerminalSnapshots, sessionId);
     peer.subscribedSessionIds.delete(sessionId);
     dropRoute(peer, sessionId);
     restoreDesktopTerminalSizeIfUnwatched(sessionId, backend);
@@ -922,35 +774,39 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
       return;
     }
     if (!sessionId || data == null) {
-      sendFailure("project_mismatch", "Terminal input does not belong to this hosted project.");
+      sendFailure("project_mismatch", "Terminal input is missing its session or data.");
       return;
     }
     const deviceId = ctx.peerDeviceId(peer);
     const dataFingerprint = inputId
       ? createHash("sha256").update(data, "utf8").digest("hex")
       : null;
-    if (inputId && deviceId && dataFingerprint) {
-      const recordedFingerprint = ctx.dedupeLedger.fingerprint(deviceId, sessionId, inputId);
+    // Input with an id is deduplicated per device, session and id.
+    const dedupe = inputId && deviceId && dataFingerprint
+      ? { inputId, deviceId, dataFingerprint }
+      : null;
+    if (dedupe) {
+      const recordedFingerprint = ctx.dedupeLedger.fingerprint(dedupe.deviceId, sessionId, dedupe.inputId);
       if (recordedFingerprint) {
-        if (recordedFingerprint !== dataFingerprint) {
+        if (recordedFingerprint !== dedupe.dataFingerprint) {
           ctx.logger.warn("sync.terminal_input_id_conflict", {
             sessionId,
-            peerDeviceId: deviceId,
-            inputId,
+            peerDeviceId: dedupe.deviceId,
+            inputId: dedupe.inputId,
           });
           sendFailure("input_id_conflict", "This terminal input id was already used for different data.");
           return;
         }
         sendAck({
           sessionId,
-          inputId,
+          inputId: dedupe.inputId,
           ok: true,
           duplicate: true,
         } satisfies SyncTerminalInputAckPayload);
         return;
       }
     }
-    const backend = route?.backend ?? (target?.kind === "hosted" ? ctx.hostedBackend : null);
+    const backend = target ? backendForTarget(peer, sessionId, target) : null;
     if (!peer.subscribedSessionIds.has(sessionId) || !backend) {
       ctx.logger.warn("sync.terminal_input_unsubscribed_session", { sessionId });
       sendFailure("not_subscribed", "Subscribe to this terminal before sending input.");
@@ -967,11 +823,9 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
       sendFailure("session_not_live", "This terminal session is no longer live.");
       return;
     }
-    if (inputId && deviceId && dataFingerprint) {
-      if (!ctx.dedupeLedger.hasCapacity()) {
-        sendFailure("dedupe_capacity", "Too many terminal inputs are awaiting retry-window expiry.");
-        return;
-      }
+    if (dedupe && !ctx.dedupeLedger.hasCapacity()) {
+      sendFailure("dedupe_capacity", "Too many terminal inputs are awaiting retry-window expiry.");
+      return;
     }
     const accepted = backend.ptyService.writeBySessionId(sessionId, data);
     if (!accepted) {
@@ -979,8 +833,8 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
       sendFailure("session_not_live", "This terminal session is no longer live.");
       return;
     }
-    if (inputId && deviceId && dataFingerprint) {
-      const remembered = ctx.dedupeLedger.remember(deviceId, sessionId, inputId, dataFingerprint);
+    if (dedupe) {
+      const remembered = ctx.dedupeLedger.remember(dedupe.deviceId, sessionId, dedupe.inputId, dedupe.dataFingerprint);
       if (remembered !== "recorded") {
         // Capacity and duplicate checks run synchronously before the PTY write,
         // so this indicates an internal contract violation. Close rather than
@@ -991,7 +845,7 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
       }
       sendAck({
         sessionId,
-        inputId,
+        inputId: dedupe.inputId,
         ok: true,
         duplicate: false,
       } satisfies SyncTerminalInputAckPayload);
@@ -1083,61 +937,31 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
       }
     },
 
-    /** Stops every routed stream (the ingress is going away). */
+    /**
+     * Stops every routed stream (the ingress is going away). A routed PTY
+     * outlives this ingress, so it gets its desktop size back.
+     */
     releaseAll(): void {
+      liveTerminalStreamInstances.delete(liveInstance);
       for (const peer of ctx.peers()) {
-        for (const sessionId of [...(routesByPeer.get(peer)?.keys() ?? [])]) dropRoute(peer, sessionId);
+        for (const sessionId of [...(routesByPeer.get(peer)?.keys() ?? [])]) {
+          const route = dropRoute(peer, sessionId);
+          if (route) restoreDesktopTerminalSizeIfUnwatched(sessionId, route.backend);
+        }
       }
     },
   };
 }
 
-/** The project a `terminal_*` envelope names, for an ingress with no project of its own. */
-export function syncTerminalProjectTarget(envelope: ParsedSyncEnvelope): SyncTerminalTarget | null {
-  const projectId = toOptionalString(envelope.projectId);
-  if (!projectId) return null;
-  const payload = envelope.payload as { projectRootPath?: unknown } | null;
-  return {
-    kind: "project",
-    projectId,
-    projectRootPath: toOptionalString(payload?.projectRootPath),
-  };
-}
-
-const SYNC_TERMINAL_ENVELOPE_TYPES = new Set<SyncEnvelope["type"]>([
-  "terminal_subscribe",
-  "terminal_unsubscribe",
-  "terminal_input",
-  "terminal_resize",
-  "terminal_history",
-]);
-
-export function isSyncTerminalEnvelopeType(type: SyncEnvelope["type"]): boolean {
-  return SYNC_TERMINAL_ENVELOPE_TYPES.has(type);
-}
-
-/** The terminal services of a booted project scope, or null when it has none. */
-export function syncTerminalRuntimeFromScope(scope: unknown): SyncTerminalProjectRuntime | null {
-  const runtime = (scope as { runtime?: Partial<SyncTerminalProjectRuntime> } | null | undefined)?.runtime;
-  if (!runtime?.ptyService || !runtime.sessionService || typeof runtime.eventBuffer?.subscribe !== "function") {
-    return null;
-  }
-  return runtime as SyncTerminalProjectRuntime;
-}
-
-/**
- * A project that is open (or opening) on this machine. Never boots one: a
- * project that is not open, or failed to open, gives null.
- */
-export async function resolveBootedTerminalProject(
-  scopes: { getIfBooted(projectId: string): Promise<unknown> | null },
-  projectId: string,
-): Promise<SyncTerminalProjectRuntime | null> {
-  const pending = scopes.getIfBooted(projectId);
-  if (!pending) return null;
+/** Closes a socket and ignores a failure, because the socket may already be gone. */
+export function closeSocketQuietly(
+  ws: { close(code: number, reason: string): void },
+  code: number,
+  reason: string,
+): void {
   try {
-    return syncTerminalRuntimeFromScope(await pending);
+    ws.close(code, reason);
   } catch {
-    return null;
+    // ignore close failures
   }
 }

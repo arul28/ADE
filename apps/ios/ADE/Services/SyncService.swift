@@ -3898,62 +3898,6 @@ enum SyncChatCommandScope: Equatable {
   case personal
 }
 
-/// Delivery events for the full-screen terminal. The active screen attaches a
-/// handler per session id and receives hydration snapshots, ordered live
-/// chunks, and process exit without polling `terminalBuffers`.
-enum TerminalStreamEvent {
-  /// Snapshot payload from `terminal_subscribe`. `replacing == false` means a
-  /// delta resume (bytes from the requested `sinceOffset` to the end) that
-  /// must be appended, not re-rendered from scratch. `paintFromScreen` means
-  /// `text` is SerializeAddon CSI, not the transcript window — do not page
-  /// history through it.
-  case hydrate(text: String, replacing: Bool, startOffset: Int?, endOffset: Int?, paintFromScreen: Bool)
-  case chunk(text: String, endOffset: Int?)
-  case exit(code: Int?)
-  case inputFailure(message: String)
-}
-
-/// Every attached handler for each session, in attach order. Events go to
-/// the last one only. A detach removes its own entry, and the handler
-/// before it receives events again.
-struct TerminalStreamHandlerStack {
-  private var entries: [String: [(token: UUID, handler: (TerminalStreamEvent) -> Void)]] = [:]
-
-  subscript(sessionId: String) -> ((TerminalStreamEvent) -> Void)? {
-    entries[sessionId]?.last?.handler
-  }
-
-  mutating func attach(sessionId: String, handler: @escaping (TerminalStreamEvent) -> Void) -> UUID {
-    let token = UUID()
-    entries[sessionId, default: []].append((token: token, handler: handler))
-    return token
-  }
-
-  mutating func detach(sessionId: String, token: UUID) {
-    guard var list = entries[sessionId] else { return }
-    list.removeAll { $0.token == token }
-    entries[sessionId] = list.isEmpty ? nil : list
-  }
-}
-
-/// What the full-screen terminal needs from a connection. `SyncService`
-/// serves the focused machine; a `MachineConnection` serves a terminal of
-/// another machine over its light link, without a focus switch.
-@MainActor
-protocol TerminalStreamTransport: AnyObject {
-  func attachTerminalStream(sessionId: String, handler: @escaping (TerminalStreamEvent) -> Void) -> UUID?
-  func detachTerminalStream(sessionId: String, token: UUID?)
-  func hasTerminalStream(sessionId: String) -> Bool
-  func subscribeTerminalStream(sessionId: String, sinceOffset: Int?) async throws
-  func refreshTerminalSnapshot(sessionId: String, maxBytes: Int, sinceOffset: Int?) async throws
-  func unsubscribeTerminal(sessionId: String) async throws
-  func resumeCliSession(sessionId: String, cols: Int?, rows: Int?) async throws -> StartCliSessionResult
-  func fetchTerminalHistory(sessionId: String, beforeOffset: Int, maxBytes: Int) async throws -> TerminalHistorySlice
-  func canAcceptTerminalInput(sessionId: String) -> Bool
-  func sendTerminalInput(sessionId: String, data: String) -> SyncTerminalInputSubmission
-  func sendTerminalResize(sessionId: String, cols: Int, rows: Int)
-}
-
 extension SyncService: TerminalStreamTransport {}
 
 struct WorkStartShellSessionRequest: Equatable {
@@ -4609,18 +4553,29 @@ final class SyncService: ObservableObject {
   private(set) var terminalBuffers: [String: String] = [:]
   private(set) var terminalBufferUpdatedAt: [String: Date] = [:]
   private(set) var terminalBufferRevisionsBySessionId: [String: Int] = [:]
-  /// Transcript END byte offset (UTF-8) confirmed per terminal session, fed by
-  /// `terminal_data.offset` and snapshot `endOffset`. Nil for hosts that do not
-  /// emit offsets; all gap/dedupe logic disables itself in that case.
-  private(set) var terminalEndOffsets: [String: Int] = [:]
-  private var terminalStreamHandlers = TerminalStreamHandlerStack()
-  private var desiredTerminalSessionIds: Set<String> = []
-  private var supportsTerminalInputAcknowledgements = false
-  private var terminalInputAcknowledgementRetryWindowMilliseconds: TimeInterval = 0
-  private var terminalInputMaximumOutstanding = SyncTerminalInputQueue.defaultMaximumItemCount
-  private var terminalInputQueues: [String: SyncTerminalInputQueue] = [:]
-  private var terminalInputTimeoutTasks: [String: Task<Void, Never>] = [:]
-  private var terminalGapRecoveryInFlight: Set<String> = []
+  /// The shared terminal stream state: subscriptions, transcript offsets,
+  /// handlers and queued input. The client runs the input acks and the resend.
+  private(set) lazy var terminalStream: TerminalStreamClient = {
+    let client = TerminalStreamClient(hooks: TerminalStreamClientHooks(
+      isLive: { [weak self] in self?.canSendLiveRequests() ?? false },
+      generation: { [weak self] in self?.connectionGeneration ?? 0 },
+      sendEnvelope: { [weak self] type, sessionId, payload in
+        _ = self?.sendEnvelope(type: type, requestId: nil, payload: payload)
+      },
+      resubscribe: { [weak self] sessionId, sinceOffset in
+        guard let self else { return }
+        try await self.refreshTerminalSnapshot(
+          sessionId: sessionId,
+          maxBytes: syncTerminalStreamMaxBytes,
+          sinceOffset: sinceOffset
+        )
+      }
+    ))
+    client.onSubscribedChange = { [weak self] sessionIds in
+      self?.subscribedTerminalSessionIds = sessionIds
+    }
+    return client
+  }()
   private struct TerminalSnapshotRecoveryScope: Equatable {
     let connectionGeneration: UInt64
     let hostIdentity: String?
@@ -4635,7 +4590,6 @@ final class SyncService: ObservableObject {
   private let terminalSnapshotRecoveryInitialDelayNanoseconds: UInt64 = 500_000_000
   private let terminalSnapshotRecoveryMaximumDelayNanoseconds: UInt64 = 8_000_000_000
   private var terminalSnapshotRecoveryJobs: [String: TerminalSnapshotRecoveryJob] = [:]
-  private var terminalSnapshotRequestTokens: [String: UUID] = [:]
   #if DEBUG
   private var terminalSnapshotRecoveryDelayOverrideForTesting: UInt64?
   #endif
@@ -6558,7 +6512,7 @@ final class SyncService: ObservableObject {
       resetPendingSessionSettleStates()
       resetPendingAttentionClearStates()
       cancelAllTerminalSnapshotRecovery()
-      terminalSnapshotRequestTokens.removeAll()
+      terminalStream.requestTokens.removeAll()
       prepareOutboundStateForProjectScopeChange()
       resetLanePayloadSignatures()
       // A pane belongs to the old project. Callers that intentionally open a
@@ -13231,20 +13185,23 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// Preview subscribe (artifact cards, the Work list): the smaller
+  /// subscription budget, and no request when a buffer is already live.
+  /// The full-screen terminal uses `subscribeTerminalStream`.
   func subscribeTerminal(sessionId: String) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
-    if subscribedTerminalSessionIds.contains(trimmedSessionId), terminalBuffers[trimmedSessionId] != nil {
+    if terminalStream.subscribed.contains(trimmedSessionId), terminalBuffers[trimmedSessionId] != nil {
       return
     }
-    desiredTerminalSessionIds.insert(trimmedSessionId)
+    terminalStream.desired.insert(trimmedSessionId)
     try await refreshTerminalSnapshot(sessionId: trimmedSessionId)
   }
 
   func refreshTerminalSnapshot(sessionId: String, maxBytes: Int = syncTerminalSubscriptionMaxBytes, sinceOffset: Int? = nil) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
-    desiredTerminalSessionIds.insert(trimmedSessionId)
+    terminalStream.desired.insert(trimmedSessionId)
     cancelTerminalSnapshotRecovery(sessionId: trimmedSessionId)
     let scope = currentTerminalSnapshotRecoveryScope()
     do {
@@ -13275,7 +13232,7 @@ final class SyncService: ObservableObject {
   ) async throws {
     let requestId = makeRequestId()
     let requestToken = UUID()
-    terminalSnapshotRequestTokens[sessionId] = requestToken
+    terminalStream.requestTokens[sessionId] = requestToken
     var payload: [String: Any] = [
       "sessionId": sessionId,
       "maxBytes": max(1_024, min(syncTerminalStreamMaxBytes, maxBytes)),
@@ -13294,32 +13251,32 @@ final class SyncService: ObservableObject {
         acceptResponse: { raw in
           // A refused subscribe (`rosterTerminal` error) must not hydrate an empty screen.
           if let error = (raw as? [String: Any])?["error"] as? [String: Any] {
+            self.terminalStream.refuseSnapshot(sessionId: sessionId, requestToken: requestToken)
             throw NSError(domain: "ADE", code: 7, userInfo: [
               NSLocalizedDescriptionKey: (error["message"] as? String) ?? "That computer could not open this terminal.",
             ])
           }
           let snapshot = try self.decode(raw, as: TerminalSnapshot.self)
-          guard self.terminalSnapshotRequestTokens[sessionId] == requestToken,
-                self.desiredTerminalSessionIds.contains(sessionId),
-                self.isCurrentTerminalSnapshotRecoveryScope(scope)
-          else { return }
-          self.terminalSnapshotRequestTokens.removeValue(forKey: sessionId)
           // Acceptance is the terminal state for any retry job serving this
           // session. Clear its ownership in the same actor turn as the
           // subscription barrier; otherwise callers can observe a live stream
           // alongside a stale recovery marker until the awaiting retry task's
           // defer gets scheduled.
-          self.terminalSnapshotRecoveryJobs.removeValue(forKey: sessionId)
-          self.applyTerminalSnapshot(snapshot, sessionId: sessionId)
-          self.subscribedTerminalSessionIds.insert(sessionId)
-          self.flushTerminalInputQueue(sessionId: sessionId)
+          self.terminalStream.acceptSnapshot(
+            snapshot,
+            sessionId: sessionId,
+            requestToken: requestToken,
+            isCurrent: { self.isCurrentTerminalSnapshotRecoveryScope(scope) },
+            beforeApply: { _ = self.terminalSnapshotRecoveryJobs.removeValue(forKey: sessionId) },
+            bufferUpdate: { self.applyTerminalBuffer($0, sessionId: sessionId) }
+          )
         }
       ) {
         self.sendEnvelope(type: "terminal_subscribe", requestId: requestId, payload: payload)
       }
     } catch {
-      if terminalSnapshotRequestTokens[sessionId] == requestToken {
-        terminalSnapshotRequestTokens.removeValue(forKey: sessionId)
+      if terminalStream.requestTokens[sessionId] == requestToken {
+        terminalStream.requestTokens.removeValue(forKey: sessionId)
       }
       throw error
     }
@@ -13361,7 +13318,7 @@ final class SyncService: ObservableObject {
     scope: TerminalSnapshotRecoveryScope
   ) {
     guard terminalSnapshotRecoveryJobs[sessionId] == nil,
-          desiredTerminalSessionIds.contains(sessionId),
+          terminalStream.desired.contains(sessionId),
           isCurrentTerminalSnapshotRecoveryScope(scope)
     else { return }
 
@@ -13382,7 +13339,7 @@ final class SyncService: ObservableObject {
           return
         }
         guard self.terminalSnapshotRecoveryJobs[sessionId]?.id == jobId,
-              self.desiredTerminalSessionIds.contains(sessionId),
+              self.terminalStream.desired.contains(sessionId),
               self.isCurrentTerminalSnapshotRecoveryScope(scope)
         else { return }
         do {
@@ -13426,7 +13383,7 @@ final class SyncService: ObservableObject {
   func attachTerminalStream(sessionId: String, handler: @escaping (TerminalStreamEvent) -> Void) -> UUID? {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return nil }
-    return terminalStreamHandlers.attach(sessionId: trimmedSessionId, handler: handler)
+    return terminalStream.handlers.attach(sessionId: trimmedSessionId, handler: handler)
   }
 
   /// Removes only the handler that `token` attached. A screen that leaves
@@ -13434,7 +13391,7 @@ final class SyncService: ObservableObject {
   func detachTerminalStream(sessionId: String, token: UUID?) {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty, let token else { return }
-    terminalStreamHandlers.detach(sessionId: trimmedSessionId, token: token)
+    terminalStream.handlers.detach(sessionId: trimmedSessionId, token: token)
   }
 
   /// Fetches transcript bytes ending at/before `beforeOffset` for on-demand
@@ -13444,7 +13401,7 @@ final class SyncService: ObservableObject {
     guard !trimmedSessionId.isEmpty else {
       throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "Missing terminal session id."])
     }
-    guard subscribedTerminalSessionIds.contains(trimmedSessionId) else {
+    guard terminalStream.subscribed.contains(trimmedSessionId) else {
       throw NSError(domain: "ADE", code: 7, userInfo: [NSLocalizedDescriptionKey: "Terminal stream is not subscribed."])
     }
     let requestId = makeRequestId()
@@ -13463,35 +13420,7 @@ final class SyncService: ObservableObject {
   /// Applies a live `terminal_data` chunk with offset-based ordering. `endOffset`
   /// is the transcript END byte offset after this chunk (nil on older hosts).
   private func handleTerminalDataChunk(sessionId: String, chunk: String, endOffset: Int?) {
-    var deliverableChunk: String? = chunk
-    if let endOffset {
-      if let lastEnd = terminalEndOffsets[sessionId] {
-        let chunkStart = endOffset - chunk.utf8.count
-        if endOffset <= lastEnd {
-          // Replay of bytes a snapshot/delta already covered — drop entirely.
-          deliverableChunk = nil
-        } else if chunkStart > lastEnd {
-          // Missed bytes between lastEnd and this chunk. Drop the chunk and
-          // let a delta resubscribe (sinceOffset = lastEnd) deliver the full
-          // contiguous range; feeding it now would render out of order.
-          deliverableChunk = nil
-          recoverTerminalGap(sessionId: sessionId, sinceOffset: lastEnd)
-        } else {
-          if chunkStart < lastEnd {
-            // Partial overlap: trim the already-applied UTF-8 prefix.
-            let bytes = Array(chunk.utf8)
-            var overlap = min(max(0, lastEnd - chunkStart), bytes.count)
-            while overlap < bytes.count, bytes[overlap] & 0xC0 == 0x80 {
-              overlap += 1
-            }
-            deliverableChunk = String(decoding: bytes.dropFirst(overlap), as: UTF8.self)
-          }
-          terminalEndOffsets[sessionId] = endOffset
-        }
-      } else {
-        terminalEndOffsets[sessionId] = endOffset
-      }
-    }
+    let deliverableChunk = terminalStream.orderedChunk(sessionId: sessionId, chunk: chunk, endOffset: endOffset)
     guard let deliverableChunk, !deliverableChunk.isEmpty else {
       terminalBufferUpdatedAt[sessionId] = Date()
       return
@@ -13499,58 +13428,22 @@ final class SyncService: ObservableObject {
     terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + deliverableChunk)
     terminalBufferUpdatedAt[sessionId] = Date()
     markTerminalBufferChanged(sessionId: sessionId)
-    terminalStreamHandlers[sessionId]?(.chunk(text: deliverableChunk, endOffset: endOffset))
+    terminalStream.handlers[sessionId]?(.chunk(text: deliverableChunk, endOffset: endOffset))
   }
 
-  private func recoverTerminalGap(sessionId: String, sinceOffset: Int) {
-    guard !terminalGapRecoveryInFlight.contains(sessionId) else { return }
-    terminalGapRecoveryInFlight.insert(sessionId)
-    Task { @MainActor [weak self] in
-      guard let self else { return }
-      defer { self.terminalGapRecoveryInFlight.remove(sessionId) }
-      try? await self.refreshTerminalSnapshot(
-        sessionId: sessionId,
-        maxBytes: syncTerminalStreamMaxBytes,
-        sinceOffset: sinceOffset
-      )
-    }
-  }
-
-  private func applyTerminalSnapshot(_ snapshot: TerminalSnapshot, sessionId: String) {
-    if let endOffset = snapshot.endOffset {
-      terminalEndOffsets[sessionId] = endOffset
-    }
+  /// Writes an accepted snapshot into the transcript buffer. The client calls
+  /// this before it sends the snapshot to the stream handler.
+  private func applyTerminalBuffer(_ snapshot: TerminalSnapshot, sessionId: String) {
     if snapshot.delta == true {
       // Delta resume: payload covers exactly [sinceOffset, end). Append —
       // replacing would drop everything the screen already rendered.
       if !snapshot.transcript.isEmpty {
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + snapshot.transcript)
         markTerminalBufferChanged(sessionId: sessionId, immediate: true)
-        terminalStreamHandlers[sessionId]?(.hydrate(
-          text: snapshot.transcript,
-          replacing: false,
-          startOffset: snapshot.startOffset,
-          endOffset: snapshot.endOffset,
-          paintFromScreen: false
-        ))
       }
       terminalBufferUpdatedAt[sessionId] = Date()
     } else {
-      let hydrateText = snapshot.replacingHydrateText
       updateTerminalBuffer(sessionId: sessionId, transcript: snapshot.transcript, immediate: true)
-      terminalStreamHandlers[sessionId]?(.hydrate(
-        text: hydrateText,
-        replacing: true,
-        startOffset: snapshot.startOffset,
-        endOffset: snapshot.endOffset,
-        paintFromScreen: snapshot.hasScreenPaint
-      ))
-    }
-    if snapshot.live == false {
-      // No PTY behind the session (ended, or orphaned by a brain restart even
-      // though status still says running) — typing would go nowhere. Surface
-      // the exited/resume state instead of a live prompt.
-      terminalStreamHandlers[sessionId]?(.exit(code: nil))
     }
   }
 
@@ -13559,7 +13452,7 @@ final class SyncService: ObservableObject {
   func hasTerminalStream(sessionId: String) -> Bool {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return false }
-    return terminalStreamHandlers[trimmedSessionId] != nil
+    return terminalStream.handlers[trimmedSessionId] != nil
   }
 
   /// Relaunches an ended/orphaned agent CLI session's runtime on the host
@@ -13709,22 +13602,17 @@ final class SyncService: ObservableObject {
   func unsubscribeTerminal(sessionId: String) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
-    guard desiredTerminalSessionIds.contains(trimmedSessionId) else { return }
-    desiredTerminalSessionIds.remove(trimmedSessionId)
-    subscribedTerminalSessionIds.remove(trimmedSessionId)
+    guard terminalStream.desired.contains(trimmedSessionId) else { return }
     cancelTerminalSnapshotRecovery(sessionId: trimmedSessionId)
-    terminalSnapshotRequestTokens.removeValue(forKey: trimmedSessionId)
-    terminalInputTimeoutTasks.removeValue(forKey: trimmedSessionId)?.cancel()
-    terminalInputQueues.removeValue(forKey: trimmedSessionId)
-    if canSendLiveRequests() {
-      sendEnvelope(type: "terminal_unsubscribe", requestId: nil, payload: [
-        "sessionId": trimmedSessionId,
-      ])
-    }
+    terminalStream.unsubscribe(sessionId: trimmedSessionId)
   }
 
+  /// A refused subscribe removes the session from `hydrated`, so input is
+  /// refused there too and does not wait in the queue.
   func canAcceptTerminalInput(sessionId: String) -> Bool {
-    desiredTerminalSessionIds.contains(sessionId) && terminalBuffers[sessionId] != nil
+    terminalStream.desired.contains(sessionId)
+      && terminalStream.hydrated.contains(sessionId)
+      && terminalBuffers[sessionId] != nil
   }
 
   /// Queue terminal input in order. ACK-capable hosts keep the exact input id
@@ -13734,169 +13622,11 @@ final class SyncService: ObservableObject {
   @discardableResult
   func sendTerminalInput(sessionId: String, data: String) -> SyncTerminalInputSubmission {
     let sessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !sessionId.isEmpty, !data.isEmpty else {
-      return .rejected(message: "Terminal input is empty.")
-    }
-    guard canAcceptTerminalInput(sessionId: sessionId) else {
-      let message = "Terminal input is waiting for the terminal snapshot."
-      terminalStreamHandlers[sessionId]?(.inputFailure(message: message))
-      return .rejected(message: message)
-    }
-    do {
-      var queue = terminalInputQueues[sessionId] ?? SyncTerminalInputQueue(
-        maximumItemCount: terminalInputMaximumOutstanding
-      )
-      let item = try queue.enqueue(data: Data(data.utf8))
-      terminalInputQueues[sessionId] = queue
-      let ready = canSendLiveRequests() && subscribedTerminalSessionIds.contains(sessionId)
-      if ready {
-        flushTerminalInputQueue(sessionId: sessionId)
-      }
-      if supportsTerminalInputAcknowledgements {
-        return ready
-          ? .awaitingAcknowledgement(inputId: item.inputId)
-          : .queuedUntilReady(inputId: item.inputId)
-      }
-      return ready ? .sentToLegacyHost : .queuedUntilReady(inputId: item.inputId)
-    } catch {
-      let message = error.localizedDescription
-      terminalStreamHandlers[sessionId]?(.inputFailure(message: message))
-      return .rejected(message: message)
-    }
-  }
-
-  private func flushTerminalInputQueue(sessionId: String) {
-    guard canSendLiveRequests(), subscribedTerminalSessionIds.contains(sessionId),
-          var queue = terminalInputQueues[sessionId],
-          let item = queue.nextSendableItem(
-            reliableAcknowledgements: supportsTerminalInputAcknowledgements
-          ) else { return }
-    guard let data = String(data: item.data, encoding: .utf8) else {
-      _ = queue.acknowledge(inputId: item.inputId)
-      terminalInputQueues[sessionId] = queue
-      terminalStreamHandlers[sessionId]?(.inputFailure(message: "Terminal input could not be encoded."))
-      flushTerminalInputQueue(sessionId: sessionId)
-      return
-    }
-    var payload: [String: Any] = ["sessionId": sessionId, "data": data]
-    if supportsTerminalInputAcknowledgements {
-      payload["inputId"] = item.inputId
-      queue.markSent(
-        inputId: item.inputId,
-        generation: connectionGeneration,
-        sentUptime: ProcessInfo.processInfo.systemUptime
-      )
-      terminalInputQueues[sessionId] = queue
-      scheduleTerminalInputAcknowledgementTimeout(sessionId: sessionId)
-    } else {
-      _ = queue.removeLegacyDelivery(inputId: item.inputId)
-      terminalInputQueues[sessionId] = queue
-    }
-    sendEnvelope(type: "terminal_input", requestId: nil, payload: payload)
-    if !supportsTerminalInputAcknowledgements {
-      flushTerminalInputQueue(sessionId: sessionId)
-    }
-  }
-
-  private func scheduleTerminalInputAcknowledgementTimeout(sessionId: String) {
-    terminalInputTimeoutTasks[sessionId]?.cancel()
-    let generation = connectionGeneration
-    terminalInputTimeoutTasks[sessionId] = Task { @MainActor [weak self] in
-      try? await Task.sleep(
-        nanoseconds: UInt64((SyncTerminalInputQueue.defaultAcknowledgementTimeout * 1_000_000_000).rounded())
-      )
-      guard let self, !Task.isCancelled,
-            var queue = self.terminalInputQueues[sessionId],
-            let inputId = queue.timedOutInputId(
-              nowUptime: ProcessInfo.processInfo.systemUptime,
-              generation: generation
-            ),
-            let item = queue.item(inputId: inputId) else { return }
-      switch syncTerminalInputRetryDecision(
-        item: item,
-        nowUptime: ProcessInfo.processInfo.systemUptime,
-        retryWindowMilliseconds: self.terminalInputAcknowledgementRetryWindowMilliseconds
-      ) {
-      case .retry(let afterNanoseconds):
-        try? await Task.sleep(nanoseconds: afterNanoseconds)
-        guard !Task.isCancelled,
-              self.connectionGeneration == generation,
-              self.subscribedTerminalSessionIds.contains(sessionId) else { return }
-        self.terminalInputTimeoutTasks[sessionId] = nil
-        self.resendTerminalInput(sessionId: sessionId, inputId: inputId)
-      case .attemptsExhausted, .retryWindowExpired:
-        _ = queue.acknowledge(inputId: inputId)
-        self.terminalInputQueues[sessionId] = queue
-        self.terminalInputTimeoutTasks[sessionId] = nil
-        self.terminalStreamHandlers[sessionId]?(.inputFailure(
-          message: "The computer did not confirm whether that terminal input was applied. It was not retried again."
-        ))
-        self.flushTerminalInputQueue(sessionId: sessionId)
-      }
-    }
-  }
-
-  private func resendTerminalInput(sessionId: String, inputId: String) {
-    guard canSendLiveRequests(), subscribedTerminalSessionIds.contains(sessionId),
-          var queue = terminalInputQueues[sessionId],
-          let item = queue.item(inputId: inputId),
-          let data = String(data: item.data, encoding: .utf8) else { return }
-    queue.markSent(
-      inputId: inputId,
-      generation: connectionGeneration,
-      sentUptime: ProcessInfo.processInfo.systemUptime
+    return terminalStream.submitInput(
+      sessionId: sessionId,
+      data: data,
+      accepting: canAcceptTerminalInput(sessionId: sessionId)
     )
-    terminalInputQueues[sessionId] = queue
-    sendEnvelope(type: "terminal_input", requestId: nil, payload: [
-      "sessionId": sessionId,
-      "data": data,
-      "inputId": inputId,
-    ])
-    scheduleTerminalInputAcknowledgementTimeout(sessionId: sessionId)
-  }
-
-  private func handleTerminalInputAcknowledgement(_ payload: [String: Any]) {
-    guard let acknowledgement = syncTerminalInputAcknowledgement(from: payload) else { return }
-    switch acknowledgement {
-    case .success(let sessionId, let inputId, _):
-      guard var queue = terminalInputQueues[sessionId],
-            queue.inFlightItem(inputId: inputId, generation: connectionGeneration) != nil else {
-        return
-      }
-      terminalInputTimeoutTasks.removeValue(forKey: sessionId)?.cancel()
-      _ = queue.acknowledge(inputId: inputId)
-      terminalInputQueues[sessionId] = queue
-      flushTerminalInputQueue(sessionId: sessionId)
-    case .failure(let sessionId, let inputId, _, let message, let retryableSubscription):
-      guard let sessionId, let inputId,
-            var queue = terminalInputQueues[sessionId],
-            queue.inFlightItem(inputId: inputId, generation: connectionGeneration) != nil else {
-        return
-      }
-      terminalInputTimeoutTasks.removeValue(forKey: sessionId)?.cancel()
-      if retryableSubscription {
-        queue.prepareForReconnect()
-        terminalInputQueues[sessionId] = queue
-        subscribedTerminalSessionIds.remove(sessionId)
-        Task { @MainActor [weak self] in
-          guard let self, self.desiredTerminalSessionIds.contains(sessionId) else { return }
-          do {
-            try await self.refreshTerminalSnapshot(
-              sessionId: sessionId,
-              maxBytes: syncTerminalStreamMaxBytes,
-              sinceOffset: self.terminalEndOffsets[sessionId]
-            )
-          } catch {
-            self.terminalStreamHandlers[sessionId]?(.inputFailure(message: message))
-          }
-        }
-        return
-      }
-      _ = queue.acknowledge(inputId: inputId)
-      terminalInputQueues[sessionId] = queue
-      terminalStreamHandlers[sessionId]?(.inputFailure(message: message))
-      flushTerminalInputQueue(sessionId: sessionId)
-    }
   }
 
   /// Tell the host to reshape the active PTY for `sessionId` to a new
@@ -13904,14 +13634,7 @@ final class SyncService: ObservableObject {
   /// split view, font-size). Cheap and idempotent; the host clamps to a
   /// sane dimension range internally.
   func sendTerminalResize(sessionId: String, cols: Int, rows: Int) {
-    guard !sessionId.isEmpty else { return }
-    guard cols > 0, rows > 0 else { return }
-    guard canSendLiveRequests() else { return }
-    sendEnvelope(type: "terminal_resize", requestId: nil, payload: [
-      "sessionId": sessionId,
-      "cols": cols,
-      "rows": rows,
-    ])
+    terminalStream.sendResize(sessionId: sessionId, cols: cols, rows: rows)
   }
 
   /// Registers a chat session as living in a FOREIGN project (cross-project
@@ -21521,8 +21244,9 @@ final class SyncService: ObservableObject {
   }
 
   func seedTerminalBufferForTesting(sessionId: String, transcript: String) {
-    desiredTerminalSessionIds.insert(sessionId)
-    subscribedTerminalSessionIds.insert(sessionId)
+    terminalStream.desired.insert(sessionId)
+    terminalStream.subscribed.insert(sessionId)
+    terminalStream.hydrated.insert(sessionId)
     terminalBuffers[sessionId] = transcript
     terminalBufferUpdatedAt[sessionId] = Date()
     terminalBufferRevisionsBySessionId[sessionId, default: 0] += 1
@@ -21535,8 +21259,8 @@ final class SyncService: ObservableObject {
     data: Data
   ) throws {
     seedTerminalBufferForTesting(sessionId: sessionId, transcript: "ready")
-    supportsTerminalInputAcknowledgements = true
-    terminalInputAcknowledgementRetryWindowMilliseconds = 30_000
+    terminalStream.acknowledgementsEnabled = true
+    terminalStream.retryWindowMilliseconds = 30_000
     var queue = SyncTerminalInputQueue()
     _ = try queue.enqueue(data: data, inputId: inputId)
     queue.markSent(
@@ -21544,16 +21268,16 @@ final class SyncService: ObservableObject {
       generation: connectionGeneration,
       sentUptime: ProcessInfo.processInfo.systemUptime
     )
-    terminalInputQueues[sessionId] = queue
-    scheduleTerminalInputAcknowledgementTimeout(sessionId: sessionId)
+    terminalStream.inputQueues[sessionId] = queue
+    terminalStream.scheduleAcknowledgementTimeout(sessionId: sessionId)
   }
 
   func terminalInputQueueForTesting(sessionId: String) -> SyncTerminalInputQueue? {
-    terminalInputQueues[sessionId]
+    terminalStream.inputQueues[sessionId]
   }
 
   func desiredTerminalSessionIdsForTesting() -> Set<String> {
-    desiredTerminalSessionIds
+    terminalStream.desired
   }
 
   func setTerminalSnapshotRecoveryDelayForTesting(_ nanoseconds: UInt64?) {
@@ -21585,20 +21309,20 @@ final class SyncService: ObservableObject {
   }
 
   func handleTerminalDataChunkForTesting(sessionId: String, chunk: String, endOffset: Int?) {
-    guard subscribedTerminalSessionIds.contains(sessionId) else { return }
+    guard terminalStream.subscribed.contains(sessionId) else { return }
     handleTerminalDataChunk(sessionId: sessionId, chunk: chunk, endOffset: endOffset)
   }
 
   func hasTerminalInputTimeoutForTesting(sessionId: String) -> Bool {
-    terminalInputTimeoutTasks[sessionId] != nil
+    terminalStream.inputTimeouts[sessionId] != nil
   }
 
   func supportsTerminalInputAcknowledgementsForTesting() -> Bool {
-    supportsTerminalInputAcknowledgements
+    terminalStream.acknowledgementsEnabled
   }
 
   func handleTerminalInputAcknowledgementForTesting(_ payload: [String: Any]) {
-    handleTerminalInputAcknowledgement(payload)
+    terminalStream.handleAcknowledgement(payload)
   }
 
   func scheduleLanePresenceHeartbeatForTesting() {
@@ -22055,25 +21779,16 @@ final class SyncService: ObservableObject {
     supportsOpenCodeInboxSteer = featureEnabled("openCodeInboxSteer", "open_code_inbox_steer")
     supportsStackLayeredBypass = featureEnabled("prsStackLayeredBypass", "prs_stack_layered_bypass")
     supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
-    supportsTerminalInputAcknowledgements = featureEnabled("terminalInputAck", "terminal_input_ack")
+    terminalStream.acknowledgementsEnabled = featureEnabled("terminalInputAck", "terminal_input_ack")
     supportsChunkedEnvelopes = negotiation.chunkedMaxFrameBytes != nil
     negotiatedMaxFrameBytes = negotiation.chunkedMaxFrameBytes ?? syncDefaultMaxFrameBytes
     negotiatedCompressionCodec = negotiation.deflateThresholdBytes != nil ? .deflate : nil
     negotiatedCompressionThresholdBytes = negotiation.deflateThresholdBytes ?? syncApplicationCompressionThresholdBytes
-    if supportsTerminalInputAcknowledgements,
-       let terminalInputAck = features?["terminalInputAck"] as? [String: Any] {
-      terminalInputAcknowledgementRetryWindowMilliseconds = max(
-        1_000,
-        (terminalInputAck["retryWindowMs"] as? NSNumber)?.doubleValue ?? 60_000
-      )
-      terminalInputMaximumOutstanding = min(
-        SyncTerminalInputQueue.defaultMaximumItemCount,
-        max(1, (terminalInputAck["maxOutstanding"] as? NSNumber)?.intValue ?? 64)
-      )
-    } else {
-      terminalInputAcknowledgementRetryWindowMilliseconds = 0
-      terminalInputMaximumOutstanding = SyncTerminalInputQueue.defaultMaximumItemCount
-    }
+    terminalStream.applyInputAckFeature(
+      enabled: terminalStream.acknowledgementsEnabled,
+      config: features?["terminalInputAck"] as? [String: Any],
+      retryWindowWithoutConfig: 0
+    )
     relayAuthorizationLease = syncIsFullWebSocketRoute(connectedHost)
       ? (payload["relayAuthorization"] as? [String: Any]).flatMap(SyncRelayAuthorizationLease.init)
       : nil
@@ -22879,21 +22594,21 @@ final class SyncService: ObservableObject {
       }
     case "terminal_data":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String, let chunk = dict["data"] as? String {
-        guard subscribedTerminalSessionIds.contains(sessionId) else { break }
+        guard terminalStream.subscribed.contains(sessionId) else { break }
         handleTerminalDataChunk(sessionId: sessionId, chunk: chunk, endOffset: (dict["offset"] as? NSNumber)?.intValue)
       }
     case "terminal_input_ack":
       if let dict = payload as? [String: Any] {
-        handleTerminalInputAcknowledgement(dict)
+        terminalStream.handleAcknowledgement(dict)
       }
     case "terminal_exit":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String {
-        guard subscribedTerminalSessionIds.contains(sessionId) else { break }
+        guard terminalStream.subscribed.contains(sessionId) else { break }
         let exitCode = dict["exitCode"] as? Int
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + "\n\n[process exited\(exitCode.map { " with \($0)" } ?? "")]")
         terminalBufferUpdatedAt[sessionId] = Date()
         markTerminalBufferChanged(sessionId: sessionId, immediate: true)
-        terminalStreamHandlers[sessionId]?(.exit(code: exitCode))
+        terminalStream.handlers[sessionId]?(.exit(code: exitCode))
       }
     case "roster_snapshot":
       // A roster carries every chat of every project; decoding it on the main
@@ -23686,16 +23401,8 @@ final class SyncService: ObservableObject {
 
   private func resetTerminalTransportStateForReconnect() {
     cancelAllTerminalSnapshotRecovery()
-    terminalSnapshotRequestTokens.removeAll()
-    subscribedTerminalSessionIds.removeAll()
-    supportsTerminalInputAcknowledgements = false
-    terminalInputAcknowledgementRetryWindowMilliseconds = 0
-    terminalInputMaximumOutstanding = SyncTerminalInputQueue.defaultMaximumItemCount
-    for task in terminalInputTimeoutTasks.values { task.cancel() }
-    terminalInputTimeoutTasks.removeAll()
-    for sessionId in Array(terminalInputQueues.keys) {
-      terminalInputQueues[sessionId]?.prepareForReconnect()
-    }
+    terminalStream.resetForNewSocket()
+    terminalStream.applyInputAckFeature(enabled: false, config: nil, retryWindowWithoutConfig: 0)
   }
 
   private func beginAutomaticTransportRecovery(
@@ -24641,17 +24348,17 @@ final class SyncService: ObservableObject {
 
   private func restoreTerminalSubscriptions() {
     guard canSendLiveRequests() else { return }
-    let sessionIds = desiredTerminalSessionIds.sorted()
+    let sessionIds = terminalStream.desired.sorted()
     guard !sessionIds.isEmpty else { return }
     Task { @MainActor [weak self] in
       guard let self else { return }
       for sessionId in sessionIds {
-        if self.terminalStreamHandlers[sessionId] != nil {
+        if self.terminalStream.handlers[sessionId] != nil {
           // Active full-screen terminal: resume exactly after the last byte we
           // applied so the reconnect back-fills as an append, not a re-render.
           try? await self.subscribeTerminalStream(
             sessionId: sessionId,
-            sinceOffset: self.terminalEndOffsets[sessionId]
+            sinceOffset: self.terminalStream.endOffsets[sessionId]
           )
         } else {
           try? await self.subscribeTerminal(sessionId: sessionId)
@@ -24737,14 +24444,7 @@ final class SyncService: ObservableObject {
 
   private func resetTerminalSubscriptionState(clearHistory: Bool) {
     cancelAllTerminalSnapshotRecovery()
-    terminalSnapshotRequestTokens.removeAll()
-    desiredTerminalSessionIds.removeAll()
-    subscribedTerminalSessionIds.removeAll()
-    for task in terminalInputTimeoutTasks.values { task.cancel() }
-    terminalInputTimeoutTasks.removeAll()
-    terminalInputQueues.removeAll()
-    terminalEndOffsets.removeAll()
-    terminalGapRecoveryInFlight.removeAll()
+    terminalStream.forgetAllSessions()
     if clearHistory {
       terminalBuffers.removeAll()
       terminalBufferUpdatedAt.removeAll()

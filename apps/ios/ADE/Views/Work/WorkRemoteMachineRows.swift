@@ -264,8 +264,8 @@ func workSerializeMachineFilter(_ ids: Set<String>) -> String {
 }
 
 /// Whether a merged row is another machine's CLI or shell session. Its
-/// terminal streams only from the focused machine, so the row opens after its
-/// machine becomes the focused one, never through a roster connection.
+/// terminal streams over that machine's light link when the link can stream
+/// terminals. Otherwise the row opens after its machine becomes the focused one.
 func workIsRemoteMachineTerminalRow(_ session: TerminalSessionSummary) -> Bool {
   isWorkRemoteLaneId(session.laneId) && !isChatSession(session)
 }

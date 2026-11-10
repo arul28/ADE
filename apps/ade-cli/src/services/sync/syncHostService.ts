@@ -15,13 +15,16 @@ import os from "node:os";
 import path from "node:path";
 import { runWithAbortSignal } from "./abortSignal";
 import {
+  closeSocketQuietly,
   createSyncTerminalStreams,
+  type SyncTerminalTarget,
+} from "./syncTerminalStreams";
+import {
   isSyncTerminalEnvelopeType,
   resolveBootedTerminalProject,
   syncTerminalProjectTarget,
-  type PendingTerminalSnapshotBarrier,
-  type SyncTerminalTarget,
-} from "./syncTerminalStreams";
+} from "./syncTerminalTargets";
+import type { PendingTerminalSnapshotBarrier } from "./syncTerminalSnapshotBarrier";
 import { promisify } from "node:util";
 import {
   recordUsageInteraction,
@@ -631,7 +634,7 @@ const RELAY_PEER_BRAIN_STATUS_INTERVAL_MS = 30_000;
 const NATIVE_LAN_DISCOVERY_RECOVERY_DELAY_MS = 1_000;
 const NATIVE_LAN_DISCOVERY_FALLBACK_MS = 30_000;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
-const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
+export const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const SEND_AND_WAIT_TIMEOUT_MS = 15_000;
 const DEFAULT_SYNC_MESSAGE_TIMEOUT_MS = 60_000;
 const DEFAULT_SYNC_SLOW_COMMAND_MS = 5_000;
@@ -1305,7 +1308,11 @@ type SyncHostServiceArgs = {
   remoteCommandService?: SyncRemoteCommandService;
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
   /** Booted project scopes only; routed file requests must never start a runtime. */
-  projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
+  projectScopes?: {
+    getIfBooted(projectId: string): Promise<unknown> | null;
+    /** One input ledger for every phone ingress of this brain (see `createTerminalInputDedupeLedger`). */
+    terminalInputDedupeLedger?: TerminalInputDedupeLedger;
+  };
   /** A connected client just changed a file here (a save from the web or the phone). */
   onRemoteFileWrite?: () => void;
   productAnalyticsService?: ProductAnalyticsService | null;
@@ -2080,7 +2087,6 @@ function looksLikePendingTailnetApproval(text: string): boolean {
 export const CHAT_EVENT_REPLAY_MAX_EVENTS = 500;
 export const CHAT_EVENT_REPLAY_MAX_BYTES = 2_000_000;
 export const TERMINAL_INPUT_DEDUPE_MAX_ENTRIES = 2_048;
-export { TERMINAL_INPUT_ID_MAX_CHARS } from "./syncTerminalStreams";
 export const TERMINAL_INPUT_RETRY_WINDOW_MS = 60_000;
 export const TERMINAL_INPUT_MAX_OUTSTANDING = 64;
 export const ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS = 5 * 60_000;
@@ -2099,6 +2105,9 @@ type TerminalInputDedupeEntry = {
   dataFingerprint: string;
   recordedAtMs: number;
 };
+
+/** Input receipts per device, session and input id, for one retry window. */
+export type TerminalInputDedupeLedger = ReturnType<typeof createTerminalInputDedupeLedger>;
 
 export function createTerminalInputDedupeLedger(options: {
   maxEntries?: number;
@@ -2602,7 +2611,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }>();
   // Host-scoped rather than peer-scoped so a transport reconnect from the
   // same authenticated device can retry a lost ACK without rewriting input.
-  const terminalInputDedupeLedger = createTerminalInputDedupeLedger();
+  // The brain shares its ledger with its own phone ingress: a phone that
+  // reconnects to the other ingress then cannot apply the same input twice.
+  const terminalInputDedupeLedger = args.projectScopes?.terminalInputDedupeLedger
+    ?? createTerminalInputDedupeLedger();
   // Terminal streams of this project, and of this machine's other open
   // projects when a peer names one (`rosterTerminal`).
   const terminalStreams = createSyncTerminalStreams<PeerState>({
@@ -2618,16 +2630,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       send(peer.ws, type, payload);
     },
     peerDeviceId: (peer) => toOptionalString(peer.pairedDeviceId) ?? toOptionalString(peer.metadata?.deviceId),
-    closePeer: (peer, code, reason) => {
-      try {
-        peer.ws.close(code, reason);
-      } catch {
-        // ignore close failures
-      }
-    },
+    closePeer: (peer, code, reason) => closeSocketQuietly(peer.ws, code, reason),
     hostedBackend: { ptyService: args.ptyService, sessionService: args.sessionService },
     ...(args.projectScopes
-      ? { resolveProject: (target) => resolveBootedTerminalProject(args.projectScopes!, target.projectId) }
+      ? { resolveProject: (target) => resolveBootedTerminalProject(args.projectScopes!, target.projectId, args.logger) }
       : {}),
     dedupeLedger: terminalInputDedupeLedger,
     logPrefix: "sync_host",
@@ -2636,13 +2642,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    * Where a `terminal_*` envelope goes: this project, another open project of
    * this machine, or nowhere (null) when its scope is refused.
    */
-  function terminalTargetFor(envelope: ParsedSyncEnvelope): SyncTerminalTarget | null {
-    const scope = resolveSyncHostInboundProjectScope(
-      envelope.type,
-      envelope.projectId,
-      args.projectId,
-      hostProjectIdAliases,
-    );
+  function terminalTargetFor(
+    envelope: ParsedSyncEnvelope,
+    scope: SyncHostProjectScopeResolution,
+  ): SyncTerminalTarget | null {
     if (scope.ok) return { kind: "hosted" };
     if (scope.code !== "project_mismatch" || !args.projectScopes) return null;
     return syncTerminalProjectTarget(envelope);
@@ -7319,7 +7322,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         : Promise.resolve();
       const work = Promise.all([priorInput, ownershipBarrier]).then(async () => {
         if (disposed || !peers.has(peer) || !peer.authenticated) return;
-        await terminalStreams.handleInput(peer, envelope, terminalTargetFor(envelope));
+        const projectScope = resolveSyncHostInboundProjectScope(
+          envelope.type,
+          envelope.projectId,
+          args.projectId,
+          hostProjectIdAliases,
+        );
+        await terminalStreams.handleInput(peer, envelope, terminalTargetFor(envelope, projectScope));
       });
       peer.terminalInputQueue = work.catch((error) => {
         args.logger.warn("sync_host.terminal_input_failed", {
@@ -8325,7 +8334,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     if (!projectScope.ok && isSyncTerminalEnvelopeType(envelope.type)) {
       // A phone opening a terminal of this machine's other open project.
-      const terminalTarget = terminalTargetFor(envelope);
+      const terminalTarget = terminalTargetFor(envelope, projectScope);
       if (terminalTarget) {
         if (envelope.type === "terminal_input") {
           await terminalStreams.handleInput(peer, envelope, terminalTarget);

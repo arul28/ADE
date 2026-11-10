@@ -474,6 +474,9 @@ final class TerminalSessionController: NSObject, ObservableObject {
     case .inputFailure(let message):
       inputStatusMessage = message
       blockedInputPulse += 1
+    case .subscribeFailure(let message):
+      isSubscribed = false
+      subscribeError = message
     }
   }
 

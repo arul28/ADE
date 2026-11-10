@@ -113,7 +113,20 @@ final class MachineConnection {
   private var chatStreamTraces: [String: ChatStreamTrace] = [:]
   private var socketCloseCount = 0
   /// Terminals opened on this machine. Kept across sockets, like `chatScopes`.
-  private var terminals = MachineTerminalState()
+  var terminalScopes: [String: MachineTerminalScope] = [:]
+  /// The shared terminal stream state: handlers, offsets and queued input.
+  /// It outlives a socket, like `terminalScopes`.
+  private(set) lazy var terminalStream = TerminalStreamClient(hooks: TerminalStreamClientHooks(
+    isLive: { [weak self] in self?.isLive ?? false },
+    generation: { [weak self] in UInt64(self?.socketCloseCount ?? 0) },
+    sendEnvelope: { [weak self] type, sessionId, payload in
+      _ = self?.sendTerminalEnvelope(type: type, sessionId: sessionId, fields: payload)
+    },
+    resubscribe: { [weak self] sessionId, sinceOffset in
+      guard let self else { return }
+      try await self.subscribeTerminalStream(sessionId: sessionId, sinceOffset: sinceOffset)
+    }
+  ), resendsSizeOnSubscribe: true)
 
   private struct PendingRequest {
     let continuation: CheckedContinuation<Any, Error>
@@ -382,7 +395,7 @@ final class MachineConnection {
     // offline view and the seq for the next socket's `sinceSeq`. A brain that
     // still holds that roster state answers with a delta, any other brain
     // with a full snapshot.
-    let error = NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
+    let error = NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: machineConnectionUnreachableMessage])
     let requests = pending
     pending.removeAll()
     for (_, request) in requests {
@@ -508,7 +521,7 @@ final class MachineConnection {
     case "terminal_exit":
       handleTerminalExit(payload)
     case "terminal_input_ack":
-      if let dict = payload as? [String: Any] { handleTerminalInputAcknowledgement(dict) }
+      if let dict = payload as? [String: Any] { terminalStream.handleAcknowledgement(dict) }
     case "roster_snapshot":
       // Decoded off the main actor: a full roster is large enough to hang the
       // app. The receive loop awaits each frame, so ordering holds.
@@ -540,7 +553,7 @@ final class MachineConnection {
   // MARK: - Requests
 
   @discardableResult
-  private func send(type: String, requestId: String?, payload: Any, projectId: String? = nil) -> Bool {
+  func send(type: String, requestId: String?, payload: Any, projectId: String? = nil) -> Bool {
     guard let socket else { return false }
     guard let frames = try? syncEncodeEnvelopeFrames(
       type: type,
@@ -566,7 +579,7 @@ final class MachineConnection {
     return true
   }
 
-  private func request(
+  func request(
     type: String,
     payload: [String: Any],
     requestId: String = UUID().uuidString,
@@ -576,7 +589,7 @@ final class MachineConnection {
     accept: ((Any) throws -> Void)? = nil
   ) async throws -> Any {
     guard socket != nil, phase == .live else {
-      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: machineConnectionUnreachableMessage])
     }
     return try await withCheckedThrowingContinuation { continuation in
       let timeoutTask = Task { @MainActor [weak self] in
@@ -589,7 +602,7 @@ final class MachineConnection {
         resolve(requestId: requestId, result: .failure(NSError(
           domain: "ADE",
           code: 14,
-          userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."]
+          userInfo: [NSLocalizedDescriptionKey: machineConnectionUnreachableMessage]
         )))
       }
     }
@@ -1264,6 +1277,9 @@ func machineConnectionBackoffNanoseconds(failures: Int, jitter: Double = Double.
   return UInt64(machineConnectionRetryDelaysSeconds[index] * jitter * 1_000_000_000)
 }
 
+/// The error text when a computer cannot take a request right now.
+let machineConnectionUnreachableMessage = "Can’t reach this computer right now."
+
 func machineConnectionDecode<T: Decodable>(_ payload: Any, as type: T.Type) -> T? {
   guard JSONSerialization.isValidJSONObject(payload),
         let data = try? JSONSerialization.data(withJSONObject: payload)
@@ -1283,498 +1299,4 @@ func machineConnectionDecodeOffMain<T: Decodable & Sendable>(_ payload: Any, as 
 func nonEmptyTrimmed(_ value: String?) -> String? {
   guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
   return trimmed
-}
-
-// MARK: - Terminals
-
-/// The project a terminal of this machine lives in, as this machine names it.
-struct MachineTerminalScope: Equatable {
-  let projectId: String
-  let rootPath: String
-}
-
-/// Terminal state of one machine's light link. The scopes, the wanted set, the
-/// handlers, the offsets and queued input outlive a socket; the rest belongs
-/// to the socket and resets when it closes.
-struct MachineTerminalState {
-  var handlers = TerminalStreamHandlerStack()
-  var scopes: [String: MachineTerminalScope] = [:]
-  /// Terminals the phone wants streamed. A new socket subscribes them again.
-  var desired: Set<String> = []
-  /// Terminals the current socket has a snapshot for.
-  var subscribed: Set<String> = []
-  /// Terminals that had a snapshot at least once (input may queue).
-  var hydrated: Set<String> = []
-  var endOffsets: [String: Int] = [:]
-  var requestTokens: [String: UUID] = [:]
-  var gapRecovery: Set<String> = []
-  var lastSize: [String: (cols: Int, rows: Int)] = [:]
-  var inputQueues: [String: SyncTerminalInputQueue] = [:]
-  var inputTimeouts: [String: Task<Void, Never>] = [:]
-  var inputAcks = false
-  var inputRetryWindowMilliseconds: TimeInterval = 0
-  var inputMaximumOutstanding = SyncTerminalInputQueue.defaultMaximumItemCount
-}
-
-extension MachineConnection: TerminalStreamTransport {
-  private static let unreachableError = NSError(
-    domain: "ADE",
-    code: 14,
-    userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."]
-  )
-
-  /// Name the project of a terminal before it opens. Every terminal envelope
-  /// for the session carries this scope, so the host never routes it to a
-  /// different project.
-  func setTerminalScope(sessionId: String, projectId: String, rootPath: String) {
-    terminals.scopes[sessionId] = MachineTerminalScope(projectId: projectId, rootPath: rootPath)
-  }
-
-  /// A light link that can open a terminal now: live, and the host streams
-  /// terminals of any open project.
-  var canStreamTerminals: Bool { isLive && supportsRosterTerminal }
-
-  /// Names the current socket for input acks. It changes when a socket closes.
-  private var generationForTerminalInput: UInt64 { UInt64(socketCloseCount) }
-
-  fileprivate func applyTerminalInputAckFeature(enabled: Bool, config: [String: Any]?) {
-    terminals.inputAcks = enabled
-    if enabled, let config {
-      terminals.inputRetryWindowMilliseconds = max(1_000, (config["retryWindowMs"] as? NSNumber)?.doubleValue ?? 60_000)
-      terminals.inputMaximumOutstanding = min(
-        SyncTerminalInputQueue.defaultMaximumItemCount,
-        max(1, (config["maxOutstanding"] as? NSNumber)?.intValue ?? 64)
-      )
-    } else {
-      terminals.inputRetryWindowMilliseconds = enabled ? 60_000 : 0
-      terminals.inputMaximumOutstanding = SyncTerminalInputQueue.defaultMaximumItemCount
-    }
-  }
-
-  fileprivate func resetTerminalTransportState() {
-    terminals.subscribed.removeAll()
-    terminals.requestTokens.removeAll()
-    terminals.gapRecovery.removeAll()
-    for task in terminals.inputTimeouts.values { task.cancel() }
-    terminals.inputTimeouts.removeAll()
-    for sessionId in Array(terminals.inputQueues.keys) {
-      terminals.inputQueues[sessionId]?.prepareForReconnect()
-    }
-  }
-
-  /// A new socket: every open terminal resumes after the last byte it has,
-  /// then gets its size back.
-  fileprivate func restoreTerminalSubscriptions() {
-    guard supportsRosterTerminal else { return }
-    let sessionIds = terminals.desired.sorted()
-    guard !sessionIds.isEmpty else { return }
-    Task { @MainActor [weak self] in
-      for sessionId in sessionIds {
-        guard let self, self.terminals.desired.contains(sessionId) else { continue }
-        try? await self.subscribeTerminalStream(sessionId: sessionId, sinceOffset: self.terminals.endOffsets[sessionId])
-      }
-    }
-  }
-
-  private func terminalScopeOrThrow(_ sessionId: String) throws -> MachineTerminalScope {
-    guard let scope = terminals.scopes[sessionId] else {
-      throw NSError(domain: "ADE", code: 7, userInfo: [
-        NSLocalizedDescriptionKey: "This terminal has no project on that computer.",
-      ])
-    }
-    return scope
-  }
-
-  private func terminalPayload(_ scope: MachineTerminalScope, _ fields: [String: Any]) -> [String: Any] {
-    var payload = fields
-    if !scope.rootPath.isEmpty { payload["projectRootPath"] = scope.rootPath }
-    return payload
-  }
-
-  @discardableResult
-  private func sendTerminalEnvelope(type: String, sessionId: String, fields: [String: Any]) -> Bool {
-    guard isLive, let scope = terminals.scopes[sessionId] else { return false }
-    return send(
-      type: type,
-      requestId: nil,
-      payload: terminalPayload(scope, fields),
-      projectId: scope.projectId
-    )
-  }
-
-  func attachTerminalStream(sessionId: String, handler: @escaping (TerminalStreamEvent) -> Void) -> UUID? {
-    guard !sessionId.isEmpty else { return nil }
-    return terminals.handlers.attach(sessionId: sessionId, handler: handler)
-  }
-
-  func detachTerminalStream(sessionId: String, token: UUID?) {
-    guard !sessionId.isEmpty, let token else { return }
-    terminals.handlers.detach(sessionId: sessionId, token: token)
-  }
-
-  func hasTerminalStream(sessionId: String) -> Bool {
-    terminals.handlers[sessionId] != nil
-  }
-
-  func subscribeTerminalStream(sessionId: String, sinceOffset: Int?) async throws {
-    try await refreshTerminalSnapshot(sessionId: sessionId, maxBytes: syncTerminalStreamMaxBytes, sinceOffset: sinceOffset)
-  }
-
-  func refreshTerminalSnapshot(sessionId: String, maxBytes: Int, sinceOffset: Int?) async throws {
-    guard !sessionId.isEmpty else { return }
-    let scope = try terminalScopeOrThrow(sessionId)
-    terminals.desired.insert(sessionId)
-    guard isLive, supportsRosterTerminal else { throw Self.unreachableError }
-    let requestToken = UUID()
-    terminals.requestTokens[sessionId] = requestToken
-    var fields: [String: Any] = [
-      "sessionId": sessionId,
-      "maxBytes": max(1_024, min(syncTerminalStreamMaxBytes, maxBytes)),
-    ]
-    if let sinceOffset, sinceOffset >= 0 { fields["sinceOffset"] = sinceOffset }
-    do {
-      _ = try await request(
-        type: "terminal_subscribe",
-        payload: terminalPayload(scope, fields),
-        projectId: scope.projectId,
-        timeoutNanoseconds: SyncRequestTimeout.defaultTimeoutNanoseconds,
-        timeoutMessage: "Timed out opening the terminal.",
-        accept: { [weak self] raw in
-          guard let self else { return }
-          if let dict = raw as? [String: Any],
-             let error = dict["error"] as? [String: Any] {
-            let message = (error["message"] as? String) ?? "That computer could not open this terminal."
-            throw NSError(domain: "ADE", code: 7, userInfo: [NSLocalizedDescriptionKey: message])
-          }
-          guard let snapshot = machineConnectionDecode(raw, as: TerminalSnapshot.self) else {
-            throw NSError(domain: "ADE", code: 15, userInfo: [
-              NSLocalizedDescriptionKey: "The machine sent an unreadable terminal snapshot.",
-            ])
-          }
-          // A newer subscribe or an unsubscribe owns this session now.
-          guard self.terminals.requestTokens[sessionId] == requestToken,
-                self.terminals.desired.contains(sessionId) else { return }
-          self.terminals.requestTokens.removeValue(forKey: sessionId)
-          self.applyTerminalSnapshot(snapshot, sessionId: sessionId)
-          self.terminals.subscribed.insert(sessionId)
-          self.terminals.hydrated.insert(sessionId)
-          if let size = self.terminals.lastSize[sessionId] {
-            self.sendTerminalEnvelope(type: "terminal_resize", sessionId: sessionId, fields: [
-              "sessionId": sessionId,
-              "cols": size.cols,
-              "rows": size.rows,
-            ])
-          }
-          self.flushTerminalInputQueue(sessionId: sessionId)
-        }
-      )
-    } catch {
-      if terminals.requestTokens[sessionId] == requestToken {
-        terminals.requestTokens.removeValue(forKey: sessionId)
-      }
-      throw error
-    }
-  }
-
-  func unsubscribeTerminal(sessionId: String) async throws {
-    guard terminals.desired.contains(sessionId) else { return }
-    if isLive {
-      sendTerminalEnvelope(type: "terminal_unsubscribe", sessionId: sessionId, fields: ["sessionId": sessionId])
-    }
-    terminals.desired.remove(sessionId)
-    terminals.subscribed.remove(sessionId)
-    terminals.hydrated.remove(sessionId)
-    terminals.requestTokens.removeValue(forKey: sessionId)
-    terminals.endOffsets.removeValue(forKey: sessionId)
-    terminals.lastSize.removeValue(forKey: sessionId)
-    terminals.inputTimeouts.removeValue(forKey: sessionId)?.cancel()
-    terminals.inputQueues.removeValue(forKey: sessionId)
-    // The scope stays: the screen may open the session again.
-  }
-
-  func resumeCliSession(sessionId: String, cols: Int?, rows: Int?) async throws -> StartCliSessionResult {
-    let scope = try terminalScopeOrThrow(sessionId)
-    var args: [String: Any] = ["sessionId": sessionId]
-    if let cols { args["cols"] = cols }
-    if let rows { args["rows"] = rows }
-    let raw = try await sendCommand(
-      action: "work.resumeCliSession",
-      args: args,
-      projectId: scope.projectId,
-      projectRootPath: scope.rootPath.isEmpty ? nil : scope.rootPath
-    )
-    guard let result = machineConnectionDecode(raw, as: StartCliSessionResult.self) else {
-      throw NSError(domain: "ADE", code: 15, userInfo: [
-        NSLocalizedDescriptionKey: "The machine sent an unreadable answer.",
-      ])
-    }
-    return result
-  }
-
-  func fetchTerminalHistory(sessionId: String, beforeOffset: Int, maxBytes: Int) async throws -> TerminalHistorySlice {
-    let scope = try terminalScopeOrThrow(sessionId)
-    guard terminals.subscribed.contains(sessionId) else {
-      throw NSError(domain: "ADE", code: 7, userInfo: [NSLocalizedDescriptionKey: "Terminal stream is not subscribed."])
-    }
-    let raw = try await request(
-      type: "terminal_history",
-      payload: terminalPayload(scope, [
-        "sessionId": sessionId,
-        "beforeOffset": beforeOffset,
-        "maxBytes": max(1_024, min(syncTerminalHistoryMaxBytes, maxBytes)),
-      ]),
-      projectId: scope.projectId,
-      timeoutNanoseconds: SyncRequestTimeout.defaultTimeoutNanoseconds,
-      timeoutMessage: SyncRequestTimeout.message
-    )
-    guard let slice = machineConnectionDecode(raw, as: TerminalHistorySlice.self) else {
-      throw NSError(domain: "ADE", code: 15, userInfo: [
-        NSLocalizedDescriptionKey: "The machine sent an unreadable terminal history page.",
-      ])
-    }
-    return slice
-  }
-
-  func canAcceptTerminalInput(sessionId: String) -> Bool {
-    terminals.desired.contains(sessionId) && terminals.hydrated.contains(sessionId)
-  }
-
-  func sendTerminalInput(sessionId: String, data: String) -> SyncTerminalInputSubmission {
-    guard !sessionId.isEmpty, !data.isEmpty else {
-      return .rejected(message: "Terminal input is empty.")
-    }
-    guard canAcceptTerminalInput(sessionId: sessionId) else {
-      let message = "Terminal input is waiting for the terminal snapshot."
-      terminals.handlers[sessionId]?(.inputFailure(message: message))
-      return .rejected(message: message)
-    }
-    do {
-      var queue = terminals.inputQueues[sessionId] ?? SyncTerminalInputQueue(
-        maximumItemCount: terminals.inputMaximumOutstanding
-      )
-      let item = try queue.enqueue(data: Data(data.utf8))
-      terminals.inputQueues[sessionId] = queue
-      let ready = isLive && terminals.subscribed.contains(sessionId)
-      if ready { flushTerminalInputQueue(sessionId: sessionId) }
-      if terminals.inputAcks {
-        return ready ? .awaitingAcknowledgement(inputId: item.inputId) : .queuedUntilReady(inputId: item.inputId)
-      }
-      return ready ? .sentToLegacyHost : .queuedUntilReady(inputId: item.inputId)
-    } catch {
-      let message = error.localizedDescription
-      terminals.handlers[sessionId]?(.inputFailure(message: message))
-      return .rejected(message: message)
-    }
-  }
-
-  func sendTerminalResize(sessionId: String, cols: Int, rows: Int) {
-    guard !sessionId.isEmpty, cols > 0, rows > 0 else { return }
-    terminals.lastSize[sessionId] = (cols, rows)
-    sendTerminalEnvelope(type: "terminal_resize", sessionId: sessionId, fields: [
-      "sessionId": sessionId,
-      "cols": cols,
-      "rows": rows,
-    ])
-  }
-
-  // MARK: Terminal frames
-
-  private func applyTerminalSnapshot(_ snapshot: TerminalSnapshot, sessionId: String) {
-    if let endOffset = snapshot.endOffset {
-      terminals.endOffsets[sessionId] = endOffset
-    }
-    let handler = terminals.handlers[sessionId]
-    if snapshot.delta == true {
-      // A delta covers exactly [sinceOffset, end): append it.
-      if !snapshot.transcript.isEmpty {
-        handler?(.hydrate(
-          text: snapshot.transcript,
-          replacing: false,
-          startOffset: snapshot.startOffset,
-          endOffset: snapshot.endOffset,
-          paintFromScreen: false
-        ))
-      }
-    } else {
-      handler?(.hydrate(
-        text: snapshot.replacingHydrateText,
-        replacing: true,
-        startOffset: snapshot.startOffset,
-        endOffset: snapshot.endOffset,
-        paintFromScreen: snapshot.hasScreenPaint
-      ))
-    }
-    if snapshot.live == false {
-      // No PTY behind the session: show the ended state, not a prompt.
-      handler?(.exit(code: nil))
-    }
-  }
-
-  fileprivate func handleTerminalData(_ payload: Any) {
-    guard let dict = payload as? [String: Any],
-          let sessionId = dict["sessionId"] as? String,
-          let chunk = dict["data"] as? String,
-          terminals.subscribed.contains(sessionId) else { return }
-    let endOffset = (dict["offset"] as? NSNumber)?.intValue
-    var deliverable: String? = chunk
-    if let endOffset {
-      if let lastEnd = terminals.endOffsets[sessionId] {
-        let chunkStart = endOffset - chunk.utf8.count
-        if endOffset <= lastEnd {
-          // Bytes a snapshot already covered.
-          deliverable = nil
-        } else if chunkStart > lastEnd {
-          // Bytes are missing: drop the chunk and resume after the last byte.
-          deliverable = nil
-          recoverTerminalGap(sessionId: sessionId, sinceOffset: lastEnd)
-        } else {
-          if chunkStart < lastEnd {
-            // Partial overlap: trim the applied UTF-8 prefix.
-            let bytes = Array(chunk.utf8)
-            var overlap = min(max(0, lastEnd - chunkStart), bytes.count)
-            while overlap < bytes.count, bytes[overlap] & 0xC0 == 0x80 { overlap += 1 }
-            deliverable = String(decoding: bytes.dropFirst(overlap), as: UTF8.self)
-          }
-          terminals.endOffsets[sessionId] = endOffset
-        }
-      } else {
-        terminals.endOffsets[sessionId] = endOffset
-      }
-    }
-    guard let deliverable, !deliverable.isEmpty else { return }
-    terminals.handlers[sessionId]?(.chunk(text: deliverable, endOffset: endOffset))
-  }
-
-  fileprivate func handleTerminalExit(_ payload: Any) {
-    guard let dict = payload as? [String: Any],
-          let sessionId = dict["sessionId"] as? String,
-          terminals.subscribed.contains(sessionId) else { return }
-    terminals.handlers[sessionId]?(.exit(code: (dict["exitCode"] as? NSNumber)?.intValue))
-  }
-
-  private func recoverTerminalGap(sessionId: String, sinceOffset: Int) {
-    guard !terminals.gapRecovery.contains(sessionId) else { return }
-    terminals.gapRecovery.insert(sessionId)
-    Task { @MainActor [weak self] in
-      guard let self else { return }
-      defer { self.terminals.gapRecovery.remove(sessionId) }
-      try? await self.subscribeTerminalStream(sessionId: sessionId, sinceOffset: sinceOffset)
-    }
-  }
-
-  // MARK: Terminal input
-
-  private func flushTerminalInputQueue(sessionId: String) {
-    guard isLive, terminals.subscribed.contains(sessionId),
-          var queue = terminals.inputQueues[sessionId],
-          let item = queue.nextSendableItem(reliableAcknowledgements: terminals.inputAcks) else { return }
-    guard let data = String(data: item.data, encoding: .utf8) else {
-      _ = queue.acknowledge(inputId: item.inputId)
-      terminals.inputQueues[sessionId] = queue
-      terminals.handlers[sessionId]?(.inputFailure(message: "Terminal input could not be encoded."))
-      flushTerminalInputQueue(sessionId: sessionId)
-      return
-    }
-    var fields: [String: Any] = ["sessionId": sessionId, "data": data]
-    if terminals.inputAcks {
-      fields["inputId"] = item.inputId
-      queue.markSent(inputId: item.inputId, generation: generationForTerminalInput, sentUptime: ProcessInfo.processInfo.systemUptime)
-      terminals.inputQueues[sessionId] = queue
-      scheduleTerminalInputAcknowledgementTimeout(sessionId: sessionId)
-    } else {
-      _ = queue.removeLegacyDelivery(inputId: item.inputId)
-      terminals.inputQueues[sessionId] = queue
-    }
-    sendTerminalEnvelope(type: "terminal_input", sessionId: sessionId, fields: fields)
-    if !terminals.inputAcks {
-      flushTerminalInputQueue(sessionId: sessionId)
-    }
-  }
-
-  private func scheduleTerminalInputAcknowledgementTimeout(sessionId: String) {
-    terminals.inputTimeouts[sessionId]?.cancel()
-    let inputGeneration = generationForTerminalInput
-    terminals.inputTimeouts[sessionId] = Task { @MainActor [weak self] in
-      try? await Task.sleep(
-        nanoseconds: UInt64((SyncTerminalInputQueue.defaultAcknowledgementTimeout * 1_000_000_000).rounded())
-      )
-      guard let self, !Task.isCancelled,
-            var queue = self.terminals.inputQueues[sessionId],
-            let inputId = queue.timedOutInputId(nowUptime: ProcessInfo.processInfo.systemUptime, generation: inputGeneration),
-            let item = queue.item(inputId: inputId) else { return }
-      switch syncTerminalInputRetryDecision(
-        item: item,
-        nowUptime: ProcessInfo.processInfo.systemUptime,
-        retryWindowMilliseconds: self.terminals.inputRetryWindowMilliseconds
-      ) {
-      case .retry(let afterNanoseconds):
-        try? await Task.sleep(nanoseconds: afterNanoseconds)
-        guard !Task.isCancelled,
-              self.generationForTerminalInput == inputGeneration,
-              self.terminals.subscribed.contains(sessionId) else { return }
-        self.terminals.inputTimeouts[sessionId] = nil
-        self.resendTerminalInput(sessionId: sessionId, inputId: inputId)
-      case .attemptsExhausted, .retryWindowExpired:
-        _ = queue.acknowledge(inputId: inputId)
-        self.terminals.inputQueues[sessionId] = queue
-        self.terminals.inputTimeouts[sessionId] = nil
-        self.terminals.handlers[sessionId]?(.inputFailure(
-          message: "The computer did not confirm whether that terminal input was applied. It was not retried again."
-        ))
-        self.flushTerminalInputQueue(sessionId: sessionId)
-      }
-    }
-  }
-
-  private func resendTerminalInput(sessionId: String, inputId: String) {
-    guard isLive, terminals.subscribed.contains(sessionId),
-          var queue = terminals.inputQueues[sessionId],
-          let item = queue.item(inputId: inputId),
-          let data = String(data: item.data, encoding: .utf8) else { return }
-    queue.markSent(inputId: inputId, generation: generationForTerminalInput, sentUptime: ProcessInfo.processInfo.systemUptime)
-    terminals.inputQueues[sessionId] = queue
-    sendTerminalEnvelope(type: "terminal_input", sessionId: sessionId, fields: [
-      "sessionId": sessionId,
-      "data": data,
-      "inputId": inputId,
-    ])
-    scheduleTerminalInputAcknowledgementTimeout(sessionId: sessionId)
-  }
-
-  fileprivate func handleTerminalInputAcknowledgement(_ payload: [String: Any]) {
-    guard let acknowledgement = syncTerminalInputAcknowledgement(from: payload) else { return }
-    switch acknowledgement {
-    case .success(let sessionId, let inputId, _):
-      guard var queue = terminals.inputQueues[sessionId],
-            queue.inFlightItem(inputId: inputId, generation: generationForTerminalInput) != nil else { return }
-      terminals.inputTimeouts.removeValue(forKey: sessionId)?.cancel()
-      _ = queue.acknowledge(inputId: inputId)
-      terminals.inputQueues[sessionId] = queue
-      flushTerminalInputQueue(sessionId: sessionId)
-    case .failure(let sessionId, let inputId, _, let message, let retryableSubscription):
-      guard let sessionId, let inputId,
-            var queue = terminals.inputQueues[sessionId],
-            queue.inFlightItem(inputId: inputId, generation: generationForTerminalInput) != nil else { return }
-      terminals.inputTimeouts.removeValue(forKey: sessionId)?.cancel()
-      if retryableSubscription {
-        // The host lost the subscription: subscribe again, then resend.
-        queue.prepareForReconnect()
-        terminals.inputQueues[sessionId] = queue
-        terminals.subscribed.remove(sessionId)
-        Task { @MainActor [weak self] in
-          guard let self, self.terminals.desired.contains(sessionId) else { return }
-          do {
-            try await self.subscribeTerminalStream(sessionId: sessionId, sinceOffset: self.terminals.endOffsets[sessionId])
-          } catch {
-            self.terminals.handlers[sessionId]?(.inputFailure(message: message))
-          }
-        }
-        return
-      }
-      _ = queue.acknowledge(inputId: inputId)
-      terminals.inputQueues[sessionId] = queue
-      terminals.handlers[sessionId]?(.inputFailure(message: message))
-      flushTerminalInputQueue(sessionId: sessionId)
-    }
-  }
 }

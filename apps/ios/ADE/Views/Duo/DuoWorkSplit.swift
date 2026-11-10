@@ -207,10 +207,11 @@ extension WorkRootListScreen {
     // machine, as a tap on the phone layout does.
     let remoteTerminal: WorkRemoteTerminalContext?
     if workIsRemoteMachineTerminalRow(session) {
-      guard let remote = remoteTerminalContext(for: session) else {
-        openRemoteMachineTerminal(sessionId: session.id, laneId: session.laneId)
-        return
-      }
+      guard let remote = remoteTerminalContextOrOpen(
+        session: session,
+        sessionId: session.id,
+        laneId: session.laneId
+      ) else { return }
       remoteTerminal = remote
     } else {
       remoteTerminal = nil

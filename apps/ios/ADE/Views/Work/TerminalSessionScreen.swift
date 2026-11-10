@@ -27,6 +27,8 @@ struct TerminalSessionScreen: View {
   /// Whether the connection the screen streams over still serves the
   /// session's machine. While false, the screen sends nothing.
   @State private var linkLive = true
+  /// The remote terminal's controller is active on the machine's light link.
+  @State private var remoteTerminalActivated = false
   @State private var keyboardVisible = false
   @State private var pasteboardHasStrings = false
   @State private var showReconnectingCaption = false
@@ -56,10 +58,16 @@ struct TerminalSessionScreen: View {
   private var lifecycleDecorated: some View {
     chromeDecorated
       .task(id: session.id) { handleAppear() }
-      .onDisappear { controller.deactivate() }
+      .onDisappear {
+        controller.deactivate()
+        remoteTerminalActivated = false
+      }
       .onChange(of: syncService.connectionState) { (_, _: RemoteConnectionState) in refreshLinkLive() }
       .onChange(of: syncService.focusedMachineKey) { (_, _: String?) in refreshLinkLive() }
-      .onReceive(fleetPublisher) { _ in refreshLinkLive() }
+      .onReceive(fleetPublisher) { _ in
+        activateRemoteTerminalWhenLinked()
+        refreshLinkLive()
+      }
       .onChange(of: linkLive) { (_, live: Bool) in
         controller.handleConnectionChange(isConnected: live)
       }
@@ -143,22 +151,34 @@ struct TerminalSessionScreen: View {
   }
 
   private func handleAppear() {
+    activateTerminal()
+    pasteboardHasStrings = controller.pasteboardHasStrings
+    refreshLinkLive()
+  }
+
+  /// Activates the controller on the terminal's transport. A remote terminal
+  /// waits for its machine's light link. It activates once, when the link exists.
+  private func activateTerminal() {
     if let remoteTerminal {
       sessionMachineKey = remoteTerminal.machineKey
-      if let connection = remoteConnection {
-        connection.setTerminalScope(
-          sessionId: session.id,
-          projectId: remoteTerminal.projectId,
-          rootPath: remoteTerminal.rootPath
-        )
-        controller.activate(transport: connection, sessionId: session.id, sessionStatus: session.status)
-      }
+      guard !remoteTerminalActivated, let connection = remoteConnection else { return }
+      connection.setTerminalScope(
+        sessionId: session.id,
+        projectId: remoteTerminal.projectId,
+        rootPath: remoteTerminal.rootPath
+      )
+      controller.activate(transport: connection, sessionId: session.id, sessionStatus: session.status)
+      remoteTerminalActivated = true
     } else {
       sessionMachineKey = syncService.focusedMachineKey
       controller.activate(transport: syncService, sessionId: session.id, sessionStatus: session.status)
     }
-    pasteboardHasStrings = controller.pasteboardHasStrings
-    refreshLinkLive()
+  }
+
+  /// A fleet change can bring a remote terminal's light link. Activate then.
+  private func activateRemoteTerminalWhenLinked() {
+    guard remoteTerminal != nil else { return }
+    activateTerminal()
   }
 
   /// The light link of the session's machine, when the session is on another one.

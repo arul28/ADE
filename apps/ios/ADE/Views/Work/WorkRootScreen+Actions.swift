@@ -792,7 +792,7 @@ extension WorkRootListScreen {
     // Another machine's CLI or shell row streams over that machine's light
     // link when it can. Otherwise that machine is focused first.
     if workIsRemoteMachineTerminalRow(session) {
-      if let remote = remoteTerminalContext(for: session) {
+      if let remote = remoteTerminalContextOrOpen(session: session, sessionId: session.id, laneId: session.laneId) {
         navigationMutationPending = true
         selectedSessionTransitionId = session.id
         Task { @MainActor in
@@ -801,8 +801,6 @@ extension WorkRootListScreen {
           path.append(WorkSessionRoute(sessionId: session.id, remoteTerminal: remote))
           navigationMutationPending = false
         }
-      } else {
-        openRemoteMachineTerminal(sessionId: session.id, laneId: session.laneId)
       }
       return
     }
@@ -862,21 +860,22 @@ extension WorkRootListScreen {
         syncService.requestedWorkSessionNavigation = nil
         navigationMutationPending = false
         let session = row ?? rosterChat?.asTerminalSessionSummary(laneName: "")
-        if let session, let remote = remoteTerminalContext(for: session, laneId: laneId) {
-          selectedSessionTransitionId = request.sessionId
-          let route = WorkSessionRoute(sessionId: request.sessionId, remoteTerminal: remote)
-          if duoLayout.isWide {
-            duoComposeRoute = nil
-            duoSelectedRoute = route
-            path = NavigationPath()
-          } else {
-            var fresh = NavigationPath()
-            fresh.append(route)
-            path = fresh
-          }
-          return
+        guard let remote = remoteTerminalContextOrOpen(
+          session: session,
+          sessionId: request.sessionId,
+          laneId: laneId
+        ) else { return }
+        selectedSessionTransitionId = request.sessionId
+        let route = WorkSessionRoute(sessionId: request.sessionId, remoteTerminal: remote)
+        if duoLayout.isWide {
+          duoComposeRoute = nil
+          duoSelectedRoute = route
+          path = NavigationPath()
+        } else {
+          var fresh = NavigationPath()
+          fresh.append(route)
+          path = fresh
         }
-        openRemoteMachineTerminal(sessionId: request.sessionId, laneId: laneId)
         return
       }
     }
@@ -927,6 +926,21 @@ extension WorkRootListScreen {
   ) -> WorkRemoteTerminalContext? {
     guard let machineKey = workParseRemoteLaneId(laneId ?? session.laneId)?.machineKey else { return nil }
     return workRemoteTerminalContext(session: session, machineKey: machineKey, fleet: syncService.machineFleet)
+  }
+
+  /// The light-link context of another machine's CLI or shell row. When the
+  /// link cannot stream it, this starts the focus-and-open fallback instead and
+  /// returns nil, so the caller returns.
+  func remoteTerminalContextOrOpen(
+    session: TerminalSessionSummary?,
+    sessionId: String,
+    laneId: String
+  ) -> WorkRemoteTerminalContext? {
+    if let session, let remote = remoteTerminalContext(for: session, laneId: laneId) {
+      return remote
+    }
+    openRemoteMachineTerminal(sessionId: sessionId, laneId: laneId)
+    return nil
   }
 
   /// Opens a CLI or shell session that lives on another machine.

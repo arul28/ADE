@@ -130,16 +130,20 @@ import {
   createTerminalInputDedupeLedger,
   isRuntimeHostPairingRecord,
   isSyncHostRecoveryPairingRecord,
+  REQUIRED_SEND_MAX_BUFFERED_BYTES,
   type SyncForeignChatTranscriptResolver,
   type SyncProjectCatalogProvider,
+  type TerminalInputDedupeLedger,
 } from "./syncHostService";
 import { resolveDeviceDisplayName } from "./deviceRegistryService";
 import {
+  closeSocketQuietly,
   createSyncTerminalStreams,
-  syncTerminalProjectTarget,
-  type PendingTerminalSnapshotBarrier,
   type SyncTerminalProjectResolver,
+  type SyncTerminalTarget,
 } from "./syncTerminalStreams";
+import type { PendingTerminalSnapshotBarrier } from "./syncTerminalSnapshotBarrier";
+import { syncTerminalProjectTarget } from "./syncTerminalTargets";
 import { supportedAdoptChannelAeads } from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
 import {
   issueAdoptChallenge,
@@ -217,6 +221,11 @@ type BrainProjectActionsSyncHandlerArgs = {
    * With it, a socket parked here streams any open project's terminals.
    */
   terminalProjects?: SyncTerminalProjectResolver;
+  /**
+   * The input ledger this brain shares with its project sync hosts, so a phone
+   * that resends input after it moves between them cannot apply it twice.
+   */
+  terminalInputDedupeLedger?: TerminalInputDedupeLedger;
   /** True while a project sync host owns new sockets on the shared listener. */
   projectHostAttached?: () => boolean;
   /** Subscribe to a project sync host attaching to the shared listener. */
@@ -267,6 +276,10 @@ type BrainPeerState = SyncRosterPeerState & {
   subscribedSessionIds: Set<string>;
   pendingTerminalSnapshots: Map<string, PendingTerminalSnapshotBarrier>;
   nextTerminalSnapshotGeneration: number;
+  /** Terminal input runs here, beside the message queue (as on the project host). */
+  terminalInputQueue: Promise<void>;
+  /** Subscribe and unsubscribe envelopes queued on `messageQueue` and not finished. */
+  pendingTerminalOwnershipChanges: number;
 };
 
 const WS_OPEN = 1;
@@ -813,23 +826,35 @@ export function createBrainProjectActionsSyncHandler(
       peers.has(peer) && peer.lifecycleGeneration === generation && peer.ws.readyState === WS_OPEN,
     isPeerConnected: (peer) => peers.has(peer) && peer.authenticated,
     isPeerBackpressured: (peer) => isPeerBackpressured(peer.ws),
-    sendRequired: (peer, type, payload, requestId) => send(peer.ws, type, payload, requestId),
+    sendRequired: (peer, type, payload, requestId) => {
+      if (peer.ws.readyState !== WS_OPEN) return false;
+      // Same limit as the project host: a peer that does not drain is closed.
+      if (peer.ws.bufferedAmount >= REQUIRED_SEND_MAX_BUFFERED_BYTES) {
+        args.logger.warn("sync_brain.required_send_backpressured", {
+          type,
+          requestId: requestId ?? null,
+          bufferedAmount: peer.ws.bufferedAmount,
+        });
+        closeSocketQuietly(peer.ws, 1013, "Required sync response backpressured");
+        return false;
+      }
+      return send(peer.ws, type, payload, requestId);
+    },
     send: (peer, type, payload) => {
       send(peer.ws, type, payload);
     },
     peerDeviceId: (peer) => optionalString(peer.metadata?.deviceId),
-    closePeer: (peer, code, reason) => {
-      try {
-        peer.ws.close(code, reason);
-      } catch {
-        // ignore close failures
-      }
-    },
+    closePeer: (peer, code, reason) => closeSocketQuietly(peer.ws, code, reason),
     hostedBackend: null,
     ...(args.terminalProjects ? { resolveProject: args.terminalProjects } : {}),
-    dedupeLedger: createTerminalInputDedupeLedger(),
+    dedupeLedger: args.terminalInputDedupeLedger ?? createTerminalInputDedupeLedger(),
     logPrefix: "sync_brain",
   });
+  // This ingress has a terminal resolver only when it was given one.
+  const terminalCapable = Boolean(args.terminalProjects);
+  /** The project a `terminal_*` envelope names, or null when this ingress has no resolver. */
+  const terminalTargetFor = (envelope: ReturnType<typeof parseSyncEnvelope>): SyncTerminalTarget | null =>
+    terminalCapable ? syncTerminalProjectTarget(envelope) : null;
   const routedCommands = createBrainRoutedCommandHandler<BrainPeerState>({
     router: args.projectCommandRouter,
     send,
@@ -1301,7 +1326,7 @@ export function createBrainProjectActionsSyncHandler(
       case "terminal_history":
       case "terminal_resize": {
         // No project of its own: an envelope that names no project is refused.
-        const target = args.terminalProjects ? syncTerminalProjectTarget(envelope) : null;
+        const target = terminalTargetFor(envelope);
         if (!target) {
           args.logger.warn("sync_brain.terminal_envelope_without_project", {
             type: envelope.type,
@@ -1314,8 +1339,7 @@ export function createBrainProjectActionsSyncHandler(
       }
       case "terminal_input": {
         // A null target answers a missing project with a `project_mismatch` ack.
-        const target = args.terminalProjects ? syncTerminalProjectTarget(envelope) : null;
-        await terminalStreams.handleInput(peer, envelope, target);
+        await terminalStreams.handleInput(peer, envelope, terminalTargetFor(envelope));
         break;
       }
       case "changeset_batch":
@@ -1356,6 +1380,8 @@ export function createBrainProjectActionsSyncHandler(
       subscribedSessionIds: new Set(),
       pendingTerminalSnapshots: new Map(),
       nextTerminalSnapshotGeneration: 0,
+      terminalInputQueue: Promise.resolve(),
+      pendingTerminalOwnershipChanges: 0,
       ...createSyncRosterPeerState(),
     };
     peers.add(peer);
@@ -1464,6 +1490,9 @@ export function createBrainProjectActionsSyncHandler(
     // One queue for every envelope this socket sends: frames, and a hello
     // that came with the upgrade request (`X-ADE-Hello`), which goes first.
     const enqueueEnvelope = (envelope: ReturnType<typeof parseSyncEnvelope>, lifecycleGeneration: number): void => {
+      const changesTerminalOwnership = envelope.type === "terminal_subscribe"
+        || envelope.type === "terminal_unsubscribe";
+      if (changesTerminalOwnership) peer.pendingTerminalOwnershipChanges += 1;
       peer.messageQueue = peer.messageQueue.catch(() => {}).then(async () => {
         if (!isPeerCurrent(lifecycleGeneration)) return;
 
@@ -1948,8 +1977,8 @@ export function createBrainProjectActionsSyncHandler(
               ? args.getCloudRelayWssUrl?.() ?? null
               : null,
             relayAuthorization: peer.relayAuthorization?.metadata() ?? null,
-            terminalInputAckEnabled: Boolean(args.terminalProjects),
-            rosterTerminalEnabled: Boolean(args.terminalProjects),
+            terminalInputAckEnabled: terminalCapable,
+            rosterTerminalEnabled: terminalCapable,
             // Handed back only on first-time account adoption, so the device
             // can reconnect directly later with a real paired secret instead of
             // depending on the relay every time.
@@ -2010,6 +2039,30 @@ export function createBrainProjectActionsSyncHandler(
         args.logger.warn("sync_brain.envelope_failed", {
           error: error instanceof Error ? error.message : String(error),
           peerDeviceId: peer.metadata?.deviceId ?? null,
+        });
+      }).finally(() => {
+        if (changesTerminalOwnership) {
+          peer.pendingTerminalOwnershipChanges = Math.max(0, peer.pendingTerminalOwnershipChanges - 1);
+        }
+      });
+    };
+    // Terminal input skips the message queue, as on the project host, so a slow
+    // request cannot delay an attached shell. It waits for the queue only while a
+    // subscribe or unsubscribe is pending on this socket.
+    const runTerminalInput = (envelope: ReturnType<typeof parseSyncEnvelope>, lifecycleGeneration: number): void => {
+      const priorInput = peer.terminalInputQueue.catch(() => {});
+      const ownershipBarrier = peer.pendingTerminalOwnershipChanges > 0
+        ? peer.messageQueue.catch(() => {})
+        : Promise.resolve();
+      const work = Promise.all([priorInput, ownershipBarrier]).then(async () => {
+        if (!isPeerCurrent(lifecycleGeneration) || !peer.authenticated) return;
+        await terminalStreams.handleInput(peer, envelope, terminalTargetFor(envelope));
+      });
+      peer.terminalInputQueue = work.catch((error) => {
+        args.logger.warn("sync_brain.terminal_input_failed", {
+          error: error instanceof Error ? error.message : String(error),
+          peerDeviceId: peer.metadata?.deviceId ?? null,
+          requestId: envelope.requestId,
         });
       });
     };
@@ -2099,6 +2152,10 @@ export function createBrainProjectActionsSyncHandler(
         && upgradeHelloRequestId != null
         && envelope.requestId === upgradeHelloRequestId
       ) {
+        return;
+      }
+      if (peer.authenticated && envelope.type === "terminal_input") {
+        runTerminalInput(envelope, lifecycleGeneration);
         return;
       }
       enqueueEnvelope(envelope, lifecycleGeneration);
