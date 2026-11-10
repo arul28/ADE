@@ -376,7 +376,8 @@ import {
 } from "./chatSessionRetention";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { cardShowsOwnError, readNativeInputCard } from "../../../shared/nativeInputCards";
-import { ProviderSignInComposer, providerSettingsEntryId, providerSignInKnownBeforeSend, type ProviderSignInNeed } from "./ProviderSignInCard";
+import { ProviderSignInComposer, providerSettingsEntryId, providerSignInKnownBeforeSend, providerSignInSpec, type ProviderSignInNeed } from "./ProviderSignInCard";
+import { ProviderSignInCardHolder, ProviderSignInStrip } from "./ProviderSignInSlot";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
@@ -8260,8 +8261,8 @@ export function AgentChatPane({
   }, [isPersonalPane, projectBinding, projectRoot]);
 
   // The picker's "Sign in" opens that provider's Settings page on the machine
-  // the composer runs on, which is the machine the picker greyed it out for.
-  // A chat already signed out shows its sign-in card in the composer.
+  // the composer runs on, which is the machine the picker marked "Not signed in" for.
+  // A chat already signed out shows its sign-in card above the prompt box.
   const openProviderSignIn = useCallback((
     family?: ProviderFamily,
     signInTarget?: readonly unknown[] | OpenProjectBinding | null,
@@ -9957,6 +9958,13 @@ export function AgentChatPane({
     handoffModelAutoseedRef.current = false;
     setHandoffModelId(modelId);
   }, []);
+  // The cross-machine target was picked in its modal, so a catalog update must
+  // not swap it back to the source model or the first listed one.
+  const remoteHandoffModelPickedRef = useRef(false);
+  const chooseRemoteHandoffModel = useCallback((modelId: string) => {
+    remoteHandoffModelPickedRef.current = true;
+    setRemoteHandoffModelId(modelId);
+  }, []);
   useEffect(() => {
     if (!handoffFormActive) {
       handoffModelAutoseedRef.current = true;
@@ -9970,13 +9978,19 @@ export function AgentChatPane({
       : null;
     const preferredTargetId = sourceModelId ?? handoffAvailableModelIds[0] ?? "";
     setHandoffModelId((current) => {
-      if (!autoseed && current && handoffAvailableModelIds.includes(current)) return current;
+      // A model the person picked stays, also one whose provider is signed
+      // out (the picker offers it, but this machine's list does not hold it).
+      if (
+        !autoseed
+        && current
+        && (handoffAvailableModelIds.includes(current) || resolveScopedModelDescriptor(current, modelCatalogScopeKey))
+      ) return current;
       return preferredTargetId;
     });
     // Until the source model is in the catalog, a later catalog update may
     // still replace the fallback with it.
     if (sourceModelId) handoffModelAutoseedRef.current = false;
-  }, [handoffFormActive, handoffAvailableModelIds, selectedSessionModelId]);
+  }, [handoffFormActive, handoffAvailableModelIds, modelCatalogScopeKey, selectedSessionModelId]);
 
   const prevHandoffOpenRef = useRef(false);
   useEffect(() => {
@@ -10028,6 +10042,7 @@ export function AgentChatPane({
       // model.
       setHandoffLocalMode("fork");
       setHandoffTargetLaneId(selectedSession?.laneId ?? laneId ?? "");
+      remoteHandoffModelPickedRef.current = false;
       setRemoteHandoffModelId(
         selectedSessionModelId
           || handoffAvailableModelIds[0]
@@ -10045,7 +10060,8 @@ export function AgentChatPane({
   useEffect(() => {
     if (!handoffFormActive || handoffAvailableModelIds.length === 0) return;
     setRemoteHandoffModelId((current) => {
-      if (current && handoffAvailableModelIds.includes(current)) return current;
+      // A picked model stays, also one whose provider is signed out.
+      if (current && (remoteHandoffModelPickedRef.current || handoffAvailableModelIds.includes(current))) return current;
       if (selectedSessionModelId && handoffAvailableModelIds.includes(selectedSessionModelId)) {
         return selectedSessionModelId;
       }
@@ -10061,6 +10077,9 @@ export function AgentChatPane({
     if (!localHandoffOpen || handoffLocalMode !== "fork" || !handoffForkSupported) return;
     if (handoffForkAvailableModelIds.length === 0) return;
     if (handoffForkAvailableModelIds.includes(handoffModelId)) return;
+    // A model the picker offers but this machine's list lacks is a pick whose
+    // provider is signed out. It stays.
+    if (resolveScopedModelDescriptor(handoffModelId, modelCatalogScopeKey)) return;
     const next = selectedSessionModelId && handoffForkAvailableModelIds.includes(selectedSessionModelId)
       ? selectedSessionModelId
       : handoffForkAvailableModelIds[0];
@@ -10072,6 +10091,7 @@ export function AgentChatPane({
     handoffLocalMode,
     handoffModelId,
     localHandoffOpen,
+    modelCatalogScopeKey,
     selectedSessionModelId,
   ]);
 
@@ -16801,13 +16821,19 @@ export function AgentChatPane({
   // machine. Before a send, from the status the picker already reads for that
   // machine (no extra probe per send); after a turn stopped on its sign-in,
   // from that turn's error. It runs the sign-in on that machine
-  // (`composerRuntimePin`, null for the tab's own) and takes the composer's place.
+  // (`composerRuntimePin`, null for the tab's own) and shows above the prompt box.
   const signInProvider = selectedSessionId ? (selectedSession?.provider ?? null) : sessionProvider;
   const signInConnection = signInProvider
     ? (aiStatus?.providerConnections as Record<string, AiProviderConnectionStatus | undefined> | undefined)?.[signInProvider] ?? null
     : null;
+  /**
+   * A draft bound for Cursor Cloud or Devin runs elsewhere, so this
+   * computer's login does not apply: no local sign-in strip or card, and Send
+   * is not held off for it.
+   */
+  const draftRunsInACloud = !selectedSessionId && (cursorCloudMode || devinCloudMode);
   const providerSignInNeed = useMemo<(ProviderSignInNeed & { key: string }) | null>(() => {
-    if (!signInProvider || turnActive || subagentView || personalScope) return null;
+    if (!signInProvider || turnActive || subagentView || personalScope || draftRunsInACloud) return null;
     const machineKey = activeComposerRuntimeBinding?.key ?? "tab";
     if (chatSignInFailure && chatSignInFailure.provider === signInProvider) {
       return { provider: signInProvider, reason: "failed-turn", key: `${machineKey}:${chatSignInFailure.eventKey}` };
@@ -16823,25 +16849,81 @@ export function AgentChatPane({
       return { provider: signInProvider, reason: "no-login", key: `${machineKey}:${signInProvider}:no-login` };
     }
     return null;
-  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, personalScope, signInConnection, signInProvider, subagentView, turnActive]);
+  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, draftRunsInACloud, personalScope, signInConnection, signInProvider, subagentView, turnActive]);
   // Not now hides this card until a different reason (another failed turn,
   // another machine) brings one back.
   const [dismissedSignInKey, setDismissedSignInKey] = useState<string | null>(null);
+  // The need whose card the person opened from the strip. A failed turn opens
+  // its card at once; a missing login shows the one-line strip first.
+  const [signInCardKey, setSignInCardKey] = useState<string | null>(null);
   const providerSignInShown = providerSignInNeed && providerSignInNeed.key !== dismissedSignInKey
     ? providerSignInNeed
     : null;
+  /**
+   * The need the card just reported signed in. Send turns on with that report
+   * (same commit as the card's success), before the forced status re-read
+   * below answers; the re-read then decides, and clears this mark.
+   */
+  const [signedInNeedKey, setSignedInNeedKey] = useState<string | null>(null);
+  /**
+   * Send stays off while the picked model's provider has no login on the
+   * chat's computer: the same "no-login" need that shows the strip or card.
+   * A turn that failed on its sign-in keeps its own flow (card, resend after
+   * sign-in) and does not turn Send off. A draft that runs in a cloud has no
+   * need at all (`draftRunsInACloud`).
+   */
+  const signInSendBlockReason = providerSignInNeed?.reason === "no-login"
+    && providerSignInNeed.key !== signedInNeedKey
+    ? `Sign in to ${providerSignInSpec(providerSignInNeed.provider)?.label ?? providerSignInNeed.provider} first`
+    : null;
+  const signInSendBlocked = signInSendBlockReason != null;
+  // One forced status read at a time for the sign-in checks below.
+  const signInRecheckInFlightRef = useRef(false);
+  /**
+   * Reads the composer machine's sign-in status again, forced (the login may
+   * have changed outside ADE's cache: another window, a terminal). Only runs
+   * while Send is off for a missing login, on a press of Send and on focus.
+   */
+  const recheckProviderSignIn = useCallback(() => {
+    if (signInRecheckInFlightRef.current) return;
+    signInRecheckInFlightRef.current = true;
+    void refreshAvailableModels({ force: true })
+      .catch(() => undefined)
+      .finally(() => { signInRecheckInFlightRef.current = false; });
+  }, [refreshAvailableModels]);
+  /** Send or Enter while the login is missing: bring back the strip (Not now hid it) and check again. */
+  const handleSendBlocked = useCallback(() => {
+    if (!signInSendBlocked) return;
+    // Back as the one-line strip, never the card: the card takes focus, and a
+    // second Enter would then start a provider sign-in. Focus stays in the box.
+    setSignInCardKey(null);
+    setDismissedSignInKey(null);
+    recheckProviderSignIn();
+  }, [recheckProviderSignIn, signInSendBlocked]);
+  // A sign-in done elsewhere (another window, an outside terminal, Settings on
+  // another computer) shows when the person comes back to this window. A
+  // listener, not a timer, and only while Send is off for it.
+  useEffect(() => {
+    if (!signInSendBlocked) return undefined;
+    window.addEventListener("focus", recheckProviderSignIn);
+    return () => window.removeEventListener("focus", recheckProviderSignIn);
+  }, [recheckProviderSignIn, signInSendBlocked]);
   const signInMachineName = selectedSessionId ? chatMachineName : draftMachineDisplayName;
   const signInRunsHere = !isWebClientMode()
     && machineIdForBinding(activeComposerRuntimeBinding ?? projectBinding ?? null) === THIS_MACHINE_ID;
   const handleProviderSignedIn = useCallback(() => {
     const need = providerSignInShown;
     if (!need) return;
-    // Hide at once; the status re-read below confirms it.
+    // Hide at once, and turn Send on at once; the status re-read below confirms it.
     setDismissedSignInKey(need.key);
+    setSignedInNeedKey(need.key);
     void (async () => {
       // The forced re-read also clears the machine's signed-out mark, so the
       // turn that stopped on the sign-in sends again only after it.
       await refreshAvailableModels({ force: true }).catch(() => undefined);
+      // From here the status itself decides. A machine that still reads
+      // signed out turns Send off again; a press brings the strip back.
+      setSignedInNeedKey((current) => (current === need.key ? null : current));
       if (need.reason !== "failed-turn" || !selectedSessionId) return;
       const failure = await resendLastUserMessage(selectedSessionId, null, { afterSignIn: true });
       if (typeof failure === "string") setError({ message: `Signed in, but the message did not send again: ${failure}`, kind: "status" });
@@ -16859,26 +16941,50 @@ export function AgentChatPane({
     if (!providerSignInNeed) setDismissedSignInKey(null);
   }, [providerSignInNeed]);
   const signInAccountEmail = signInConnection?.accountEmail?.trim() || null;
-  const providerSignInCard = useMemo(() => (providerSignInShown ? (
-    <ProviderSignInComposer
-      key={providerSignInShown.key}
-      need={providerSignInShown}
-      pin={composerRuntimePin}
-      runsHere={signInRunsHere}
-      machineName={signInMachineName}
-      instanceId={selectedSession?.instanceId ?? null}
-      accountEmail={signInAccountEmail}
-      onSignedIn={handleProviderSignedIn}
-      onDismiss={() => setDismissedSignInKey(providerSignInShown.key)}
-      onOpenSettings={openSignInSettings}
-    />
-  ) : null), [
+  const returnFocusToComposer = useCallback(() => setComposerFocusRequest((current) => current + 1), []);
+  // Sits above the prompt box, which stays mounted: typed text never hides.
+  const providerSignInSlot = useMemo(() => {
+    if (!providerSignInShown) return null;
+    const openedFromStrip = providerSignInShown.key === signInCardKey;
+    if (providerSignInShown.reason === "no-login" && !openedFromStrip) {
+      return (
+        <ProviderSignInStrip
+          key={providerSignInShown.key}
+          provider={providerSignInShown.provider}
+          machineName={signInMachineName}
+          runsHere={signInRunsHere}
+          onSignIn={() => setSignInCardKey(providerSignInShown.key)}
+        />
+      );
+    }
+    return (
+      <ProviderSignInCardHolder
+        key={providerSignInShown.key}
+        openedFromStrip={openedFromStrip}
+        onReturnFocus={returnFocusToComposer}
+      >
+        <ProviderSignInComposer
+          need={providerSignInShown}
+          pin={composerRuntimePin}
+          runsHere={signInRunsHere}
+          machineName={signInMachineName}
+          instanceId={selectedSession?.instanceId ?? null}
+          accountEmail={signInAccountEmail}
+          onSignedIn={handleProviderSignedIn}
+          onDismiss={() => setDismissedSignInKey(providerSignInShown.key)}
+          onOpenSettings={openSignInSettings}
+        />
+      </ProviderSignInCardHolder>
+    );
+  }, [
     composerRuntimePin,
     handleProviderSignedIn,
     openSignInSettings,
     providerSignInShown,
+    returnFocusToComposer,
     selectedSession?.instanceId,
     signInAccountEmail,
+    signInCardKey,
     signInMachineName,
     signInRunsHere,
   ]);
@@ -18716,7 +18822,9 @@ export function AgentChatPane({
             onRemoveAppControlContext={removeAppControlContext}
             onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
             onOpenAiSettings={openProviderSignIn}
-            replacementCard={providerSignInCard}
+            aboveComposerSlot={providerSignInSlot}
+            sendBlockedReason={signInSendBlockReason}
+            onSendBlocked={handleSendBlocked}
             onOpenLinearSettings={openLinearSettings}
             launchPromptClipboardEnabled={launchPromptClipboardEnabled}
             launchPromptClipboardNoticeEnabled={launchPromptClipboardNoticeEnabled}
@@ -20018,7 +20126,7 @@ export function AgentChatPane({
           sourceProvider={selectedSession?.provider}
           target={crossMachineHandoffTarget}
           modelId={remoteHandoffModelId}
-          onModelChange={setRemoteHandoffModelId}
+          onModelChange={chooseRemoteHandoffModel}
           availableModelIds={handoffAvailableModelIds}
           forkAvailableModelIds={handoffForkAvailableModelIds}
           reasoningEffort={handoffReasoningEffort}

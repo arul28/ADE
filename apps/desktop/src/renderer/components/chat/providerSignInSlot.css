@@ -1,0 +1,110 @@
+/*
+ * The sign-in slot above the prompt box (ProviderSignInSlot.tsx). Every strip
+ * colour and size is here, so the design pass tunes one file. Surfaces mix the
+ * provider tint (--psi-accent) into theme tokens; nothing is hard-coded white
+ * or black.
+ */
+
+.ade-psi-strip {
+  container-type: inline-size;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 34px;
+  padding: 0 4px 0 10px;
+  border: 1px solid color-mix(in srgb, var(--psi-accent) 24%, var(--kit-panel-edge));
+  border-radius: var(--radius-md, 10px);
+  /* Opaque: the prompt box's own panel color with the provider tint, so the
+     strip reads over a wallpaper and as one piece with the box. */
+  background: color-mix(in srgb, var(--psi-accent) 7%, var(--chat-panel-bg-strong, var(--color-card, #15151c)));
+  color: var(--color-fg);
+  /* Follows the chat text size, like the rest of the composer. */
+  font-size: calc(var(--chat-font-size, 14px) * 12 / 14);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: left;
+}
+
+.ade-psi-logo {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.ade-psi-text {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.ade-psi-lead {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--kit-text-2);
+}
+
+/* The machine name gives way first. */
+.ade-psi-machine {
+  flex: 0 100 auto;
+  min-width: 2ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.ade-psi-end {
+  flex: none;
+  color: var(--kit-text-2);
+}
+
+/* Above the prompt box the strip is a tab on the box: inset from its sides,
+   touching the box (the slot's 6px gap plus the box's edge). */
+[data-composer-above-slot] .ade-psi-strip {
+  margin: 0 var(--composer-tab-inset, 26px) -7px;
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
+}
+
+.ade-psi-short { display: none; }
+
+@container (max-width: 300px) {
+  .ade-psi-long { display: none; }
+  .ade-psi-short { display: flex; }
+}
+
+.ade-psi-button {
+  flex: none;
+}
+
+/* The card sits above the prompt box now, not inside it: drop the inset it
+   kept from the box. */
+.ade-psi-holder > .ade-icc {
+  margin: 0;
+}
+
+/* Above the prompt box the card is a tab on the box, like the strip it grows
+   from: the same inset, touching the box, square at the bottom. */
+[data-composer-above-slot] .ade-psi-holder > .ade-icc {
+  margin: 0 var(--composer-tab-inset, 26px) -7px;
+  border-radius: 12px 12px 0 0;
+}
+
+/* Strip to card: a short grow from the strip's height. */
+.ade-psi-holder[data-grow="true"] > .ade-icc {
+  animation: ade-psi-grow 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes ade-psi-grow {
+  from { max-height: 34px; opacity: 0.4; }
+  to { max-height: 420px; opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-psi-holder[data-grow="true"] > .ade-icc { animation: none; }
+}

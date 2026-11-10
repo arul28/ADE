@@ -1135,6 +1135,8 @@ function ComposerIdleSendButton({
   effect,
   icon,
   sendEnabled,
+  sendPressableWhenOff = false,
+  sendAriaLabel,
   backgroundLabel,
   backgroundEnabled,
   backgroundBusy,
@@ -1147,6 +1149,10 @@ function ComposerIdleSendButton({
   effect?: string | undefined;
   icon: React.ReactNode;
   sendEnabled: boolean;
+  /** Send looks off but still takes the press (the composer explains why on it). */
+  sendPressableWhenOff?: boolean;
+  /** The Send part's accessible name; it carries the reason while Send is off. */
+  sendAriaLabel?: string;
   backgroundLabel: string;
   backgroundEnabled: boolean;
   backgroundBusy: boolean;
@@ -1200,9 +1206,10 @@ function ComposerIdleSendButton({
           <button
             data-send-part=""
             type="button"
-            disabled={!sendEnabled}
+            disabled={!sendEnabled && !sendPressableWhenOff}
+            aria-disabled={sendEnabled ? undefined : true}
             onClick={onSend}
-            aria-label={label}
+            aria-label={sendAriaLabel ?? label}
             className={cn(
               "inline-flex h-7 items-center justify-center rounded-l-full pl-2.5 pr-2 transition-all",
               sendEnabled
@@ -2422,7 +2429,9 @@ function AgentChatComposerImpl({
   onSendSteerNow,
   onSendSteerInterrupt,
   onOpenAiSettings,
-  replacementCard,
+  aboveComposerSlot,
+  sendBlockedReason = null,
+  onSendBlocked,
   onOpenLinearSettings,
   launchPromptClipboardEnabled = false,
   launchPromptClipboardNoticeEnabled = true,
@@ -2756,11 +2765,24 @@ function AgentChatComposerImpl({
   onSendSteerInterrupt?: () => void;
   onOpenAiSettings?: (family?: ProviderFamily) => void;
   /**
-   * A card that takes the composer's place while it is up: the sign-in card
-   * for a provider that is signed out on the composer's machine. An agent's
-   * own question still comes first.
+   * Shown above the prompt box while the box stays mounted and usable: the
+   * sign-in strip or card for a provider signed out on the composer's machine.
+   * It never hides what the person typed.
    */
-  replacementCard?: React.ReactNode;
+  aboveComposerSlot?: React.ReactNode;
+  /**
+   * Send is off for this reason (the target can't take the message now, e.g.
+   * its provider is not signed in). The typed text stays; Enter does nothing
+   * and the Send button's tooltip says why. The reason itself shows above the
+   * box.
+   */
+  sendBlockedReason?: string | null;
+  /**
+   * Called when the person presses Send or Enter while `sendBlockedReason`
+   * holds Send off. Given, the Send button stays pressable (it still looks
+   * off), so the press can bring back what explains the reason.
+   */
+  onSendBlocked?: () => void;
   onOpenLinearSettings?: () => void;
   launchPromptClipboardEnabled?: boolean;
   launchPromptClipboardNoticeEnabled?: boolean;
@@ -7410,6 +7432,11 @@ function AgentChatComposerImpl({
     if (pendingInput?.blocking && !pendingRedirectActive) {
       return;
     }
+    // The reason already shows above the box; a blocked send says nothing more.
+    if (sendBlockedReason && !turnActive) {
+      onSendBlocked?.();
+      return;
+    }
     if (pendingImageAttachments.length > 0) {
       return;
     }
@@ -7469,7 +7496,7 @@ function AgentChatComposerImpl({
     // empty composer (Send clicked with the menu open, `/usage`, `/context`).
     closeCommandMenu();
     onSubmit();
-  }, [activeTurnHasContent, closeCommandMenu, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [sendBlockedReason, onSendBlocked, turnActive, activeTurnHasContent, closeCommandMenu, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -7560,7 +7587,11 @@ function AgentChatComposerImpl({
     })
     : null;
   const hasPendingImageAttachments = pendingImageAttachments.length > 0;
+  const sendBlocked = Boolean(sendBlockedReason) && !turnActive;
+  // Off for a reason the pane can explain: the button takes the press anyway.
+  const sendPressableWhileBlocked = sendBlocked && Boolean(onSendBlocked);
   const sendEnabled = !busy
+    && !sendBlocked
     && !backgroundLaunchBusy
     && !parallelLaunchBusy
     && !composerInputLocked
@@ -7573,6 +7604,7 @@ function AgentChatComposerImpl({
     && (cloudModeActiveForSend ? cloudSendBlock === null : activeTurnHasContent);
   const backgroundSendEnabled = Boolean(onSubmitInBackground)
     && !busy
+    && !sendBlocked
     && !backgroundLaunchBusy
     && !parallelLaunchBusy
     && !composerInputLocked
@@ -7585,6 +7617,7 @@ function AgentChatComposerImpl({
 
   function sendButtonTitle(): string {
     if (composerInputLocked) return composerInputLockMessage ?? "Resolve the pending request before sending.";
+    if (sendBlocked && sendBlockedReason) return sendBlockedReason;
     if (hasPendingImageAttachments) return "Finish attaching images";
     if (parallelChatMode) {
       if (parallelModelSlots.length < 2) return "Add at least two models";
@@ -8363,7 +8396,14 @@ function AgentChatComposerImpl({
           // Without a background option this is a plain circular Send.
           if (!backgroundAvailable) {
             return withThreadComments(
-              <SmartTooltip forceEnabled content={{ label, description, effect: sendButtonTitleText }}>
+              <SmartTooltip
+                forceEnabled
+                // A block reason is plain text in the body, not the effect
+                // line: that line is the success tone, and this is no success.
+                content={sendBlocked && sendBlockedReason
+                  ? { label, description: sendBlockedReason }
+                  : { label, description, effect: sendButtonTitleText }}
+              >
                 <button
                   data-send-part=""
                   data-send-control=""
@@ -8374,9 +8414,10 @@ function AgentChatComposerImpl({
                       ? "bg-white/90 text-zinc-900 hover:bg-white"
                       : "bg-fg/[0.06] text-muted-fg/20",
                   )}
-                  disabled={!sendEnabled}
+                  disabled={!sendEnabled && !sendPressableWhileBlocked}
+                  aria-disabled={sendEnabled ? undefined : true}
                   onClick={submitComposerDraftLatest}
-                  aria-label={label}
+                  aria-label={sendBlocked && sendBlockedReason ? `${label}. ${sendBlockedReason}` : label}
                 >
                   {sendIcon}
                 </button>
@@ -8387,10 +8428,12 @@ function AgentChatComposerImpl({
           return withThreadComments(
             <ComposerIdleSendButton
               label={label}
-              description={description}
-              effect={sendButtonTitleText}
+              description={sendBlocked && sendBlockedReason ? sendBlockedReason : description}
+              effect={sendBlocked && sendBlockedReason ? undefined : sendButtonTitleText}
               icon={sendIcon}
               sendEnabled={sendEnabled}
+              sendPressableWhenOff={sendPressableWhileBlocked}
+              sendAriaLabel={sendBlocked && sendBlockedReason ? `${label}. ${sendBlockedReason}` : label}
               backgroundLabel={backgroundLaunchActionLabel}
               backgroundEnabled={backgroundSendEnabled}
               backgroundBusy={backgroundLaunchBusy}
@@ -8401,7 +8444,7 @@ function AgentChatComposerImpl({
           );
         })()
 
-  )), [activeSteerEnabled, activeTurnSendCapability, activeTurnSendMenuEnabled, backgroundJobCount, backgroundLaunchActionLabel, backgroundLaunchBusy, backgroundSendEnabled, childChatCount, cloudModeActiveForSend, cloudTargetLabel, composerInputLocked, draftHasText, draftInlineBlockedReason, draftInlineSteerHandler, effectiveActiveTurnSendMode, effectiveStopMode, onClearDraft, onInterrupt, onSendSteerInterrupt, onSendSteerNow, onSubmitInBackground, openComposerSchedule, parallelChatMode, scheduledSendContext, sendButtonTitleText, sendEnabled, sessionProvider, submitActiveTurnDraftLatest, submitComposerDraftLatest, turnActive, updateActiveTurnStopMode, withThreadComments]);
+  )), [sendBlocked, sendBlockedReason, sendPressableWhileBlocked, activeSteerEnabled, activeTurnSendCapability, activeTurnSendMenuEnabled, backgroundJobCount, backgroundLaunchActionLabel, backgroundLaunchBusy, backgroundSendEnabled, childChatCount, cloudModeActiveForSend, cloudTargetLabel, composerInputLocked, draftHasText, draftInlineBlockedReason, draftInlineSteerHandler, effectiveActiveTurnSendMode, effectiveStopMode, onClearDraft, onInterrupt, onSendSteerInterrupt, onSendSteerNow, onSubmitInBackground, openComposerSchedule, parallelChatMode, scheduledSendContext, sendButtonTitleText, sendEnabled, sessionProvider, submitActiveTurnDraftLatest, submitComposerDraftLatest, turnActive, updateActiveTurnStopMode, withThreadComments]);
   const commandMenu = useMemo(() => (
     <ChatCommandMenu
       ref={commandMenuRef}
@@ -8455,6 +8498,14 @@ function AgentChatComposerImpl({
           >
             Dismiss
           </button>
+        </div>
+      ) : null}
+      {aboveComposerSlot ? (
+        <div
+          data-composer-above-slot="true"
+          className={cn("mb-1.5 min-w-0", layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]")}
+        >
+          {aboveComposerSlot}
         </div>
       ) : null}
       <BorderBeam
@@ -9487,8 +9538,6 @@ function AgentChatComposerImpl({
             />
           );
         }
-
-        if (replacementCard) return replacementCard;
 
         // The one thing the tags cannot say, kept visible because tooltips
         // never show on a touch pointer: why a message has to wait.
