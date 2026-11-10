@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_THEME_ID } from "../../shared/theme";
+import { DEFAULT_SCENE_PREFERENCES } from "../scene/scenePreferences";
 
 const PREFERENCES_KEY = "ade.userPreferences.v1";
 
@@ -83,6 +84,48 @@ describe("appearance before the app store loads", () => {
     getAppearanceState().setInterfacePreferences({ focusGridMaxChats: 99 });
     expect(getAppearanceState().interfacePreferences.focusGridMaxChats).toBeNull();
     expect(JSON.parse(window.localStorage.getItem(PREFERENCES_KEY)!).interfacePreferences.focusGridMaxChats).toBeNull();
+  });
+
+  it("saves a scheduled look and keeps every other stored key and interface choice", async () => {
+    window.localStorage.setItem(PREFERENCES_KEY, JSON.stringify({
+      theme: "dark",
+      themeId: DEFAULT_THEME_ID,
+      themeFollowsSystem: false,
+      chatFontSizePx: 15,
+      interfacePreferences: { sansFont: "geist", monoFont: "jetbrains", reduceMotion: true, focusGridMaxChats: 4 },
+    }));
+    const { patchStoredLook } = await loadWithoutAppStore();
+
+    expect(patchStoredLook({
+      theme: "light",
+      themeId: "light",
+      themeFollowsSystem: true,
+      interfacePreferences: { sansFont: "system", monoFont: "geist-mono", scene: { ...DEFAULT_SCENE_PREFERENCES, mode: "plain" } },
+    })).toBe(true);
+
+    expect(JSON.parse(window.localStorage.getItem(PREFERENCES_KEY)!)).toEqual({
+      theme: "light",
+      themeId: "light",
+      themeFollowsSystem: true,
+      chatFontSizePx: 15,
+      interfacePreferences: {
+        sansFont: "system",
+        monoFont: "geist-mono",
+        reduceMotion: true,
+        focusGridMaxChats: 4,
+        scene: { ...DEFAULT_SCENE_PREFERENCES, mode: "plain" },
+      },
+    });
+
+    // With no preferences record yet there is nothing to keep, so nothing is written.
+    window.localStorage.clear();
+    expect(patchStoredLook({
+      theme: "light",
+      themeId: "light",
+      themeFollowsSystem: false,
+      interfacePreferences: { sansFont: "geist", monoFont: "jetbrains", scene: DEFAULT_SCENE_PREFERENCES },
+    })).toBe(false);
+    expect(window.localStorage.getItem(PREFERENCES_KEY)).toBeNull();
   });
 
   it("falls back to the legacy keys and writes no partial record that would hide them from the app's migration", async () => {

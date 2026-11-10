@@ -249,6 +249,40 @@ function patchStoredPreferences(patch: Partial<StoredAppearance>): void {
   }
 }
 
+/**
+ * Save a look (theme, mode, background, fonts) into the unified preferences,
+ * leaving every other key, other interface choices included, as stored. For
+ * an automatic change, which can run in a window whose copy of the other
+ * preferences is older than another window's. False when there is no record
+ * yet or it could not be written.
+ */
+export function patchStoredLook(look: Pick<StoredAppearance, "theme" | "themeId" | "themeFollowsSystem"> & {
+  interfacePreferences: Pick<InterfacePreferences, "sansFont" | "monoFont" | "scene">;
+}): boolean {
+  try {
+    const raw = window.localStorage.getItem(USER_PREFERENCES_STORAGE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const storedInterface =
+      parsed.interfacePreferences && typeof parsed.interfacePreferences === "object" ? parsed.interfacePreferences : {};
+    const { sansFont, monoFont, scene } = look.interfacePreferences;
+    window.localStorage.setItem(
+      USER_PREFERENCES_STORAGE_KEY,
+      JSON.stringify({
+        ...parsed,
+        theme: look.theme,
+        themeId: look.themeId,
+        themeFollowsSystem: look.themeFollowsSystem,
+        interfacePreferences: { ...storedInterface, sansFont, monoFont, scene },
+      }),
+    );
+    return true;
+  } catch (error) {
+    console.warn("[appearance] could not save the scheduled look", error);
+    return false;
+  }
+}
+
 function createStandInStore(): AppearanceStoreApi {
   const stored = readStoredAppearance();
   const systemColorScheme = readSystemColorScheme();

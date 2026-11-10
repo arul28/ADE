@@ -117,6 +117,7 @@ enum WorkSettingsCatalog {
     "storage.project-health": Setting(path: "Project › Location › Project checks", locked: true),
     "appearance.theme": Setting(path: "App › Appearance › Theme", locked: false),
     "appearance.background": Setting(path: "App › Appearance › Background", locked: false),
+    "appearance.schedule": Setting(path: "App › Appearance › Schedule", locked: false),
     "appearance.chat-font-size": Setting(path: "App › Chat › Chat font size", locked: false),
     "appearance.transcript-density": Setting(path: "App › Chat › Transcript density", locked: false),
     "appearance.chat-tint": Setting(path: "App › Chat › Runtime color", locked: false),
