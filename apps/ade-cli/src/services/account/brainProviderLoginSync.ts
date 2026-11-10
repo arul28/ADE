@@ -27,13 +27,11 @@ export async function installBrainProviderLoginSync(args: {
     { cloudAccessDepsFor, onCloudAccessAnswerChanged, readCloudAccessState },
     { getOrCreateLocalAccountMachineIdentity },
     { isCloudMachine },
-    { bootSignInEnv },
   ] = await Promise.all([
     import("../../../../desktop/src/main/services/providerLogins/providerLoginSync"),
     import("../../../../desktop/src/main/services/adeCloud/cloudAccess"),
     import("../../../../desktop/src/main/services/account/localMachineIdentity"),
     import("../power/cloudKeepAwake"),
-    import("../../../../desktop/src/main/services/providerLogins/providerLoginBoot"),
   ]);
   // The name the machine directory and the Usage page show ("Mac Studio"), not
   // the network hostname. Loaded lazily, as the brain loads the registry; the
@@ -79,7 +77,6 @@ export async function installBrainProviderLoginSync(args: {
     },
     cloudAccess: () => readCloudAccessState(accessDeps),
     onCloudAccessChanged: onCloudAccessAnswerChanged,
-    bootSignInEnv,
     cloudComputer: isCloudMachine(),
     logger: args.logger,
   }));

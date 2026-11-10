@@ -168,4 +168,23 @@ export type ProviderLoginStatus = {
   providers: ProviderLoginProviderStatus[];
   /** On a cloud computer, what it applied for each place; null on every other computer. */
   applied: ProviderLoginApplied[] | null;
+} & ProviderLoginStatusParts;
+
+/**
+ * Fields another package adds to the status (`registerProviderLoginStatusPart`).
+ * P6 fills `claudePasses` and may narrow its type.
+ */
+export type ProviderLoginStatusParts = {
+  claudePasses?: unknown[];
 };
+
+/**
+ * The vault kind `provider_login` also holds Claude passes (P6), under this
+ * key prefix. They are never a carried sign-in: not listed, applied, removed
+ * or pruned by the sign-in sync.
+ */
+export const CLAUDE_PASS_KEY_PREFIX = "claude-pass/";
+
+export function isClaudePassKey(key: string): boolean {
+  return key.startsWith(CLAUDE_PASS_KEY_PREFIX) && key.length > CLAUDE_PASS_KEY_PREFIX.length;
+}

@@ -3164,8 +3164,8 @@ export async function createAdeRuntime(args: {
     // Settings hears the change.
     const chatServiceForLogins = agentChatService;
     teardown.push(registerProviderLoginRuntime({
-      restartProviderRuntimesWhenIdle: (provider) => {
-        chatServiceForLogins?.restartProviderRuntimesWhenIdle(provider);
+      restartProviderRuntimesWhenIdle: (provider, options) => {
+        chatServiceForLogins?.restartProviderRuntimesWhenIdle(provider, options);
       },
       notifyChanged: () => pushEvent("runtime", { type: "provider_logins_changed" }),
     }));

@@ -66490,17 +66490,48 @@ export function createAgentChatService(args: {
    * the provider's unused pooled processes. A running turn is never cut: it
    * ends on the login it started with.
    */
-  const restartProviderRuntimesWhenIdle = (provider: string): { restarted: number; deferred: number; pooledEnded: number } => {
+  /**
+   * The provider account a chat runs as, read without the side effects of
+   * `resolveSessionInstance` (no pin, no persist, no thread reset): its
+   * `instanceId`, or the account the store falls back to. Null for a provider
+   * without accounts.
+   */
+  const resolvedInstanceIdOf = (managed: ManagedChatSession): string | null => {
+    const provider = managed.session.provider;
+    if (!isProviderInstanceProvider(provider)) return null;
+    const requested = managed.session.instanceId?.trim() || undefined;
+    try {
+      return getMachineProviderInstanceStore().resolve(provider, requested).instance.id;
+    } catch {
+      return requested ?? null;
+    }
+  };
+
+  /**
+   * A login of `provider` changed: end its idle processes now and the busy
+   * ones after their turn. With `instanceIds` (P6: one Claude pass), only the
+   * chats whose resolved account id is in the list, and the pooled processes,
+   * which belong to no account, stay.
+   */
+  const restartProviderRuntimesWhenIdle = (
+    provider: string,
+    options?: { instanceIds?: readonly string[] },
+  ): { restarted: number; deferred: number; pooledEnded: number } => {
     const id = provider.trim().toLowerCase();
+    const onlyAccounts = options?.instanceIds ? new Set(options.instanceIds) : null;
     let restarted = 0;
     let deferred = 0;
     for (const managed of managedSessions.values()) {
       if (managed.session.provider !== id || !managed.runtime || managed.deleted) continue;
+      if (onlyAccounts) {
+        const instanceId = resolvedInstanceIdOf(managed);
+        if (!instanceId || !onlyAccounts.has(instanceId)) continue;
+      }
       managed.pendingLoginRestart = true;
       if (runLoginRestartIfIdle(managed)) restarted += 1;
       else if (managed.pendingLoginRestart) deferred += 1;
     }
-    const pooledEnded = (args.acpSessionPool ?? acpSessionPool).disposeIdle(id, "provider login changed");
+    const pooledEnded = onlyAccounts ? 0 : (args.acpSessionPool ?? acpSessionPool).disposeIdle(id, "provider login changed");
     if (restarted || deferred || pooledEnded) {
       logger.info("agent_chat.login_restart_requested", { provider: id, restarted, deferred, pooledEnded });
     }

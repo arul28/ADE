@@ -28634,23 +28634,14 @@ async function runServe(
           + `(signed out; the old identity is kept in ${hostGuard.movedTo}).\n`,
       );
     }
-    const { isCloudMachine } = await import("./services/power/cloudKeepAwake");
-    if (isCloudMachine()) {
-      // An ADE Cloud computer (P5): the sign-in variables its instance env may
-      // carry (an older desktop still sends them) leave the brain's env before
-      // any chat starts. The sign-in sync puts each saved key back from the
-      // account vault while ADE Cloud uses it, and adopts the Codex file an
-      // older brain wrote from one.
-      const { takeCloudSignInEnv } = await import("../../desktop/src/main/services/providerLogins/providerLoginBoot");
-      takeCloudSignInEnv();
-    } else {
-      // A cloud machine without the P5 marker (`ADE_CLOUD_INSTANCE_ID`): the
-      // old path. Codex reads its key only from its auth file, so it is
-      // written before any chat starts.
-      const { applyCloudSignIns } = await import("../../desktop/src/main/services/adeCloud/cloudSignInBoot");
-      if (applyCloudSignIns() === "failed") {
-        process.stderr.write("ADE: couldn't write Codex's sign-in on this machine; Codex asks to sign in here instead.\n");
-      }
+    // A cloud machine made with the person's sign-ins: Codex reads its key
+    // only from its auth file, so it is written before any chat starts, and
+    // the sign-in variables stay in the env. On an ADE Cloud computer the
+    // sign-in sync takes them out at its first apply, once the account's
+    // vault can give each key back (fix B1, providerLoginBoot.ts).
+    const { applyCloudSignIns } = await import("../../desktop/src/main/services/adeCloud/cloudSignInBoot");
+    if (applyCloudSignIns() === "failed") {
+      process.stderr.write("ADE: couldn't write Codex's sign-in on this machine; Codex asks to sign in here instead.\n");
     }
   }
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");

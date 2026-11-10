@@ -25,6 +25,7 @@ import os from "node:os";
 
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import {
+  isClaudePassKey,
   isProviderLoginProvider,
   type ProviderLoginApplied,
   type ProviderLoginApplyState,
@@ -51,7 +52,14 @@ import {
   type AppliedEntry,
   type AppliedStateFile,
 } from "./providerLoginApply";
-import { installProviderLoginGate, notifyProviderLoginsChanged, restartProviderRuntimesWhenIdle } from "./providerLoginHooks";
+import {
+  installProviderLoginGate,
+  notifyProviderLoginPass,
+  notifyProviderLoginsChanged,
+  readProviderLoginStatusParts,
+  restartProviderRuntimesWhenIdle,
+} from "./providerLoginHooks";
+import { takeCloudSignInEnv } from "./providerLoginBoot";
 import {
   PROVIDER_LOGIN_MAX_CHARS,
   PROVIDER_LOGIN_VAULT_KIND,
@@ -170,8 +178,6 @@ export type ProviderLoginSyncDeps = {
   /** Hear a change of the cached ADE Cloud answer, whoever asked (`onCloudAccessAnswerChanged`). */
   onCloudAccessChanged?: (listener: () => void) => () => void;
   cloudComputer: boolean;
-  /** On a cloud computer: the sign-in variables the boot took out of the env (`takeCloudSignInEnv`). */
-  bootSignInEnv?: () => Readonly<Record<string, string>>;
   logger: Logger;
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
@@ -443,13 +449,16 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     lastPassAt = now();
     // The account lost ADE Cloud or signed out between two answers: stop riding the ticks.
     if (off === "no_ade_cloud" || off === "signed_out") leaveTicks();
-    if (off === "all_off" && deps.cloudComputer) {
-      // Nothing is captured, but the switched-off sign-ins leave this cloud
-      // computer and its saved keys stay managed (the switch covers sign-ins only).
+    if (off === "all_off") {
+      // Nothing is captured. On a cloud computer the switched-off sign-ins
+      // leave and its saved keys stay managed (the switch covers sign-ins only).
       const vault = deps.vault();
       const machine = deps.machine();
       const accountUserId = deps.accountUserId();
-      if (vault && machine && accountUserId) await runApply(vault, accountUserId, originId(machine.machineKey), providers, false);
+      if (vault && machine && accountUserId) {
+        if (deps.cloudComputer) await runApply(vault, accountUserId, originId(machine.machineKey), providers, false);
+        notifyProviderLoginPass({ accountUserId, cloudComputer: deps.cloudComputer, providers: providers ? [...providers] : null, captureOff: "all_off" });
+      }
       return;
     }
     if (off) return;
@@ -558,6 +567,12 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     }
     if (accountChanged) notifyProviderLoginsChanged();
     if (deps.cloudComputer) await runApply(vault, accountUserId, origin12, providers, true);
+    notifyProviderLoginPass({
+      accountUserId,
+      cloudComputer: deps.cloudComputer,
+      providers: providers ? [...providers] : null,
+      captureOff: null,
+    });
   }
 
   /** One pass at a time; a request during a pass runs once more after it. */
@@ -670,6 +685,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       signIns,
       providers,
       applied: deps.cloudComputer && !deps.staticOff ? appliedStatus(provider ?? null) : null,
+      // Fields other packages add (P6: `claudePasses`), never the sync's own.
+      ...(deps.staticOff ? {} : await readProviderLoginStatusParts(provider ?? null)),
     };
   }
 
@@ -714,13 +731,21 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       .map((row) => row.key));
   }
 
-  /** Save the setting, without entries whose sign-in is gone (§2.2: a write prunes). */
-  async function saveSetting(next: CloudSetting): Promise<ProviderLoginStatus> {
+  /**
+   * Save the setting, without entries whose sign-in is gone (§2.2: a write
+   * prunes). A Claude pass key (P6) is never pruned here, only dropped by its
+   * own removal (`dropKey`). Fields this code does not know (P6:
+   * `claude.smartBalance`) are kept as they are.
+   */
+  async function saveSetting(next: CloudSetting, dropKey: string | null = null): Promise<ProviderLoginStatus> {
     const { vault, settings } = await writableStores();
     const live = liveSignInKeys(vault);
-    const inUse = Object.fromEntries(Object.entries(next.inUse).filter(([, key]) => key === "key" || live.has(key)));
-    const off = [...new Set(next.off.filter((key) => live.has(key)))].sort();
-    if (!settings.set(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING, { v: 1, enabled: next.enabled, inUse, off })) {
+    const keep = (key: string) => key !== dropKey && (isClaudePassKey(key) || live.has(key));
+    const inUse = Object.fromEntries(Object.entries(next.inUse).filter(([, key]) => key === "key" || keep(key)));
+    const off = [...new Set(next.off.filter(keep))].sort();
+    const raw = settings.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING);
+    const unknownFields = isRecord(raw) ? raw : {};
+    if (!settings.set(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING, { ...unknownFields, v: 1, enabled: next.enabled, inUse, off })) {
       throw new Error("ADE couldn't save that to your account. Try again in a moment.");
     }
     return await afterWrite();
@@ -733,39 +758,44 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     return await status();
   }
 
-  function existingSignIn(vault: ProviderLoginVault, key: string): { provider: ProviderLoginProvider; slot: string } {
+  /** A live key of the account: a carried sign-in (with its place), or a Claude pass (P6, place "claude"). */
+  function existingKey(vault: ProviderLoginVault, key: string): { provider: ProviderLoginProvider; slot: string | null; place: string; pass: boolean } {
+    if (!liveSignInKeys(vault).has(key)) throw new Error("That sign-in is not in your account.");
+    if (isClaudePassKey(key)) return { provider: "claude", slot: null, place: "claude", pass: true };
     const parsedKey = parseProviderLoginKey(key);
-    if (!parsedKey || !liveSignInKeys(vault).has(key)) throw new Error("That sign-in is not in your account.");
-    return parsedKey;
+    if (!parsedKey) throw new Error("That sign-in is not in your account.");
+    return { provider: parsedKey.provider, slot: parsedKey.slot, place: cloudChoiceKey(parsedKey.provider, parsedKey.slot), pass: false };
   }
 
   const writes = {
-    /** ADE Cloud uses this sign-in (a vault key), the saved key ("key"), or the newest (null). */
+    /**
+     * ADE Cloud uses this sign-in (a vault key; for Claude a pass key), the
+     * saved key ("key"), or the newest (null). Picking a key also switches it on.
+     */
     async use(args: { provider: ProviderLoginProvider; key: string | null; slot?: string | null }): Promise<ProviderLoginStatus> {
       const { vault } = await writableStores();
       const setting = cloudSetting();
       if (args.key && args.key !== "key") {
-        const signIn = existingSignIn(vault, args.key);
-        if (signIn.provider !== args.provider) throw new Error("That sign-in belongs to another provider.");
-        const place = cloudChoiceKey(signIn.provider, signIn.slot);
-        setting.inUse[place] = args.key;
+        const found = existingKey(vault, args.key);
+        if (found.provider !== args.provider) throw new Error("That sign-in belongs to another provider.");
+        setting.inUse[found.place] = args.key;
         setting.off = setting.off.filter((key) => key !== args.key);
       } else if (args.key === "key") {
-        if (args.provider === "pi") throw new Error("Pi has no saved ADE Cloud key.");
+        if (args.provider === "pi" || args.provider === "claude") throw new Error(`${args.provider === "pi" ? "Pi" : "Claude"} has no saved ADE Cloud key.`);
         setting.inUse[args.provider] = "key";
       } else {
-        delete setting.inUse[cloudChoiceKey(args.provider, args.slot ?? "base")];
+        delete setting.inUse[args.provider === "claude" ? "claude" : cloudChoiceKey(args.provider, args.slot ?? "base")];
       }
       return await saveSetting(setting);
     },
-    /** Switch one sign-in on or off for ADE Cloud. */
+    /** Switch one sign-in (or Claude pass) on or off for ADE Cloud. */
     async setCloud(args: { key: string; on: boolean }): Promise<ProviderLoginStatus> {
       const { vault } = await writableStores();
-      const signIn = existingSignIn(vault, args.key);
+      const found = existingKey(vault, args.key);
       const setting = cloudSetting();
       setting.off = args.on ? setting.off.filter((key) => key !== args.key) : [...setting.off, args.key];
-      const place = cloudChoiceKey(signIn.provider, signIn.slot);
-      if (!args.on && setting.inUse[place] === args.key) delete setting.inUse[place];
+      // A pass's pick is P6's to change; a carried sign-in switched off stops being the pick.
+      if (!found.pass && !args.on && setting.inUse[found.place] === args.key) delete setting.inUse[found.place];
       return await saveSetting(setting);
     },
     /** The one off switch for all of ADE Cloud's sign-ins. */
@@ -774,15 +804,15 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       setting.enabled = args.on;
       return await saveSetting(setting);
     },
-    /** Remove one sign-in from the account (a tombstone every computer hears), and prune the setting. */
+    /** Remove one sign-in or Claude pass from the account (a tombstone every computer hears), and its setting entries. */
     async remove(args: { key: string }): Promise<ProviderLoginStatus> {
       const { vault } = await writableStores();
-      const signIn = existingSignIn(vault, args.key);
+      const found = existingKey(vault, args.key);
       if (!vault.remove(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, args.key)) {
         throw new Error("ADE couldn't remove that sign-in from your account. Try again in a moment.");
       }
-      deps.logger.info("provider_login.removed", { provider: signIn.provider, slot: signIn.slot, reason: "removed_by_person" });
-      return await saveSetting(cloudSetting());
+      deps.logger.info("provider_login.removed", { provider: found.provider, slot: found.slot ?? "pass", reason: "removed_by_person" });
+      return await saveSetting(cloudSetting(), args.key);
     },
   };
 
@@ -795,6 +825,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     | { kind: "key"; place: string; provider: ProviderLoginProvider; id: string; token: string; contentHash: string };
 
   let appliedCache: AppliedStateFile | null = null;
+  /** What the first apply took out of the env (fix B1); null until then. Values stay in memory only. */
+  let envTaken: Readonly<Record<string, string>> | null = null;
   const applyStates = new Map<string, { state: ProviderLoginApplyState; key: string | null }>();
   let appliedLoginHashes = new Set<string>();
 
@@ -972,9 +1004,20 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   async function runApply(vault: ProviderLoginVault, accountUserId: string, origin12: string, providers: Set<ProviderLoginProvider> | null, captureRan: boolean): Promise<void> {
     const state = await loadApplied(accountUserId);
     const before = JSON.stringify(state);
+    // Fix B1: the boot leaves the sign-in variables the desktop sent in the env
+    // (the old path). They leave at the first apply, which runs only with a
+    // signed-in account and a ready vault, so a key leaves only when the vault
+    // can give it back. A process that started earlier keeps its env until the
+    // idle restart that the changed providers get below.
+    const envBefore = new Map(SAVED_KEYS.map((spec) => [spec.env, env[spec.env]]));
+    const takeover = !envTaken;
+    if (takeover) {
+      envTaken = takeCloudSignInEnv(env);
+      deps.logger.info("provider_login.env_taken", { names: Object.keys(envTaken) });
+    }
     if (!state.applied.codex && !state.env.OPENAI_API_KEY) {
       // The Codex file the old cloud boot wrote from the computer's instance env: managed from now on.
-      const bootKey = deps.bootSignInEnv?.().OPENAI_API_KEY;
+      const bootKey = envTaken?.OPENAI_API_KEY;
       const adopted = bootKey ? adoptOldCodexKeyFile(bootKey, ctx, now()) : null;
       if (adopted) {
         state.applied.codex = adopted;
@@ -1053,29 +1096,29 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     }
 
     // Env keys: a saved key is in its variable only while it is in use, so it never outranks a carried sign-in.
-    if (!providers || SAVED_KEYS.some((spec) => spec.provider && providers.has(spec.provider))) {
+    // The pass that took the boot variables puts back every one the account still has, whatever `providers` says.
+    const envProviders = takeover ? null : providers;
+    if (!envProviders || SAVED_KEYS.some((spec) => spec.provider && envProviders.has(spec.provider))) {
       for (const spec of SAVED_KEYS) {
-        if (providers && (!spec.provider || !providers.has(spec.provider))) continue;
+        if (envProviders && (!spec.provider || !envProviders.has(spec.provider))) continue;
         const want = spec.provider ? wants.get(spec.provider) : null;
         const token = spec.provider
           ? (want?.kind === "key" && want.id === spec.id ? want.token : null)
           : savedKeyToken(spec.id, vault);
         const setHash = state.env[spec.env];
         if (token) {
-          if (env[spec.env] !== token) {
-            env[spec.env] = token;
-            changed.add(spec.provider ?? spec.id);
-          }
+          if (env[spec.env] !== token) env[spec.env] = token;
           state.env[spec.env] = shortHash(token);
         } else if (setHash) {
           const current = env[spec.env];
-          if (current != null && shortHash(current) === setHash) {
-            delete env[spec.env];
-            changed.add(spec.provider ?? spec.id);
-          }
+          if (current != null && shortHash(current) === setHash) delete env[spec.env];
           delete state.env[spec.env];
         }
       }
+    }
+    // A provider whose variable now differs from before this pass (set, changed, or taken away) restarts when idle.
+    for (const spec of SAVED_KEYS) {
+      if (env[spec.env] !== envBefore.get(spec.env)) changed.add(spec.provider ?? spec.id);
     }
 
     if (JSON.stringify(state) !== before) {
