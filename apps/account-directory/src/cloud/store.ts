@@ -64,6 +64,8 @@ export type ComputerRow = {
   memory_gb: number;
   disk_gb: number;
   disk_reserved_at: number | null;
+  /** While a grow waits for the provider: the size it last confirmed (billed until then). */
+  disk_confirmed_gb: number | null;
   multiplier_milli: number;
   template_version: string | null;
   machine_key: string | null;
@@ -481,14 +483,15 @@ export const MOVE_GRACE_MS = 2 * 60 * 60_000;
  * the account named by `userIdSql` (a `?` or a column). A move's source is
  * left out while its move runs (`moving_from`). With `except`, it takes one
  * more `?`: an instance to leave out (a move about to start, or a computer
- * about to change size). `billable` leaves out reservations no computer
- * stands behind yet: a create or copy not yet adopted (`pending:`) and a grow the
- * provider hasn't confirmed (`disk_reserved_at`), which the confirm write counts.
+ * about to change size). `billable` counts only disk the provider made: a
+ * create or copy not yet adopted (`pending:`) counts nothing, and a computer
+ * whose grow it hasn't confirmed (`disk_reserved_at`) counts its confirmed size.
  */
 export function accountDiskSql(userIdSql: string, options: { except?: boolean; billable?: boolean } = {}): string {
-  return `(select coalesce(sum(dc.disk_gb), 0) from cloud_computers dc where dc.user_id = ${userIdSql} and dc.deleted_at is null`
+  const disk = options.billable ? "case when dc.disk_reserved_at is null then dc.disk_gb else coalesce(dc.disk_confirmed_gb, dc.disk_gb) end" : "dc.disk_gb";
+  return `(select coalesce(sum(${disk}), 0) from cloud_computers dc where dc.user_id = ${userIdSql} and dc.deleted_at is null`
     + " and not exists (select 1 from cloud_computers dm where dm.moving_from = dc.instance_id and dm.deleted_at is null)"
-    + `${options.billable ? ` and dc.instance_id not like '${PENDING_PREFIX}%' and dc.disk_reserved_at is null` : ""}${options.except ? " and dc.instance_id <> ?" : ""})`;
+    + `${options.billable ? ` and dc.instance_id not like '${PENDING_PREFIX}%'` : ""}${options.except ? " and dc.instance_id <> ?" : ""})`;
 }
 
 /** The disk `computers` (one account's, not deleted) count toward the plan; as `accountDiskSql`. */
@@ -823,7 +826,8 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   const live = liveUsedMilli(account, computers, now);
   const rules = accountRules(account);
   const plan = planFacts(account);
-  const diskUsed = computers.reduce((sum, computer) => sum + computer.disk_gb, 0);
+  // The same total the wake rule and the limits use: a move's source stays out while the move runs.
+  const diskUsed = countedDiskGb(computers);
   const offers = cloudOffers(env);
   const extraDiskMicros = offers.extraDisk && rules === "paid" && account.extra_disk_state === "on" ? await extraDiskMicrosThisPeriod(env, account) : 0;
   const due = computers

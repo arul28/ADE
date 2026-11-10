@@ -503,7 +503,7 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
       const room = await diskRoom(env, account, await accountDiskGb(env, computer.user_id, computer.instance_id) + nextDisk, now);
       if (!room.ok) return refuse(room);
       const reserved = await env.DB.prepare(`
-        update cloud_computers set disk_gb = ?, disk_reserved_at = ?
+        update cloud_computers set disk_gb = ?, disk_reserved_at = ?, disk_confirmed_gb = coalesce(disk_confirmed_gb, disk_gb)
         where instance_id = ? and disk_gb = ?
           and ${accountDiskSql("?", { except: true })} + ? <= ?
       `).bind(nextDisk, now, computer.instance_id, computer.disk_gb, computer.user_id, computer.instance_id, nextDisk, room.capGb).run();
@@ -528,7 +528,7 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
     status = await provider.resizeInstance(computer.instance_id, resize);
   } catch (error) {
     if (nextDisk !== currentDisk && providerMadeNothing(error)) {
-      await env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null where instance_id = ? and disk_gb = ?")
+      await env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null, disk_confirmed_gb = null where instance_id = ? and disk_gb = ?")
         .bind(currentDisk, computer.instance_id, nextDisk).run();
     }
     throw error;
@@ -541,7 +541,7 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
   computer.multiplier_milli = size.multiplierMilli;
   statements.push(
     // A confirmed grow is no longer a reservation, so it counts as billed disk from here.
-    env.DB.prepare(`update cloud_computers set cpu = ?, memory_gb = ?, disk_gb = ?, multiplier_milli = ?${nextDisk !== currentDisk ? ", disk_reserved_at = null" : ""} where instance_id = ?`)
+    env.DB.prepare(`update cloud_computers set cpu = ?, memory_gb = ?, disk_gb = ?, multiplier_milli = ?${nextDisk !== currentDisk ? ", disk_reserved_at = null, disk_confirmed_gb = null" : ""} where instance_id = ?`)
       .bind(size.cpu, size.memoryGb, nextDisk, size.multiplierMilli, computer.instance_id),
     ...statusChangeStatements(env, computer, status, now, "resize"),
   );

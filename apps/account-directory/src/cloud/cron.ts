@@ -133,16 +133,21 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
       computer.machine_key = instance.metadata.ade_machine_key;
       statements.push(env.DB.prepare("update cloud_computers set machine_key = ? where instance_id = ?").bind(computer.machine_key, computer.instance_id));
     }
-    // At rest the provider's disk is the truth: a grow whose answer was lost leaves this row ahead, holding room in the shared limit.
-    // Once settled, the reservation ends either way (and a grow that landed is billed from today's row).
+    // The provider's disk is the truth. A grow whose answer was lost settles from it, running or not: at once when
+    // it shows the new size, or after the settle window (then the room goes back); a grow that landed is billed
+    // from today's row. With no grow waiting, a row ahead of a resting computer comes back down.
     const disk = instance.resources?.disk;
-    const growLanding = computer.disk_reserved_at != null && now - computer.disk_reserved_at < DISK_GROW_SETTLE_MS;
-    if (disk && (disk !== computer.disk_gb || computer.disk_reserved_at != null) && isRestingStatus(instance.status) && !growLanding) {
-      statements.push(env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null where instance_id = ? and disk_gb = ? and disk_reserved_at is ?")
+    const pending = computer.disk_reserved_at != null;
+    const settles = pending
+      ? disk != null && disk > 0 && (disk >= computer.disk_gb || now - computer.disk_reserved_at! >= DISK_GROW_SETTLE_MS)
+      : disk != null && disk > 0 && disk !== computer.disk_gb && isRestingStatus(instance.status);
+    if (settles && disk) {
+      statements.push(env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null, disk_confirmed_gb = null where instance_id = ? and disk_gb = ? and disk_reserved_at is ?")
         .bind(disk, computer.instance_id, computer.disk_gb, computer.disk_reserved_at));
-      if (computer.disk_reserved_at != null) diskConfirmed.set(computer.user_id, true);
+      if (pending) diskConfirmed.set(computer.user_id, true);
       computer.disk_gb = disk;
       computer.disk_reserved_at = null;
+      computer.disk_confirmed_gb = null;
     }
   }
   statements.push(...await diskDayStatements(env, diskConfirmed, now));

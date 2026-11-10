@@ -817,16 +817,26 @@ describe("ADE Cloud account", () => {
       expect(accountRow()).toEqual(expect.objectContaining({ paid_plan: "plus", included_milli: 500_000 }));
       expect(planItem()).toBe("price_plan");
     }],
-    ["a grow the provider refuses is never billed", async () => {
+    ["a grow is billed only once the provider made it: refused never, a lost answer from the old size until the tick sees it", async () => {
       seedAccount(harness, OWNER, { ...plusAccount, extra_disk_state: "on", extra_disk_limit_cents: 1000 });
       seedStopped([40], XLARGE);
+      const grow = () => harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 4, memory: 16, disk: 52 });
+      const peak = () => harness.row("select peak_gb from cloud_disk_days where user_id = ? and day = ?", OWNER, DAY_ONE).peak_gb;
       harness.net.once.push({ match: /POST .*\/resize$/, reply: harness.net.reply({ error: { code: "invalid_request" } }, 400) });
-      expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 4, memory: 16, disk: 52 })).ok).toBe(false);
+      expect((await grow()).ok).toBe(false);
+      harness.net.once.push({ match: /POST .*\/resize$/, reply: harness.net.reply({ error: { code: "upstream_timeout" } }, 504) });
+      expect((await grow()).ok).toBe(false);
       await harness.tick();
+      expect(peak()).toBe(40);
+
+      // The grow landed and the computer woke: the tick settles it without waiting for it to rest.
+      Object.assign(harness.net.instances.get(INSTANCE)!, { status: "running", resources: { cpu: 4, memory: 16, disk: 52 } });
+      clock += 60_000;
+      await harness.tick();
+      expect(computer(harness).disk_reserved_at).toBeNull();
       clock += DAY;
       await harness.tick();
-      expect(computer(harness).disk_gb).toBe(40);
-      expect(meterCalls()).toEqual([]);
+      expect(meterCalls().map((call) => call.body?.["payload[value]"])).toEqual(["12"]);
     }],
     ["a move's old computer counts once while the move runs, and again if it outlives the move", async () => {
       seedAccount(harness, OWNER);
@@ -834,7 +844,9 @@ describe("ADE Cloud account", () => {
       seedStopped([8]);
       const wakeOld = () => harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/start`, {});
       const moveFrom = (id: string) => harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, moveFromInstanceId: id });
+      const usedGb = async () => ((await (await harness.send(OWNER, "GET", "/cloud/account")).json()) as { disk: { usedGb: number } }).disk.usedGb;
       expect((await moveFrom(INSTANCE)).status).toBe(201);
+      expect(await usedGb()).toBe(8);
       expect((await wakeOld()).status).toBe(200);
       // One move at a time: neither the new computer nor the old one starts another while it runs.
       for (const id of ["madenew12345", INSTANCE]) expect((await errorOf(await moveFrom(id)))?.code).toBe("computer_busy");
@@ -842,6 +854,7 @@ describe("ADE Cloud account", () => {
       clock += 3 * HOUR;
       await harness.tick();
       expect((await errorOf(await wakeOld()))?.code).toBe("over_plan_disk");
+      expect(await usedGb()).toBe(16);
     }],
     ["the owner's limit reached last month lets a new computer in once the month turns, with no computer left", async () => {
       seedAccount(harness, OWNER, plusAccount);

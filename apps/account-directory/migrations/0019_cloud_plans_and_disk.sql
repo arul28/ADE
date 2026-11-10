@@ -24,6 +24,11 @@ alter table cloud_accounts add column extra_disk_over_limit_at integer;
 alter table cloud_computers add column moving_from text;
 create index if not exists idx_cloud_computers_moving_from on cloud_computers (moving_from) where moving_from is not null;
 
+-- While a grow waits for the provider (`disk_reserved_at` set), `disk_gb`
+-- holds the new size for the limit and this holds the size the provider last
+-- confirmed, which is what extra disk bills until the grow is confirmed.
+alter table cloud_computers add column disk_confirmed_gb integer;
+
 -- What the provider charges for the awake time of each computer-day, in
 -- millionths of a dollar. Corrected with the provider's minutes by the daily
 -- reconcile, like the hours.
