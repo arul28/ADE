@@ -41,6 +41,7 @@ export type CtoOnlyRule =
 /** Saving a key, Claude's sign-in, and forgetting one: Settings › Integrations › the provider only. */
 const CLOUD_SIGN_IN_WRITES = [
   "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
+  "cloud_sign_in_keep",
 ] as const;
 
 /**

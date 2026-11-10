@@ -307,6 +307,7 @@ import { buildProviderLoginsDomainService } from "../providerLogins/providerLogi
 import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import { cloudMachineEnv, type CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
+import { claudePassVaultFromStore } from "../adeCloud/claudePassStore";
 import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
 import { buildCloudReadyActions } from "../adeCloud/cloudReadyActions";
 import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
@@ -4229,6 +4230,7 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   });
   const cloudSignIns = buildCloudSignInActions({
     vaults: () => cloudSignInVaults(runtime),
+    passVault: () => (runtime.accountVaultStore && runtime.accountAuthService?.getStatus().signedIn === true ? claudePassVaultFromStore(runtime.accountVaultStore) : null),
     accountId: () => runtime.accountAuthService?.getStatus().userId ?? null,
     // Which providers people sign in for cloud machines. A six-hour dedupe per
     // provider: at most 36 accepted events a day.

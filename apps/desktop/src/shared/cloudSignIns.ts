@@ -147,7 +147,87 @@ export function cloudSignInSpec(id: string): CloudSignInSpec | null {
   return CLOUD_SIGN_INS.find((spec) => spec.id === id) ?? null;
 }
 
-export type CloudClaudeSignInState = "running" | "saving" | "succeeded" | "failed" | "cancelled";
+/**
+ * One approve, in order: `running` (Claude Code's sign-in waits for the
+ * browser), `verifying` (ADE asks Claude Code which account the new pass is
+ * for), then `saving` and `succeeded`. `mismatch` waits for the person: the
+ * pass is for another account than the one pressed (Keep it, or try again).
+ * `saved_here`: the pass is kept on this computer but has not reached the
+ * account (`upload` says why); ADE sends it on its own. Never "Signed in".
+ */
+export type CloudClaudeSignInState =
+  | "running"
+  | "verifying"
+  | "mismatch"
+  | "saving"
+  | "succeeded"
+  | "saved_here"
+  | "failed"
+  | "cancelled";
+
+/**
+ * Where a pass's last write is. `account`: in the ADE account. `pending`: kept
+ * on this computer, sent on the next sync. `refused`: the account service
+ * refused it (an older server); kept on this computer and tried every hour.
+ */
+export type ClaudePassUpload = "account" | "pending" | "refused";
+
+/**
+ * How ADE knows which account a pass is for. `match`: Claude Code named the
+ * account the person pressed (or, with none pressed, named one). `kept_other`:
+ * it named another account and the person kept it. `unchecked`: Claude Code
+ * named none, so the label is the pressed account.
+ */
+export type ClaudePassCheck = "match" | "kept_other" | "unchecked";
+
+/** Where a pass's label email came from. */
+export type ClaudePassLabelSource = "checked" | "pressed" | "typed" | "none";
+
+/** A pass's place in its year: the tile line starts at `ending_soon`. */
+export type ClaudePassState = "active" | "ending_soon" | "ended";
+
+/** One Claude pass for ADE Cloud, as a window may see it: never the token. */
+export type CloudClaudePass = {
+  /** Vault key, `claude-pass/<12 hex>` or `claude-pass/legacy`. Stable. */
+  key: string;
+  /** The account's email, or "Claude pass from <date>" without one. */
+  label: string;
+  email: string | null;
+  check: ClaudePassCheck;
+  /** The pass the single sign-in of older versions kept. */
+  legacy: boolean;
+  /** The computer the approve ran on, or null (a legacy pass). */
+  madeOnLabel: string | null;
+  createdAt: number;
+  /** Last Renew of this pass, or null. */
+  renewedAt: number | null;
+  expiresAt: number;
+  /** `estimate`: save time plus one year. `claude`: Claude Code reported it. */
+  expiresAtSource: "estimate" | "claude";
+  /** Whole days left, never below 0. */
+  endsInDays: number;
+  state: ClaudePassState;
+  /** When the one "ends soon" notice is due. */
+  noticeDueAt: number;
+  /** The local Claude account on the brain that answered with the same email, or null. */
+  localInstanceId: string | null;
+  /** Not `account`: only on the computer that answered so far. */
+  upload: ClaudePassUpload;
+  unreadable: false;
+};
+
+/**
+ * A pass row this computer can't read (the relay could not open it, or a
+ * newer version wrote it). Shown as unknown, never hidden; Remove still works.
+ */
+export type CloudClaudePassUnreadable = { key: string; unreadable: true };
+
+/** A signed-in Claude account of the computer the approve runs on, to pick from. */
+export type CloudClaudeLocalAccount = {
+  instanceId: string;
+  email: string;
+  isDefault: boolean;
+};
 
 export type CloudSignInStatus = {
   /** One entry per sign-in, in `CLOUD_SIGN_INS` order. */
@@ -163,5 +243,24 @@ export type CloudSignInStatus = {
     awaitingCode: boolean;
     /** Why it failed, in one sentence. */
     message: string | null;
+    /** The account the person pressed "Sign in" for, or null ("Another account"). */
+    forEmail: string | null;
+    /** The account Claude Code named for the new pass; set in `mismatch` and after. */
+    foundEmail: string | null;
+    /** Set once the check ran: in `mismatch`, `saving` and `succeeded`. */
+    check: ClaudePassCheck | null;
+    /** The pass this approve renews, or null. */
+    renewKey: string | null;
+    /** The pass key the approve saved, once `succeeded` or `saved_here`. */
+    savedKey: string | null;
+    /** Where the saved pass is; set with `savedKey`. */
+    upload: ClaudePassUpload | null;
   } | null;
+  /** The signed-in Claude accounts of the computer that answers, for the account list. */
+  localAccounts: CloudClaudeLocalAccount[];
+  /**
+   * Every Claude pass of the account, newest first, then the unreadable rows;
+   * null when the passes can't be read here. Narrow on `unreadable`.
+   */
+  passes: Array<CloudClaudePass | CloudClaudePassUnreadable> | null;
 };
