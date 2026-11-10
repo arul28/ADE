@@ -24356,11 +24356,17 @@ final class SyncService: ObservableObject {
         if self.terminalStream.handlers[sessionId] != nil {
           // Active full-screen terminal: resume exactly after the last byte we
           // applied so the reconnect back-fills as an append, not a re-render.
-          try? await self.subscribeTerminalStream(
-            sessionId: sessionId,
-            sinceOffset: self.terminalStream.endOffsets[sessionId]
-          )
+          do {
+            try await self.subscribeTerminalStream(
+              sessionId: sessionId,
+              sinceOffset: self.terminalStream.endOffsets[sessionId]
+            )
+          } catch {
+            // The screen shows the error and Retry, not a frozen terminal.
+            self.terminalStream.reportSubscribeFailure(sessionId: sessionId, error: error)
+          }
         } else {
+          // A preview row: no screen to tell; the next open subscribes again.
           try? await self.subscribeTerminal(sessionId: sessionId)
         }
       }

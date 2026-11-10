@@ -28890,8 +28890,12 @@ async function runServe(
     );
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
   // One phone input ledger for the brain's own ingress and every project
-  // sync host: a resent input id is a duplicate on either one.
-  const brainTerminalInputDedupeLedger = (await import("./services/sync/syncHostService")).createTerminalInputDedupeLedger();
+  // sync host: a resent input id is a duplicate on either one. It holds the
+  // receipts of all of them, so it gets a larger bound than one host's.
+  const syncHostModule = await import("./services/sync/syncHostService");
+  const brainTerminalInputDedupeLedger = syncHostModule.createTerminalInputDedupeLedger({
+    maxEntries: syncHostModule.TERMINAL_INPUT_DEDUPE_MAX_ENTRIES * 4,
+  });
   const keepAwakeServiceModule = !embedded && servesMachineEndpoint
     ? await import("./services/power/brainKeepAwakeService")
     : null;

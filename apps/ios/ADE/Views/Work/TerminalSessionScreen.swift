@@ -121,7 +121,28 @@ struct TerminalSessionScreen: View {
 
   @ViewBuilder
   private var terminalLoadOverlay: some View {
-    if controller.hasPainted || controller.hasExited {
+    if controller.hasExited {
+      EmptyView()
+    } else if controller.hasPainted, let subscribeError = controller.subscribeError {
+      // A painted screen keeps its text; a bar says the stream stopped.
+      HStack(spacing: 10) {
+        Text(subscribeError)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+        Spacer(minLength: 8)
+        Button("Retry") {
+          controller.retrySubscribe()
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(ADEColor.accent)
+        .controlSize(.small)
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 10)
+      .background(Color.black.opacity(0.85))
+      .frame(maxHeight: .infinity, alignment: .top)
+    } else if controller.hasPainted {
       EmptyView()
     } else if let subscribeError = controller.subscribeError {
       VStack(spacing: 12) {

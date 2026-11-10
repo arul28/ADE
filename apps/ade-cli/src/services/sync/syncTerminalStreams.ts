@@ -399,7 +399,7 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
         kind: "refused",
         error: {
           code: "project_not_open",
-          message: "This project is not open on that computer. Open it there, then try again.",
+          message: "This project is not open on that computer, or it is still opening. Open it there, then try again.",
         },
       };
     }
@@ -938,16 +938,17 @@ export function createSyncTerminalStreams<P extends SyncTerminalStreamPeer>(ctx:
     },
 
     /**
-     * Stops every routed stream (the ingress is going away). A routed PTY
+     * Stops every routed stream (the ingress is going away). Each watched PTY
      * outlives this ingress, so it gets its desktop size back.
      */
     releaseAll(): void {
       liveTerminalStreamInstances.delete(liveInstance);
       for (const peer of ctx.peers()) {
-        for (const sessionId of [...(routesByPeer.get(peer)?.keys() ?? [])]) {
-          const route = dropRoute(peer, sessionId);
-          if (route) restoreDesktopTerminalSizeIfUnwatched(sessionId, route.backend);
+        for (const sessionId of peer.subscribedSessionIds) {
+          const backend = dropRoute(peer, sessionId)?.backend ?? ctx.hostedBackend;
+          restoreDesktopTerminalSizeIfUnwatched(sessionId, backend);
         }
+        for (const sessionId of [...(routesByPeer.get(peer)?.keys() ?? [])]) dropRoute(peer, sessionId);
       }
     },
   };

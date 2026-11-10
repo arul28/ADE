@@ -316,8 +316,9 @@ final class TerminalSessionController: NSObject, ObservableObject {
       // The sync layer re-subscribes with sinceOffset on reconnect; we only
       // need to re-assert the phone's PTY size. The attached stream handler
       // persists across transport teardown, unlike the confirmed-subscription
-      // set, and uniquely represents this active full-screen terminal.
-      isSubscribed = true
+      // set, and uniquely represents this active full-screen terminal. A
+      // failed resubscribe keeps its error until a snapshot or Retry.
+      isSubscribed = subscribeError == nil
       lastSentSize = nil
       if let terminal = terminalView?.getTerminal() {
         sendResizeIfNeeded(cols: terminal.cols, rows: terminal.rows)

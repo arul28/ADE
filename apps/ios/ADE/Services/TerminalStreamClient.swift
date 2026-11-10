@@ -92,8 +92,9 @@ final class TerminalStreamClient {
   /// Runs after every change to `subscribed`. The focused sync service
   /// uses it to publish the set.
   var onSubscribedChange: ((Set<String>) -> Void)?
-  /// Terminals with an accepted snapshot since their last subscribe (input
-  /// may queue). A refusal or an unsubscribe removes the session.
+  /// Terminals with an accepted snapshot (input may queue). A new socket
+  /// keeps the set, so input waits for the resubscribe; a refusal, an
+  /// unsubscribe or `forgetAllSessions` removes the session.
   var hydrated: Set<String> = []
   var endOffsets: [String: Int] = [:]
   var requestTokens: [String: UUID] = [:]
