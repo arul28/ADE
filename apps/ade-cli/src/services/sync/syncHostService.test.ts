@@ -91,7 +91,7 @@ import type { SyncHostSingletonConflict } from "./syncHostSingleton";
 import { createSyncPinStore } from "./syncPinStore";
 import { createLaneShareGrantService } from "./laneShareGrantService";
 import { PAIR_FAILURE_THRESHOLD } from "./syncPairFailureTracker";
-import { buildSyncDpopChallenge, sha256Hex } from "./syncDpop";
+import { buildSyncDpopChallenge, sha256Hex, syncDpopKeyThumbprint } from "./syncDpop";
 import {
   buildRelayReauthorizationChallenge,
   sha256RelayToken,
@@ -4713,20 +4713,47 @@ describe("sync host account authentication", () => {
       ...overrides,
     });
 
-    /** The account directory at the network boundary: `POST /lane-shares/host`. */
+    /**
+     * The account directory at the network boundary: `POST /lane-shares/host`
+     * (the list) and `POST /lane-shares/host/redeem` (a ticket, used once,
+     * answered with what the mint recorded and the current list).
+     */
     function fakeDirectory(initial: { status: number; body: unknown }) {
       let answer = initial;
-      const fetchImpl = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
-        expect(String(input)).toBe("http://127.0.0.1:9/lane-shares/host");
-        return new Response(JSON.stringify(answer.body), {
-          status: answer.status,
+      let hang: Promise<never> | null = null;
+      const tickets = new Map<string, { grantId: string; receiverUserId: string; laneId: string; dpopThumbprint: string; used: boolean }>();
+      let minted = 0;
+      const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        if (hang) return hang;
+        const url = String(input);
+        const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), {
+          status,
           headers: { "content-type": "application/json" },
         });
+        if (url === "http://127.0.0.1:9/lane-shares/host") return respond(answer.status, answer.body);
+        expect(url).toBe("http://127.0.0.1:9/lane-shares/host/redeem");
+        if (answer.status !== 200) return respond(answer.status, answer.body);
+        const ticket = tickets.get(String((JSON.parse(String(init?.body)) as { ticket?: unknown }).ticket));
+        if (!ticket || ticket.used) return respond(404, { error: { code: "not_found" } });
+        ticket.used = true;
+        const { used: _used, ...redeemed } = ticket;
+        return respond(200, { ...(answer.body as object), redeemed });
       });
       return {
         fetchImpl,
         answer: (next: { status: number; body: unknown }) => {
           answer = next;
+        },
+        /** Every read from now on waits forever: a directory that hangs. */
+        hang: () => {
+          hang = new Promise<never>(() => {});
+        },
+        /** What `POST /lane-shares/:id/connect` does for the guest: a ticket bound to its key. */
+        mint: (dpopThumbprint: string, overrides: Partial<{ grantId: string; receiverUserId: string; laneId: string }> = {}) => {
+          minted += 1;
+          const ticket = `${String(minted).padStart(4, "0")}${"t".repeat(39)}`;
+          tickets.set(ticket, { grantId: grantId("a"), receiverUserId: guestUserId, laneId: sharedLane, dpopThumbprint, used: false, ...overrides });
+          return ticket;
         },
       };
     }
@@ -4746,11 +4773,15 @@ describe("sync host account authentication", () => {
             { id: "session-private", laneId: privateLane },
           ];
         }
+        if (payload.action === "chat.listSubagents") return [{ taskId: "task-1", agentId: "agent-1" }];
         return { ran: payload.action, args: payload.args };
       });
       const actions = [
         "work.listSessions",
+        "chat.listSessions",
         "chat.getSummary",
+        "chat.getSubagentTranscript",
+        "chat.listSubagents",
         "chat.send",
         "chat.respondToInput",
         "chat.updateSession",
@@ -4763,6 +4794,8 @@ describe("sync host account authentication", () => {
       // Every call that would act on the host for a dropped envelope.
       const effects = vi.fn();
       const ptyWrite = vi.fn();
+      // The owner verifier: nothing a guest sends may ever reach it.
+      const ownerVerifier = vi.fn(verifyClerkAccountAttestation);
       const port = await listener.ensureListening([0]);
       const laneShareGrants = createLaneShareGrantService({
         getAccessToken: async () => "host-account-token",
@@ -4773,6 +4806,7 @@ describe("sync host account authentication", () => {
       const host = createSyncHostService({
         ...baseArgs,
         ...accountDependencies(),
+        verifyAccountAttestation: ownerVerifier,
         projectId: "project-1",
         sharedListener: listener,
         discoveryEnabled: false,
@@ -4816,6 +4850,7 @@ describe("sync host account authentication", () => {
         execute,
         effects,
         ptyWrite,
+        ownerVerifier,
         upsertPeerMetadata,
         close: async (clients: Array<{ ws: WebSocket } | null>) => {
           for (const client of clients) client?.ws.close();
@@ -4826,17 +4861,29 @@ describe("sync host account authentication", () => {
       };
     }
 
-    async function connectGuest(port: number, proof: string | null, options: {
-      userId?: string;
+    type GuestKey = ReturnType<typeof makeDpopKeyPair>;
+    const guestThumbprint = (key: GuestKey) => syncDpopKeyThumbprint(key.publicKeyX963)!;
+
+    /**
+     * A guest hello: the ticket and a DPoP proof over it, nothing else. By
+     * default the directory mints the ticket for the guest's own key.
+     */
+    async function connectGuest(port: number, proof: string | null, directory: ReturnType<typeof fakeDirectory>, options: {
+      key?: GuestKey;
+      /** The key that signs the hello, when it is not the key the ticket was minted for. */
+      signingKey?: GuestKey;
+      ticket?: string;
+      mint?: Partial<{ grantId: string; receiverUserId: string; laneId: string }>;
       extraAuth?: Record<string, unknown>;
       dpop?: boolean;
     } = {}) {
       const client = await openAccountClient(port, proof);
-      const accountToken = await mintAccountToken(options.userId ?? guestUserId);
-      const key = makeDpopKeyPair();
+      const key = options.key ?? makeDpopKeyPair();
+      const ticket = options.ticket ?? directory.mint(guestThumbprint(key), options.mint);
+      const signer = options.signingKey ?? key;
       const peer = {
         deviceId: "guest-laptop",
-        deviceName: "Guest laptop",
+        deviceName: "Owner's iPhone",
         platform: "macOS",
         deviceType: "desktop",
         siteId: "guest-laptop-site",
@@ -4851,12 +4898,15 @@ describe("sync host account authentication", () => {
           auth: {
             kind: "guest",
             deviceId: peer.deviceId,
-            accountToken,
-            dpop: options.dpop === false ? null : signAccountDpop({
-              privateKey: key.privateKey,
-              publicKeyX963: key.publicKeyX963,
-              deviceId: peer.deviceId,
-              accountToken,
+            ticket,
+            ...(options.dpop === false ? {} : {
+              dpop: signAccountDpop({
+                privateKey: signer.privateKey,
+                publicKeyX963: signer.publicKeyX963,
+                deviceId: peer.deviceId,
+                // The proof signs the ticket.
+                accountToken: ticket,
+              }),
             }),
             ...options.extraAuth,
           },
@@ -4866,7 +4916,7 @@ describe("sync host account authentication", () => {
         () => client.envelopes.find((entry) => entry.type === "hello_ok" || entry.type === "hello_error"),
         "guest hello answer",
       );
-      return { client, first };
+      return { client, first, ticket, key };
     }
 
     /** Sends a command and waits for its result; also the barrier after an unanswered envelope. */
@@ -4888,96 +4938,165 @@ describe("sync host account authentication", () => {
       )).payload as { ok: boolean; result?: unknown; error?: { code: string } };
     }
 
-    it("accepts an active grant with nothing beyond the shared lane", async () => {
+    it("accepts a redeemed ticket with nothing beyond the shared lane, and never sees an account token", async () => {
       const directory = fakeDirectory(grantsBody([grant()]));
       const env = await startGuestHost(directory);
       let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
       try {
-        guest = await connectGuest(env.port, env.proof);
+        guest = await connectGuest(env.port, env.proof, directory);
         expect(guest.first.type).toBe("hello_ok");
         const hello = guest.first.payload as Record<string, unknown> & { features: Record<string, unknown> };
         expect(hello.laneShareGuest).toEqual({ userId: guestUserId, grants: [{ grantId: grantId("a"), laneId: sharedLane }] });
         expect(hello).not.toHaveProperty("accountPairing");
         expect(hello).not.toHaveProperty("cloudRelayWssUrl");
+        // No Relay lease to refresh: a guest never sends an account token.
+        expect(hello.relayAuthorization ?? null).toBeNull();
         expect(hello.projects).toEqual([]);
         expect(hello.features.rpcChannel ?? false).toBe(false);
         expect(hello.features).toMatchObject({ projectCatalog: { enabled: false }, roster: { enabled: false } });
         expect(hello.actions ?? hello.remoteCommandActions ?? []).not.toContainEqual(expect.objectContaining({ action: "chat.send" }));
         expect(env.upsertPeerMetadata).not.toHaveBeenCalled();
-        // The only directory read is the host's own, with the host's token.
+        // The only directory call is the host's redeem, with the host's token and the ticket alone.
         expect(directory.fetchImpl).toHaveBeenCalledTimes(1);
         const init = directory.fetchImpl.mock.calls[0]![1]!;
-        expect(JSON.parse(String(init.body))).toEqual({ machineKey: "machine-guest-test" });
+        expect(JSON.parse(String(init.body))).toEqual({ ticket: guest.ticket, machineKey: "machine-guest-test" });
+        expect(new Headers(init.headers).get("authorization")).toBe("Bearer host-account-token");
+        // The owner's machine list marks it a guest, under a name the host made.
+        expect(env.host.getPeerStates()).toContainEqual(expect.objectContaining({ laneShareGuest: true, deviceName: "Guest lane_g" }));
+        // A Relay refresh is answered "no lease" without reading what it carries.
+        guest.client.ws.send(encodeSyncEnvelope({
+          type: "relay_reauthorize",
+          requestId: "reauth",
+          payload: { relayAccountToken: await mintAccountToken(guestUserId), challenge: "x", dpop: {} },
+        }));
+        expect((await waitForValue(
+          () => guest!.client.envelopes.find((entry) => entry.type === "relay_reauthorize_result"),
+          "relay reauthorize answer",
+        )).payload).toMatchObject({ ok: false, error: { code: "invalid_request" } });
         // A read in the granted lane runs; the barrier proves nothing else came first.
         expect(await runCommand(guest.client, "list", "work.listSessions", { laneId: sharedLane })).toMatchObject({
           ok: true,
           result: [{ id: "session-shared", laneId: sharedLane }],
         });
-        expect(guest.client.envelopes.map((entry) => entry.type)).not.toEqual(
-          expect.arrayContaining(["changeset_batch"]),
-        );
         expect(guest.client.envelopes.some((entry) =>
           entry.type === "changeset_batch" || entry.type === "brain_status" || entry.type === "project_catalog"
         )).toBe(false);
+        expect(env.ownerVerifier).not.toHaveBeenCalled();
       } finally {
         await env.close([guest?.client ?? null]);
       }
     });
 
-    it.each([
-      ["an account with no grant", grantsBody([grant({ receiverUserId: "user_someone_else" })]), {}, "lane_share_refused"],
-      ["a pending grant", grantsBody([grant({ state: "pending", receiverUserId: null })]), {}, "lane_share_refused"],
-      ["a pending grant that names the account", grantsBody([grant({ state: "pending" })]), {}, "lane_share_refused"],
-      ["a revoked grant", grantsBody([], [{ id: grantId("a"), state: "revoked", closedAt: Date.now() }]), {}, "lane_share_refused"],
-      ["an ended grant", grantsBody([grant({ endsAt: Date.now() - 1_000 })]), {}, "lane_share_refused"],
-      ["a machine the directory does not list", { status: 404, body: { error: "unknown_machine" } }, {}, "lane_share_refused"],
-      ["a directory that is down", { status: 503, body: {} }, {}, "lane_share_unavailable"],
-      ["a malformed grant list", { status: 200, body: { serverTime: Date.now(), grants: [{ id: "nope" }] } }, {}, "lane_share_unavailable"],
-      ["the owner's own account", grantsBody([grant({ receiverUserId: ownerUserId })]), { userId: ownerUserId }, "lane_share_refused"],
-      ["a guest without a DPoP proof", grantsBody([grant()]), { dpop: false }, "auth_failed"],
-    ] as const)("refuses %s", async (_label, answer, options, code) => {
-      const env = await startGuestHost(fakeDirectory(answer));
+    it.each<[string, { status: number; body: unknown }, (directory: ReturnType<typeof fakeDirectory>) => Parameters<typeof connectGuest>[3], string]>([
+      ["a ticket the directory does not honor (another machine, expired, revoked, not the giver)", grantsBody([grant()]),
+        () => ({ ticket: "x".repeat(43) }), "lane_share_refused"],
+      ["a ticket signed by a key it was not minted for", grantsBody([grant()]),
+        () => ({ signingKey: makeDpopKeyPair() }), "lane_share_refused"],
+      ["a ticket whose grant is gone from the list read with it", grantsBody([]), () => ({}), "lane_share_refused"],
+      ["a ticket of another grant than the guest's active one", grantsBody([grant()]),
+        () => ({ mint: { grantId: grantId("b") } }), "lane_share_refused"],
+      ["a ticket of a pending grant", grantsBody([grant({ state: "pending", receiverUserId: null })]), () => ({}), "lane_share_refused"],
+      ["a ticket of an ended grant", grantsBody([grant({ endsAt: Date.now() - 1_000 })]), () => ({}), "lane_share_refused"],
+      ["a ticket that names the owner's own account", grantsBody([grant({ receiverUserId: ownerUserId })]),
+        () => ({ mint: { receiverUserId: ownerUserId } }), "lane_share_refused"],
+      ["a machine the directory does not list", { status: 404, body: { error: "unknown_machine" } }, () => ({}), "lane_share_refused"],
+      ["a directory that is down", { status: 503, body: {} }, () => ({}), "lane_share_unavailable"],
+      ["a malformed answer", { status: 200, body: { serverTime: Date.now(), grants: [{ id: "nope" }] } }, () => ({}), "lane_share_unavailable"],
+    ])("refuses %s", async (_label, answer, options, code) => {
+      const directory = fakeDirectory(answer);
+      const env = await startGuestHost(directory);
       let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
       try {
-        guest = await connectGuest(env.port, env.proof, options);
+        guest = await connectGuest(env.port, env.proof, directory, options(directory));
         expect(guest.first).toMatchObject({ type: "hello_error", payload: { code } });
         await waitForValue(() => guest!.client.closeEvents[0], "guest close");
         expect(guest.client.closeEvents[0]?.code).toBe(4003);
         expect(env.execute).not.toHaveBeenCalled();
+        expect(env.ownerVerifier).not.toHaveBeenCalled();
       } finally {
         await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it.each<[string, Parameters<typeof connectGuest>[3]]>([
+      ["carries an account token", { extraAuth: { accountToken: "a-real-looking-token" } }],
+      ["carries a relay account token", { extraAuth: { relayAccountToken: "a-real-looking-token" } }],
+      ["has no DPoP proof", { dpop: false }],
+      ["has a malformed ticket", { ticket: "short" }],
+      ["has a DPoP proof that does not sign its ticket", { extraAuth: { ticket: "y".repeat(43) } }],
+    ])("drops a guest hello that %s before any directory call", async (_label, options) => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory, options);
+        expect(guest.first.type).toBe("hello_error");
+        expect((guest.first.payload as { code: string }).code).toMatch(/^(invalid_hello|auth_failed)$/);
+        expect(directory.fetchImpl).not.toHaveBeenCalled();
+        expect(env.ownerVerifier).not.toHaveBeenCalled();
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it("admits one of two hellos that share a ticket, and refuses the reuse", async () => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      const key = makeDpopKeyPair();
+      const ticket = directory.mint(guestThumbprint(key));
+      let guests: Array<Awaited<ReturnType<typeof connectGuest>>> = [];
+      try {
+        // Each hello signs the ticket with a fresh nonce, so only the ticket is shared.
+        guests = await Promise.all([1, 2].map(() => connectGuest(env.port, env.proof, directory, { key, ticket })));
+        expect(guests.map((entry) => entry.first.type).sort()).toEqual(["hello_error", "hello_ok"]);
+        expect(guests.find((entry) => entry.first.type === "hello_error")!.first.payload).toMatchObject({ code: "lane_share_refused" });
+        // A ticket this host already sent never reaches the directory again.
+        expect(directory.fetchImpl).toHaveBeenCalledTimes(1);
+      } finally {
+        await env.close(guests.map((entry) => entry.client));
       }
     });
 
     it("refuses a guest hello that does not come through ADE Relay", async () => {
-      const env = await startGuestHost(fakeDirectory(grantsBody([grant()])));
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
       let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
       try {
-        guest = await connectGuest(env.port, null);
+        guest = await connectGuest(env.port, null, directory);
         expect(guest.first).toMatchObject({ type: "hello_error", payload: { code: "lane_share_refused" } });
+        expect(directory.fetchImpl).not.toHaveBeenCalled();
       } finally {
         await env.close([guest?.client ?? null]);
       }
     });
 
-    it("ignores a role, grants or lane the client claims", async () => {
-      const env = await startGuestHost(fakeDirectory(grantsBody([grant()])));
+    it("ignores a role, grants, a lane or a user id the client claims", async () => {
+      const directory = fakeDirectory(grantsBody([grant(), grant({ id: grantId("b"), laneId: privateLane })]));
+      const env = await startGuestHost(directory);
       let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
       try {
-        guest = await connectGuest(env.port, env.proof, {
+        guest = await connectGuest(env.port, env.proof, directory, {
           extraAuth: {
             role: "owner",
             guest: false,
+            userId: ownerUserId,
             grants: [{ grantId: grantId("b"), laneId: privateLane }],
             laneId: privateLane,
           },
         });
         expect(guest.first.type).toBe("hello_ok");
+        // Only the grant the ticket names, though the account holds another on this host.
         expect((guest.first.payload as { laneShareGuest: unknown }).laneShareGuest).toEqual({
           userId: guestUserId,
           grants: [{ grantId: grantId("a"), laneId: sharedLane }],
         });
         expect(await runCommand(guest.client, "claimed", "work.listSessions", { laneId: privateLane })).toMatchObject({
+          ok: false,
+          error: { code: "forbidden_command" },
+        });
+        // A refresh keeps it to that grant too.
+        await env.host.refreshLaneShareGrants();
+        expect(await runCommand(guest.client, "after-refresh", "work.listSessions", { laneId: privateLane })).toMatchObject({
           ok: false,
           error: { code: "forbidden_command" },
         });
@@ -4997,15 +5116,62 @@ describe("sync host account authentication", () => {
       ["delete a session", "work.deleteSession", { sessionId: "session-shared" }],
       ["run an unknown action", "runtime.anything", { sessionId: "session-shared" }],
     ])("refuses a command to %s, even in the shared lane", async (_label, action, args) => {
-      const env = await startGuestHost(fakeDirectory(grantsBody([grant()])));
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
       let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
       try {
-        guest = await connectGuest(env.port, env.proof);
+        guest = await connectGuest(env.port, env.proof, directory);
         expect(await runCommand(guest.client, `refused-${action}`, action, args)).toMatchObject({
           ok: false,
           error: { code: "forbidden_command" },
         });
         expect(env.execute).not.toHaveBeenCalled();
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it.each<[string, string, Record<string, unknown>, Record<string, unknown>]>([
+      ["chat list identity and automation flags", "chat.listSessions",
+        { laneId: sharedLane, includeIdentity: true, includeAutomation: true, includeArchived: true },
+        { laneId: sharedLane, includeArchived: true }],
+      ["the conditional list reply", "work.listSessions",
+        { laneId: sharedLane, conditional: true, headRows: 1, ifNoneMatch: "sig", omitNullFields: true, status: "running" },
+        { laneId: sharedLane, status: "running" }],
+      ["a client lane next to a subagent", "chat.getSubagentTranscript",
+        { sessionId: "session-shared", agentId: "agent-1", laneId: privateLane, projectRoot: "/" },
+        { sessionId: "session-shared", agentId: "agent-1" }],
+    ])("drops arguments outside the guest list: %s", async (_label, action, args, expected) => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory);
+        expect(await runCommand(guest.client, `args-${action}`, action, args)).toMatchObject({ ok: true });
+        expect(env.execute).toHaveBeenCalledWith(
+          expect.objectContaining({ action, args: expected }),
+          expect.objectContaining({ readOnly: true }),
+        );
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it.each<[string, Record<string, unknown>, boolean]>([
+      ["a subagent the host lists for the chat", { agentId: "agent-1" }, true],
+      ["a subagent by its task id", { agentId: "task-1", taskId: "agent-1" }, true],
+      ["a child the host does not list for the chat", { agentId: "thread-of-another-chat" }, false],
+      ["a listed agent with a task id of another child", { agentId: "agent-1", taskId: "task-other" }, false],
+    ])("reads a subagent transcript only for %s", async (_label, child, allowed) => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory);
+        const result = await runCommand(guest.client, "subagent", "chat.getSubagentTranscript", { sessionId: "session-shared", ...child });
+        expect(result.ok).toBe(allowed);
+        const transcriptReads = env.execute.mock.calls.filter(([payload]) => payload.action === "chat.getSubagentTranscript");
+        expect(transcriptReads).toHaveLength(allowed ? 1 : 0);
       } finally {
         await env.close([guest?.client ?? null]);
       }
@@ -5020,10 +5186,11 @@ describe("sync host account authentication", () => {
       ["a roster subscription", "roster_subscribe", {}],
       ["a project catalog request", "project_catalog_request", {}],
     ])("drops %s from a guest without an answer", async (_label, type, payload) => {
-      const env = await startGuestHost(fakeDirectory(grantsBody([grant()])));
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
       let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
       try {
-        guest = await connectGuest(env.port, env.proof);
+        guest = await connectGuest(env.port, env.proof, directory);
         // Subscribed to the shared terminal, so only the guest gates stand
         // between this envelope and the host.
         guest.client.ws.send(encodeSyncEnvelope({
@@ -5056,10 +5223,11 @@ describe("sync host account authentication", () => {
     });
 
     it("refuses a read of another lane's session even when the client names the shared lane", async () => {
-      const env = await startGuestHost(fakeDirectory(grantsBody([grant()])));
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
       let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
       try {
-        guest = await connectGuest(env.port, env.proof);
+        guest = await connectGuest(env.port, env.proof, directory);
         expect(await runCommand(guest.client, "private", "chat.getSummary", {
           sessionId: "session-private",
           laneId: sharedLane,
@@ -5084,10 +5252,11 @@ describe("sync host account authentication", () => {
     });
 
     it("keeps only rows of the shared lane in a list result", async () => {
-      const env = await startGuestHost(fakeDirectory(grantsBody([grant()])));
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
       let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
       try {
-        guest = await connectGuest(env.port, env.proof);
+        guest = await connectGuest(env.port, env.proof, directory);
         // The fake service ignores the lane filter and returns both lanes.
         expect(await runCommand(guest.client, "rows", "work.listSessions", { laneId: sharedLane, conditional: true })).toEqual({
           commandId: "rows",
@@ -5100,10 +5269,11 @@ describe("sync host account authentication", () => {
     });
 
     it("streams the shared lane's terminal and nothing of another lane", async () => {
-      const env = await startGuestHost(fakeDirectory(grantsBody([grant()])));
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
       let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
       try {
-        guest = await connectGuest(env.port, env.proof);
+        guest = await connectGuest(env.port, env.proof, directory);
         for (const sessionId of ["session-private", "session-shared"]) {
           guest.client.ws.send(encodeSyncEnvelope({
             type: "terminal_subscribe",
@@ -5143,45 +5313,77 @@ describe("sync host account authentication", () => {
       }
     });
 
-    it("closes a guest at once when its grant is revoked, and when the grant list goes stale", async () => {
-      const directory = fakeDirectory(grantsBody([grant(), grant({ id: grantId("b"), laneId: "lane-second" })]));
+    it("closes a guest at once when its grant is revoked, when the list goes stale, and when the machine leaves the account", async () => {
+      const directory = fakeDirectory(grantsBody([grant()]));
       const env = await startGuestHost(directory);
-      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
-      let second: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      const guests: Array<Awaited<ReturnType<typeof connectGuest>>> = [];
       const realNow = Date.now;
       try {
-        guest = await connectGuest(env.port, env.proof);
-        expect(guest.first.type).toBe("hello_ok");
-        // One grant goes: the guest stays, and loses that lane.
-        directory.answer(grantsBody([grant({ id: grantId("b"), laneId: "lane-second" })]));
+        const revoked = await connectGuest(env.port, env.proof, directory);
+        guests.push(revoked);
+        expect(revoked.first.type).toBe("hello_ok");
+        directory.answer(grantsBody([], [{ id: grantId("a"), state: "revoked" }]));
         await env.host.refreshLaneShareGrants();
-        expect(guest.client.ws.readyState).toBe(WebSocket.OPEN);
-        expect(await runCommand(guest.client, "lost-lane", "work.listSessions", { laneId: sharedLane })).toMatchObject({
+        await waitForValue(() => revoked.client.closeEvents[0], "revoked guest close");
+        expect(revoked.client.closeEvents[0]).toMatchObject({ code: 4003, reason: "Lane share ended" });
+
+        // A list older than the bound closes the guest on the tick itself,
+        // while the directory read still hangs.
+        directory.answer(grantsBody([grant()]));
+        const stale = await connectGuest(env.port, env.proof, directory);
+        guests.push(stale);
+        expect(stale.first.type).toBe("hello_ok");
+        directory.hang();
+        const start = realNow();
+        vi.spyOn(Date, "now").mockImplementation(() => start + 60_000);
+        void env.host.refreshLaneShareGrants();
+        await runCommand(stale.client, "still-open", "chat.getSummary", { sessionId: "session-shared" });
+        expect(stale.client.ws.readyState).toBe(WebSocket.OPEN);
+        vi.spyOn(Date, "now").mockImplementation(() => start + 91_000);
+        void env.host.refreshLaneShareGrants();
+        await waitForValue(() => stale.client.closeEvents[0], "stale guest close");
+        expect(stale.client.closeEvents[0]?.code).toBe(4003);
+      } finally {
+        vi.restoreAllMocks();
+        await env.close(guests.map((entry) => entry.client));
+      }
+    });
+
+    it("drops every guest at once when the directory stops listing this machine", async () => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory);
+        expect(guest.first.type).toBe("hello_ok");
+        directory.answer({ status: 404, body: { error: "unknown_machine" } });
+        await env.host.refreshLaneShareGrants();
+        await waitForValue(() => guest!.client.closeEvents[0], "unknown machine close");
+        expect(guest.client.closeEvents[0]?.code).toBe(4003);
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it("stops serving a grant whose end passed, on the host clock, before any refresh", async () => {
+      const endsAt = Date.now() + 60_000;
+      const directory = fakeDirectory(grantsBody([grant({ endsAt })]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      const realNow = Date.now;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory);
+        expect(await runCommand(guest.client, "before-end", "chat.getSummary", { sessionId: "session-shared" })).toMatchObject({ ok: true });
+        const start = realNow();
+        vi.spyOn(Date, "now").mockImplementation(() => start + 61_000);
+        expect(await runCommand(guest.client, "after-end", "chat.getSummary", { sessionId: "session-shared" })).toMatchObject({
           ok: false,
           error: { code: "forbidden_command" },
         });
-        // The last grant goes: the connection closes.
-        directory.answer(grantsBody([], [{ id: grantId("b"), state: "revoked" }]));
-        await env.host.refreshLaneShareGrants();
-        await waitForValue(() => guest!.client.closeEvents[0], "revoked guest close");
-        expect(guest.client.closeEvents[0]).toMatchObject({ code: 4003, reason: "Lane share ended" });
-
-        // A list older than the bound, with the directory down, closes too.
-        directory.answer(grantsBody([grant()]));
-        second = await connectGuest(env.port, env.proof);
-        expect(second.first.type).toBe("hello_ok");
-        directory.answer({ status: 503, body: {} });
-        const start = realNow();
-        vi.spyOn(Date, "now").mockImplementation(() => start + 60_000);
-        await env.host.refreshLaneShareGrants();
-        expect(second.client.ws.readyState).toBe(WebSocket.OPEN);
-        vi.spyOn(Date, "now").mockImplementation(() => start + 91_000);
-        await env.host.refreshLaneShareGrants();
-        await waitForValue(() => second!.client.closeEvents[0], "stale guest close");
-        expect(second.client.closeEvents[0]?.code).toBe(4003);
+        expect(directory.fetchImpl).toHaveBeenCalledTimes(1);
       } finally {
         vi.restoreAllMocks();
-        await env.close([guest?.client ?? null, second?.client ?? null]);
+        await env.close([guest?.client ?? null]);
       }
     });
   });

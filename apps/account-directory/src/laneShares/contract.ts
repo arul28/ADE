@@ -25,11 +25,18 @@
  *   POST   /lane-shares/:id/leave       { grant: LaneShareReceiverView } receiver, or the invited address (decline)
  *   POST   /lane-shares/:id/move        { grant: LaneShareGiverView, moved } giver: the lane moved to another of
  *                                       its machines; every live grant of that lane follows (`moved` = how many)
- *   POST   /lane-shares/:id/connect     LaneShareConnectResponse     receiver of an ACTIVE grant: how to reach the host
+ *   POST   /lane-shares/:id/connect     LaneShareConnectResponse     receiver of an ACTIVE grant: how to reach the host,
+ *                                       and a one-use ticket for the host (body: LaneShareConnectRequest)
+ *   POST   /lane-shares/host/redeem     LaneShareRedeemResponse      a machine of the giver: redeems a guest's ticket
  *
- * Browsers may call every route except `/lane-shares/host` from the hosted
- * web client's exact origin (`WEB_CLIENT_ORIGIN`). Native callers send no
- * Origin. Any other Origin is refused before the token is read.
+ * Browsers may call every route except `/lane-shares/host` and
+ * `/lane-shares/host/redeem` from the hosted web client's exact origin
+ * (`WEB_CLIENT_ORIGIN`). Native callers send no Origin. Any other Origin is
+ * refused before the token is read.
+ *
+ * A guest's account token goes only to this directory. A host never sees it:
+ * the guest's hello carries a one-use ticket from `connect`, and the host
+ * learns the guest's user id by redeeming that ticket here.
  */
 
 export const LANE_SHARE_PATHS = {
@@ -37,7 +44,11 @@ export const LANE_SHARE_PATHS = {
   given: "/lane-shares/given",
   received: "/lane-shares/received",
   host: "/lane-shares/host",
+  hostRedeem: "/lane-shares/host/redeem",
 } as const;
+
+/** A connection ticket: 32 random bytes, base64url. Also the RFC 7638 thumbprint's shape (SHA-256, base64url). */
+export const LANE_SHARE_TICKET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 /** `/lane-shares/:id` and its actions. */
 export const laneSharePath = (id: string, action?: "accept" | "revoke" | "leave" | "move" | "connect"): string =>
@@ -82,6 +93,14 @@ export const LANE_SHARE_MAX_DURATION_MS = 366 * 24 * 60 * 60 * 1000;
 /** How long a closed grant stays in the lists and in the host read's `closed`. */
 export const LANE_SHARE_CLOSED_VISIBLE_MS = 30 * 24 * 60 * 60 * 1000;
 export const LANE_SHARE_HOST_CLOSED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+/** Invite emails all accounts together may send per UTC day. Past it an invite still works by its link. */
+export const LANE_SHARE_DAILY_EMAILS_GLOBAL = 2_000;
+/** Clerk Backend API reads one account's lane share calls may cause per UTC hour. */
+export const LANE_SHARE_HOURLY_CLERK_READS_PER_USER = 120;
+/** How long a connection ticket can be redeemed. */
+export const LANE_SHARE_TICKET_TTL_MS = 2 * 60 * 1000;
+/** Tickets one grant may mint per hour. */
+export const LANE_SHARE_TICKET_MINTS_PER_HOUR = 30;
 
 export type LaneShareInviteRequest = {
   /** Trimmed and lowercased by the server. */
@@ -174,9 +193,9 @@ export type LaneShareOpenResponse =
  * How the receiver of an ACTIVE grant reaches the host machine. Only the
  * receiver may read it, and only while the grant is active. `relayUrl` is the
  * ADE Relay address the host machine published (`wss://<relay>/connect/<key>`).
- * It admits a socket to the relay and nothing more: the host checks the
- * guest's account and this grant on every connection, so a guest that keeps
- * the address after a revoke is refused at the host. LAN and tailnet
+ * It admits a socket to the relay and nothing more: the host redeems the
+ * ticket (`POST /lane-shares/host/redeem`) on every connection, so a guest
+ * that keeps the address after a revoke is refused at the host. LAN and tailnet
  * addresses are never given out; a guest connection is relay-only.
  */
 export type LaneShareConnectResponse = {
@@ -187,6 +206,40 @@ export type LaneShareConnectResponse = {
   relayUrl: string | null;
   /** The host machine reported in within the directory's online window. */
   hostOnline: boolean;
+  /**
+   * 32 random bytes, base64url, shown once. The guest's hello to the host
+   * carries it with a DPoP proof signed by the key named in the request; the
+   * host redeems it once, within `LANE_SHARE_TICKET_TTL_MS`. Null when there
+   * is no relay address to connect to.
+   */
+  ticket: string | null;
+  ticketExpiresAt: number | null;
+};
+
+/**
+ * `dpopThumbprint`: the RFC 7638 SHA-256 JWK thumbprint (base64url, 43
+ * characters) of the guest's P-256 DPoP public key. The host admits the
+ * ticket only for a hello signed by that key.
+ */
+export type LaneShareConnectRequest = { dpopThumbprint: string };
+
+export type LaneShareRedeemRequest = { machineKey: string; ticket: string };
+
+/**
+ * The redeemed ticket and the machine's complete live grant list, read in the
+ * same call. The host admits `redeemed.receiverUserId`, never a user id the
+ * guest sent, and only while the grant is active in `grants`. Every failure
+ * (unknown, used, expired, another machine, a grant no longer active, a caller
+ * that is not the giver) answers the same 404.
+ */
+export type LaneShareRedeemResponse = LaneShareHostResponse & {
+  redeemed: {
+    grantId: string;
+    receiverUserId: string;
+    laneId: string;
+    repoKey: string;
+    dpopThumbprint: string;
+  };
 };
 
 export type LaneShareReceivedResponse = {
@@ -247,4 +300,5 @@ export type LaneShareErrorCode =
   | "unknown_machine"
   | "invite_expired"
   | "share_closed"
+  | "rate_limited"
   | "origin_not_allowed";

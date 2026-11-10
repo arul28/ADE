@@ -3053,6 +3053,18 @@ describe("lane share guest command policy", () => {
       expect(service.getDescriptor(action as never)?.policy).not.toMatchObject({ requiresApproval: true });
     }
   });
+
+  // A guest's read must not write on the host: `work.getSession` hydrates a
+  // closed CLI row's resume target (a session row write) only for the owner.
+  it.each<[string, { readOnly?: boolean }, number]>([
+    ["an owner's read", {}, 1],
+    ["a read-only (guest) read", { readOnly: true }, 0],
+  ])("writes resume targets on %s of work.getSession only when it may write", async (_label, context, writes) => {
+    const session = { id: "session-1", tracked: true, status: "exited", toolType: "claude", resumeMetadata: null };
+    const { service, ptyService } = createService({ sessionService: { get: vi.fn().mockReturnValue(session) } });
+    await service.execute(makePayload("work.getSession", { sessionId: "session-1" }), context);
+    expect(ptyService.ensureResumeTargets).toHaveBeenCalledTimes(writes);
+  });
 });
 
 describe("prs.land", () => {

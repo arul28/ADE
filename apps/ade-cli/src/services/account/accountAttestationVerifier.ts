@@ -82,22 +82,17 @@ function isAllowedCallerToken(payload: JWTPayload, oauthClientId: string): boole
   return audienceIncludes(payload.aud, oauthClientId) || payload.azp === oauthClientId;
 }
 
-/**
- * Signature, issuer, expiry and audience of one Clerk token; returns its
- * subject. Says nothing about WHICH account it may be: both callers below
- * decide that.
- */
-async function verifyClerkTokenSubject(args: {
+export async function verifyClerkAccountAttestation(args: {
   token: string;
+  expectedUserId: string;
   config: AccountAttestationConfig;
-  /** The owner check, made before the audience check as it always was. */
-  expectedUserId?: string;
-}): Promise<{ userId: string; expiresAtMs: number }> {
+}): Promise<VerifiedAccountAttestation> {
   const token = args.token.trim();
+  const expectedUserId = args.expectedUserId.trim();
   const issuer = args.config.issuer.trim();
   const jwksUrl = args.config.jwksUrl.trim();
   const oauthClientId = args.config.oauthClientId.trim();
-  if (!token) {
+  if (!token || !expectedUserId) {
     throw new AccountAttestationError("invalid_token", "Account attestation is missing required identity data");
   }
   if (!issuer || !jwksUrl || !oauthClientId) {
@@ -118,7 +113,7 @@ async function verifyClerkTokenSubject(args: {
   }
   const subject = typeof payload.sub === "string" ? payload.sub.trim() : "";
   if (!subject) throw new AccountAttestationError("invalid_token", "Account attestation subject is required");
-  if (args.expectedUserId !== undefined && subject !== args.expectedUserId) {
+  if (subject !== expectedUserId) {
     throw new AccountAttestationError(
       "account_mismatch",
       "Account attestation subject does not match this machine owner",
@@ -127,43 +122,11 @@ async function verifyClerkTokenSubject(args: {
   if (!isAllowedCallerToken(payload, oauthClientId)) {
     throw new AccountAttestationError("invalid_token", "Account attestation audience is not allowed");
   }
-  return { userId: subject, expiresAtMs: payload.exp! * 1_000 };
-}
-
-export async function verifyClerkAccountAttestation(args: {
-  token: string;
-  expectedUserId: string;
-  config: AccountAttestationConfig;
-}): Promise<VerifiedAccountAttestation> {
-  const expectedUserId = args.expectedUserId.trim();
-  if (!args.token.trim() || !expectedUserId) {
-    throw new AccountAttestationError("invalid_token", "Account attestation is missing required identity data");
-  }
-  const verified = await verifyClerkTokenSubject({ token: args.token, config: args.config, expectedUserId });
   return Object.freeze({
-    userId: verified.userId,
-    expiresAtMs: verified.expiresAtMs,
+    userId: subject,
+    expiresAtMs: payload.exp! * 1_000,
     [VERIFIED_ACCOUNT_ATTESTATION]: true as const,
   });
-}
-
-/**
- * A verified Clerk token of ANY account. Lane sharing only: the host takes
- * the user id from here and then decides from its grant list whether that
- * account may connect. Never a substitute for the owner check above, and its
- * result is deliberately not a `VerifiedAccountAttestation`, so it cannot be
- * passed where an owner attestation is required (a pairing write).
- */
-export type VerifiedGuestAccountToken = {
-  readonly userId: string;
-  readonly expiresAtMs: number;
-};
-
-export async function verifyClerkGuestAccountToken(args: {
-  token: string;
-  config: AccountAttestationConfig;
-}): Promise<VerifiedGuestAccountToken> {
-  return Object.freeze(await verifyClerkTokenSubject({ token: args.token, config: args.config }));
 }
 
 export function isVerifiedAccountAttestation(value: unknown): value is VerifiedAccountAttestation {

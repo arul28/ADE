@@ -129,12 +129,43 @@ export async function sendCloudEmail(env: CloudEmailEnv, email: CloudEmail): Pro
 export type LaneShareInviteEmail = {
   /** The invited address, already normalized. */
   to: string;
-  /** Who shares: a name, or null for "An ADE user". Client text; escaped here. */
+  /**
+   * Who shares: the giver's Clerk name, or null. Text the giver chose, so it
+   * is cleaned here (`inviteSenderName`) before it goes in the email.
+   */
   giverLabel: string | null;
-  projectLabel: string | null;
-  laneLabel: string | null;
+  /** ADE's own invite link. The only link in the email. */
   link: string;
 };
+
+const INVITE_SENDER_FALLBACK = "An ADE user";
+const MAX_INVITE_SENDER_NAME = 60;
+
+/**
+ * The giver's name as the invite email shows it. A name is the giver's own
+ * text and the email goes to an address the giver typed, so nothing in it may
+ * read as a link or an address a mail client would turn into one: words that
+ * look like a URL or a host name are dropped, and so are `@`, control and
+ * format characters, and markup characters. What is left is cut to 60
+ * characters; nothing left is "An ADE user".
+ */
+export function inviteSenderName(label: string | null | undefined): string {
+  if (!label) return INVITE_SENDER_FALLBACK;
+  const words = label
+    .normalize("NFKC")
+    .replace(/[\p{Cc}\p{Cf}\p{Co}\p{Cn}]/gu, " ")
+    .split(/\s+/)
+    .filter((word) =>
+      word
+      && !/[:/\\]/.test(word)
+      && !/^www\b/i.test(word)
+      // A dot between two letters or digits: a host name (`evil.com`, `a.b.c`).
+      && !/[\p{L}\p{N}][.\u3002\uFF0E\uFF61][\p{L}\p{N}]/u.test(word))
+    .map((word) => word.replace(/[@<>"'`{}[\]|=&]/g, ""))
+    .filter(Boolean);
+  const name = words.join(" ").slice(0, MAX_INVITE_SENDER_NAME).trim();
+  return name || INVITE_SENDER_FALLBACK;
+}
 
 export type DirectEmailOutcome = "sent" | "not_configured" | "failed";
 
@@ -149,12 +180,10 @@ export async function sendLaneShareInviteEmail(env: CloudEmailEnv, invite: LaneS
     logEmail("lane_share.email_skipped", { reason: "not_configured" });
     return "not_configured";
   }
-  const who = invite.giverLabel ?? "An ADE user";
-  const lane = invite.laneLabel ? `the lane "${invite.laneLabel}"` : "a lane";
-  const project = invite.projectLabel ? ` in ${invite.projectLabel}` : "";
+  const who = inviteSenderName(invite.giverLabel);
   const subject = `${who} shared a lane with you in ADE`;
   const text = [
-    `${who} invited you to ${lane}${project}.`,
+    `${who} invited you to a lane in ADE.`,
     "Open the invite to see what you can do in it. The invite works for 24 hours, and only when you sign in to ADE with this email address.",
     "If you did not expect this, you can ignore this email.",
     `Open the invite: ${invite.link}`,

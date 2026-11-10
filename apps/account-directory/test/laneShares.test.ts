@@ -5,7 +5,8 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleLaneShareRequest, type LaneShareEnv } from "../src/laneShares/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
-import type { LaneShareGiverView, LaneShareHostResponse } from "../src/laneShares/contract";
+import type { LaneShareConnectResponse, LaneShareGiverView, LaneShareHostResponse, LaneShareRedeemResponse } from "../src/laneShares/contract";
+import { cleanupLaneShares } from "../src/laneShares/routes";
 import { ISSUER, jwksEndpoint, mintToken, OAUTH_CLIENT_ID } from "./jwks";
 
 /**
@@ -187,6 +188,15 @@ const stateOf = async (id: string): Promise<string> =>
   ((await (await send(GIVER, "GET", `/lane-shares/${id}`)).json()) as { grant: { state: string } }).grant.state;
 
 const MISSING_ID = "ls_00000000000000000000000000000000";
+/** A guest's DPoP key thumbprint (RFC 7638 shape: 43 base64url characters). */
+const THUMB = "a".repeat(43);
+const OTHER_THUMB = "b".repeat(43);
+
+const connect = (id: string, caller = GUEST, dpopThumbprint: unknown = THUMB): Promise<Response> =>
+  send(caller, "POST", `/lane-shares/${id}/connect`, { dpopThumbprint });
+
+const redeem = (ticket: unknown, machineKey = MACHINE, caller = GIVER, headers: Record<string, string> = {}): Promise<Response> =>
+  send(caller, "POST", "/lane-shares/host/redeem", { machineKey, ticket }, headers);
 
 beforeEach(async () => {
   clock = NOW;
@@ -235,6 +245,20 @@ describe("who may see and change a grant", () => {
     expect((await send(OTHER, "GET", `/lane-shares/${id}`)).status).toBe(503);
     expect((await send(OTHER, "GET", `/lane-shares/${MISSING_ID}`)).status).toBe(503);
     expect((await send(GIVER, "GET", `/lane-shares/${id}`)).status).toBe(200);
+  });
+
+  it("answers 429 once an account spent its hourly Clerk budget, whether or not the id exists", async () => {
+    const id = await invitedId();
+    data.exec("insert into lane_share_invite_days (day, subject, count) values (?, ?, 120)", "2026-11-10", `clerk:12:${OTHER}`);
+    for (const target of [id, MISSING_ID]) {
+      expect((await send(OTHER, "GET", `/lane-shares/${target}`)).status).toBe(429);
+      expect((await send(OTHER, "POST", `/lane-shares/${target}/accept`)).status).toBe(429);
+    }
+    const received = await send(OTHER, "GET", "/lane-shares/received");
+    expect([received.status, ((await received.json()) as { pendingInvitesUnavailable: boolean }).pendingInvitesUnavailable]).toEqual([200, true]);
+    // The next hour has its own budget.
+    clock = NOW + HOUR;
+    expect((await send(OTHER, "GET", `/lane-shares/${id}`)).status).toBe(404);
   });
 
   it.each<[string, string, string, unknown, number, string]>([
@@ -359,11 +383,49 @@ describe("invite email", () => {
     expect(net.emails[0]!.to).toEqual(["guest@example.com"]);
     expect(net.emails[0]!.html).toContain(`https://ade-app.dev/open?type=lane-share&amp;id=${body.grant.id}`);
     expect(net.emails[0]!.html).not.toContain("<img src=x");
+    // The giver's labels are never in the email.
+    for (const part of [net.emails[0]!.text, net.emails[0]!.html, net.emails[0]!.subject]) {
+      expect(part).not.toMatch(/onerror|Widgets/);
+    }
 
     const soon = (await (await invite()).json()) as { emailSent: boolean; emailNotSentReason: string };
     expect([soon.emailSent, soon.emailNotSentReason, net.emails.length]).toEqual([false, "rate_limited", 1]);
     clock = NOW + 11 * 60_000;
     expect(((await (await invite()).json()) as { emailSent: boolean }).emailSent).toBe(true);
+  });
+
+  it.each<[string, string, string]>([
+    ["a plain name", "Gia Rossi", "Gia Rossi shared a lane with you in ADE"],
+    ["a name with a link, a host and an address in it", "Gia https://evil.example/login evil.example x@y.co @gia", "Gia gia shared a lane with you in ADE"],
+    ["a name that is only a host", "accounts.evil.example", "An ADE user shared a lane with you in ADE"],
+    ["a name with control and markup characters", "Gia\u202e\u0007<b>Ross", "Gia bRoss shared a lane with you in ADE"],
+  ])("cleans the giver's name: %s", async (_label, firstName, subject) => {
+    net.users.get(GIVER)!.firstName = firstName;
+    await invite();
+    const email = net.emails[0]!;
+    expect(email.subject).toBe(subject);
+    expect(`${email.subject}\n${email.text}`).not.toMatch(/evil|@|https?:\/\/(?!ade-app\.dev\/)/);
+  });
+
+  it("counts one daily email budget for every spelling of a Gmail address, and keeps the exact address", async () => {
+    const spellings = ["guest.one@gmail.com", "guestone+a@gmail.com", "Guest.One+b@googlemail.com", "g.u.e.s.t.o.n.e@gmail.com", "guestone@gmail.com", "guest.one+c@gmail.com"];
+    const sent: boolean[] = [];
+    for (const [index, receiverEmail] of spellings.entries()) {
+      const body = (await (await invite({ laneId: `lane-${index}`, receiverEmail })).json()) as { emailSent: boolean; grant: LaneShareGiverView };
+      sent.push(body.emailSent);
+      expect(body.grant.receiverEmail).toBe(receiverEmail.toLowerCase());
+    }
+    expect(sent).toEqual([true, true, true, true, true, false]);
+    // Another address still gets its email.
+    expect(((await (await invite({ laneId: "lane-9", receiverEmail: "guestone@example.com" })).json()) as { emailSent: boolean }).emailSent).toBe(true);
+  });
+
+  it("stops invite emails from every account past the global daily cap, and the invite still works", async () => {
+    data.exec("insert into lane_share_invite_days (day, subject, count) values (?, 'all', 2000)", "2026-11-10");
+    const response = await invite();
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as { emailSent: boolean; emailNotSentReason: string };
+    expect([body.emailSent, body.emailNotSentReason, net.emails.length]).toEqual([false, "rate_limited", 0]);
   });
 
   it.each<[string, () => void, string]>([
@@ -470,9 +532,17 @@ describe("connect", () => {
   it("gives only the receiver of an active grant the host's relay address, never its LAN address", async () => {
     publish([{ kind: "lan", host: "192.168.1.5", port: 8787 }, { kind: "relay", url: relayUrl }]);
     const id = await activeId();
-    const response = await send(GUEST, "POST", `/lane-shares/${id}/connect`);
+    const response = await connect(id);
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ grantId: id, laneId: LANE, repoKey: "repo:github.com/acme/widgets", relayUrl, hostOnline: true });
+    expect(await response.json()).toEqual({
+      grantId: id,
+      laneId: LANE,
+      repoKey: "repo:github.com/acme/widgets",
+      relayUrl,
+      hostOnline: true,
+      ticket: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+      ticketExpiresAt: NOW + 2 * 60_000,
+    });
   });
 
   it.each<[string, string, (id: string) => Promise<unknown>, number]>([
@@ -485,12 +555,12 @@ describe("connect", () => {
     publish([{ kind: "relay", url: relayUrl }]);
     const id = await activeId({ endsAt: NOW + HOUR });
     await before(id);
-    expect((await send(caller, "POST", `/lane-shares/${id}/connect`)).status).toBe(status);
+    expect((await connect(id, caller)).status).toBe(status);
   });
 
   it("refuses an invite that was not accepted yet, even for the invited address", async () => {
     const id = await invitedId();
-    expect((await send(GUEST, "POST", `/lane-shares/${id}/connect`)).status).toBe(404);
+    expect((await connect(id)).status).toBe(404);
   });
 
   it.each<[string, unknown, number | null, string | null, boolean]>([
@@ -501,8 +571,137 @@ describe("connect", () => {
   ])("reports %s", async (_label, endpoints, lastSeenAt, expectedUrl, online) => {
     publish(endpoints, lastSeenAt);
     const id = await activeId();
-    const body = (await (await send(GUEST, "POST", `/lane-shares/${id}/connect`)).json()) as { relayUrl: string | null; hostOnline: boolean };
+    const body = (await (await connect(id)).json()) as LaneShareConnectResponse;
     expect(body).toMatchObject({ relayUrl: expectedUrl, hostOnline: online });
+    // No relay address, nothing to connect to: no ticket.
+    expect(body.ticket === null).toBe(expectedUrl === null);
+  });
+});
+
+describe("connection tickets", () => {
+  const relayUrl = `wss://relay.test/connect/${MACHINE}`;
+  beforeEach(() => {
+    for (const [userId, machineKey] of [[GIVER, MACHINE], [GIVER, SECOND_MACHINE], [OTHER, "machine-other-0003"]] as const) {
+      data.exec(
+        "update machines set reachable_endpoints = ?, last_seen_at = ? where user_id = ? and machine_key = ?",
+        JSON.stringify([{ kind: "relay", url: `wss://relay.test/connect/${machineKey}` }]), NOW, userId, machineKey,
+      );
+    }
+  });
+
+  const mint = async (id: string, dpopThumbprint = THUMB): Promise<string> => {
+    const response = await connect(id, GUEST, dpopThumbprint);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as LaneShareConnectResponse;
+    expect(body.relayUrl).toBe(relayUrl);
+    return body.ticket!;
+  };
+
+  it("redeems once for the giver's machine, naming the receiver and the guest's DPoP key from the mint", async () => {
+    const id = await activeId();
+    const ticket = await mint(id);
+    // Only the hash is kept.
+    expect(JSON.stringify(data.row("select * from lane_share_tickets"))).not.toContain(ticket);
+    const response = await redeem(ticket);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as LaneShareRedeemResponse;
+    expect(body.redeemed).toEqual({ grantId: id, receiverUserId: GUEST, laneId: LANE, repoKey: "repo:github.com/acme/widgets", dpopThumbprint: THUMB });
+    expect(body.grants.map((grant) => [grant.id, grant.state, grant.receiverUserId])).toEqual([[id, "active", GUEST]]);
+  });
+
+  it.each<[string, (ticket: string, id: string) => Promise<Response>]>([
+    ["a ticket redeemed by another machine of the giver", (ticket) => redeem(ticket, SECOND_MACHINE)],
+    ["a ticket of a grant that moved to another machine", async (ticket, id) => {
+      expect((await send(GIVER, "POST", `/lane-shares/${id}/move`, { machineKey: SECOND_MACHINE })).status).toBe(200);
+      return redeem(ticket, MACHINE);
+    }],
+    ["the same moved grant, redeemed by its new machine", async (ticket, id) => {
+      expect((await send(GIVER, "POST", `/lane-shares/${id}/move`, { machineKey: SECOND_MACHINE })).status).toBe(200);
+      return redeem(ticket, SECOND_MACHINE);
+    }],
+    ["an expired ticket", async (ticket, id) => {
+      expect((await send(GIVER, "PATCH", `/lane-shares/${id}`, { endsAt: NOW + DAY })).status).toBe(200);
+      clock = NOW + 2 * 60_000;
+      return redeem(ticket);
+    }],
+    ["a ticket used before", async (ticket) => { expect((await redeem(ticket)).status).toBe(200); return redeem(ticket); }],
+    ["a grant revoked between mint and redeem", async (ticket, id) => {
+      expect((await send(GIVER, "POST", `/lane-shares/${id}/revoke`)).status).toBe(200);
+      return redeem(ticket);
+    }],
+    ["a grant the guest left between mint and redeem", async (ticket, id) => {
+      expect((await send(GUEST, "POST", `/lane-shares/${id}/leave`)).status).toBe(200);
+      return redeem(ticket);
+    }],
+    ["a grant whose end date passed", async (ticket) => { clock = NOW + 60_000; return redeem(ticket); }],
+    ["an account that is not the giver, naming the giver's machine", (ticket) => redeem(ticket, MACHINE, OTHER)],
+    ["an account that is not the giver, naming its own machine", (ticket) => redeem(ticket, "machine-other-0003", OTHER)],
+    ["an account that is not the giver, with a machine row under the same key", (ticket) => {
+      data.exec("insert into machines (user_id, machine_key, created_at) values (?, ?, ?)", OTHER, MACHINE, NOW);
+      return redeem(ticket, MACHINE, OTHER);
+    }],
+    ["the guest itself", (ticket) => redeem(ticket, MACHINE, GUEST)],
+    ["a ticket that was never minted", () => redeem("c".repeat(43))],
+    ["a malformed ticket", (ticket) => redeem(`${ticket}x`)],
+  ])("refuses %s with the same 404", async (_label, act) => {
+    const id = await activeId({ endsAt: NOW + 60_000 });
+    const ticket = await mint(id);
+    const response = await act(ticket, id);
+    expect([response.status, await response.json()]).toEqual([404, { error: { code: "not_found", message: expect.any(String) } }]);
+  });
+
+  it("lets only one of two concurrent redeems win", async () => {
+    const id = await activeId();
+    const ticket = await mint(id);
+    const responses = await Promise.all([redeem(ticket), redeem(ticket)]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 404]);
+  });
+
+  it("never redeems a ticket of another giver's grant for this giver", async () => {
+    // OTHER shares its own lane with the guest; the guest hands that ticket to GIVER's machine.
+    const otherGrant = await (async () => {
+      const response = await send(OTHER, "POST", "/lane-shares", {
+        receiverEmail: "guest@example.com", repoKey: "repo:github.com/acme/widgets", machineKey: "machine-other-0003",
+        laneId: LANE, preset: "comment", risk: "low",
+      });
+      const id = ((await response.json()) as { grant: LaneShareGiverView }).grant.id;
+      expect((await send(GUEST, "POST", `/lane-shares/${id}/accept`)).status).toBe(200);
+      return id;
+    })();
+    await activeId();
+    const body = (await (await connect(otherGrant)).json()) as LaneShareConnectResponse;
+    expect((await redeem(body.ticket!, MACHINE, GIVER)).status).toBe(404);
+    expect((await redeem(body.ticket!, "machine-other-0003", OTHER)).status).toBe(200);
+  });
+
+  it.each<[string, Record<string, string>, number]>([
+    ["a browser, even from the web client", { origin: WEB }, 403],
+    ["another site", { origin: "https://evil.example" }, 403],
+  ])("refuses a redeem from %s before it reads the ticket", async (_label, headers, status) => {
+    const id = await activeId();
+    const ticket = await mint(id);
+    expect((await redeem(ticket, MACHINE, GIVER, headers)).status).toBe(status);
+    expect((await redeem(ticket)).status).toBe(200);
+  });
+
+  it("asks for the guest's DPoP key, and caps mints per grant per hour", async () => {
+    const id = await activeId();
+    expect((await connect(id, GUEST, null)).status).toBe(400);
+    expect((await connect(id, GUEST, "not-a-thumbprint")).status).toBe(400);
+    for (let index = 0; index < 30; index += 1) await mint(id);
+    const over = await connect(id);
+    expect([over.status, ((await over.json()) as { error: { code: string } }).error.code]).toEqual([429, "rate_limited"]);
+    clock = NOW + 60 * 60_000 + 1;
+    await mint(id);
+  });
+
+  it("sweeps tickets older than the mint window", async () => {
+    const id = await activeId();
+    await mint(id);
+    clock = NOW + 30 * 60_000;
+    await mint(id);
+    await cleanupLaneShares({ DB: data.DB }, NOW + 61 * 60_000);
+    expect(data.row("select count(*) as n from lane_share_tickets")).toEqual({ n: 1 });
   });
 });
 

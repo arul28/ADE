@@ -11,20 +11,24 @@
  * trusted.
  */
 
-export type LaneShareGuestGrant = { grantId: string; laneId: string };
+/** `endsAtMs`: the grant's end on the host clock, null for no end. */
+export type LaneShareGuestGrant = { grantId: string; laneId: string; endsAtMs: number | null };
 
 /**
  * Attached to a peer by the host after a guest hello. Nothing on it comes
- * from the client: the user id is the verified token's subject, the grants
- * come from the host's grant list.
+ * from the client: the user id and the grant come from the account
+ * directory's answer to the redeemed ticket, the grant's lane and end from the
+ * host's grant list.
  */
 export type LaneShareGuestRole = {
   readonly guest: true;
   readonly userId: string;
+  /** The grant the redeemed ticket names. The connection never reaches another grant. */
+  readonly grantId: string;
   /** The device id the client sent. The peer's own device id is namespaced. */
   readonly clientDeviceId: string;
-  /** Pinned from the guest hello's DPoP proof; Relay refreshes must sign with it. */
-  readonly dpopPublicKey: string | null;
+  /** The key that signed the hello: the one the ticket was minted for. */
+  readonly dpopPublicKey: string;
   grants: LaneShareGuestGrant[];
   /**
    * sessionId -> its lane on this host (null: no such session), read at
@@ -37,24 +41,36 @@ export type LaneShareGuestRole = {
 
 export const SESSION_LANE_TTL_MS = 30_000;
 
+export type LaneShareGuestCommandRule = {
+  readonly scope: "lane" | "session";
+  /**
+   * The only arguments a guest's call keeps; every other key is dropped, so
+   * a flag that widens what a command reads (`includeIdentity`,
+   * `includeAutomation`, a conditional reply, a client `laneId` next to a
+   * session id) never reaches the handler. The scope key is set by the gate.
+   */
+  readonly args: readonly string[];
+};
+
 /**
- * The read-only commands a guest may run, and which argument names the
- * scope. `lane`: `laneId` must be a granted lane, and list results keep only
- * rows of granted lanes. `session`: `sessionId` must resolve, on this host,
- * to a granted lane.
+ * The read-only commands a guest may run. `lane`: `laneId` must be a granted
+ * lane, and list results keep only rows of granted lanes. `session`:
+ * `sessionId` must resolve, on this host, to a granted lane.
  */
-export const LANE_SHARE_GUEST_COMMANDS: Readonly<Record<string, "lane" | "session">> = Object.freeze({
-  "work.listSessions": "lane",
-  "chat.listSessions": "lane",
-  "work.getSession": "session",
-  "chat.getSummary": "session",
-  "chat.getTranscript": "session",
-  "chat.getChatEventHistory": "session",
-  "chat.getChatEventHistoryPage": "session",
-  "agentChat.getEventHistoryPage": "session",
-  "chat.getSubagentTranscript": "session",
-  "chat.listSubagents": "session",
-  "chat.listThreadComments": "session",
+export const LANE_SHARE_GUEST_COMMANDS: Readonly<Record<string, LaneShareGuestCommandRule>> = Object.freeze({
+  "work.listSessions": { scope: "lane", args: ["status", "limit"] },
+  "chat.listSessions": { scope: "lane", args: ["includeArchived"] },
+  "work.getSession": { scope: "session", args: [] },
+  "chat.getSummary": { scope: "session", args: [] },
+  "chat.getTranscript": { scope: "session", args: ["limit", "maxChars", "cursor", "cursorKind"] },
+  "chat.getChatEventHistory": { scope: "session", args: ["maxEvents", "maxBytes", "afterOffset", "historyGeneration"] },
+  "chat.getChatEventHistoryPage": { scope: "session", args: ["beforeOffset", "beforeSequence", "maxBytes"] },
+  "agentChat.getEventHistoryPage": { scope: "session", args: ["beforeOffset", "beforeSequence", "maxBytes"] },
+  // The host also checks that `agentId`/`taskId` is a subagent of this chat
+  // (`laneShareGuestSubagentBelongs`) before the provider sees it.
+  "chat.getSubagentTranscript": { scope: "session", args: ["agentId", "taskId", "limit", "offset"] },
+  "chat.listSubagents": { scope: "session", args: [] },
+  "chat.listThreadComments": { scope: "session", args: [] },
 });
 
 export function isLaneShareGuestCommand(action: string): boolean {
@@ -70,7 +86,9 @@ export function isLaneShareGuestCommand(action: string): boolean {
  */
 export const LANE_SHARE_GUEST_INBOUND: ReadonlyMap<string, "none" | "session" | "command"> = new Map([
   ["heartbeat", "none"],
-  ["relay_reauthorize", "none"],
+  // No `relay_reauthorize`: a guest has no Relay lease to refresh (its
+  // session is bounded by the host's grant checks), and that message would
+  // carry an account token.
   ["command", "command"],
   ["chat_subscribe", "session"],
   ["chat_unsubscribe", "session"],
@@ -105,9 +123,10 @@ export const LANE_SHARE_GUEST_OUTBOUND: ReadonlyMap<string, "always" | "session"
   ["terminal_history", "session"],
 ]);
 
-export function laneShareGuestHasLane(role: LaneShareGuestRole, laneId: string | null | undefined): boolean {
+/** A granted lane whose end, checked on every use, has not passed. */
+export function laneShareGuestHasLane(role: LaneShareGuestRole, laneId: string | null | undefined, nowMs = Date.now()): boolean {
   if (!laneId) return false;
-  return role.grants.some((grant) => grant.laneId === laneId);
+  return role.grants.some((grant) => grant.laneId === laneId && (grant.endsAtMs == null || grant.endsAtMs > nowMs));
 }
 
 /** The lane of a session on this host, cached briefly on the role. */
@@ -172,19 +191,41 @@ export function evaluateLaneShareGuestCommand(args: {
 }): { ok: true; args: Record<string, unknown> } | { ok: false; refusal: LaneShareGuestRefusal } {
   const refuse = (message = GUEST_REFUSAL_MESSAGE) => ({ ok: false as const, refusal: { code: "forbidden_command" as const, message } });
   if (!isLaneShareGuestCommand(args.action)) return refuse();
-  const scope = LANE_SHARE_GUEST_COMMANDS[args.action];
-  if (scope === "lane") {
+  const rule = LANE_SHARE_GUEST_COMMANDS[args.action]!;
+  // Only the listed arguments survive. The conditional list reply (`{
+  // signature, notModified }` with no rows) cannot be filtered row by row, so
+  // its flags are not listed and a guest always gets the plain list.
+  const kept: Record<string, unknown> = {};
+  for (const key of rule.args) {
+    if (Object.prototype.hasOwnProperty.call(args.args, key)) kept[key] = args.args[key];
+  }
+  if (rule.scope === "lane") {
     const laneId = typeof args.args.laneId === "string" ? args.args.laneId.trim() : "";
     if (!laneShareGuestHasLane(args.role, laneId)) return refuse("Name a lane that was shared with you.");
-    // The conditional reply (`{ signature, notModified }` with no rows) cannot
-    // be filtered row by row, so a guest always gets the plain list.
-    const { conditional: _c, ifNoneMatch: _i, headRows: _h, ...rest } = args.args;
-    return { ok: true, args: { ...rest, laneId } };
+    return { ok: true, args: { ...kept, laneId } };
   }
   const sessionId = typeof args.args.sessionId === "string" ? args.args.sessionId.trim() : "";
   if (!laneShareGuestMaySeeSession(args.role, sessionId, args.resolveSessionLaneId)) return refuse();
-  const { laneId: _clientLaneId, ...rest } = args.args;
-  return { ok: true, args: { ...rest, sessionId } };
+  return { ok: true, args: { ...kept, sessionId } };
+}
+
+/**
+ * Whether the child a guest names (`agentId`, and `taskId` when given) is a
+ * subagent of the chat, by the host's own list of that chat's subagents. A
+ * provider reads a child by the id it is given, so a guest must never pass
+ * an id the host cannot show belongs to the granted chat.
+ */
+export function laneShareGuestSubagentBelongs(subagents: unknown, args: Record<string, unknown>): boolean {
+  if (!Array.isArray(subagents)) return false;
+  const agentId = typeof args.agentId === "string" ? args.agentId.trim() : "";
+  const taskId = typeof args.taskId === "string" ? args.taskId.trim() : "";
+  if (!agentId) return false;
+  return subagents.some((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const record = entry as { agentId?: unknown; taskId?: unknown };
+    const ids = [record.agentId, record.taskId].filter((id): id is string => typeof id === "string" && id.trim() !== "");
+    return ids.includes(agentId) && (!taskId || ids.includes(taskId));
+  });
 }
 
 function rowLaneId(row: unknown): string | null {
@@ -202,7 +243,7 @@ export function filterLaneShareGuestCommandResult(
   result: unknown,
   role: LaneShareGuestRole,
 ): unknown {
-  if (LANE_SHARE_GUEST_COMMANDS[action] !== "lane") return result;
+  if (LANE_SHARE_GUEST_COMMANDS[action]?.scope !== "lane") return result;
   const keep = (rows: unknown[]) => rows.filter((row) => laneShareGuestHasLane(role, rowLaneId(row)));
   if (Array.isArray(result)) return keep(result);
   if (result && typeof result === "object" && Array.isArray((result as { sessions?: unknown }).sessions)) {

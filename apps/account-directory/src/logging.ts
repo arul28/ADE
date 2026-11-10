@@ -294,6 +294,8 @@ export function logLaneShare(args: {
     | "lane_share.declined"
     | "lane_share.edited"
     | "lane_share.moved"
+    | "lane_share.ticket_minted"
+    | "lane_share.ticket_redeemed"
     | "lane_share.refused";
   userId: string;
   grantId?: string;

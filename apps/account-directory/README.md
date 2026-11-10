@@ -883,10 +883,14 @@ here (`src/cloud/chats.ts`, routes in `contract.ts`).
 
 One account (the giver) gives another account (the receiver) limited access
 to one lane on one of the giver's machines (`src/laneShares/routes.ts`, table
-in migration 0019, routes and shapes in `src/laneShares/contract.ts`). This
-Worker is only the index and the revocation list. It holds no detailed rights
-and a grant here never opens a machine: the host machine keeps the rights and
-calls `POST /lane-shares/host` on every guest connection.
+in migration 0019, tickets in migration 0020, routes and shapes in
+`src/laneShares/contract.ts`). This Worker is only the index and the
+revocation list. It holds no detailed rights and a grant here never opens a
+machine: the host machine keeps the rights and redeems the guest's ticket on
+every guest connection.
+
+Trust: a guest's account token goes only to the directory; a host sees a
+one-use ticket. No sign-in or credential moves to another machine.
 
 - Every route takes the account bearer and checks the caller's user id against
   the row. A pending invite matches a caller only through an address Clerk has
@@ -897,24 +901,42 @@ calls `POST /lane-shares/host` on every guest connection.
 - At most 5 guests (pending and active) per lane. An invite lasts 24 h, on the
   server clock. A second invite to the same address refreshes the pending one.
 - Limits against spam: 20 invites and re-sends per giver per UTC day, 5 invite
-  emails per address per UTC day, one email per invite per 10 minutes and 5 in
-  its life (`lane_share_invite_days`, as in the Jev bonus).
+  emails per address per UTC day, 2,000 invite emails per UTC day from all
+  accounts together, one email per invite per 10 minutes and 5 in its life
+  (`lane_share_invite_days`, as in the Jev bonus). The per-address cap counts
+  a canonical form of the address (lowercase, no `+tag`, no dots at Gmail);
+  the invite keeps the exact address.
+- Each account may cause 120 Clerk Backend API reads per UTC hour through these
+  routes. Past that, the routes that need Clerk answer 429, and the
+  "Shared with me" list leaves out pending invites.
 - The invite email goes through Resend (`RESEND_API_KEY`). Without the key, or
   when the send fails, the invite still succeeds and says `emailSent: false`.
+  The email names the giver (cleaned: no link-like or host-like words, no `@`)
+  and carries no project or lane label. Its only link is ADE's invite link.
 - The host read lists every live grant of the machine. A host drops any cached
   grant that is not in the list, so a revoke counts at the next connection.
 - `POST /lane-shares/:id/connect` gives the receiver of an ACTIVE grant the
-  ADE Relay address the host machine published (`wss://…/connect/<machineKey>`)
-  and whether the host reported in recently. Nobody else may read it, not even
-  the giver (404); a closed grant answers 410. LAN and tailnet addresses are
-  never given out. The relay address only admits a socket: the host checks the
-  guest's account and the grant on every connection. A guest keeps the
-  address after a revoke, so a revoked guest can still reach the host's
-  sign-in step (and use one of the relay's 16 sockets for that machine) until
-  the host refuses it.
+  ADE Relay address the host machine published (`wss://…/connect/<machineKey>`),
+  whether the host reported in recently, and a one-use ticket. Nobody else may
+  read it, not even the giver (404); a closed grant answers 410. LAN and
+  tailnet addresses are never given out. The body names the guest's DPoP key
+  (`dpopThumbprint`, RFC 7638). The ticket is 32 random bytes, lives 2
+  minutes, and D1 keeps only its hash. A grant may mint 30 tickets an hour.
+- `POST /lane-shares/host/redeem` is for a machine of the giver only (owner
+  token, no browser Origin). One conditional UPDATE uses the ticket once,
+  and only while it is unexpired, minted for that machine, and its grant is
+  still active with the caller as the giver. The answer names the receiver,
+  the lane and the DPoP key, with the machine's full grant list. Every
+  failure answers the same 404. The host admits the user id from this answer
+  and only for a hello signed by that DPoP key, so a copied ticket is useless.
+- A guest keeps the relay address after a revoke, so a revoked guest can still
+  reach the host's hello step (and use one of the relay's 16 sockets for that
+  machine). The host drops a guest hello without a well-formed ticket and a
+  valid DPoP proof before it calls the directory, and a revoked guest gets no
+  new ticket.
 - Clerk `user.deleted` closes every live grant given by or to the account.
 - The cron writes the clock-derived states, deletes rows closed 90 days ago,
-  and drops budget rows older than a week.
+  drops budget rows older than a week, and deletes tickets older than an hour.
 
 ## Sign-up analytics
 

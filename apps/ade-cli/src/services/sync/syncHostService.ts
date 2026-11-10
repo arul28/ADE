@@ -175,11 +175,7 @@ import { reportHelloRejected, reportPeerAccepted } from "./syncHelloTelemetry";
 import type { AccountAuthService } from "../account/accountAuthService";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
-import {
-  AccountAttestationError,
-  verifyClerkAccountAttestation,
-  verifyClerkGuestAccountToken,
-} from "../account/accountAttestationVerifier";
+import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
 import type { CloudAgentsService } from "../../../../desktop/src/main/services/chat/cloudAgentsService";
@@ -237,6 +233,7 @@ import {
   createSyncDpopNonceCache,
   evaluatePairedHelloDpop,
   syncDpopFailureMessage,
+  syncDpopKeyThumbprint,
 } from "./syncDpop";
 import {
   authenticateSyncAccountHello,
@@ -250,12 +247,11 @@ import {
   LANE_SHARE_GUEST_INBOUND,
   laneShareGuestMayReceive,
   laneShareGuestMaySeeSession,
-  type LaneShareGuestGrant,
+  laneShareGuestSubagentBelongs,
   type LaneShareGuestRole,
 } from "./laneShareGuestPolicy";
 import {
   activeLaneShareGrantsFor,
-  LANE_SHARE_GRANT_HELLO_REUSE_MS,
   LANE_SHARE_GRANT_MAX_AGE_MS,
   LANE_SHARE_GRANT_REFRESH_MS,
   LaneShareGrantError,
@@ -1441,7 +1437,14 @@ function toSyncPeerConnectionState(peer: PeerState, currentServerDbVersion: numb
     isBrain: false,
     isHost: false,
     isAuthenticated: peer.authenticated,
+    ...(peer.laneShareGuest ? { laneShareGuest: true } : {}),
   };
+}
+
+/** What the owner's machine list calls a guest. Host-made: never the name the guest sent. */
+function laneShareGuestLabel(userId: string): string {
+  const short = userId.replace(/^user_/, "").slice(0, 6);
+  return short ? `Guest ${short}` : "Guest";
 }
 
 export function syncHeartbeatMissLimitForPeerMetadata(metadata: Pick<SyncPeerMetadata, "platform" | "deviceType"> | null | undefined): number {
@@ -2914,11 +2917,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   // Lane sharing: guests (package 4b, read only).
   //
   // A guest is another ADE account the owner of this machine shared one lane
-  // with. It proves its account on every connection (the same Clerk check as
-  // an account hello, relay only) and the host accepts it only when its own
-  // fresh grant list (`args.laneShareGrants`) holds an active grant for that
-  // account. A guest never gets a pairing record, so it cannot reconnect on
-  // any other path. Every gate below is default refuse:
+  // with. Its account token never comes here: its hello carries a one-use
+  // ticket from the account directory and a DPoP proof over it (relay only).
+  // The host redeems the ticket with its owner's token, takes the user id
+  // from the directory's answer, and accepts only while that grant is active
+  // in the fresh list read in the same call and the hello is signed by the
+  // key the ticket was minted for. A guest never gets a pairing record, so it
+  // cannot reconnect on any other path, and it never gets a Relay lease to
+  // refresh: the grant refresh below bounds its session. Every gate below is
+  // default refuse:
   //   - inbound: `admitLaneShareGuestEnvelope` (queued) and the top of
   //     `handleImmediateControlEnvelope` (unqueued);
   //   - commands: `handleLaneShareGuestCommand`, before the command cache;
@@ -2929,6 +2936,34 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   // proofs, and that id must never touch the owner's devices' nonces.
   const laneShareGuestDpopNonceCache = createSyncDpopNonceCache();
   let laneShareRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  // The relay admits any socket, so a hello must not let anyone make this
+  // host call the directory at will. A ticket is single use: one this host
+  // already sent to the directory is refused here without a call. And the
+  // host sends at most LANE_SHARE_REDEEMS_PER_MINUTE redeems a minute.
+  const LANE_SHARE_REDEEMS_PER_MINUTE = 30;
+  const LANE_SHARE_TICKETS_SEEN_MAX = 4_096;
+  const laneShareTicketsSeen = new Map<string, number>();
+  const laneShareRedeemWindow = { startedAtMs: 0, count: 0 };
+
+  /** Claims one directory redeem for `ticket`: refused when seen before or over the rate. */
+  function claimLaneShareRedeem(ticket: string): "ok" | "seen" | "busy" {
+    const nowMs = Date.now();
+    for (const [hash, expiresAtMs] of laneShareTicketsSeen) {
+      if (expiresAtMs > nowMs && laneShareTicketsSeen.size < LANE_SHARE_TICKETS_SEEN_MAX) break;
+      laneShareTicketsSeen.delete(hash);
+    }
+    const hash = createHash("sha256").update(ticket, "utf8").digest("hex");
+    if (laneShareTicketsSeen.has(hash)) return "seen";
+    if (nowMs - laneShareRedeemWindow.startedAtMs >= 60_000) {
+      laneShareRedeemWindow.startedAtMs = nowMs;
+      laneShareRedeemWindow.count = 0;
+    }
+    if (laneShareRedeemWindow.count >= LANE_SHARE_REDEEMS_PER_MINUTE) return "busy";
+    laneShareRedeemWindow.count += 1;
+    // Kept past the directory's two-minute ticket life.
+    laneShareTicketsSeen.set(hash, nowMs + 5 * 60_000);
+    return "ok";
+  }
 
   /** The lane of a session on THIS host's database. Never from the client. */
   function resolveSessionLaneId(sessionId: string): string | null {
@@ -2965,8 +3000,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    * turn on the host is not touched.
    */
   function closeLaneShareGuest(peer: PeerState, reason: string): void {
-    peer.relayAuthorization?.dispose();
-    peer.relayAuthorization = null;
     peer.authenticated = false;
     args.logger.info("sync_host.lane_share_guest_closed", {
       reason,
@@ -2999,19 +3032,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  /** The guest's grant (only the one its ticket named) in `snapshot`, if still active. */
+  function laneShareGuestGrantsIn(snapshot: LaneShareGrantSnapshot, role: LaneShareGuestRole, nowMs: number) {
+    return activeLaneShareGrantsFor(snapshot, role.userId, nowMs).filter((grant) => grant.grantId === role.grantId);
+  }
+
   /** Each good grant read: drop removed grants from every guest; close a guest left with none. */
   function applyLaneShareGrantSnapshot(snapshot: LaneShareGrantSnapshot): void {
     const nowMs = Date.now();
     for (const peer of connectedLaneShareGuests()) {
       const role = peer.laneShareGuest!;
-      const next = activeLaneShareGrantsFor(snapshot, role.userId, nowMs);
+      const next = laneShareGuestGrantsIn(snapshot, role, nowMs);
       if (next.length === 0) {
         closeLaneShareGuest(peer, "Lane share ended");
         continue;
       }
       const same = next.length === role.grants.length
         && next.every((grant, index) =>
-          grant.grantId === role.grants[index]?.grantId && grant.laneId === role.grants[index]?.laneId);
+          grant.grantId === role.grants[index]?.grantId
+          && grant.laneId === role.grants[index]?.laneId
+          && grant.endsAtMs === role.grants[index]?.endsAtMs);
       if (same) continue;
       role.grants = next;
       role.sessionLanes.clear();
@@ -3020,25 +3060,44 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     syncLaneShareRefreshTimer();
   }
 
-  /** A failed read closes every guest once the last good list is older than the bound. */
+  /**
+   * Runs on every tick, before and whatever the read does, so a slow or hung
+   * read never delays a close: a guest goes once the last good list is older
+   * than the bound, or once its grant's end passed on the host clock.
+   */
   function enforceLaneShareGrantAge(): void {
     const current = args.laneShareGrants?.current() ?? null;
-    if (current && Date.now() - current.fetchedAtMs <= LANE_SHARE_GRANT_MAX_AGE_MS) return;
+    const nowMs = Date.now();
+    const fresh = Boolean(current && nowMs - current.fetchedAtMs <= LANE_SHARE_GRANT_MAX_AGE_MS);
     for (const peer of connectedLaneShareGuests()) {
-      closeLaneShareGuest(peer, "This machine could not check its shared lanes");
+      const role = peer.laneShareGuest!;
+      if (!fresh) {
+        closeLaneShareGuest(peer, "This machine could not check its shared lanes");
+      } else if (role.grants.every((grant) => grant.endsAtMs != null && grant.endsAtMs <= nowMs)) {
+        closeLaneShareGuest(peer, "Lane share ended");
+      }
     }
     syncLaneShareRefreshTimer();
   }
 
+  function closeAllLaneShareGuests(reason: string): void {
+    for (const peer of connectedLaneShareGuests()) closeLaneShareGuest(peer, reason);
+    syncLaneShareRefreshTimer();
+  }
+
   async function refreshLaneShareGrants(): Promise<void> {
-    if (!args.laneShareGrants) {
-      enforceLaneShareGrantAge();
-      return;
-    }
+    enforceLaneShareGrantAge();
+    if (!args.laneShareGrants) return;
     try {
       // A good read reaches every guest through the subscription below.
       await args.laneShareGrants.refresh();
-    } catch {
+    } catch (error) {
+      // The directory no longer lists this machine for the signed-in account:
+      // final, so every guest goes now instead of after the age bound.
+      if (error instanceof LaneShareGrantError && error.code === "unknown_machine") {
+        closeAllLaneShareGuests("This computer is no longer on the account that shared this lane");
+        return;
+      }
       enforceLaneShareGrantAge();
     }
   }
@@ -3059,54 +3118,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   const unsubscribeLaneShareGrants = args.laneShareGrants?.subscribe(applyLaneShareGrantSnapshot) ?? null;
 
-  /** Relay refreshes for a guest: same lifecycle as an owner peer, with the guest as the account. */
-  function installLaneShareGuestRelayAuthorization(
-    peer: PeerState,
-    role: LaneShareGuestRole,
-    initial: RelayAuthorizationSnapshot,
-  ): void {
-    peer.relayAuthorization?.dispose();
-    peer.relayAuthorization = null;
-    const lifecycle = createRelayAuthorizationLifecycle({
-      capable: Boolean(peer.metadata?.capabilities?.includes(SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY)),
-      // The guest signs with the device id it sent; the peer's own id is namespaced.
-      deviceId: () => role.clientDeviceId,
-      pinnedPublicKey: () => role.dpopPublicKey,
-      // The host must still be signed in, as the same owner, and the guest
-      // must still hold a grant on this host's last good list.
-      captureHostAuthorization: async () => {
-        const host = await captureAccountAuthorization();
-        if (!host || host.userId === role.userId) return null;
-        const snapshot = args.laneShareGrants?.current() ?? null;
-        if (!snapshot || Date.now() - snapshot.fetchedAtMs > LANE_SHARE_GRANT_MAX_AGE_MS) return null;
-        if (activeLaneShareGrantsFor(snapshot, role.userId, Date.now()).length === 0) return null;
-        return { userId: role.userId, generation: host.generation };
-      },
-      verifyAccountToken: async (token, expectedUserId) => {
-        const config = args.getAccountAttestationConfig?.();
-        if (!config) throw new AccountAttestationError("configuration_error", "Relay account attestation is unavailable.");
-        const verified = await verifyClerkGuestAccountToken({ token, config });
-        if (verified.userId !== expectedUserId) {
-          throw new AccountAttestationError("account_mismatch", "The Relay account token belongs to a different ADE account.");
-        }
-        return verified;
-      },
-      sendResult: (payload, requestId) => {
-        sendRequired(peer, "relay_reauthorize_result", payload, requestId);
-      },
-      close: (reason) => closeLaneShareGuest(peer, reason),
-      logger: args.logger,
-    });
-    lifecycle.initialize(initial);
-    peer.relayAuthorization = lifecycle;
-  }
-
   /**
-   * The guest hello. Order: relay only, device id, grant source, host signed
-   * in, Clerk config, the guest's token (any account but the owner's), a
-   * DPoP proof, a fresh grant list with an active grant for that account, and
-   * the host account unchanged across all of it. Nothing the client sends
-   * decides a role or a lane.
+   * The guest hello. Order: relay only, device id, grant source, a DPoP proof
+   * over the ticket (all local, so a hello without a well-formed ticket and a
+   * valid proof never reaches the directory), host signed in, the ticket
+   * redeemed by the directory with the owner's token, the proof's key equal
+   * to the key the ticket was minted for, a guest that is not the owner, the
+   * ticket's grant active in the list read with it, and the host account
+   * unchanged across all of it. Nothing the client sends decides an account,
+   * a role or a lane.
    */
   async function handleLaneShareGuestHello(
     peer: PeerState,
@@ -3138,7 +3158,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
     };
     const unavailable = "This computer could not check its shared lanes right now. Try again in a moment.";
-    const noGrant = "This lane is not shared with your ADE account, or the share has ended.";
+    const noGrant = "This lane is not shared with your ADE account, or the share has ended. Open it again from ADE.";
     if (peer.transportOrigin !== "relay-bridge") {
       refuse("lane_share_refused", "A shared lane is reachable only through ADE Relay.", "not_relay");
       return;
@@ -3152,40 +3172,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       refuse("lane_share_unavailable", unavailable, "no_grant_source");
       return;
     }
-    const before = await captureAccountAuthorization();
-    if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
-    if (!before) {
-      refuse("lane_share_unavailable", unavailable, "host_signed_out");
-      return;
-    }
-    const config = args.getAccountAttestationConfig?.() ?? null;
-    if (!config) {
-      refuse("lane_share_unavailable", unavailable, "no_attestation_config");
-      return;
-    }
-    let verified: { userId: string; expiresAtMs: number };
-    try {
-      verified = await verifyClerkGuestAccountToken({ token: auth.accountToken, config });
-    } catch (error) {
-      if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
-      const code = error instanceof AccountAttestationError ? error.code : "verification_failed";
-      if (code === "verification_unavailable" || code === "configuration_error") {
-        refuse("lane_share_unavailable", unavailable, code);
-      } else {
-        refuse("auth_failed", "Your ADE sign-in on this device is not valid. Sign in again, then retry.", code);
-      }
-      return;
-    }
-    if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
-    if (verified.userId === before.userId) {
-      refuse("lane_share_refused", "This is your own computer. Connect with your account instead.", "owner_as_guest");
-      return;
-    }
+    // The proof signs the ticket, so a ticket copied off the wire is useless
+    // without the guest's private key. Checked before any network call.
     let dpopPublicKey: string | null = null;
     const dpopFailure = evaluatePairedHelloDpop({
       storedPublicKey: null,
       deviceId: auth.deviceId,
-      secret: auth.accountToken,
+      secret: auth.ticket,
       proof: auth.dpop ?? null,
       requireDpop: true,
       nonceCache: laneShareGuestDpopNonceCache,
@@ -3193,30 +3186,55 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         dpopPublicKey = publicKey;
       },
     });
-    if (dpopFailure || !dpopPublicKey) {
+    const proofThumbprint = dpopPublicKey ? syncDpopKeyThumbprint(dpopPublicKey) : null;
+    if (dpopFailure || !dpopPublicKey || !proofThumbprint) {
       refuse("auth_failed", syncDpopFailureMessage(dpopFailure ?? "dpop_required"), `dpop_${dpopFailure ?? "missing"}`);
       return;
     }
-    let grants: LaneShareGuestGrant[];
+    const claim = claimLaneShareRedeem(auth.ticket);
+    if (claim === "seen") {
+      refuse("lane_share_refused", noGrant, "ticket_seen");
+      return;
+    }
+    if (claim === "busy") {
+      refuse("lane_share_unavailable", unavailable, "redeem_rate");
+      return;
+    }
+    const before = await captureAccountAuthorization();
+    if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
+    if (!before) {
+      refuse("lane_share_unavailable", unavailable, "host_signed_out");
+      return;
+    }
+    let redeemed: Awaited<ReturnType<LaneShareGrantSource["redeem"]>>;
     try {
-      const readStartedAtMs = Date.now();
-      let snapshot = await grantSource.refresh({ maxAgeMs: LANE_SHARE_GRANT_HELLO_REUSE_MS });
-      grants = activeLaneShareGrantsFor(snapshot, verified.userId, Date.now());
-      // A reused list may only admit, never refuse: a grant accepted a moment
-      // ago is not in it yet, so a refusal is always decided on a new read.
-      if (grants.length === 0 && snapshot.fetchedAtMs < readStartedAtMs) {
-        snapshot = await grantSource.refresh();
-        grants = activeLaneShareGrantsFor(snapshot, verified.userId, Date.now());
-      }
+      redeemed = await grantSource.redeem(auth.ticket);
     } catch (error) {
       if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       const code = error instanceof LaneShareGrantError ? error.code : "unavailable";
-      // A machine the directory does not list for this account has no grants.
-      if (code === "unknown_machine") refuse("lane_share_refused", noGrant, code);
-      else refuse("lane_share_unavailable", unavailable, `grants_${code}`);
+      // A ticket the directory does not honor, or a machine it does not list
+      // for this account: no grant. Anything else: could not decide.
+      if (code === "ticket_refused" || code === "unknown_machine") refuse("lane_share_refused", noGrant, `ticket_${code}`);
+      else refuse("lane_share_unavailable", unavailable, `ticket_${code}`);
       return;
     }
     if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
+    const { redemption, snapshot } = redeemed;
+    // The ticket was minted for one key; a hello signed by any other is not its guest.
+    const expected = Buffer.from(redemption.dpopThumbprint, "utf8");
+    const presented = Buffer.from(proofThumbprint, "utf8");
+    if (expected.length !== presented.length || !timingSafeEqual(expected, presented)) {
+      refuse("lane_share_refused", noGrant, "ticket_dpop_mismatch");
+      return;
+    }
+    // The account comes from the directory's answer, never from the hello.
+    const guestUserId = redemption.receiverUserId;
+    if (guestUserId === before.userId) {
+      refuse("lane_share_refused", "This is your own computer. Connect with your account instead.", "owner_as_guest");
+      return;
+    }
+    const grants = activeLaneShareGrantsFor(snapshot, guestUserId, Date.now())
+      .filter((grant) => grant.grantId === redemption.grantId && grant.laneId === redemption.laneId);
     if (grants.length === 0) {
       refuse("lane_share_refused", noGrant, "no_active_grant");
       return;
@@ -3230,7 +3248,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     const role: LaneShareGuestRole = {
       guest: true,
-      userId: verified.userId,
+      userId: guestUserId,
+      grantId: redemption.grantId,
       clientDeviceId: auth.deviceId,
       dpopPublicKey,
       grants,
@@ -3240,7 +3259,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // owner's devices (presence, arbitration, the command cache, terminal
     // input dedupe), so a guest's peer id is derived and namespaced.
     const guestDeviceId = `guest:${createHash("sha256")
-      .update(verified.userId, "utf8")
+      .update(guestUserId, "utf8")
       .update("\0")
       .update(auth.deviceId, "utf8")
       .digest("hex")
@@ -3257,19 +3276,25 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     peer.helloAcceptedAtMs = Date.now();
     peer.adoptChallenge = null;
     clearPeerAuthTimeout(peer);
-    // `roster`: never a replica. No changeset, cursor row or handoff.
-    peer.metadata = { ...clientPeer, deviceId: guestDeviceId, syncRole: SYNC_PEER_ROLE_ROSTER };
+    // `roster`: never a replica. No changeset, cursor row or handoff. The
+    // name is the host's, so the owner's machine list never shows a name the
+    // guest chose (such as the owner's own phone).
+    peer.metadata = {
+      ...clientPeer,
+      deviceId: guestDeviceId,
+      deviceName: laneShareGuestLabel(guestUserId),
+      syncRole: SYNC_PEER_ROLE_ROSTER,
+    };
     peer.authKind = "guest";
     peer.pairedDeviceId = null;
     peer.pairingRecord = null;
     peer.pendingPairingCommitDeviceId = null;
     peer.pendingPairingCommitSecret = null;
     peer.lastKnownServerDbVersion = args.db.sync.getDbVersion();
-    installLaneShareGuestRelayAuthorization(peer, role, {
-      ownerUserId: verified.userId,
-      expiresAtMs: verified.expiresAtMs,
-      challenge: randomBytes(24).toString("base64url"),
-    });
+    // No Relay lease: a guest sends no account token to refresh one. The
+    // grant refresh and `enforceLaneShareGrantAge` bound the session instead.
+    peer.relayAuthorization?.dispose();
+    peer.relayAuthorization = null;
     const supported = new Set<string>(remoteCommandService.getSupportedActions());
     const guestActions = Object.keys(LANE_SHARE_GUEST_COMMANDS)
       .filter((action) => supported.has(action)) as SyncCommandPayload["action"][];
@@ -3300,7 +3325,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       remoteCommandDescriptors: remoteCommandService.getDescriptors().filter((entry) => guestActionSet.has(entry.action)),
       localCommandDescriptors: [],
       compressionThresholdBytes,
-      relayAuthorization: peer.relayAuthorization?.metadata() ?? null,
+      relayAuthorization: null,
       connectionTransport: "relay",
       runtimeChannelEnabled: false,
       omitProjectCatalog: true,
@@ -3308,7 +3333,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
     const helloOkSent = send(peer.ws, "hello_ok", {
       ...helloOk,
-      laneShareGuest: { userId: role.userId, grants: role.grants.map((grant) => ({ ...grant })) },
+      laneShareGuest: { userId: role.userId, grants: role.grants.map((grant) => ({ grantId: grant.grantId, laneId: grant.laneId })) },
     }, envelope.requestId);
     if (helloOkSent) {
       reportPeerAccepted({
@@ -3400,6 +3425,29 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       reject(gate.refusal.message, gate.refusal.code);
       return;
     }
+    // Every guest command runs read only: a handler that would write on a
+    // read (resume targets) skips that write.
+    const context = { signal, readOnly: true } as const;
+    if (action === "chat.getSubagentTranscript") {
+      // A provider reads a child by the id it is given: the id must be a
+      // subagent the host itself lists for this chat.
+      let belongs = false;
+      try {
+        const subagents = await remoteCommandService.execute({
+          ...payload,
+          action: "chat.listSubagents",
+          args: { sessionId: gate.args.sessionId },
+          ...(hostProjectId ? { projectId: hostProjectId } : {}),
+        }, context);
+        belongs = laneShareGuestSubagentBelongs(subagents, gate.args);
+      } catch {
+        belongs = false;
+      }
+      if (!belongs) {
+        reject("This is not available on a shared lane.");
+        return;
+      }
+    }
     sendRequired(peer, "command_ack", {
       commandId,
       accepted: true,
@@ -3412,7 +3460,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         action,
         args: gate.args,
         ...(hostProjectId ? { projectId: hostProjectId } : {}),
-      }, { signal });
+      }, context);
       sendRequired(peer, "command_result", {
         commandId,
         ok: true,

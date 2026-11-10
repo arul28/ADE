@@ -225,6 +225,14 @@ function fromRow(row: DraftRow, localSiteId: string | null): DraftEntry {
   };
 }
 
+/**
+ * `prompt_stashes.author_json` is a CRR column: every replica of the owner's
+ * project database (the owner's other machines and phones) can write it, and
+ * the change syncs here. So the stored author says who a draft is FOR the
+ * owner's own devices; it is never proof of who wrote it, and nothing may
+ * grant or refuse a right because of it. A guest is not a replica and cannot
+ * write it (guests are roster peers with no changesets).
+ */
 function parseStoredAuthor(value: string | null): AdeMessageAuthor | null {
   if (!value) return null;
   try {

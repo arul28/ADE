@@ -782,6 +782,11 @@ export type SyncRemoteCommandExecutionContext = {
    * caller's per-tab token and never from the wire.
    */
   connectionId?: string;
+  /**
+   * Set by the host for a lane-sharing guest. A read must not write on its
+   * behalf: `work.getSession` skips its resume-target hydration.
+   */
+  readOnly?: boolean;
 };
 
 type RegisteredRemoteCommand = {
@@ -2533,10 +2538,12 @@ function projectChatOntoSession(
 async function getRemoteWorkSession(
   args: SyncRemoteCommandServiceArgs,
   sessionId: string,
+  options: { hydrateResumeTargets: boolean } = { hydrateResumeTargets: true },
 ) {
   let session = args.sessionService.get(sessionId);
   if (!session) return null;
-  if (sessionNeedsResumeTargetHydration(session)) {
+  // Hydration writes the resume targets to the session row: never for a read-only caller.
+  if (options.hydrateResumeTargets && sessionNeedsResumeTargetHydration(session)) {
     try {
       await args.ptyService.ensureResumeTargets([session.id]);
       const hydrated = args.sessionService.get(sessionId);
@@ -4484,8 +4491,10 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     agentChatService: args.agentChatService,
     logger: args.logger,
   });
-  register("work.getSession", { viewerAllowed: true }, async (payload) =>
-    getRemoteWorkSession(args, parseSessionIdArgs(payload, "work.getSession").sessionId));
+  register("work.getSession", { viewerAllowed: true }, async (payload, context) =>
+    getRemoteWorkSession(args, parseSessionIdArgs(payload, "work.getSession").sessionId, {
+      hydrateResumeTargets: context.readOnly !== true,
+    }));
   register("work.deleteSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const sessionId = requireString(payload.sessionId, "Session id is required.");
     await deleteTerminalSessionWithRuntimeCleanup({

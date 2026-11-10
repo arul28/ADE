@@ -238,6 +238,11 @@ export type SyncPeerConnectionState = SyncPeerMetadata & {
   isBrain: boolean;
   isHost?: boolean;
   isAuthenticated: boolean;
+  /**
+   * A lane-sharing guest (another ADE account). Its `deviceName` is set by
+   * the host ("Guest" and a short user id), never the name the guest sent.
+   */
+  laneShareGuest?: boolean;
 };
 
 // Legacy internal/wire role names kept for sync protocol compatibility.
@@ -1653,17 +1658,18 @@ export type SyncHelloAuth =
   | {
       /**
        * Another ADE account reaching a lane the host's owner shared with it
-       * (lane sharing). Relay only. The host verifies `accountToken` with the
-       * same Clerk check as an account hello, takes the user id from the
-       * token, and accepts only when the host's fresh grant list has an
-       * active grant for that user. It never writes a pairing record: the
-       * guest proves its account on every connection. `dpop` binds the token
-       * to a key this connection holds, which later Relay refreshes must sign.
+       * (lane sharing). Relay only. The guest's account token never comes
+       * here: `ticket` is the one-use ticket the account directory gave the
+       * guest (`POST /lane-shares/:id/connect`). The host redeems it with its
+       * own owner's token, takes the user id from the directory's answer,
+       * and accepts only while that grant is active and `dpop` is signed (over
+       * the ticket) by the key the ticket was minted for. It never writes a
+       * pairing record. A hello that also carries `accountToken` is refused.
        */
       kind: "guest";
       deviceId: string;
-      accountToken: string;
-      dpop?: SyncDpopProof | null;
+      ticket: string;
+      dpop: SyncDpopProof;
     };
 
 /**

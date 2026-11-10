@@ -60,7 +60,12 @@ function normalizeStoredComment(entry: unknown, sessionId: string): ChatThreadCo
   };
 }
 
-/** Old comments have no author and read as the host's own user. */
+/**
+ * Old comments have no author and read as the host's own user. The stored
+ * author is display data written by the host, not proof of authorship: the
+ * chat's files sit in the owner's project, which the owner's own machines
+ * can change, so nothing may grant or refuse a right because of it.
+ */
 function withStoredAuthor(value: unknown): { author?: AdeMessageAuthor } {
   const author = parseMessageAuthor(value);
   return author ? { author } : {};
