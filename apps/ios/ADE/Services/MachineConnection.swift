@@ -76,7 +76,7 @@ final class MachineConnection {
   private weak var syncService: SyncService?
   private let registry: ChatThreadRegistry
   private var runTask: Task<Void, Never>?
-  private var socket: URLSessionWebSocketTask?
+  private(set) var socket: URLSessionWebSocketTask?
   /// Bumped on every start/stop and every new socket; stale work compares it.
   private var generation: UInt64 = 0
   private var pending: [String: PendingRequest] = [:]

@@ -24350,9 +24350,14 @@ final class SyncService: ObservableObject {
     guard canSendLiveRequests() else { return }
     let sessionIds = terminalStream.desired.sorted()
     guard !sessionIds.isEmpty else { return }
+    let generation = connectionGeneration
     Task { @MainActor [weak self] in
       guard let self else { return }
       for sessionId in sessionIds {
+        // Each subscribe awaits. A newer socket runs its own restore, and a
+        // screen closed in the meantime must not be subscribed again.
+        guard self.connectionGeneration == generation else { return }
+        guard self.terminalStream.desired.contains(sessionId) else { continue }
         if self.terminalStream.handlers[sessionId] != nil {
           // Active full-screen terminal: resume exactly after the last byte we
           // applied so the reconnect back-fills as an append, not a re-render.

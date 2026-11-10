@@ -38,10 +38,12 @@ extension MachineConnection: TerminalStreamTransport {
   func restoreTerminalSubscriptions() {
     guard supportsRosterTerminal else { return }
     let sessionIds = terminalStream.desired.sorted()
-    guard !sessionIds.isEmpty else { return }
+    guard !sessionIds.isEmpty, let restoreSocket = socket else { return }
     Task { @MainActor [weak self] in
       for sessionId in sessionIds {
-        guard let self, self.terminalStream.desired.contains(sessionId) else { continue }
+        // Each subscribe awaits. A newer socket runs its own restore.
+        guard let self, self.socket === restoreSocket else { return }
+        guard self.terminalStream.desired.contains(sessionId) else { continue }
         do {
           try await self.subscribeTerminalStream(
             sessionId: sessionId,
