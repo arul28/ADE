@@ -3233,8 +3233,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // already have cached lanes (stale-while-revalidate after a project
     // switch), keep `lanesLoading: false` so the chat pane + lane list stay
     // visually stable while we refresh silently in the background.
+    // A retry after a failed first read keeps the reason on screen. A spinner
+    // there would hide it for as long as each attempt takes, and a machine
+    // that never answers would look like a load that never ends.
     if (get().lanes.length === 0) {
-      set({ lanesLoading: true });
+      const failed = get().lanesLoadError;
+      const retryOfFailedRead = failed != null
+        && failed.projectKey === normalizeProjectKey(selectActiveProjectStateKey(get()));
+      // Also clears a flag that a reopen of the same project set.
+      set({ lanesLoading: !retryOfFailedRead });
     }
 
     if (laneRefreshInFlight) {

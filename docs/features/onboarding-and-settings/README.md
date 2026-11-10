@@ -2246,7 +2246,8 @@ renderer, timeline and settings live in `components/ui/liquidGlass/`). The
 splash stays for the boot or the reveal (about 3.5 s), whichever ends later,
 never longer, and plays once per window (`app/BootSplashReveal.tsx`). Reduce
 motion, no WebGL or a logo that fails to load show the still logo and hold
-nothing.
+nothing. The hosted web client never plays it: its own start screens cover the
+boot, and a route that is still loading shows the plain loading view.
 
 The logo everywhere in the app is `<AdeWordmark>` (`components/ui/AdeWordmark.tsx`):
 `logo.png` on dark themes, `logo-light.png` (purple and white swapped) on light
