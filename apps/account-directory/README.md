@@ -997,6 +997,39 @@ these rules apply under any rights:
 - The cron writes the clock-derived states, deletes rows closed 90 days ago,
   drops budget rows older than a week, and deletes tickets older than an hour.
 
+### Moving a chat to the other person
+
+The owner, or a guest with Collaborate (send and start chats), can move a chat
+of the shared lane, with its unpushed work, to a computer of the other person.
+The directory carries none of it: the move goes only over the guest
+connection (the `laneShare.move` guest command) and the machines' own runtime
+actions. `POST /lane-shares/:id/move` is a different thing: it moves the
+owner's grants to another machine of the same account.
+
+- The person who must consent does it on their own machine. A consent refuses
+  by default, ends after 15 minutes, works once, and ends with a revoke, a
+  leave, the end of the share or a pause. One move at a time per share; a
+  second one gets "A move is already waiting".
+- The host binds each step to the guest's grant and lane (from its own role,
+  never from the client), to the move id and to the consent state. It sends no
+  chunk and takes no chunk without an accepted consent for that move id.
+- What moves is a fixed list of fields: the move id, chat title, lane name,
+  branch name, head commit, repository key, a model hint, the handoff brief,
+  the continuation note, the artifact summary, Linear issue references, and
+  the bundle's size, checksum and chunk count. The receiver refuses any other
+  field. No sign-in, token, credential, provider session, environment, MCP
+  configuration or secret moves.
+- The bundle goes in 384 KiB chunks, in order, with its SHA-256 checked at the
+  end, at most 50 MiB. The receiver runs `git bundle verify`, accepts only the
+  one expected ref, fetches with hooks off and no submodule fetch, and lands
+  the work in a NEW lane on a branch that did not exist there. It never
+  touches the shared lane's worktree or an existing branch.
+- The chat on the receiving computer uses only that computer's sign-ins and
+  starts in plan mode. The new lane is shared back to the other person by the
+  receiving computer's own account, with the rights its person chose.
+- When the owner starts a move, the owner's account email goes to the guest,
+  so the guest's computer can share the new lane back.
+
 ## Sign-up analytics
 
 `POST /webhooks/clerk` takes Clerk's `user.created` and `user.deleted`

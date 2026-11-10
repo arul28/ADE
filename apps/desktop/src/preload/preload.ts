@@ -8,6 +8,7 @@ import type {
   LaneShareCreateResult,
   LaneShareEvent,
   LaneShareLeaveResult,
+  LaneShareMoveAction,
   LaneShareListArgs,
   LaneShareListResult,
   LaneShareReceivedResult,
@@ -14487,6 +14488,8 @@ const adeBridge = {
       callLaneShareAction<LaneShareReceivedResult>("listReceived", {}, pin),
     leave: (args: { grantId: string }, pin?: OpenProjectBinding | null): Promise<LaneShareLeaveResult> =>
       callLaneShareAction<LaneShareLeaveResult>("leave", { grantId: args.grantId }, pin),
+    move: <T = unknown>(action: LaneShareMoveAction, args: Record<string, unknown>, pin?: OpenProjectBinding | null): Promise<T> =>
+      callLaneShareAction<T>(action, { ...args }, pin),
     onEvent: (cb: (event: LaneShareEvent) => void, pin?: OpenProjectBinding | null): (() => void) => {
       const removePinned = subscribePinnedProjectRuntimeEvents(
         pin,

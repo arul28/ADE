@@ -109,6 +109,7 @@ import {
 } from "../account/sharedAccountAuthService";
 import { createLaneShareGrantService } from "./laneShareGrantService";
 import { createLaneShareHostService } from "./laneShareHostService";
+import { createLaneShareMoveService } from "./laneShareMoveService";
 import { createLaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
 import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
 import { readGitOriginUrl } from "../../../../desktop/src/main/services/projects/recentProjectSummary";
@@ -717,6 +718,39 @@ export function createSyncService(args: SyncServiceArgs) {
     onEvent: (event) => args.onLaneShareEvent?.(event),
     logger: args.logger,
   });
+  // Moving a chat to the other person of a share (plan Part C). Uses this
+  // machine's own chats, rights and account; the guest side is reached only
+  // through the sync host's guest connection.
+  const laneShareMoves = createLaneShareMoveService({
+    chat: () => {
+      const chat = args.agentChatService;
+      if (!chat) return null;
+      return {
+        getSessionSummary: async (sessionId) => {
+          const summary = await chat.getSessionSummary(sessionId);
+          return summary ? { laneId: summary.laneId, title: summary.title ?? null, modelId: summary.modelId ?? null } : null;
+        },
+        prepareLaneShareMove: (moveArgs) => chat.prepareLaneShareMove(moveArgs),
+        checkLaneShareMoveDestination: (moveArgs) => chat.checkLaneShareMoveDestination(moveArgs),
+        acceptLaneShareMove: (moveArgs) => chat.acceptLaneShareMove(moveArgs),
+        markLaneShareMoved: (moveArgs) => chat.markLaneShareMoved(moveArgs),
+        discardLaneShareMoveLane: (laneId) => chat.discardLaneShareMoveLane(laneId),
+      };
+    },
+    rightsStore: laneShareRights,
+    share: () => ({
+      create: async (createArgs) => ({ grantId: (await laneShareService.create(createArgs)).grantId }),
+      acceptShareBack: (acceptArgs) => laneShareService.acceptShareBack(acceptArgs),
+    }),
+    getRepoKey: () => {
+      laneShareRepoKey ??= { value: accountRepoScopeKey(readGitOriginUrl(args.projectRoot)) };
+      return laneShareRepoKey.value;
+    },
+    getAccountEmail: () => accountAuthService.getStatus().email?.trim() || null,
+    notifyGuests: (grantId) => hostService?.notifyLaneShareGuestState(grantId),
+    onEvent: (event) => args.onLaneShareEvent?.(event),
+    logger: args.logger,
+  });
   const isRelayAccountSignedIn = (): boolean => {
     const status = accountAuthService.getStatus();
     return status.signedIn && Boolean(status.userId?.trim());
@@ -1281,6 +1315,7 @@ export function createSyncService(args: SyncServiceArgs) {
       accountAuthService,
       laneShareGrants,
       laneShareRights,
+      laneShareMoves,
       onLaneShareEvent: args.onLaneShareEvent,
       getAccountAttestationConfig: args.getAccountAttestationConfig ?? (() =>
         getSharedAccountAttestationConfig({ projectRoots: () => [args.projectRoot] })),
@@ -2402,6 +2437,11 @@ export function createSyncService(args: SyncServiceArgs) {
       return laneShareService;
     },
 
+    /** Moves of a chat to or from the other person of a share (`lane_share.move*` actions). */
+    getLaneShareMoveService() {
+      return laneShareMoves;
+    },
+
     getRegisteredPeerCount(): number | null {
       return pairingStore.countPairingRecords();
     },
@@ -2415,6 +2455,8 @@ export function createSyncService(args: SyncServiceArgs) {
       // After the host stops, so no pushed record can outlive its socket.
       macDesktopSyncStream?.dispose();
       appControlSyncStream?.dispose();
+      // Temp bundles of unfinished moves go with the runtime.
+      laneShareMoves.dispose();
       await syncPeerService.dispose();
     },
   };

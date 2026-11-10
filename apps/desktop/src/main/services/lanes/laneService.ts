@@ -1,5 +1,6 @@
 import { parseGitWorktreePorcelain, type GitWorktreeInfo } from "./gitWorktreePorcelain";
 import fs from "node:fs";
+import os from "node:os";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { DELETED_LANE_KEEP_DAYS } from "../../../shared/laneCleanup";
 import path from "node:path";
@@ -6403,6 +6404,13 @@ export function createLaneService({
         publishUpstream?: boolean;
         /** Lets `cancelGitWrite` stop the checkout. */
         operationId?: string;
+        /**
+         * The branch holds another person's work (a lane share move): the
+         * checkout runs with hooks pointed at an empty folder, so no hook
+         * the arriving tree carries (a relative `core.hooksPath` such as
+         * `.husky/_`) runs, and no submodule is checked out.
+         */
+        disableGitHooks?: boolean;
       },
       runtimeOptions: { laneId?: string } = {},
     ): Promise<LaneSummary> {
@@ -6471,6 +6479,10 @@ export function createLaneService({
         }
 
         // Attaching an existing branch: do NOT create a new branch, just add a worktree checkout.
+        const noHooksDir = args.disableGitHooks ? fs.mkdtempSync(path.join(os.tmpdir(), "ade-no-hooks-")) : null;
+        const noHooksArgs = noHooksDir
+          ? ["-c", `core.hooksPath=${noHooksDir}`, "-c", "submodule.recurse=false"]
+          : [];
         const gitWrite = beginLaneGitWrite(args.operationId);
         let gitStarted = false;
         try {
@@ -6479,7 +6491,7 @@ export function createLaneService({
             // Also checked here: a call nested in another mutation skips the queue.
             if (gitWrite.signal.aborted) throw new AdeExpectedError(LANE_CREATE_CANCEL_MESSAGE, "user");
             gitStarted = true;
-            return runGitOrThrow(["worktree", "add", worktreePath, branchRef], {
+            return runGitOrThrow([...noHooksArgs, "worktree", "add", worktreePath, branchRef], {
               cwd: projectRoot,
               ...TREE_WRITE_GIT_LIMITS,
               signal: gitWrite.signal,
@@ -6499,6 +6511,7 @@ export function createLaneService({
           throw addError;
         } finally {
           gitWrite.end();
+          if (noHooksDir) fs.rmSync(noHooksDir, { recursive: true, force: true });
         }
         worktreeAdded = true;
         refreshNewWorktreeIndexSoon(worktreePath);

@@ -286,6 +286,7 @@ import {
 } from "../../../shared/chatTurnStatus";
 import { Banner, NoticeChip, StatusChip, StatusStrip, noticeKindModel } from "../ui/notice";
 import { LaneShareComposerChip } from "../laneShare/LaneShareComposerChip";
+import { LaneShareOwnerMoveCard } from "../laneShare/LaneShareOwnerMove";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
   compareChatSessionsByEffectiveRecency,
@@ -18975,7 +18976,7 @@ export function AgentChatPane({
         {mcpRefreshChip}
         {pendingSettingsChip}
         {/* Lane sharing (owner view): who has access to this lane, who is here. Same machine as the chat. */}
-        {!forceDraft ? <LaneShareComposerChip pin={chatRuntimePin} laneId={composerDriftLaneId ?? null} laneName={laneDisplayLabel ?? null} /> : null}
+        {!forceDraft ? <LaneShareComposerChip pin={chatRuntimePin} laneId={composerDriftLaneId ?? null} laneName={laneDisplayLabel ?? null} sessionId={selectedSessionId ?? null} /> : null}
         {sessionDelta ? (
           <StatusChip
             tone="neutral"
@@ -19054,6 +19055,16 @@ export function AgentChatPane({
       record={selectedSession?.crossMachineHandoff}
       runtimePin={chatRuntimePin}
       onRecord={(next) => applyCrossMachineHandoffRecord(selectedSessionId, next)}
+      style={composerBannerStyle}
+    />
+  ) : null;
+  // Lane sharing (owner view): a guest's request to move work here, and this chat's move to a guest.
+  const laneShareMoveCard = selectedSessionId && renderedSessionId === selectedSessionId && !personalScope && !forceDraft ? (
+    <LaneShareOwnerMoveCard
+      key={`lane-share-move:${selectedSessionId}`}
+      pin={chatRuntimePin}
+      laneId={composerDriftLaneId ?? null}
+      sessionId={selectedSessionId}
       style={composerBannerStyle}
     />
   ) : null;
@@ -19172,6 +19183,7 @@ export function AgentChatPane({
       {takeoverBanner}
       {stalledTurnBanner}
       {crossMachineMoveBanner}
+      {laneShareMoveCard}
       {crossMachineBatchApprovalBanner}
       {crossMachineArrivalBanner}
       {steeringPendingInput ? (
@@ -19644,6 +19656,7 @@ export function AgentChatPane({
                         {takeoverBanner}
                         {stalledTurnBanner}
                         {crossMachineMoveBanner}
+                        {laneShareMoveCard}
                         {crossMachineBatchApprovalBanner}
                         {crossMachineArrivalBanner}
                                           {claudeModUi}

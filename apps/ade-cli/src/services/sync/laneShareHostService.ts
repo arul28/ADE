@@ -453,6 +453,27 @@ export function createLaneShareHostService(options: {
       return { grantId: sentId, directory: body };
     },
 
+    /**
+     * A lane share move landed on the other person's machine, and that
+     * machine shared the new lane back to this account. Accepts that invite
+     * only when the directory names the expected giver (the guest of the
+     * move's grant) and this project's repository; anything else is left
+     * alone, for the person to see in "Shared with me".
+     */
+    async acceptShareBack(args: { grantId: string; giverUserId: string }): Promise<void> {
+      const grantId = cleanGrantId(args.grantId);
+      const opened = await request("GET", `/lane-shares/${encodeURIComponent(grantId)}`);
+      const role = opened && typeof opened === "object" ? (opened as { role?: unknown }).role : null;
+      const grant = opened && typeof opened === "object" ? (opened as { grant?: Record<string, unknown> }).grant : null;
+      if (role !== "invitee" || !grant || grant.state !== "pending") return;
+      if (grant.giverUserId !== args.giverUserId || grant.repoKey !== options.getRepoKey()) {
+        options.logger?.warn("lane_share.share_back_mismatch", { grantId });
+        return;
+      }
+      await request("POST", `/lane-shares/${encodeURIComponent(grantId)}/accept`);
+      options.logger?.info("lane_share.share_back_accepted", { grantId });
+    },
+
     /** Lane archived: every share of it pauses (connections close; a hello is refused until unarchived). */
     pauseLane(laneId: string): number {
       const closed = options.getHost()?.closeLaneShareLane(laneId, "The owner paused this shared lane") ?? 0;

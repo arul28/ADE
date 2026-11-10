@@ -4,6 +4,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { StatusChip } from "../ui/notice";
 import { isLiveLaneShare } from "./laneShareModel";
 import { openLaneShareSheet, useLaneShareList } from "./laneShareStore";
+import { startLaneShareMove } from "./LaneShareOwnerMove";
 
 function personLabel(email: string | null): string {
   if (!email) return "a guest";
@@ -22,10 +23,13 @@ export const LaneShareComposerChip = React.memo(function LaneShareComposerChip({
   pin,
   laneId,
   laneName,
+  sessionId = null,
 }: {
   pin: OpenProjectBinding | null;
   laneId: string | null;
   laneName: string | null;
+  /** The open chat: "Move to <guest>'s computer" moves it. */
+  sessionId?: string | null;
 }) {
   const { key, entry } = useLaneShareList(pin, { enabled: Boolean(laneId) });
   const shares = entry?.shares;
@@ -49,17 +53,29 @@ export const LaneShareComposerChip = React.memo(function LaneShareComposerChip({
       detail={here.length > 0 ? `${here.join(", ")} here now` : undefined}
       tooltip={tooltip}
       testId="chat-lane-share-chip"
-      actions={[{
-        label: "Manage",
-        onClick: () => openLaneShareSheet({
-          listKey: key,
-          laneId,
-          laneName: laneName?.trim() || "this lane",
-          pin,
-          machineName: pin?.kind === "remote" ? pin.runtimeName : null,
-          grantId: live[0]?.grantId ?? null,
-        }),
-      }]}
+      actions={[
+        {
+          label: "Manage",
+          onClick: () => openLaneShareSheet({
+            listKey: key,
+            laneId,
+            laneName: laneName?.trim() || "this lane",
+            pin,
+            machineName: pin?.kind === "remote" ? pin.runtimeName : null,
+            grantId: live[0]?.grantId ?? null,
+          }),
+        },
+        // An accepted share of this machine: the open chat can move to that person.
+        ...(sessionId
+          ? live
+              .filter((share) => share.state === "active" && share.local && share.rights)
+              .slice(0, 2)
+              .map((share) => ({
+                label: `Move to ${personLabel(share.receiverEmail)}'s computer`,
+                onClick: () => { void startLaneShareMove({ pin, share, sessionId }); },
+              }))
+          : []),
+      ]}
     />
   );
 });

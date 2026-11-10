@@ -259,6 +259,7 @@ export function LaneShareGuestChat({
   selfUserId,
   ownerLabel,
   guestState,
+  composerCard = null,
 }: {
   connection: LaneShareGuestConnection;
   sessionId: string;
@@ -266,6 +267,8 @@ export function LaneShareGuestChat({
   selfUserId: string | null;
   ownerLabel: string;
   guestState: LaneShareGuestState | null;
+  /** A card above the composer (a move the owner offers). */
+  composerCard?: React.ReactNode;
 }) {
   const [events, setEvents] = React.useState<AgentChatEventEnvelope[]>([]);
   const [initialTurnActive, setInitialTurnActive] = React.useState<boolean | null>(null);
@@ -445,6 +448,7 @@ export function LaneShareGuestChat({
       </div>
       <div className="shrink-0 border-t border-fg/[0.06] px-4 pb-3 pt-2">
         <div className="mx-auto flex max-w-[760px] flex-col gap-2">
+          {composerCard}
           {refusal ? (
             <Banner
               layout="inline"

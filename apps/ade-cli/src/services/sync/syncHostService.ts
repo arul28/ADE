@@ -284,6 +284,7 @@ import {
   type LaneShareRightsStore,
 } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
 import type { LaneShareGuestPresence, LaneShareGuestState, LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
+import { LaneShareMoveError, type LaneShareMoveService } from "./laneShareMoveService";
 import { MAX_DRAFTS, type AdeMessageAuthor } from "../../../../desktop/src/shared/types/chat";
 import {
   LANE_SHARE_PLAIN_TEXT_ONLY,
@@ -1378,6 +1379,8 @@ type SyncHostServiceArgs = {
    * Absent: every guest gets Watch rights and nothing that counts a message.
    */
   laneShareRights?: LaneShareRightsStore | null;
+  /** Moves of a chat to or from the other person of a share (`laneShare.move` guest command). */
+  laneShareMoves?: LaneShareMoveService | null;
   /** Lane sharing events for the owner's app (a guest turn still running after a revoke). */
   onLaneShareEvent?: (event: LaneShareHostEvent) => void;
   /** Test seam for account-session lease reconciliation. */
@@ -3259,6 +3262,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // another device, a guest who left and an expiry reach this host only
     // through this list.
     for (const grantId of snapshot.closedIds ?? []) {
+      // A move of a closed grant ends here, connected guest or not.
+      args.laneShareMoves?.cancelGrant(grantId, "The share ended.");
       let queued = false;
       try {
         if (!laneShareRights?.get(grantId)) continue;
@@ -3300,6 +3305,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (next.length === 0) {
         closeLaneShareGuest(peer, "Lane share ended");
         dropLaneShareQueuedSteersSoon(role.grantId);
+        args.laneShareMoves?.cancelGrant(role.grantId, "The share ended.");
         continue;
       }
       const same = next.length === role.grants.length
@@ -3337,6 +3343,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       applied += 1;
     }
     notifyLaneShareGuests((role) => role.grantId === grantId);
+    // A guest that lost Collaborate keeps no move of its own going; no rights end every move.
+    args.laneShareMoves?.rightsChanged(grantId, laneShareRightsFor(grantId));
     // Rights that no longer send or steer, or an end date that has passed:
     // the guest's queued messages go too, connected or not.
     const rights = laneShareRightsFor(grantId);
@@ -3353,6 +3361,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (!peer.laneShareGuest!.grants.some((grant) => grant.laneId === laneId)) continue;
       closeLaneShareGuest(peer, reason);
       closed += 1;
+    }
+    for (const record of laneShareRights?.list() ?? []) {
+      if (record.laneId === laneId) args.laneShareMoves?.cancelGrant(record.grantId, "The owner paused this shared lane.");
     }
     syncLaneShareRefreshTimer();
     return closed;
@@ -3397,6 +3408,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   async function closeLaneShareGrant(grantId: string, reason: string): Promise<LaneShareCloseResult> {
+    // A move of this grant ends first: no chunk or landing goes on after a revoke.
+    args.laneShareMoves?.cancelGrant(grantId, "The share ended.");
     let closedConnections = 0;
     let guestName: string | null = null;
     for (const peer of connectedLaneShareGuests()) {
@@ -3487,6 +3500,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       ) {
         closeLaneShareGuest(peer, "Lane share ended");
         dropLaneShareQueuedSteersSoon(role.grantId);
+        args.laneShareMoves?.cancelGrant(role.grantId, "The share ended.");
       }
     }
     syncLaneShareRefreshTimer();
@@ -3888,6 +3902,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       reject("This is not available on a shared lane.");
       return;
     }
+    if (action === "laneShare.move") {
+      await handleLaneShareGuestMove(peer, role, commandId, payload, reply, reject);
+      return;
+    }
     if (LANE_SHARE_GUEST_HOST_COMMANDS.has(action)) {
       reply(
         { commandId, ok: true, result: laneShareGuestState(role) },
@@ -3984,6 +4002,56 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     } catch (error) {
       undoPrepared();
       sendRequired(peer, "command_result", commandErrorResult(commandId, error), requestId, { action });
+    }
+  }
+
+  /**
+   * `laneShare.move`: one step of a move to or from this guest
+   * (`laneShareMoveService.ts`). The grant, lane, user id, name and rights
+   * come from the host's role, never from the client; the move service binds
+   * each step to the move id and the consent state. A share that ended
+   * closes the guest here, as for every other command.
+   */
+  async function handleLaneShareGuestMove(
+    peer: PeerState,
+    role: LaneShareGuestRole,
+    commandId: string,
+    payload: SyncCommandPayload,
+    reply: (result: SyncCommandResultPayload, ack: SyncCommandAckPayload) => void,
+    reject: (message: string, code?: string) => void,
+  ): Promise<void> {
+    const moves = args.laneShareMoves;
+    if (!moves) {
+      reject("This computer cannot move chats on a shared lane.", "lane_share_unavailable");
+      return;
+    }
+    if (laneShareRightsEnded(role.rights, Date.now())) {
+      reject("This share has ended.", "lane_share_ended");
+      closeLaneShareGuest(peer, "Lane share ended");
+      return;
+    }
+    const grant = role.grants[0];
+    if (!grant) {
+      reject("This share has ended.", "lane_share_ended");
+      return;
+    }
+    const rawArgs = payload.args && typeof payload.args === "object" && !Array.isArray(payload.args)
+      ? payload.args as Record<string, unknown>
+      : {};
+    try {
+      const result = await moves.guestCommand(
+        { grantId: role.grantId, laneId: grant.laneId, userId: role.userId, name: role.name, rights: role.rights },
+        rawArgs,
+      );
+      // The guest may have been closed while the step awaited.
+      if (!peer.authenticated || peer.laneShareGuest !== role) return;
+      reply(
+        { commandId, ok: true, result },
+        { commandId, accepted: true, status: "accepted", message: "Executing laneShare.move." },
+      );
+    } catch (error) {
+      const code = error instanceof LaneShareMoveError ? error.code : "lane_share_move_failed";
+      reject(error instanceof Error ? error.message.slice(0, 300) : "The move failed.", code);
     }
   }
 
@@ -4432,6 +4500,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       },
       machine: hide ? null : { name: brain.deviceName, platform: String(brain.platform ?? "") },
       present,
+      move: args.laneShareMoves?.guestView({ grantId: role.grantId }) ?? null,
     };
   }
 
@@ -11725,6 +11794,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     closeLaneShareGrant,
     closeLaneShareLane,
     laneShareConnectedDevices,
+    /** A move of this grant changed: its guests read their state again. */
+    notifyLaneShareGuestState(grantId: string): void {
+      notifyLaneShareGuests((role) => role.grantId === grantId);
+    },
 
     async dispose(): Promise<void> {
       if (disposed) return;

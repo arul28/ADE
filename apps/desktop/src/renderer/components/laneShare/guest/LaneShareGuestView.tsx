@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowsClockwise, ChatCircle, FolderPlus, Plus, Robot, SignOut, Terminal, TerminalWindow, X } from "@phosphor-icons/react";
+import { ArrowsClockwise, ArrowsLeftRight, ChatCircle, FolderPlus, Plus, Robot, SignOut, Terminal, TerminalWindow, X } from "@phosphor-icons/react";
 import type { LaneShareReceivedEntry } from "../../../../shared/types/laneShare";
 import type { LaneShareGuestState } from "../../../../shared/laneShareRights";
 import { parseCodedErrorMessage } from "../../../../shared/codedError";
@@ -24,6 +24,7 @@ import {
 } from "./laneShareGuestStore";
 import { LaneShareGuestChat, laneShareGuestModelLabel } from "./LaneShareGuestChat";
 import { plainTerminalText } from "./laneShareGuestTranscript";
+import { LaneShareGuestMoveCard, LaneShareGuestMoveOut } from "./LaneShareGuestMove";
 
 /**
  * A shared lane opened by its guest: a header (lane, owner, connection),
@@ -317,6 +318,7 @@ export function LaneShareGuestView({
   const notice = useLaneShareGuestStore((state) => state.notices[grantId] ?? null);
   const [cloneTarget, setCloneTarget] = React.useState<CloneLocallyTarget | null>(null);
   const [starting, setStarting] = React.useState<GuestStartKind | null>(null);
+  const [movingOut, setMovingOut] = React.useState(false);
   const connected = connectionState?.kind === "connected";
   const connection = laneShareGuestConnection(grantId);
 
@@ -361,6 +363,20 @@ export function LaneShareGuestView({
   const canStartCli = Boolean(rights?.run.startCliSessions) && connected && !paused;
   const canTypeCli = Boolean(rights?.run.typeInCliSessions) && !paused;
   const waiting = connectionState?.kind === "retrying" || connectionState?.kind === "host_offline" ? connectionState : null;
+  // Moving a chat to the owner needs Collaborate (send and start chats); the host checks it again.
+  const canMoveOut = Boolean(rights?.speak.send && rights?.run.startChats) && connected && !paused;
+  const openAddProject = () => {
+    if (!repoUrl) return;
+    setCloneTarget({
+      displayName: entry.projectLabel ?? "this project",
+      machineName: ownerLabel,
+      gitOriginUrl: repoUrl,
+      remoteKey: `lane-share:${grantId}`,
+    });
+  };
+  const moveCard = connection ? (
+    <LaneShareGuestMoveCard entry={entry} connection={connection} guestState={guestState} onAddProject={openAddProject} />
+  ) : null;
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col" data-testid="lane-share-guest-view">
@@ -387,12 +403,7 @@ export function LaneShareGuestView({
             className="kit-btn"
             data-size="sm"
             title="Add the repository of this lane on this computer. The share works without it."
-            onClick={() => setCloneTarget({
-              displayName: entry.projectLabel ?? "this project",
-              machineName: ownerLabel,
-              gitOriginUrl: repoUrl,
-              remoteKey: `lane-share:${grantId}`,
-            })}
+            onClick={openAddProject}
           >
             <FolderPlus size={13} />
             Add this project
@@ -448,6 +459,7 @@ export function LaneShareGuestView({
             selfUserId={connectionState?.kind === "connected" ? connectionState.selfUserId : null}
             ownerLabel={ownerLabel}
             guestState={guestState}
+            composerCard={moveCard}
           />
         ) : selected ? (
           <GuestTerminal
@@ -462,6 +474,7 @@ export function LaneShareGuestView({
           <div className="h-full overflow-y-auto px-4 py-3">
             {connected && sessions.length === 0 ? <div className="text-[12px] text-fg/55">Nothing you can see on this lane yet.</div> : null}
             {!connected && !stopped ? <div className="text-[12px] text-fg/50">Waiting for the owner's computer…</div> : null}
+            {moveCard ? <div className="mb-3 max-w-[640px] empty:hidden">{moveCard}</div> : null}
             {(canStartChat || canStartCli) && !starting ? (
               <div className="mb-2 flex items-center gap-2">
                 {canStartChat ? (
@@ -476,6 +489,17 @@ export function LaneShareGuestView({
                     New CLI session
                   </button>
                 ) : null}
+                {canMoveOut && !movingOut ? (
+                  <button type="button" className="kit-btn" data-size="sm" onClick={() => setMovingOut(true)}>
+                    <ArrowsLeftRight size={13} />
+                    Move a chat to {ownerLabel}'s computer
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {movingOut && connection && guestState ? (
+              <div className="mb-3">
+                <LaneShareGuestMoveOut entry={entry} connection={connection} guestState={guestState} onClose={() => setMovingOut(false)} />
               </div>
             ) : null}
             {starting && connection && guestState ? (

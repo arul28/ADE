@@ -1,3 +1,4 @@
+import type { LaneShareMoveView } from "./laneShareMove";
 import { AGENT_CHAT_PERMISSION_MODE_VALUES, type AgentChatPermissionMode } from "./types/chat";
 
 /**
@@ -503,4 +504,9 @@ export type LaneShareGuestState = {
   /** Null when the owner hides its machines. */
   machine: { name: string; platform: string } | null;
   present: LaneShareGuestPresence[];
+  /**
+   * The move of a chat to or from this guest that is live or just ended
+   * (`shared/laneShareMove.ts`). Absent from an older host.
+   */
+  move?: (LaneShareMoveView & { received?: number }) | null;
 };

@@ -7,6 +7,12 @@ import {
   pickLiveCheckout,
   sanitizePortableGitRemote,
 } from "./crossMachineHandoff";
+import {
+  createLaneShareMoveConsents,
+  LANE_SHARE_MOVE_PAYLOAD_KEYS,
+  laneShareMovePayloadFromCapsule,
+  parseLaneShareMovePayload,
+} from "./laneShareMove";
 
 describe("cross-machine handoff boundaries", () => {
   it("normalizes equivalent Git remotes and removes every URL credential surface", () => {
@@ -108,5 +114,91 @@ describe("cross-machine handoff boundaries", () => {
     expect(pickLiveCheckout(checkouts)?.id).toBe(picked);
     expect(pickLiveCheckout([...checkouts].reverse())?.id).toBe(picked);
     expect(pickLiveCheckout([])).toBeNull();
+  });
+});
+
+describe("lane share move payload", () => {
+  const moveId = `lsm_${"2".repeat(32)}`;
+  const sha = "a".repeat(40);
+  // A capsule with every field that can carry a sign-in or a secret.
+  const capsule = {
+    source: {
+      title: "Fix the login",
+      laneName: "login",
+      branchRef: "refs/heads/fix/login",
+      headSha: sha,
+      model: "claude-x",
+      machineKey: "SECRET-machine-key",
+      originUrl: "https://user:SECRET-token@github.com/acme/widgets.git",
+      sessionId: "SECRET-provider-session",
+    },
+    target: { targetModelId: "claude-x", claudePermissionMode: "bypassPermissions" },
+    route: { credentialId: "SECRET-credential", instanceId: "SECRET-instance", env: { API_KEY: "SECRET-env" } },
+    forkTransport: { mainFile: { contentBase64Gzip: "SECRET-provider-history" } },
+    transcriptEnvelopes: { contentBase64Gzip: "SECRET-transcript" },
+    mcpServers: [{ name: "x", env: { TOKEN: "SECRET-mcp" } }],
+    brief: "Work on the login form.",
+    continuationPrompt: "Continue.",
+    artifacts: { fileChanges: ["src/login.ts"], commands: ["npm test"], errors: [] },
+    linearIssues: [{ identifier: "ADE-1", title: "Login", url: null }],
+  };
+
+  it("carries only its fixed fields, none of which holds a sign-in", () => {
+    const payload = laneShareMovePayloadFromCapsule(capsule, { moveId, repoKey: "repo:github.com/acme/widgets", bundle: null });
+    expect(Object.keys(payload).sort()).toEqual([...LANE_SHARE_MOVE_PAYLOAD_KEYS].sort());
+    expect(JSON.stringify(payload)).not.toContain("SECRET");
+    expect(payload.branchName).toBe("fix/login");
+  });
+
+  it.each<[string, (payload: Record<string, unknown>) => void]>([
+    ["an env field", (payload) => { payload.env = { API_KEY: "x" }; }],
+    ["a sign-in route", (payload) => { payload.route = { credentialId: "x" }; }],
+    ["an MCP configuration", (payload) => { payload.mcpServers = []; }],
+    ["a field inside the bundle", (payload) => { payload.bundle = { ...(payload.bundle as object), token: "x" }; }],
+    ["a field inside an issue", (payload) => { payload.linearIssues = [{ identifier: "ADE-1", title: "t", url: null, token: "x" }]; }],
+    ["another move id", (payload) => { payload.moveId = `lsm_${"3".repeat(32)}`; }],
+  ])("refuses a payload with %s", (_label, change) => {
+    const payload = JSON.parse(JSON.stringify(laneShareMovePayloadFromCapsule(capsule, {
+      moveId,
+      repoKey: "repo:github.com/acme/widgets",
+      bundle: { bytes: 10, sha256: "b".repeat(64), chunkCount: 1, branchHeadSha: sha, snapshotSha: null, unpushedCommitCount: 1, changedFileCount: 1 },
+    }))) as Record<string, unknown>;
+    expect(() => parseLaneShareMovePayload(payload, moveId)).not.toThrow();
+    change(payload);
+    expect(() => parseLaneShareMovePayload(payload, moveId)).toThrow();
+  });
+});
+
+describe("lane share move consent", () => {
+  const grant = `ls_${"a".repeat(32)}`;
+  const move = (n: string) => `lsm_${n.repeat(32)}`;
+
+  it("refuses by default, works once, and ends after 15 minutes", () => {
+    let now = 1_000_000;
+    const consents = createLaneShareMoveConsents({ now: () => now });
+    // Nothing offered: nothing is accepted.
+    expect(consents.isAccepted(move("1"), grant)).toBe(false);
+    expect(consents.consume(move("1"), grant)).toMatchObject({ ok: false });
+
+    expect(consents.offer({ moveId: move("1"), grantId: grant, laneId: "lane", direction: "to_owner" })).toMatchObject({ ok: true });
+    // Offered is not accepted.
+    expect(consents.consume(move("1"), grant)).toMatchObject({ ok: false });
+    expect(consents.accept(move("1"), grant)).toMatchObject({ ok: true });
+    expect(consents.isAccepted(move("1"), grant, "lane")).toBe(true);
+    expect(consents.isAccepted(move("1"), grant, "other-lane")).toBe(false);
+    expect(consents.consume(move("1"), grant)).toEqual({ ok: true });
+    expect(consents.consume(move("1"), grant)).toMatchObject({ ok: false, code: "lane_share_move_used" });
+    // A spent consent cannot be accepted again.
+    expect(consents.accept(move("1"), grant)).toMatchObject({ ok: false });
+    expect(consents.isAccepted(move("1"), grant)).toBe(false);
+
+    consents.finish(move("1"));
+    expect(consents.offer({ moveId: move("2"), grantId: grant, laneId: "lane", direction: "to_guest" })).toMatchObject({ ok: true });
+    expect(consents.accept(move("2"), grant)).toMatchObject({ ok: true });
+    now += 15 * 60_000;
+    expect(consents.isAccepted(move("2"), grant)).toBe(false);
+    expect(consents.consume(move("2"), grant)).toMatchObject({ ok: false, code: "lane_share_move_expired" });
+    // An expired or used id is never offered again.
+    expect(consents.offer({ moveId: move("2"), grantId: grant, laneId: "lane", direction: "to_guest" })).toMatchObject({ ok: false });
   });
 });

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createLaneShareRightsStore, ensureLaneShareRightsSchema } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
 import { laneSharePresetRights, type LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
 import { createLaneShareHostService } from "./laneShareHostService";
+import { createLaneShareMoveService } from "./laneShareMoveService";
 
 type DatabaseSyncType = {
   prepare(sql: string): { run(...params: never[]): unknown; get(...params: never[]): unknown; all(...params: never[]): unknown[] };
@@ -86,5 +87,133 @@ describe("lane share host service", () => {
     const { service, store } = makeService(async () => invited());
     await service.create({ laneId, receiverEmail: "guest@example.com", rights: highRisk(), confirmHighRisk: true });
     expect(store.get(grantId)?.rights.run.typeInCliSessions).toBe(true);
+  });
+});
+
+describe("lane share move consent", () => {
+  const sha = "c".repeat(40);
+  const collaborate = () => laneSharePresetRights("collaborate" as never);
+  const guest = (rights = collaborate()) => ({ grantId, laneId, userId: "user-guest", name: "Guest", rights });
+  const otherGrant = { ...guest(), grantId: `ls_${"b".repeat(32)}` };
+
+  /** The move service on a real rights store; the chat side is the service's own port. */
+  function makeMoves() {
+    const store = makeStore();
+    store.put({ grantId, laneId, receiverEmail: "guest@example.com", rights: collaborate() });
+    const landed = vi.fn(async () => ({ laneId: "lane-new", laneName: "moved", sessionId: "chat-new", branchName: "fix/login" }));
+    const moves = createLaneShareMoveService({
+      chat: () => ({
+        getSessionSummary: async () => ({ laneId, title: "Fix", modelId: null }),
+        prepareLaneShareMove: async () => { throw new Error("not used"); },
+        checkLaneShareMoveDestination: async () => ({ modelId: "m" }),
+        acceptLaneShareMove: landed,
+        markLaneShareMoved: async () => {},
+        discardLaneShareMoveLane: async () => {},
+      }),
+      rightsStore: store,
+      share: () => null,
+      getRepoKey: () => "repo:github.com/acme/widgets",
+      getAccountEmail: () => "owner@example.com",
+      notifyGuests: () => {},
+    });
+    return { moves, landed };
+  }
+
+  const moveId = (n: string) => `lsm_${n.repeat(32)}`;
+  const offer = (moves: ReturnType<typeof makeMoves>["moves"], n: string) => moves.guestCommand(guest(), {
+    op: "offer", moveId: moveId(n), laneName: "login", branchName: "fix/login", repoKey: "repo:github.com/acme/widgets", chatTitle: "Fix",
+  });
+  const payload = (id: string, bundle: Record<string, unknown> | null = null) => ({
+    version: 1, moveId: id, title: "Fix", laneName: "login", branchName: "fix/login", headSha: sha,
+    repoKey: "repo:github.com/acme/widgets", modelHint: null, brief: "b", continuationPrompt: "c",
+    artifacts: { fileChanges: [], commands: [], errors: [] }, linearIssues: [], bundle,
+  });
+
+  it.each<[string, RegExp, (moves: ReturnType<typeof makeMoves>["moves"]) => Promise<unknown>]>([
+    ["a chunk of the owner's move before the guest accepts", /not ready to send/, async (moves) => {
+      const view = await moves.start({ grantId, sessionId: "chat-1" });
+      return moves.guestCommand(guest(), { op: "chunk", moveId: view.moveId, index: 0 });
+    }],
+    ["the payload of the owner's move before the guest accepts", /not ready to send/, async (moves) => {
+      const view = await moves.start({ grantId, sessionId: "chat-1" });
+      return moves.guestCommand(guest(), { op: "payload", moveId: view.moveId });
+    }],
+    ["the guest's work before the owner accepts", /has not accepted/, async (moves) => {
+      await offer(moves, "4");
+      return moves.guestCommand(guest(), { op: "begin", moveId: moveId("4"), payload: payload(moveId("4")) });
+    }],
+    ["a finish before the owner accepts", /has not accepted/, async (moves) => {
+      await offer(moves, "4");
+      return moves.guestCommand(guest(), { op: "finish", moveId: moveId("4") });
+    }],
+    ["another grant's step on this move", /no such move/, async (moves) => {
+      await offer(moves, "4");
+      await moves.respond({ moveId: moveId("4"), accept: true });
+      return moves.guestCommand(otherGrant, { op: "begin", moveId: moveId("4"), payload: payload(moveId("4")) });
+    }],
+    ["a guest without Collaborate", /does not include moving/, async (moves) => moves.guestCommand(guest(laneSharePresetRights("watch")), {
+      op: "offer", moveId: moveId("4"), laneName: "login", branchName: "fix/login", repoKey: "repo:github.com/acme/widgets",
+    })],
+  ])("refuses %s", async (_label, refusal, step) => {
+    const { moves, landed } = makeMoves();
+    await expect(step(moves)).rejects.toThrow(refusal);
+    expect(landed).not.toHaveBeenCalled();
+    moves.dispose();
+  });
+
+  it("uses a consent once, allows one move at a time, and lets it expire after 15 minutes", async () => {
+    vi.useFakeTimers();
+    try {
+      const { moves, landed } = makeMoves();
+      await offer(moves, "5");
+      await expect(moves.start({ grantId, sessionId: "chat-1" })).rejects.toThrow(/already waiting/);
+      moves.respond({ moveId: moveId("5"), accept: true });
+      await moves.guestCommand(guest(), { op: "begin", moveId: moveId("5"), payload: payload(moveId("5")) });
+      await moves.guestCommand(guest(), { op: "finish", moveId: moveId("5") });
+      await vi.waitFor(async () => expect((await moves.guestCommand(guest(), { op: "status", moveId: moveId("5") }) as { stage: string }).stage).toBe("done"));
+      // The same move id again: its consent is spent.
+      await expect(moves.guestCommand(guest(), { op: "finish", moveId: moveId("5") })).rejects.toThrow(/already ended/);
+      await expect(offer(moves, "5")).rejects.toThrow(/already/);
+      expect(landed).toHaveBeenCalledTimes(1);
+
+      await offer(moves, "6");
+      vi.advanceTimersByTime(15 * 60_000);
+      expect(() => moves.respond({ moveId: moveId("6"), accept: true })).toThrow(/expired|already ended|no such move/);
+      moves.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each<[string, (data: Buffer) => { bundle: Record<string, unknown>; chunks: Array<[number, string]> }]>([
+    ["a checksum that does not match", (data) => ({
+      bundle: { bytes: data.length, sha256: "d".repeat(64), chunkCount: 1 },
+      chunks: [[0, data.toString("base64")]],
+    })],
+  ])("never lands a bundle with %s", async (_label, make) => {
+    const { moves, landed } = makeMoves();
+    const { bundle, chunks } = make(Buffer.from("not really a bundle"));
+    const info = { ...bundle, branchHeadSha: sha, snapshotSha: null, unpushedCommitCount: 1, changedFileCount: 1 };
+    await offer(moves, "7");
+    moves.respond({ moveId: moveId("7"), accept: true });
+    await moves.guestCommand(guest(), { op: "begin", moveId: moveId("7"), payload: payload(moveId("7"), info) });
+    const sent = (async () => {
+      for (const [index, data] of chunks) await moves.guestCommand(guest(), { op: "put", moveId: moveId("7"), index, data });
+      await moves.guestCommand(guest(), { op: "finish", moveId: moveId("7") });
+    })();
+    await sent.catch(() => undefined);
+    await vi.waitFor(async () => expect((await moves.guestCommand(guest(), { op: "status", moveId: moveId("7") }) as { stage: string }).stage).toBe("failed"));
+    expect(landed).not.toHaveBeenCalled();
+    moves.dispose();
+  });
+
+  it("refuses a bundle over 50 MiB before any part arrives", async () => {
+    const { moves } = makeMoves();
+    await offer(moves, "8");
+    moves.respond({ moveId: moveId("8"), accept: true });
+    const bytes = 50 * 1024 * 1024 + 1;
+    const info = { bytes, sha256: "d".repeat(64), chunkCount: Math.ceil(bytes / (384 * 1024)), branchHeadSha: sha, snapshotSha: null, unpushedCommitCount: 1, changedFileCount: 1 };
+    await expect(moves.guestCommand(guest(), { op: "begin", moveId: moveId("8"), payload: payload(moveId("8"), info) })).rejects.toThrow();
+    moves.dispose();
   });
 });

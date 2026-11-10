@@ -402,8 +402,12 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
     "removeConnection",
   ],
   // Sharing a lane with another account, and what that person may do in it,
-  // is the owner's call. No agent makes, widens or ends a share.
-  lane_share: ["create", "list", "updateRights", "revoke", "resendInvite", "listReceived", "leave"],
+  // is the owner's call. No agent makes, widens or ends a share, and no
+  // agent moves a chat to or from the other person (`move*`).
+  lane_share: [
+    "create", "list", "updateRights", "revoke", "resendInvite", "listReceived", "leave",
+    "moveStart", "moveRespond", "moveCancel", "moveList", "moveReceivePrepare", "moveReceiveBegin", "moveReceiveChunk", "moveReceiveLand", "moveReceiveStatus", "moveReceiveCancel", "movePackStart", "movePackStatus", "movePackChunk", "movePackRelease",
+  ],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -548,7 +552,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "sendNotification",
   ],
   keep_awake: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"],
-  lane_share: ["create", "list", "updateRights", "revoke", "resendInvite", "listReceived", "leave"],
+  lane_share: [
+    "create", "list", "updateRights", "revoke", "resendInvite", "listReceived", "leave",
+    "moveStart", "moveRespond", "moveCancel", "moveList", "moveReceivePrepare", "moveReceiveBegin", "moveReceiveChunk", "moveReceiveLand", "moveReceiveStatus", "moveReceiveCancel", "movePackStart", "movePackStatus", "movePackChunk", "movePackRelease",
+  ],
   remote_mcp: [
     "getStatus",
     "listActivity",

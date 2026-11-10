@@ -151,6 +151,8 @@ const GUEST_INBOUND_TYPES: ReadonlySet<string> = new Set([
  */
 const GUEST_ACTIONS: Readonly<Record<string, "lane" | "session" | "none">> = Object.freeze({
   "laneShare.getGuestState": "none",
+  /** One step of a move to or from this guest; the host binds it to the grant and the consent. */
+  "laneShare.move": "none",
   "work.listSessions": "lane",
   "chat.create": "lane",
   "chat.send": "session",
@@ -805,6 +807,15 @@ export class LaneShareGuestConnection {
       throw codedError("lane_share_unavailable", "The owner's computer sent an answer for another share.");
     }
     return state;
+  }
+
+  /**
+   * One step of a move of a chat to or from this guest (`laneShare.move`).
+   * The host checks the grant, the lane, the move id and the consent; the
+   * result is checked again by the move runner that called it.
+   */
+  async moveStep<T = unknown>(op: string, args: Record<string, unknown> = {}): Promise<T> {
+    return await this.call<T>("laneShare.move", { ...args, op });
   }
 
   /** Lists the sessions of the granted lane. Rows of any other lane are dropped. */

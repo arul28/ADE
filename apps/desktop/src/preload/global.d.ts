@@ -16,6 +16,7 @@ import type {
   LaneShareCreateResult,
   LaneShareEvent,
   LaneShareLeaveResult,
+  LaneShareMoveAction,
   LaneShareListArgs,
   LaneShareListResult,
   LaneShareReceivedResult,
@@ -5230,6 +5231,8 @@ declare global {
         resendInvite: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareResendResult>;
         listReceived: (pin?: OpenProjectBinding | null) => Promise<LaneShareReceivedResult>;
         leave: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareLeaveResult>;
+        /** A step of a chat move (`LaneShareMoveAction`), on the pinned machine. */
+        move: <T = unknown>(action: LaneShareMoveAction, args: Record<string, unknown>, pin?: OpenProjectBinding | null) => Promise<T>;
         /** `lane_share_event` from the pinned machine, else the bound one. */
         onEvent: (cb: (event: LaneShareEvent) => void, pin?: OpenProjectBinding | null) => () => void;
       };

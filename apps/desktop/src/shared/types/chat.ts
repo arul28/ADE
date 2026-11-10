@@ -697,6 +697,8 @@ export type AgentChatVoiceSession = {
 
 export type AgentChatNoticeDetail = {
   kind?: "continuity_recovery" | "disk_pressure";
+  /** `status: "lane_share_moved"`: the lane share move that took this chat to the other person's machine. */
+  laneShareMoveId?: string;
   /**
    * The usage-snapshot account id a notice is about (`<provider>:<instanceId>`).
    *

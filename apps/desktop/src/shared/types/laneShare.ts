@@ -158,6 +158,28 @@ export type LaneShareReceivedResult = {
 
 export type LaneShareLeaveResult = { grantId: string; state: string };
 
+/**
+ * Moving a chat to or from the other person of a share
+ * (`shared/laneShareMove.ts`, `laneShareMoveService.ts`). `move*` without
+ * Receive or Pack runs on the machine of the shared lane; `moveReceive*`
+ * and `movePack*` run on the guest's own machine. Pass that machine's pin.
+ */
+export type LaneShareMoveAction =
+  | "moveStart"
+  | "moveRespond"
+  | "moveCancel"
+  | "moveList"
+  | "moveReceivePrepare"
+  | "moveReceiveBegin"
+  | "moveReceiveChunk"
+  | "moveReceiveLand"
+  | "moveReceiveStatus"
+  | "moveReceiveCancel"
+  | "movePackStart"
+  | "movePackStatus"
+  | "movePackChunk"
+  | "movePackRelease";
+
 // ---------------------------------------------------------------------------
 // The guest's side (`window.ade.laneShareGuest`). Account calls only: they go
 // from THIS device to the account directory with this device's own account
@@ -219,4 +241,11 @@ export type LaneShareEvent =
       type: "lane_share_presence_changed";
       grantId: string;
       laneId: string | null;
+    }
+  | {
+      /** A move to or from the other person of a share changed; the owner's card reads `moveList` again. */
+      type: "lane_share_move_changed";
+      grantId: string;
+      laneId: string | null;
+      moveId: string;
     };

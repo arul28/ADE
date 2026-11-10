@@ -728,7 +728,7 @@ async function withLaneShareErrorCode<T>(call: () => Promise<T>): Promise<T> {
     return await call();
   } catch (error) {
     const coded = error as { name?: unknown; code?: unknown; directoryCode?: unknown; message?: unknown } | null;
-    if (coded?.name === "LaneShareHostError" && typeof coded.code === "string") {
+    if ((coded?.name === "LaneShareHostError" || coded?.name === "LaneShareMoveError") && typeof coded.code === "string") {
       const code = coded.code === "directory_refused" && typeof coded.directoryCode === "string" && coded.directoryCode
         ? coded.directoryCode
         : coded.code;
@@ -761,6 +761,57 @@ function buildLaneShareDomainService(runtime: AdeRuntime): OpaqueService | null 
     resendInvite: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.resendInvite({ grantId: args?.grantId })),
     listReceived: () => withLaneShareErrorCode(() => service.listReceived()),
     leave: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.leave({ grantId: args?.grantId })),
+    ...buildLaneShareMoveActions(sync),
+  };
+}
+
+/**
+ * Moving a chat to or from the other person of a share (`laneShareMoveService.ts`).
+ * The host part (`moveStart`, `moveRespond`, `moveCancel`, `moveList`) runs on
+ * the machine of the shared lane. The `moveReceive*` and `movePack*` parts run
+ * on the guest's own machine, through its pin. All are user-only.
+ */
+function buildLaneShareMoveActions(sync: AdeRuntime["syncService"]): Record<string, (args?: Record<string, unknown>) => Promise<unknown>> {
+  const moves = typeof sync?.getLaneShareMoveService === "function" ? sync.getLaneShareMoveService() : null;
+  if (!moves) return {};
+  const run = <T>(call: () => T | Promise<T>) => withLaneShareErrorCode(async () => await call());
+  return {
+    moveStart: (args) => run(() => moves.start({ grantId: args?.grantId, sessionId: args?.sessionId })),
+    moveRespond: (args) => run(() => moves.respond({
+      moveId: args?.moveId,
+      accept: args?.accept,
+      rights: args?.rights,
+      endsAt: args?.endsAt,
+      confirmHighRisk: args?.confirmHighRisk,
+    })),
+    moveCancel: (args) => run(() => moves.cancel({ moveId: args?.moveId })),
+    moveList: () => run(() => moves.list()),
+    moveReceivePrepare: (args) => run(() => moves.receivePrepare({
+      moveId: args?.moveId,
+      grantId: args?.grantId,
+      repoKey: args?.repoKey,
+      modelHint: args?.modelHint,
+      expiresAt: args?.expiresAt,
+    })),
+    moveReceiveBegin: (args) => run(() => moves.receiveBegin({ moveId: args?.moveId, grantId: args?.grantId, payload: args?.payload })),
+    moveReceiveChunk: (args) => run(() => moves.receiveChunk({
+      moveId: args?.moveId,
+      grantId: args?.grantId,
+      index: args?.index,
+      data: args?.data,
+    })),
+    moveReceiveLand: (args) => run(() => moves.receiveLand({
+      moveId: args?.moveId,
+      grantId: args?.grantId,
+      fromName: args?.fromName,
+      shareBack: args?.shareBack,
+    })),
+    moveReceiveStatus: (args) => run(() => moves.receiveStatus({ moveId: args?.moveId, grantId: args?.grantId })),
+    moveReceiveCancel: (args) => run(() => moves.receiveCancel({ moveId: args?.moveId, grantId: args?.grantId })),
+    movePackStart: (args) => run(() => moves.packStart({ moveId: args?.moveId, grantId: args?.grantId, sessionId: args?.sessionId })),
+    movePackStatus: (args) => run(() => moves.packStatus({ moveId: args?.moveId })),
+    movePackChunk: (args) => run(() => moves.packChunk({ moveId: args?.moveId, index: args?.index })),
+    movePackRelease: (args) => run(() => moves.packRelease({ moveId: args?.moveId, landed: args?.landed, toName: args?.toName })),
   };
 }
 

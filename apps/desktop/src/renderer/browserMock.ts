@@ -10403,6 +10403,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       resendInvite: async () => { throw new Error("Lane sharing isn't available in the browser preview."); },
       listReceived: async () => ({ shares: [], pendingInvitesUnavailable: false }),
       leave: async () => { throw new Error("Lane sharing isn't available in the browser preview."); },
+      move: async () => { throw new Error("Lane sharing isn't available in the browser preview."); },
       onEvent: () => () => {},
     },
     laneShareGuest: {

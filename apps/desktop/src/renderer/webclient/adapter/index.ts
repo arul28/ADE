@@ -212,6 +212,8 @@ export function createAdeWebAdapter(
       resendInvite: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
       listReceived: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
       leave: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      // A move lands work through a machine's own runtime; the web client has no such channel.
+      move: async () => { throw new Error("lane_share_desktop_only: Move chats from the ADE desktop app."); },
       onEvent: () => () => {},
     },
     // The guest's side of lane sharing needs no machine: this browser's own

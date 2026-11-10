@@ -280,9 +280,12 @@ export const LANE_SHARE_GUEST_COMMANDS: Readonly<Record<string, LaneShareGuestCo
 /**
  * Commands only the host answers for a guest (no remote command behind
  * them). `laneShare.getGuestState`: the guest's own rights, limits, locks,
- * who is present, and whether the share is paused.
+ * who is present, and whether the share is paused. `laneShare.move`: one
+ * step of a move of a chat to or from the guest; the move service binds it
+ * to the grant, the lane, the move id and the consent
+ * (`laneShareMoveService.ts`).
  */
-export const LANE_SHARE_GUEST_HOST_COMMANDS = new Set(["laneShare.getGuestState"]);
+export const LANE_SHARE_GUEST_HOST_COMMANDS = new Set(["laneShare.getGuestState", "laneShare.move"]);
 
 /** Commands that count as one guest message against the limits. */
 export const LANE_SHARE_COUNTED_COMMANDS = new Set(["chat.send", "chat.steer", "work.startCliSession"]);
