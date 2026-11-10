@@ -92,6 +92,17 @@ export function createThreadCommentService({
    */
   const pendingPersist = new Set<string>();
 
+  /**
+   * Whether a comment goes with the next send. A lane-sharing guest's
+   * comment goes only when the owner names it (`guestIds`): its text would
+   * otherwise reach the agent in the owner's turn, under the owner's
+   * permission mode.
+   */
+  const goesWithSend = (comment: ChatThreadComment, guestIds: ReadonlySet<string>): boolean => {
+    if (comment.author?.kind === "guest") return guestIds.has(comment.id);
+    return comment.includeInNextSend;
+  };
+
   const fileFor = (sessionId: string): string => {
     if (!isThreadCommentSessionId(sessionId)) {
       throw new Error("Invalid chat session id.");
@@ -242,12 +253,17 @@ export function createThreadCommentService({
    * make. `restore` puts them back, for a send that fails before it delivers.
    * Held comments stay where they are.
    */
-  const takeForSend = (sessionId: string): { block: string | null; count: number; restore: () => void } => {
+  const takeForSend = (
+    sessionId: string,
+    options: { guestCommentIds?: readonly string[] | null } = {},
+  ): { block: string | null; count: number; restore: () => void } => {
     const current = read(sessionId);
-    const taken = current.filter((comment) => comment.includeInNextSend);
+    const guestIds = new Set(options.guestCommentIds ?? []);
+    const goes = (comment: ChatThreadComment) => goesWithSend(comment, guestIds);
+    const taken = current.filter(goes);
     if (!taken.length) return { block: null, count: 0, restore: () => {} };
     const block = formatThreadReviewBlock(taken);
-    write(sessionId, current.filter((comment) => !comment.includeInNextSend));
+    write(sessionId, current.filter((comment) => !goes(comment)));
     let restored = false;
     return {
       block,
@@ -283,7 +299,7 @@ export function createThreadCommentService({
 
   /** True when a send with `includeThreadComments` would carry at least one comment. */
   const hasCommentsForSend = (sessionId: string): boolean =>
-    isThreadCommentSessionId(sessionId) && read(sessionId).some((comment) => comment.includeInNextSend);
+    isThreadCommentSessionId(sessionId) && read(sessionId).some((comment) => goesWithSend(comment, new Set()));
 
   /** Drops a deleted chat's comments without telling clients (the chat is gone). */
   const forgetSession = (sessionId: string): void => {

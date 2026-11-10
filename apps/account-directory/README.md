@@ -893,6 +893,57 @@ every guest connection.
 Trust: a guest's account token goes only to the directory; a host sees a
 one-use ticket. No sign-in or credential moves to another machine.
 
+On the host machine, a guest's input reaches services that ADE wrote for the
+owner. So the host turns off each interpretation it does for the owner, and
+these rules apply under any rights:
+
+- A guest's text is a plain prompt. The host runs no slash command of any
+  provider, no `!` shell line, no `/side` or `/memory`, no custom command or
+  skill, and no `@chat:`, `@term:`, `@lane:` or `@mac:` expansion on it. A
+  provider CLI can read a leading `/` or `!` itself, so the host refuses a
+  guest message that starts with one (`lane_share_plain_text_only`). The rule
+  applies to a send, a steer, a guest's draft and each edit of it (also when
+  the owner sends it), a guest's answer to a card, and the first input of a
+  CLI session. A guest's draft goes only to an existing chat.
+- Only the owner answers a card that is a permission or a secret: a project
+  secret, an MCP server to add or remove, an integration connect, the Mac
+  real-input lease, a shared-desktop consent, an MCP App call. The host
+  refuses a guest's answer or dismissal of such a card, and a guest sees only
+  "Waiting for the owner" in place of its text. A card kind with no mapped
+  right (such as a model choice) is refused too. With a Decide right, a guest
+  cannot choose "for the whole session" (that saves rules in the provider's
+  settings), and approves a plan only when the mode the plan returns to is
+  one the owner allowed.
+- A guest's thread comment never goes with the owner's next send on its own.
+  The owner includes it by name, and the agent reads it as written by
+  another person. Its `@chat:`-style chips stay plain text.
+- Typing into a CLI session gives the same reach as a shell on the host. Only
+  the typing right allows it. Each submitted line counts as one message. The
+  host refuses guest typing when it runs Windows, where a shell stays after
+  the CLI exits.
+- A guest reads no file that git ignores (such as `.env`) and nothing under
+  `.ade/`, through a file read or a diff read, also through a link.
+- The mode lock holds the mode a turn really runs in, read from the
+  provider's own settings (for a plan, also the mode its approval returns
+  to). A mode the host cannot map is refused. A guest changes the settings
+  only of a chat it started. With no model in the lock, a guest starts no
+  chat and no CLI session.
+- The host keeps the share's end date in its own rights and enforces it on
+  every action and every outgoing message. When a share ends, is revoked
+  (here or on another device), is left, or loses its send and steer rights,
+  the host removes the messages its guest queued that have not started.
+- The host admits a guest only when its rights row names the same lane as
+  the directory's grant. Message and draft limits are counted in one step,
+  so two requests at once cannot both take the last place.
+- With "hide machines" on, a guest sees no device or machine name, id or
+  platform in any payload. With "history before the share" off, previews,
+  summaries, goals, thread comments and subagents from before the share are
+  removed from every read, not only from the transcript.
+- `lane_share.*` actions are user-only: only an RPC caller that names itself
+  as an ADE desktop client and carries no agent identity reaches them. A
+  guest never reaches them: its commands are limited to a fixed list, and
+  its connection has no runtime RPC channel.
+
 - Every route takes the account bearer and checks the caller's user id against
   the row. A pending invite matches a caller only through an address Clerk has
   VERIFIED for that caller, read on each call with `CLERK_SECRET_KEY`. Without

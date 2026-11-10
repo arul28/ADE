@@ -805,7 +805,13 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
-import { withHostMessageAuthor } from "../../../shared/messageAuthor";
+import {
+  isPlainPromptMessage,
+  LANE_SHARE_PLAIN_TEXT_ONLY,
+  LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE,
+  leadingPromptCommandCharacter,
+  withHostMessageAuthor,
+} from "../../../shared/messageAuthor";
 import {
   applyClaudePlanModeTransition as applyClaudePlanModeTransitionShared,
   isSessionInPlanMode,
@@ -8283,6 +8289,18 @@ function parseAutoLaneIdentity(raw: unknown): { laneTitle: string | null; branch
  * failure without matching text. The message itself is unchanged.
  */
 const TURN_IN_FLIGHT_ERROR_CODE = "turn_in_flight";
+
+/**
+ * A guest's message is a plain prompt (`isPlainPromptMessage`): a leading
+ * command character is refused, because a provider CLI may read it as a
+ * command even when ADE does not.
+ */
+function assertPlainPromptText(args: { text?: unknown; metadata?: { author?: unknown } | null }): void {
+  if (!isPlainPromptMessage(args.metadata)) return;
+  if (typeof args.text === "string" && leadingPromptCommandCharacter(args.text)) {
+    throw markExpected(codedError(LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE, LANE_SHARE_PLAIN_TEXT_ONLY), "user");
+  }
+}
 
 function turnInFlightError(message: string): Error & { code: typeof TURN_IN_FLIGHT_ERROR_CODE } {
   // An answer: the caller waits for the turn or stops it, nothing failed.
@@ -28504,6 +28522,26 @@ export function createAgentChatService(args: {
       ? managed.runtime.activeTurnId != null
       : managed.runtime?.busy === true
   );
+
+  /**
+   * Refuses a message (or a stop) whose caller named the turn it may act on
+   * (`expectedTurnId`) when that is no longer the chat's state: null needs a
+   * chat with no turn running, an id needs that turn running now. A turn the
+   * runtime runs without an id never matches an id. Synchronous, so nothing
+   * can start or end a turn between this check and the caller's next step.
+   */
+  const assertExpectedTurn = (managed: ManagedChatSession, expected: string | null | undefined): void => {
+    if (expected === undefined) return;
+    const current = activeTurnIdForManaged(managed);
+    const running = current != null || runtimeMidTurn(managed) || managed.session.status === "active";
+    if (expected === null ? !running : current === expected) return;
+    throw markExpected(codedError(
+      expected === null
+        ? "A turn started in this chat. Wait for it to end."
+        : "The turn you started has ended. Send a new message.",
+      "lane_share_not_your_turn",
+    ), "user");
+  };
 
   // ── Host sleep ───────────────────────────────────────────────────────────
   //
@@ -56264,8 +56302,10 @@ export function createAgentChatService(args: {
           : "";
     if (!trimmed.length) return null;
     if (!allowContinuityRecovery) assertContinuityDispatchAllowed(managed);
-    const slashCommand = extractLeadingSlashCommand(trimmed);
-    const providerSlashCommand = isProviderSlashCommandInput(trimmed);
+    // A guest's message is a plain prompt: no slash command of any kind.
+    const plainPrompt = isPlainPromptMessage(metadata);
+    const slashCommand = plainPrompt ? null : extractLeadingSlashCommand(trimmed);
+    const providerSlashCommand = plainPrompt ? false : isProviderSlashCommandInput(trimmed);
     const hasPastedPromptAttachment = hasPastedTextPromptAttachment(attachments);
     const rawDisplayText = displayText?.trim().length ? displayText : undefined;
     const visibleText = hasPastedPromptAttachment
@@ -63363,7 +63403,7 @@ export function createAgentChatService(args: {
   };
 
   type ThreadReviewIntake<T> = {
-    args: Omit<T, "includeThreadComments">;
+    args: Omit<T, "includeThreadComments" | "includeGuestCommentIds">;
     block: string | null;
     restore: () => void;
   };
@@ -63381,10 +63421,16 @@ export function createAgentChatService(args: {
    * text the disk gate will refuse. A comments-only send under disk pressure
    * throws the disk message instead, since nothing else would report it.
    */
-  const takeThreadReviewForSend = <T extends { sessionId: string; text: string; displayText?: string; includeThreadComments?: boolean }>(
+  const takeThreadReviewForSend = <T extends {
+    sessionId: string;
+    text: string;
+    displayText?: string;
+    includeThreadComments?: boolean;
+    includeGuestCommentIds?: string[];
+  }>(
     args: T,
   ): ThreadReviewIntake<T> => {
-    const { includeThreadComments, ...rest } = args;
+    const { includeThreadComments, includeGuestCommentIds, ...rest } = args;
     const untouched: ThreadReviewIntake<T> = { args: rest, block: null, restore: () => {} };
     if (!includeThreadComments) return untouched;
     const typed = args.text.trim();
@@ -63401,7 +63447,7 @@ export function createAgentChatService(args: {
     // with it, and a message without them would read as an unrelated reply.
     let taken: ReturnType<ThreadCommentService["takeForSend"]>;
     try {
-      taken = threadComments.takeForSend(args.sessionId);
+      taken = threadComments.takeForSend(args.sessionId, { guestCommentIds: includeGuestCommentIds ?? null });
     } catch (error) {
       logger.warn("agent_chat.thread_comments_take_failed", {
         sessionId: args.sessionId,
@@ -63488,6 +63534,7 @@ export function createAgentChatService(args: {
   ): Promise<void | AgentChatSteerResult> {
     assertChatRuntimeOwnedHere(args.sessionId, "send to");
     assertChatNotMovedAway(args.sessionId, "send_message");
+    assertPlainPromptText(args);
     // A send retried after a sleep (its first copy may have landed before the
     // machine froze): the client's id tells a retry from a second message.
     if (args.clientSendId && noteClientSendSeen(args.sessionId, args.clientSendId)) return;
@@ -63498,6 +63545,7 @@ export function createAgentChatService(args: {
     // cannot have one (a side chat, CTO, a provider with no fork) gets the
     // text as typed, as before side chats.
     const sideCommand = !options?.preparedMessage && !args.attachments?.length && !args.contextAttachments?.length
+      && !isPlainPromptMessage(args.metadata)
       && !sideChatUnavailableReason(managed.session)
       ? parseSideSlashCommand(args.text)
       : null;
@@ -63807,6 +63855,7 @@ export function createAgentChatService(args: {
         resetSessionActivity(args.sessionId);
       }
     };
+    assertExpectedTurn(managed, args.expectedTurnId);
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
       if (isManualCompactCommand(args.text)) {
         throw turnInFlightError("A turn is already active. Use steer or interrupt.");
@@ -63821,6 +63870,7 @@ export function createAgentChatService(args: {
         reasoningEffort: args.reasoningEffort,
         executionMode: args.executionMode,
         interactionMode: args.interactionMode,
+        ...(args.expectedTurnId !== undefined ? { expectedTurnId: args.expectedTurnId } : {}),
       };
       // This literal drops the expansion marker the send path stamped, so
       // re-stamp it: steerWithOptions expands too, and the blocks must not be
@@ -64130,6 +64180,7 @@ export function createAgentChatService(args: {
     assertChatRuntimeOwnedHere(steerArgs.sessionId, "steer");
     assertChatNotMovedAway(steerArgs.sessionId, "steer");
     assertNoRerunInFlight(managedSessions.get(steerArgs.sessionId));
+    assertPlainPromptText(steerArgs);
     const expandedArgs = await materializePastedTextPrompt(await applyChatMentionExpansion(steerArgs));
     const {
       sessionId,
@@ -64161,6 +64212,8 @@ export function createAgentChatService(args: {
 
     const managed = ensureManagedSession(sessionId);
     assertContinuityDispatchAllowed(managed);
+    // After the last await above: the turn the caller named is still the one.
+    assertExpectedTurn(managed, expandedArgs.expectedTurnId);
     // The CTO thread has a steer queue cap of zero. Everything reaching it —
     // child reports, scheduled wakes, peer notes — is context that is only
     // useful now, so a delivery that would have been staged for the next turn
@@ -65396,6 +65449,9 @@ export function createAgentChatService(args: {
   ): Promise<AgentChatMessageSessionResult> => {
     assertChatRuntimeOwnedHere(sessionId, "message");
     assertChatNotMovedAway(sessionId, movedAwayPathForMessage(metadata));
+    // A guest's draft that the owner sends keeps its guest author: a plain
+    // prompt on every route below, not only the ones that check it themselves.
+    assertPlainPromptText({ text, metadata });
     const managed = ensureManagedSession(sessionId);
     const normalizedKind = normalizeMessageSessionKind(kind);
     const statusBefore = managed.session.status;
@@ -66573,6 +66629,11 @@ export function createAgentChatService(args: {
     if (waitingOnKeychain) settlePendingClaudeKeychainRetry(waitingOnKeychain);
     // Never throws; the sweep is a local scheduler write.
     if (internalOptions.cancelAutoResume) await autoResume.cancelForSession(args.sessionId, "stopped");
+    // A caller that named the turn it may stop: still that turn, after the await above.
+    if (args.expectedTurnId !== undefined) {
+      const named = managedSessions.get(args.sessionId);
+      if (named) assertExpectedTurn(named, args.expectedTurnId);
+    }
     const result = await interruptProviderTurn(
       { sessionId: args.sessionId, mode: stopModeProviderMode(mode) },
       internalOptions,
@@ -68526,6 +68587,9 @@ export function createAgentChatService(args: {
       interactionMode: liveSession?.interactionMode ?? persisted?.interactionMode ?? null,
         ...(liveSession?.claudePermissionMode || persisted?.claudePermissionMode
           ? { claudePermissionMode: liveSession?.claudePermissionMode ?? persisted?.claudePermissionMode }
+          : {}),
+        ...(liveSession?.claudePrePlanAccessMode || persisted?.claudePrePlanAccessMode
+          ? { claudePrePlanAccessMode: liveSession?.claudePrePlanAccessMode ?? persisted?.claudePrePlanAccessMode }
           : {}),
         ...(liveSession?.claudeOutputStyle || persisted?.claudeOutputStyle
           ? { claudeOutputStyle: liveSession?.claudeOutputStyle ?? persisted?.claudeOutputStyle }
@@ -77935,15 +77999,25 @@ export function createAgentChatService(args: {
     },
     isChatMovedAway: (sessionId: string) => Boolean(getCrossMachineMoveLock(sessionId, "draft_delivery")),
     attachmentsReady: (draft: DraftEntry) => draftAttachmentsReady(draft, fs.existsSync),
-    sendToChat: async ({ sessionId, text, attachments }: {
+    sendToChat: async ({ sessionId, text, attachments, author }: {
       sessionId: string;
       text: string;
       attachments: AgentChatFileRef[];
+      author: AdeMessageAuthor | null;
     }) => {
       // "auto" is the programmatic twin of the person pressing send: it joins
       // a live turn where the provider supports that, and starts a new turn
       // otherwise, so the message reads as theirs rather than as agent work.
-      await messageSession({ sessionId, text, kind: "auto", attachments });
+      // A guest's draft keeps its author, which makes it a plain prompt
+      // (`isPlainPromptMessage`) even when the owner sends it.
+      const guestAuthor = author?.kind === "guest" ? author : null;
+      await messageSession({
+        sessionId,
+        text,
+        kind: "auto",
+        attachments,
+        ...(guestAuthor ? { metadata: { author: guestAuthor } } : {}),
+      });
     },
     createChatAndSend: async ({
       laneId,
@@ -77954,6 +78028,7 @@ export function createAgentChatService(args: {
       modelId,
       permissionMode,
       thinking,
+      author,
     }: {
       laneId: string;
       text: string;
@@ -77963,7 +78038,13 @@ export function createAgentChatService(args: {
       modelId: string | null;
       permissionMode: string | null;
       thinking: string | null;
+      author: AdeMessageAuthor | null;
     }) => {
+      // A launch sends through the public path, which keeps no author, so a
+      // guest's text would lose its plain-prompt rule there.
+      if (author?.kind === "guest") {
+        throw new DraftDeliveryUnsupportedError("A draft that a guest wrote can go only to an existing chat.");
+      }
       const launches = args.getChatLaunchService?.() ?? null;
       if (!launches) {
         throw new DraftDeliveryUnsupportedError(
@@ -78237,7 +78318,16 @@ export function createAgentChatService(args: {
    * blocks. Owned by the mention service; the send and steer paths call it, and
    * the marker it stamps keeps a send→steer reroute from expanding twice.
    */
-  const applyChatMentionExpansion = chatMentionService.applyChatMentionExpansion;
+  /**
+   * `@chat:`, `@term:`, `@lane:` and `@mac:` chips expand into previews of
+   * other chats, terminals, lanes and machines. A guest's message is a plain
+   * prompt: its text reaches the model as written.
+   */
+  const applyChatMentionExpansion = async <T extends { text: string; displayText?: string; metadata?: { author?: unknown } | null }>(
+    mentionArgs: T,
+  ): Promise<T> => (
+    isPlainPromptMessage(mentionArgs.metadata) ? mentionArgs : await chatMentionService.applyChatMentionExpansion(mentionArgs)
+  );
 
   /**
    * What ADE itself would send a new lane chat of `provider` on this machine,

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   laneShareLocalDayKey,
   laneShareNextDayStart,
@@ -30,7 +31,8 @@ export const LANE_SHARE_RIGHTS_TABLE = "lane_share_rights";
  */
 export const LANE_SHARE_GUEST_ITEMS_TABLE = "lane_share_guest_items";
 
-export type LaneShareGuestItemKind = "draft" | "comment" | "steer" | "turn";
+/** `chat`: a chat the guest created, whose settings it may change. */
+export type LaneShareGuestItemKind = "draft" | "comment" | "steer" | "turn" | "chat";
 
 /** Per grant and kind, the oldest records past this many are dropped. */
 const MAX_ITEMS_PER_KIND = 200;
@@ -295,6 +297,43 @@ export function createLaneShareRightsStore(options: {
         `select item_id, session_id from ${LANE_SHARE_GUEST_ITEMS_TABLE} where grant_id = ? and kind = ? order by created_at desc`,
         [grantId, kind],
       ).map((item) => ({ itemId: item.item_id, sessionId: item.session_id }));
+    },
+
+    /**
+     * Holds one slot of `kind` for the guest of `grantId` while the item is
+     * made, or returns null when it already holds `max` (in the chat
+     * `sessionId` when `perSession`). One SQL statement counts and inserts,
+     * so two requests at once cannot both pass the cap. `settleItem` turns
+     * the hold into the real item or drops it.
+     */
+    holdItem(grantId: string, kind: LaneShareGuestItemKind, sessionId: string | null, max: number, perSession = false): string | null {
+      const holdId = `hold:${randomUUID()}`;
+      db.run(
+        `insert into ${LANE_SHARE_GUEST_ITEMS_TABLE} (grant_id, kind, item_id, session_id, created_at)
+         select ?, ?, ?, ?, ?
+         where (select count(*) from ${LANE_SHARE_GUEST_ITEMS_TABLE}
+                where grant_id = ? and kind = ?${perSession ? " and session_id is ?" : ""}) < ?`,
+        perSession
+          ? [grantId, kind, holdId, sessionId, now(), grantId, kind, sessionId, max]
+          : [grantId, kind, holdId, sessionId, now(), grantId, kind, max],
+      );
+      const held = db.get(
+        `select 1 as found from ${LANE_SHARE_GUEST_ITEMS_TABLE} where grant_id = ? and kind = ? and item_id = ?`,
+        [grantId, kind, holdId],
+      );
+      return held ? holdId : null;
+    },
+
+    /** The hold becomes the item `itemId`, or goes away when it is null (the item was not made). */
+    settleItem(grantId: string, kind: LaneShareGuestItemKind, holdId: string, itemId: string | null): void {
+      if (itemId) {
+        db.run(
+          `update ${LANE_SHARE_GUEST_ITEMS_TABLE} set item_id = ? where grant_id = ? and kind = ? and item_id = ?`,
+          [itemId, grantId, kind, holdId],
+        );
+        return;
+      }
+      db.run(`delete from ${LANE_SHARE_GUEST_ITEMS_TABLE} where grant_id = ? and kind = ? and item_id = ?`, [grantId, kind, holdId]);
     },
 
     removeItem(grantId: string, kind: LaneShareGuestItemKind, itemId: string): void {

@@ -255,6 +255,11 @@ export type GetFileDiffArgs = {
   mode: DiffMode;
   compareRef?: string;
   compareTo?: "worktree" | "parent";
+  /**
+   * Refuse a file git ignores, a file under `.ade/`, or a link to one. The
+   * lane-sharing host sets it for every guest read.
+   */
+  refuseIgnored?: boolean;
 };
 
 export type GetFilePatchArgs = GetFileDiffArgs;

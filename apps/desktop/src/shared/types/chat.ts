@@ -3431,6 +3431,8 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
+  /** The access mode a Claude chat in plan mode returns to when its plan is approved. */
+  claudePrePlanAccessMode?: Exclude<AgentChatClaudePermissionMode, "plan"> | null;
   claudeOutputStyle?: string | null;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
@@ -5596,6 +5598,14 @@ export type AgentChatSendArgs = {
   /** Compact as a separate turn before this message; false overrides Always for this send. */
   compactFirst?: boolean;
   sessionId: string;
+  /**
+   * The turn this message may go into: a turn id (that turn must be the one
+   * running), or null (no turn may be running; the message starts one). The
+   * service checks it right before it routes the message, so a turn that
+   * starts or ends after the caller looked cannot take the message. It only
+   * refuses more. The lane-sharing host sets it for a guest.
+   */
+  expectedTurnId?: string | null;
   text: string;
   displayText?: string;
   attachments?: AgentChatFileRef[];
@@ -5616,6 +5626,12 @@ export type AgentChatSendArgs = {
    * review the user has not sent.
    */
   includeThreadComments?: boolean;
+  /**
+   * Comments a lane-sharing guest wrote that go with this send too. A guest's
+   * comment never goes on its own: the owner names each one here, and the
+   * agent reads it as written by another person.
+   */
+  includeGuestCommentIds?: string[];
   /**
    * Set once per send attempt by a client talking to another machine. A brain
    * that froze or restarted mid-send may have already taken this message, so
@@ -5844,6 +5860,14 @@ export function providerSupportsLiveRedirect(provider: string): boolean {
 
 export type AgentChatSteerArgs = {
   sessionId: string;
+  /**
+   * The turn this message may go into: a turn id (that turn must be the one
+   * running), or null (no turn may be running; the message starts one). The
+   * service checks it right before it routes the message, so a turn that
+   * starts or ends after the caller looked cannot take the message. It only
+   * refuses more. The lane-sharing host sets it for a guest.
+   */
+  expectedTurnId?: string | null;
   text: string;
   displayText?: string;
   attachments?: AgentChatFileRef[];
@@ -5873,6 +5897,8 @@ export type AgentChatSteerArgs = {
   sentByUser?: boolean;
   /** See `AgentChatSendArgs.includeThreadComments`. */
   includeThreadComments?: boolean;
+  /** See `AgentChatSendArgs.includeGuestCommentIds`. */
+  includeGuestCommentIds?: string[];
 };
 
 export type AgentChatSteerResult = {
@@ -6211,6 +6237,14 @@ export type AgentChatStopMode = CanonicalAgentChatStopMode;
 
 export type AgentChatInterruptArgs = {
   sessionId: string;
+  /**
+   * The turn this message may go into: a turn id (that turn must be the one
+   * running), or null (no turn may be running; the message starts one). The
+   * service checks it right before it routes the message, so a turn that
+   * starts or ends after the caller looked cannot take the message. It only
+   * refuses more. The lane-sharing host sets it for a guest.
+   */
+  expectedTurnId?: string | null;
   /** Defaults to stop_and_clear for backward-compatible Stop-means-stop behavior. */
   mode?: AgentChatStopMode;
 };

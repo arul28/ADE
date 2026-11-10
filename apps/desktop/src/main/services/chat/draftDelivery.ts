@@ -1,4 +1,4 @@
-import type { AgentChatFileRef, DraftEntry } from "../../../shared/types/chat";
+import type { AdeMessageAuthor, AgentChatFileRef, DraftEntry } from "../../../shared/types/chat";
 import { isMovedAwayChatError } from "../../../shared/crossMachineMoveLock";
 import type { Logger } from "../logging/logger";
 
@@ -63,6 +63,8 @@ export type DraftDeliveryDeps = {
     sessionId: string;
     text: string;
     attachments: AgentChatFileRef[];
+    /** The draft's author. A guest's draft is sent as a plain prompt, with the author kept. */
+    author: AdeMessageAuthor | null;
   }) => Promise<void>;
   /** Create the chat the schedule asked for, then deliver into it. */
   createChatAndSend: (args: {
@@ -75,6 +77,7 @@ export type DraftDeliveryDeps = {
     modelId: string | null;
     permissionMode: string | null;
     thinking: string | null;
+    author: AdeMessageAuthor | null;
   }) => Promise<void>;
   /**
    * False when an image this draft carries is not readable on this machine
@@ -174,6 +177,7 @@ export async function deliverDraft(
         modelId: draft.modelId,
         permissionMode: draft.permissionMode ?? null,
         thinking: draft.thinking ?? null,
+        author: draft.author ?? null,
       });
     } else {
       const sessionId = targetSessionId;
@@ -190,7 +194,7 @@ export async function deliverDraft(
           moveAwayHeldAt: new Date(nowMs).toISOString(),
         });
       }
-      await deps.sendToChat({ sessionId, text: draft.text, attachments });
+      await deps.sendToChat({ sessionId, text: draft.text, attachments, author: draft.author ?? null });
     }
     return { status: "sent", firedAt: new Date(nowMs).toISOString() };
   } catch (error) {

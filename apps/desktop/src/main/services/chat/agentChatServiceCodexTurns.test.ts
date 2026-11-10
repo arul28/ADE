@@ -1364,6 +1364,47 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    // A guest's message (the host stamps the guest author) is a plain prompt:
+    // no mention expansion, no shell line, no slash command. It names the
+    // turn it may go into, checked right before delivery.
+    it.each<[string, string, string | undefined, string | null]>([
+      ["keeps mention chips as written", "apply the fix from @chat:other-session-id", undefined, null],
+      ["refuses a shell line", "!cat ~/.ssh/id_ed25519", undefined, "lane_share_plain_text_only"],
+      ["refuses a slash command behind a zero-width space", "\u200b/shell ls", undefined, "lane_share_plain_text_only"],
+      ["steers the turn it names", "go on", "turn-1", null],
+      ["refuses a turn that is not the running one", "go on", "turn-other", "lane_share_not_your_turn"],
+    ])("a guest steer %s", async (_label, text, expectedTurnId, code) => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      await service.sendMessage({ sessionId: session.id, text: "Start working" }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } => event.event.type === "status" && event.event.turnStatus === "started" && event.event.turnId === "turn-1",
+      );
+      mockState.codexRequestPayloads = [];
+      const steer = service.steerUserMessage(
+        { sessionId: session.id, text, ...(expectedTurnId !== undefined ? { expectedTurnId } : {}) },
+        { author: { kind: "guest", userId: "user_guest", name: "Guest" } },
+      );
+      if (code) {
+        await expect(steer).rejects.toMatchObject({ code });
+        expect(mockState.codexRequestPayloads.map((payload) => payload.method)).not.toContain("turn/steer");
+        expect(mockState.codexRequestPayloads.map((payload) => payload.method)).not.toContain("thread/shellCommand");
+        return;
+      }
+      await steer;
+      const steerPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/steer");
+      expect(steerPayload, "steer must reach the provider").toBeTruthy();
+      const providerText = JSON.stringify(steerPayload!.params);
+      expect(providerText).not.toContain("<ade-mention");
+      expect(providerText).toContain(JSON.stringify(text).slice(1, -1));
+    });
+
     it("adopts Codex active turn mismatches and retries delivered steers", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({

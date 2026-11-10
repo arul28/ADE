@@ -134,6 +134,11 @@ export type FileContent = {
 export type FilesReadFileRangeArgs = {
   workspaceId: string;
   path: string;
+  /**
+   * Refuse a file git ignores, a file under `.ade/`, or a link to one. The
+   * lane-sharing host sets it for every guest read.
+   */
+  refuseIgnored?: boolean;
   /** Byte offset to start reading from. */
   offset: number;
   /** Bytes to read, clamped to [1, 512KB]. Defaults to 256KB. */
@@ -179,6 +184,11 @@ export type FilesGitBlameResult = {
 export type FilesReadFileArgs = {
   workspaceId: string;
   path: string; // relative to workspace root
+  /**
+   * Refuse a file git ignores, a file under `.ade/`, or a link to one. The
+   * lane-sharing host sets it for every guest read.
+   */
+  refuseIgnored?: boolean;
 };
 
 export type FilesOpenExternalPathArgs = {

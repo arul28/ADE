@@ -64,9 +64,16 @@ export type LaneShareRights = {
     historyBeforeShare: boolean;
   };
   speak: {
-    /** Comment on parts of an agent reply. */
+    /**
+     * Comment on parts of an agent reply. A guest's comment never goes with
+     * the owner's next send on its own: the owner includes it by name.
+     */
     comment: boolean;
-    /** Write drafts. Only the owner sends one, and it then counts for the owner. */
+    /**
+     * Write drafts. Only the owner sends one, and it then counts for the
+     * owner. It goes as a plain prompt with the guest as its author, and only
+     * to an existing chat.
+     */
     drafts: boolean;
     /** Send messages that start or queue a turn. */
     send: boolean;
@@ -81,11 +88,16 @@ export type LaneShareRights = {
   run: {
     startChats: boolean;
     startCliSessions: boolean;
-    /** Typing into a CLI session (never a shell). High risk. */
+    /**
+     * Typing into a CLI session (never a shell). High risk: it gives the same
+     * reach as a shell on this computer. Each submitted line counts as a
+     * message. Refused when the host runs Windows.
+     */
     typeInCliSessions: boolean;
     /**
-     * The model ids a guest may use. Empty: only the session's current model,
-     * with no change; a new chat or CLI session then cannot be started.
+     * The model ids a guest may use, which also name the provider of a new
+     * chat. Empty: only the session's current model, with no change; a new
+     * chat or CLI session then cannot be started (no provider default).
      */
     models: string[];
     /** Reasoning levels a guest may pick. Empty: the session's current level, no change. */
@@ -301,7 +313,7 @@ export function laneShareRiskLevel(rights: LaneShareRights): { level: LaneShareR
   const high: string[] = [];
   const medium: string[] = [];
   if (rights.run.typeInCliSessions) {
-    high.push("Can type into CLI sessions on this computer. A CLI agent can run any command.");
+    high.push("Typing into a CLI session gives the same reach as a shell on this computer.");
   }
   if (rights.run.startCliSessions) high.push("Can start CLI sessions on this computer.");
   if (rights.decide.approvals) high.push("Can approve the agent's actions, such as commands and file edits.");

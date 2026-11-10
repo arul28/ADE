@@ -804,7 +804,19 @@ export type SyncRemoteCommandExecutionContext = {
    * The chat shows the guest's own text.
    */
   agentNote?: string | null;
+  /**
+   * Set only by the host, for a lane-sharing guest: the turn the guest's
+   * `chat.send`, `chat.steer` or `chat.interrupt` may act on (a turn id), or
+   * null for "no turn may be running". The chat service checks it right
+   * before it acts (`expectedTurnId`). Absent: no check.
+   */
+  expectedTurnId?: string | null;
 };
+
+/** The turn a host-set `expectedTurnId` names, added to a guest's args. */
+function withExpectedTurn<T extends object>(turnArgs: T, context: SyncRemoteCommandExecutionContext): T {
+  return context.expectedTurnId === undefined ? turnArgs : { ...turnArgs, expectedTurnId: context.expectedTurnId };
+}
 
 /** The text a guest's turn gives the agent, and the text the chat shows. */
 function withGuestAgentNote<T extends { text: string; displayText?: string }>(
@@ -3394,6 +3406,8 @@ function parseGetFileDiffArgs(value: Record<string, unknown>): GetFileDiffArgs {
     mode: requireString(value.mode, "git.getFile requires mode.") as GetFileDiffArgs["mode"],
     ...(asTrimmedString(value.compareRef) ? { compareRef: asTrimmedString(value.compareRef)! } : {}),
     ...(asTrimmedString(value.compareTo) ? { compareTo: value.compareTo as GetFileDiffArgs["compareTo"] } : {}),
+    // Only refuses more: a caller that sets it reads less.
+    ...(value.refuseIgnored === true ? { refuseIgnored: true } : {}),
   };
 }
 
@@ -3404,6 +3418,8 @@ function parseGetFilePatchArgs(value: Record<string, unknown>): GetFileDiffArgs 
     mode: requireString(value.mode, "git.getFilePatch requires mode.") as GetFileDiffArgs["mode"],
     ...(asTrimmedString(value.compareRef) ? { compareRef: asTrimmedString(value.compareRef)! } : {}),
     ...(asTrimmedString(value.compareTo) ? { compareTo: value.compareTo as GetFileDiffArgs["compareTo"] } : {}),
+    // Only refuses more: a caller that sets it reads less.
+    ...(value.refuseIgnored === true ? { refuseIgnored: true } : {}),
   };
 }
 
@@ -5563,7 +5579,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.completeLaunchClient", { viewerAllowed: true }, async (payload) =>
     requireChatLaunchService().completeClient(parseChatLaunchCompleteClientArgs(payload)));
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload, context) => {
-    const sendArgs = withGuestAgentNote(parseAgentChatSendArgs(payload), context);
+    const sendArgs = withExpectedTurn(withGuestAgentNote(parseAgentChatSendArgs(payload), context), context);
     // A phone or web message: no desktop is the one being talked from now.
     noteSessionInputOrigin(sendArgs.sessionId, null);
     const result = await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(
@@ -5572,8 +5588,9 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     );
     return isRecord(result) ? { ...result, ok: true } : { ok: true };
   });
-  register("chat.interrupt", { viewerAllowed: true, queueable: false }, async (payload) => {
-    const result = await requireService(args.agentChatService, "Agent chat service not available.").interrupt(parseAgentChatInterruptArgs(payload));
+  register("chat.interrupt", { viewerAllowed: true, queueable: false }, async (payload, context) => {
+    const result = await requireService(args.agentChatService, "Agent chat service not available.")
+      .interrupt(withExpectedTurn(parseAgentChatInterruptArgs(payload), context));
     return { ...result, ok: true };
   });
   register("chat.interruptWithQueueMode", { viewerAllowed: true, queueable: false }, async (payload) => {
@@ -5610,7 +5627,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       .resolveUnprocessedMessage(parseAgentChatResolveUnprocessedMessageArgs(payload)));
   register("chat.steer", { viewerAllowed: true, queueable: false }, async (payload, context) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
-    const steerArgs = withGuestAgentNote(parseAgentChatSteerArgs(payload), context);
+    const steerArgs = withExpectedTurn(withGuestAgentNote(parseAgentChatSteerArgs(payload), context), context);
     const result = context.author
       ? await agentChatService.steerUserMessage(steerArgs, { author: context.author })
       : await agentChatService.steerUserMessage(steerArgs);
@@ -7129,6 +7146,7 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
       mode: parsed.mode,
       compareRef: parsed.compareRef,
       compareTo: parsed.compareTo,
+      ...(parsed.refuseIgnored ? { refuseIgnored: true } : {}),
     });
   });
   register("git.getFilePatch", { viewerAllowed: true }, async (payload) => {
@@ -7140,6 +7158,7 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
       mode: parsed.mode,
       compareRef: parsed.compareRef,
       compareTo: parsed.compareTo,
+      ...(parsed.refuseIgnored ? { refuseIgnored: true } : {}),
     });
   });
   register("git.getUserIdentity", { viewerAllowed: true }, async (payload) =>

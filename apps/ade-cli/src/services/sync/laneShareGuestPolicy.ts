@@ -4,6 +4,7 @@ import {
   type LaneShareRights,
 } from "../../../../desktop/src/shared/laneShareRights";
 import { isChatToolType } from "../../../../desktop/src/shared/sessionSpawnNesting";
+import { isUserOnlyConsentCard } from "../../../../desktop/src/shared/types/macDesktop";
 import { isTrackedAgentCliToolType, type TerminalToolType } from "../../../../desktop/src/shared/types/sessions";
 
 /**
@@ -338,9 +339,16 @@ export const LANE_SHARE_GUEST_OUTBOUND: ReadonlyMap<string, "always" | "session"
   ["terminal_input_ack", "session"],
 ] as const);
 
-/** A granted lane whose end, checked on every use, has not passed. */
+/**
+ * A granted lane whose end, checked on every use, has not passed: the grant's
+ * end from the directory and the end date in the host's rights. Every scope
+ * check, every outgoing session payload and every file request goes through
+ * here, so an end date that passes stops all of them at once.
+ */
 export function laneShareGuestHasLane(role: LaneShareGuestRole, laneId: string | null | undefined, nowMs = Date.now()): boolean {
   if (!laneId) return false;
+  // The host's own end date (`rights.limits.endsAt`), not only the directory's.
+  if (role.rights.limits.endsAt != null && nowMs >= role.rights.limits.endsAt) return false;
   return role.grants.some((grant) => grant.laneId === laneId && (grant.endsAtMs == null || grant.endsAtMs > nowMs));
 }
 
@@ -444,10 +452,14 @@ function checkToolArgs(action: string, kept: Record<string, unknown>): string | 
   if (action === "git.getFile" || action === "git.getFilePatch" || action === "git.getFileHistory") {
     const path = laneShareSafeRelativePath(kept.path);
     if (!path) return "That path is outside the shared lane.";
+    if (laneShareIsAdeStatePath(path)) return "That file is not shared on this lane.";
     kept.path = path;
   }
-  if ((action === "git.getFile" || action === "git.getFilePatch") && !GUEST_DIFF_MODES.has(String(kept.mode))) {
-    return "That comparison is not available on a shared lane.";
+  if (action === "git.getFile" || action === "git.getFilePatch") {
+    if (!GUEST_DIFF_MODES.has(String(kept.mode))) return "That comparison is not available on a shared lane.";
+    // An unstaged read opens the working-tree file: the diff service asks git
+    // on this host and refuses an ignored file (`.env`) or a link to one.
+    kept.refuseIgnored = true;
   }
   return null;
 }
@@ -516,32 +528,182 @@ export function laneShareCheckLocks(
     ?? check(requested.permissionMode, rights.run.permissionModes, current?.permissionMode, "permission mode", "lane_share_permission_locked");
 }
 
+/** The session fields that decide the mode a turn really runs in. */
+export type LaneShareSessionModes = {
+  provider?: string | null;
+  modelId?: string | null;
+  permissionMode?: string | null;
+  interactionMode?: string | null;
+  claudePermissionMode?: string | null;
+  claudePrePlanAccessMode?: string | null;
+  codexApprovalPolicy?: string | null;
+  codexSandbox?: string | null;
+  codexConfigSource?: string | null;
+  opencodePermissionMode?: string | null;
+  droidPermissionMode?: string | null;
+  copilotPermissionMode?: string | null;
+  musePermissionMode?: string | null;
+  cursorModeId?: string | null;
+};
+
+const CLAUDE_ACCESS_TO_MODE: Record<string, string> = {
+  default: "default",
+  auto: "auto",
+  acceptEdits: "edit",
+  bypassPermissions: "full-auto",
+};
+
+/**
+ * Every permission mode a turn in this session can run in, read from the
+ * provider's own settings, not the legacy `permissionMode` label (a stored
+ * field that can lag the native one). The mapping is the chat service's own
+ * (`syncLegacyPermissionMode`). A chat in plan mode gives two: plan, and the
+ * mode an approved plan returns to (for Claude the saved pre-plan mode,
+ * `default` when none is saved). `null`: the native settings name no mode the
+ * lock can hold (an unmapped Codex pair, a Droid tier with no ADE word), which
+ * the lock refuses.
+ */
+export function laneShareEffectiveModes(session: LaneShareSessionModes): string[] | null {
+  const legacy = session.permissionMode ?? "default";
+  const plan = session.interactionMode === "plan";
+  const withPlan = (mode: string | null | undefined): string[] | null => {
+    if (!mode) return null;
+    return plan && mode !== "plan" ? ["plan", mode] : [mode];
+  };
+  switch (session.provider) {
+    case "claude": {
+      if (plan || session.claudePermissionMode === "plan") {
+        const after = session.claudePrePlanAccessMode ? ownMode(CLAUDE_ACCESS_TO_MODE, session.claudePrePlanAccessMode) : "default";
+        return after ? ["plan", after] : null;
+      }
+      const mode = session.claudePermissionMode ? ownMode(CLAUDE_ACCESS_TO_MODE, session.claudePermissionMode) : legacy;
+      return mode ? [mode] : null;
+    }
+    case "codex": {
+      if (!session.codexApprovalPolicy && !session.codexSandbox && !session.codexConfigSource) return [legacy];
+      if (session.codexConfigSource === "config-toml") return ["config-toml"];
+      const approval = session.codexApprovalPolicy ?? "";
+      const sandbox = session.codexSandbox ?? "";
+      if (approval === "never" && sandbox === "danger-full-access") return ["full-auto"];
+      if (approval === "untrusted" && sandbox === "workspace-write") return ["edit"];
+      if ((approval === "on-request" || approval === "on-failure") && sandbox === "workspace-write") return ["default"];
+      if ((approval === "on-request" || approval === "untrusted") && sandbox === "read-only") return ["plan"];
+      return null;
+    }
+    case "droid":
+    case "factory": {
+      if (!session.droidPermissionMode) return withPlan(session.opencodePermissionMode ?? legacy);
+      return withPlan(ownMode(DROID_TO_MODE, session.droidPermissionMode));
+    }
+    case "muse":
+      return withPlan(session.musePermissionMode ? ownMode(MUSE_TO_MODE, session.musePermissionMode) : legacy);
+    case "copilot":
+      return withPlan(session.copilotPermissionMode ? ownMode(COPILOT_TO_MODE, session.copilotPermissionMode) : legacy);
+    case "cursor":
+      if (session.cursorModeId === undefined) return withPlan(legacy);
+      return withPlan(session.cursorModeId === null ? "default" : ownMode(CURSOR_TO_MODE, session.cursorModeId));
+    case "pi":
+      return withPlan(legacy);
+    default:
+      // OpenCode and providers that speak its modes.
+      return withPlan(session.opencodePermissionMode ? ownMode(OPENCODE_TO_MODE, session.opencodePermissionMode) : legacy);
+  }
+}
+
+/** The ADE mode a native value names, or null (own keys only). */
+function ownMode(map: Readonly<Record<string, string>>, value: string): string | null {
+  return Object.prototype.hasOwnProperty.call(map, value) ? map[value]! : null;
+}
+
+const DROID_TO_MODE: Record<string, string> = { "read-only": "plan", "auto-low": "edit", "auto-medium": "default", "auto-high": "full-auto" };
+const MUSE_TO_MODE: Record<string, string> = { denyUnmatched: "plan", promptUnmatched: "edit", onRequest: "default", allowAll: "full-auto" };
+const COPILOT_TO_MODE: Record<string, string> = { plan: "plan", ask: "default", assisted: "edit", "auto-edit": "edit", "full-auto": "full-auto" };
+const CURSOR_TO_MODE: Record<string, string> = { "full-auto": "full-auto", plan: "plan", ask: "edit", agent: "default" };
+const OPENCODE_TO_MODE: Record<string, string> = { plan: "plan", edit: "edit", "full-auto": "full-auto", "config-toml": "config-toml" };
+
 /**
  * Whether a guest turn may run in a session as it is now: with a non-empty
- * lock, the session's current model and permission mode must be in it. A
- * guest never sends into a chat the owner set to a mode it did not allow.
+ * lock, the session's current model and every mode the turn can run in
+ * (`laneShareEffectiveModes`) must be in it. A guest never sends into a chat
+ * the owner set to a mode it did not allow, and never into a plan that would
+ * return to such a mode when it is approved.
  */
 export function laneShareSessionWithinLocks(
   rights: LaneShareRights,
-  session: { modelId?: string | null; permissionMode?: string | null },
+  session: LaneShareSessionModes,
 ): LaneShareGuestRefusal | null {
   if (rights.run.models.length > 0 && !rights.run.models.includes(String(session.modelId ?? ""))) {
     return { code: "lane_share_model_locked", message: "This chat uses a model the owner did not allow on this shared lane." };
   }
-  if (rights.run.permissionModes.length > 0 && !(rights.run.permissionModes as string[]).includes(String(session.permissionMode ?? "default"))) {
-    return {
-      code: "lane_share_permission_locked",
-      message: "This chat runs in a permission mode the owner did not allow on this shared lane.",
-    };
+  if (rights.run.permissionModes.length > 0) {
+    const allowed = rights.run.permissionModes as readonly string[];
+    const modes = laneShareEffectiveModes(session);
+    if (!modes || !modes.every((mode) => allowed.includes(mode))) {
+      return {
+        code: "lane_share_permission_locked",
+        message: "This chat runs in a permission mode the owner did not allow on this shared lane.",
+      };
+    }
   }
   return null;
 }
 
-/** The right that answers a pending card of `kind`. Unknown kinds need both Decide rights. */
+/** What a guest sees of a card only the owner may answer. */
+export const LANE_SHARE_OWNER_ONLY_CARD_TEXT = "Waiting for the owner. Only the owner can answer this.";
+
+const OWNER_ONLY_CARD_KEPT_KEYS = ["requestId", "itemId", "kind", "turnId", "source", "blocking", "createdAt"] as const;
+
+function ownerOnlyCardRequest(request: Record<string, unknown>): Record<string, unknown> | null {
+  const metadata = request.providerMetadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  if (!isUserOnlyConsentCard(metadata as Record<string, unknown>)) return null;
+  const kept: Record<string, unknown> = {};
+  for (const key of OWNER_ONLY_CARD_KEPT_KEYS) if (key in request) kept[key] = request[key];
+  return {
+    ...kept,
+    title: LANE_SHARE_OWNER_ONLY_CARD_TEXT,
+    description: LANE_SHARE_OWNER_ONLY_CARD_TEXT,
+    questions: [],
+    allowsFreeform: false,
+    providerMetadata: { laneShareOwnerOnly: true },
+  };
+}
+
+/**
+ * A payload for a guest with each card only the owner may answer
+ * (`isUserOnlyConsentCard`: a secret, an MCP server, an integration
+ * connect, the Mac real-input lease, a shared-desktop consent, an MCP App
+ * call) reduced to its ids and a "waiting for the owner" line. The card's
+ * text, questions and metadata can name a secret, a command line or an
+ * account, and a guest can never answer it anyway. Covers the card itself
+ * (pending lists) and the `approval_request` event that carries it.
+ */
+export function laneShareScrubOwnerOnlyCards<T>(value: T, depth = 0): T {
+  if (depth > 12 || !value || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((entry) => laneShareScrubOwnerOnlyCards(entry, depth + 1)) as T;
+  const record = value as Record<string, unknown>;
+  const card = ownerOnlyCardRequest(record);
+  if (card) return card as T;
+  if (record.type === "approval_request" && record.detail && typeof record.detail === "object") {
+    const request = (record.detail as Record<string, unknown>).request;
+    const scrubbed = request && typeof request === "object" ? ownerOnlyCardRequest(request as Record<string, unknown>) : null;
+    if (scrubbed) return { ...record, description: LANE_SHARE_OWNER_ONLY_CARD_TEXT, detail: { request: scrubbed } } as T;
+  }
+  let changed = false;
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    const next = laneShareScrubOwnerOnlyCards(entry, depth + 1);
+    if (next !== entry) changed = true;
+    out[key] = next;
+  }
+  return (changed ? out : value) as T;
+}
+
+/** The right that answers a pending card of `kind`. A kind not listed here is refused under any rights. */
 export function laneShareInputKindRight(rights: LaneShareRights, kind: string | null | undefined): boolean {
   if (kind === "question" || kind === "structured_question") return rights.decide.questions;
   if (kind === "approval" || kind === "permissions" || kind === "plan_approval") return rights.decide.approvals;
-  return rights.decide.approvals && rights.decide.questions;
+  return false;
 }
 
 /**
@@ -619,6 +781,50 @@ function scrubModels(value: unknown, allowed: ReadonlySet<string>, modelKey: boo
 export function laneShareHideModels<T>(value: T, rights: LaneShareRights): T {
   if (!rights.privacy.hideModels) return value;
   return scrubModels(value, new Set(rights.run.models), false, 0) as T;
+}
+
+/**
+ * Keys whose value names or identifies a computer: device ids and names,
+ * machine keys, names and platforms (also with a prefix, such as
+ * `targetMachineName` or `hostDeviceId`), host names and site ids.
+ */
+const MACHINE_VALUE_KEY = /^(?:deviceId|deviceName|machineKey|machineName|machinePlatform|machineLabel|hostname|hostName|siteId)$|[a-z](?:DeviceId|DeviceName|MachineKey|MachineName|MachinePlatform|MachineLabel|HostName|Hostname|SiteId)$/;
+
+function scrubMachines(value: unknown, depth: number): unknown {
+  if (!value || typeof value !== "object") return value;
+  if (depth >= MAX_SCRUB_DEPTH) return null;
+  if (Array.isArray(value)) {
+    let copy: unknown[] | null = null;
+    for (let index = 0; index < value.length; index += 1) {
+      const next = scrubMachines(value[index], depth + 1);
+      if (next !== value[index]) {
+        copy ??= value.slice();
+        copy[index] = next;
+      }
+    }
+    return copy ?? value;
+  }
+  let copy: Record<string, unknown> | null = null;
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const next = MACHINE_VALUE_KEY.test(key) ? (entry == null ? entry : null) : scrubMachines(entry, depth + 1);
+    if (next !== entry) {
+      copy ??= { ...(value as Record<string, unknown>) };
+      copy[key] = next;
+    }
+  }
+  return copy ?? value;
+}
+
+/**
+ * With `privacy.hideMachines` on, everything the host sends a guest (except
+ * the hello reply, which the host builds with an id made for the share)
+ * goes through this: every field that names or identifies a computer
+ * (`MACHINE_VALUE_KEY`) becomes null. Unchanged parts keep their identity.
+ * Free text (an agent reply, terminal output) is not changed.
+ */
+export function laneShareHideMachines<T>(value: T, rights: LaneShareRights): T {
+  if (!rights.privacy.hideMachines) return value;
+  return scrubMachines(value, 0) as T;
 }
 
 /**
@@ -712,6 +918,84 @@ export function filterLaneShareHistory(value: unknown, cutoffMs: number | null):
     if ("startOffset" in out) out.startOffset = 0;
   }
   return out;
+}
+
+/** Text fields of a session or chat row that repeat its history (previews, summaries, goals). */
+const HISTORY_TEXT_KEYS = [
+  "lastOutputPreview",
+  "lastMessagePreview",
+  "lastUserMessagePreview",
+  "lastAssistantMessagePreview",
+  "preview",
+  "summary",
+  "summaryText",
+  "goal",
+  "excerpt",
+  "finalSummary",
+  "statusNote",
+  "attentionMessage",
+  "codexGoal",
+  "claudeGoal",
+] as const;
+
+function rowStartedMs(row: unknown): number | null {
+  return timestampMs(rowField(row, "startedAt"))
+    ?? timestampMs(rowField(row, "startTimestamp"))
+    ?? timestampMs(rowField(row, "createdAt"));
+}
+
+/** A row that began before the cutoff (or has no time) loses its history text. */
+function withoutHistoryText(row: unknown, cutoffMs: number): unknown {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return row;
+  const started = rowStartedMs(row);
+  if (started != null && started >= cutoffMs) return row;
+  const out: Record<string, unknown> = { ...(row as Record<string, unknown>) };
+  let changed = false;
+  for (const key of HISTORY_TEXT_KEYS) {
+    if (key in out) {
+      delete out[key];
+      changed = true;
+    }
+  }
+  return changed ? out : row;
+}
+
+function mapRows(value: unknown, keys: readonly string[], map: (rows: unknown[]) => unknown[]): unknown {
+  if (Array.isArray(value)) return map(value);
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  for (const key of keys) {
+    if (Array.isArray(record[key])) return { ...record, [key]: map(record[key] as unknown[]) };
+  }
+  return value;
+}
+
+/**
+ * The history filter for answers that are not event lists: thread comments
+ * written before the cutoff go (their excerpts quote the history);
+ * subagents started before it go; session and chat rows that began before
+ * it keep their ids and state but lose previews, summaries and goals.
+ */
+export function filterLaneShareActionHistory(action: string, value: unknown, cutoffMs: number | null): unknown {
+  if (cutoffMs == null) return value;
+  const after = (row: unknown) => {
+    const at = rowStartedMs(row);
+    return at != null && at >= cutoffMs;
+  };
+  switch (action) {
+    case "chat.listThreadComments":
+      return mapRows(value, ["comments", "items"], (rows) => rows.filter(after));
+    case "chat.listSubagents":
+      return mapRows(value, ["subagents", "items"], (rows) => rows.filter(after));
+    case "work.listSessions":
+    case "chat.listSessions":
+      return mapRows(value, ["sessions", "items"], (rows) => rows.map((row) => withoutHistoryText(row, cutoffMs)));
+    case "work.getSession":
+    case "chat.getSummary":
+      return withoutHistoryText(value, cutoffMs);
+    default:
+      return value;
+  }
 }
 
 /**
@@ -823,12 +1107,43 @@ export function laneShareGuestFileRequest(
     if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
     if (key === "path" || key === "parentPath") {
       const safe = laneShareSafeRelativePath(input[key], { allowEmpty: key === "parentPath" });
-      if (safe == null) return null;
+      if (safe == null || laneShareIsAdeStatePath(safe)) return null;
       args[key] = safe;
     } else {
       args[key] = input[key];
     }
   }
-  if ((action === "readFile" || action === "readFileRange") && typeof args.path !== "string") return null;
+  if (action === "readFile" || action === "readFileRange") {
+    if (typeof args.path !== "string") return null;
+    // The file service asks git on this host and refuses ignored files (`.env`).
+    args.refuseIgnored = true;
+  }
   return { action, args };
+}
+
+/** A path inside `.ade/`: ADE's own state on this computer, never shared. */
+export function laneShareIsAdeStatePath(relPath: string): boolean {
+  return relPath.replace(/\\/g, "/").split("/").find((segment) => segment !== "" && segment !== ".")?.toLowerCase() === ".ade";
+}
+
+const FILE_ROW_PATH_KEYS = ["path", "relPath", "relativePath"] as const;
+
+/**
+ * A file reply for a guest without rows inside `.ade/` (tree nodes, quick
+ * open items, search matches). The listing already hides what git ignores.
+ */
+export function laneShareScrubFileResponse<T>(value: T, depth = 0): T {
+  if (depth > 12 || !value || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    return value
+      .filter((row) => {
+        if (!row || typeof row !== "object") return true;
+        const record = row as Record<string, unknown>;
+        return !FILE_ROW_PATH_KEYS.some((key) => typeof record[key] === "string" && laneShareIsAdeStatePath(record[key] as string));
+      })
+      .map((row) => laneShareScrubFileResponse(row, depth + 1)) as T;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) out[key] = laneShareScrubFileResponse(entry, depth + 1);
+  return out as T;
 }

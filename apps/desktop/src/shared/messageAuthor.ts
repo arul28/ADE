@@ -48,3 +48,41 @@ export function withHostMessageAuthor<T extends { metadata?: Record<string, unkn
     metadata: Object.keys(nextMetadata).length > 0 ? nextMetadata : (metadata == null ? metadata : null),
   };
 }
+
+/**
+ * The refusal code for a guest message that starts with a command character.
+ * A guest's text is a plain prompt: the host interprets none of it.
+ */
+export const LANE_SHARE_PLAIN_TEXT_ONLY = "lane_share_plain_text_only" as const;
+
+export const LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE =
+  "On a shared lane, a message cannot start with / or !. Start it with a word.";
+
+/** Characters that ADE or a provider reads as a command at the start of a message. */
+const PROMPT_COMMAND_CHARACTERS = ["/", "!"] as const;
+
+/**
+ * The command character `text` starts with, or null. Leading white space and
+ * invisible format characters are skipped, and the text is NFKC normalized
+ * first, so a full-width or zero-width disguise reads as the plain form. Each
+ * parser in the chat service (slash commands of every provider, `!` shell
+ * drafts, `/side`, `/memory`, `/goal`, Muse skills) starts its match at the
+ * first visible character, so this finds every text they would interpret.
+ * `extra` adds characters for a surface that reads more of them (a CLI TUI).
+ */
+export function leadingPromptCommandCharacter(text: string, extra: readonly string[] = []): string | null {
+  const visible = text.normalize("NFKC").replace(/^[\s\p{Cf}]+/u, "");
+  const first = visible.charAt(0);
+  if (!first) return null;
+  return (PROMPT_COMMAND_CHARACTERS as readonly string[]).includes(first) || extra.includes(first) ? first : null;
+}
+
+/**
+ * Whether a message is a plain prompt: written by a guest, so the host runs
+ * no command, slash command, shell draft or mention expansion on its text.
+ * The author is set only by the host (`withHostMessageAuthor`), never by a
+ * caller, so a client cannot turn this off.
+ */
+export function isPlainPromptMessage(metadata: { author?: unknown } | null | undefined): boolean {
+  return isGuestAuthored(metadata?.author);
+}

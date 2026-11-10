@@ -252,10 +252,16 @@ export function createLaneShareHostService(options: {
       for (const grant of grants) {
         const grantId = grant.id as string;
         const state = typeof grant.state === "string" ? grant.state : "unknown";
-        const record = options.store.get(grantId);
+        let record = options.store.get(grantId);
         // A final grant's rights and records go (kept until the grant is final).
         if (record && state !== "pending" && state !== "active") {
           options.store.delete(grantId);
+        }
+        // Rights stored for another lane than the directory's grant are not
+        // this share's: they go, and the share needs rights again.
+        if (record && typeof grant.laneId === "string" && record.laneId !== grant.laneId) {
+          options.store.deleteRights(grantId);
+          record = null;
         }
         const live = state === "pending" || state === "active";
         shares.push({
@@ -285,8 +291,12 @@ export function createLaneShareHostService(options: {
      */
     async updateRights(args: { grantId: unknown; rights: unknown; endsAt?: unknown; confirmHighRisk?: unknown }) {
       const grantId = cleanGrantId(args.grantId);
-      const { rights, risk } = checkedRights(args.rights, args.confirmHighRisk);
+      const { rights: asked, risk } = checkedRights(args.rights, args.confirmHighRisk);
       const endsAt = cleanEndsAt(args.endsAt, now());
+      // The end date is kept in the local rights too, before the directory
+      // write: the host enforces it, so a failed write cannot leave an old,
+      // later end in force here.
+      const rights = endsAt !== undefined ? { ...asked, limits: { ...asked.limits, endsAt } } : asked;
       let record = options.store.get(grantId) ? options.store.updateRights(grantId, rights) : null;
       if (!record) {
         // "Needs rights": a live grant of this machine that holds no rights here.
