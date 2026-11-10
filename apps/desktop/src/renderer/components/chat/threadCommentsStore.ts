@@ -142,6 +142,11 @@ export function useThreadComments(
   return comments;
 }
 
+/** The lane-sharing guest comments the owner ticked: a send names each one (`includeGuestCommentIds`). */
+export function guestCommentIdsForNextSend(comments: readonly ChatThreadComment[]): string[] {
+  return comments.filter((comment) => comment.includeInNextSend && comment.author?.kind === "guest").map((comment) => comment.id);
+}
+
 /** How many comments go with the next send. */
 export function countCommentsForNextSend(comments: readonly ChatThreadComment[]): number {
   let count = 0;

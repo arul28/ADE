@@ -399,6 +399,7 @@ describe("invite email", () => {
     ["a name with a link, a host and an address in it", "Gia https://evil.example/login evil.example x@y.co @gia", "Gia gia shared a lane with you in ADE"],
     ["a name that is only a host", "accounts.evil.example", "An ADE user shared a lane with you in ADE"],
     ["a name with control and markup characters", "Gia\u202e\u0007<b>Ross", "Gia bRoss shared a lane with you in ADE"],
+    ["a host name split by markup characters", "Gia PayPal[.]com evil=.com", "Gia shared a lane with you in ADE"],
   ])("cleans the giver's name: %s", async (_label, firstName, subject) => {
     net.users.get(GIVER)!.firstName = firstName;
     await invite();

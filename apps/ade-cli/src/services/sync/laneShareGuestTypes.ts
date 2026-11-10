@@ -105,6 +105,7 @@ export type LaneShareGuestHostDeps = LaneShareGuestSyncHostDeps & {
     agentChatService?: ReturnType<typeof createAgentChatService>;
     laneShareGrants?: LaneShareGrantSource | null;
     laneShareRights?: LaneShareRightsStore | null;
+    getLaneShareRepoKey?: () => string | null;
     laneShareMoves?: LaneShareMoveService | null;
     onLaneShareEvent?: (event: LaneShareEvent) => void;
   };

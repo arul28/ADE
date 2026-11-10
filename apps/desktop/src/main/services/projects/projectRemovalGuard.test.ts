@@ -1,6 +1,11 @@
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { ProjectCopyCheckoutState, ProjectCopyState } from "../../../shared/projectRemoval";
+import { summarizeCopyWork, type ProjectCopyCheckoutState, type ProjectCopyState } from "../../../shared/projectRemoval";
 import { decideProjectFolderDeletion, decideRemovalRecheck, projectCopyStateToken } from "./projectRemovalGuard";
+import { readProjectCopyState } from "./projectRemovalState";
 
 describe("decideProjectFolderDeletion", () => {
   const posix = {
@@ -121,5 +126,36 @@ describe("decideRemovalRecheck", () => {
       acceptWork: accept,
     });
     expect(decision.ok ? "ok" : decision.code).toBe(expected);
+  });
+});
+
+describe("readProjectCopyState", () => {
+  // `git ls-files --directory` lists an ignored folder as one line: the
+  // secrets inside it must still reach the removal report, by name.
+  it("names the secret files inside an ignored folder, and skips dependency folders", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-removal-state-"));
+    try {
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: root, stdio: "ignore" });
+      git("init");
+      fs.writeFileSync(path.join(root, ".gitignore"), "config/\nnode_modules/\n.env\n", "utf8");
+      git("add", ".gitignore");
+      git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-m", "init");
+      for (const [rel, text] of [
+        [".env", "A=1"],
+        ["config/.env.production", "B=2"],
+        ["config/deep/server.pem", "KEY"],
+        ["config/notes.txt", "plain"],
+        ["node_modules/pkg/.env", "C=3"],
+      ] as const) {
+        fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+        fs.writeFileSync(path.join(root, rel), text, "utf8");
+      }
+      const state = await readProjectCopyState(root, { chats: 0, terminals: 0 });
+      const main = state.checkouts.find((checkout) => checkout.isMain)!;
+      expect([...main.ignoredEnvFiles].sort()).toEqual([".env", "config/.env.production", "config/deep/server.pem"]);
+      expect(summarizeCopyWork(state).summary).toContain("config/deep/server.pem");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

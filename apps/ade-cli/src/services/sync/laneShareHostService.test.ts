@@ -101,6 +101,7 @@ describe("lane share move consent", () => {
     const store = makeStore();
     store.put({ grantId, laneId, receiverEmail: "guest@example.com", rights: collaborate() });
     const landed = vi.fn(async () => ({ laneId: "lane-new", laneName: "moved", sessionId: "chat-new", branchName: "fix/login", note: null }));
+    const discarded = vi.fn(async (_laneId: string) => {});
     const moves = createLaneShareMoveService({
       chat: () => ({
         getSessionSummary: async () => ({ laneId, title: "Fix", modelId: null }),
@@ -108,7 +109,7 @@ describe("lane share move consent", () => {
         checkLaneShareMoveDestination: async () => ({ modelId: "m" }),
         acceptLaneShareMove: landed,
         markLaneShareMoved: async () => {},
-        discardLaneShareMoveLane: async () => {},
+        discardLaneShareMoveLane: discarded,
       }),
       rightsStore: store,
       share,
@@ -116,7 +117,7 @@ describe("lane share move consent", () => {
       getAccountEmail: () => "owner@example.com",
       notifyGuests: () => {},
     });
-    return { moves, landed };
+    return { moves, landed, discarded };
   }
 
   const moveId = (n: string) => `lsm_${n.repeat(32)}`;
@@ -218,7 +219,7 @@ describe("lane share move consent", () => {
     ["shares nothing back when this account is not the grant's receiver", "receiver", { role: "giver", userId: "user-owner", email: "x@example.com" }, null],
   ])("%s", async (_label, side, party, expectedEmail) => {
     const create = vi.fn(async () => ({ grantId: `ls_${"e".repeat(32)}` }));
-    const { moves, landed } = makeMoves(() => ({ create, shareBackParty: async () => party, acceptShareBack: async () => {} }));
+    const { moves, landed } = makeMoves(() => ({ create, shareBackParty: async () => party, acceptShareBack: async () => {}, revoke: async () => {} }));
     let result: () => Promise<{ stage: string; result: { shareBackGrantId: string | null; note: string | null } | null }>;
     if (side === "giver") {
       await offer(moves, "9");
@@ -243,6 +244,45 @@ describe("lane share move consent", () => {
       expect(done.shareBackGrantId).toBeNull();
       expect(done.note).toMatch(/not shared back/);
     }
+    moves.dispose();
+  });
+
+  // A cancel that arrives while the directory makes the share back: the
+  // share just made ends, and the landed lane goes again (both landings).
+  it.each<[string, "giver" | "receiver"]>([
+    ["the owner's landing of a guest's move", "giver"],
+    ["the guest's landing of the owner's move", "receiver"],
+  ])("ends the share back and discards the lane when a cancel arrives during %s", async (_label, side) => {
+    const madeId = `ls_${"f".repeat(32)}`;
+    const revoke = vi.fn(async (_grantId: string) => {});
+    let cancelNow: () => void = () => {};
+    const create = vi.fn(async () => {
+      cancelNow();
+      return { grantId: madeId };
+    });
+    const party = side === "giver"
+      ? { role: "giver" as const, userId: "user-guest", email: "guest@example.com" }
+      : { role: "receiver" as const, userId: "user-owner", email: null };
+    const { moves, discarded } = makeMoves(() => ({ create, shareBackParty: async () => party, acceptShareBack: async () => {}, revoke }));
+    let stage: () => Promise<string>;
+    if (side === "giver") {
+      await offer(moves, "a");
+      moves.respond({ moveId: moveId("a"), accept: true });
+      cancelNow = () => { moves.cancel({ moveId: moveId("a") }); };
+      await moves.guestCommand(guest(), { op: "begin", moveId: moveId("a"), payload: payload(moveId("a")) });
+      await moves.guestCommand(guest(), { op: "finish", moveId: moveId("a") });
+      stage = async () => ((await moves.guestCommand(guest(), { op: "status", moveId: moveId("a") })) as { stage: string }).stage;
+    } else {
+      await moves.receivePrepare({ moveId: moveId("a"), grantId, repoKey: "repo:github.com/acme/widgets" });
+      moves.receiveBegin({ moveId: moveId("a"), grantId, payload: payload(moveId("a")) });
+      cancelNow = () => { moves.receiveCancel({ moveId: moveId("a"), grantId }); };
+      moves.receiveLand({ moveId: moveId("a"), grantId, fromName: "Owner", shareBack: { receiverEmail: "owner@example.com", rights: laneSharePresetRights("watch") } });
+      stage = async () => moves.receiveStatus({ moveId: moveId("a"), grantId }).stage;
+    }
+    await vi.waitFor(() => expect(discarded).toHaveBeenCalledWith("lane-new"));
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(revoke).toHaveBeenCalledWith(madeId);
+    expect(await stage()).toBe("cancelled");
     moves.dispose();
   });
 

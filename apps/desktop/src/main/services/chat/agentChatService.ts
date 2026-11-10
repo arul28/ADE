@@ -812,6 +812,7 @@ import {
   LANE_SHARE_PLAIN_TEXT_ONLY,
   LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE,
   leadingPromptCommandCharacter,
+  parseMessageAuthor,
   withHostMessageAuthor,
 } from "../../../shared/messageAuthor";
 import {
@@ -48552,6 +48553,29 @@ export function createAgentChatService(args: {
     ).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
   };
 
+  /**
+   * The lane share host's check of a queued guest message, run when the
+   * message starts (`installQueuedGuestSteerGate`). False drops the message.
+   */
+  let queuedGuestSteerGate: ((args: { sessionId: string; steerId: string; author: AdeMessageAuthor }) => boolean) | null = null;
+
+  /** Whether a queued message may start now: always, unless a guest wrote it and the host's gate refuses. */
+  const queuedSteerMayStart = (managed: ManagedChatSession, steer: QueuedSteer): boolean => {
+    const author = parseMessageAuthor(steer.metadata?.author);
+    if (author?.kind !== "guest") return true;
+    // A guest's message with no host check to pass does not start.
+    if (!queuedGuestSteerGate) return false;
+    try {
+      return queuedGuestSteerGate({ sessionId: managed.session.id, steerId: steer.steerId, author });
+    } catch (error) {
+      logger.warn("agent_chat.guest_steer_gate_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  };
+
   const deliverNextQueuedSteer = async (
     managed: ManagedChatSession,
     runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime | CopilotRuntime | PiRuntime | AcpRuntime | MuseRuntime,
@@ -48577,6 +48601,13 @@ export function createAgentChatService(args: {
 
     const nextSteer = runtime.pendingSteers.shift();
     if (!nextSteer) return false;
+    // A guest's message is checked against the share again as it starts: a
+    // revoke, an end date or lost rights while it waited drop it here.
+    if (!queuedSteerMayStart(managed, nextSteer)) {
+      if (runtime.kind === "claude") runtime.knownQueuedMessages.delete(nextSteer.uuid);
+      finalizeCancelledSteer(managed, nextSteer.steerId, runtime.activeTurnId, { removedSteer: nextSteer });
+      return deliverNextQueuedSteerInner(managed, runtime);
+    }
     // A Cursor steer the live turn refused already has a row of its own. Its
     // turn lands on that row as `delivered` instead of leaving it beside a
     // second bubble. Taken at the shift, so a refusal still awaiting its answer
@@ -78119,7 +78150,7 @@ export function createAgentChatService(args: {
       sessionId: string;
       text: string;
       attachments: AgentChatFileRef[];
-      author: AdeMessageAuthor | null;
+      author?: AdeMessageAuthor;
     }) => {
       // "auto" is the programmatic twin of the person pressing send: it joins
       // a live turn where the provider supports that, and starts a new turn
@@ -78154,7 +78185,7 @@ export function createAgentChatService(args: {
       modelId: string | null;
       permissionMode: string | null;
       thinking: string | null;
-      author: AdeMessageAuthor | null;
+      author?: AdeMessageAuthor;
     }) => {
       // A launch sends through the public path, which keeps no author, so a
       // guest's text would lose its plain-prompt rule there.
@@ -78901,6 +78932,13 @@ export function createAgentChatService(args: {
     continueUsageLimitOnAlternate,
     switchAccount,
     setScheduledWorkPaused,
+    /** The lane share host installs its check of queued guest messages. Returns its removal. */
+    installQueuedGuestSteerGate: (gate: NonNullable<typeof queuedGuestSteerGate>): (() => void) => {
+      queuedGuestSteerGate = gate;
+      return () => {
+        if (queuedGuestSteerGate === gate) queuedGuestSteerGate = null;
+      };
+    },
     refreshScheduledWork,
     readTranscript,
     getCodexGoal,

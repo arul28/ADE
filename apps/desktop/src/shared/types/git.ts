@@ -184,11 +184,15 @@ export type GitFileHistoryEntry = {
 export type GitListCommitFilesArgs = {
   laneId: string;
   commitSha: string;
+  /** Refuse a commit that is not in the lane's own history (a lane share guest's read). */
+  onlyLaneHistory?: boolean;
 };
 
 export type GitGetCommitMessageArgs = {
   laneId: string;
   commitSha: string;
+  /** Refuse a commit that is not in the lane's own history (a lane share guest's read). */
+  onlyLaneHistory?: boolean;
 };
 
 export type GitGetFileHistoryArgs = {

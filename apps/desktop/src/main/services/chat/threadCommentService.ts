@@ -212,7 +212,8 @@ export function createThreadCommentService({
       messageExcerpt: collapseWhitespace(typeof args.messageExcerpt === "string" ? args.messageExcerpt : "").slice(0, MAX_THREAD_COMMENT_EXCERPT_CHARS),
       anchor,
       body,
-      includeInNextSend: true,
+      // A guest's comment waits until the owner ticks it (`goesWithSend`).
+      includeInNextSend: options.author?.kind !== "guest",
       createdAt: at,
       updatedAt: at,
       ...withStoredAuthor(options.author),
@@ -228,10 +229,14 @@ export function createThreadCommentService({
     const previous = current[index]!;
     const body = args.body === undefined ? previous.body : cleanBody(args.body);
     if (!body) throw new Error("A comment cannot be empty. Delete it instead.");
+    // The owner ticked a guest's comment for the text it had: new text waits for a new tick.
+    const guestTextChanged = previous.author?.kind === "guest" && body !== previous.body;
     const next: ChatThreadComment = {
       ...previous,
       body,
-      includeInNextSend: typeof args.includeInNextSend === "boolean" ? args.includeInNextSend : previous.includeInNextSend,
+      includeInNextSend: typeof args.includeInNextSend === "boolean"
+        ? args.includeInNextSend
+        : guestTextChanged ? false : previous.includeInNextSend,
       updatedAt: now(),
     };
     const comments = [...current];

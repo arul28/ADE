@@ -160,20 +160,29 @@ export function inviteSenderName(label: string | null | undefined): string {
  */
 export function personName(label: string | null | undefined): string | null {
   if (!label) return null;
-  const words = label
-    .normalize("NFKC")
+  // Markup characters go first, so `PayPal[.]com` is a host name when the
+  // host check reads it. The check runs again until nothing changes.
+  let name = label.normalize("NFKC");
+  for (;;) {
+    const next = cleanNameWords(name).slice(0, MAX_INVITE_SENDER_NAME).trim();
+    if (next === name) break;
+    name = next;
+  }
+  return name || null;
+}
+
+function cleanNameWords(text: string): string {
+  return text
     .replace(/[\p{Cc}\p{Cf}\p{Co}\p{Cn}]/gu, " ")
     .split(/\s+/)
+    .map((word) => word.replace(/[@<>"'`{}[\]|=&]/g, ""))
     .filter((word) =>
       word
       && !/[:/\\]/.test(word)
       && !/^www\b/i.test(word)
       // A dot between two letters or digits: a host name (`evil.com`, `a.b.c`).
       && !/[\p{L}\p{N}][.\u3002\uFF0E\uFF61][\p{L}\p{N}]/u.test(word))
-    .map((word) => word.replace(/[@<>"'`{}[\]|=&]/g, ""))
-    .filter(Boolean);
-  const name = words.join(" ").slice(0, MAX_INVITE_SENDER_NAME).trim();
-  return name || null;
+    .join(" ");
 }
 
 export type DirectEmailOutcome = "sent" | "not_configured" | "failed";

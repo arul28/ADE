@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -18,16 +19,31 @@ import { listLaneWorktreeRoots } from "./projectDetailService";
  * repository's stashes and unpushed branches.
  *
  * It runs when the remove dialog asks and again right before a delete, never
- * on a timer. Each checkout costs four short git reads; at most
- * {@link CHECKOUT_CONCURRENCY} checkouts are read at once, under the git read
- * cap every git read shares.
+ * on a timer. Each checkout costs four short git reads and a bounded walk of
+ * its ignored folders; at most {@link CHECKOUT_CONCURRENCY} checkouts are read
+ * at once, under the git read cap every git read shares.
  */
 
 const CHECKOUT_CONCURRENCY = 4;
 const GIT_READ_TIMEOUT_MS = 15_000;
 const MAX_ENV_FILES = 20;
-/** `.env`, `.env.local`, `.envrc`: the ignored files people keep secrets in. */
-const ENV_FILE = /(^|\/)\.env(rc|\..+)?$/;
+/**
+ * The ignored files people keep secrets in: `.env`, `.env.local`, `.envrc`,
+ * keys and certificates, and credential or secret files.
+ */
+const ENV_FILE = /(^|\/)(\.env(rc|\..+)?|[^/]+\.(pem|key|p12|pfx|jks|keystore)|id_(rsa|dsa|ecdsa|ed25519)|credentials(\.json)?|secrets?\.(json|ya?ml|toml))$/i;
+/** Entries one checkout's walk of its ignored folders reads, at most. */
+const MAX_IGNORED_WALK_ENTRIES = 5_000;
+/**
+ * Ignored folders the walk does not open: dependencies, build output and
+ * caches, which are large and hold no secrets of the person. `.ade` holds the
+ * lanes, which are checkouts of their own.
+ */
+const SKIPPED_IGNORED_DIRS = new Set([
+  "node_modules", ".git", ".ade", "dist", "build", "out", "target", "vendor", "coverage",
+  ".next", ".nuxt", ".turbo", ".cache", ".parcel-cache", ".gradle", ".venv", "venv",
+  "__pycache__", ".pytest_cache", ".mypy_cache", "Pods", "DerivedData", "bower_components",
+]);
 
 async function folderState(rootPath: string): Promise<"present" | "missing"> {
   try {
@@ -143,11 +159,7 @@ async function readCheckout(args: {
   ]);
   const branch = branchRes.exitCode === 0 ? branchRes.stdout.trim() : "";
   const ignoredEnvFiles = ignoredRes && ignoredRes.exitCode === 0
-    ? ignoredRes.stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line && !line.endsWith("/") && ENV_FILE.test(line))
-      .slice(0, MAX_ENV_FILES)
+    ? await findIgnoredEnvFiles(cwd, ignoredRes.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean))
     : [];
   // A repository with no commit yet has no HEAD: nothing to lose but its files.
   const noCommits = unpushedRes.exitCode !== 0 && /unknown revision|bad revision|ambiguous argument 'HEAD'/i.test(unpushedRes.stderr);
@@ -161,6 +173,43 @@ async function readCheckout(args: {
     ignoredEnvFiles,
     hasSubmodules,
   };
+}
+
+/**
+ * The secret-like files among the ignored paths of a checkout. `--directory`
+ * lists an ignored folder as one line, so each ignored folder is walked for
+ * the files in it (a `.env` in `config/`), except the dependency and build
+ * folders. Links are not followed. The walk stops after
+ * {@link MAX_IGNORED_WALK_ENTRIES} entries or {@link MAX_ENV_FILES} files.
+ */
+async function findIgnoredEnvFiles(checkoutPath: string, ignoredLines: string[]): Promise<string[]> {
+  const found: string[] = [];
+  const folders: string[] = [];
+  for (const line of ignoredLines) {
+    if (line.endsWith("/")) folders.push(line.slice(0, -1));
+    else if (ENV_FILE.test(line)) found.push(line);
+  }
+  let budget = MAX_IGNORED_WALK_ENTRIES;
+  const queue = folders.filter((folder) => !SKIPPED_IGNORED_DIRS.has(path.posix.basename(folder)));
+  while (queue.length > 0 && budget > 0 && found.length < MAX_ENV_FILES) {
+    const folder = queue.shift()!;
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(path.join(checkoutPath, ...folder.split("/")), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (--budget < 0) break;
+      const relative = `${folder}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (!SKIPPED_IGNORED_DIRS.has(entry.name)) queue.push(relative);
+      } else if ((entry.isFile() || entry.isSymbolicLink()) && ENV_FILE.test(relative)) {
+        found.push(relative);
+      }
+    }
+  }
+  return found.slice(0, MAX_ENV_FILES);
 }
 
 async function mapLimited<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {

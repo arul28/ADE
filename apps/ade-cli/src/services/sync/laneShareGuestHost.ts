@@ -35,6 +35,7 @@ import { SYNC_PEER_ROLE_ROSTER } from "./syncHelloProtocol";
 import { reportHelloRejected, reportPeerAccepted } from "./syncHelloTelemetry";
 import { SYNC_CHUNKED_ENVELOPES_CAPABILITY, type ParsedSyncEnvelope } from "./syncProtocol";
 import { createLaneShareGuestGates } from "./laneShareGuestGates";
+import { createLaneShareGuestQueue } from "./laneShareGuestQueue";
 import type { LaneShareCloseResult, LaneShareGuestHostDeps, LaneShareGuestPeer, LaneShareTurnOwner } from "./laneShareGuestTypes";
 
 export type { LaneShareCloseResult, LaneShareGuestHostDeps, LaneShareGuestPeer } from "./laneShareGuestTypes";
@@ -151,6 +152,17 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     }
   }
 
+  const guestQueue = createLaneShareGuestQueue({
+    laneShareRights,
+    grants: () => args.laneShareGrants?.current() ?? null,
+    chat: () => args.agentChatService ?? null,
+    laneState: (laneId) => laneShareLaneState(laneId),
+    rightsMatchLane: (grantId, laneId) => laneShareRightsMatchLane(grantId, laneId),
+    logger: args.logger,
+  });
+  const removeLaneShareQueuedSteers = guestQueue.removeQueued;
+  const dropLaneShareQueuedSteersSoon = guestQueue.dropQueuedSoon;
+
   /**
    * Who started the turn that runs in a chat, for chats where a guest started
    * it, read from the chat's own events. A `user_message` that starts a turn
@@ -173,13 +185,18 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
       turnStatus?: unknown;
       turnId?: unknown;
       steerId?: unknown;
+      deliveryState?: unknown;
       metadata?: { author?: unknown } | null;
     };
     const sessionId = envelope.sessionId;
     const turnId = typeof event?.turnId === "string" && event.turnId ? event.turnId : null;
     if (event?.type === "user_message") {
-      // A steer, queued or delivered, starts no turn of its own.
-      if (typeof event.steerId === "string" && event.steerId) return;
+      // A steer, queued or delivered, starts no turn of its own. One that left
+      // the queue is no longer the guest's to remove.
+      if (typeof event.steerId === "string" && event.steerId) {
+        if (event.deliveryState !== "queued") guestQueue.forget(event.steerId);
+        return;
+      }
       const author = parseMessageAuthor(event.metadata?.author);
       if (author?.kind === "guest") laneShareTurnOwners.set(sessionId, { userId: author.userId, turnId });
       else laneShareTurnOwners.delete(sessionId);
@@ -429,38 +446,6 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
   }
 
   /**
-   * Removes the messages a grant's guest queued that have not started. Runs
-   * when the share ends, expires or is left, and when new rights take away
-   * sending and steering. Returns how many it removed.
-   */
-  async function removeLaneShareQueuedSteers(grantId: string): Promise<number> {
-    const chat = args.agentChatService;
-    if (!laneShareRights || !chat) return 0;
-    let removed = 0;
-    for (const steer of laneShareRights.listItems(grantId, "steer")) {
-      if (!steer.sessionId) continue;
-      try {
-        await chat.cancelSteer({ sessionId: steer.sessionId, steerId: steer.itemId, requireQueued: true });
-        removed += 1;
-      } catch {
-        // Already started or gone: nothing to remove.
-      }
-      laneShareRights.removeItem(grantId, "steer", steer.itemId);
-    }
-    return removed;
-  }
-
-  /** `removeLaneShareQueuedSteers` started from a sync path; a failure is logged. */
-  function dropLaneShareQueuedSteersSoon(grantId: string): void {
-    void removeLaneShareQueuedSteers(grantId).catch((error) => {
-      args.logger.warn("sync_host.lane_share_queue_drop_failed", {
-        grantId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  }
-
-  /**
    * Ends a share on this host at once (revoke, lane deleted): closes the
    * guest's connections, removes the messages it queued that have not
    * started, and reports each chat where a turn it started still runs. A
@@ -560,6 +545,13 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
         endLaneShareGuest(peer, role, "Lane share ended");
       }
     }
+    // Queued messages, guest connected or not: a share that may no longer
+    // send loses them. No list read yet (just started): the next tick decides.
+    if (current) {
+      for (const grantId of guestQueue.grantsWithQueued()) {
+        if (!guestQueue.mayStart(grantId, null)) dropLaneShareQueuedSteersSoon(grantId);
+      }
+    }
     syncLaneShareRefreshTimer();
   }
 
@@ -585,14 +577,20 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     }
   }
 
-  /** Armed only while a guest is connected: no guest, no timer, no request. */
+  /**
+   * Armed while a guest is connected or a guest's messages wait in a queue:
+   * otherwise no timer and no request. Armed for a queue alone, it reads the
+   * grants at once.
+   */
   function syncLaneShareRefreshTimer(): void {
-    const needed = !isDisposed() && connectedLaneShareGuests().length > 0;
+    const guests = isDisposed() ? 0 : connectedLaneShareGuests().length;
+    const needed = !isDisposed() && (guests > 0 || guestQueue.grantsWithQueued().length > 0);
     if (needed && !laneShareRefreshTimer) {
       laneShareRefreshTimer = setInterval(() => {
         void refreshLaneShareGrants();
       }, LANE_SHARE_GRANT_REFRESH_MS);
       laneShareRefreshTimer.unref?.();
+      if (guests === 0) void refreshLaneShareGrants();
     } else if (!needed && laneShareRefreshTimer) {
       clearInterval(laneShareRefreshTimer);
       laneShareRefreshTimer = null;
@@ -600,6 +598,14 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
   }
 
   const unsubscribeLaneShareGrants = args.laneShareGrants?.subscribe(applyLaneShareGrantSnapshot) ?? null;
+  const removeQueuedGuestSteerGate = args.agentChatService?.installQueuedGuestSteerGate?.((input) => {
+    const admitted = guestQueue.admit(input);
+    syncLaneShareRefreshTimer();
+    return admitted;
+  }) ?? null;
+  // Messages a guest queued before a restart keep the grant checks going
+  // (after the sync host finished its own setup).
+  queueMicrotask(syncLaneShareRefreshTimer);
 
   /**
    * The guest hello. Order: relay only, device id, grant source, a DPoP proof
@@ -708,6 +714,13 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     const presented = Buffer.from(proofThumbprint, "utf8");
     if (expected.length !== presented.length || !timingSafeEqual(expected, presented)) {
       refuse("lane_share_refused", noGrant, "ticket_dpop_mismatch");
+      return;
+    }
+    // One project is hosted at a time on the shared listener: a lane of
+    // another project is not in this host's database, so it is refused as
+    // not hosted (the guest tries again), never looked up here.
+    if (redemption.repoKey && redemption.repoKey !== (args.getLaneShareRepoKey?.() ?? null)) {
+      refuse("lane_share_unavailable", "The owner's computer has another project open. This lane opens again when the owner opens its project.", "project_not_hosted");
       return;
     }
     // The account comes from the directory's answer, never from the hello.
@@ -913,6 +926,7 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
 
   function dispose(): void {
     unsubscribeLaneShareGrants?.();
+    removeQueuedGuestSteerGate?.();
     if (laneShareRefreshTimer) clearInterval(laneShareRefreshTimer);
     laneShareRefreshTimer = null;
   }

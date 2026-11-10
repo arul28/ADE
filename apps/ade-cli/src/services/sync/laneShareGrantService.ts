@@ -91,6 +91,8 @@ export type LaneShareTicketRedemption = {
   receiverUserId: string;
   laneId: string;
   dpopThumbprint: string;
+  /** The shared lane's repository (`repo:host/owner/name`). Null from a directory older than this field. */
+  repoKey: string | null;
 };
 
 export type LaneShareGrantSource = {
@@ -131,7 +133,8 @@ export function parseLaneShareRedeemResponse(value: unknown): {
   if (!grantId || !receiverUserId || !laneId || !dpopThumbprint) {
     throw new LaneShareGrantError("invalid_response", "The ticket answer was malformed.");
   }
-  return { redemption: { grantId, receiverUserId, laneId, dpopThumbprint }, list };
+  const repoKey = typeof record?.repoKey === "string" && record.repoKey.trim() ? record.repoKey.trim() : null;
+  return { redemption: { grantId, receiverUserId, laneId, dpopThumbprint, repoKey }, list };
 }
 
 /** The active grants a user holds in `snapshot`, read on the directory's clock. */

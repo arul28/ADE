@@ -208,11 +208,20 @@ export function startCopyJob(input: StartCopyJobInput, onReady?: ReadyCallback):
   return job;
 }
 
-/** Tries a failed job again, on the same machine and with the same folder. */
-export function retryCopyJob(key: string): void {
+/**
+ * Tries a failed job again, on the same machine. `parentDir` changes the
+ * folder first (the person picked another one); without it the folder stays.
+ */
+export function retryCopyJob(key: string, change: { parentDir?: string | null } = {}): void {
   const existing = jobs.get(key);
   if (!existing || existing.status !== "failed") return;
-  const job: CopyJob = { ...existing, status: "cloning", failure: null, result: null };
+  const job: CopyJob = {
+    ...existing,
+    ...(change.parentDir !== undefined ? { parentDir: change.parentDir } : {}),
+    status: "cloning",
+    failure: null,
+    result: null,
+  };
   jobs.set(key, job);
   runJob(job);
   emit();

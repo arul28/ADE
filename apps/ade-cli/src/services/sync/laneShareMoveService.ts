@@ -102,6 +102,8 @@ export type LaneShareMoveSharePort = {
   shareBackParty(grantId: string): Promise<{ role: "giver" | "receiver"; userId: string; email: string | null }>;
   /** Accepts a share back made for this account, only when its giver and repository are the expected ones. */
   acceptShareBack(args: { grantId: string; giverUserId: string }): Promise<void>;
+  /** Ends a share back this machine just made (its move was cancelled meanwhile). */
+  revoke(grantId: string): Promise<void>;
 };
 
 /** A guest connection as the host knows it. Nothing here comes from the client. */
@@ -449,6 +451,10 @@ export function createLaneShareMoveService(options: {
           endsAt: record.shareBackEndsAt,
         });
       }
+      if (record.cancelled) {
+        await abandonCancelled(record, landed.laneId, shareBack.grantId);
+        return;
+      }
       record.result = { laneName: landed.laneName, shareBackGrantId: shareBack.grantId, note: joinNotes(landed.note, shareBack.note) };
       end(record, "done");
     } catch (error) {
@@ -566,11 +572,30 @@ export function createLaneShareMoveService(options: {
           endsAt: shareBack.endsAt,
         });
       }
+      if (record.cancelled) {
+        await abandonCancelled(record, landed.laneId, made.grantId);
+        return;
+      }
       record.result = { laneName: landed.laneName, shareBackGrantId: made.grantId, note: joinNotes(landed.note, made.note) };
       end(record, "done");
     } catch (error) {
       end(record, "failed", errorText(error));
     }
+  };
+
+  /**
+   * A move cancelled while its share back was made: the share just made ends
+   * and the landed lane goes again. Failures are logged, never thrown.
+   */
+  const abandonCancelled = async (record: MoveRecord, laneId: string, shareBackGrantId: string | null): Promise<void> => {
+    if (shareBackGrantId) {
+      try {
+        await options.share()?.revoke(shareBackGrantId);
+      } catch (error) {
+        options.logger?.warn("lane_share.move_share_back_revoke_failed", { moveId: record.moveId, error: errorText(error) });
+      }
+    }
+    await discardLanded(record, laneId);
   };
 
   /** A landed lane of a move cancelled meanwhile goes again; a failure is logged, never thrown. */

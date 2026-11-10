@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneShareConnectTicket } from "../../../../shared/types/laneShare";
+import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../../lib/account";
 import {
   LaneShareGuestConnection,
   type LaneShareGuestSocket,
 } from "./laneShareGuestConnection";
+import {
+  laneShareGuestConnection,
+  loadLaneShareReceived,
+  retainLaneShareGuestConnection,
+  useLaneShareGuestStore,
+} from "./laneShareGuestStore";
 
 /**
  * Trust rules of the guest client (lane sharing). Everything the host sends
@@ -158,5 +165,39 @@ describe("LaneShareGuestConnection", () => {
     expect(payload.args.laneId).toBe(LANE_ID);
     expect(payload.args.projectId).toBeUndefined();
     expect(payload.projectId ?? null).toBeNull();
+  });
+});
+
+describe("the guest store across accounts", () => {
+  // Shares and guest connections are the signed-in account's: a sign-out or
+  // another account closes them, and a list read still on its way is dropped.
+  it.each<[string, string | null]>([
+    ["a sign-out", null],
+    ["another account", "user_b"],
+  ])("clears everything on %s", async (_label, nextUser) => {
+    const signedIn = (userId: string) => ({ ...SIGNED_OUT_ACCOUNT, signedIn: true, userId });
+    let finishRead: (result: { shares: unknown[]; pendingInvitesUnavailable: boolean }) => void = () => {};
+    const listReceived = vi.fn(() => new Promise((resolve) => { finishRead = resolve; }));
+    const connect = vi.fn(() => new Promise<LaneShareConnectTicket>(() => {}));
+    const account = { status: vi.fn(async () => signedIn("user_a")) };
+    vi.stubGlobal("window", { ade: { account, laneShareGuest: { listReceived, connect } } });
+    try {
+      publishAccountStatus(signedIn("user_a"));
+      const release = retainLaneShareGuestConnection({ grantId: GRANT_ID, laneId: LANE_ID });
+      await vi.waitFor(() => expect(laneShareGuestConnection(GRANT_ID)).not.toBeNull());
+      const opened = laneShareGuestConnection(GRANT_ID)!;
+      const read = loadLaneShareReceived({ force: true });
+
+      publishAccountStatus(nextUser ? signedIn(nextUser) : SIGNED_OUT_ACCOUNT);
+      finishRead({ shares: [{ grantId: GRANT_ID, state: "active", laneId: LANE_ID }], pendingInvitesUnavailable: false });
+      await read;
+
+      expect(laneShareGuestConnection(GRANT_ID)).toBeNull();
+      expect(opened.state.kind).toBe("idle");
+      expect(useLaneShareGuestStore.getState()).toMatchObject({ received: null, connections: {}, receivedStatus: "idle" });
+      release();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

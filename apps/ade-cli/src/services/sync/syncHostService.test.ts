@@ -4746,7 +4746,7 @@ describe("sync host account authentication", () => {
     function fakeDirectory(initial: { status: number; body: unknown }) {
       let answer = initial;
       let hang: Promise<never> | null = null;
-      const tickets = new Map<string, { grantId: string; receiverUserId: string; laneId: string; dpopThumbprint: string; used: boolean }>();
+      const tickets = new Map<string, { grantId: string; receiverUserId: string; laneId: string; dpopThumbprint: string; repoKey?: string; used: boolean }>();
       let minted = 0;
       const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
         if (hang) return hang;
@@ -4774,7 +4774,7 @@ describe("sync host account authentication", () => {
           hang = new Promise<never>(() => {});
         },
         /** What `POST /lane-shares/:id/connect` does for the guest: a ticket bound to its key. */
-        mint: (dpopThumbprint: string, overrides: Partial<{ grantId: string; receiverUserId: string; laneId: string }> = {}) => {
+        mint: (dpopThumbprint: string, overrides: Partial<{ grantId: string; receiverUserId: string; laneId: string; repoKey: string }> = {}) => {
           minted += 1;
           const ticket = `${String(minted).padStart(4, "0")}${"t".repeat(39)}`;
           tickets.set(ticket, { grantId: grantId("a"), receiverUserId: guestUserId, laneId: sharedLane, dpopThumbprint, used: false, ...overrides });
@@ -4872,6 +4872,8 @@ describe("sync host account authentication", () => {
         "chat.create",
         "git.getChanges",
         "git.getFile",
+        "git.listCommitFiles",
+        "git.getCommitMessage",
         "work.deleteSession",
       ];
       const chatState = {
@@ -4883,7 +4885,15 @@ describe("sync host account authentication", () => {
         ...options.chat,
       };
       const chatListeners = new Set<(event: unknown) => void>();
+      // The host's check of a queued guest message, as the chat service runs it when the message starts.
+      let queuedGuestSteerGate: ((input: { sessionId: string; steerId: string; author: typeof guestAuthor }) => boolean) | null = null;
       const agentChatService = {
+        installQueuedGuestSteerGate: (gate: typeof queuedGuestSteerGate) => {
+          queuedGuestSteerGate = gate;
+          return () => {
+            if (queuedGuestSteerGate === gate) queuedGuestSteerGate = null;
+          };
+        },
         subscribeToEvents: (listener: (event: unknown) => void) => {
           chatListeners.add(listener);
           return () => chatListeners.delete(listener);
@@ -4920,6 +4930,7 @@ describe("sync host account authentication", () => {
         discoveryEnabled: false,
         laneShareGrants,
         laneShareRights: store,
+        getLaneShareRepoKey: () => "repo:github.com/acme/widgets",
         laneShareMoves: options.laneShareMoves ?? null,
         onLaneShareEvent: laneShareEvents,
         agentChatService,
@@ -4975,6 +4986,9 @@ describe("sync host account authentication", () => {
         sqlite,
         agentChatService,
         chatState,
+        /** The chat service starts a queued guest message: whether the host lets it run (no host check: no). */
+        startQueuedGuestSteer: (steerId: string) =>
+          queuedGuestSteerGate?.({ sessionId: "session-shared", steerId, author: guestAuthor }) ?? false,
         /** One chat event, as the chat service emits it. */
         emitChatEvent: (sessionId: string, event: Record<string, unknown>) => {
           for (const listener of chatListeners) listener({ sessionId, timestamp: new Date().toISOString(), event });
@@ -5001,7 +5015,7 @@ describe("sync host account authentication", () => {
       /** The key that signs the hello, when it is not the key the ticket was minted for. */
       signingKey?: GuestKey;
       ticket?: string;
-      mint?: Partial<{ grantId: string; receiverUserId: string; laneId: string }>;
+      mint?: Partial<{ grantId: string; receiverUserId: string; laneId: string; repoKey: string }>;
       extraAuth?: Record<string, unknown>;
       dpop?: boolean;
     } = {}) {
@@ -5071,7 +5085,8 @@ describe("sync host account authentication", () => {
       const env = await startGuestHost(directory);
       let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
       try {
-        guest = await connectGuest(env.port, env.proof, directory);
+        // The ticket's lane is in the project this host serves.
+        guest = await connectGuest(env.port, env.proof, directory, { mint: { repoKey: "repo:github.com/acme/widgets" } });
         expect(guest.first.type).toBe("hello_ok");
         const hello = guest.first.payload as Record<string, unknown> & { features: Record<string, unknown> };
         expect(hello.laneShareGuest).toEqual({ userId: guestUserId, grants: [{ grantId: grantId("a"), laneId: sharedLane }] });
@@ -5128,6 +5143,9 @@ describe("sync host account authentication", () => {
       ["a ticket that names the owner's own account", grantsBody([grant({ receiverUserId: ownerUserId })]),
         () => ({ mint: { receiverUserId: ownerUserId } }), "lane_share_refused"],
       ["a machine the directory does not list", { status: 404, body: { error: "unknown_machine" } }, () => ({}), "lane_share_refused"],
+      // The brain hosts one project at a time: a lane of another project is not hosted here (the guest tries again).
+      ["a lane of a project this host does not serve", grantsBody([grant()]),
+        () => ({ mint: { repoKey: "repo:github.com/acme/other" } }), "lane_share_unavailable"],
       ["a directory that is down", { status: 503, body: {} }, () => ({}), "lane_share_unavailable"],
       ["a malformed answer", { status: 200, body: { serverTime: Date.now(), grants: [{ id: "nope" }] } }, () => ({}), "lane_share_unavailable"],
     ])("refuses %s", async (_label, answer, options, code) => {
@@ -6387,6 +6405,44 @@ describe("sync host account authentication", () => {
         }
       });
 
+      // A queued message runs when the turn ends, maybe long after its guest
+      // left: the host checks the share again, from its own records, as it starts.
+      it.each<[string, (env: Awaited<ReturnType<typeof startGuestHost>>) => void, boolean]>([
+        ["the share still allows it", () => {}, true],
+        ["the end date passed while it waited", (env) => {
+          const rights = laneSharePresetRights("collaborate");
+          env.store.updateRights(grantId("a"), { ...rights, limits: { ...rights.limits, endsAt: Date.now() - 1_000 } });
+        }, false],
+        ["the rights no longer send or steer", (env) => { env.store.updateRights(grantId("a"), laneSharePresetRights("watch")); }, false],
+        ["the share was revoked here", (env) => { env.store.deleteRights(grantId("a")); }, false],
+        ["the grant list is older than the age bound", () => {
+          const later = Date.now() + 91_000;
+          vi.spyOn(Date, "now").mockReturnValue(later);
+        }, false],
+      ])("a queued guest message starts only when its share allows it: %s", async (_label, change, runs) => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights: laneSharePresetRights("collaborate") });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          expect((await runCommand(guest.client, "first", "chat.send", { sessionId: "session-shared", text: "hi" })).ok).toBe(true);
+          // Its own turn runs; its next message queues behind it.
+          env.emitChatEvent("session-shared", { type: "user_message", text: "hi", turnId: "turn-g", metadata: { author: guestAuthor } });
+          env.emitChatEvent("session-shared", { type: "status", turnStatus: "started", turnId: "turn-g" });
+          env.chatState.status = "active";
+          expect((await runCommand(guest.client, "queued", "chat.send", { sessionId: "session-shared", text: "next" })).ok).toBe(true);
+          guest.client.ws.close();
+          await waitForValue(() => guest!.client.closeEvents[0], "guest gone");
+          change(env);
+          expect(env.startQueuedGuestSteer("steer-1")).toBe(runs);
+          // Started once: the message is no longer the guest's queued message.
+          expect(env.store.hasItem(grantId("a"), "steer", "steer-1")).toBe(false);
+        } finally {
+          vi.restoreAllMocks();
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
       it("gives a guest nothing for a grant with no rights here, until the owner sets them", async () => {
         const directory = fakeDirectory(grantsBody([grant()]));
         const env = await startGuestHost(directory, { rights: null });
@@ -6450,10 +6506,13 @@ describe("sync host account authentication", () => {
         ["a file read in another lane", "file:readFile", { workspaceId: privateLane, path: "README.md" }, false],
         ["a file write", "file:writeText", { workspaceId: sharedLane, path: "README.md", text: "x" }, false],
         ["a file read in the worktree", "file:readFile", { workspaceId: sharedLane, path: "README.md" }, true],
+        ["a commit read by a name, not a hash", "git.getCommitMessage", { laneId: sharedLane, commitSha: "main" }, false],
+        ["a commit read the git service checks against the lane's history", "git.listCommitFiles", { laneId: sharedLane, commitSha: "a".repeat(40) }, true],
       ])("tool reads: refuses %s", async (_label, action, args, allowed) => {
         const rights = laneSharePresetRights("watch");
         rights.tools.diff = true;
         rights.tools.file = true;
+        rights.tools.git = true;
         const directory = fakeDirectory(grantsBody([grant()]));
         const env = await startGuestHost(directory, { rights });
         let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
@@ -6475,7 +6534,10 @@ describe("sync host account authentication", () => {
             expect(result.ok).toBe(allowed);
             expect(env.execute.mock.calls.filter(([payload]) => payload.action === action).map(([payload]) => payload.args))
               // The diff service refuses an ignored file (`refuseIgnored`): an unstaged read opens the working tree.
-              .toEqual(allowed ? [{ laneId: sharedLane, path: "src/a.ts", mode: "unstaged", refuseIgnored: true }] : []);
+              // Lanes share one object store: the git service refuses a commit outside the lane's history (`onlyLaneHistory`).
+              .toEqual(!allowed ? [] : "commitSha" in args
+                ? [{ laneId: sharedLane, commitSha: args.commitSha, onlyLaneHistory: true }]
+                : [{ laneId: sharedLane, path: "src/a.ts", mode: "unstaged", refuseIgnored: true }]);
           }
         } finally {
           await env.close([guest?.client ?? null]);

@@ -699,6 +699,11 @@ export function createSyncService(args: SyncServiceArgs) {
   // of this project's database, never synced.
   const laneShareRights = createLaneShareRightsStore({ db: args.db });
   let laneShareRepoKey: { value: string | null } | null = null;
+  // Read once: the origin of a project does not change while it is open.
+  const readLaneShareRepoKey = (): string | null => {
+    laneShareRepoKey ??= { value: accountRepoScopeKey(readGitOriginUrl(args.projectRoot)) };
+    return laneShareRepoKey.value;
+  };
   const laneShareService = createLaneShareHostService({
     access: {
       getAccessToken: (tokenOptions) => requireSignedInAccountAccessToken(accountAuthService, tokenOptions),
@@ -707,11 +712,7 @@ export function createSyncService(args: SyncServiceArgs) {
     getMachineKey: () => cloudRelayStore.getMachineIdentity().machineKey,
     store: laneShareRights,
     getHost: () => hostService,
-    getRepoKey: () => {
-      // Read once: the origin of a project does not change while it is open.
-      laneShareRepoKey ??= { value: accountRepoScopeKey(readGitOriginUrl(args.projectRoot)) };
-      return laneShareRepoKey.value;
-    },
+    getRepoKey: readLaneShareRepoKey,
     getProjectLabel: () => path.basename(args.projectRoot) || null,
     getLaneLabel: (laneId) => args.laneService.findLaneIdentity(laneId)?.name ?? null,
     refreshGrants: () => laneShareGrants.refresh(),
@@ -742,11 +743,11 @@ export function createSyncService(args: SyncServiceArgs) {
       create: async (createArgs) => ({ grantId: (await laneShareService.create(createArgs)).grantId }),
       shareBackParty: (grantId) => laneShareService.shareBackParty(grantId),
       acceptShareBack: (acceptArgs) => laneShareService.acceptShareBack(acceptArgs),
+      revoke: async (grantId) => {
+        await laneShareService.revoke({ grantId });
+      },
     }),
-    getRepoKey: () => {
-      laneShareRepoKey ??= { value: accountRepoScopeKey(readGitOriginUrl(args.projectRoot)) };
-      return laneShareRepoKey.value;
-    },
+    getRepoKey: readLaneShareRepoKey,
     getAccountEmail: () => accountAuthService.getStatus().email?.trim() || null,
     notifyGuests: (grantId) => hostService?.notifyLaneShareGuestState(grantId),
     onEvent: (event) => args.onLaneShareEvent?.(event),
@@ -1316,6 +1317,7 @@ export function createSyncService(args: SyncServiceArgs) {
       accountAuthService,
       laneShareGrants,
       laneShareRights,
+      getLaneShareRepoKey: readLaneShareRepoKey,
       laneShareMoves,
       onLaneShareEvent: args.onLaneShareEvent,
       getAccountAttestationConfig: args.getAccountAttestationConfig ?? (() =>

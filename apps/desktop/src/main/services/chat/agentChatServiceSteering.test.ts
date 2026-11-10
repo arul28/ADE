@@ -1501,6 +1501,71 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    // A lane share guest's queued message runs only when the host's check
+    // passes as it starts; with no check installed it does not run.
+    it.each<[string, boolean | null]>([
+      ["the host's check passes", true],
+      ["the host's check refuses", false],
+      ["no host check is installed", null],
+    ])("delivers a queued guest message only when %s", async (_label, gateAnswer) => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let finishActiveTurn!: () => void;
+      const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-guest-steer", slash_commands: [] };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+          };
+          await activeTurnGate;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-guest-steer",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const gate = vi.fn(() => gateAnswer === true);
+      if (gateAnswer !== null) service.installQueuedGuestSteerGate(gate);
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Foreground work", timeoutMs: 15_000 });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "text" && event.event.text.includes("Still working"),
+      );
+      const guest = await service.steerUserMessage(
+        { sessionId: session.id, text: "GUEST-QUEUED" },
+        { author: { kind: "guest", userId: "user_guest", name: "Guest" } },
+      ) as { steerId?: string };
+      await service.sendMessage({ sessionId: session.id, text: "OWNER-QUEUED" }, { routeActiveToSteer: true });
+      expect(guest.steerId).toBeTruthy();
+
+      finishActiveTurn();
+      await activeTurn;
+      await vi.waitFor(() => {
+        expect(send.mock.calls.map((call) => String(call[0])).join("\n")).toContain("OWNER-QUEUED");
+      });
+      expect(send.mock.calls.map((call) => String(call[0])).join("\n").includes("GUEST-QUEUED")).toBe(gateAnswer === true);
+      if (gateAnswer !== null) {
+        expect(gate).toHaveBeenCalledWith({ sessionId: session.id, steerId: guest.steerId, author: { kind: "guest", userId: "user_guest", name: "Guest" } });
+      }
+    });
+
     it("moveSteer delivers queued Claude messages in the order the user set", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);

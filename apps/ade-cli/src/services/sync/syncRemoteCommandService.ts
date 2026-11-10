@@ -380,6 +380,7 @@ import {
   parseAgentChatCreateFields,
   parseAgentChatFileRefs,
   parseAgentChatSendArgs,
+  guestCommentIdsField,
   parseChatLaunchArgs,
   parseChatLaunchCompleteClientArgs,
   parseChatLaunchIdArgs,
@@ -2840,6 +2841,7 @@ function parseAgentChatSteerArgs(value: Record<string, unknown>): AgentChatSteer
     // typed in the composer.
     sentByUser: true,
     ...(includeThreadComments ? { includeThreadComments: true } : {}),
+    ...guestCommentIdsField(includeThreadComments, value.includeGuestCommentIds),
   };
 }
 
@@ -3264,6 +3266,7 @@ function parseGitListCommitFilesArgs(value: Record<string, unknown>): GitListCom
   return {
     laneId: requireString(value.laneId, "git.listCommitFiles requires laneId."),
     commitSha: requireString(value.commitSha, "git.listCommitFiles requires commitSha."),
+    ...(value.onlyLaneHistory === true ? { onlyLaneHistory: true } : {}),
   };
 }
 
@@ -3271,6 +3274,7 @@ function parseGitGetCommitMessageArgs(value: Record<string, unknown>): GitGetCom
   return {
     laneId: requireString(value.laneId, "git.getCommitMessage requires laneId."),
     commitSha: requireString(value.commitSha, "git.getCommitMessage requires commitSha."),
+    ...(value.onlyLaneHistory === true ? { onlyLaneHistory: true } : {}),
   };
 }
 

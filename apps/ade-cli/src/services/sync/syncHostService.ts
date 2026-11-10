@@ -1318,6 +1318,12 @@ type SyncHostServiceArgs = {
    * Absent: no grant has rights here, so every guest hello is refused.
    */
   laneShareRights?: LaneShareRightsStore | null;
+  /**
+   * The repository of the project this host serves (`repo:host/owner/name`),
+   * or null when it has no remote. A guest hello for a lane of another
+   * project (the brain switched projects) is refused as "not hosted here".
+   */
+  getLaneShareRepoKey?: () => string | null;
   /** Moves of a chat to or from the other person of a share (`laneShare.move` guest command). */
   laneShareMoves?: LaneShareMoveService | null;
   /** Lane sharing events for the owner's app (a guest turn still running after a revoke). */

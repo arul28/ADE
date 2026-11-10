@@ -255,7 +255,12 @@ export function AddProjectForm({
       onFolderChange={(value) =>
         setParentByMachine((current) => ({ ...current, [machine.machineId]: value }))
       }
-      onRetry={(job) => retryCopyJob(job.key)}
+      onRetry={(job) => {
+        // The folder the row shows now, which the person may have changed after the failure.
+        const folder = parentByMachine[machine.machineId]?.trim();
+        setEditingMachineId((current) => (current === machine.machineId ? null : current));
+        retryCopyJob(job.key, folder ? { parentDir: folder } : {});
+      }}
     />
   );
 
@@ -627,19 +632,33 @@ function MachineRow({
         detail = (
           <span style={{ ...detailStyle, color: COLORS.danger }} title={job.failure?.detail}>
             {job.failure?.reason ?? "Couldn't add the copy"}
+            {folder.trim() && folder.trim() !== (job.parentDir ?? "") ? ` · Retry uses ${folder.trim()}` : null}
           </span>
         );
         // A retry calls the machine, so it waits until the machine is
-        // connected again: this form never connects to or wakes one.
+        // connected again: this form never connects to or wakes one. The
+        // folder can change first (a folder that does not exist, no access).
         trailing = machine.online ? (
-          <button
-            type="button"
-            style={outlineButton({ height: 24, padding: "0 10px", fontSize: 11 })}
-            aria-label={`Retry on ${machine.name}`}
-            onClick={() => onRetry(job)}
-          >
-            Retry
-          </button>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+            <button
+              type="button"
+              className="kit-icon-btn"
+              aria-label={`Change folder on ${machine.name}`}
+              aria-expanded={machine.isLocal ? undefined : editing}
+              onClick={onEditFolder}
+              style={{ width: 24, height: 24, flexShrink: 0 }}
+            >
+              <DotsThree size={14} weight="bold" />
+            </button>
+            <button
+              type="button"
+              style={outlineButton({ height: 24, padding: "0 10px", fontSize: 11 })}
+              aria-label={`Retry on ${machine.name}`}
+              onClick={() => onRetry(job)}
+            >
+              Retry
+            </button>
+          </span>
         ) : null;
       }
       break;
@@ -702,7 +721,7 @@ function MachineRow({
         {detail}
         {trailing}
       </div>
-      {editing && state.kind === "available" && !machine.isLocal ? (
+      {editing && (state.kind === "available" || (state.kind === "job" && state.job.status === "failed")) && !machine.isLocal ? (
         <div style={{ padding: "0 12px 10px 38px" }}>
           <input
             type="text"

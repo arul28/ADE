@@ -292,6 +292,22 @@ export function createLaneShareRightsStore(options: {
       return Number(found?.n) || 0;
     },
 
+    /** The grant whose guest recorded the item, or null (not a guest's item). */
+    itemGrant(kind: LaneShareGuestItemKind, itemId: string): string | null {
+      return db.get<{ grant_id: string }>(
+        `select grant_id from ${LANE_SHARE_GUEST_ITEMS_TABLE} where kind = ? and item_id = ? limit 1`,
+        [kind, itemId],
+      )?.grant_id ?? null;
+    },
+
+    /** Every grant with at least one item of `kind`, rights row or not. */
+    grantsWithItems(kind: LaneShareGuestItemKind): string[] {
+      return db.all<{ grant_id: string }>(
+        `select distinct grant_id from ${LANE_SHARE_GUEST_ITEMS_TABLE} where kind = ?`,
+        [kind],
+      ).map((item) => item.grant_id);
+    },
+
     listItems(grantId: string, kind: LaneShareGuestItemKind): Array<{ itemId: string; sessionId: string | null }> {
       return db.all<{ item_id: string; session_id: string | null }>(
         `select item_id, session_id from ${LANE_SHARE_GUEST_ITEMS_TABLE} where grant_id = ? and kind = ? order by created_at desc`,

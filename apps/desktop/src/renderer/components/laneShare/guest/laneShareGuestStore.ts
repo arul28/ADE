@@ -5,6 +5,7 @@ import { parseCodedErrorMessage } from "../../../../shared/codedError";
 import { LANE_SHARING_UNAVAILABLE } from "../../../../shared/laneShareDirectory";
 import { LANE_SHARE_ERROR_TEXT } from "../laneShareModel";
 import { logRendererDebugEvent } from "../../../lib/debugLog";
+import { fetchAccountStatus, subscribeAccountStatus } from "../../../lib/account";
 import {
   LaneShareGuestConnection,
   type LaneShareGuestConnectionState,
@@ -22,11 +23,16 @@ import {
  * a user action or after 5 minutes. A directory without lane sharing is
  * asked again only on Try again (or the next app start). A connection opens
  * only when the user opens a shared lane or expands it in the Work shelf.
+ *
+ * Everything here belongs to one account. A sign-out or another account
+ * clears it all: connections close, and a read still on its way is dropped.
  */
 
 export type LaneShareGuestProblem = { code: string | null; message: string };
 
 type GuestStore = {
+  /** The account the received list was read for (undefined: read before the account was known). */
+  receivedFor: string | null | undefined;
   received: LaneShareReceivedEntry[] | null;
   receivedStatus: "idle" | "loading" | "ready" | "error";
   receivedProblem: LaneShareGuestProblem | null;
@@ -41,7 +47,8 @@ type GuestStore = {
   workSelection: { grantId: string; sessionId: string | null } | null;
 };
 
-export const useLaneShareGuestStore = create<GuestStore>(() => ({
+const EMPTY_GUEST_STORE: GuestStore = {
+  receivedFor: undefined,
   received: null,
   receivedStatus: "idle",
   receivedProblem: null,
@@ -52,14 +59,56 @@ export const useLaneShareGuestStore = create<GuestStore>(() => ({
   guestStates: {},
   notices: {},
   workSelection: null,
-}));
+};
+
+export const useLaneShareGuestStore = create<GuestStore>(() => ({ ...EMPTY_GUEST_STORE }));
 
 const RECEIVED_TTL_MS = 5 * 60_000;
 /** After a failed read, mounts wait this long (doubling to the TTL) before they ask again. */
 const RECEIVED_RETRY_MS = 15_000;
 let receivedInFlight: Promise<void> | null = null;
 let receivedFailures = 0;
-const liveConnections = new Map<string, { connection: LaneShareGuestConnection; dispose: () => void; users: number }>();
+/** `account` undefined: opened before the account was known; the first status adopts it. */
+type LiveConnection = { connection: LaneShareGuestConnection; dispose: () => void; users: number; account: string | null | undefined };
+const liveConnections = new Map<string, LiveConnection>();
+
+/** The signed-in account's user id; undefined until the first status arrives. */
+let boundAccount: string | null | undefined;
+/** Moves on each account change: a read started for an earlier account is dropped. */
+let accountEpoch = 0;
+let accountWatch: (() => void) | null = null;
+
+function accountOf(status: { signedIn: boolean; userId: string | null }): string | null {
+  return status.signedIn ? status.userId?.trim() || null : null;
+}
+
+/** Closes every guest connection and clears the store: the account changed. */
+function clearForAccountChange(): void {
+  accountEpoch += 1;
+  receivedInFlight = null;
+  receivedFailures = 0;
+  for (const live of liveConnections.values()) live.dispose();
+  liveConnections.clear();
+  useLaneShareGuestStore.setState({ ...EMPTY_GUEST_STORE });
+}
+
+/** Starts, once, the watch that clears everything on a sign-out or another account. */
+function watchAccount(): void {
+  if (accountWatch) return;
+  const onStatus = (status: { signedIn: boolean; userId: string | null }) => {
+    const next = accountOf(status);
+    if (boundAccount === undefined) {
+      // The first status: what was opened before it is this account's.
+      for (const live of liveConnections.values()) live.account ??= next;
+      if (useLaneShareGuestStore.getState().receivedFor === undefined) useLaneShareGuestStore.setState({ receivedFor: next });
+    } else if (next !== boundAccount) {
+      clearForAccountChange();
+    }
+    boundAccount = next;
+  };
+  accountWatch = subscribeAccountStatus(onStatus);
+  void fetchAccountStatus().then(onStatus).catch(() => undefined);
+}
 
 /** A plain reason for a failed guest call. */
 export function laneShareGuestProblem(error: unknown): LaneShareGuestProblem {
@@ -86,7 +135,14 @@ function bridge() {
  * `retry` (a Try again) asks it again.
  */
 export async function loadLaneShareReceived(options: { force?: boolean; retry?: boolean } = {}): Promise<void> {
+  watchAccount();
+  const account = boundAccount;
+  // No account change can pass during the read (the epoch drops it), so a
+  // read started before the first status belongs to the account it brought.
+  const readFor = () => (account === undefined ? boundAccount : account);
   const state = useLaneShareGuestStore.getState();
+  // A list read for another account is no cache of this one.
+  if (state.receivedFor !== account) options = { ...options, force: true };
   if (!options.retry && state.receivedProblem?.code === LANE_SHARING_UNAVAILABLE) return;
   if (!options.force && state.receivedStatus === "ready" && Date.now() - state.receivedAt < RECEIVED_TTL_MS) return;
   // A failed read is cached too: a mount does not ask again until its backoff ends.
@@ -97,15 +153,18 @@ export async function loadLaneShareReceived(options: { force?: boolean; retry?: 
   if (receivedInFlight) return await receivedInFlight;
   const api = bridge();
   if (!api) {
-    useLaneShareGuestStore.setState({ receivedStatus: "ready", received: [], receivedAt: Date.now() });
+    useLaneShareGuestStore.setState({ receivedFor: readFor(), receivedStatus: "ready", received: [], receivedAt: Date.now() });
     return;
   }
   useLaneShareGuestStore.setState({ receivedStatus: state.received ? state.receivedStatus : "loading" });
-  receivedInFlight = (async () => {
+  const epoch = accountEpoch;
+  const read = (async () => {
     try {
       const result = await api.listReceived();
+      if (epoch !== accountEpoch) return;
       receivedFailures = 0;
       useLaneShareGuestStore.setState({
+        receivedFor: readFor(),
         received: result.shares,
         pendingInvitesUnavailable: result.pendingInvitesUnavailable,
         receivedStatus: "ready",
@@ -113,13 +172,16 @@ export async function loadLaneShareReceived(options: { force?: boolean; retry?: 
         receivedAt: Date.now(),
       });
     } catch (error) {
+      if (epoch !== accountEpoch) return;
       receivedFailures += 1;
-      useLaneShareGuestStore.setState({ receivedStatus: "error", receivedProblem: laneShareGuestProblem(error), receivedAt: Date.now() });
+      useLaneShareGuestStore.setState({ receivedFor: readFor(), receivedStatus: "error", receivedProblem: laneShareGuestProblem(error), receivedAt: Date.now() });
     } finally {
-      receivedInFlight = null;
+      // A read of an earlier account no longer owns the slot (the change cleared it).
+      if (epoch === accountEpoch) receivedInFlight = null;
     }
   })();
-  return await receivedInFlight;
+  receivedInFlight = read;
+  return await read;
 }
 
 /** Shares that are in use: accepted and not ended. */
@@ -146,6 +208,7 @@ export async function refreshLaneShareGuestState(grantId: string, options: { wit
   if (!live || live.connection.state.kind !== "connected") return;
   try {
     const guestState = await live.connection.getGuestState();
+    if (liveConnections.get(grantId) !== live) return;
     useLaneShareGuestStore.setState((state) => ({ guestStates: { ...state.guestStates, [grantId]: guestState } }));
     if (options.withSessions) await live.connection.refreshSessions();
   } catch (error) {
@@ -155,7 +218,8 @@ export async function refreshLaneShareGuestState(grantId: string, options: { wit
 }
 
 export function laneShareGuestConnection(grantId: string): LaneShareGuestConnection | null {
-  return liveConnections.get(grantId)?.connection ?? null;
+  const live = liveConnections.get(grantId);
+  return live && live.account === boundAccount ? live.connection : null;
 }
 
 /**
@@ -165,7 +229,14 @@ export function laneShareGuestConnection(grantId: string): LaneShareGuestConnect
 export function retainLaneShareGuestConnection(entry: Pick<LaneShareReceivedEntry, "grantId" | "laneId">): () => void {
   const api = bridge();
   if (!api || !entry.laneId) return () => undefined;
+  watchAccount();
+  const account = boundAccount;
   let live = liveConnections.get(entry.grantId);
+  if (live && live.account !== account) {
+    live.dispose();
+    liveConnections.delete(entry.grantId);
+    live = undefined;
+  }
   if (!live) {
     const connection = new LaneShareGuestConnection({ grantId: entry.grantId, laneId: entry.laneId, directory: api });
     const offState = connection.on("state", (connectionState) => {
@@ -190,6 +261,7 @@ export function retainLaneShareGuestConnection(entry: Pick<LaneShareReceivedEntr
     live = {
       connection,
       users: 0,
+      account,
       dispose: () => {
         offState();
         offSessions();
@@ -200,14 +272,16 @@ export function retainLaneShareGuestConnection(entry: Pick<LaneShareReceivedEntr
     };
     liveConnections.set(entry.grantId, live);
   }
-  live.users += 1;
-  live.connection.start();
+  const held = live;
+  held.users += 1;
+  held.connection.start();
   let released = false;
   return () => {
     if (released) return;
     released = true;
+    // A connection an account change already closed is not this release's to count.
     const current = liveConnections.get(entry.grantId);
-    if (!current) return;
+    if (current !== held) return;
     current.users -= 1;
     if (current.users > 0) return;
     current.dispose();

@@ -13,6 +13,7 @@ import type {
 import { normalizeHarnessPreset } from "../../../shared/harnessPresets";
 import { parseLaneLinearIssueValue } from "../../../shared/laneLinearIssue";
 import { normalizeLaneStart } from "../../../shared/laneStart";
+import { parseGuestCommentIds } from "../../../shared/threadComments";
 import { isRecord } from "../shared/utils";
 
 /**
@@ -150,6 +151,12 @@ function parseAgentChatMessageFields(value: Record<string, unknown>): Omit<Agent
   };
 }
 
+/** The guest comments the owner named for this send; only with the chat's own comments. */
+export function guestCommentIdsField(includeThreadComments: boolean, value: unknown): { includeGuestCommentIds?: string[] } {
+  const ids = includeThreadComments ? parseGuestCommentIds(value) : undefined;
+  return ids ? { includeGuestCommentIds: ids } : {};
+}
+
 export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendArgs {
   const messageFields = parseAgentChatMessageFields(value);
   const text = typeof value.text === "string" ? asTrimmedString(value.text) ?? "" : null;
@@ -165,6 +172,7 @@ export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentCha
     ...messageFields,
     ...(typeof value.compactFirst === "boolean" ? { compactFirst: value.compactFirst } : {}),
     ...(includeThreadComments ? { includeThreadComments: true } : {}),
+    ...guestCommentIdsField(includeThreadComments, value.includeGuestCommentIds),
   };
 }
 

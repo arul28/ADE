@@ -524,14 +524,15 @@ describe("fileService", () => {
       fs.writeFileSync(path.join(rootPath, "src", "index.ts"), "export {};\n", "utf8");
       if (process.platform !== "win32") fs.symlinkSync(path.join(rootPath, ".env"), path.join(rootPath, "src", "env-link"));
       else if (relPath === "src/env-link") return;
-      const read = service.readFile({ workspaceId: "workspace-1", path: relPath, refuseIgnored: true });
-      const range = service.readFileRange({ workspaceId: "workspace-1", path: relPath, offset: 0, refuseIgnored: true });
+      // Each read starts only when the one before it is awaited: a rejection never waits unhandled.
+      const read = () => service.readFile({ workspaceId: "workspace-1", path: relPath, refuseIgnored: true });
+      const range = () => service.readFileRange({ workspaceId: "workspace-1", path: relPath, offset: 0, refuseIgnored: true });
       if (readable) {
-        await expect(read).resolves.toMatchObject({ content: "export {};\n" });
-        await expect(range).resolves.toBeTruthy();
+        await expect(read()).resolves.toMatchObject({ content: "export {};\n" });
+        await expect(range()).resolves.toBeTruthy();
       } else {
-        await expect(read).rejects.toThrow("not shared");
-        await expect(range).rejects.toThrow("not shared");
+        await expect(read()).rejects.toThrow("not shared");
+        await expect(range()).rejects.toThrow("not shared");
       }
     } finally {
       removeTestTree(rootPath);

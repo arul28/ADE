@@ -63,8 +63,8 @@ export type DraftDeliveryDeps = {
     sessionId: string;
     text: string;
     attachments: AgentChatFileRef[];
-    /** The draft's author. A guest's draft is sent as a plain prompt, with the author kept. */
-    author: AdeMessageAuthor | null;
+    /** The draft's author, only when it has one. A guest's draft is sent as a plain prompt, with the author kept. */
+    author?: AdeMessageAuthor;
   }) => Promise<void>;
   /** Create the chat the schedule asked for, then deliver into it. */
   createChatAndSend: (args: {
@@ -77,7 +77,8 @@ export type DraftDeliveryDeps = {
     modelId: string | null;
     permissionMode: string | null;
     thinking: string | null;
-    author: AdeMessageAuthor | null;
+    /** The draft's author, only when it has one. */
+    author?: AdeMessageAuthor;
   }) => Promise<void>;
   /**
    * False when an image this draft carries is not readable on this machine
@@ -177,7 +178,7 @@ export async function deliverDraft(
         modelId: draft.modelId,
         permissionMode: draft.permissionMode ?? null,
         thinking: draft.thinking ?? null,
-        author: draft.author ?? null,
+        ...(draft.author ? { author: draft.author } : {}),
       });
     } else {
       const sessionId = targetSessionId;
@@ -194,7 +195,7 @@ export async function deliverDraft(
           moveAwayHeldAt: new Date(nowMs).toISOString(),
         });
       }
-      await deps.sendToChat({ sessionId, text: draft.text, attachments, author: draft.author ?? null });
+      await deps.sendToChat({ sessionId, text: draft.text, attachments, ...(draft.author ? { author: draft.author } : {}) });
     }
     return { status: "sent", firedAt: new Date(nowMs).toISOString() };
   } catch (error) {

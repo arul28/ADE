@@ -110,6 +110,17 @@ export type ChatThreadCommentsChangedEvent = {
   comments: ChatThreadComment[];
 };
 
+/**
+ * The guest comment ids a send names (`includeGuestCommentIds`), cleaned: at
+ * most one chat's worth of short ids. Undefined when it names none.
+ */
+export function parseGuestCommentIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids = [...new Set(value.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 128))]
+    .slice(0, MAX_THREAD_COMMENTS_PER_SESSION);
+  return ids.length ? ids : undefined;
+}
+
 export function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }

@@ -390,8 +390,11 @@ export function createLaneShareHostService(options: {
       // The end date is kept in the local rights too, before the directory
       // write: the host enforces it, so a failed write cannot leave an old,
       // later end in force here.
-      const rights = endsAt !== undefined ? { ...asked, limits: { ...asked.limits, endsAt } } : asked;
-      let record = options.store.get(grantId) ? options.store.updateRights(grantId, rights) : null;
+      // No end date in the call: the stored one stays, as it does on the directory.
+      const stored = options.store.get(grantId);
+      const keptEndsAt = endsAt !== undefined ? endsAt : stored ? stored.rights.limits.endsAt ?? null : asked.limits.endsAt;
+      const rights = { ...asked, limits: { ...asked.limits, endsAt: keptEndsAt } };
+      let record = stored ? options.store.updateRights(grantId, rights) : null;
       if (!record) {
         // "Needs rights": a live grant of this machine that holds no rights here.
         const grant = await givenGrant(grantId);
@@ -459,7 +462,8 @@ export function createLaneShareHostService(options: {
       const record = options.store.get(grantId);
       if (!record?.receiverEmail) throw new LaneShareHostError("not_found", "This computer holds no invite for that lane share.");
       const risk = laneShareRiskLevel(record.rights);
-      const { grantId: sentId, body } = await invite(record.laneId, record.receiverEmail, record.rights, risk.level, undefined);
+      // The stored end goes with it: the directory writes the invite's end over the old one.
+      const { grantId: sentId, body } = await invite(record.laneId, record.receiverEmail, record.rights, risk.level, record.rights.limits.endsAt ?? null);
       if (sentId !== grantId) {
         // The directory made a new grant (the old one closed): keep the rights under it.
         options.store.put({ grantId: sentId, laneId: record.laneId, receiverEmail: record.receiverEmail, rights: record.rights });

@@ -189,6 +189,7 @@ import {
 } from "./AgentChatComposer";
 import {
   countCommentsForNextSend,
+  guestCommentIdsForNextSend,
   requestThreadCommentFocus,
   setThreadComments,
   useThreadComments,
@@ -5516,6 +5517,9 @@ export function AgentChatPane({
   const threadCommentSendCount = countCommentsForNextSend(threadComments);
   const threadCommentSendCountRef = useRef(threadCommentSendCount);
   threadCommentSendCountRef.current = threadCommentSendCount;
+  // A guest's comment goes only when the owner ticked it: the send names it.
+  const threadCommentsRef = useRef(threadComments);
+  threadCommentsRef.current = threadComments;
   const threadCommentsSessionIdRef = useRef(threadCommentsSessionId);
   threadCommentsSessionIdRef.current = threadCommentsSessionId;
   const threadCommentsProp = useMemo(
@@ -15274,7 +15278,10 @@ export function AgentChatPane({
           : contextAttachmentsSnapshot.length || !includeThreadComments
             ? "Attached issue context"
             : "");
-      const threadCommentSendFields = includeThreadComments ? { includeThreadComments: true as const } : {};
+      const guestCommentIdsForSend = includeThreadComments ? guestCommentIdsForNextSend(threadCommentsRef.current) : [];
+      const threadCommentSendFields = includeThreadComments
+        ? { includeThreadComments: true as const, ...(guestCommentIdsForSend.length ? { includeGuestCommentIds: guestCommentIdsForSend } : {}) }
+        : {};
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);

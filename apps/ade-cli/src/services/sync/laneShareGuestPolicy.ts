@@ -265,8 +265,9 @@ export const LANE_SHARE_GUEST_COMMANDS: Readonly<Record<string, LaneShareGuestCo
   "chat.dismissPendingInput": { scope: "session", kinds: CHAT, args: ["itemId"], needs: (rights) => rights.decide.questions, kind: "write" },
 
   // Tools: reads of the granted lane only, with paths and commits checked
-  // here (`laneShareSafeRelativePath`, `COMMIT_SHA`). No compare refs and no
-  // other lanes' scope.
+  // here (`laneShareSafeRelativePath`, `COMMIT_SHA`), and a commit checked
+  // against the lane's history by the git service (`onlyLaneHistory`). No
+  // compare refs and no other lanes' scope.
   "git.listRecentCommits": { scope: "lane", args: ["limit", "skip"], needs: (rights) => rights.tools.git, kind: "read" },
   "git.listCommitFiles": { scope: "lane", args: ["commitSha"], needs: (rights) => rights.tools.git, kind: "read" },
   "git.getCommitMessage": { scope: "lane", args: ["commitSha"], needs: (rights) => rights.tools.git, kind: "read" },
@@ -455,8 +456,11 @@ function laneShareSafeRelativePath(value: unknown, options: { allowEmpty?: boole
 
 /** Extra argument checks for the tool reads: paths, commits and diff modes. */
 function checkToolArgs(action: string, kept: Record<string, unknown>): string | null {
-  if ("commitSha" in kept && (typeof kept.commitSha !== "string" || !COMMIT_SHA.test(kept.commitSha))) {
-    return "Name a commit by its hash.";
+  if ("commitSha" in kept) {
+    if (typeof kept.commitSha !== "string" || !COMMIT_SHA.test(kept.commitSha)) return "Name a commit by its hash.";
+    // Lanes share one object store: the git service refuses a commit the
+    // granted lane's HEAD does not reach.
+    kept.onlyLaneHistory = true;
   }
   if (action === "git.getFile" || action === "git.getFilePatch" || action === "git.getFileHistory") {
     const path = laneShareSafeRelativePath(kept.path);
