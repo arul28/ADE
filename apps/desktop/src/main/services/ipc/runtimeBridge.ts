@@ -544,6 +544,29 @@ export type RuntimeBridgeRegistration = {
     rootPath?: string | null;
     windowId: number | null;
   }): Promise<OpenProjectBinding & { kind: "remote" }>;
+  /**
+   * Main-process access to a paired computer for work no window owns: an ADE
+   * Cloud lane launch (`cloudLaneLaunchService.ts`) sets up its computer and
+   * hands the launch to that computer's brain with the window closed.
+   */
+  remoteForMain: {
+    /** Connects (waking a sleeping cloud computer); true once connected, throws otherwise. */
+    connect(targetId: string): Promise<boolean>;
+    projects(targetId: string): Promise<RemoteRuntimeProjectRecord[]>;
+    defaultParentDir(targetId: string): Promise<string>;
+    /** Clones with the computer's own Git sign-in; no credential from here goes with it. */
+    cloneProject(targetId: string, input: CloneProjectInput): Promise<RemoteRuntimeProjectRecord>;
+    resolveBinding(targetId: string, projectId: string, rootPath: string): Promise<OpenProjectBinding & { kind: "remote" }>;
+    /** One runtime action through a pin; the action's own result. */
+    callAction(binding: OpenProjectBinding & { kind: "remote" }, request: RemoteRuntimeActionRequest): Promise<unknown>;
+    /** The pin's runtime events of one category; `onEnded` when the stream stops by itself. */
+    subscribeEvents(
+      binding: OpenProjectBinding & { kind: "remote" },
+      category: RemoteRuntimeEventCategory,
+      onEvent: (event: RemoteRuntimeBufferedEvent) => void,
+      onEnded: () => void,
+    ): Promise<() => void>;
+  };
 };
 
 /**
@@ -769,6 +792,32 @@ export function registerRuntimeBridge({
       const binding = await resolveRemoteProjectBinding(targetId, projectId, rootPath);
       bindRemoteProject?.(windowId, binding);
       return binding;
+    },
+    remoteForMain: {
+      connect: async (targetId) => {
+        // Resolves only once connected; a failure throws.
+        await remoteConnectionService.connect(requireRemoteTarget(targetId).id, { explicit: true });
+        return true;
+      },
+      projects: (targetId) => remoteConnectionService.projects(requireRemoteTarget(targetId).id),
+      defaultParentDir: (targetId) => remoteConnectionService.getDefaultParentDir(requireRemoteTarget(targetId).id),
+      cloneProject: (targetId, input) => remoteConnectionService.cloneProject(requireRemoteTarget(targetId).id, stripCloneAuthHeader(input)),
+      resolveBinding: (targetId, projectId, rootPath) => resolveRemoteProjectBinding(targetId, projectId, rootPath),
+      callAction: async (binding, request) => (await remoteConnectionService.callAction(
+        requireRemoteTarget(binding.targetId).id,
+        binding.projectId,
+        request,
+        { projectRootPath: binding.rootPath },
+      )).result,
+      subscribeEvents: (binding, category, onEvent, onEnded) => remoteConnectionService.subscribeEvents(
+        requireRemoteTarget(binding.targetId).id,
+        binding.projectId,
+        { category },
+        (event) => onEvent(event),
+        onEnded,
+        undefined,
+        { projectRootPath: binding.rootPath },
+      ),
     },
   };
 

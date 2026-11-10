@@ -100,6 +100,13 @@ import { assertLaneIdArg, describeArgType } from "./laneIdArg";
 import { laneWorktreeFolderName, legacyLaneWorktreeFolderName } from "./laneWorktreeNaming";
 import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
 import { measureTree } from "../storage/diskUsage";
+import {
+  assertCloudComputerHasRoomForLane as assertCloudComputerRoom,
+  claimCloudComputerLane,
+  cloudComputerLaneRuleApplies,
+  releaseCloudComputerLaneClaim,
+  type CloudComputerLaneRow,
+} from "../adeCloud/cloudComputerLaneHold";
 import { writeLaneUsageTombstone, type LaneUsageTombstoneMode } from "./laneUsageTombstone";
 import type {
   ArchiveAndReclaimLaneArgs,
@@ -3192,16 +3199,35 @@ export function createLaneService({
       const now = new Date().toISOString();
       const displayName = inferLaneNameFromWorktree(candidate);
       const laneColor = allocateLaneColorForProject();
-      db.run(
-        `
-          insert into lanes(
-            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-            attached_root_path, is_edit_protected, color, icon, tags_json, status, created_at, archived_at
-          )
-          values(?, ?, ?, null, 'worktree', ?, ?, ?, null, 0, ?, null, null, 'active', ?, null)
-        `,
-        [laneId, projectId, displayName, defaultBaseRef, branchRef, worktreePath, laneColor, now]
-      );
+      // A worktree made by hand on a cloud computer that already holds a
+      // lane stays a plain folder: the one-lane rule counts adopted lanes too.
+      // Claimed and inserted in one synchronous step, like a create.
+      let cloudLaneClaimed = false;
+      try {
+        cloudLaneClaimed = claimCloudLaneForInsert(laneId);
+      } catch (error) {
+        logger.info("laneService.cloud_computer_adoption_skipped", {
+          projectRoot,
+          worktreePath,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
+      try {
+        db.run(
+          `
+            insert into lanes(
+              id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+              attached_root_path, is_edit_protected, color, icon, tags_json, status, created_at, archived_at
+            )
+            values(?, ?, ?, null, 'worktree', ?, ?, ?, null, 0, ?, null, null, 'active', ?, null)
+          `,
+          [laneId, projectId, displayName, defaultBaseRef, branchRef, worktreePath, laneColor, now]
+        );
+      } finally {
+        // Inserted or not, the claim only covered the insert.
+        releaseCloudLaneClaim(cloudLaneClaimed, laneId);
+      }
 
       const row = getLaneRow(laneId);
       if (row) {
@@ -4185,6 +4211,64 @@ export function createLaneService({
     }
   };
 
+  /**
+   * The id of the lane `restoreDeletedLane` brings back, set only while it
+   * imports that lane. Held in async context, not in an argument, so no
+   * caller can claim it.
+   */
+  const restoringDeletedLane = new AsyncLocalStorage<string>();
+
+  /**
+   * This project's lanes that hold its cloud computer, for the one-lane rule
+   * (`cloudComputerLaneHold.ts`): every lane but the primary, archived ones
+   * too (an archived lane keeps its computer for a one-click restore). Not a
+   * lane being deleted (a deleted lane has no row), and not the lane a
+   * restore brings back. `raced` names the folder and branch of the lane
+   * being inserted: a row on either is a recovery artifact of that same
+   * insert, which the insert absorbs, not a second lane.
+   */
+  const cloudComputerOwnLanes = (raced?: { worktreePath: string; branchRef: string }): CloudComputerLaneRow[] => {
+    const restoringLaneId = restoringDeletedLane.getStore() ?? null;
+    return db.all<{ id: string; name: string | null; status: string | null; lane_type: string; worktree_path: string; branch_ref: string }>(
+      "select id, name, status, lane_type, worktree_path, branch_ref from lanes where project_id = ? and lane_type != 'primary' order by created_at asc",
+      [projectId],
+    )
+      .filter((row) => row.id !== restoringLaneId && deleteProgressByLaneId.get(row.id)?.overallStatus !== "running")
+      .filter((row) => !(raced && row.status !== "archived" && row.lane_type === "worktree"
+        && (row.worktree_path === raced.worktreePath || row.branch_ref === raced.branchRef)))
+      .map(({ id, name, status }) => ({ id, name, status }));
+  };
+
+  /**
+   * One lane per ADE Cloud computer, across every project on it: refuses a
+   * new lane when the computer already holds one. The early check, before
+   * any git work. A computer from the older flow that holds several lanes
+   * keeps them all; only a new one is refused. A normal computer is never
+   * checked.
+   */
+  const assertCloudComputerHasRoomForLane = (): void => {
+    if (!cloudComputerLaneRuleApplies()) return;
+    assertCloudComputerRoom({ projectRoot, ownLanes: cloudComputerOwnLanes() });
+  };
+
+  /**
+   * The same check right before a lane row is inserted, in the same
+   * synchronous step as the insert: under this database's write lock and the
+   * computer-wide lock, so two creates at once (in this project, another
+   * project, or another process) cannot both pass. True when it took a
+   * claim; the caller gives it back with `releaseCloudLaneClaim` once the
+   * insert committed or failed.
+   */
+  const claimCloudLaneForInsert = (laneId: string, raced?: { worktreePath: string; branchRef: string }): boolean => {
+    if (!cloudComputerLaneRuleApplies()) return false;
+    claimCloudComputerLane({ projectRoot, laneId, ownLanes: () => cloudComputerOwnLanes(raced) });
+    return true;
+  };
+
+  const releaseCloudLaneClaim = (claimed: boolean, laneId: string): void => {
+    if (claimed) releaseCloudComputerLaneClaim(projectRoot, laneId);
+  };
+
   const resolvePresetLaneId = (requested: string | null | undefined): string => {
     const trimmed = requested?.trim() ?? "";
     if (!trimmed) return randomUUID();
@@ -4290,7 +4374,11 @@ export function createLaneService({
         const laneColor = allocateLaneColorForProject();
         db.run("begin immediate");
         let absorbedRowsInTransaction = 0;
+        let cloudLaneClaimed = false;
         try {
+          // Checked again under the write lock: a create that raced this one
+          // may have inserted its lane since the first check.
+          cloudLaneClaimed = claimCloudLaneForInsert(laneId, { worktreePath, branchRef });
           // Insert the canonical row first, then fold any raced recovery
           // artifact into it (so its sessions / Linear links migrate rather
           // than being deleted). Archived lanes are excluded: an old archived
@@ -4338,12 +4426,15 @@ export function createLaneService({
 
           db.run("commit");
           absorbedRacedAdoptionRows = absorbedRowsInTransaction;
+          // The row counts now; the claim only covered the insert.
+          releaseCloudLaneClaim(cloudLaneClaimed, laneId);
         } catch (txError) {
           try {
             db.run("rollback");
           } catch {
             // surface the original error below
           }
+          releaseCloudLaneClaim(cloudLaneClaimed, laneId);
           throw txError;
         }
         // Linear issue upsert manages its own transaction, so it must run
@@ -6268,6 +6359,8 @@ export function createLaneService({
       }: CreateLaneArgs,
       runtimeOptions: LaneCreateRuntimeOptions = {},
     ): Promise<LaneSummary> {
+      // Before any git work: a cloud computer that holds a lane refuses at once.
+      assertCloudComputerHasRoomForLane();
       const gitWrite = beginLaneGitWrite(operationId, runtimeOptions.signal);
       runtimeOptions = { ...runtimeOptions, signal: gitWrite.signal };
       try {
@@ -6409,6 +6502,10 @@ export function createLaneService({
       const rawRef = (args.branchRef ?? "").trim();
       if (!rawRef) throw new Error("branchRef is required");
       if (rawRef.includes("\0")) throw new Error("Invalid branchRef");
+      // Before any git work. A restore counts too: it brings its lane back
+      // only when the computer holds no other lane (`cloudComputerOwnLanes`
+      // skips the restored lane's own row).
+      assertCloudComputerHasRoomForLane();
 
       let branchRef = rawRef;
       let remoteRefToTrack: string | null = null;
@@ -6508,7 +6605,10 @@ export function createLaneService({
         const laneColor = allocateLaneColorForProject();
 
         db.run("begin immediate");
+        let cloudLaneClaimed = false;
         try {
+          // Again under the write lock, for an import that raced this one.
+          cloudLaneClaimed = claimCloudLaneForInsert(laneId, { worktreePath, branchRef });
           db.run(
             `
               insert into lanes(
@@ -6539,12 +6639,15 @@ export function createLaneService({
 
           db.run("commit");
           laneInserted = true;
+          // The row counts now; the claim only covered the insert.
+          releaseCloudLaneClaim(cloudLaneClaimed, laneId);
         } catch (txError) {
           try {
             db.run("rollback");
           } catch {
             // surface the original error below
           }
+          releaseCloudLaneClaim(cloudLaneClaimed, laneId);
           throw txError;
         }
         invalidateLanePathCaches();
@@ -9093,7 +9196,9 @@ export function createLaneService({
       let lane: LaneSummary;
       try {
         // A restore must not publish work the person never pushed.
-        lane = await laneServiceApi.importBranch({ branchRef: branchName, name: snapshot.laneName, publishUpstream: false });
+        lane = await restoringDeletedLane.run(snapshot.laneId, () => laneServiceApi.importBranch(
+          { branchRef: branchName, name: snapshot.laneName, publishUpstream: false },
+        ));
       } catch (error) {
         await deleteRestoredLaneBranches(projectRoot, [branchName, ...extraBranches]);
         throw error;
@@ -9437,6 +9542,17 @@ export function createLaneService({
       const row = getLaneRow(laneId);
       if (!row || row.status === "archived") return null;
       return { id: row.id, name: row.name, branchRef: row.branch_ref, baseRef: row.base_ref, worktreePath: row.worktree_path };
+    },
+
+    /**
+     * Throws the one-lane refusal (`CloudComputerLaneLimitError`) when this
+     * is an ADE Cloud computer that already holds a lane. A cheap read for a
+     * caller that is about to ask for a new lane here (a chat launch, the
+     * destination check of a hand-off), so the person gets the answer before
+     * any work starts. `create` and `importBranch` check again on their own.
+     */
+    assertRoomForNewLane(): void {
+      assertCloudComputerHasRoomForLane();
     },
 
     getLaneBaseAndBranch(laneId: string): { baseRef: string; branchRef: string; worktreePath: string; laneType: LaneType; linearIssue: LaneLinearIssue | null } {

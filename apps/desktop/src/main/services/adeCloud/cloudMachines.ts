@@ -30,6 +30,7 @@ import {
   type CloudResources,
 } from "../../../shared/adeCloud";
 import { CLOUD_READY_METADATA, readCloudReadyMachineState } from "../../../shared/cloudReady";
+import { cloudMachineLaneFactsOf, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider, type CloudInstance } from "./cloudProvider";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
 import { cloudSleepPolicyOf } from "./cloudSleep";
@@ -69,7 +70,13 @@ function resourcesOf(instance: CloudInstance): CloudResources | null {
   return { cpu: raw.cpu, memoryGb: raw.memory, diskGb: raw.disk };
 }
 
-function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudMachine {
+/**
+ * One computer as the list shows it. A lane computer also carries its lane
+ * facts from its metadata (`CloudLaneMachine.lane`), so the composer can list
+ * a project's ADE Cloud lanes without waking any of them.
+ */
+function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudLaneMachine {
+  const lane = cloudMachineLaneFactsOf(instance.metadata);
   const resources = resourcesOf(instance);
   const type = cloudMachineType(instance.type);
   const shape = cloudShapeFor(resources);
@@ -90,6 +97,7 @@ function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudMa
     ready: readyOf(instance),
     sleep: cloudSleepPolicyOf(instance),
     diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], catalog),
+    ...(lane ? { lane } : {}),
   };
 }
 
@@ -112,6 +120,21 @@ function liveMachineKeys(instances: readonly CloudInstance[]): Set<string> {
       .map((instance) => instance.metadata[CLOUD_MACHINE_KEY_METADATA])
       .filter((key): key is string => Boolean(key)),
   );
+}
+
+/**
+ * Of these computers (as the provider lists them), the ones an agent made,
+ * copied or moved since UTC midnight (they carry `ade_made_by_chat`).
+ */
+export function countAgentMadeToday(instances: readonly CloudInstance[], nowMs: number): number {
+  const midnight = new Date(nowMs);
+  midnight.setUTCHours(0, 0, 0, 0);
+  return instances.filter((instance) => {
+    if (!instance.metadata[CLOUD_MADE_BY_CHAT_METADATA] || instance.created == null) return false;
+    // the provider answers epoch seconds; milliseconds are accepted too.
+    const createdMs = instance.created < 1e12 ? instance.created * 1000 : instance.created;
+    return createdMs >= midnight.getTime();
+  }).length;
 }
 
 /** One read of the computers for the known keys must not hold up a connect for long. */
@@ -433,14 +456,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     agentMadeToday: async (): Promise<number> => {
       const client = await deps.client();
       if (!client) return 0;
-      const midnight = new Date(now());
-      midnight.setUTCHours(0, 0, 0, 0);
-      return (await client.listInstances()).filter((instance) => {
-        if (!instance.metadata[CLOUD_MADE_BY_CHAT_METADATA] || instance.created == null) return false;
-        // the provider answers epoch seconds; milliseconds are accepted too.
-        const createdMs = instance.created < 1e12 ? instance.created * 1000 : instance.created;
-        return createdMs >= midnight.getTime();
-      }).length;
+      return countAgentMadeToday(await client.listInstances(), now());
     },
     /** Plan and hours (a costly action from elsewhere checks them). */
     account: async (): Promise<CloudAccountState | null> => {

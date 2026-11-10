@@ -416,7 +416,7 @@ export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): bo
  * items (cloudVaultItems.ts).
  */
 export const ADE_ACTION_MACHINE_SCOPED = {
-  cloud: ["access", "list", "hours", "limits", "sleep", "wake", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
+  cloud: ["access", "status", "list", "hours", "limits", "sleep", "wake", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
   account_vault: ["get", "set", "remove"],
 } as const satisfies Partial<Record<AdeActionDomain, readonly string[]>>;
 
@@ -1132,8 +1132,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // give an unused claim back) and the machine verbs. What spends money or
   // deletes asks the person first (the RPC server stamps who asks). Never the key.
   cloud: [
-    "access", "ready_status", "claim_ready", "release_ready", "list", "hours", "create", "sleep", "wake", "resize", "update",
+    // `status` is the whole account in one read (plan, hours, disk, lanes,
+    // sizes, agent limits, canStartLane); no key, no wake, no spend.
+    "access", "status", "ready_status", "claim_ready", "release_ready", "list", "hours", "create", "sleep", "wake", "resize", "update",
     "copy", "move", "delete", "ready_set", "ready_off", "ready_retry", "make_status", "limits", "set_limits",
+    // A new lane on its own new computer (`ade chat create --machine cloud`).
+    "lane_launch", "lane_launch_status", "lane_launch_cancel",
     // Sign-ins for new machines: which are kept (never a value), and the
     // person's own saves and Claude sign-in (user-only, below).
     "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES,

@@ -110,7 +110,8 @@ type CloudAccess =
   | { state: "ready"; provider: CloudProvider }
   | { state: "no_access" | "signed_out" | "unreadable" };
 
-const NO_PROVIDER_SENTENCE: Record<Exclude<CloudAccess["state"], "ready">, string> = {
+/** Why ADE Cloud can't be used from here, one sentence per reason (`cloud.status` names the reason by these). */
+export const NO_PROVIDER_SENTENCE: Readonly<Record<Exclude<CloudAccess["state"], "ready">, string>> = {
   no_access: "ADE Cloud isn't available on this account yet.",
   signed_out: "Sign in to ADE to use ADE Cloud.",
   unreadable: "ADE couldn't check this account's ADE Cloud access. Try again in a moment.",

@@ -559,8 +559,32 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     );
   };
 
+  /**
+   * Set a GitHub repository up on a machine (`machines.cloneForAgent` there:
+   * its own Git sign-in, its projects folder; a checkout already there wins).
+   * Answers that machine's project record. For an ADE Cloud lane's new
+   * computer, which this brain made and the account just listed.
+   */
+  const setUpRepository = async (input: { machine: string; originUrl: string }): Promise<unknown> => {
+    let machine = await pool.selectMachine(input.machine);
+    if (pool.isThisMachine(machine)) throw new MachineIsLocalError(machineName(machine));
+    const woke = !machine.online ? await wakeIfSleepingCloudMachine(machine) : null;
+    if (woke) machine = woke;
+    if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
+    const entry = woke ? await acquireWokenMachine(machine) : await pool.acquire(machine);
+    return await pool.request(
+      machine,
+      entry,
+      "machines.cloneForAgent",
+      "machines.cloneForAgent",
+      { originUrl: input.originUrl },
+      MACHINE_CLONE_TIMEOUT_MS,
+    );
+  };
+
   return {
     call,
+    setUpRepository,
     listMachines,
     deliverWake,
     locateChat,

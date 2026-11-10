@@ -18,6 +18,7 @@ import { LaneSetupCard, LaunchStageGlyph } from "../chat/launch/LaneSetupCard";
 import { LaunchProgressRail } from "../chat/launch/LaunchProgressRail";
 import { useLaunchDurationText } from "../chat/launch/launchClock";
 import { LaneIcon } from "../ui/vcsIcons";
+import { CloudMark } from "../remoteTargets/cloudBrand";
 import { NoticeIcon } from "../ui/notice/NoticeParts";
 import { noticeTone, type NoticeTone } from "../ui/notice/noticeTones";
 import { ToastCard } from "../ui/notice/ToastCard";
@@ -123,6 +124,11 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
     : null;
   const KindIcon = launch.kind === "cli" ? TerminalWindow : ChatCircleText;
   const tone = launchTone(failed, succeeded);
+  const cloud = launch.cloud != null;
+  const cloudRunning = cloud && !failed && !succeeded;
+  const statusLine = chatLaunchStatusLine(launch);
+  // An ADE Cloud clone's percent in the blue, as on the step card.
+  const statusPercent = cloudRunning ? /^(.*) · (\d{1,3}%)$/.exec(statusLine) : null;
   return (
     <li
       data-testid="chat-launch-row"
@@ -137,7 +143,14 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
       >
         <span className="flex w-full min-w-0 items-start gap-2.5">
           <span className="relative shrink-0" aria-hidden>
-            <NoticeIcon tone={tone} size="sm" icon={<KindIcon size={13} weight="bold" />} />
+            {cloudRunning ? (
+              // The ADE Cloud tile while its computer is made (LaneSetupCard).
+              <span className="adec-tile grid h-[22px] w-[22px] place-items-center rounded-[6px] border">
+                <CloudMark size={13} bold />
+              </span>
+            ) : (
+              <NoticeIcon tone={tone} size="sm" icon={cloud ? <CloudMark size={13} bold /> : <KindIcon size={13} weight="bold" />} />
+            )}
             <span className="absolute -bottom-1 -right-1 grid h-3 w-3 place-items-center rounded-full bg-card">
               {failed ? (
                 <LaunchStageGlyph status="failed" size={8} />
@@ -167,7 +180,13 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
             style={{ color: failed || succeeded ? noticeTone(tone).text : "var(--color-muted-fg)" }}
             data-testid="chat-launch-row-status"
           >
-            {chatLaunchStatusLine(launch)}
+            {statusPercent ? (
+              <>
+                {statusPercent[1]}
+                {" · "}
+                <span className="adec-percent tabular-nums">{statusPercent[2]}</span>
+              </>
+            ) : statusLine}
           </span>
           <LaunchElapsed launch={launch} />
         </span>
@@ -176,7 +195,7 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
           <span className="min-w-0 truncate">{launch.laneName}</span>
         </span>
         <span className="block w-full pl-[32px]" title={`${done} of ${total} steps`}>
-          <LaunchProgressRail stages={launch.stages} />
+          <LaunchProgressRail stages={launch.stages} cloud={launch.cloud != null} />
         </span>
       </button>
       <AnimatePresence initial={false}>

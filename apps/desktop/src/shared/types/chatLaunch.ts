@@ -2,6 +2,7 @@ import type { AgentChatCreateArgs, AgentChatSendArgs, AgentChatFileRef } from ".
 import type { LaneEnvInitStep } from "./config";
 import type { LaneLinearIssue } from "./lanes";
 import type { LaneStart } from "../laneStart";
+import type { OpenProjectBinding } from "./core";
 
 /**
  * A chat (or CLI session) launched into a lane that does not exist yet.
@@ -26,6 +27,12 @@ import type { LaneStart } from "../laneStart";
  *   queueMessage,completeClient,onEvent}` (every call takes an optional pin).
  * - Sync commands `chat.startLaunch` … `chat.completeLaunchClient` (same names
  *   as the action domain) and the pushed `chat_launch_event` envelope for iOS.
+ * - A launch whose args carry a `cloud` target first makes its own ADE Cloud
+ *   computer. The desktop app's main process owns `computer`, `join` and
+ *   `clone`, then starts the same launch (same id) on that computer's brain
+ *   with those stages as `priorStages`; that brain owns the rest. The desktop
+ *   routes every `window.ade.chatLaunch.*` call for such a launch to whichever
+ *   side owns it now (see `cloudLaneLaunchService.ts`).
  * - Once the chat exists its transcript carries an `ade_card` with variant
  *   `lane_setup` and cardId `lane-setup:<launchId>` (built by
  *   `buildLaneSetupCard` in shared/chatLaunch.ts; each row's `key` is its stage
@@ -46,8 +53,14 @@ export type ChatLaunchMode = "foreground" | "background";
  * - `environment` is omitted when neither a default lane template nor a
  *   project lane-environment config applies.
  * - `agent` is "Start agent" for a chat and "Start CLI session" for a CLI launch.
+ * - `computer`, `join` and `clone` are present only for an ADE Cloud launch
+ *   (`ChatLaunchArgs.cloud`): make the computer, let it join the account, and
+ *   clone the repository there. They come before every other stage.
  */
-export type ChatLaunchStageId = "fetch" | "checkout" | "environment" | "agent";
+export type ChatLaunchStageId = "computer" | "join" | "clone" | "fetch" | "checkout" | "environment" | "agent";
+
+/** The stages an ADE Cloud launch runs on the desktop before its computer's brain takes over. */
+export type ChatLaunchCloudStageId = "computer" | "join" | "clone";
 
 export type ChatLaunchStageStatus =
   | "pending"
@@ -104,6 +117,32 @@ export type ChatLaunchQueuedMessage = {
   deliveryError?: string | null;
 };
 
+/**
+ * An ADE Cloud launch's computer, on its snapshot. Absent for a launch that
+ * runs on a machine that already exists.
+ */
+export type ChatLaunchCloudState = {
+  /** The size picked at Send (a `CloudTierId`). */
+  sizeId: string;
+  /** The repository the lane clones, `github.com/owner/repo`: which project's views show this launch. */
+  projectOrigin: string;
+  /** The ADE Cloud computer, once the create answered. */
+  instanceId: string | null;
+  /** The computer's ADE account machine key, once it joined. */
+  machineKey: string | null;
+  /**
+   * The project on the new computer, once it is cloned there. This is the pin
+   * for every call to the chat (its session id is the launch id) and its lane.
+   * Null until the `clone` stage is done.
+   */
+  binding: (OpenProjectBinding & { kind: "remote" }) | null;
+  /**
+   * True once the computer's own brain owns the launch. From then on the
+   * snapshot is that brain's, and the launch goes on with this app closed.
+   */
+  handedOff: boolean;
+};
+
 export type ChatLaunchSnapshot = {
   /** Stable id for the launch. For a chat launch this equals `sessionId`. */
   launchId: string;
@@ -157,6 +196,8 @@ export type ChatLaunchSnapshot = {
   updatedAt: string;
   /** Monotonic per launch; clients drop snapshots older than the one they hold. */
   sequence: number;
+  /** Present only for an ADE Cloud launch. */
+  cloud?: ChatLaunchCloudState;
 };
 
 export type ChatLaunchEvent =
@@ -238,6 +279,23 @@ export type ChatLaunchArgs = {
   originClientId?: string | null;
   /** Required for kind "chat"; ignored for kind "cli". */
   chat?: ChatLaunchChatArgs;
+  /**
+   * Run the launch on a new ADE Cloud computer made for this lane alone.
+   * Chat launches only. The desktop app handles it, or a brain's
+   * `cloud.lane_launch` (the CLI's `--machine cloud`); `chat.startLaunch` ignores it.
+   */
+  cloud?: ChatLaunchCloudTarget | null;
+  /**
+   * Stages that finished before this brain got the launch (an ADE Cloud
+   * launch's `computer`, `join` and `clone`). Only those ids, only finished
+   * statuses; the brain shows them first and keeps them on the card.
+   */
+  priorStages?: ChatLaunchStage[];
+};
+
+export type ChatLaunchCloudTarget = {
+  /** The size, as `cloudTiers` names it: `small`, `medium`, `large` or `xlarge`. */
+  sizeId: string;
 };
 
 export type ChatLaunchIdArgs = { launchId: string };

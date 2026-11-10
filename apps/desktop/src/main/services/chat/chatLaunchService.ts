@@ -26,7 +26,13 @@ import type {
   NewLaneDefaultsSnapshot,
 } from "../../../shared/types";
 import type { AdeCardPayload } from "../../../shared/adeCard";
-import { chatLaunchLaneStart, createChatLaunchSnapshot, isChatLaunchTerminal, toQueuedMessage } from "../../../shared/chatLaunch";
+import {
+  chatLaunchLaneStart,
+  createChatLaunchSnapshot,
+  isChatLaunchTerminal,
+  normalizeChatLaunchPriorStages,
+  toQueuedMessage,
+} from "../../../shared/chatLaunch";
 import { DEFAULT_LANE_START, laneStartSourceBranch, type LaneStart } from "../../../shared/laneStart";
 import {
   deriveDeterministicLaneNameFromPrompt,
@@ -81,6 +87,8 @@ type LaneServiceLike = {
   cleanupReservedWorktree?: (args: { laneId: string; name: string }) => Promise<void>;
   /** The live lane row with this id, or null (see `laneService.findLaneIdentity`). */
   findLaneIdentity?: (laneId: string) => ReservedLaneIdentity | null;
+  /** Throws the one-lane refusal of an ADE Cloud computer that already holds a lane (`laneService.assertRoomForNewLane`). */
+  assertRoomForNewLane?: () => void;
 };
 
 type ReservedLaneIdentity = Pick<LaneSummary, "id" | "name" | "branchRef" | "baseRef" | "worktreePath">;
@@ -940,6 +948,13 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const launchId = requireLaunchId(args?.launchId);
     const existing = records.get(launchId);
     if (existing) return cloneSnapshot(existing.snapshot);
+    // Every launch makes a lane. A cloud computer that already holds one says
+    // so now, to the caller, instead of at the checkout stage. A launch whose
+    // reserved lane row already exists is a retry, not a new lane.
+    const reservedLaneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
+    if (!(reservedLaneId && deps.laneService.findLaneIdentity?.(reservedLaneId))) {
+      deps.laneService.assertRoomForNewLane?.();
+    }
 
     const kind = args.kind === "cli" ? "cli" : "chat";
     let chat: ChatLaunchChatArgs | null = null;
@@ -963,12 +978,16 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const start = chatLaunchLaneStart(laneConfig, laneDefaults()?.defaults.start ?? DEFAULT_LANE_START);
     // No template asked for: the project's default template (its new-lane defaults).
     const environment = deps.planEnvironment(laneConfig?.templateId ?? null);
+    // An ADE Cloud launch's desktop stages: shown first and never run here.
+    // Re-checked even after the parser, because in-process callers skip it.
+    const priorStages = kind === "chat" ? normalizeChatLaunchPriorStages(args.priorStages) : [];
     const snapshot = createChatLaunchSnapshot({
       launch: { ...args, launchId, kind, ...(chat ? { chat } : {}) },
       laneId,
       laneName,
       includeFetch: start?.on === "remote",
       includeEnvironment: environment.hasEnvironment,
+      ...(priorStages.length ? { priorStages } : {}),
       templateName: environment.templateName,
       nowIso: nowIso(),
     });
@@ -985,7 +1004,13 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     };
     records.set(launchId, record);
     publish(record);
-    logger.info("chat_launch.started", { launchId, kind, laneId, stages: snapshot.stages.map((stage) => stage.id) });
+    logger.info("chat_launch.started", {
+      launchId,
+      kind,
+      laneId,
+      stages: snapshot.stages.map((stage) => stage.id),
+      ...(priorStages.length ? { priorStages: priorStages.length } : {}),
+    });
     void runPipeline(record);
     return cloneSnapshot(record.snapshot);
   };

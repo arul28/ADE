@@ -1143,6 +1143,13 @@ export const IPC = {
   cloudCreateProgress: "cloud:createProgress",
   cloudCancelCreate: "ade.cloud.cancelCreate",
   cloudStatusChanged: "cloud:statusChanged",
+  /**
+   * ADE Cloud lane launches: one call for every `chatLaunch` method, answered
+   * by this app while it owns the launch (`cloudLaneLaunchService.ts`), and
+   * their snapshots to every window.
+   */
+  cloudLaneLaunchCall: "ade.cloud.laneLaunch.call",
+  cloudLaneLaunchEvent: "cloud:laneLaunchEvent",
   cloudSavedChatsList: "ade.cloud.savedChats.list",
   cloudSavedChatsRead: "ade.cloud.savedChats.read",
   cloudSavedChatsDelete: "ade.cloud.savedChats.delete",

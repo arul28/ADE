@@ -702,6 +702,14 @@ never reach a connected app**: prompts leave them out, and `ade skill list|show`
 hide them whenever `ADE_REMOTE_MCP_CONNECTION_ID` is set. The check compares
 real paths, so a project folder linked to `~/.agents/skills` stays hidden too.
 
+ADE Cloud guidance reaches an app this way: the instructions say "Before an
+ADE Cloud lane, run `cloud status` and follow the `ade-cloud` prompt", and the
+`ade-cloud` prompt is the bundled skill an ADE chat's agent reads, word for
+word (shown only to an account with ADE Cloud access). `cloud status` is a
+read, so a read-only connection can see why a lane can't start; starting one
+needs write access, under the agent limits. See
+[Guidance for agents](../ade-cloud/README.md#guidance-for-agents).
+
 ## Chat turns from an app
 
 A message an app sends with `ade chat send|message|steer` or `chat create

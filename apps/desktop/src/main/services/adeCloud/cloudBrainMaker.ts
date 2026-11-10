@@ -57,28 +57,26 @@ const FINISHED_JOB_TTL_MS = 30 * 60_000;
 /** A self-approval comes this soon after its create started, or not at all. */
 const SELF_APPROVAL_WINDOW_MS = 20 * 60_000;
 
-export function createCloudBrainMaker(deps: {
-  /** The creator's deps without a window: the approval is handed off. */
-  base: Omit<CloudCopyDeps, "approveInWindow" | "handOffApproval" | "selfApproval"> & {
-    /** Plan and hours, for a sign-in the brain approves itself. */
-    account?: () => Promise<CloudAccountState | null>;
-  };
-  logger?: {
-    info?(event: string, meta?: Record<string, unknown>): void;
-    warn?(event: string, meta?: Record<string, unknown>): void;
-  };
+type BrainLogger = {
+  info?(event: string, meta?: Record<string, unknown>): void;
+  warn?(event: string, meta?: Record<string, unknown>): void;
+};
+
+/**
+ * Whether this brain may approve a new machine's sign-in itself, with no
+ * tap: the machine carries the request id of a make this brain started with
+ * an unattended yes, the make is recent, it is the first ask for that
+ * request, and the account still has hours. Every answer is logged. Shared by
+ * the maker here and the brain's ADE Cloud lane launches.
+ */
+export function createCloudSelfApproval(deps: {
+  client: CloudCopyDeps["client"];
+  account?: () => Promise<CloudAccountState | null>;
+  logger?: BrainLogger;
 }) {
-  const jobs = new Map<string, CloudMakeJob>();
   /** Requests whose sign-in this brain already approved itself: once each. */
   const selfApproved = new Set<string>();
-
-  /**
-   * Whether this brain may approve `instanceId`'s sign-in itself, with no
-   * tap: the machine carries the request id of a make this brain started
-   * with an unattended yes, the make is recent, it is the first ask for that
-   * request, and the account still has hours. Every answer is logged.
-   */
-  const allowSelfApproval = async (
+  return async (
     input: { requestId: string; instanceId: string },
     make: { selfApprove: boolean; startedAt: number },
   ): Promise<boolean> => {
@@ -93,15 +91,29 @@ export function createCloudBrainMaker(deps: {
       deps.logger?.warn?.("cloud.self_approval_read_failed", { ...input, read, error: error instanceof Error ? error.message : String(error) });
       return null;
     };
-    const client = await deps.base.client().catch(readFailed("client"));
+    const client = await deps.client().catch(readFailed("client"));
     const instance = client ? await client.getInstance(input.instanceId).catch(readFailed("instance")) : null;
     if (instance?.metadata?.ade_request_id !== input.requestId) return refuse("request_id_mismatch");
-    const blocked = cloudUnattendedHoursBlock(await deps.base.account?.().catch(readFailed("account")));
+    const blocked = cloudUnattendedHoursBlock(await deps.account?.().catch(readFailed("account")));
     if (blocked) return refuse(blocked);
     selfApproved.add(input.requestId);
     deps.logger?.info?.("cloud.self_approval_used", input);
     return true;
   };
+}
+
+/** The creator's deps a brain fills in with no window: the approval is handed off. */
+export type CloudBrainMakerBase = Omit<CloudCopyDeps, "approveInWindow" | "handOffApproval" | "selfApproval"> & {
+  /** Plan and hours, for a sign-in the brain approves itself. */
+  account?: () => Promise<CloudAccountState | null>;
+};
+
+export function createCloudBrainMaker(deps: {
+  base: CloudBrainMakerBase;
+  logger?: BrainLogger;
+}) {
+  const jobs = new Map<string, CloudMakeJob>();
+  const allowSelfApproval = createCloudSelfApproval({ client: deps.base.client, account: deps.base.account, logger: deps.logger });
 
   const prune = () => {
     const now = Date.now();

@@ -38,10 +38,18 @@ export function summarizeRuntimeActivity(runtime: AdeRuntime): RuntimeActivityCo
 }
 
 /** What the cloud busy list reads from this runtime (`decideCloudBusy`). */
-export function readRuntimeBusyFacts(runtime: AdeRuntime): Pick<CloudBusyFacts, "chats" | "terminals"> {
+export function readRuntimeBusyFacts(runtime: AdeRuntime): Pick<CloudBusyFacts, "chats" | "terminals" | "laneSetups"> {
+  let laneSetups = 0;
+  try {
+    // A launch's fetch, checkout and setup run outside any turn or terminal.
+    laneSetups = runtime.chatLaunchService?.list().filter((launch) => launch.phase === "running").length ?? 0;
+  } catch {
+    laneSetups = 0;
+  }
   return {
     chats: runtime.agentChatService?.listBusyFacts?.() ?? [],
     terminals: runtime.ptyService.listBusyFacts?.() ?? [],
+    ...(laneSetups > 0 ? { laneSetups } : {}),
   };
 }
 

@@ -6,8 +6,10 @@ import {
   CaretRight,
   Check,
   Circle,
+  Cloud,
   CloudArrowDown,
   Copy,
+  DownloadSimple,
   Files,
   HardDrives,
   Key,
@@ -21,6 +23,7 @@ import {
   Stack,
   TerminalWindow,
   Trash,
+  UserCirclePlus,
   Warning,
   Wrench,
   X,
@@ -65,6 +68,8 @@ import {
 } from "./chatLaunchActions";
 import { LaunchProgressRail } from "./LaunchProgressRail";
 import { useLaunchDurationText } from "./launchClock";
+import { CloudMark } from "../../remoteTargets/cloudBrand";
+import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 
 /**
  * The lane setup card: a header (phase tile, title, lane + base chips, live
@@ -120,6 +125,13 @@ const LABEL_TONE: Record<ChatLaunchStageStatus, string> = {
 
 export function launchStageIcon(id: ChatLaunchStageId, context: { kind: ChatLaunchKind; templateName?: string | null }): Icon {
   switch (id) {
+    case "computer":
+      return Cloud;
+    case "join":
+      return UserCirclePlus;
+    case "clone":
+      // The repository comes down onto the new computer.
+      return DownloadSimple;
     case "fetch":
       return CloudArrowDown;
     case "checkout":
@@ -223,13 +235,15 @@ function StatusMark({ status, size }: { status: Status; size: number }) {
   );
 }
 
-function StageTile({ icon: IconComponent, status, compact }: { icon: Icon; status: Status; compact: boolean }) {
+function StageTile({ icon: IconComponent, status, compact, cloud = false }: { icon: Icon; status: Status; compact: boolean; cloud?: boolean }) {
+  const normalized = normalizeStatus(status);
   return (
     <span
       className={cn(
         "grid shrink-0 place-items-center rounded-[6px] border transition-colors duration-300",
         compact ? "h-[18px] w-[18px]" : "h-5 w-5",
-        TILE_TONE[normalizeStatus(status)],
+        // An ADE Cloud launch runs in the Night sky blue, not the violet.
+        cloud && normalized === "running" ? "adec-tile" : TILE_TONE[normalized],
       )}
       aria-hidden
     >
@@ -373,6 +387,7 @@ function StageLine({
   percent,
   trailing,
   compact,
+  cloud = false,
 }: {
   icon: Icon;
   status: ChatLaunchStageStatus;
@@ -381,16 +396,18 @@ function StageLine({
   percent?: number | null;
   trailing?: React.ReactNode;
   compact: boolean;
+  /** An ADE Cloud launch: the running tone is the Night sky blue. */
+  cloud?: boolean;
 }) {
   const stackDetail = compact && Boolean(detail);
   return (
     <div className={cn("flex min-w-0 gap-2.5", stackDetail ? "items-start py-1" : "items-center", compact ? "min-h-[28px]" : "h-[32px]")}>
-      <StageTile icon={icon} status={status} compact={compact} />
+      <StageTile icon={icon} status={status} compact={compact} cloud={cloud} />
       <div className={cn("flex min-w-0 flex-1 gap-2", stackDetail ? "flex-col items-stretch gap-0" : "items-baseline")}>
         <span className={cn("shrink-0 transition-colors duration-200", LABEL_TONE[status])}>{label}</span>
         {detail ? <span className="min-w-0 truncate text-fg/35" title={detail}>{detail}</span> : null}
         {percent != null ? (
-          <span className="shrink-0 tabular-nums text-violet-200/80">{`${percent}%`}</span>
+          <span className={cn("shrink-0 tabular-nums", cloud ? "adec-percent" : "text-violet-200/80")}>{`${percent}%`}</span>
         ) : null}
       </div>
       {trailing}
@@ -419,16 +436,18 @@ const StageRow = React.memo(function StageRow({
   templateName,
   compact,
   showSteps,
+  cloud,
 }: {
   stage: ChatLaunchStage;
   kind: ChatLaunchKind;
   templateName: string | null;
   compact: boolean;
   showSteps: boolean;
+  cloud: boolean;
 }) {
   const context = { kind, templateName };
   const detail = stage.detail?.trim() || null;
-  const percent = stage.id === "checkout" && stage.status === "running" ? stage.percent : null;
+  const percent = (stage.id === "checkout" || stage.id === "clone") && stage.status === "running" ? stage.percent : null;
   return (
     <li data-testid="lane-setup-stage" data-stage-id={stage.id} data-stage-status={stage.status}>
       <StageLine
@@ -438,6 +457,7 @@ const StageRow = React.memo(function StageRow({
         detail={detail}
         percent={percent}
         compact={compact}
+        cloud={cloud}
         trailing={<StageDuration stage={stage} className="min-w-[3rem] shrink-0 text-right text-fg/35" />}
       />
       {(stage.status === "failed" || stage.status === "warning") && stage.error ? (
@@ -537,18 +557,61 @@ const PHASE_TILE_TONE: Record<ChatLaunchSnapshot["phase"], string> = {
   cancelled: TILE_TONE.skipped,
 };
 
+/** Puffs of the drift behind an ADE Cloud card's header: place, size, how far each travels, when it starts. */
+const CLOUD_DRIFT_PUFFS = [
+  { left: -10, top: 8, width: 64, height: 30, dx: 150, delay: 0 },
+  { left: 6, top: 22, width: 50, height: 24, dx: 190, delay: 0.2 },
+  { left: -24, top: 20, width: 78, height: 34, dx: 230, delay: 0.4 },
+  { left: 10, top: 0, width: 44, height: 22, dx: 170, delay: 0.62 },
+  { left: -6, top: 30, width: 56, height: 24, dx: 260, delay: 0.85 },
+] as const;
+
+/**
+ * A short drift of cloud behind the header while the computer is made. CSS
+ * only: it plays once (about three seconds), ends hidden, and does not play
+ * with reduced motion (cloudBrand.css). It mounts with the computer step, so
+ * a card opened later, after that step, shows none.
+ */
+function CloudDrift() {
+  return (
+    <span className="adec-drift" aria-hidden data-testid="lane-setup-cloud-drift">
+      {CLOUD_DRIFT_PUFFS.map((puff, index) => (
+        <span
+          key={index}
+          className="adec-puff"
+          style={{
+            left: puff.left,
+            top: puff.top,
+            width: puff.width,
+            height: puff.height,
+            animationDelay: `${puff.delay}s`,
+            ["--adec-dx" as string]: `${puff.dx}px`,
+          }}
+        />
+      ))}
+    </span>
+  );
+}
+
 function CardHeader({ snapshot, metaSize }: { snapshot: ChatLaunchSnapshot; metaSize: string }) {
   const failed = snapshot.phase === "failed";
+  const cloud = snapshot.cloud != null;
   const base = snapshot.baseRef ?? (snapshot.branchRef ? snapshot.branchRef.replace(/^refs\/heads\//, "") : null);
+  const makingComputer = cloud && snapshot.stages.some((stage) => stage.id === "computer" && stage.status === "running");
+  // Running ADE Cloud launches wear the blue; failed stays amber, done green.
+  const tileTone = cloud && (snapshot.phase === "running" || snapshot.phase === "awaiting-client")
+    ? "adec-tile"
+    : PHASE_TILE_TONE[snapshot.phase];
   return (
-    <div className="flex min-w-0 items-start gap-2.5">
+    <div className="relative flex min-w-0 items-start gap-2.5">
+      {makingComputer ? <CloudDrift /> : null}
       <span
-        className={cn("mt-px grid h-6 w-6 shrink-0 place-items-center rounded-[7px] border transition-colors duration-300", PHASE_TILE_TONE[snapshot.phase])}
+        className={cn("relative mt-px grid h-6 w-6 shrink-0 place-items-center rounded-[7px] border transition-colors duration-300", tileTone)}
         aria-hidden
       >
-        {failed ? <Warning size={13} weight="bold" /> : <LaneIcon size={13} weight="bold" />}
+        {failed ? <Warning size={13} weight="bold" /> : cloud ? <CloudMark size={13} bold /> : <LaneIcon size={13} weight="bold" />}
       </span>
-      <div className="min-w-0 flex-1">
+      <div className="relative min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           <span
             className={cn("min-w-0 truncate font-medium", failed ? "text-amber-200/90" : "text-fg/82")}
@@ -603,6 +666,25 @@ export function LaneSetupCard({
   const confirmAbortRef = useRef<AbortController | null>(null);
   const actions = laneSetupActions(snapshot);
   const failed = snapshot.phase === "failed";
+  const cloudLaunch = snapshot.cloud != null;
+  /**
+   * What "Copy details" puts on the clipboard for a failed launch: the launch
+   * id, the step and the sentence the card shows. The snapshot carries no
+   * secret; nothing else goes in.
+   */
+  const copyFailureDetails = () => {
+    const failedStage = snapshot.stages.find((stage) => stage.status === "failed") ?? null;
+    const lines = [
+      `Launch: ${snapshot.launchId}`,
+      failedStage ? `Step: ${chatLaunchStageLabel(failedStage.id, { kind: snapshot.kind, templateName: snapshot.templateName })} (${failedStage.id})` : null,
+      `What happened: ${failedStage?.error?.trim() || snapshot.error?.trim() || "Setup stopped."}`,
+    ].filter((line): line is string => Boolean(line));
+    void copyTextToClipboard(lines.join("\n")).then((copied) => {
+      showToast(copied
+        ? { title: "Copied the launch details", tone: "success" }
+        : { title: "Couldn't copy the launch details", tone: "info" });
+    });
+  };
   const envStage = snapshot.stages.find((stage) => stage.id === "environment");
   const showEnvSteps = Boolean(detailsOpen || envStage?.status === "running" || envStage?.status === "failed");
   const hasDetails = Boolean(snapshot.branchRef || snapshot.baseRef || snapshot.worktreePath || snapshot.templateName || snapshot.error);
@@ -626,11 +708,14 @@ export function LaneSetupCard({
     confirmAbortRef.current = abort;
     setConfirmAbort(abort);
     void confirmDialog({
-      title: name === "cancel" ? "Cancel this launch?" : "Delete this launch?",
-      message: laneExists
-        ? `ADE deletes the lane it created for this ${subject} — its worktree and its local and remote branch — and the ${subject} itself. Your prompt goes back into the composer.`
-        : "Setup stops before a lane is created. Your prompt goes back into the composer.",
-      confirmLabel: laneExists ? `Delete lane and ${subject}` : "Stop setup",
+      title: name === "cancel" || cloudLaunch ? "Cancel this launch?" : "Delete this launch?",
+      message: cloudLaunch
+        // An ADE Cloud lane's computer was made for it alone: it goes too.
+        ? "ADE stops the setup and deletes the ADE Cloud computer it made for this lane. Your prompt goes back into the composer."
+        : laneExists
+          ? `ADE deletes the lane it created for this ${subject} — its worktree and its local and remote branch — and the ${subject} itself. Your prompt goes back into the composer.`
+          : "Setup stops before a lane is created. Your prompt goes back into the composer.",
+      confirmLabel: cloudLaunch ? "Stop and delete computer" : laneExists ? `Delete lane and ${subject}` : "Stop setup",
       destructive: true,
       signal: abort.signal,
     }).then((ok) => {
@@ -698,7 +783,7 @@ export function LaneSetupCard({
       {showTitle ? (
         <>
           <CardHeader snapshot={snapshot} metaSize={metaSize} />
-          <LaunchProgressRail stages={snapshot.stages} className="mb-1 mt-3" />
+          <LaunchProgressRail stages={snapshot.stages} cloud={cloudLaunch} className="mb-1 mt-3" />
         </>
       ) : null}
 
@@ -711,6 +796,7 @@ export function LaneSetupCard({
             templateName={snapshot.templateName}
             compact={compact}
             showSteps={showEnvSteps}
+            cloud={cloudLaunch}
           />
         ))}
       </ul>
@@ -800,8 +886,14 @@ export function LaneSetupCard({
           ) : null}
           {actions.delete ? (
             <TextAction disabled={busy != null} onClick={() => confirmDelete("delete")} testId="lane-setup-delete">
-              <Trash size={11} aria-hidden />
-              Delete
+              {cloudLaunch ? <X size={10} weight="bold" aria-hidden /> : <Trash size={11} aria-hidden />}
+              {cloudLaunch ? "Cancel" : "Delete"}
+            </TextAction>
+          ) : null}
+          {failed ? (
+            <TextAction onClick={copyFailureDetails} testId="lane-setup-copy-details">
+              <Copy size={11} aria-hidden />
+              Copy details
             </TextAction>
           ) : null}
           {actions.cancel ? (

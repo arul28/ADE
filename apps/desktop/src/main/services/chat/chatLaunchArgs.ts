@@ -10,6 +10,7 @@ import type {
   ChatLaunchLaneConfig,
   ChatLaunchQueueMessageArgs,
 } from "../../../shared/types";
+import { normalizeChatLaunchPriorStages } from "../../../shared/chatLaunch";
 import { normalizeHarnessPreset } from "../../../shared/harnessPresets";
 import { parseLaneLinearIssueValue } from "../../../shared/laneLinearIssue";
 import { normalizeLaneStart } from "../../../shared/laneStart";
@@ -268,6 +269,9 @@ export function parseChatLaunchArgs(value: unknown): ChatLaunchArgs {
   const attachments = parseAgentChatFileRefs(record.attachments);
   const chat = kind === "chat" ? parseChatLaunchChat(record.chat) : undefined;
   const laneConfig = parseChatLaunchLaneConfig(record.laneConfig);
+  // An ADE Cloud launch's desktop stages. A `cloud` target is the desktop's
+  // to act on, so a brain never parses one.
+  const priorStages = kind === "chat" ? normalizeChatLaunchPriorStages(record.priorStages) : [];
   return {
     kind,
     mode: record.mode === "background" ? "background" : "foreground",
@@ -283,6 +287,7 @@ export function parseChatLaunchArgs(value: unknown): ChatLaunchArgs {
     ...(asTrimmedString(record.title) ? { title: asTrimmedString(record.title) } : {}),
     ...(asTrimmedString(record.originClientId) ? { originClientId: asTrimmedString(record.originClientId) } : {}),
     ...(chat ? { chat } : {}),
+    ...(priorStages.length ? { priorStages } : {}),
   };
 }
 

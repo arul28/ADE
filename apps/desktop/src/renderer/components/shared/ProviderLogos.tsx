@@ -37,6 +37,32 @@ function lobeMarkClass(className?: string) {
   return cn("shrink-0 inline-flex [&_svg]:max-h-none [&_svg]:max-w-none", className);
 }
 
+/**
+ * The Codex avatar. The icon set draws it as a pale lilac mark on a white
+ * disc, which vanishes on a light page. The disc takes its color from
+ * `--ade-codex-avatar-bg` (set dark under `[data-theme="light"]` in
+ * foundation.css) and stays white everywhere else, so the dark theme is
+ * unchanged.
+ */
+export function CodexAvatarMark({
+  size,
+  className,
+  shape,
+}: {
+  size: number;
+  className?: string;
+  shape?: "circle" | "square";
+}) {
+  return (
+    <Codex.Avatar
+      size={size}
+      {...(shape ? { shape } : {})}
+      background="var(--ade-codex-avatar-bg, #fff)"
+      className={lobeMarkClass(cn("opacity-95", className))}
+    />
+  );
+}
+
 const FALLBACK_COLORS: Record<string, string> = {
   groq: "#06B6D4",
   together: "#22C55E",
@@ -204,9 +230,9 @@ export function ProviderLogo({
     case "claude":
       return <Claude.Avatar size={size} className={c} />;
     case "codex":
-      return <Codex.Avatar size={size} className={lobeMarkClass(cn("opacity-95", className))} />;
+      return <CodexAvatarMark size={size} className={className} />;
     case "openai-codex":
-      return <Codex.Avatar size={size} className={lobeMarkClass(cn("opacity-95", className))} />;
+      return <CodexAvatarMark size={size} className={className} />;
     case "openai":
       return <OpenAI size={size} className={c} />;
     case "cursor":
@@ -341,7 +367,7 @@ export function ModelRowLogo({
   }
 
   if (cli === "codex") {
-    return <Codex.Avatar size={size} className={lobeMarkClass(cn("opacity-95", className))} />;
+    return <CodexAvatarMark size={size} className={className} />;
   }
 
   if (fam === "openai") {

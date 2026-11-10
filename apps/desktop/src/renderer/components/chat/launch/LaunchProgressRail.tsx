@@ -1,6 +1,7 @@
 import React from "react";
 import type { ChatLaunchStage } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
+import "../../remoteTargets/cloudBrand.css";
 
 /**
  * The segmented launch progress rail: one segment per stage, shared by the
@@ -53,9 +54,12 @@ const TRACK_TONE: Record<ChatLaunchStage["status"], string> = {
 export const LaunchProgressRail = React.memo(function LaunchProgressRail({
   stages,
   className,
+  cloud = false,
 }: {
   stages: readonly ChatLaunchStage[];
   className?: string;
+  /** An ADE Cloud launch: the running step is the Night sky blue (cloudBrand.css). */
+  cloud?: boolean;
 }) {
   return (
     <div className={cn("flex w-full gap-[3px]", className)} aria-hidden data-testid="launch-rail">
@@ -65,13 +69,13 @@ export const LaunchProgressRail = React.memo(function LaunchProgressRail({
           data-stage-status={stage.status}
           className={cn(
             "relative h-[3px] min-w-0 flex-1 overflow-hidden rounded-full transition-colors duration-300",
-            TRACK_TONE[stage.status],
+            cloud && stage.status === "running" ? "adec-rail-track" : TRACK_TONE[stage.status],
           )}
         >
           <span
             className={cn(
               "absolute inset-0 origin-left rounded-full transition-[transform,background-color] duration-300 ease-out",
-              FILL_TONE[stage.status],
+              cloud && stage.status === "running" ? "adec-rail-fill" : FILL_TONE[stage.status],
             )}
             style={{ transform: `scaleX(${fillScale(stage)})` }}
           />

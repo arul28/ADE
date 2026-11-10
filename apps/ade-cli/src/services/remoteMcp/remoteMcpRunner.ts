@@ -151,6 +151,16 @@ export function activeRemoteRunCount(): number {
   return running.size;
 }
 
+/**
+ * Whether `pid` is a command this brain started for a connected app and that
+ * still runs. The proof that a caller claiming an ADE MCP connection is one:
+ * the claim itself is only an environment variable any shell can set.
+ */
+export function isRunningRemoteRun(pid: number): boolean {
+  for (const child of running) if (child.pid === pid) return true;
+  return false;
+}
+
 /** Stops every command still running, e.g. when the brain shuts down. */
 export function stopAllRemoteRuns(): void {
   for (const child of running) signalChildProcessTree(child, "SIGKILL");

@@ -195,6 +195,7 @@ import {
   isDesktopClientName,
 } from "../../desktop/src/shared/runtimeClientNames";
 import { isSyntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
+import { isRunningRemoteRun } from "./services/remoteMcp/remoteMcpRunner";
 import { hasDrawerOwner } from "../../desktop/src/shared/proofProvenance";
 import {
   ADE_CAPTURE_ACTIONS,
@@ -3908,6 +3909,7 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
  */
 const CLOUD_APPROVED_ACTIONS = new Set([
   "create", "resize", "update", "copy", "move", "delete", "ready_set", "ready_retry", "set_limits",
+  "lane_launch", "lane_launch_cancel",
 ]);
 
 /**
@@ -6669,6 +6671,18 @@ async function runTool(args: {
       // (the same rule as answering a card, above).
       const callerIsPerson = mayUseUserOnlyActions(session)
         || (callerIsCto && !isTrustedChatlessAdeCliCaller(session) && await callerIsTrustedCto(runtime, session));
+      // An outside app on an ADE MCP connection with write access (the runner
+      // gives it the operator role) has no chat: it is an unattended agent,
+      // held to the agent limits. Read only runs as `agent` and stays a
+      // chatless agent, which is refused. The connection id is only an
+      // environment claim, so the caller's process must also be one the
+      // runner started and still runs; otherwise it stays a chatless agent.
+      const callerPid = Number(/:(\d+)$/.exec(session.identity.callerId ?? "")?.[1] ?? Number.NaN);
+      const viaAdeMcp = Boolean(session.identity.remoteMcpConnectionId)
+        && callerHasRoleAtLeast(session.identity.role, "cto")
+        && isSyntheticCallerId(session.identity.callerId)
+        && Number.isInteger(callerPid)
+        && isRunningRemoteRun(callerPid);
       const { approval: _ignoredApproval, ...cloudArgs } = rawObjectArgs;
       scopedObjectArgs = {
         ...cloudArgs,
@@ -6679,6 +6693,7 @@ async function runTool(args: {
               chatSessionId: asOptionalTrimmedString(callerCtx.chatSessionId)
                 ?? asOptionalTrimmedString(session.identity.chatSessionId)
                 ?? null,
+              ...(viaAdeMcp ? { viaAdeMcp: true } : {}),
             },
       };
     }

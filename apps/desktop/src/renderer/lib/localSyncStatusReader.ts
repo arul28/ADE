@@ -151,6 +151,16 @@ function settleUnhealthy(
 }
 
 /**
+ * The last healthy snapshot a read already brought in, or null. No IPC: for a
+ * label that may show a fact the app already has (this computer's name) and
+ * must never cost a read of its own.
+ */
+export function peekLocalSyncStatus(): SyncRoleSnapshot | null {
+  const snapshot = state.lastSnapshot;
+  return snapshot && !isDegradedSyncSnapshot(snapshot) ? snapshot : null;
+}
+
+/**
  * Read this machine's sync snapshot, coalesced across callers and backed off
  * while the local runtime is unhealthy.
  *

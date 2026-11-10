@@ -24,6 +24,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
 
 /** One ping a minute: a 5-minute timeout (the provider's shortest) survives four missed pings. */
 export const CLOUD_KEEP_AWAKE_INTERVAL_MS = 60_000;
@@ -68,6 +69,11 @@ export type CloudBusyFacts = {
   chats: CloudBusyChat[];
   terminals: CloudBusyTerminal[];
   setupRunning: boolean;
+  /**
+   * New-lane launches still setting up (fetch, checkout, environment). They
+   * run git and setup commands outside any terminal or chat turn.
+   */
+  laneSetups?: number;
   /** A move, copy, resize or first clone in progress (`holdCloudBusy`). */
   holds: string[];
 };
@@ -91,7 +97,7 @@ function terminalBusyReason(terminal: CloudBusyTerminal, now: number): "agent_cl
 
 /**
  * The busy list. Busy: a running chat turn, a real running command, an agent CLI
- * actually working, setup, first clone, move, copy, resize. Idle: a shell at its
+ * actually working, setup, a new lane setting up, first clone, move, copy, resize. Idle: a shell at its
  * prompt, an agent CLI at its prompt, a chat waiting on approval (answering wakes
  * it), and a command or turn with no output and no touch for an hour. Someone
  * watching a tool (`noteUse`) and a timer due soon are added by the keep-awake.
@@ -106,13 +112,14 @@ export function decideCloudBusy(facts: CloudBusyFacts, now: number): { busy: boo
     if (reason) reasons.add(reason);
   }
   if (facts.setupRunning) reasons.add("setup");
+  if ((facts.laneSetups ?? 0) > 0) reasons.add("lane_setup");
   for (const hold of facts.holds) reasons.add(hold);
   return { busy: reasons.size > 0, reasons: [...reasons] };
 }
 
 export type CloudKeepAwakeBusy = {
   busy: boolean;
-  /** What is running, for the state file and logs: "chat", "terminal", "agent_cli", "setup", "move", "copy", "first_clone", "schedule", "in_use". */
+  /** What is running, for the state file and logs: "chat", "terminal", "agent_cli", "setup", "lane_setup", "move", "copy", "first_clone", "lane_launch", "schedule", "in_use". */
   reasons: string[];
   /** When the machine's next timer is due (a scheduled wake-up, an automation), or null. */
   nextWakeAt?: number | null;
@@ -160,10 +167,8 @@ export function cloudKeepAwakePaths(adeHome: string) {
   return { dir, wakeUrl: path.join(dir, "wake.json"), state: path.join(dir, "keep-awake.json") };
 }
 
-/** Whether this brain runs on a cloud machine (the machine template sets the variable). */
-export function isCloudMachine(env: NodeJS.ProcessEnv = process.env): boolean {
-  return /^[a-z0-9]{10}$/.test(env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "");
-}
+/** Whether this brain runs on a cloud machine (the machine template sets the variable). One check, shared with the lane and Codex rules. */
+export const isCloudMachine = isAdeCloudComputer;
 
 /** The machine's wake URL, only when it was written for this machine (a forked disk carries its source's). */
 function readWakeUrl(file: string, instanceId: string): string | null {

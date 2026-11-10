@@ -316,6 +316,7 @@ export function createRemoteMcpProtocol(deps: {
     "Use the typed tools; `ade` runs anything else.",
     "`project` defaults to the last opened, `machine` (a machines_list key) to this computer; each result names both. A chat id finds its own.",
     "The `ade-mcp-client` prompt explains the workflow.",
+    "Before an ADE Cloud lane, run `cloud status` and follow the `ade-cloud` prompt.",
     ...(scope === "read" ? ["This connection is read-only."] : []),
   ].join(" ");
 

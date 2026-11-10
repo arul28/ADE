@@ -58,6 +58,8 @@ import { createAndroidEmulatorBridge } from "./androidEmulatorPreload";
 import type { AndroidEmulatorEvent } from "../shared/types/androidEmulator";
 import { createRemoteTargetGate } from "./remoteTargetGate";
 import { IPC } from "../shared/ipc";
+import type { CloudLaneLaunchCallRequest, CloudLaneLaunchCallResult, CloudLaneLaunchMethod } from "../shared/cloudLaneLaunch";
+import { normalizeGitRemoteIdentity } from "../shared/crossMachineHandoff";
 import { APP_CONTROL_FRAME_ALL_LANES } from "../shared/appControlFrameDemand";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
 import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
@@ -2520,6 +2522,80 @@ function callChatLaunchAction<T>(
 ): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr<T>(pin, "chat", action, request, () =>
     Promise.reject(new Error("New-lane launches need a connected ADE runtime. Reconnect the machine and try again.")));
+}
+
+// ADE Cloud lane launches: this app's main process owns one until it hands
+// the launch to the new computer's brain, and keeps serving it by id after
+// (cloudLaneLaunchService.ts). Every id-based call asks main first; an id main
+// doesn't own takes the ordinary runtime route.
+const cloudOwnedLaunchIds = new Set<string>();
+/** Each source binding's origin as main read it (it can read a local checkout's git config). */
+const cloudSourceIdentities = new Map<string, string | null>();
+
+function cloudSourceKey(pin: OpenProjectBinding | null | undefined): string {
+  return (pin ?? currentProjectBinding)?.key ?? "";
+}
+
+function cloudSourceIdentity(binding: OpenProjectBinding | null | undefined): string | null {
+  if (!binding) return null;
+  return cloudSourceIdentities.has(binding.key)
+    ? cloudSourceIdentities.get(binding.key) ?? null
+    : normalizeGitRemoteIdentity(binding.gitOriginUrl ?? null);
+}
+
+/**
+ * Which project's ADE Cloud launches a subscription or list for this pin
+ * shows, or null for none. A pin to another binding of the tab's own project
+ * shows none: the tab's own subscription already shows them, and one launch
+ * must not land under two bindings.
+ */
+function cloudLaunchProjectFor(pin: OpenProjectBinding | null | undefined): string | null {
+  const tab = cloudSourceIdentity(currentProjectBinding);
+  if (!pin || pin.key === currentProjectBinding?.key) return tab;
+  const pinned = cloudSourceIdentity(pin);
+  return pinned && pinned !== tab ? pinned : null;
+}
+
+function cloudLaneLaunchSource(pin: OpenProjectBinding | null | undefined): CloudLaneLaunchCallRequest["source"] {
+  const binding = pin ?? currentProjectBinding;
+  if (!binding) return null;
+  return {
+    gitOriginUrl: binding.gitOriginUrl ?? null,
+    ...(binding.kind === "local" ? { localRootPath: binding.rootPath } : {}),
+  };
+}
+
+async function callCloudLaneLaunch(
+  method: CloudLaneLaunchMethod,
+  args: unknown,
+  source?: CloudLaneLaunchCallRequest["source"],
+): Promise<CloudLaneLaunchCallResult> {
+  const request: CloudLaneLaunchCallRequest = { method, args, ...(source !== undefined ? { source } : {}) };
+  return (await ipcRenderer.invoke(IPC.cloudLaneLaunchCall, request)) as CloudLaneLaunchCallResult;
+}
+
+function noteCloudSourceIdentity(pin: OpenProjectBinding | null | undefined, answer: CloudLaneLaunchCallResult): void {
+  const key = cloudSourceKey(pin);
+  if (key && answer.projectIdentity !== undefined) cloudSourceIdentities.set(key, answer.projectIdentity ?? null);
+}
+
+function rememberCloudLaunch(snapshot: ChatLaunchSnapshot | null | undefined): void {
+  if (snapshot?.cloud && snapshot.launchId) cloudOwnedLaunchIds.add(snapshot.launchId);
+}
+
+/** An id-based launch call: main's answer when it owns the launch, else the runtime's. */
+async function callChatLaunchById<T>(
+  method: CloudLaneLaunchMethod,
+  action: string,
+  args: { launchId: string },
+  pin: OpenProjectBinding | null | undefined,
+): Promise<T> {
+  const owned = await callCloudLaneLaunch(method, args);
+  if (owned.owned) {
+    rememberCloudLaunch(owned.result as ChatLaunchSnapshot | null);
+    return owned.result as T;
+  }
+  return await callChatLaunchAction<T>(pin, action, { args });
 }
 
 async function readLegacySyncStatuses(
@@ -8028,24 +8104,51 @@ const adeBridge = {
    * Always runtime-backed: there is no in-process Electron implementation.
    */
   chatLaunch: {
-    start: async (args: ChatLaunchArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> =>
-      await callChatLaunchAction<ChatLaunchSnapshot>(pin, "startLaunch", {
-        args: args.chat ? { ...args, chat: { ...args.chat, create: await withPresetSnapshot(args.chat.create) } } : args,
-      }),
+    /**
+     * A start with `cloud` makes a new ADE Cloud computer for the lane: this
+     * app owns it until the computer's brain takes over. The pin (or the tab's
+     * project) only names the repository to clone there.
+     */
+    start: async (args: ChatLaunchArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> => {
+      const withPreset = args.chat ? { ...args, chat: { ...args.chat, create: await withPresetSnapshot(args.chat.create) } } : args;
+      if (args.cloud) {
+        const started = await callCloudLaneLaunch("start", withPreset, cloudLaneLaunchSource(pin));
+        noteCloudSourceIdentity(pin, started);
+        const snapshot = started.result as ChatLaunchSnapshot;
+        rememberCloudLaunch(snapshot);
+        return snapshot;
+      }
+      return await callChatLaunchAction<ChatLaunchSnapshot>(pin, "startLaunch", { args: withPreset });
+    },
     get: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
-      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "getLaunch", { args }),
-    list: (pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot[]> =>
-      callChatLaunchAction<ChatLaunchSnapshot[]>(pin, "listLaunches", { args: {} }),
+      callChatLaunchById<ChatLaunchSnapshot | null>("get", "getLaunch", args, pin),
+    /** The runtime's launches and this project's ADE Cloud launches, one row per launch id. */
+    list: async (pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot[]> => {
+      const [runtime, cloud] = await Promise.all([
+        callChatLaunchAction<ChatLaunchSnapshot[]>(pin, "listLaunches", { args: {} }),
+        callCloudLaneLaunch("list", {}, cloudLaneLaunchSource(pin))
+          .then((answer) => {
+            noteCloudSourceIdentity(pin, answer);
+            const project = cloudLaunchProjectFor(pin);
+            const snapshots = Array.isArray(answer.result) ? answer.result as ChatLaunchSnapshot[] : [];
+            return project ? snapshots.filter((snapshot) => snapshot.cloud?.projectOrigin === project) : [];
+          })
+          .catch(() => [] as ChatLaunchSnapshot[]),
+      ]);
+      for (const snapshot of cloud) rememberCloudLaunch(snapshot);
+      const cloudIds = new Set(cloud.map((snapshot) => snapshot.launchId));
+      return [...runtime.filter((snapshot) => !cloudIds.has(snapshot.launchId)), ...cloud];
+    },
     cancel: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
-      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "cancelLaunch", { args }),
+      callChatLaunchById<ChatLaunchSnapshot | null>("cancel", "cancelLaunch", args, pin),
     retry: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
-      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "retryLaunch", { args }),
+      callChatLaunchById<ChatLaunchSnapshot | null>("retry", "retryLaunch", args, pin),
     startNow: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
-      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "startLaunchNow", { args }),
+      callChatLaunchById<ChatLaunchSnapshot | null>("startNow", "startLaunchNow", args, pin),
     queueMessage: (args: ChatLaunchQueueMessageArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> =>
-      callChatLaunchAction<ChatLaunchSnapshot>(pin, "queueLaunchMessage", { args }),
+      callChatLaunchById<ChatLaunchSnapshot>("queueMessage", "queueLaunchMessage", args, pin),
     completeClient: (args: ChatLaunchCompleteClientArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
-      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "completeLaunchClient", { args }),
+      callChatLaunchById<ChatLaunchSnapshot | null>("completeClient", "completeLaunchClient", args, pin),
     /**
      * `onResync` fires when the event stream may have dropped launch events
      * (a buffer gap, a runtime restart, recovery after failed polls), so the
@@ -8056,18 +8159,46 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
       onResync?: () => void,
     ): (() => void) => {
+      // ADE Cloud launches come from main, with their `cloud` block. The
+      // computer's brain sends the same launch without it when the pin is that
+      // computer, so its raw copy is dropped here.
+      const cloudListener = (_event: Electron.IpcRendererEvent, launchEvent: ChatLaunchEvent) => {
+        if (launchEvent.type === "launch-updated") {
+          rememberCloudLaunch(launchEvent.launch);
+          // Read per event: the tab's project can change under an unpinned subscription.
+          const project = cloudLaunchProjectFor(pin);
+          if (project && launchEvent.launch.cloud?.projectOrigin === project) cb(launchEvent);
+          return;
+        }
+        // A removal names no project; one for a launch this view never held is ignored there.
+        cb(launchEvent);
+        cloudOwnedLaunchIds.delete(launchEvent.launchId);
+      };
+      ipcRenderer.on(IPC.cloudLaneLaunchEvent, cloudListener);
+      const removeCloud = () => ipcRenderer.removeListener(IPC.cloudLaneLaunchEvent, cloudListener);
+      const runtimeCb = (launchEvent: ChatLaunchEvent) => {
+        const launchId = launchEvent.type === "launch-updated" ? launchEvent.launch.launchId : launchEvent.launchId;
+        if (cloudOwnedLaunchIds.has(launchId)) return;
+        cb(launchEvent);
+      };
       const removePinned = subscribePinnedProjectRuntimeEvents(
         pin,
         (payload) => toWrappedEvent<ChatLaunchEvent>(payload, "chat_launch_event"),
-        cb,
+        runtimeCb,
         "chat launch",
         undefined,
         onResync,
       );
-      if (removePinned) return removePinned;
-      const removeEvents = remoteChatLaunchEventFanout.subscribe(cb);
+      if (removePinned) {
+        return () => {
+          removeCloud();
+          removePinned();
+        };
+      }
+      const removeEvents = remoteChatLaunchEventFanout.subscribe(runtimeCb);
       const removeResync = onResync ? subscribeActiveRuntimeEventResync(onResync) : () => {};
       return () => {
+        removeCloud();
         removeResync();
         removeEvents();
       };

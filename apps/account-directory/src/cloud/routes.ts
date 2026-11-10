@@ -69,6 +69,7 @@ const noProviderKey = () => fail("unavailable", cloudErrorMessage("no_provider_k
 const diskLimit = () => fail("disk_limit", `Your computers share ${PAID_DISK_POOL_GB} GB of disk, and this would go past it.`, 403);
 
 const CANT_MAKE_COMPUTER_MESSAGE = "ADE Cloud can't make a computer right now. Try again soon.";
+const createInProgress = () => fail("create_in_progress", "ADE Cloud is still making this computer. Try again in a moment.", 409);
 
 /** `CLOUD_ACCESS_ACCOUNTS`: comma list of Clerk ids, or `*`. Unset is nobody. */
 export function cloudAccessAllows(env: Pick<CloudEnv, "CLOUD_ACCESS_ACCOUNTS">, userId: string): boolean {
@@ -155,7 +156,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
   requestId: string;
   templateVersion: string | null;
   now: number;
-}): Promise<{ ok: true; pendingId: string } | { ok: false; response: Response }> {
+}): Promise<{ ok: true; pendingId: string } | { ok: false; response: Response } | { ok: false; replay: true }> {
   const rules = accountRules(account);
   const limit = computerLimit(account);
   const pendingId = newPendingId();
@@ -166,14 +167,21 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
     where (select count(*) from cloud_computers where user_id = ? and deleted_at is null and (status != 'provisioning' or created_at > ?)) < ?
       and (? is null or (select coalesce(sum(disk_gb), 0) from cloud_computers where user_id = ? and deleted_at is null) + ? <= ?)
       and not exists (select 1 from cloud_computers where request_id = ? and user_id <> ?)
+      and not exists (select 1 from cloud_computers where request_id = ? and user_id = ? and deleted_at is null)
   `).bind(
     pendingId, account.user_id, args.requestId, args.size.type, args.size.cpu, args.size.memoryGb, args.diskGb, args.size.multiplierMilli,
     args.templateVersion, args.name, args.now, args.now, args.now,
     account.user_id, cutoff, limit,
     rules === "paid" ? PAID_DISK_POOL_GB : null, account.user_id, args.diskGb, PAID_DISK_POOL_GB,
     args.requestId, account.user_id,
+    args.requestId, account.user_id,
   ).run();
   if (result.meta.changes === 1) return { ok: true, pendingId };
+  // A twin request with this id got its row in first (D1 runs one write at a
+  // time, so only one insert can pass the check): answer as a repeat.
+  const ownTwin = await env.DB.prepare("select 1 as taken from cloud_computers where request_id = ? and user_id = ? and deleted_at is null limit 1")
+    .bind(args.requestId, account.user_id).first<{ taken: number }>();
+  if (ownTwin) return { ok: false, replay: true };
   // The tag finds a lost create in the shared provider list, so it can only ever be one account's.
   const tagTaken = await env.DB.prepare("select 1 as taken from cloud_computers where request_id = ? and user_id <> ? limit 1")
     .bind(args.requestId, account.user_id).first<{ taken: number }>();
@@ -190,6 +198,51 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
 
 async function releasePending(env: CloudEnv, pendingId: string): Promise<void> {
   await env.DB.prepare("delete from cloud_computers where instance_id = ?").bind(pendingId).run();
+}
+
+/**
+ * A create or copy that names a request id this account already used gets the
+ * computer that request made, so a retried request (a lost answer, a client
+ * that restarted mid-create) never makes a second one or holds a second slot.
+ * Null when there is none to give, and a fresh create may go ahead:
+ * - no live row: never used, or its computer was deleted or never made;
+ * - its computer is gone from the provider (the row is closed here);
+ * - its reservation is older than `PENDING_TIMEOUT_MS` and the provider has
+ *   no computer with its tag (the row is released; the tick would drop it).
+ * A reservation still inside that time with no computer yet is a create in
+ * flight: 409 `create_in_progress`, and the client asks again in a moment.
+ */
+async function replayRequest(env: CloudEnv, provider: CloudProvider, userId: string, requestId: string, now: number): Promise<Response | null> {
+  const row = await env.DB.prepare("select * from cloud_computers where user_id = ? and request_id = ? and deleted_at is null order by created_at desc limit 1")
+    .bind(userId, requestId).first<ComputerRow>();
+  if (!row) return null;
+  if (!isPendingId(row.instance_id)) {
+    try {
+      const instance = await provider.getInstance(row.instance_id);
+      await recordStatus(env, row, instance.status, now, "seen");
+      logCloud("cloud.create_replayed", { userId, instanceId: row.instance_id });
+      return json(instance, 200);
+    } catch (error) {
+      if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
+      await markGone(env, row, now);
+      return null;
+    }
+  }
+  // The first answer was lost, or the provider is still making it: its tag finds it.
+  const instance = (await provider.listInstances())
+    .find((entry) => entry.metadata.ade_request_id === requestId && entry.status !== "deleted");
+  if (instance) {
+    const [adopted] = await env.DB.batch(adoptionStatements(env, { pendingId: row.instance_id, instance, machineKey: instance.metadata.ade_machine_key ?? null, now, reason: "create_replayed" }));
+    if (adopted?.meta.changes === 1) {
+      logCloud("cloud.create_replayed", { userId, instanceId: instance.id, adopted: true });
+      return json(instance, 200);
+    }
+  }
+  if (now - row.created_at > PENDING_TIMEOUT_MS) {
+    await releasePending(env, row.instance_id);
+    return null;
+  }
+  return createInProgress();
 }
 
 /** Only a provider's clear no means nothing was made. Timeouts and 5xx can leave a running computer, so its reservation stays for adoption. */
@@ -225,6 +278,14 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
   const publicPorts = onlyWakePorts(body.publicPorts);
   if (!clientMetadata || !clientEnv || !publicPorts) return badRequest(UNREADABLE_REQUEST_MESSAGE);
 
+  // A repeat of a request this account made gets that computer, before any
+  // limit: it is not a new computer, so hours or the computer limit can't refuse it.
+  const repeatedId = clientMetadata.ade_request_id;
+  if (repeatedId) {
+    const replay = await replayRequest(env, provider, userId, repeatedId, now);
+    if (replay) return replay;
+  }
+
   const templateVersion = await readSetting(env, "template_version");
   if (!templateVersion) {
     logCloud("cloud.create_refused_no_template_version", { userId });
@@ -246,7 +307,10 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
 
   const { metadata, requestId } = withRequestId(clientMetadata);
   const reservation = await reserveComputer(env, account, { size, diskGb, name, requestId, templateVersion, now });
-  if (!reservation.ok) return reservation.response;
+  if (!reservation.ok) {
+    if ("replay" in reservation) return await replayRequest(env, provider, userId, requestId, now) ?? createInProgress();
+    return reservation.response;
+  }
 
   try {
     const instance = await provider.createInstance({
@@ -289,6 +353,10 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
 
   const metadataIn = stringMap(body.metadata, MAX_METADATA_ENTRIES);
   if (!metadataIn) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  if (metadataIn.ade_request_id) {
+    const replay = await replayRequest(env, provider, computer.user_id, metadataIn.ade_request_id, now);
+    if (replay) return replay;
+  }
   const { metadata, requestId } = withRequestId(metadataIn);
   const name = shortText(body.name, 60);
   const reservation = await reserveComputer(env, account, {
@@ -299,7 +367,10 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
     templateVersion: computer.template_version,
     now,
   });
-  if (!reservation.ok) return reservation.response;
+  if (!reservation.ok) {
+    if ("replay" in reservation) return await replayRequest(env, provider, computer.user_id, requestId, now) ?? createInProgress();
+    return reservation.response;
+  }
   try {
     const instance = await provider.forkInstance(computer.instance_id, {
       ...(name ? { name } : {}),

@@ -16,6 +16,11 @@ const SELECT_WAIT_MS = 20_000;
 
 export type OfflineDraftMachine = { targetId: string; name: string; machineKey: string | null };
 
+/** The machine (remote target id) a clone row stands for, or null for any other row. */
+export function draftCloneRowTargetId(rowId: string): string | null {
+  return rowId.startsWith(CLONE_ROW_PREFIX) ? rowId.slice(CLONE_ROW_PREFIX.length) : null;
+}
+
 type Busy = { targetId: string; name: string; phase: "waking" | "cloning" | "selecting" };
 
 /** `https://github.com/owner/repo.git` for a GitHub origin, else null: only GitHub repositories are set up on another machine. */
@@ -43,7 +48,8 @@ function githubCloneUrl(originUrl: string | null): { url: string; repo: string }
 export function useDraftMachineSetup({
   enabled,
   originUrl,
-  pickerOpens,
+  cloudMachines,
+  hiddenMachineKeys,
   cloneCandidates,
   offlineMachines,
   selectableMachineIds,
@@ -52,8 +58,14 @@ export function useDraftMachineSetup({
 }: {
   enabled: boolean;
   originUrl: string | null;
-  /** How many times the person opened the picker: each open reads the provider list again (0: never read). */
-  pickerOpens: number;
+  /**
+   * The account's computers, from the shared read that runs while the draft
+   * shows (`useCloudMachines`). The wake rows come from it, so they are in
+   * the menu when it opens instead of arriving after.
+   */
+  cloudMachines: readonly CloudMachine[];
+  /** Account machine keys the picker lists elsewhere (ADE Cloud lane computers): no row of their own here. */
+  hiddenMachineKeys?: ReadonlySet<string>;
   /** Connected machines without this repository. */
   cloneCandidates: readonly LaneMachineOption[];
   /** Saved paired machines that are not connected now. */
@@ -66,37 +78,21 @@ export function useDraftMachineSetup({
   // Stable for one origin, so the effects below don't restart on each render.
   const cloudEnabled = useAdeCloudEnabled();
   const clone = useMemo(() => githubCloneUrl(originUrl), [originUrl]);
-  const [cloudMachines, setCloudMachines] = useState<CloudMachine[]>([]);
   const [busy, setBusy] = useState<Busy | null>(null);
   /** Prepared (connected, repository there): selected as soon as the picker lists it. */
   const [pendingTargetId, setPendingTargetId] = useState<string | null>(null);
   const attemptRef = useRef(0);
-  const hasOffline = offlineMachines.length > 0;
-
-  useEffect(() => {
-    const listMachines = window.ade?.cloud?.listMachines;
-    if (!enabled || !cloudEnabled || pickerOpens === 0 || !hasOffline || !listMachines) {
-      setCloudMachines([]);
-      return;
-    }
-    let cancelled = false;
-    void listMachines().then(
-      (result) => { if (!cancelled) setCloudMachines(result?.state === "ok" ? result.machines : []); },
-      (error: unknown) => console.warn("[cloud] machine list for the picker failed", ipcErrorMessage(error)),
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [cloudEnabled, enabled, hasOffline, pickerOpens]);
 
   const cloudOffline = useMemo(() => {
+    if (!enabled || !cloudEnabled) return [];
     const byKey = new Map(cloudMachines.filter((machine) => machine.machineKey).map((machine) => [machine.machineKey!, machine]));
     return offlineMachines.flatMap((machine) => {
+      if (machine.machineKey && hiddenMachineKeys?.has(machine.machineKey)) return [];
       const cloud = machine.machineKey ? byKey.get(machine.machineKey) : null;
       if (!cloud || cloud.state === "deleting" || cloud.state === "error") return [];
       return [{ ...machine, asleep: cloud.state === "asleep" || cloud.state === "stopped" }];
     });
-  }, [cloudMachines, offlineMachines]);
+  }, [cloudEnabled, cloudMachines, enabled, hiddenMachineKeys, offlineMachines]);
 
   const cloneRepository = useCallback(async (targetId: string, name: string, stillWanted: () => boolean) => {
     if (!clone) throw new Error(`${name} doesn't have this repository, and ADE sets up GitHub repositories only. Clone it there by hand.`);

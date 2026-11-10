@@ -514,14 +514,19 @@ export async function readMachineRuntimeActivitySummary(args: BootedRuntimeSourc
 /** What the cloud busy list reads, across every project this brain booted and its personal chats. */
 export async function readMachineBusyFacts(args: BootedRuntimeSources & {
   personalChatScope: Partial<Pick<PersonalChatScope, "busyFacts">>;
-}): Promise<Pick<CloudBusyFacts, "chats" | "terminals">> {
-  const parts = [
+}): Promise<Pick<CloudBusyFacts, "chats" | "terminals" | "laneSetups">> {
+  const parts: Array<Pick<CloudBusyFacts, "chats" | "terminals" | "laneSetups">> = [
     ...await mapBootedProjectRuntimes(args, (runtime) => readRuntimeBusyFacts(runtime)),
     typeof args.personalChatScope.busyFacts === "function"
       ? await args.personalChatScope.busyFacts()
       : { chats: [], terminals: [] },
   ];
-  return { chats: parts.flatMap((part) => part.chats), terminals: parts.flatMap((part) => part.terminals) };
+  const laneSetups = parts.reduce((total, part) => total + (part.laneSetups ?? 0), 0);
+  return {
+    chats: parts.flatMap((part) => part.chats),
+    terminals: parts.flatMap((part) => part.terminals),
+    ...(laneSetups > 0 ? { laneSetups } : {}),
+  };
 }
 
 /**
