@@ -26158,6 +26158,15 @@ async function createConnection(
     throw await liveRuntimeRequiredError(args.needsLiveRuntime);
   }
 
+  // The brain refuses this folder, and an in-process runtime must not open it
+  // either: it would write into the other install's database.
+  if (isOtherAdeInstallHome(roots.projectRoot)) {
+    throw new CliToolError(
+      `${roots.projectRoot} is where another ADE install keeps its data, so ADE will not open it as a project. Run this from a project folder.`,
+      undefined,
+    );
+  }
+
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   const previousRpcUrl = process.env.ADE_RPC_URL;
   let roleOwnedByConnection = false;
