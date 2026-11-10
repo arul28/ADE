@@ -5,6 +5,7 @@ import type {
   ProjectCopySessions,
   ProjectCopyState,
 } from "../../../shared/projectRemoval";
+import { adeScaffoldFileContents } from "../../../shared/adeLayout";
 import { runGit } from "../git/git";
 import { isPathInside, pathKey } from "../shared/pathCompare";
 import { listLaneWorktreeRoots } from "./projectDetailService";
@@ -68,8 +69,49 @@ async function listGitWorktrees(rootPath: string): Promise<string[] | null> {
   return paths;
 }
 
+function nonEmptyLines(raw: string): string[] {
+  return raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+}
+
 function countLines(raw: string): number {
-  return raw.split(/\r?\n/).filter((line) => line.trim().length > 0).length;
+  return nonEmptyLines(raw).length;
+}
+
+/** A `git status --porcelain=v1` line for an untracked path under `.ade/`. */
+const UNTRACKED_ADE_LINE = /^\?\? "?\.ade\//;
+
+/** Whether a file is exactly what ADE writes under `.ade/` (path and content). */
+async function isAdeScaffoldFile(checkoutPath: string, relativeToCheckout: string): Promise<boolean> {
+  const underAde = relativeToCheckout.replace(/^\.ade\//, "");
+  const expected = adeScaffoldFileContents().get(underAde);
+  if (expected === undefined) return false;
+  try {
+    const actual = await fs.readFile(path.join(checkoutPath, ...relativeToCheckout.split("/")), "utf8");
+    return actual.replace(/\r\n/g, "\n") === expected;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The changed files of a checkout, from `git status`, leaving out the files
+ * ADE itself writes under `.ade/` when it opens a project. Status collapses an
+ * untracked folder into one line (`?? .ade/`), so the untracked files under
+ * `.ade/` are listed again one by one, and each counts unless it is exactly a
+ * file of ADE's scaffold. Tracked changes always count. Null when git fails.
+ */
+async function countChangedFiles(checkoutPath: string, statusStdout: string): Promise<number | null> {
+  const lines = nonEmptyLines(statusStdout);
+  const others = lines.filter((line) => !UNTRACKED_ADE_LINE.test(line));
+  if (others.length === lines.length) return lines.length;
+  const untracked = await runGit(["ls-files", "--others", "--exclude-standard", "--", ".ade"], {
+    cwd: checkoutPath,
+    timeoutMs: GIT_READ_TIMEOUT_MS,
+  });
+  if (untracked.exitCode !== 0) return null;
+  const files = nonEmptyLines(untracked.stdout).map((line) => line.trim());
+  const scaffold = await Promise.all(files.map((file) => isAdeScaffoldFile(checkoutPath, file)));
+  return others.length + scaffold.filter((isScaffold) => !isScaffold).length;
 }
 
 function parseCount(raw: string): number | null {
@@ -114,7 +156,7 @@ async function readCheckout(args: {
     isMain: args.isMain,
     insideProject,
     branch: branch && branch !== "HEAD" ? branch : null,
-    changedFiles: statusRes.exitCode === 0 ? countLines(statusRes.stdout) : null,
+    changedFiles: statusRes.exitCode === 0 ? await countChangedFiles(cwd, statusRes.stdout) : null,
     unpushedCommits: unpushedRes.exitCode === 0 ? parseCount(unpushedRes.stdout) : noCommits ? 0 : null,
     ignoredEnvFiles,
     hasSubmodules,

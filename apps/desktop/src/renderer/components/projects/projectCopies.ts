@@ -194,6 +194,31 @@ export function existingCopiesForRepo(
 }
 
 /**
+ * Splits a list of machines for a long list: the rows that always show (this
+ * computer, connected machines, and any row `keepVisible` names, such as an
+ * offline machine with a copy), in their order, and the offline rest, which a
+ * list collapses into one "N machines offline" row.
+ */
+export function splitOfflineMachines<T>(
+  items: readonly T[],
+  machineOf: (item: T) => CopyMachine,
+  keepVisible: (item: T) => boolean = () => false,
+): { visible: T[]; offline: T[] } {
+  const visible: T[] = [];
+  const offline: T[] = [];
+  for (const item of items) {
+    const machine = machineOf(item);
+    if (machine.isLocal || machine.online || keepVisible(item)) visible.push(item);
+    else offline.push(item);
+  }
+  return { visible, offline };
+}
+
+export function offlineMachinesLabel(count: number): string {
+  return `${count} ${count === 1 ? "machine" : "machines"} offline`;
+}
+
+/**
  * Whether any copy of `repoKey` may still exist on any machine once the
  * entries in `gone` are removed. Every copy counts, not one per machine: a
  * second copy on the same machine, a copy whose folder is missing, a copy on a

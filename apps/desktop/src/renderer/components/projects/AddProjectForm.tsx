@@ -37,6 +37,8 @@ import {
   copyMachines,
   existingCopiesForRepo,
   expandRepoInput,
+  offlineMachinesLabel,
+  splitOfflineMachines,
   isGitHubRepoUrl,
   repoKeyForUrl,
   repoNameForUrl,
@@ -211,6 +213,50 @@ export function AddProjectForm({
       return { kind: "available" };
     },
     [existing, jobByMachine, webMode],
+  );
+
+  // A long list of offline machines collapses into one row, so the folder
+  // row and the Add button stay in view. A machine with a copy or a clone job
+  // of this repository stays out of the collapsed group.
+  const [offlineExpanded, setOfflineExpanded] = useState(false);
+  const { visible: visibleMachines, offline: offlineMachines } = useMemo(
+    () => splitOfflineMachines(machines, (machine) => machine, (machine) => {
+      const kind = rowState(machine).kind;
+      return kind === "job" || kind === "existing";
+    }),
+    [machines, rowState],
+  );
+
+  const renderMachineRow = (machine: CopyMachine, index: number) => (
+    <MachineRow
+      key={machine.machineId}
+      machine={machine}
+      first={index === 0}
+      state={rowState(machine)}
+      ticked={ticked.has(machine.machineId)}
+      repoChosen={Boolean(repoKey)}
+      folder={parentByMachine[machine.machineId] ?? ""}
+      editing={editingMachineId === machine.machineId}
+      onToggle={(next) =>
+        setTicked((current) => {
+          const updated = new Set(current);
+          if (next) updated.add(machine.machineId);
+          else updated.delete(machine.machineId);
+          return updated;
+        })
+      }
+      onEditFolder={() => {
+        if (machine.isLocal) {
+          void chooseLocalFolder(machine);
+          return;
+        }
+        setEditingMachineId((current) => (current === machine.machineId ? null : machine.machineId));
+      }}
+      onFolderChange={(value) =>
+        setParentByMachine((current) => ({ ...current, [machine.machineId]: value }))
+      }
+      onRetry={(job) => retryCopyJob(job.key)}
+    />
   );
 
   // Default ticks, once the machines and recents are known: this computer,
@@ -413,37 +459,34 @@ export function AddProjectForm({
               No machines are connected.
             </div>
           ) : (
-            machines.map((machine, index) => (
-              <MachineRow
-                key={machine.machineId}
-                machine={machine}
-                first={index === 0}
-                state={rowState(machine)}
-                ticked={ticked.has(machine.machineId)}
-                repoChosen={Boolean(repoKey)}
-                folder={parentByMachine[machine.machineId] ?? ""}
-                editing={editingMachineId === machine.machineId}
-                onToggle={(next) =>
-                  setTicked((current) => {
-                    const updated = new Set(current);
-                    if (next) updated.add(machine.machineId);
-                    else updated.delete(machine.machineId);
-                    return updated;
-                  })
-                }
-                onEditFolder={() => {
-                  if (machine.isLocal) {
-                    void chooseLocalFolder(machine);
-                    return;
-                  }
-                  setEditingMachineId((current) => (current === machine.machineId ? null : machine.machineId));
-                }}
-                onFolderChange={(value) =>
-                  setParentByMachine((current) => ({ ...current, [machine.machineId]: value }))
-                }
-                onRetry={(job) => retryCopyJob(job.key)}
-              />
-            ))
+            <>
+              {visibleMachines.map((machine, index) => renderMachineRow(machine, index))}
+              {offlineMachines.length > 0 ? (
+                <button
+                  type="button"
+                  aria-expanded={offlineExpanded}
+                  onClick={() => setOfflineExpanded((current) => !current)}
+                  className="kit-row"
+                  style={{
+                    minHeight: 36,
+                    padding: "6px 12px",
+                    borderRadius: 0,
+                    borderTop: visibleMachines.length > 0 ? `1px solid ${COLORS.border}` : undefined,
+                    fontFamily: SANS_FONT,
+                    fontSize: 12,
+                    color: COLORS.textMuted,
+                  }}
+                >
+                  <span aria-hidden style={{ width: 16, display: "inline-flex", justifyContent: "center", flexShrink: 0 }}>
+                    {offlineExpanded ? <CaretUp size={11} weight="bold" /> : <CaretDown size={11} weight="bold" />}
+                  </span>
+                  {offlineMachinesLabel(offlineMachines.length)}
+                </button>
+              ) : null}
+              {offlineExpanded
+                ? offlineMachines.map((machine, index) => renderMachineRow(machine, visibleMachines.length + 1 + index))
+                : null}
+            </>
           )}
         </div>
         {repoKey && !submitted && cloneableTicked.length === 0 && !openOnlyExisting ? (

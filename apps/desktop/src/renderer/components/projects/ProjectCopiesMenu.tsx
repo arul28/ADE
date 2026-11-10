@@ -1,5 +1,7 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
+  CaretDown,
+  CaretUp,
   CheckCircle,
   CircleDashed,
   CircleNotch,
@@ -12,7 +14,7 @@ import {
 import { useClampedFixedPosition, type FixedAnchor } from "../../hooks/useClampedFixedPosition";
 import { ContextMenuSurface } from "../ui/ContextMenu";
 import { MENU_ITEM_CLASS, MenuSectionLabel, MenuSeparator } from "../ui/MenuSubmenu";
-import type { CopyMachine } from "./projectCopies";
+import { offlineMachinesLabel, splitOfflineMachines, type CopyMachine } from "./projectCopies";
 import { retryCopyJob, useCopyJobs, watchCopyJobs, type CopyJob } from "./projectCopyJobs";
 
 /** One machine in a tab's copies menu. */
@@ -68,7 +70,8 @@ export function ProjectCopiesMenu({
 }) {
   const open = menu != null;
   const jobs = useCopyJobs(repoKey);
-  const { ref, position } = useClampedFixedPosition(menu, rows.length + jobs.length);
+  const [offlineExpanded, setOfflineExpanded] = useState(false);
+  const { ref, position } = useClampedFixedPosition(menu, `${rows.length}:${jobs.length}:${offlineExpanded}`);
   const focusedOnOpenRef = useRef(false);
 
   useEffect(() => (open && repoKey ? watchCopyJobs(repoKey) : undefined), [open, repoKey]);
@@ -76,6 +79,7 @@ export function ProjectCopiesMenu({
   useEffect(() => {
     if (!open) {
       focusedOnOpenRef.current = false;
+      setOfflineExpanded(false);
       return;
     }
     const onKeyDown = (event: KeyboardEvent) => {
@@ -107,6 +111,27 @@ export function ProjectCopiesMenu({
 
   if (!menu) return null;
   const jobByMachine = new Map(jobs.map((job) => [job.machine.machineId, job]));
+  // A long list of offline machines collapses into one row. An offline
+  // machine with a copy (or a clone job) stays in view: the person needs to
+  // see where the copies are.
+  const { visible, offline } = splitOfflineMachines(
+    rows,
+    (row) => row.machine,
+    (row) => row.copy != null || jobByMachine.has(row.machine.machineId),
+  );
+  const renderRow = (row: CopiesMenuRow) => (
+    <CopyRow
+      key={row.machine.machineId}
+      row={row}
+      job={row.copy ? null : jobByMachine.get(row.machine.machineId) ?? null}
+      canAddCopies={canAddCopies && repoKey != null}
+      onSwitch={() => {
+        onClose();
+        onSwitch(row);
+      }}
+      onAddCopy={() => onAddCopy(row.machine)}
+    />
+  );
 
   return (
     <ContextMenuSurface
@@ -120,19 +145,22 @@ export function ProjectCopiesMenu({
       className="w-[340px] max-w-[calc(100vw-16px)]"
     >
       <MenuSectionLabel>Copies of {projectName}</MenuSectionLabel>
-      {rows.map((row) => (
-        <CopyRow
-          key={row.machine.machineId}
-          row={row}
-          job={row.copy ? null : jobByMachine.get(row.machine.machineId) ?? null}
-          canAddCopies={canAddCopies && repoKey != null}
-          onSwitch={() => {
-            onClose();
-            onSwitch(row);
-          }}
-          onAddCopy={() => onAddCopy(row.machine)}
-        />
-      ))}
+      {visible.map(renderRow)}
+      {offline.length > 0 ? (
+        <button
+          type="button"
+          role="menuitem"
+          aria-expanded={offlineExpanded}
+          className={`${ROW_CLASS} text-muted-fg/70`}
+          onClick={() => setOfflineExpanded((current) => !current)}
+        >
+          {offlineExpanded
+            ? <CaretUp size={12} weight="bold" aria-hidden className="shrink-0 opacity-60" />
+            : <CaretDown size={12} weight="bold" aria-hidden className="shrink-0 opacity-60" />}
+          {offlineMachinesLabel(offline.length)}
+        </button>
+      ) : null}
+      {offlineExpanded ? offline.map(renderRow) : null}
       {onlyOneMachine ? (
         <>
           <MenuSeparator />
@@ -246,7 +274,14 @@ function CopyRow({
     );
   }
   if (!machine.online) {
-    return disabledRow(<CircleDashed size={12} aria-hidden className="shrink-0 opacity-60" />, quiet("offline"));
+    // An offline machine's copy shows where it is; it cannot be opened now.
+    return copy
+      ? disabledRow(
+        <CircleDashed size={12} aria-hidden className="shrink-0 opacity-60" />,
+        path(copy.rootPath),
+        <span className="ml-auto shrink-0 text-[10px] text-muted-fg/70">offline</span>,
+      )
+      : disabledRow(<CircleDashed size={12} aria-hidden className="shrink-0 opacity-60" />, quiet("offline"));
   }
   if (copy) {
     return (
