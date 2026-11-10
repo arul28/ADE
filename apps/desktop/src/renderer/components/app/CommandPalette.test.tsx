@@ -9,6 +9,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
@@ -1154,9 +1155,10 @@ describe("CommandPalette", () => {
         </MemoryRouter>,
       );
 
-      expect(await screen.findByText("Navigate")).toBeTruthy();
-      expect(screen.getByText("Select")).toBeTruthy();
-      expect(screen.getByText("Close")).toBeTruthy();
+      // The hints share one footer; settings results (a "Close" CRM server) may say "Close" too.
+      const footer = (await screen.findByText("Navigate")).parentElement!;
+      expect(within(footer).getByText("Select")).toBeTruthy();
+      expect(within(footer).getByText("Close")).toBeTruthy();
     });
 
     // The Work sidebar is a union across every connected machine, always. The
