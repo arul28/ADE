@@ -627,6 +627,9 @@ export function registerRuntimeBridge({
     },
     pairedMachineStore,
   );
+  /** The folder a pinned remote call sends with its project id, or null. */
+  const pinFolder = (value: unknown): string | null =>
+    typeof value === "string" ? value.trim() || null : null;
   /** A saved remote target by id. One that is gone (removed, or never saved here) is the caller's to fix. */
   const requireRemoteTarget = (id: string | null | undefined) => {
     const target = id ? remoteConnectionService.getTarget(id) : null;
@@ -1521,8 +1524,7 @@ export function registerRuntimeBridge({
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const projectId =
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
-      const projectRootPath =
-        typeof arg?.projectRootPath === "string" ? arg.projectRootPath.trim() || null : null;
+      const projectRootPath = pinFolder(arg?.projectRootPath);
       const request =
         arg?.request &&
         typeof arg.request === "object" &&
@@ -1966,8 +1968,7 @@ export function registerRuntimeBridge({
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const projectId =
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
-      const projectRootPath =
-        typeof arg?.projectRootPath === "string" ? arg.projectRootPath.trim() || null : null;
+      const projectRootPath = pinFolder(arg?.projectRootPath);
       if (!id) throw new Error("Remote target id is required.");
       if (!projectId) throw new Error("Remote project id is required.");
       const target = requireRemoteTarget(id);

@@ -1555,9 +1555,18 @@ export class RemoteConnectionService {
     // it first, and waits for it to come back. The app's own background writes don't.
     const wakes = adeActionAccess(request.domain, request.action) === "write"
       && !isBackgroundAdeWrite(request.domain, request.action);
-    // Read after any wake: the woken machine's own list, else the last one known.
+    // Read after any wake: the woken machine's own list, else the last one
+    // known. A machine this app holds no list for (awake, but not connected
+    // here yet) is asked for it first; a failure there is the call's failure.
     let wokenProjects: RemoteRuntimeProjectRecord[] | null = null;
-    const routedProjectId = () => this.projectIdOnMachine(targetId, projectId, options?.projectRootPath, wokenProjects);
+    const routedProjectId = async (machine: RemoteRuntimeTarget): Promise<string> => {
+      if (!options?.projectRootPath) return projectId;
+      if (!wokenProjects && !this.statusById.get(targetId)?.projects?.length) {
+        wokenProjects = coerceProjects(await this.pool.projectsForTarget(machine));
+        this.mergeStatus(targetId, { projects: wokenProjects });
+      }
+      return this.projectIdOnMachine(targetId, projectId, options.projectRootPath, wokenProjects);
+    };
     if (!this.pool.hasEntry(targetId) && wakes) {
       const sleeping = this.registry.get(targetId);
       // The same guards as any implicit use, but for the reconnect backoff a
@@ -1582,7 +1591,7 @@ export class RemoteConnectionService {
     try {
       let result: RemoteRuntimeActionResult;
       try {
-        result = await this.pool.callActionForTarget(target, routedProjectId(), request);
+        result = await this.pool.callActionForTarget(target, await routedProjectId(target), request);
       } catch (error) {
         // A connection that looked open to a box that is asleep: wake it. The
         // call is sent once more only when sending it twice is safe, or when
@@ -1593,7 +1602,7 @@ export class RemoteConnectionService {
         wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(target));
         if (error instanceof RemoteActionOutcomeUnknownError
           && !isRetriableAfterSleep(request, this.statusById.get(targetId)?.capabilities?.clientSendDedupe === true)) throw error;
-        result = await this.pool.callActionForTarget(target, routedProjectId(), request);
+        result = await this.pool.callActionForTarget(target, await routedProjectId(target), request);
       }
       this.mergeStatus(targetId, {
         state: "connected",
