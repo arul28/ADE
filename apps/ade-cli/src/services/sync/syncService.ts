@@ -63,6 +63,7 @@ import {
   type SyncForeignChatTranscriptResolver,
   type SyncRuntimeKind,
   type SyncHostRemoteCommandExecutor,
+  type TerminalInputDedupeLedger,
 } from "./syncHostService";
 import { createSyncArtifactReads, runSyncFileServiceRequest } from "./syncFileRequests";
 import { createSyncPairingStore } from "./syncPairingStore";
@@ -256,7 +257,10 @@ type SyncServiceArgs = {
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
-  projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
+  projectScopes?: {
+    getIfBooted(projectId: string): Promise<unknown> | null;
+    terminalInputDedupeLedger?: TerminalInputDedupeLedger;
+  };
   /**
    * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`
    * sync commands to share favorites + recents with desktop; the

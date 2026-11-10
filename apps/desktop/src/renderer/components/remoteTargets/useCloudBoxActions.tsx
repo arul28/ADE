@@ -10,6 +10,10 @@ import {
   type CloudMachineActionKind,
   type CloudMachineActionResult,
   type CloudShapeId,
+  cloudShape,
+  cloudShapeById,
+  cloudShapeFor,
+  cloudShapeRunsAndroid,
 } from "../../../shared/adeCloud";
 import { accountMachineDisplayName, accountMachineRemovalConfirmBody } from "../../../shared/accountDirectory";
 import { captureError } from "../../../shared/sentry/capture";
@@ -131,7 +135,7 @@ export function useCloudBoxActions(args: {
   const run = useCallback(async (
     ctx: CloudBoxContext,
     action: CloudMachineActionKind,
-    extra: { shape?: CloudShapeId } = {},
+    extra: { shape?: CloudShapeId; disk?: number; computerIdle?: boolean } = {},
   ): Promise<CloudMachineActionResult | null> => {
     const machineAction = window.ade?.cloud?.machineAction;
     if (!machineAction) return null;
@@ -155,7 +159,10 @@ export function useCloudBoxActions(args: {
     }
     if (!result) return null;
     if (result.ok) {
-      showToast({ tone: "success", title: toastTitle(action, ctx.name), message: result.message, replayMask: { title: true } });
+      const title = action === "resize" && extra.disk !== undefined && extra.shape === undefined
+        ? `Growing the disk of ${ctx.name}`
+        : toastTitle(action, ctx.name);
+      showToast({ tone: "success", title, message: result.message, replayMask: { title: true } });
     } else {
       setError(instanceId, { message: result.message, blocker: result.blocker });
     }
@@ -173,6 +180,22 @@ export function useCloudBoxActions(args: {
       if (!ok) return;
     }
     await run(ctx, "sleep");
+  }, [run]);
+
+  /**
+   * Grows the disk to `toGb` at the same size, once the person agrees to the
+   * restart it takes. That agreement is what `computerIdle` tells the server:
+   * without it, a grow waits for the computer to be idle. The server's answer,
+   * with its `diskRefusal` when refused; null when the person said no.
+   */
+  const growDisk = useCallback(async (ctx: CloudBoxContext, toGb: number): Promise<CloudMachineActionResult | null> => {
+    const ok = await confirmDialog({
+      title: `Grow the disk of ${ctx.name} to ${toGb} GB?`,
+      message: `${ctx.name} restarts to grow its disk, so everything running on it stops: a chat turn in progress may fail and need a retry. It is back in a few minutes. A disk can't shrink later.`,
+      confirmLabel: "Grow the disk",
+    });
+    if (!ok) return null;
+    return await run(ctx, "resize", { disk: toGb, computerIdle: true });
   }, [run]);
 
   const deleteBox = useCallback(async (ctx: CloudBoxContext) => {
@@ -317,14 +340,28 @@ export function useCloudBoxActions(args: {
     if (ok) await run(ctx, "update");
   }, [run]);
 
-  const moveBox = useCallback(async (ctx: CloudBoxContext) => {
+  /**
+   * Move to the other kind. `shape` picks the new computer's size (the
+   * Android notice asks for Medium); without it the new one keeps this size.
+   */
+  const moveBox = useCallback(async (ctx: CloudBoxContext, shape?: CloudShapeId | null) => {
     const moveMachine = window.ade.cloud?.moveMachine;
     if (!moveMachine) return;
     const to = ctx.box.type === "vm" ? "box" : "vm";
+    // The size the new computer gets: the one asked for, else this one's
+    // (main falls back to Small the same way).
+    const target = (shape ? cloudShapeById(shape) : null)
+      ?? cloudShape(ctx.box.shapeId)
+      ?? cloudShapeFor(ctx.box.resources)
+      ?? cloudShapeById("2x4");
+    // A full computer smaller than Medium runs Docker but not Android: say so.
+    const runs = cloudShapeRunsAndroid(target.id)
+      ? "Android and Docker; it uses hours faster"
+      : "Docker; it uses hours faster. Android needs Medium or bigger: resize it after the move, or use Move in the Android pane";
     const ok = await confirmDialog({
       title: to === "vm" ? `Move ${ctx.name} to a full computer?` : `Move ${ctx.name} to a standard computer?`,
       message: to === "vm"
-        ? `ADE makes a full computer (Android and Docker; it uses hours faster), copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Running processes stop.`
+        ? `ADE makes a ${target.label} full computer (${runs}), copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Running processes stop.`
         : `ADE makes a standard computer, copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Docker images and volumes stay behind, and running processes stop.`,
       confirmLabel: "Move",
       destructive: true,
@@ -336,6 +373,7 @@ export function useCloudBoxActions(args: {
       instanceId: ctx.box.instanceId,
       machineKey: ctx.accountMachine?.machineKey ?? null,
       to,
+      ...(shape ? { shape } : {}),
     }));
   }, [runLong]);
 
@@ -436,6 +474,10 @@ export function useCloudBoxActions(args: {
     actionsFor,
     wake: (ctx: CloudBoxContext) => run(ctx, "wake"),
     removeFromAde,
+    moveBox,
+    /** Opens the Resize dialog (rendered by `dialog`). */
+    resize: (ctx: CloudBoxContext) => setResizing(ctx),
+    growDisk,
     dialog,
   };
 }

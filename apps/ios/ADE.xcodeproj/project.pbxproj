@@ -378,6 +378,7 @@
 		5E77000000000000000B0001 /* SettingsRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0001 /* SettingsRoute.swift */; };
 		5E77000000000000000B0002 /* SettingsGeneralPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0002 /* SettingsGeneralPage.swift */; };
 		5E77000000000000000B0003 /* SettingsChatPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0003 /* SettingsChatPage.swift */; };
+		E2000000000000000000DE06 /* SettingsAccountPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE06 /* SettingsAccountPage.swift */; };
 		5E77000000000000000B0004 /* SettingsProvidersPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0004 /* SettingsProvidersPage.swift */; };
 		5E77000000000000000B0005 /* SettingsIntegrationsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0005 /* SettingsIntegrationsPage.swift */; };
 		5E77000000000000000B0006 /* SettingsLanesPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E77000000000000000A0006 /* SettingsLanesPage.swift */; };
@@ -473,6 +474,8 @@
 		C5B00000000000000000000D /* SSHPairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000D /* SSHPairingView.swift */; };
 		C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000E /* SSHBootstrapTests.swift */; };
 		E20000000000000000000F01 /* MachineConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F01 /* MachineConnection.swift */; };
+		E2000000000000000000DE05 /* MachineConnection+Terminal.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE05 /* MachineConnection+Terminal.swift */; };
+		E2000000000000000000DE04 /* TerminalStreamClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE04 /* TerminalStreamClient.swift */; };
 		E20000000000000000000F07 /* SyncService+Fleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F07 /* SyncService+Fleet.swift */; };
 		E20000000000000000000F7A /* SyncService+Artifacts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F7A /* SyncService+Artifacts.swift */; };
 		7C0FFEE0000000000000A004 /* SyncService+ThreadComments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */; };
@@ -910,6 +913,7 @@
 		5E77000000000000000A0001 /* SettingsRoute.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsRoute.swift; path = ADE/Views/Settings/SettingsRoute.swift; sourceTree = "<group>"; };
 		5E77000000000000000A0002 /* SettingsGeneralPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsGeneralPage.swift; path = ADE/Views/Settings/SettingsGeneralPage.swift; sourceTree = "<group>"; };
 		5E77000000000000000A0003 /* SettingsChatPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsChatPage.swift; path = ADE/Views/Settings/SettingsChatPage.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE06 /* SettingsAccountPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsAccountPage.swift; path = ADE/Views/Settings/SettingsAccountPage.swift; sourceTree = "<group>"; };
 		5E77000000000000000A0004 /* SettingsProvidersPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProvidersPage.swift; path = ADE/Views/Settings/SettingsProvidersPage.swift; sourceTree = "<group>"; };
 		5E77000000000000000A0005 /* SettingsIntegrationsPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsIntegrationsPage.swift; path = ADE/Views/Settings/SettingsIntegrationsPage.swift; sourceTree = "<group>"; };
 		5E77000000000000000A0006 /* SettingsLanesPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsLanesPage.swift; path = ADE/Views/Settings/SettingsLanesPage.swift; sourceTree = "<group>"; };
@@ -983,6 +987,8 @@
 		FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCardExpansionTests.swift; path = ADETests/WorkCardExpansionTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLiveRosterHydrationTests.swift; path = ADETests/WorkLiveRosterHydrationTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000F01 /* MachineConnection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachineConnection.swift; path = ADE/Services/MachineConnection.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE05 /* MachineConnection+Terminal.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "MachineConnection+Terminal.swift"; path = "ADE/Services/MachineConnection+Terminal.swift"; sourceTree = "<group>"; };
+		D2000000000000000000DE04 /* TerminalStreamClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TerminalStreamClient.swift; path = ADE/Services/TerminalStreamClient.swift; sourceTree = "<group>"; };
 		D20000000000000000000F07 /* SyncService+Fleet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+Fleet.swift"; path = "ADE/Services/SyncService+Fleet.swift"; sourceTree = "<group>"; };
 		D20000000000000000000F7A /* SyncService+Artifacts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+Artifacts.swift"; path = "ADE/Services/SyncService+Artifacts.swift"; sourceTree = "<group>"; };
 		7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+ThreadComments.swift"; path = "ADE/Services/SyncService+ThreadComments.swift"; sourceTree = "<group>"; };
@@ -1479,6 +1485,7 @@
 				5E77000000000000000A0001 /* SettingsRoute.swift */,
 				5E77000000000000000A0002 /* SettingsGeneralPage.swift */,
 				5E77000000000000000A0003 /* SettingsChatPage.swift */,
+				D2000000000000000000DE06 /* SettingsAccountPage.swift */,
 				5E77000000000000000A0004 /* SettingsProvidersPage.swift */,
 				5E77000000000000000A0005 /* SettingsIntegrationsPage.swift */,
 				5E77000000000000000A0006 /* SettingsLanesPage.swift */,
@@ -1509,6 +1516,8 @@
 				D10000000000000000000F82 /* SyncService+SessionHandoff.swift */,
 				D20000000000000000000F02 /* MachineFleet.swift */,
 				D20000000000000000000F01 /* MachineConnection.swift */,
+				D2000000000000000000DE05 /* MachineConnection+Terminal.swift */,
+				D2000000000000000000DE04 /* TerminalStreamClient.swift */,
 				D20000000000000000000F07 /* SyncService+Fleet.swift */,
 				D20000000000000000000F7A /* SyncService+Artifacts.swift */,
 				7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */,
@@ -2157,6 +2166,8 @@
 				28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */,
 				E20000000000000000000F02 /* MachineFleet.swift in Sources */,
 				E20000000000000000000F01 /* MachineConnection.swift in Sources */,
+				E2000000000000000000DE05 /* MachineConnection+Terminal.swift in Sources */,
+				E2000000000000000000DE04 /* TerminalStreamClient.swift in Sources */,
 				E20000000000000000000F07 /* SyncService+Fleet.swift in Sources */,
 				E20000000000000000000F7A /* SyncService+Artifacts.swift in Sources */,
 				7C0FFEE0000000000000A004 /* SyncService+ThreadComments.swift in Sources */,
@@ -2273,6 +2284,7 @@
 				5E77000000000000000B0001 /* SettingsRoute.swift in Sources */,
 				5E77000000000000000B0002 /* SettingsGeneralPage.swift in Sources */,
 				5E77000000000000000B0003 /* SettingsChatPage.swift in Sources */,
+				E2000000000000000000DE06 /* SettingsAccountPage.swift in Sources */,
 				5E77000000000000000B0004 /* SettingsProvidersPage.swift in Sources */,
 				5E77000000000000000B0005 /* SettingsIntegrationsPage.swift in Sources */,
 				5E77000000000000000B0006 /* SettingsLanesPage.swift in Sources */,

@@ -2032,10 +2032,11 @@ describe("createSyncRemoteCommandService", () => {
 
   it("rejects missing required args for new remote-command parsers", async () => {
     const postReviewComment = vi.fn();
+    const updateDescription = vi.fn();
     const activeForChat = vi.fn();
     const save = vi.fn();
     const { service } = createService({
-      prService: { postReviewComment },
+      prService: { postReviewComment, updateDescription },
       ptyService: { activeForChat },
       projectConfigService: { save },
     });
@@ -2045,6 +2046,13 @@ describe("createSyncRemoteCommandService", () => {
     await expect(
       service.execute(makePayload("prs.postReviewComment", { prId: "pr-1", threadId: "thread-1" })),
     ).rejects.toThrow("prs.postReviewComment requires body.");
+    // A call with no body must not reach GitHub as "clear the description".
+    await expect(
+      service.execute(makePayload("prs.updateDescription", { prId: "pr-1" })),
+    ).rejects.toThrow("prs.updateDescription requires body.");
+    expect(updateDescription).not.toHaveBeenCalled();
+    await service.execute(makePayload("prs.updateDescription", { prId: "pr-1", body: "" }));
+    expect(updateDescription).toHaveBeenCalledWith({ prId: "pr-1", body: "" });
     await expect(service.execute(makePayload("projectConfig.save"))).rejects.toThrow("projectConfig.save requires candidate.");
     await expect(service.execute(makePayload("chat.resolveSmartLinkPreview"))).rejects.toThrow(
       "chat.resolveSmartLinkPreview requires url.",

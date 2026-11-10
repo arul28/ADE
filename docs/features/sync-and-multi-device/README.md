@@ -684,6 +684,11 @@ carry that machine and project identity back to the owning runtime.
 
 - `apps/ios/ADE/Services/MachineFleet.swift` and `MachineConnection.swift` —
   account-wide connected machines and their lightweight roster sockets.
+- `apps/ios/ADE/Services/TerminalStreamClient.swift` and
+  `MachineConnection+Terminal.swift` — the terminal stream state (handlers,
+  offsets, queued input, acks) that the focused connection and each roster
+  connection share, and the roster connection's terminal transport
+  (`features.rosterTerminal`).
 - `apps/ios/ADE/Services/SyncService+RemoteLanes.swift` and
   `apps/ios/ADE/Views/Lanes/LaneRemoteMachines.swift` — machine-qualified lane
   reads and stale-result handling for the Lanes tab.
@@ -2048,6 +2053,16 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `syncHelloTelemetry.ts` — the dialed machine's report of each hello it
   accepted or rejected, from both the project host and the brain's fallback.
   Bounds what an unauthenticated peer can put in a log line.
+- `syncTerminalStreams.ts` — terminal streaming for phone sockets: the
+  snapshot barrier, offset resume, live data, history, resize and
+  acknowledged input. The project host and the brain's projectless ingress
+  both use it. A session of another open project is routed to that project's
+  runtime, and later envelopes must name the project the subscribe named.
+  The desktop size of a PTY comes back only when no ingress in the process
+  still watches it. `syncTerminalSnapshotBarrier.ts` holds the pure barrier
+  (queued output, flush plan, snapshot payloads); `syncTerminalTargets.ts`
+  reads the project an envelope names and finds that project's runtime
+  without booting it (a bounded wait for one that is still opening).
 - `syncHostService.ts` — the per-project WebSocket host. Owns
   connection acceptance, hello/pairing handshakes (an `auth_failed`
   rejection is attributed with the rejecting machine's

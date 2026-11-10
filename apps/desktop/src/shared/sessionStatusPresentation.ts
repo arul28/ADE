@@ -1,7 +1,7 @@
 import { resolveUsageLimitResumeState } from "./usageLimitResumeState";
 import { usageLimitResumeRowStatus } from "./usageLimitResumePresentation";
 import type { AgentChatUsageLimitResume } from "./types/chat";
-import type { SessionActivityReport } from "./types/sessions";
+import type { SessionActivityReport, TerminalSessionSummary } from "./types/sessions";
 import { prWatchHint, type SessionActivePrWatch } from "./prWatch";
 import { isReportFromTurn } from "./sessionActivity";
 import type {
@@ -673,4 +673,47 @@ export function formatFutureDuration(timestampMs: number, nowMs: number): string
   const days = Math.floor(totalHours / 24);
   const hours = totalHours % 24;
   return hours ? `${days}d ${hours}h` : `${days}d`;
+}
+
+/** A send is waking the row's sleeping cloud computer: the working look, with its own word. */
+export const WAKING_STATUS_PRESENTATION: SessionStatusPresentation = {
+  label: "Waking",
+  tone: "blue",
+  glyph: "working",
+  showsElapsed: true,
+  prominent: false,
+  // A board card keeps the word: its column says Done, the card says why not.
+  activityDetail: true,
+};
+
+/**
+ * The chat's own machine reports a turn running: a live row (not a saved
+ * copy) with a turn started and not idle since. A waking mark gives way to it.
+ */
+export function sessionTurnLive(
+  session: Pick<TerminalSessionSummary, "cloudSavedCopy" | "currentTurnStartedAt" | "chatIdleSinceAt" | "endedAt">,
+): boolean {
+  return session.cloudSavedCopy !== true && Boolean(session.currentTurnStartedAt) && !session.chatIdleSinceAt && session.endedAt == null;
+}
+
+/**
+ * The row while a send wakes its computer: a live turn since the wake started,
+ * so the status, its elapsed and the settle controls read as working, not as
+ * the saved copy's Done.
+ */
+export function wakingSessionView(session: TerminalSessionSummary, since: string): TerminalSessionSummary {
+  return {
+    ...session,
+    status: "running",
+    runtimeState: "running",
+    endedAt: null,
+    exitCode: null,
+    currentTurnStartedAt: since,
+    lastActivityAt: since,
+    chatIdleSinceAt: null,
+    activityStatus: null,
+    settledAt: null,
+    settleOverride: null,
+    lastTurnFailedAt: null,
+  };
 }

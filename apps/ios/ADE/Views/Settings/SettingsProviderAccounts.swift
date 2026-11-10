@@ -111,7 +111,7 @@ struct SettingsProviderAccountsPage: View {
   /// can manage its accounts from here.
   private var choices: [(option: ProviderAccountsMachineOption, host: ProviderAccountsHost)] {
     var result: [(ProviderAccountsMachineOption, ProviderAccountsHost)] = [(
-      ProviderAccountsMachineOption(id: primaryId, name: syncService.hostName ?? "This machine", isPrimary: true),
+      ProviderAccountsMachineOption(id: primaryId, name: syncService.hostName ?? "Primary machine", isPrimary: true),
       syncService
     )]
     for machine in fleet.machines where machine.state == .live && machine.machineKey != primaryId {
@@ -187,11 +187,11 @@ struct ProviderAccountsMachinePicker: View {
     HStack(spacing: 12) {
       ADESettingsIconTile(symbol: "desktopcomputer", tint: .accent, size: 32)
       VStack(alignment: .leading, spacing: 1) {
-        Text(selected?.name ?? "This machine")
+        Text(selected?.name ?? "Primary machine")
           .font(.system(size: 15, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
-        Text(showsChevron ? "\(machines.count) machines" : "Accounts on this computer")
+        Text(showsChevron ? "\(machines.count) machines" : "Primary machine")
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
       }
@@ -816,7 +816,7 @@ struct ProviderAccountsUnavailableView: View {
       symbol: connected ? "arrow.down.circle" : "desktopcomputer.trianglebadge.exclamationmark",
       title: connected ? "Update ADE to manage accounts" : "Connect a machine",
       message: connected
-        ? "\(hostName ?? "This machine") runs an ADE that cannot manage accounts from the phone yet. Update ADE there, then reconnect."
+        ? "\(hostName ?? "Your primary machine") runs an ADE that cannot manage accounts from the phone yet. Update ADE there, then reconnect."
         : "AI accounts live on your computer. Connect to it from Settings to manage them here."
     ) {
       EmptyView()

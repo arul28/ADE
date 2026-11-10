@@ -6144,6 +6144,7 @@ function AgentChatMessageListMain({
   surfaceProfile = "standard",
   assistantLabel,
   sessionTurnActive = false,
+  wakingSinceMs = null,
   usageLimitResumeActive = false,
   usageLimitResumeTurnId = null,
   onOpenWorkspacePath,
@@ -6226,6 +6227,12 @@ function AgentChatMessageListMain({
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
   sessionTurnActive?: boolean;
+  /**
+   * Set while a send wakes the chat's sleeping cloud computer: when the wake
+   * started. Until a live turn takes over, the working indicator shows
+   * "Waking the computer…" and counts from here.
+   */
+  wakingSinceMs?: number | null;
   /**
    * The host's live usage-limit resume state for this chat, or null. Only two
    * facts are read here — that a limit is live (the quota card stands down for
@@ -9171,7 +9178,18 @@ function AgentChatMessageListMain({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight, timelineRowGapPx]);
 
-  const streamingIndicator = showStreamingIndicator && !sessionEnded && !(activeTurnId && compactOnlyTurnIds.has(activeTurnId)) ? (
+  const liveTurnIndicator = showStreamingIndicator && !sessionEnded && !(activeTurnId && compactOnlyTurnIds.has(activeTurnId));
+  // The same indicator element, so a live turn that follows the wake takes it
+  // over in place instead of a second one fading in.
+  const wakingIndicator = !liveTurnIndicator && !sessionEnded && wakingSinceMs != null;
+  const workingActivity = wakingIndicator
+    ? "Waking the computer…"
+    : activeProviderRetryActivity || resolveWorkingIndicatorLabel(
+      latestActivity?.activity ?? null,
+      transcriptToolActivity.activeFileEntries,
+      transcriptToolActivity.activeEntries,
+    );
+  const streamingIndicator = liveTurnIndicator || wakingIndicator ? (
     <motion.div
       className="w-fit max-w-[var(--chat-content-width,52rem)] pt-3 pb-2"
       // Read when it mounts: shown with the chat it opened with, it does not fade in.
@@ -9180,17 +9198,9 @@ function AgentChatMessageListMain({
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
       <WorkingIndicator
-        activity={
-          activeProviderRetryActivity
-            ? activeProviderRetryActivity
-            : resolveWorkingIndicatorLabel(
-              latestActivity?.activity ?? null,
-              transcriptToolActivity.activeFileEntries,
-              transcriptToolActivity.activeEntries,
-            )
-        }
-        startedAt={activeTurnStartedAt}
-        toolEntries={transcriptToolActivity.activeEntries}
+        activity={workingActivity}
+        startedAt={wakingIndicator ? wakingSinceMs : activeTurnStartedAt}
+        toolEntries={wakingIndicator ? EMPTY_WORK_LOG_ENTRIES : transcriptToolActivity.activeEntries}
         replyWritesScene={activeTurnReplyWritesScene}
         onNavigateSuggestion={handleNavigateSuggestion}
         onInsertDraft={onInsertDraft}

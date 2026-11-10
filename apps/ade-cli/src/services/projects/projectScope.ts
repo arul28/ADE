@@ -2,6 +2,7 @@ import type { CrossMachineHandoffTransport } from "../../../../desktop/src/main/
 import type { AdeRuntime, AdeRuntimeSyncOptions } from "../../bootstrap";
 import type { SyncCommandPayload, SyncFileRequest } from "../../../../desktop/src/shared/types";
 import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteCommandService";
+import type { TerminalInputDedupeLedger } from "../sync/syncHostService";
 import type { SyncHostBlocker } from "../sync/syncService";
 import type { BrainKeepAwakeService } from "../power/brainKeepAwakeService";
 import type { RuntimeDisposeReason } from "../runtime/startupTeardown";
@@ -238,6 +239,8 @@ export class ProjectScopeRegistry {
       crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
       /** One machine service shared by all scopes hosted by this brain. */
       keepAwakeService?: BrainKeepAwakeService | null;
+      /** The brain's phone input ledger, shared with each project's sync host. */
+      terminalInputDedupeLedger?: TerminalInputDedupeLedger;
       onDisposeProject?: (projectId: ProjectId) => void;
       /**
        * Stops the devices a removed project's earlier teardown handed off:
@@ -1099,6 +1102,9 @@ export class ProjectScopeRegistry {
       projectScopes: {
         getIfBooted: (peerProjectId: string) =>
           this.getIfBooted(this.projectRegistry.resolveMovedProjectId(peerProjectId) ?? peerProjectId),
+        ...(this.options.terminalInputDedupeLedger
+          ? { terminalInputDedupeLedger: this.options.terminalInputDedupeLedger }
+          : {}),
       },
     };
   }

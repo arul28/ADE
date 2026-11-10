@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useSyncExternalStore } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowUp, CheckCircle, Play, Terminal, Warning } from "@phosphor-icons/react";
 import type { OpenProjectBinding, PtyExitEvent, TerminalSerializedSnapshot } from "../../../shared/types";
 import { SHELL_BLOCK_RUN_ENV } from "../../../shared/types/sync";
@@ -9,6 +9,8 @@ import { planShellBlockRun, shellRunResultMessage, shellRunTerminalTitle } from 
 import { requestChatTerminalFocus } from "./chatTerminalFocus";
 import { CODE_BLOCK_ACTION_BUTTON_CLASS, CODE_BLOCK_ACTION_BUTTON_STYLE } from "./codeBlockActionButton";
 import { captureError } from "../../../shared/sentry/capture";
+import { useChatMachineWake } from "./useChatMachineWake";
+import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 
 type RevealTerminal = (terminal: { chatSessionId: string; terminalId: string; ptyId: string; label: string }) => void;
 
@@ -352,9 +354,11 @@ function scopeIsWindows(scope: ChatRuntimeScope): boolean {
   return path.length > 0 && isWindowsAbsolutePath(path);
 }
 
+const NO_PROJECT_LANE = "This chat has no project lane to run commands in.";
+
 function blockedReason(scope: ChatRuntimeScope): string | null {
   // A personal chat's lane is its own workspace, not a lane of this project.
-  if (!scope.laneId || !scope.lane) return "This chat has no project lane to run commands in.";
+  if (!scope.laneId || !scope.lane) return NO_PROJECT_LANE;
   if (!scope.online) return `${scope.machineName} is offline.`;
   if (scope.lane?.archivedAt) return "This chat's lane is archived. Restore it to run commands.";
   if (!scope.laneWorktreePath) return `This lane's folder isn't known on ${scope.machineName}.`;
@@ -366,17 +370,54 @@ function blockedReason(scope: ChatRuntimeScope): string | null {
 export function ShellCodeBlockRunButton({ code, language }: { code: string; language: string }) {
   const scope = useChatRuntimeScope();
   const reveal = useContext(ChatTerminalRevealContext);
+  // The chat's machine as the chat found it: a sleeping cloud computer wakes
+  // on the person's click, an unreachable machine stays "offline".
+  const machine = useChatMachineWake();
+  // A click on a sleeping computer: true while its wake runs.
+  const [runAfterWake, setRunAfterWake] = useState(false);
+  // After the wake: the run waits for the woken machine's own lane read (the
+  // saved copy's lane has no folder), until this time (ms).
+  const [laneWaitUntil, setLaneWaitUntil] = useState<number | null>(null);
+  // Why a run a wake asked for did not start, as one sentence.
+  const [runFailure, setRunFailure] = useState<string | null>(null);
+  // The latest render's start and scope, for the wait below.
+  const runNowRef = useRef<(() => void) | null>(null);
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const liveFolder = scope.online ? scope.laneWorktreePath : null;
+  useEffect(() => {
+    if (laneWaitUntil == null) return;
+    if (liveFolder) {
+      // Once: the wait ends before the start, so a later render starts nothing.
+      setLaneWaitUntil(null);
+      runNowRef.current?.();
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setLaneWaitUntil(null);
+      const current = scopeRef.current;
+      setRunFailure(blockedReason(current) ?? `${current.machineName} didn't come back online in time. Try again.`);
+    }, Math.max(0, laneWaitUntil - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [laneWaitUntil, liveFolder]);
   // Outside a chat (a PR description, a preview) there is nowhere to run it.
   if (!scope.sessionId || reveal === false) return null;
   const plan = planShellBlockRun({ code, language, machineIsWindows: scopeIsWindows(scope) });
   if (!plan) return null;
-  const reason = blockedReason(scope) ?? (plan.ok ? null : plan.reason);
+  const asleep = !scope.online && machine.resting;
+  // A sleeping cloud computer is no reason to refuse: the click wakes it, and
+  // the lane's facts are read once it is up. It still needs a project lane.
+  const machineBlocked = asleep ? (scope.laneId ? null : NO_PROJECT_LANE) : blockedReason(scope);
+  const blocked = machineBlocked ?? (plan.ok ? null : plan.reason);
+  const waking = machine.waking || runAfterWake || laneWaitUntil != null;
+  const reason = waking ? `Waking ${scope.machineName}…` : blocked;
   const sessionId = scope.sessionId;
   const laneId = scope.laneId;
   const folder = scope.laneWorktreePath;
 
-  const handleClick = async () => {
-    if (reason || !plan.ok || !laneId || !folder) return;
+  /** Asks, then starts the run in a new terminal, with this render's lane and folder. */
+  const runNow = async () => {
+    if (blocked || !plan.ok || !laneId || !folder) return;
     const confirmed = await confirmDialog({
       title: "Run this command?",
       message: "The agent wrote it. Read it before you run it.",
@@ -412,15 +453,39 @@ export function ShellCodeBlockRunButton({ code, language }: { code: string; lang
       reveal,
     });
   };
+  runNowRef.current = () => void runNow();
 
-  const label = reason ?? "Run in a new terminal";
+  const handleClick = () => {
+    if (waking || blocked || !plan.ok || !laneId) return;
+    setRunFailure(null);
+    if (!asleep) {
+      void runNow();
+      return;
+    }
+    // The person's click wakes the chat's own machine. Once it reads online,
+    // the run waits for its lane's folder (the effect above), then starts
+    // once. A failed or timed-out wake starts nothing and leaves the hook's
+    // sentence.
+    setRunAfterWake(true);
+    void machine
+      .wakeThen(() => setLaneWaitUntil(Date.now() + WOKEN_MACHINE_CONNECT_WAIT_MS))
+      .finally(() => setRunAfterWake(false));
+  };
+
+  // A failed or timed-out wake says why while the machine is still offline; Run stays clickable.
+  const wakeFailure = !scope.online ? machine.error : null;
+  // A run a wake asked for that never started, until the lane's folder is known.
+  const shownRunFailure = liveFolder ? null : runFailure;
+  const label = (waking ? null : wakeFailure ?? shownRunFailure)
+    ?? reason
+    ?? (asleep ? `${scope.machineName} is asleep. Run wakes it, then runs this.` : "Run in a new terminal");
   return (
     <button
       type="button"
       className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 ${reason ? "cursor-not-allowed" : ""}`}
       style={reason ? { ...CODE_BLOCK_ACTION_BUTTON_STYLE, color: "color-mix(in srgb, var(--chat-copy-button-fg) 55%, transparent)" } : CODE_BLOCK_ACTION_BUTTON_STYLE}
       aria-disabled={reason ? true : undefined}
-      onClick={() => void handleClick()}
+      onClick={handleClick}
       title={label}
       aria-label={label}
     >

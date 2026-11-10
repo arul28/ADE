@@ -92,7 +92,7 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 - every `logger.error` line, grouped by the error it carries and by event name when it carries only a message (`shared/sentry/logBridge.ts`), except `window.console` (renderer console output, kept as warn-level logs only: the renderer SDK reports the real errors itself, and the error-level log lines the beta gate reads stay ADE's own). `logger.warn` lines become Sentry Logs and breadcrumbs, not issues. Info and debug never leave the machine, except the release-health lines below;
 - a brain that keeps restarting (`The brain kept restarting`, `ade-cli/src/sentry/brainRestartLoop.ts`), as a warning, reported by the brain itself so it works with no desktop window open. Every service brain (not one the desktop app started, which the app kills outright when it quits, and not a hand-run `ade serve` on the machine endpoint: on macOS its parent must be launchd, on Windows the supervisor whose pid the service's pid record names) records its start in `runtime/brain-starts.json` and marks it stopped when it shuts down in an orderly way (an update, the restart button, a shutdown request). A start counts when the brain before it died without that mark, ran the same build, started since the computer last booted and is gone, or when the build goes back to one an earlier brain in the window left (two installs replacing each other). Three counted starts within 10 minutes are a loop. One report per loop, sent by the first brain that stays up 2 minutes, or by whichever brain is up 5 minutes after the loop was found, so its later restarts are in it; at most once a day per machine (`lastReportedAt` in the same file), with one fingerprint per platform. It carries `desktop-logs.txt.gz` (above) beside the service's own logs;
 - the first provider health transition into `runtime-failed` for each provider and kind of failure in a process, as a warning (`providerRuntimeHealth.ts`); later ones are Sentry Logs, and the in-app health display shows every one. The kind comes from a closed list matched on the message (`root-refused`, `session-missing`, `turn-active`, `method-missing`, `owned-elsewhere`, `timeout:<ACP method>`, `spawn-failed`, `exited`, else `other`), rides as the `provider.failure` tag, and is part of the fingerprint, so unrelated failures of one provider are separate issues. A Claude failure also carries `extra.stderrTail`: the CLI's last 20 stderr lines (`claudeSubprocessReaper.ts`), each scrubbed with `scrubFreeText` before it is cut, and with any line whose start fell outside the kept buffer dropped, so a secret cut off from the prefix the scrubber knows it by never goes.
-- a failure of ADE Cloud's server work (`cloud.stripe_webhook_failed`, `cloud.stripe_claim_release_failed`, `cloud.meter_report_failed`, `cloud.tick_account_failed`, `cloud.stop_failed`, `cloud.backstop_sleep_failed`, `cloud.delete_inactive_failed`, `cloud.account_delete_failed`: `reportCloudFailure`, `apps/account-directory/src/cloud/store.ts`), one issue per event name with the name as the fingerprint and no account or instance id (those stay in the Worker's own log line), at most one event per name per isolate per hour;
+- a failure of ADE Cloud's server work, every failed provider call and every billing mismatch (`reportCloudFailure`, `apps/account-directory/src/cloud/store.ts`): the Stripe webhook, claim release and both meter reports (`cloud.stripe_webhook_failed`, `cloud.stripe_claim_release_failed`, `cloud.meter_report_failed`, `cloud.disk_meter_report_failed`, `cloud.disk_report_failed`); billing mismatches and setup gaps (`cloud.stripe_unknown_subscription`, `cloud.duplicate_subscription_cancelled`, `cloud.plan_item_missing`, `cloud.plan_change_failed`, `cloud.plan_change_refused` (Stripe refused the switch; the account stays as it was), `cloud.plan_upgrade_declined`, `cloud.plan_change_unconfirmed`, `cloud.plan_change_unsaved`, `cloud.checkout_failed`, `cloud.portal_failed`, `cloud.billing_not_configured`, `cloud.extra_disk_item_failed`, `cloud.extra_disk_not_configured`, `cloud.reconcile_unexplained`, `cloud.disk_meter_unconfirmed` (a disk-day send never confirmed inside Stripe's dedupe window; it is not resent, the owner checks it), `cloud.disk_day_without_subscription`); provider calls (`cloud.provider_call_failed` for a 401, 403, 5xx or no answer, `cloud.no_provider_key`, `cloud.tick_list_failed`, `cloud.billing_read_failed`, `cloud.reconcile_read_failed`, `cloud.prepare_stop_failed`, `cloud.computer_gone`, the template refusals `cloud.create_refused_template`, `cloud.create_refused_no_template_version`, `cloud.update_refused_no_template_version`); and the cron's own work (`cloud.tick_account_failed`, `cloud.stop_failed`, `cloud.backstop_sleep_failed`, `cloud.delete_inactive_check_failed`, `cloud.delete_inactive_failed`, `cloud.delete_events_read_failed`, `cloud.cost_estimate_failed`, `cloud.daily_<step>_failed`, `cloud.account_delete_failed`). One issue per event name with the name as the fingerprint and no account or instance id (those stay in the Worker's own log line), at most one event per name per isolate per hour;
 - on iOS, a Live Inspect reply the app cannot decode (`area: live_inspect`, `LiveInspectMarkupModel.fail`): the host and app disagree on the format. Offline machines, timeouts and older hosts are shown to the user and not reported.
 - a Linux lane screen that fails on its host (`linux_screen.<kind>`, `linuxDesktop/linuxScreenTelemetry.ts`), as a warning with a fixed description per kind and structured fields only (the helper's error text can carry Xvfb or ffmpeg output, so it stays in the local log), once per kind and detail per process: the helper not starting or exiting with lanes up (`helper_start_failed`, `helper_lost`), `display.create` failing for anything but a caller's mistake (`display_create_failed`), an accessibility bus that would not start (`display_degraded`), a recording whose encoder died (`recording_interrupted`), and an `ade screen setup` that failed or left something missing (`setup_failed`). Each carries the host as tags: `linux.distro`, `linux.distro_version`, `linux.distro_like` (from `/etc/os-release`), `linux.container` and `arch`, because only Ubuntu x64 is exercised by hand. What a host lacks before setup, a sudo that needs a password and a missing window manager are Sentry Logs (`linux_screen.host_report`, `linux_screen.setup_needs_user`, `linux_screen.display_degraded`), searchable by the same fields;
 - a recording whose demo every engine failed to make (`demo_video.all_engines_failed`, tagged `platform`, `arch` and on Linux the distribution, with the failed stage but not the engines' errors, which can carry ffmpeg's stderr), once per process per engine set: the user gets the uncut recording, and nothing else says the demo pipeline is broken on that machine;
@@ -689,6 +689,47 @@ It needs `CLERK_WEBHOOK_SIGNING_SECRET` and `POSTHOG_PROJECT_TOKEN` set on the
 Worker and a Clerk webhook subscribed to `user.created` and `user.deleted`;
 until then the route answers 503 and records nothing. Volume is one event per
 new or deleted account.
+
+#### ADE Cloud (server-side)
+
+The account-directory Worker records ADE Cloud's product facts itself,
+because it decides every create, grow, refusal and plan change, for every
+client version and for work nobody watches
+(`apps/account-directory/src/cloud/analytics.ts`). Both events go to
+`/i/v0/e/` under `waitUntil` with a two-second timeout; a failure logs
+`cloud.analytics_capture_failed` and never fails a request or a tick. Without
+`POSTHOG_PROJECT_TOKEN` nothing is sent. The distinct id is the account's
+`ade_user_…` hash; every event carries `client: "account"` and
+`$geoip_disable: true`.
+
+- **`ade_cloud_action`**: one per decided action. `action` is `create`,
+  `move`, `copy`, `tier_change`, `grow`, `delete`, `plan_change` or
+  `refused`; `plan` is `free`, `plus` or `pro`; `origin` is `person`,
+  `agent` (the computer was made by an agent's chat, or an agent deleted it)
+  or `system` (the computer's own disk grower, the 30-day delete); `tier` is
+  `small`, `medium`, `large`, `xlarge` or `other`. A refusal adds `refusal`
+  (`out_of_hours`, `computer_limit`, `plan_disk`, `needs_approval`,
+  `extra_off`, `monthly_limit`, `tier_limit`, `owner_limit`, `over_plan_disk`) and
+  `refused_action` (`create`, `move`, `copy`, `tier_change`, `grow`, `wake`).
+  The uuid comes from the account, the action, a key (the instance id, hashed
+  and never sent) and a time bucket: one per minute for an action, one per
+  refusal kind per hour for a refusal, so a retry or a grower that asks again
+  stays one event.
+- **`ade_cloud_day`**: one per account with power changes on a UTC day, sent
+  by the daily run for the day before: `wakes`, `sleeps`, `stops`, `starts`
+  (from `cloud_power_log`) and `computers`, each capped at 1,000. The uuid
+  comes from the account and the day.
+
+Never an instance id, a name, a size in numbers, a price, an amount, a
+message or a Stripe id. Volume: a few events per account per active day.
+
+Server log lines (Worker logs only, `logCloud`) for plans and cost:
+`cloud.plan_changed` (from, to),
+`cloud.daily_cost_report` (totals only), `cloud.owner_alert` (an alarm),
+`cloud.owner_limit_unset` (once a day while no limit is set),
+`cloud.owner_limit_reached`, `cloud.extra_disk_capped` (a day of extra disk
+billed only up to the person's monthly limit), and
+`cloud.analytics_capture_failed`.
 
 The new product facts reuse `ade_feature_used`; they do not add an event name or
 raise a ceiling. The taxonomy is closed at the producer and again by

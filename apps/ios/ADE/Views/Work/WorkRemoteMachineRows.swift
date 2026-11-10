@@ -159,13 +159,14 @@ private func workPickLiveCheckout(_ projects: [RemoteRosterProject]) -> RemoteRo
 struct WorkRemoteMachineMerge {
   var sessions: [TerminalSessionSummary]
   var lanes: [LaneSummary]
-  /// Session id -> where the chat lives, for routing and navigation.
+  /// Session id -> where the session lives, for routing and navigation.
   var remoteChats: [String: SyncRemoteMachineChat]
 }
 
-/// Add the other machines' chats and lanes to the focused project's rows. A
-/// session id the focused machine already shows wins (the desktop union
-/// deduplicates the same way).
+/// Add the other machines' sessions and lanes to the focused project's rows:
+/// chats, CLI sessions and shells. The Work filters then decide which rows
+/// show, by the same rules as focused-machine rows. A session id the focused
+/// machine already shows wins (the desktop union deduplicates the same way).
 func workMergeRemoteMachineRows(
   sessions: [TerminalSessionSummary],
   lanes: [LaneSummary],
@@ -183,7 +184,7 @@ func workMergeRemoteMachineRows(
     let laneById = Dictionary(repo.lanes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     var usedLaneIds: [String] = []
     var usedLaneIdSet = Set<String>()
-    for chat in repo.chats where chat.isChatTool {
+    for chat in repo.chats {
       guard seenSessionIds.insert(chat.id).inserted else { continue }
       let lane = laneById[chat.laneId]
       // The lane's own name, as desktop shows it: a machine name is not part
@@ -260,6 +261,55 @@ func workParseMachineFilter(_ raw: String) -> Set<String> {
 
 func workSerializeMachineFilter(_ ids: Set<String>) -> String {
   ids.sorted().joined(separator: "\n")
+}
+
+/// Whether a merged row is another machine's CLI or shell session. Its
+/// terminal streams over that machine's light link when the link can stream
+/// terminals. Otherwise the row opens after its machine becomes the focused one.
+func workIsRemoteMachineTerminalRow(_ session: TerminalSessionSummary) -> Bool {
+  isWorkRemoteLaneId(session.laneId) && !isChatSession(session)
+}
+
+/// A CLI or shell session of another machine that streams over that machine's
+/// light link. The phone's focused machine and project stay as they are.
+struct WorkRemoteTerminalContext: Hashable {
+  let machineKey: String
+  /// The session's project, as that machine names it.
+  let projectId: String
+  let rootPath: String
+  let session: TerminalSessionSummary
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(machineKey)
+    hasher.combine(projectId)
+    hasher.combine(session.id)
+  }
+}
+
+/// The light-link context of another machine's CLI or shell session. Nil when
+/// the terminal needs that machine focused: its link is down, its ADE is
+/// older, or its roster does not list the session in an open project.
+@MainActor
+func workRemoteTerminalContext(
+  session: TerminalSessionSummary,
+  machineKey: String,
+  fleet: MachineFleet?
+) -> WorkRemoteTerminalContext? {
+  guard let fleet,
+        let connection = fleet.connection(for: machineKey),
+        connection.canStreamTerminals,
+        let machine = fleet.machine(for: machineKey)
+  else { return nil }
+  // The roster row names the project. Never guess another project.
+  guard let project = machine.projects.first(where: { project in
+    project.chats.contains { $0.id == session.id }
+  }), project.booted else { return nil }
+  return WorkRemoteTerminalContext(
+    machineKey: machineKey,
+    projectId: project.projectId,
+    rootPath: project.rootPath ?? "",
+    session: session
+  )
 }
 
 /// The roster row of a chat that lives on another machine's checkout.

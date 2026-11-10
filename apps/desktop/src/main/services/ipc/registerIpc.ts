@@ -12683,6 +12683,9 @@ export function registerIpc({
     listAccountMachines: () => accountBridge.listMachines(),
     renameMachine: (machineKey, name) => accountBridge.renameMachine(machineKey, name),
     removeAccountMachine: (machineKey) => accountBridge.removeMachine(machineKey),
+    forgetMachineConnections: (machine) => {
+      runtimeBridge.removeTargetsForMachine({ machineKey: machine.machineKey, hostname: machine.instanceId });
+    },
     // Where the create's outcome is known. Coarse outcome only; a six-hour
     // dedupe per outcome bounds it to 16 accepted events a day.
     recordMachineCreate: (outcome) => {

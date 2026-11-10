@@ -272,8 +272,16 @@ impl LiveEncoder {
             .args(["-s", &format!("{w}x{h}"), "-r", &fps.to_string(), "-i", "pipe:0", "-an"]);
         match codec {
             Codec::X264 => {
+                // Two threads as slices of one frame (zerolatency's own
+                // `sliced-threads`), never as two frames in flight: frame
+                // threading holds each picture inside x264 until the next one
+                // arrives, and frames only arrive on damage, so the last
+                // picture of a change (a typed letter, a click's result) would
+                // wait for the next change or the one-second heartbeat. Every viewer
+                // decodes a frame of several slices: WebCodecs takes the whole
+                // Annex-B unit and the phone rewrites every NAL to AVCC.
                 cmd.args(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-bf", "0", "-g", "600"])
-                    .args(["-x264-params", "repeat-headers=1:aud=1:sliced-threads=0", "-threads", "2"]);
+                    .args(["-x264-params", "repeat-headers=1:aud=1:sliced-threads=1", "-threads", "2"]);
             }
             Codec::OpenH264 => {
                 cmd.args(["-c:v", "libopenh264", "-g", "600", "-bsf:v", "h264_metadata=aud=insert"]);

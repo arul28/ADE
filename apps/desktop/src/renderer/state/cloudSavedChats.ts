@@ -22,6 +22,9 @@ export function isSavedChatsMachineId(machineId: string): boolean {
   return machineId.startsWith(SAVED_CHATS_MACHINE_PREFIX);
 }
 
+/** What a chat on a deleted cloud computer says when something is sent or asked of it. */
+export const SAVED_CHAT_COMPUTER_GONE_MESSAGE = "This computer was deleted. Its chats are saved here, but it can't answer anymore.";
+
 export type SavedChatLocation = {
   machineKey: string;
   chatId: string;
@@ -51,6 +54,11 @@ export function savedChatLocation(
   const location = locations.get(locationKey(pin.key, sessionId));
   if (!location) return null;
   return location.computerGone || !machineOnline(location.machineId) ? location : null;
+}
+
+/** Whether the chat's computer was deleted (its chats live on as saved copies). */
+export function savedChatComputerGone(pin: OpenProjectBinding | null | undefined, sessionId: string): boolean {
+  return savedChatLocation(pin, sessionId, () => false)?.computerGone === true;
 }
 
 /** The synthetic row for a chat on a computer not currently connected. */
@@ -189,7 +197,7 @@ export function withSavedChatReads(
     },
     send: async (args, pin) => {
       const location = locate(args.sessionId, pin);
-      if (location?.computerGone) throw new Error("This computer was deleted. Its chats are saved here, but it can't answer anymore.");
+      if (location?.computerGone) throw new Error(SAVED_CHAT_COMPUTER_GONE_MESSAGE);
       return api.send(args, pin);
     },
     delete: async (args, pin) => {

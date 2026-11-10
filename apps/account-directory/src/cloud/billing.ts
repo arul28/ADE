@@ -1,9 +1,18 @@
+import { captureCloudAction, type CloudWaitUntil } from "./analytics";
+import { formatCloudCents, type CloudCheckoutResult } from "./contract";
 import { sendCloudEmail } from "./email";
 import { json } from "./http";
+import { CENT_MICROS, EXTRA_DISK_MONTH_DAYS, extraDiskGbDaysIn, extraDiskMonthFits, extraDiskMonthMicros, utcDay, type CloudPaidPlanId } from "./plans";
 import {
+  accountDiskGb,
+  accountDiskSql,
   accountRules,
   applyCloudPlanChange,
+  boughtPlanIdOf,
+  cloudOffers,
+  countedPlanDiskGb,
   groupByUser,
+  paidPlanOf,
   extraActive,
   extraOwedMilli,
   listComputers,
@@ -48,6 +57,9 @@ export class CloudBillingError extends Error {
     this.name = "CloudBillingError";
   }
 }
+
+/** A plan switch retried inside this window reuses its Stripe idempotency key, so it switches once. */
+const PLAN_CHANGE_RETRY_WINDOW_MS = 10 * 60_000;
 
 const unavailable = () => new CloudBillingError("billing_unavailable", "ADE Cloud can't reach billing right now. Try again soon.", 503);
 
@@ -95,14 +107,27 @@ const idOf = (value: unknown): string | null => textOf(value) ?? textOf(objectOf
 
 /* ---- Checkout, portal ---- */
 
-function billingConfig(env: CloudEnv): { planPrice: string; extraPrice: string } {
-  const planPrice = env.STRIPE_PLAN_PRICE_ID?.trim();
+/** Each paid plan's monthly price; Pro is unset until `scripts/stripe-setup.mjs` made it. */
+function planPriceIds(env: CloudEnv): Record<CloudPaidPlanId, string | null> {
+  return { plus: env.STRIPE_PLAN_PRICE_ID?.trim() || null, pro: env.STRIPE_PRO_PRICE_ID?.trim() || null };
+}
+
+/** Which paid plan a price is, or null when it is neither. */
+function paidPlanOfPrice(env: CloudEnv, priceId: string | null): CloudPaidPlanId | null {
+  const prices = planPriceIds(env);
+  if (priceId && priceId === prices.pro) return "pro";
+  if (priceId && priceId === prices.plus) return "plus";
+  return null;
+}
+
+function billingConfig(env: CloudEnv, plan: CloudPaidPlanId): { planPrice: string; extraPrice: string; diskPrice: string | null } {
+  const planPrice = planPriceIds(env)[plan];
   const extraPrice = env.STRIPE_EXTRA_PRICE_ID?.trim();
   if (!planPrice || !extraPrice || !env.STRIPE_SECRET_KEY?.trim()) {
-    logCloud("cloud.billing_not_configured");
+    reportCloudFailure("cloud.billing_not_configured", { plan });
     throw unavailable();
   }
-  return { planPrice, extraPrice };
+  return { planPrice, extraPrice, diskPrice: env.STRIPE_DISK_PRICE_ID?.trim() || null };
 }
 
 /** One Stripe customer per account, even when two checkouts start at once. */
@@ -124,10 +149,27 @@ async function expireOpenCheckouts(env: CloudEnv, customer: string): Promise<voi
   }
 }
 
-export async function createCheckoutUrl(env: CloudEnv, userId: string, origin: string, now: number): Promise<{ url: string }> {
-  const { planPrice, extraPrice } = billingConfig(env);
+/** Checkout for a plan. A paid account asking for its other plan changes it in place (`changePaidPlan`). */
+export async function createCheckoutUrl(
+  env: CloudEnv,
+  userId: string,
+  origin: string,
+  now: number,
+  requested?: CloudPaidPlanId,
+  waitUntil?: CloudWaitUntil,
+): Promise<CloudCheckoutResult> {
+  const plan = requested ?? "plus";
+  const { planPrice, extraPrice, diskPrice } = billingConfig(env, plan);
   const account = await loadAccount(env, userId, now);
-  if (account.plan === "paid") throw new CloudBillingError("already_paid", "You're already on the paid plan.", 409);
+  if (account.plan === "paid") {
+    // A build that knows one paid plan names none: it only ever buys, never switches.
+    if (!requested) throw new CloudBillingError("already_paid", "You already have a paid plan.", 409);
+    const current = paidPlanOf(account);
+    const pending = account.paid_plan_next;
+    if (current === plan && pending == null) throw new CloudBillingError("already_paid", "You're already on that plan.", 409);
+    if (pending === plan) throw new CloudBillingError("already_paid", "Your plan already changes to that at the end of this period.", 409);
+    return changePaidPlan(env, account, plan, planPrice, now, waitUntil);
+  }
   try {
     const customer = await ensureCustomer(env, account, now);
     await expireOpenCheckouts(env, customer);
@@ -139,6 +181,8 @@ export async function createCheckoutUrl(env: CloudEnv, userId: string, origin: s
       "line_items[0][price]": planPrice,
       "line_items[0][quantity]": "1",
       "line_items[1][price]": extraPrice,
+      // Extra disk rides its own meter and price, never the hours price.
+      ...(diskPrice ? { "line_items[2][price]": diskPrice } : {}),
       "metadata[ade_user_id]": userId,
       "subscription_data[metadata][ade_user_id]": userId,
       success_url: `${origin}${RETURN_PATH}?to=done`,
@@ -149,11 +193,130 @@ export async function createCheckoutUrl(env: CloudEnv, userId: string, origin: s
     return { url };
   } catch (error) {
     if (error instanceof StripeRequestError) {
-      logCloud("cloud.checkout_failed", { status: error.status, message: error.stripeMessage });
+      reportCloudFailure("cloud.checkout_failed", { status: error.status, message: error.stripeMessage });
       throw unavailable();
     }
     throw error;
   }
+}
+
+/** The portal setup stripe-setup made (card, cancel at period end, invoices), when set. */
+const portalConfigParams = (env: CloudEnv): Record<string, string> => {
+  const id = env.STRIPE_PORTAL_CONFIG_ID?.trim();
+  return id ? { configuration: id } : {};
+};
+
+/** The subscription's items: which one is the plan, and the price of each. */
+async function subscriptionItems(env: CloudEnv, subscriptionId: string): Promise<Array<{ id: string; price: string | null }>> {
+  const subscription = await stripeRequest(env, "GET", `/subscriptions/${encodeURIComponent(subscriptionId)}`);
+  const items = (objectOf(subscription.items)?.data as StripeObject[] | undefined) ?? [];
+  return items.flatMap((item) => {
+    const id = textOf(item.id);
+    return id ? [{ id, price: idOf(item.price) }] : [];
+  });
+}
+
+/**
+ * Plus to Pro, or Pro to Plus, on the subscription itself. The billing portal
+ * can't do it: Stripe refuses a portal plan switch on a subscription with more
+ * than one item, and every ADE subscription has the plan plus its meters.
+ * - Upgrade: charged now for the rest of the period; a declined card changes
+ *   nothing. Pro's hours apply at once, the hours used stay.
+ * - Downgrade: no refund and no charge; the next invoice is Plus. Pro's hours
+ *   and limits stay until the period ends (`applyCloudPlanChange`).
+ * - Back to Pro before a downgrade took effect: the item goes back, uncharged.
+ * The webhook that follows applies the same change again, which is a no-op.
+ */
+async function changePaidPlan(env: CloudEnv, account: AccountRow, to: CloudPaidPlanId, toPrice: string, now: number, waitUntil: CloudWaitUntil): Promise<CloudCheckoutResult> {
+  if (!account.stripe_subscription_id) throw unavailable();
+  if (account.stripe_status === "past_due") {
+    throw new CloudBillingError("past_due", "Your last payment didn't go through. Update your card in Manage, then change your plan.", 409);
+  }
+  const undoDowngrade = to === "pro" && account.paid_plan === "pro" && account.paid_plan_next === "plus";
+  const charged = to === "pro" && !undoDowngrade;
+  if (to === "plus") await refuseDowngradeOverDisk(env, account);
+  const subscriptionId = account.stripe_subscription_id;
+  const planItemOf = async () => (await subscriptionItems(env, subscriptionId)).find((item) => paidPlanOfPrice(env, item.price) != null) ?? null;
+  let planItem: { id: string; price: string | null } | null;
+  try {
+    planItem = await planItemOf();
+  } catch (error) {
+    if (error instanceof CloudBillingError) throw error;
+    reportCloudFailure("cloud.plan_change_failed", { step: "read", status: error instanceof StripeRequestError ? error.status : 0 });
+    throw unavailable();
+  }
+  if (!planItem) {
+    reportCloudFailure("cloud.plan_item_missing", { userId: account.user_id });
+    throw unavailable();
+  }
+  if (planItem.price !== toPrice) {
+    let confirmed = false;
+    let failure: unknown = null;
+    try {
+      const changed = await stripeRequest(env, "POST", `/subscription_items/${encodeURIComponent(planItem.id)}`, {
+        price: toPrice,
+        quantity: "1",
+        proration_behavior: charged ? "always_invoice" : "none",
+        // A declined card leaves the subscription as it was: no half-switched plan.
+        ...(charged ? { payment_behavior: "error_if_incomplete" } : {}),
+        // The mode and the account's last change are in the key: "Stay on Pro" after a round
+        // trip, or the same switch again after it, is a new request; a retry after a lost answer is not.
+      }, `ade-plan:${planItem.id}:${to}:${charged ? "charge" : "no-charge"}:${account.updated_at}:${Math.floor(now / PLAN_CHANGE_RETRY_WINDOW_MS)}`);
+      // Trust the item Stripe returns, not the request: a replayed or partial answer writes nothing.
+      confirmed = idOf(changed.price) === toPrice;
+    } catch (error) {
+      failure = error;
+    }
+    if (!confirmed) {
+      // A failed or unexpected answer: Stripe may have switched anyway, so ask it and follow what it says.
+      const error = failure;
+      const after = await planItemOf().catch(() => null);
+      if (after?.price !== toPrice) {
+        // The account stays exactly as it was. Managed Payments may refuse some subscription changes from the API.
+        if (error instanceof StripeRequestError && charged && error.status === 402) {
+          reportCloudFailure("cloud.plan_upgrade_declined", { userId: account.user_id });
+          throw new CloudBillingError("payment_failed", "Your card was declined, so your plan didn't change. Update your card in Manage.", 402);
+        }
+        reportCloudFailure("cloud.plan_change_refused", {
+          userId: account.user_id,
+          to,
+          status: error instanceof StripeRequestError ? error.status : 0,
+          message: error instanceof StripeRequestError ? error.stripeMessage : error instanceof Error ? error.name : error == null ? "item_not_on_target_price" : "unknown",
+        });
+        throw new CloudBillingError("plan_change_refused", "ADE Cloud couldn't change your plan right now. Nothing changed. Try again later.", 409);
+      }
+      reportCloudFailure("cloud.plan_change_unconfirmed", { userId: account.user_id, to });
+    }
+  }
+  try {
+    await applyAndAnnounce(env, account, { paidPlan: to }, now, waitUntil);
+  } catch (error) {
+    // Stripe switched; the webhook that follows saves the same change.
+    reportCloudFailure("cloud.plan_change_unsaved", { userId: account.user_id, to, message: error instanceof Error ? error.message : "unknown" });
+  }
+  return { url: null, change: to === "pro" ? "now" : "next_period" };
+}
+
+/**
+ * Pro to Plus while the computers hold more than Plus's disk would leave
+ * disk nobody pays for, so it waits until they don't, or until extra disk is
+ * on and a full month of the difference fits its limit.
+ */
+async function refuseDowngradeOverDisk(env: CloudEnv, account: AccountRow): Promise<void> {
+  const plusGb = countedPlanDiskGb(account, paidPlanOf(account), "plus");
+  const extraGb = await accountDiskGb(env, account.user_id) - plusGb;
+  if (extraGb <= 0) return;
+  const offered = cloudOffers(env).extraDisk;
+  const limitCents = account.extra_disk_limit_cents;
+  const fits = offered && account.extra_disk_state === "on" && limitCents != null && extraDiskMonthFits(extraGb, limitCents);
+  if (fits) return;
+  throw new CloudBillingError(
+    "disk_over_plan",
+    offered
+      ? `Delete computers until you use ${plusGb} GB or less at one time, or turn on extra disk.`
+      : `Delete computers until you use ${plusGb} GB or less at one time.`,
+    409,
+  );
 }
 
 export async function createPortalUrl(env: CloudEnv, userId: string, origin: string, now: number): Promise<{ url: string }> {
@@ -163,13 +326,14 @@ export async function createPortalUrl(env: CloudEnv, userId: string, origin: str
     const session = await stripeRequest(env, "POST", "/billing_portal/sessions", {
       customer: account.stripe_customer_id,
       return_url: `${origin}${RETURN_PATH}?to=portal`,
+      ...portalConfigParams(env),
     });
     const url = textOf(session.url);
     if (!url) throw unavailable();
     return { url };
   } catch (error) {
     if (error instanceof StripeRequestError) {
-      logCloud("cloud.portal_failed", { status: error.status, message: error.stripeMessage });
+      reportCloudFailure("cloud.portal_failed", { status: error.status, message: error.stripeMessage });
       throw unavailable();
     }
     throw error;
@@ -190,6 +354,59 @@ export async function setExtraHours(env: CloudEnv, userId: string, enabled: bool
   if (enabled) await recordOwed();
 }
 
+/**
+ * Extra disk: on with a monthly limit, or off. Turning it on makes sure the
+ * subscription has the extra-disk price (subscriptions bought before it
+ * existed don't). Turning it off while the computers hold more than the
+ * plan's disk is refused: that disk would still be there, unpaid.
+ */
+export async function setExtraDisk(
+  env: CloudEnv,
+  userId: string,
+  choice: { enabled: true; monthlyLimitCents: number } | { enabled: false },
+  now: number,
+): Promise<void> {
+  const account = await loadAccount(env, userId, now);
+  if (choice.enabled) {
+    if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra disk needs a paid plan.", 403);
+    const diskPrice = env.STRIPE_DISK_PRICE_ID?.trim();
+    if (!diskPrice || !env.STRIPE_DISK_METER_EVENT?.trim() || !account.stripe_subscription_id) {
+      reportCloudFailure("cloud.extra_disk_not_configured", { userId });
+      throw unavailable();
+    }
+    try {
+      const items = await subscriptionItems(env, account.stripe_subscription_id);
+      if (!items.some((item) => item.price === diskPrice)) {
+        await stripeRequest(env, "POST", "/subscription_items", {
+          subscription: account.stripe_subscription_id,
+          price: diskPrice,
+        }, `ade-cloud-disk-item-${account.stripe_subscription_id}`);
+      }
+    } catch (error) {
+      if (error instanceof StripeRequestError) {
+        reportCloudFailure("cloud.extra_disk_item_failed", { status: error.status, message: error.stripeMessage });
+        throw unavailable();
+      }
+      throw error;
+    }
+    await env.DB.prepare("update cloud_accounts set extra_disk_state = 'on', extra_disk_limit_cents = ?, extra_disk_asked_at = coalesce(extra_disk_asked_at, ?), updated_at = ? where user_id = ?")
+      .bind(choice.monthlyLimitCents, now, now, userId).run();
+    return;
+  }
+  // A downgrade waiting for the period end counts already: the next plan's disk is what stays paid.
+  const planGb = countedPlanDiskGb(account);
+  const usedGb = await accountDiskGb(env, userId);
+  if (account.extra_disk_state === "on" && usedGb > planGb) {
+    throw new CloudBillingError(
+      "disk_over_plan",
+      `Your computers hold ${usedGb} GB, more than your plan's ${planGb} GB at one time. Delete a computer you no longer use, then turn extra disk off.`,
+      409,
+    );
+  }
+  await env.DB.prepare("update cloud_accounts set extra_disk_state = 'asked', extra_disk_asked_at = coalesce(extra_disk_asked_at, ?), updated_at = ? where user_id = ?")
+    .bind(now, now, userId).run();
+}
+
 /** Ends the account's subscription now, for a deleted account. Already gone counts as done. */
 export async function cancelAccountSubscription(env: Pick<CloudEnv, "DB" | "STRIPE_SECRET_KEY">, account: Pick<AccountRow, "user_id" | "stripe_subscription_id">, now: number): Promise<void> {
   if (!account.stripe_subscription_id) return;
@@ -198,7 +415,7 @@ export async function cancelAccountSubscription(env: Pick<CloudEnv, "DB" | "STRI
   } catch (error) {
     if (!(error instanceof StripeRequestError && error.status === 404)) throw error;
   }
-  await env.DB.prepare("update cloud_accounts set plan = 'free', stripe_subscription_id = null, stripe_status = null, extra_enabled = 0, extra_owed_milli = 0, cancel_at_period_end = 0, updated_at = ? where user_id = ?")
+  await env.DB.prepare("update cloud_accounts set plan = 'free', stripe_subscription_id = null, stripe_status = null, extra_enabled = 0, extra_owed_milli = 0, extra_disk_state = 'off', cancel_at_period_end = 0, updated_at = ? where user_id = ?")
     .bind(now, account.user_id).run();
   logCloud("cloud.subscription_cancelled_for_deleted_account", { userId: account.user_id });
 }
@@ -241,6 +458,8 @@ type SubscriptionFacts = {
   customer: string | null;
   userId: string | null;
   cancelAtPeriodEnd: boolean;
+  /** Which plan the plan item is; null when no item is a plan price (setup or Stripe changed). */
+  paidPlan: CloudPaidPlanId | null;
   /** Seconds, from the plan's own item. Null only if Stripe's shape changed. */
   periodStart: number | null;
   periodEnd: number | null;
@@ -250,7 +469,9 @@ type SubscriptionFacts = {
 async function readSubscription(env: CloudEnv, id: string): Promise<SubscriptionFacts> {
   const subscription = await stripeRequest(env, "GET", `/subscriptions/${encodeURIComponent(id)}`);
   const items = (objectOf(subscription.items)?.data as StripeObject[] | undefined) ?? [];
-  const planItem = items.find((item) => objectOf(item.price)?.id === env.STRIPE_PLAN_PRICE_ID?.trim()) ?? items[0];
+  // Never `items[0]`: the metered items (extra hours, extra disk) carry their own periods.
+  const planItem = items.find((item) => paidPlanOfPrice(env, idOf(item.price)) != null);
+  if (!planItem) reportCloudFailure("cloud.plan_item_missing", { subscriptionId: id });
   const metadata = objectOf(subscription.metadata);
   return {
     id,
@@ -258,6 +479,7 @@ async function readSubscription(env: CloudEnv, id: string): Promise<Subscription
     customer: idOf(subscription.customer),
     userId: textOf(metadata?.ade_user_id),
     cancelAtPeriodEnd: subscription.cancel_at_period_end === true || subscription.cancel_at != null,
+    paidPlan: planItem ? paidPlanOfPrice(env, idOf(planItem.price)) : null,
     periodStart: typeof planItem?.current_period_start === "number" ? planItem.current_period_start : null,
     periodEnd: typeof planItem?.current_period_end === "number" ? planItem.current_period_end : null,
     hasThreshold: objectOf(subscription.billing_thresholds)?.amount_gte != null,
@@ -305,18 +527,23 @@ async function announceChange(env: CloudEnv, before: AccountRow, after: AccountR
   }
 }
 
-async function applyAndAnnounce(env: CloudEnv, before: AccountRow, change: CloudPlanChange, now: number): Promise<void> {
+async function applyAndAnnounce(env: CloudEnv, before: AccountRow, change: CloudPlanChange, now: number, waitUntil?: CloudWaitUntil): Promise<void> {
   const after = await applyCloudPlanChange(env, before.user_id, change, now);
   await announceChange(env, before, after);
+  const plan = boughtPlanIdOf(after);
+  if (plan !== boughtPlanIdOf(before)) {
+    logCloud("cloud.plan_changed", { userId: after.user_id, from: boughtPlanIdOf(before), to: plan });
+    captureCloudAction(env, waitUntil, after.user_id, { action: "plan_change", plan, origin: "person" }, `plan:${plan}`, now);
+  }
 }
 
 /** Matches the account to what Stripe says about its subscription right now. */
-async function syncSubscription(env: CloudEnv, subscriptionId: string | null, now: number, paidInvoice?: StripeObject): Promise<void> {
+async function syncSubscription(env: CloudEnv, subscriptionId: string | null, now: number, waitUntil: CloudWaitUntil, paidInvoice?: StripeObject): Promise<void> {
   if (!subscriptionId) return;
   const subscription = await readSubscription(env, subscriptionId);
   const userId = await userForSubscription(env, subscription);
   if (!userId) {
-    logCloud("cloud.stripe_unknown_subscription", { subscriptionId });
+    reportCloudFailure("cloud.stripe_unknown_subscription", { subscriptionId });
     return;
   }
   const account = await loadAccount(env, userId, now);
@@ -325,11 +552,11 @@ async function syncSubscription(env: CloudEnv, subscriptionId: string | null, no
 
   const { status, cancelAtPeriodEnd } = subscription;
   if (status === "canceled" || status === "incomplete_expired") {
-    await applyAndAnnounce(env, account, { plan: "free", stripeSubscriptionId: null, stripeStatus: null, cancelAtPeriodEnd: false }, now);
+    await applyAndAnnounce(env, account, { plan: "free", stripeSubscriptionId: null, stripeStatus: null, cancelAtPeriodEnd: false }, now, waitUntil);
     return;
   }
   if (status === "past_due" || status === "unpaid") {
-    await applyAndAnnounce(env, account, { stripeStatus: "past_due", cancelAtPeriodEnd }, now);
+    await applyAndAnnounce(env, account, { stripeStatus: "past_due", cancelAtPeriodEnd }, now, waitUntil);
     return;
   }
   if (status !== "active" && status !== "trialing") return;
@@ -341,10 +568,12 @@ async function syncSubscription(env: CloudEnv, subscriptionId: string | null, no
   const movesPeriod = starting || isRenewal || account.stripe_status === "past_due";
   await applyAndAnnounce(env, account, {
     ...(starting ? { plan: "paid" as const } : {}),
+    // Plus to Pro or back: the plan's hours change now, the hours used stay.
+    ...(subscription.paidPlan ? { paidPlan: subscription.paidPlan } : {}),
     stripeStatus: status,
     cancelAtPeriodEnd,
     ...(movesPeriod ? periodChange(subscription) : {}),
-  }, now);
+  }, now, waitUntil);
   // On every active event, so a threshold that failed after the plan was saved still gets set.
   if (starting || account.plan === "paid") await ensureThreshold(env, subscription);
 }
@@ -358,7 +587,7 @@ async function ensureThreshold(env: CloudEnv, subscription: SubscriptionFacts): 
   });
 }
 
-async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: number): Promise<void> {
+async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: number, waitUntil: CloudWaitUntil): Promise<void> {
   const subscriptionId = idOf(session.subscription);
   const metadata = objectOf(session.metadata);
   const userId = textOf(session.client_reference_id) ?? textOf(metadata?.ade_user_id);
@@ -372,7 +601,8 @@ async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: nu
         stripeCustomerId: subscription.customer ?? idOf(session.customer),
         stripeSubscriptionId: subscription.id,
         stripeStatus: "incomplete",
-      }, now);
+        ...(subscription.paidPlan ? { paidPlan: subscription.paidPlan } : {}),
+      }, now, waitUntil);
     }
     return;
   }
@@ -382,19 +612,20 @@ async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: nu
   if (account.plan === "paid" && account.stripe_subscription_id && account.stripe_subscription_id !== subscription.id) {
     // Two Checkouts finished: keep the first plan and don't leave the person paying twice.
     await stripeRequest(env, "DELETE", `/subscriptions/${encodeURIComponent(subscription.id)}`);
-    logCloud("cloud.duplicate_subscription_cancelled", { userId, subscriptionId });
+    reportCloudFailure("cloud.duplicate_subscription_cancelled", { userId, subscriptionId });
     await sendCloudEmail(env, { owner: true, subject: "ADE Cloud double purchase to refund", text: `Subscription ${subscription.id} duplicated an existing plan and was cancelled. Refund its first invoice.` });
     return;
   }
   if (account.stripe_subscription_id !== subscription.id || account.plan !== "paid") {
     await applyAndAnnounce(env, account, {
       plan: "paid",
+      ...(subscription.paidPlan ? { paidPlan: subscription.paidPlan } : {}),
       ...periodChange(subscription),
       stripeCustomerId: subscription.customer ?? idOf(session.customer),
       stripeSubscriptionId: subscription.id,
       stripeStatus: subscription.status,
       cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
-    }, now);
+    }, now, waitUntil);
   }
   await ensureThreshold(env, subscription);
 }
@@ -402,11 +633,11 @@ async function onCheckoutCompleted(env: CloudEnv, session: StripeObject, now: nu
 const invoiceSubscriptionId = (invoice: StripeObject): string | null =>
   idOf(objectOf(objectOf(invoice.parent)?.subscription_details)?.subscription) ?? idOf(invoice.subscription);
 
-async function applyStripeEvent(env: CloudEnv, type: string, object: StripeObject, now: number): Promise<void> {
-  if (type === "checkout.session.completed") return onCheckoutCompleted(env, object, now);
-  if (type === "customer.subscription.updated" || type === "customer.subscription.deleted") return syncSubscription(env, idOf(object.id), now);
-  if (type === "invoice.paid") return syncSubscription(env, invoiceSubscriptionId(object), now, object);
-  if (type === "invoice.payment_failed") return syncSubscription(env, invoiceSubscriptionId(object), now);
+async function applyStripeEvent(env: CloudEnv, type: string, object: StripeObject, now: number, waitUntil: CloudWaitUntil): Promise<void> {
+  if (type === "checkout.session.completed") return onCheckoutCompleted(env, object, now, waitUntil);
+  if (type === "customer.subscription.updated" || type === "customer.subscription.deleted") return syncSubscription(env, idOf(object.id), now, waitUntil);
+  if (type === "invoice.paid") return syncSubscription(env, invoiceSubscriptionId(object), now, waitUntil, object);
+  if (type === "invoice.payment_failed") return syncSubscription(env, invoiceSubscriptionId(object), now, waitUntil);
 }
 
 /** Takes this event for one delivery: a first delivery, or one whose earlier claim was lost mid-work. */
@@ -423,7 +654,7 @@ async function claimStripeEvent(env: CloudEnv, eventId: string, type: string, no
   return retaken.meta.changes === 1 ? "claimed" : "in_progress";
 }
 
-async function handleStripeWebhook(request: Request, env: CloudEnv): Promise<Response> {
+async function handleStripeWebhook(request: Request, env: CloudEnv, waitUntil: CloudWaitUntil): Promise<Response> {
   if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
   const secret = env.STRIPE_WEBHOOK_SECRET?.trim();
   if (!secret) {
@@ -451,7 +682,7 @@ async function handleStripeWebhook(request: Request, env: CloudEnv): Promise<Res
   // Not done, so Stripe asks again later.
   if (claim === "in_progress") return json({ error: "in progress" }, 409);
   try {
-    await applyStripeEvent(env, type, object, now);
+    await applyStripeEvent(env, type, object, now, waitUntil);
     await env.DB.prepare("update cloud_stripe_events set applied_at = ? where event_id = ?").bind(Date.now(), eventId).run();
   } catch (error) {
     reportCloudFailure("cloud.stripe_webhook_failed", { type, eventId, status: error instanceof StripeRequestError ? error.status : null });
@@ -486,9 +717,9 @@ export function isCloudBillingPublicRequest(url: URL): boolean {
   return url.pathname === WEBHOOK_PATH || url.pathname === RETURN_PATH;
 }
 
-export async function handleCloudBillingPublicRequest(request: Request, env: CloudEnv): Promise<Response> {
+export async function handleCloudBillingPublicRequest(request: Request, env: CloudEnv, waitUntil?: CloudWaitUntil): Promise<Response> {
   const url = new URL(request.url);
-  return url.pathname === WEBHOOK_PATH ? handleStripeWebhook(request, env) : returnPage(url, request.method);
+  return url.pathname === WEBHOOK_PATH ? handleStripeWebhook(request, env, waitUntil) : returnPage(url, request.method);
 }
 
 /* ---- Extra hours to the meter ---- */
@@ -552,4 +783,164 @@ export async function reportExtraHours(env: CloudEnv, now = Date.now()): Promise
         .bind(now, account.user_id, account.extra_owed_milli).run();
     }
   }
+}
+
+/* ---- Extra disk to its meter ---- */
+
+/** A meter event's timestamp: midday of its day, never in the future. */
+const meterTimestamp = (day: string, now: number): string =>
+  String(Math.floor(Math.min(Date.parse(`${day}T12:00:00Z`), now) / 1000));
+
+type DiskDayRow = {
+  user_id: string;
+  day: string;
+  peak_gb: number;
+  plan_gb: number;
+  billable: number;
+  send_started_at: number | null;
+  billed_gb: number | null;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+  extra_disk_limit_cents: number | null;
+  period_start: number;
+};
+
+/** Stripe keeps a meter event's identifier for about a day; a send is retried only well inside that. */
+const DISK_REPORT_SAFE_WINDOW_MS = 20 * 60 * 60_000;
+const DISK_REPORTS_PER_RUN = 200;
+
+/**
+ * Each finished UTC day's extra disk, once, from the day's own row: the GB
+ * its peak passed the bought plan's disk by, billed only when the row says
+ * the day was billable all day (a paid plan in good standing with extra disk
+ * on). From the ten-minute owner check, so a failed send is retried soon.
+ *
+ * - One meter event per day, identified by the subscription and the day.
+ *   Stripe drops a repeat of that identifier for about a day, so a send that
+ *   timed out is resent only inside that window, with the same value
+ *   (`billed_gb` is written before the first send). A day still unconfirmed
+ *   after it is never resent blindly: it goes to the owner as a billing
+ *   mismatch (`unconfirmed_at`).
+ * - A period's extra disk never passes the monthly limit the person set:
+ *   a day that would is billed only up to it.
+ * - Each row is marked right after its own send succeeds.
+ */
+export async function reportExtraDiskDays(env: CloudEnv, now = Date.now()): Promise<void> {
+  const rows = await env.DB.prepare(`
+    select d.user_id, d.day, d.peak_gb, d.plan_gb, d.billable, d.send_started_at, d.billed_gb,
+      a.stripe_customer_id, a.stripe_subscription_id, a.extra_disk_limit_cents, a.period_start
+    from cloud_disk_days d join cloud_accounts a on a.user_id = d.user_id
+    where d.reported_at is null and d.unconfirmed_at is null and d.day < ?
+    order by d.day limit ?
+  `).bind(utcDay(now), DISK_REPORTS_PER_RUN).all<DiskDayRow>();
+  const mark = (row: DiskDayRow, billedGb: number) =>
+    env.DB.prepare("update cloud_disk_days set billed_gb = ?, reported_at = ? where user_id = ? and day = ? and reported_at is null")
+      .bind(billedGb, now, row.user_id, row.day).run();
+  for (const row of rows.results ?? []) {
+    const extraGb = Math.max(0, row.peak_gb - row.plan_gb);
+    if (row.billable !== 1 || extraGb === 0) {
+      await mark(row, 0);
+      continue;
+    }
+    const customer = row.stripe_customer_id;
+    const subscription = row.stripe_subscription_id;
+    if (!customer || !subscription) {
+      // Billable when written, but the subscription is gone now: nothing to bill it to.
+      reportCloudFailure("cloud.disk_day_without_subscription", { userId: row.user_id, day: row.day });
+      await mark(row, 0);
+      continue;
+    }
+    const eventName = env.STRIPE_DISK_METER_EVENT?.trim();
+    // Not set up yet: the day waits, unmarked and never sent, so it is billed once it is.
+    if (!eventName || !env.STRIPE_SECRET_KEY?.trim()) continue;
+    if (row.send_started_at != null && now - row.send_started_at > DISK_REPORT_SAFE_WINDOW_MS) {
+      await env.DB.prepare("update cloud_disk_days set unconfirmed_at = ? where user_id = ? and day = ?").bind(now, row.user_id, row.day).run();
+      reportCloudFailure("cloud.disk_meter_unconfirmed", { userId: row.user_id, day: row.day, billedGb: row.billed_gb });
+      continue;
+    }
+    let billGb = row.billed_gb;
+    if (row.send_started_at == null || billGb == null) {
+      billGb = Math.min(extraGb, await diskRoomUnderLimit(env, row));
+      if (billGb === 0) {
+        logCloud("cloud.extra_disk_capped", { userId: row.user_id, day: row.day, extraGb });
+        await mark(row, 0);
+        continue;
+      }
+      const claimed = await env.DB.prepare("update cloud_disk_days set send_started_at = ?, billed_gb = ? where user_id = ? and day = ? and send_started_at is null")
+        .bind(now, billGb, row.user_id, row.day).run();
+      // Another owner check claimed this day first: it sends, this run skips it.
+      if ((claimed.meta?.changes ?? 0) === 0) continue;
+    }
+    try {
+      await stripeRequest(env, "POST", "/billing/meter_events", {
+        event_name: eventName,
+        identifier: `ade-disk:${subscription}:${row.day}`,
+        timestamp: meterTimestamp(row.day, now),
+        "payload[stripe_customer_id]": customer,
+        "payload[value]": String(billGb),
+      });
+    } catch (error) {
+      if (!isDuplicateReport(error)) {
+        // Retried on the next owner check, inside Stripe's window.
+        reportCloudFailure("cloud.disk_meter_report_failed", { userId: row.user_id, status: error instanceof StripeRequestError ? error.status : null });
+        continue;
+      }
+    }
+    await mark(row, billGb);
+  }
+}
+
+/** GB-days of extra disk this row's period may still bill before passing the person's monthly limit. */
+async function diskRoomUnderLimit(env: CloudEnv, row: DiskDayRow): Promise<number> {
+  if (row.extra_disk_limit_cents == null) return 0;
+  const periodStartDay = utcDay(row.period_start);
+  // A day from before the current period is held to the 30 days before it.
+  const from = row.day >= periodStartDay ? periodStartDay : utcDay(Date.parse(`${row.day}T00:00:00Z`) - (EXTRA_DISK_MONTH_DAYS - 1) * 86_400_000);
+  const billed = await env.DB.prepare(`
+    select coalesce(sum(billed_gb), 0) as gb from cloud_disk_days
+    where user_id = ? and day >= ? and day < ? and billed_gb is not null
+  `).bind(row.user_id, from, row.day).first<{ gb: number }>();
+  const limitGbDays = extraDiskGbDaysIn(row.extra_disk_limit_cents);
+  return Math.max(0, limitGbDays - (billed?.gb ?? 0));
+}
+
+/** An account whose extra disk, kept a full month, passes its limit (`checkExtraDiskLimits`). */
+export type ExtraDiskOverLimit = { userId: string; extraGb: number; monthCents: number; limitCents: number };
+
+/**
+ * The daily check that the promise "up to $X a month" still holds for what
+ * the computers hold now (a lowered limit, a plan change). Over it, the
+ * person is told once, and the owner's report lists the account; billing
+ * itself stays inside the limit (`reportExtraDiskDays`) and growth is refused.
+ */
+export async function checkExtraDiskLimits(env: CloudEnv, now: number): Promise<ExtraDiskOverLimit[]> {
+  const rows = await env.DB.prepare(`
+    select a.*, ${accountDiskSql("a.user_id")} as disk_gb
+    from cloud_accounts a
+    where a.deleted_at is null and ((a.plan = 'paid' and a.extra_disk_state = 'on') or a.extra_disk_over_limit_at is not null)
+  `).all<AccountRow & { disk_gb: number }>();
+  const over: ExtraDiskOverLimit[] = [];
+  for (const account of rows.results ?? []) {
+    // Kept a month: a downgrade waiting for the period end counts already.
+    const planGb = countedPlanDiskGb(account, boughtPlanIdOf(account));
+    const extraGb = Math.max(0, account.disk_gb - planGb);
+    const limitCents = account.extra_disk_limit_cents ?? 0;
+    const monthCents = Math.ceil(extraDiskMonthMicros(extraGb) / CENT_MICROS);
+    const isOver = account.plan === "paid" && account.extra_disk_state === "on" && !extraDiskMonthFits(extraGb, limitCents);
+    if (!isOver) {
+      if (account.extra_disk_over_limit_at != null) {
+        await env.DB.prepare("update cloud_accounts set extra_disk_over_limit_at = null where user_id = ?").bind(account.user_id).run();
+      }
+      continue;
+    }
+    over.push({ userId: account.user_id, extraGb, monthCents, limitCents });
+    if (account.extra_disk_over_limit_at != null) continue;
+    await env.DB.prepare("update cloud_accounts set extra_disk_over_limit_at = ? where user_id = ?").bind(now, account.user_id).run();
+    await sendCloudEmail(env, {
+      userId: account.user_id,
+      subject: "Your ADE Cloud extra disk is over your limit",
+      text: `Your computers hold ${extraGb} GB more than your plan's ${planGb} GB at one time. For a month that is about ${formatCloudCents(monthCents)}, more than the ${formatCloudCents(limitCents)} limit you set. ADE Cloud bills no more than your limit, and your disks can't grow until it fits. Delete a computer you no longer use, or raise the limit in Settings.`,
+    });
+  }
+  return over;
 }

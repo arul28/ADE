@@ -26,6 +26,7 @@ mod launch;
 mod media;
 mod procs;
 mod protocol;
+mod wallpaper;
 mod xconn;
 
 use lane::Lane;

@@ -1,3 +1,6 @@
+import type { DeletedChatListResult, DeletedChatRemoveResult, DeletedChatReopenResult } from "../../../shared/types/deletedChats";
+import type { ExternalSessionDetail } from "../../../shared/types";
+import type { ChatMentionSuggestResult } from "../../../shared/types/chatMentions";
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import type {
@@ -464,6 +467,45 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("restartSession", pin);
       // A host without the action must fail loudly, not report "not restarted".
       return await callRequiredMutation("chat.restartSession", args);
+    },
+    // Recently deleted chats (Settings, and Reopen on a Work row).
+    listDeleted: async (args, pin) => {
+      guardPin("listDeleted", pin);
+      return await callRequired<DeletedChatListResult>("chat.listDeleted", args ?? {}, "Chat history", true);
+    },
+    getDeletedDetail: async (args, pin) => {
+      guardPin("getDeletedDetail", pin);
+      // A transcript page: not kept as a reconnect answer once the preview closes.
+      return await callLargeRead<ExternalSessionDetail>("chat.getDeletedDetail", args, () => {
+        throw new Error("Chat history action 'chat.getDeletedDetail' is unavailable on the connected ADE host.");
+      });
+    },
+    reopenDeleted: async (args, pin) => {
+      guardPin("reopenDeleted", pin);
+      return await callRequiredMutation<DeletedChatReopenResult>("chat.reopenDeleted", args);
+    },
+    removeDeleted: async (args, pin) => {
+      guardPin("removeDeleted", pin);
+      return await callRequiredMutation<DeletedChatRemoveResult>("chat.removeDeleted", args);
+    },
+    // The ways out of a stuck chat: each recovery button calls the chat's own
+    // machine.
+    recoverTurn: async (args, pin) => {
+      guardPin("recoverTurn", pin);
+      return await callRequiredMutation("chat.recoverTurn", args);
+    },
+    recoverCodexTurn: async (args, pin) => {
+      guardPin("recoverCodexTurn", pin);
+      return await callRequiredMutation("chat.recoverCodexTurn", args);
+    },
+    resolveUnprocessedMessage: async (args, pin) => {
+      guardPin("resolveUnprocessedMessage", pin);
+      return await callRequiredMutation("chat.resolveUnprocessedMessage", args);
+    },
+    // Chats, lanes and terminals for the composer's @ menu.
+    listMentionSuggestions: async (args, pin) => {
+      guardPin("listMentionSuggestions", pin);
+      return await callRequired<ChatMentionSuggestResult>("chat.listMentionSuggestions", args, "Chat", true);
     },
     stopTask: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("stopTask", pin);

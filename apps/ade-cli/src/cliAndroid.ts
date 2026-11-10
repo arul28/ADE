@@ -357,6 +357,8 @@ const ANDROID_ERROR_HINTS: Record<AndroidErrorCode, string> = {
   ANDROID_SDK_PATH_INVALID: "hint: Pick the folder that holds platform-tools, emulator or system-images.",
   ANDROID_LOW_MEMORY:
     "hint: stop an emulator you do not need (`ade android stop` in its lane) or close apps, then try again. Never start one with the raw `emulator` binary instead. Ask the user before you run `ade android start --force`: it boots anyway, and the machine can swap.",
+  ANDROID_LOW_DISK:
+    "hint: the disk can't hold a new device's data. Tell the user: on ADE Cloud the Android pane offers Grow the disk (it restarts the computer); elsewhere they free disk space. Never delete files to make room yourself.",
   // P1 agent suite.
   ANDROID_ELEMENT_NOT_FOUND:
     "hint: run `ade android snapshot --text` to see the screen's elements, then aim with --ref, --identifier, --label or --text.",

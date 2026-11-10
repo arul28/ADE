@@ -97,6 +97,15 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
+/**
+ * The list as last read, while some surface keeps it current (it is read again
+ * on cloud events and window focus). Null when nothing watches it, since a
+ * snapshot nobody refreshes can predate a create or a move.
+ */
+export function watchedCloudMachines(): CloudMachinesResult | null {
+  return listeners.size > 0 ? snapshot.result : null;
+}
+
 const subscribeNothing = () => () => undefined;
 const readSnapshot = () => snapshot;
 const readEmpty = () => EMPTY;
