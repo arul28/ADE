@@ -989,6 +989,21 @@ export type AutomationRuleScope = {
   sessionTitle: string;
 };
 
+/**
+ * The one computer that runs a rule that follows the account.
+ *
+ * A rule filed under the repository in the account shows on every computer
+ * that opens the repository, but only its home schedules, watches and
+ * dispatches it. Recorded by the sync device id, the account-wide identity of
+ * a computer (the same id the CTO home machine uses).
+ */
+export type AutomationRuleHome = {
+  deviceId: string;
+  /** The computer's own name, for showing on computers that cannot reach it. */
+  name: string;
+  chosenAt: string;
+};
+
 export type AutomationRule = {
   id: string;
   name: string;
@@ -1039,6 +1054,17 @@ export type AutomationRule = {
     actions?: AutomationAction[];
   };
   enabled: boolean;
+  /**
+   * Set on a rule that follows the account: the computer that runs it. Absent
+   * on a rule kept on this computer only (no remote, chat-scoped, signed out).
+   */
+  home?: AutomationRuleHome;
+  /**
+   * Whether this computer runs the rule. False when another computer is its
+   * home; this computer then shows and edits it but never starts it. Absent
+   * reads as true.
+   */
+  runsHere?: boolean;
 };
 
 export type ConfigAutomationRule = {
@@ -1070,6 +1096,7 @@ export type ConfigAutomationRule = {
   trigger?: AutomationTrigger;
   actions?: AutomationAction[];
   enabled?: boolean;
+  home?: AutomationRuleHome;
 };
 
 export type EnvironmentMapping = {

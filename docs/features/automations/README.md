@@ -13,7 +13,68 @@ Each row carries its owner, and edit, enable/disable, delete, run, and history
 reads target that machine. Creating a rule chooses its execution machine when
 more than one is eligible. Moving a rule creates a paused copy on the target,
 deletes the original, then enables the copy; if deletion fails, the target copy
-stays paused so both machines cannot run the rule at once.
+stays paused so both machines cannot run the rule at once. A rule that follows
+the account (below) is not copied: every machine already lists it once, under
+the machine that runs it, and **Runs on** only changes its home.
+
+### Rules follow the account
+
+Rules are stored in the account, per repository, so a rule made on one
+computer shows on every computer that opens the same repository. Each rule is
+one row in the brain's account settings store (`accountSettingsStore`, the
+store lane templates and the CTO home use), scope `repo:<host>/<owner>/<repo>`,
+key `automations.rule.<id>` (`automationRuleAccountStore.ts`). One row per rule
+rather than one list: the store keeps the strictly newer stamp per key, so a
+list saved on one computer would drop a rule another computer had just added.
+
+- **One home runs it.** Every rule names its home (`home: { deviceId, name,
+  chosenAt }`, the sync device id, as `ctoHomeMachine` does): the computer that
+  created it, or for a rule moved out of `local.yaml`, the computer that moved
+  it. `projectConfigService` stamps `runsHere` on each effective rule;
+  `automationService` schedules, watches and dispatches only `runsHere` rules
+  (`listRunnableRules`), the ingress `listRules` is filtered the same way, and
+  Run now on another computer refuses with "runs on <computer>". Other
+  computers show, edit, enable and delete it. Change the home with **Runs on**
+  in the rule editor (saved through the current home, so it stops before the
+  new one starts), `saveRule` with `draft.home`, or `ade automations run-on <id>
+  [--device <sync-device-id> --name <computer>]` (`automations.setRunOn`).
+- **What stays on this computer.** Rules scoped to one chat (`scope.sessionId`:
+  auto-handoff and other chat-menu rules) stay in `.ade/local.yaml`; the chat
+  lives on one computer, and its rule is created and deleted with it. A project
+  with no remote has no identity another computer could match, so its rules
+  stay in `local.yaml` too. A brain without the account store (the in-process
+  test host) keeps everything in `local.yaml`.
+- **Moving existing rules.** Once the store has synced (and again after a
+  sign-in), `migrateAutomationRulesToAccount` moves `local.yaml` rules into the
+  account and removes them from the file. Until then they show and run as
+  before. An identical rule another computer already moved is dropped (its home
+  runs it); a different rule that only shares the id is kept under
+  `<id>-<device>`.
+- **Concurrent and stale writes.** Only the rule methods
+  (`saveAutomationRule`, `deleteAutomationRule`) edit or delete an account
+  rule. A generic `projectConfigService.save` carries a snapshot that may be
+  minutes old, so it may only add a new rule; it can neither undo another
+  computer's edit nor delete a rule by leaving it out, and a rule some computer
+  deleted (a tombstone) does not come back.
+- **Signed out.** The account store hides its rows while signed out, so the
+  brain keeps a per-computer copy of the account's rules
+  (`.ade/automation-rules.account-copy.json`) and reads it, read-only, until
+  sign-in: rules keep showing and the home keeps running them. Edits made
+  signed out are saved in `local.yaml` (with their home) and move on sign-in;
+  deleting an account rule asks you to sign in.
+- **Older ADE.** An older brain never reads or writes `automations.rule.*`, so
+  it cannot wipe the account's rules. It sees only its own `local.yaml`; a rule
+  it adds there moves into the account the next time a new brain starts on that
+  computer.
+- **Machine-local gaps.** A rule homed here that names something only another
+  computer has (a lane, a test suite, a webhook gateway) lists it in
+  `homeGaps`, shown under **Runs on**. Secrets are not moved; a webhook
+  secret missing here fails that delivery with "secretRef could not be
+  resolved".
+- An account rule this ADE cannot validate on its own (saved by a newer ADE) is
+  skipped with `projectConfig.account_rule_skipped` rather than breaking the
+  whole config; an unknown trigger type reads as manual, as it does in
+  `local.yaml`.
 
 ### Availability
 
@@ -30,6 +91,7 @@ Caveat: GitHub-polling and webhook ingress only work on a runtime that can reach
 These services are loaded by the ADE runtime's project scope (and by the desktop main process when it hosts a local project) — the path reflects the source tree, not where the code "runs".
 
 - `automationService.ts` — main service. Rule CRUD, execution dispatch (`agent-session`, `built-in`), cron scheduling (via `node-cron`), durable deferred-lane cleanup, lane lifecycle dispatch, file-change watching (via `chokidar`), queue management, run history, confidence scoring, billing codes, ingress cursor storage. Scheduled callbacks first atomically claim a deterministic `(project, automation, trigger index, cron expression, minute slot)` occurrence in the machine-local `automation_schedule_occurrences` table, so concurrent runtimes sharing a project database elect exactly one executor before any chat or lane is created; claims are pruned after 35 days. Deleting an automation-owned chat tears down its provider runtime and cancels any still-open associated run. **Ingress retention:** it no longer persists raw webhook payloads (`raw_payload_json` is always written `null`), and on every insert it prunes `automation_ingress_events` for that project at write time — dropping rows older than 7 days and, for non-`dispatched` rows, everything beyond the newest 2,000 (insert + prune run in one `BEGIN IMMEDIATE`). At construction it runs a one-time, chunked reclaim that nulls any legacy `raw_payload_json` still on disk and prunes the PR-snapshot table to its retention window; a reclaim failure is logged and retried next boot, never blocking service startup. The retention/count bounds are imported from `state/dbMaintenanceApi` so the writer, the storage-doctor DB hooks, and the storage ledger enforce one policy.
+- `automationRuleAccountStore.ts` — where rules that follow the account live: one account-store row per rule under `repo:<origin>`, key `automations.rule.<id>`, plus the signed-out copy. `projectConfigService` merges these rows into `local.automations` on read and owns every write (`saveAutomationRule`, `deleteAutomationRule`, `migrateAutomationRulesToAccount`); the brain attaches it in `apps/ade-cli/src/bootstrap.ts`. See [Rules follow the account](#rules-follow-the-account).
 - `automationPlannerService.ts` — natural-language rule authoring. `parseNaturalLanguage`, `validateDraft`, `saveDraft`, `simulate`. Runs a planner subprocess (Claude or Codex) to turn a free-text brief into an `AutomationRuleDraft`. The Codex planner config carries optional `model` and `reasoningEffort`: `model` is a provider-native id, and omitting it means "whatever `~/.codex/config.toml` defaults to" rather than a hardcoded fallback, while `reasoningEffort` is forwarded as `-c model_reasoning_effort`.
 - `automationIngressService.ts` — HTTP webhook ingress (GitHub, custom webhooks) plus GitHub relay cursor drains and a repo-scoped WebSocket wake-up subscription. Signature verification for webhooks. `AutomationIngressEventRecord` is the normalized event shape. Accepts `automationService: null` for the **PR-freshness-only mode** described under [Runtime ownership](#runtime-ownership): the relay still feeds `prService.ingestGithubWebhook`, but rule dispatch, the local webhook server, and ingress status/event reads are skipped. In that mode the relay cursor is persisted through an injected `ingressCursorStore` — `createKvIngressCursorStore(db)`, which reads/writes `automations.ingress.cursor.<source>` in the kv table — instead of `automationService`'s cursor storage. Linked PR ids from relay deliveries are accumulated only after their page cursor commits, then flushed as one targeted `prPollingService.reconcilePrs(prIds)` call per successful drain; if a later page fails, ids from earlier committed pages are still reconciled. Local GitHub webhook deliveries request the same targeted reconciliation immediately. A successful drain sets the relay-health signal consumed by `prPollingService`; config removal, poll failure, and shutdown clear it so direct GitHub polling resumes. Page/transport failures honor `Retry-After` and use an exponential 30 s–15 min poll cooldown. A 401 closes the subscription, which then opens only after a poll succeeds; a second 401 in a row stops polling for 6 hours (relay status `disabled`, an error naming the fix) until it ends, `pollNow()` runs, or the person signs in to ADE (`subscribeToSignIn`, the account service's `onSignedIn`, which both hosts pass and which runs `pollNow()`; a token refresh is not a sign-in). A missing GitHub App user or ADE account token instead puts polling and socket connection attempts into a quiet 5-minute auth-pending cooldown (relay status `disabled`, a single `automations.github_relay_auth_pending` info log). A **signed-in** machine keeps a broken App credential from disabling the subscription, because the account token can still carry the poll — `noteHostedAuthFailure` starts the cooldown without `enterHostedAuthPending`'s teardown. That cooldown gates the App-token **lookup** as well as the subscription: asking for a credential ADE just found broken is what turned one dead token into a refresh request every thirty seconds. While the lookup is paused the deadline is not re-stamped, so the credential is tried again when the cooldown ends rather than being pushed out forever. `pollNow()` clears either cooldown for an explicit retry, and releases the "logged once" latch with it: a repair that did not take is a new fact, and the log line saying so must not be suppressed by the failure it replaced. `stop()`/`dispose()` abort active polling and close the socket plus polling/connect/reconnect timers. Each relay delivery always reaches automations as a raw `github-webhook` event. With `relayDispatchesTypedGithubEvents` (set only by the brain, `apps/ade-cli/src/bootstrap.ts`) it is also mapped to its typed event (`github.pr_opened`, `github.issue_labeled`, …, the same mapping as the local-webhook path, event key `<delivery id>:<type>`), because the brain runs no GitHub poller and `github.*` rules would otherwise never start there. The desktop process leaves it off: its poller already emits those typed events, and ingress dedupes per source, so both together would start one rule twice for one PR.
 - `customWebhookService.ts` — custom webhook URLs ("doorbells"): makes and rotates hook tokens (machine-local `automation_webhook_hooks`), registers them with the relay, receives every request (direct `/hooks/:hookId/:token` or drained from the relay), runs the check order in [Triggers and actions](triggers-and-actions.md#how-a-custom-webhook-delivery-is-handled), keeps the per-hook delivery log (`automation_webhook_deliveries`), and serves replay and **Send test**. Composed by `automationIngressService` and exposed as its `webhooks` member and as the `automations.webhook*` ADE actions (`ade automations webhook …`). Renderer: `builder/WebhookTriggerPanel.tsx` (the numbered setup guide) and `builder/WebhookDeliveries.tsx` (log + detail dialog); shared presets, filters and normalization in `shared/automationWebhooks.ts`.
@@ -97,6 +159,7 @@ These services are loaded by the ADE runtime's project scope (and by the desktop
 Each `AutomationRule` carries:
 
 - `id`, `name`, `description`, `enabled`.
+- `home` — the one computer that runs a rule that follows the account (`{ deviceId, name, chosenAt }`); `runsHere` (computed per brain) is false on every other computer. Absent on a rule kept on this computer only.
 - `origin` — who created the rule: `user` (default), `cto`, or `chat-menu`. A config written before this field existed has no `origin` and reads as `user`.
 - `scope` — the chat a rule belongs to: `{ sessionId, sessionTitle }`. The title is stored on the rule, so a rule created from a chat that was later deleted still has a readable label.
 - `originRequest` — the sentence that created the rule, kept verbatim.
@@ -324,7 +387,7 @@ Automations route outputs based on `outputs.disposition`:
 - **Confidence threshold is `0.65` baseline.** Rules that explicitly raise the threshold penalize confidence proportionally — document this in rule descriptions so operators understand scoring.
 - **Active hours read the zone's clock.** `activeHours.timezone` is an IANA name (`America/Chicago`); `isWithinActiveHours` reads the minute of the day on that zone's clock through `Intl`. `local`, a blank zone, or a name this runtime's ICU does not know reads the brain machine's clock, as active hours always did. Cron schedules still fire on the machine's local clock: a schedule trigger has no zone field.
 - **Ingress runs are claimed when they start.** `run_claim` on `automation_ingress_events` is what keeps a restart replay of a webhook delivery from running twice. Pass `claimStart` through `runRule` for any new ingress path, and never clear a claim.
-- **Every rule is local, and none is gated.** `.ade/ade.yaml` is no longer read, so a clone cannot contribute an automation rule at all — the prompt an agent session runs can only be one you authored on this machine. `runRuleNow` has no trust check left, and there is no `Trust config` banner.
+- **Every rule is yours, and none is gated.** `.ade/ade.yaml` is no longer read, so a clone cannot contribute an automation rule at all — the prompt an agent session runs can only be one you authored, on this computer or another one signed in to your ADE account ([Rules follow the account](#rules-follow-the-account)). `runRuleNow` has no trust check left, and there is no `Trust config` banner.
 ## Cross-links
 
 - `triggers-and-actions.md` — full trigger and action surface.

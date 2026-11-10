@@ -5403,7 +5403,8 @@ app.whenReady().then(async () => {
       githubService,
       getAccountAccessToken,
       subscribeToSignIn: (listener) => accountAuthService.onSignedIn(listener),
-      listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
+      // Only the rules this computer runs; another computer polls for its own.
+      listRules: () => (automationService ? (projectConfigService.get().effective.automations ?? []).filter((rule) => rule.runsHere !== false) : []),
       ingressCursorStore: createKvIngressCursorStore(db),
       webhooks: {
         db,

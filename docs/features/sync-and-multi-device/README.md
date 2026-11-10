@@ -448,7 +448,8 @@ See `remote-commands.md` and `../linear-integration/README.md`.
 | Replicated ADE runtime tables in `.ade/ade.db` | cr-sqlite CRRs over WebSocket | All connected devices |
 | Source code files | `git push`/`git pull` | Desktop peers only |
 | Shared ADE scaffold/config (`.ade/.gitignore`, human-authored templates/skills, repo-backed workflow YAML under `.ade/workflows/linear/**`) | Git | Desktop peers only |
-| Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`) | **Never syncs** | Machine-specific |
+| Account settings: new-lane defaults, lane templates, CTO home, automation rules (filed under `repo:<origin>`) | Account settings store through the relay, last writer wins per key; automation rules are one key per rule, and only a rule's home computer runs it | Every computer and phone signed in to the account |
+| Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`), including automation rules scoped to one chat or in a project with no remote | **Never syncs** | Machine-specific |
 | Worktrees, PTY processes, caches, transcripts, artifacts, sockets, secrets, connection drafts | **Never syncs** | Machine-specific |
 | Product-analytics installation IDs, consent, budgets/deduplication state, and the local `usage_events` export ledger | **Never syncs** | Machine/browser/iOS-client specific; paired-client consent is socket-scoped |
 | PR detail bodies (`pull_request_snapshots`: `files_json`, `comments_json`, `reviews_json`) | Desktop peers replicate them; phones fetch them on demand via `prs.refresh` instead | Desktop peers only |

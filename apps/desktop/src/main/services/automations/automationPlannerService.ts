@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import cron from "node-cron";
 import {
+  type ConfigAutomationRule,
   AUTOMATION_TRIGGER_TYPES,
   type AutomationAction,
   type AutomationActionType,
@@ -1501,10 +1502,6 @@ export function createAutomationPlannerService({
         }
       }
 
-      const snapshot = projectConfigService.get();
-      const local = { ...(snapshot.local ?? {}) };
-      const rules = Array.isArray(local.automations) ? [...local.automations] : [];
-      const idx = rules.findIndex((r) => r?.id === id);
       const nextRule = {
         id,
         name: normalized.name,
@@ -1536,11 +1533,9 @@ export function createAutomationPlannerService({
         includeProjectContext: normalized.includeProjectContext,
         ...(execution.kind === "built-in" && normalized.actions.length ? { actions: normalized.actions } : {}),
       };
-      if (idx >= 0) rules[idx] = nextRule;
-      else rules.push(nextRule);
-      local.automations = rules;
-
-      projectConfigService.save({ shared: snapshot.shared, local });
+      // Filed in the account when the rule can follow it (keeping its home
+      // unless the draft names one), else in `.ade/local.yaml`.
+      projectConfigService.saveAutomationRule(nextRule as ConfigAutomationRule, { home: req.draft.home });
       automationService.syncFromConfig();
 
       const effectiveRule = projectConfigService.get().effective.automations.find((r) => r.id === id) ?? null;
