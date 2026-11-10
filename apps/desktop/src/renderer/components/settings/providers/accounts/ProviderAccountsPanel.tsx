@@ -40,6 +40,7 @@ import { AccountCard, type CardState, type ClaudeAccountSettingPatch, type RowMe
 import { useAccountSignInSheet } from "./AddProviderAccountSheet";
 import { pinnedProviderInstances, useProviderInstances } from "./useProviderInstances";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
+import { invalidateAiDiscoveryCache } from "../../../../lib/aiDiscoveryCache";
 import { providerActionMessage } from "../providerErrorMessage";
 import { CompactionSettings } from "../CompactionSettings";
 
@@ -189,7 +190,15 @@ export function ProviderAccountsPanel({
     useProviderInstances(provider);
   // The usage numbers come from the same machine as the accounts.
   const { snapshot } = useUsageSnapshot({ pin });
-  const signInSheet = useAccountSignInSheet({ provider, providerLabel, onChanged: () => void reload() });
+  const signInSheet = useAccountSignInSheet({
+    provider,
+    providerLabel,
+    onChanged: (signedIn) => {
+      void reload();
+      // A new login may be another account: pickers and cards read fresh.
+      if (signedIn) invalidateAiDiscoveryCache();
+    },
+  });
   const openSheet = signInSheet.open;
   const reducedMotion = usePrefersReducedMotion();
   const nowMs = Date.now();

@@ -65,6 +65,7 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
   const action = useSettingsAction();
   const runAction = action.run;
   const refreshStatus = ctx.actions.refreshStatus;
+  const verifySignIn = ctx.actions.verifySignIn;
   const [state, setState] = useState<AntigravitySignInState | null>(null);
   const [method, setMethod] = useState<AntigravityAuthMethod>("oauth-personal");
   const [project, setProject] = useState("");
@@ -73,6 +74,8 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
   const [returnUrl, setReturnUrl] = useState("");
   const openedFlowRef = useRef<string | null>(null);
   const finishedFlowRef = useRef<string | null>(null);
+  /** The flow this page watched run, so an old success read on open does not start a check. */
+  const watchedFlowRef = useRef<string | null>(null);
   const supported = Boolean(window.ade?.ai?.antigravitySignInStatus);
 
   const apply = useCallback((next: AntigravitySignInState | null) => {
@@ -86,11 +89,14 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
       openedFlowRef.current = next.flowId;
       if (isThisMachine) void window.ade?.app?.openExternal?.(next.authorizationUrl);
     }
+    if (next.flowId && isAntigravitySignInRunning(next)) watchedFlowRef.current = next.flowId;
     if (next.phase === "succeeded" && next.flowId && finishedFlowRef.current !== next.flowId) {
       finishedFlowRef.current = next.flowId;
-      void refreshStatus({ force: true, silent: true });
+      void (watchedFlowRef.current === next.flowId
+        ? verifySignIn("antigravity")
+        : refreshStatus({ force: true, silent: true }));
     }
-  }, [isThisMachine, refreshStatus]);
+  }, [isThisMachine, refreshStatus, verifySignIn]);
 
   // One read per machine.
   useEffect(() => {

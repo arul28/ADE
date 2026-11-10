@@ -44,9 +44,11 @@ function DefaultAccountSignIn({
     providerLabel,
     // The card's own "Sign in" state comes from the AI status, not the
     // account list, so both are read again.
-    onChanged: () => {
+    onChanged: (signedIn) => {
       void reload();
-      void ctx.actions.refreshStatus({ force: true, silent: true });
+      // A sign-in that worked gets the CLI's own check, which reads the
+      // status again after it.
+      void (signedIn ? ctx.actions.verifySignIn(provider) : ctx.actions.refreshStatus({ force: true, silent: true }));
     },
   });
   // An older host has no account bridge; the command still works there.

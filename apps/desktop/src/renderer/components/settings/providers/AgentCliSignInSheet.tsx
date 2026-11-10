@@ -73,8 +73,11 @@ export type AgentCliSignInSheetProps = {
   pin: OpenProjectBinding | null;
   /** True when that machine is this computer, so its browser is the one in front of the user. */
   isThisMachine: boolean;
-  /** Called on every close. `changed` is true once a sign-in ended (either way). */
-  onClose: (changed: boolean) => void;
+  /**
+   * Called on every close. `changed` is true once a sign-in ended (either
+   * way); `signedIn` only when it succeeded.
+   */
+  onClose: (changed: boolean, signedIn?: boolean) => void;
 };
 
 export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachine, onClose }: AgentCliSignInSheetProps) {
@@ -96,6 +99,7 @@ export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachin
   const loginRef = useRef<AgentCliLoginStatus | null>(null);
   const startSeqRef = useRef(0);
   const changedRef = useRef(false);
+  const signedInRef = useRef(false);
   const closedRef = useRef(false);
   const aliveRef = useRef(true);
   const openedRef = useRef<string | null>(null);
@@ -123,7 +127,7 @@ export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachin
   const close = useCallback(() => {
     if (closedRef.current) return;
     closedRef.current = true;
-    onCloseRef.current(changedRef.current);
+    onCloseRef.current(changedRef.current, signedInRef.current);
   }, []);
 
   const applyLogin = useCallback((next: AgentCliLoginStatus) => {
@@ -142,6 +146,7 @@ export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachin
     }
     if (next.state === "succeeded") {
       changedRef.current = true;
+      signedInRef.current = true;
       setPhase("success");
     } else if (next.state === "failed" || next.state === "cancelled") {
       changedRef.current = true;
@@ -421,7 +426,8 @@ export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachin
 
 /**
  * Hosts the sheet for one CLI: `open()` shows it, `element` goes anywhere in
- * the tree. `onChanged` runs after a close that ended a sign-in.
+ * the tree. `onChanged` runs after a close that ended a sign-in, with
+ * whether it succeeded.
  */
 export function useAgentCliSignInSheet({
   provider,
@@ -429,7 +435,7 @@ export function useAgentCliSignInSheet({
   pin,
   isThisMachine,
   onChanged,
-}: Omit<AgentCliSignInSheetProps, "onClose"> & { onChanged: () => void }): { open: () => void; element: React.ReactNode } {
+}: Omit<AgentCliSignInSheetProps, "onClose"> & { onChanged: (signedIn: boolean) => void }): { open: () => void; element: React.ReactNode } {
   const [openCount, setOpenCount] = useState(0);
   const [shown, setShown] = useState(false);
   const open = useCallback(() => {
@@ -443,9 +449,9 @@ export function useAgentCliSignInSheet({
       providerLabel={providerLabel}
       pin={pin}
       isThisMachine={isThisMachine}
-      onClose={(changed) => {
+      onClose={(changed, signedIn) => {
         setShown(false);
-        if (changed) onChanged();
+        if (changed) onChanged(signedIn === true);
       }}
     />
   ) : null;
@@ -485,7 +491,9 @@ export function SettingsAgentCliSignIn({
     providerLabel,
     pin,
     isThisMachine,
-    onChanged: () => void refreshStatus({ force: true, silent: true }),
+    // A sign-in that worked gets the provider's own check (which reads the
+    // status again after); one that did not only reads the status again.
+    onChanged: (signedIn) => void (signedIn ? ctx.actions.verifySignIn(provider) : refreshStatus({ force: true, silent: true })),
   });
   if (!agentCliSignInSupported()) return <>{fallback}</>;
   if (!offered) return <>{sheet.element}</>;

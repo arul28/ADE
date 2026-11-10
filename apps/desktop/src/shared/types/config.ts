@@ -1254,6 +1254,35 @@ export type AiProviderConnectionStatus = {
   accountEmail?: string;
   /** Subscription the account is on, e.g. "ChatGPT Pro" / "Claude Max". */
   accountPlan?: string;
+  /**
+   * The sign-in as the status read saw it: a saved login on disk, or the last
+   * check that ran this provider for real (a chat, a sign-in, Re-check).
+   * "unknown" means ADE cannot tell from what it read, for example a keychain
+   * that did not answer. Absent on older hosts; read `authAvailable` there.
+   */
+  signInState?: AiProviderSignInState;
+};
+
+export type AiProviderSignInState = "signed-in" | "signed-out" | "unknown";
+
+/** Args for `ai.verifyProviderSignIn`: the one provider to check for real. */
+export type AiVerifyProviderSignInArgs = {
+  provider: string;
+};
+
+/**
+ * The answer of `ai.verifyProviderSignIn`. It runs that provider's own check
+ * (its CLI auth command, the agent's session handshake, the SDK's auth call)
+ * with a short limit. A timeout or an error is "unknown", never a long wait.
+ */
+export type AiProviderSignInCheck = {
+  provider: string;
+  state: AiProviderSignInState;
+  /** One short sentence: why, or what the provider said. Null when there is nothing to add. */
+  reason: string | null;
+  /** The account the provider named, when it names one. */
+  account: string | null;
+  checkedAt: string;
 };
 
 export type AiProviderConnections = {

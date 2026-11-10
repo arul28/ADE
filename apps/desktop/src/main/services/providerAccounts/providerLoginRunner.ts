@@ -124,10 +124,22 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
    * argv with its command word replaced by that copy, which also carries the
    * switches that keep it from updating itself. Never a CLI from the PATH.
    */
-  function spawnLogin(record: LoginRecord, instance: ProviderInstance, cli: PinnedProviderCli, deviceAuth: boolean): void {
+  function spawnLogin(record: LoginRecord, instance: ProviderInstance, cli: PinnedProviderCli, browserElsewhere: boolean): void {
     const command = deps.loginCommand(instance.id);
+    const deviceAuth = browserElsewhere && instance.provider === "codex";
     const args = [...cli.leadingArgs, ...command.args, ...(deviceAuth ? ["--device-auth"] : [])];
-    const env: NodeJS.ProcessEnv = { ...userProcessEnv(), ...command.env, ...cli.env, TERM: "xterm-256color" };
+    const env: NodeJS.ProcessEnv = {
+      ...userProcessEnv(),
+      ...command.env,
+      ...cli.env,
+      TERM: "xterm-256color",
+      // Claude Code prints the sign-in link and also opens a page itself, on
+      // this machine. With the person at another screen, that page lands
+      // here unseen while their screen opens the printed one. It runs
+      // $BROWSER with the link, and `true` opens nothing (on Windows the
+      // command is missing, which Claude Code also takes as "no page").
+      ...(browserElsewhere && instance.provider === "claude" ? { BROWSER: "true" } : {}),
+    };
     let pty: IPty;
     try {
       pty = spawnLoginPty(cli.command, args, env);
@@ -147,8 +159,15 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
     }
     pty.onData((data) => {
       if (!isLive(record)) return;
-      // A device code is the last thing Codex prints before it waits.
-      readLoginOutput(record, data, { hosts: AUTH_HOSTS, deviceCode: deviceAuth, pasteCode: true, promptTailLines: 4 });
+      // A device code is the last thing Codex prints before it waits. Claude's
+      // printed link always ends in a code to paste, so its box stays up
+      // while it waits; Codex asks only when it prints a prompt.
+      readLoginOutput(record, data, {
+        hosts: AUTH_HOSTS,
+        deviceCode: deviceAuth,
+        pasteCode: instance.provider === "claude" ? "while-waiting" : "prompt",
+        promptTailLines: 4,
+      });
     });
     pty.onExit(({ exitCode }) => {
       void onExit(record, exitCode);
@@ -158,8 +177,10 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
   function start(id: string, options: { deviceAuth?: boolean } = {}): ProviderLoginStatus {
     const instance = deps.getInstance(id);
     if (!instance) throw new Error(`No provider account ${JSON.stringify(id)}.`);
-    // Only Codex has a device sign-in; Claude's link already ends in a pasted code.
-    const deviceAuth = options.deviceAuth === true && instance.provider === "codex";
+    // The browser is on another screen. Codex then signs in with a device
+    // code; Claude's printed link already ends in a pasted code, and only
+    // its own page on this machine is held back.
+    const browserElsewhere = options.deviceAuth === true;
     const pinned = pinnedLoginCliState(instance.provider);
     if (pinned.kind === "blocked") throw new Error(pinned.message);
     const loginId = randomUUID();
@@ -182,7 +203,7 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
       cleanup: null,
     };
     if (pinned.kind === "ready") {
-      spawnLogin(record, instance, pinned.cli, deviceAuth);
+      spawnLogin(record, instance, pinned.cli, browserElsewhere);
     } else {
       // This machine has no copy yet: the sign-in reads as running with the
       // download's line, and starts once the copy lands (or fails with why).
@@ -191,7 +212,7 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
         .then((cli) => {
           if (!isLive(record)) return;
           record.status.output = "";
-          spawnLogin(record, instance, cli, deviceAuth);
+          spawnLogin(record, instance, cli, browserElsewhere);
         })
         .catch((error: unknown) => {
           if (!isLive(record)) return;

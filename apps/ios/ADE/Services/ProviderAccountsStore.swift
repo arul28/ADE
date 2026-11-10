@@ -346,10 +346,12 @@ struct ProviderAccountsClient {
     try await account("dismissReplaced", ["id": id])
   }
 
-  /// Codex signs in with a device code here: its normal sign-in returns to a
-  /// localhost port on the machine, which the phone's browser cannot reach.
+  /// The phone's browser is never on the machine, so the sign-in says so:
+  /// Codex then uses a device code (its normal sign-in returns to a localhost
+  /// port the phone cannot reach), and Claude does not open a second page on
+  /// the machine's own screen.
   func startLogin(id: String, provider: ProviderAccountProvider) async throws -> ProviderAccountLogin {
-    try await login("loginStart", ["id": id, "deviceAuth": provider.usesDeviceCode])
+    try await login("loginStart", ["id": id, "deviceAuth": true])
   }
 
   func loginStatus(loginId: String) async throws -> ProviderAccountLogin {

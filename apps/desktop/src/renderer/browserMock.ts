@@ -6704,6 +6704,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         message: "browser",
         verifiedAt: now,
       } as any),
+      verifyProviderSignIn: async (args: { provider: string }) => ({
+        provider: args.provider,
+        state: "unknown" as const,
+        reason: "browser",
+        account: null,
+        checkedAt: now,
+      }),
       updateConfig: resolvedArg(undefined),
       getProviderContextInventory: async (args: GetProviderContextInventoryArgs) => browserMockProviderContextInventory(args),
       opencodeAuthMethods: resolved({ methods: {} }),

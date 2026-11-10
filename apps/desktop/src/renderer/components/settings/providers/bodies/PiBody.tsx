@@ -48,7 +48,7 @@ export function PiBody({ ctx }: { ctx: ProvidersViewContext }) {
       <PiProvidersPanel
         installation={piInstallation}
         runtimeConnections={ctx.status?.runtimeConnections ?? {}}
-        onSignedIn={() => void ctx.actions.refreshStatus({ force: true })}
+        onSignedIn={() => void ctx.actions.verifySignIn("pi")}
         onRefreshStatus={() => void ctx.actions.refreshStatus({ force: true })}
       />
 

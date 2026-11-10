@@ -990,9 +990,25 @@ export async function recheckSignedOutLogins(
   return restored;
 }
 
-function attachAccountLogins(accounts: UsageAccount[]): void {
+/**
+ * Each account's login state on this machine. A poll's reading wins. With
+ * none, an account the registry counts as signed in here (its email is known
+ * and no poll found the login broken) is `ok`: Codex polls never record a
+ * state, and a Codex login kept in the keyring has no file to read, so its row
+ * said "Unknown" while Settings said "Signed in" for the same account.
+ */
+function attachAccountLogins(
+  accounts: UsageAccount[],
+  listInstances: (provider: QuotaInstanceProvider) => QuotaInstance[],
+): void {
+  const signedInHere = new Set<string>();
+  for (const provider of ["claude", "codex"] as const) {
+    for (const instance of listInstances(provider)) {
+      if (instance.signedIn === true) signedInHere.add(usageAccountId({ provider, instanceId: instance.id }));
+    }
+  }
   for (const account of accounts) {
-    const login = accountLogins.get(account.id);
+    const login = accountLogins.get(account.id) ?? (signedInHere.has(account.id) ? "ok" : undefined);
     if (login) account.login = login;
   }
 }
@@ -1496,6 +1512,11 @@ async function pollCodexInstance(
   instance: QuotaInstance,
 ): Promise<FreshUsageProviderPollResult | null> {
   const configHome = scopedConfigHome("codex", instance);
+  // Windows read with this account's own login prove the login works. A miss
+  // proves nothing: a login kept in the keyring has no auth.json to read.
+  const loginWorked = (): void => {
+    noteAccountLogin(usageAccountId({ provider: "codex", instanceId: instance.id }), instance.id, "ok");
+  };
   const creds = await measureUsagePhase(
     logger,
     { provider: "codex", phase: "credentials", reason: context.reason },
@@ -1523,6 +1544,7 @@ async function pollCodexInstance(
     if (result.ok && isRecord(result.data)) {
       const snapshot = parseCodexRateLimitSnapshot(result.data);
       if (snapshot.windows.length > 0) {
+        loginWorked();
         return { ...snapshot, source: "http", errors: [] };
       }
       const fallback = await measureUsagePhase(
@@ -1530,6 +1552,7 @@ async function pollCodexInstance(
         { provider: "codex", phase: "cli_rpc_fallback", reason: context.reason },
         () => pollCodexViaCliRpc(logger, configHome),
       );
+      if (fallback.windows.length > 0) loginWorked();
       return fallback.windows.length > 0
         ? { ...fallback, source: "cli", errors: [] }
         : {
@@ -1545,7 +1568,10 @@ async function pollCodexInstance(
         { provider: "codex", phase: "cli_rpc_fallback", reason: context.reason },
         () => pollCodexViaCliRpc(logger, configHome),
       );
-      if (fallback.windows.length > 0) return { ...fallback, source: "cli", errors: [] };
+      if (fallback.windows.length > 0) {
+        loginWorked();
+        return { ...fallback, source: "cli", errors: [] };
+      }
       return {
         ...fallback,
         source: "cli",
@@ -4127,6 +4153,27 @@ let cachedLocalMachineKey: string | null = null;
  * skipped, `getUsageRollup` answers null, and the next scan tries again because
  * the failure is not memoized.
  */
+let deviceDisplayName: (() => string) | null = null;
+let deviceDisplayNameLoad: Promise<void> | null = null;
+
+/**
+ * The name the person gave this computer ("Arul's Mac Studio"), as the machine
+ * picker shows it; peers print it in "via". The network hostname ("Mac.lan")
+ * stands in until the name is known. The device registry loads on first use,
+ * as the brain loads it: at module load it would bring the Tailscale probe in.
+ */
+function localMachineLabel(): string {
+  if (!deviceDisplayName && !deviceDisplayNameLoad) {
+    deviceDisplayNameLoad = import("../../../../../ade-cli/src/services/sync/deviceRegistryService")
+      .then((module) => {
+        deviceDisplayName = module.resolveDeviceDisplayName;
+        deviceDisplayName();
+      })
+      .catch(() => undefined);
+  }
+  return deviceDisplayName?.() ?? os.hostname();
+}
+
 function defaultLocalMachineIdentity(): LocalMachineIdentity | null {
   if (!cachedLocalMachineKey) {
     try {
@@ -4138,7 +4185,7 @@ function defaultLocalMachineIdentity(): LocalMachineIdentity | null {
   if (!cachedLocalMachineKey) return null;
   return {
     machineKey: cachedLocalMachineKey,
-    label: os.hostname(),
+    label: localMachineLabel(),
     platform: process.platform,
   };
 }
@@ -4826,7 +4873,7 @@ export function createUsageTrackingService({
     const localKey = identity?.machineKey ?? `unidentified:${os.hostname()}`;
     const contributions: AccountUsageContribution[] = [{
       machineKey: localKey,
-      label: identity?.label ?? os.hostname(),
+      label: identity?.label ?? localMachineLabel(),
       platform: identity?.platform ?? process.platform,
       isLocal: true,
       origin: "live",
@@ -5823,7 +5870,7 @@ export function createUsageTrackingService({
         ]);
         const { accounts, defaultAccountIdByProvider, duplicateAccountIds } = await stampProviderAccounts(
           providerStatus,
-          readLocalMachineIdentity()?.label ?? os.hostname(),
+          readLocalMachineIdentity()?.label ?? localMachineLabel(),
           new Set(allWindows.map((window) => window.accountId).filter((id): id is string => Boolean(id))),
           readQuotaInstances,
         );
@@ -5836,7 +5883,7 @@ export function createUsageTrackingService({
         // default account's before the notice decides the account has nothing.
         attachAccountRateLimitNotices(accounts, allWindows);
         stampAccountReadTimes(accounts, allWindows);
-        attachAccountLogins(accounts);
+        attachAccountLogins(accounts, readQuotaInstances);
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,

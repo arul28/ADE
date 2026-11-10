@@ -108,6 +108,10 @@ export function createCloudClaudeSignIn(deps: CloudClaudeSignInDeps) {
     const env: NodeJS.ProcessEnv = { ...deps.baseEnv(), ...cli.env, TERM: "xterm-256color" };
     // The token being made must not be confused with one already set here.
     delete env.CLAUDE_CODE_OAUTH_TOKEN;
+    // Settings opens the printed link, and Claude Code would open a second
+    // page of its own. It runs $BROWSER with the link; `true` opens nothing
+    // (on Windows the command is missing, which it also takes as no page).
+    env.BROWSER = "true";
     let pty: AgentCliLoginPty;
     try {
       pty = deps.spawnPty(cli.command, [...cli.leadingArgs, "setup-token"], env);
@@ -118,7 +122,8 @@ export function createCloudClaudeSignIn(deps: CloudClaudeSignInDeps) {
     target.pty = pty;
     pty.onData((data) => {
       if (record !== target || target.status.state !== "running") return;
-      const text = readLoginOutput(target, data, { hosts: AUTH_HOSTS, deviceCode: false, pasteCode: true, promptTailLines: 4 });
+      // The printed link ends in a code to paste, so the box stays up while it waits.
+      const text = readLoginOutput(target, data, { hosts: AUTH_HOSTS, deviceCode: false, pasteCode: "while-waiting", promptTailLines: 4 });
       const token = COMPLETE_CLAUDE_TOKEN_PATTERN.exec(text)?.[0] ?? null;
       if (token) take(target, token);
     });

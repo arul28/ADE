@@ -25,7 +25,7 @@ import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services
 import type { PinnedToolState } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import { loadQwenUserSettings } from "./qwenUserSettings";
 import { COPILOT_TOKEN_ENV_KEYS, copilotConfigHome, devinCredentialFiles, factoryConfigHome, ghHostsFiles, grokConfigHome } from "../shared/providerConfigHomes";
-import { resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
+import { kimiCodeLoginInKeyring, resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
 import type { AgentCliLoginProvider, AgentCliSavedLogin } from "../../../shared/types/agentCliLogin";
 import {
   reportProviderRuntimeAuthFailure,
@@ -1286,9 +1286,17 @@ export function getCachedCliAuthStatuses(): CliAuthStatus[] {
   return cachedCliAuth?.statuses ?? [];
 }
 
+/**
+ * Each provider CLI's presence and sign-in.
+ *
+ * `skipAuthProbe` is what every status read passes: saved logins are read off
+ * disk and no CLI starts, forced or not. `force` only drops the cache and
+ * reads again. The spawning checks (`claude auth status` and friends) run only
+ * without `skipAuthProbe`, or through `checkCliSignInLive` for one provider.
+ */
 export async function detectCliAuthStatuses(options?: { force?: boolean; skipAuthProbe?: boolean }): Promise<CliAuthStatus[]> {
   const now = Date.now();
-  const skipAuthProbe = options?.skipAuthProbe === true && options.force !== true;
+  const skipAuthProbe = options?.skipAuthProbe === true;
   if (
     !options?.force
     && cachedCliAuth
@@ -1310,7 +1318,9 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
   // Cached for 30 s, so a non-forced pass usually costs nothing. Provider CLIs
   // themselves are never looked up on the PATH: ADE runs its own copies.
   await refreshWindowsPersistedPathDirs({ force: options?.force === true });
-  if (options?.force || process.platform === "win32") {
+  // The login-shell PATH read starts a shell and blocks until it answers, so
+  // a status read never pays for it; only a check that spawns the CLIs does.
+  if ((options?.force && !skipAuthProbe) || process.platform === "win32") {
     await refreshProcessPathFromShell();
   }
 
@@ -1369,7 +1379,7 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
       if (cli === "droid") {
         // Reached only when ADE's copy is here, so the shallow presence check
         // below is asking about credentials, not existence.
-        const auth = await inspectDroidCliPresence(pinned, { deep: options?.force === true });
+        const auth = await inspectDroidCliPresence(pinned, { deep: options?.force === true && !skipAuthProbe });
         return {
           ...base,
           installed: auth.installed,
@@ -1504,6 +1514,77 @@ export function resetLocalProviderDetectionCache(): void {
   clearLocalProviderInspectionCache();
 }
 
+/**
+ * The logins a `copilot login` recorded on this machine, read from Copilot's
+ * `config.json` only (no token, no SDK start). Empty when there is none.
+ */
+export async function readCopilotRecordedLogins(env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  try {
+    const raw = await readFile(path.join(copilotConfigHome({ env }), "config.json"), "utf8");
+    return parseCopilotLoggedInUsers(raw);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Whether the saved sign-in a status read sees for Copilot or an ACP agent
+ * is on disk now. The same files the status read checks, read again; no
+ * process starts. Other providers answer false: their lists do not key on it.
+ */
+export async function savedCliSignInPresent(provider: string): Promise<boolean> {
+  if (provider === "copilot") return (await inspectCopilotCliCredentials()).authenticated;
+  if ((ACP_CLI_NAMES as readonly string[]).includes(provider)) {
+    return (await inspectAcpCliCredentials(provider as AcpCliName)).authenticated;
+  }
+  return false;
+}
+
+export type CliSignInLiveCheck = {
+  state: "signed-in" | "signed-out" | "unknown";
+  reason: string | null;
+};
+
+const LIVE_CHECK_LABEL: Record<"claude" | "codex" | "droid", string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  droid: "Droid",
+};
+
+/**
+ * Asks ADE's own copy of one CLI whether it is signed in, the way a forced
+ * status read used to for every CLI at once. Only the one-provider sign-in
+ * check calls this. Each spawn keeps its own 8 s limit; the caller adds the
+ * overall one.
+ */
+export async function checkCliSignInLive(cli: "claude" | "codex" | "droid"): Promise<CliSignInLiveCheck> {
+  const label = LIVE_CHECK_LABEL[cli];
+  const pinned = pinnedCliCommand(cli);
+  if (!pinned) {
+    return { state: "unknown", reason: `ADE's copy of ${label} is not on this computer yet, so it could not check.` };
+  }
+  if (cli === "droid") {
+    // Droid has no sign-in command that does not spend a model call, so the
+    // check is that ADE's copy runs and its saved sign-in is there.
+    const presence = await inspectDroidCliPresence(pinned, { deep: true });
+    if (!presence.installed) return { state: "unknown", reason: `ADE's copy of ${label} did not start.` };
+    const seen = await droidCredentialSeen();
+    if (seen === "key") return { state: "signed-in", reason: null };
+    if (seen === "sign_in") {
+      return { state: "signed-in", reason: "Droid's saved sign-in is on this computer. Droid has no separate check for it." };
+    }
+    return { state: "signed-out", reason: null };
+  }
+  const auth = await inspectCliAuthentication(cli, pinned);
+  if (auth.verified) return { state: auth.authenticated ? "signed-in" : "signed-out", reason: null };
+  return {
+    state: "unknown",
+    reason: auth.authenticated
+      ? `${label} does not report its sign-in in a form ADE can read.`
+      : `${label} did not answer the sign-in check.`,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // One agent CLI's saved sign-in, for a sign-in ADE just ran
 // ---------------------------------------------------------------------------
@@ -1573,8 +1654,11 @@ export async function readAgentCliSavedLogin(
     case "kimi": {
       // The token file Kimi reads for this environment, not `config.toml`:
       // config can outlive a login, the token file is the login.
+      // Read again on every call: a login can move the slot `config.toml` names.
       const login = resolveKimiCodeLogin({ env });
-      if (!login) return { signedIn: false, fingerprint: "none" };
+      if (!login) {
+        return { signedIn: false, fingerprint: "none", ...(kimiCodeLoginInKeyring({ env }) ? { inKeyring: true } : {}) };
+      }
       return { signedIn: await nonEmptyFile(login.credentialPath), fingerprint: await fingerprintOf([login.credentialPath]) };
     }
   }

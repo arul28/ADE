@@ -37,10 +37,11 @@ import type {
 } from "./types";
 import { statusProbeFailed } from "./types";
 import { providerStatusConnected } from "./providerConnected";
+import { SIGNED_IN_LABEL, signInStatusView } from "./providerSignInView";
 
-// The six words a tile is allowed to say — sentence case, no ellipsis-free
-// exceptions. "Verification failed" and "Unavailable" used to leak out of two
-// descriptors, which made the grid's vocabulary seven and eight words long.
+// The words a tile is allowed to say — sentence case. The sign-in ones come
+// from `signInStatusView`; the rest are "Checking…", "Needs attention", "Not
+// downloaded" and "Disabled".
 const CHECKING: ProviderStatusView = {
   state: "checking",
   label: "Checking…",
@@ -79,10 +80,11 @@ function museCuratedModels(): ProviderModelRow[] {
     .map((model) => ({ id: model.id, label: model.displayName, isDefault: model.id === MUSE_DEFAULT_MODEL_ID }));
 }
 
+/** The status read failed: the sign-in is not known, not missing. */
 function probeFailedView(ctx: ProvidersViewContext, who: string): ProviderStatusView {
   return {
-    state: "attention",
-    label: "Needs attention",
+    state: "unknown",
+    label: "Unknown",
     message: `Could not load ${who} status.`,
     errorLine: ctx.statusLoadError,
   };
@@ -95,13 +97,12 @@ function cliStatus(ctx: ProvidersViewContext, cli: "codex" | "droid" | "cursor" 
   const tool = cliTool(cli);
   const connection = ctx.status?.providerConnections?.[cli] ?? null;
   const message = buildCliMessage(tool, connection);
-  if (providerStatusConnected(cli, ctx.status)) {
-    return { state: "connected", label: "Connected", message };
-  }
-  if (connection?.runtimeDetected || connection?.authAvailable) {
-    return { state: "sign-in", label: "Sign in required", message };
-  }
-  return { state: "not-installed", label: "Not downloaded", message, errorLine: connection?.blocker ?? null };
+  return signInStatusView({
+    connected: providerStatusConnected(cli, ctx.status),
+    connection,
+    runtimeDetected: connection?.runtimeDetected === true,
+    message,
+  });
 }
 
 /** Where ADE's OpenCode binary came from, in words (the host reports a token). */
@@ -124,17 +125,18 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
         return { ...CHECKING, message: "Checking Claude SDK binary and login status." };
       }
       const availability = ctx.status?.availableProviders?.claude ?? null;
-      const message = buildClaudeAvailabilityMessage(availability);
-      if (providerStatusConnected("claude", ctx.status)) {
-        return { state: "connected", label: "Connected", message };
-      }
-      if (availability?.binary.present) {
-        return { state: "sign-in", label: "Sign in required", message };
-      }
+      const connection = ctx.status?.providerConnections?.claude ?? null;
+      const present = availability?.binary.present === true;
       // Not on this machine yet: the status payload says why (downloading,
       // failed, not available here) in the pinned tool's own words.
-      const blocker = ctx.status?.providerConnections?.claude?.blocker ?? message;
-      return { state: "not-installed", label: "Not downloaded", message: blocker, errorLine: blocker };
+      const blocker = connection?.blocker ?? buildClaudeAvailabilityMessage(availability);
+      return signInStatusView({
+        connected: providerStatusConnected("claude", ctx.status),
+        connection,
+        runtimeDetected: present,
+        message: present ? buildClaudeAvailabilityMessage(availability) : blocker,
+        ...(present ? {} : { errorLine: blocker }),
+      });
     },
     models: (ctx) => descriptorModels(ctx.status?.models?.claude ?? []),
     // What the runtime reported at its last start, so it fills in after the
@@ -182,8 +184,9 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       if (verification?.ok) {
         return {
           state: "connected",
-          label: "Connected",
-          message: "Cursor SDK connected. ADE uses this key for Cursor chat and Cursor Cloud agents.",
+          label: SIGNED_IN_LABEL,
+          message: "Signed in. ADE uses this key for Cursor chat and Cursor Cloud agents.",
+          account: (ctx.cursorAuth?.email ?? ctx.status?.providerConnections?.cursor?.accountEmail)?.trim() || null,
         };
       }
       if (verification && !verification.ok) {
@@ -201,7 +204,7 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       const message = ctx.status?.providerConnections?.cursor?.blocker
         ?? (base.state === "connected" ? base.message : "Sign in with Cursor or enter a Cursor API key.");
       // OAuth can show an email on the detail page while ADE still needs a
-      // verified Cursor API key for chat. Do not label that "Sign in required".
+      // verified Cursor API key for chat. Do not label that "Not signed in".
       if (base.state === "sign-in" && cursorOauthSignedIn(ctx)) {
         return { state: "attention", label: "Needs attention", message };
       }
@@ -261,15 +264,14 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       }
       const connection = ctx.status?.providerConnections?.muse ?? null;
       const message = connection?.blocker ?? "Ready.";
-      if (providerStatusConnected("muse", ctx.status)) {
-        return { state: "connected", label: "Connected", message };
-      }
-      // Detected but no sign-in on disk: on macOS chat is still offered (the
-      // login may be in the Keychain), so this says "sign in", not "broken".
-      if (connection?.runtimeDetected) {
-        return { state: "sign-in", label: "Sign in required", message };
-      }
-      return { state: "not-installed", label: "Not downloaded", message, errorLine: connection?.blocker ?? null };
+      // Detected but no sign-in on disk: on macOS the login may be in the
+      // Keychain, which the host reports as "unknown", not "not signed in".
+      return signInStatusView({
+        connected: providerStatusConnected("muse", ctx.status),
+        connection,
+        runtimeDetected: connection?.runtimeDetected === true,
+        message,
+      });
     },
     models: (ctx) => {
       const live = descriptorModels(ctx.status?.models?.muse ?? []);
@@ -308,8 +310,8 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       const loadFailed = ctx.isInitialCheckInFlight && !ctx.loading && ctx.statusLoadError !== null;
       if (loadFailed) {
         return {
-          state: "attention",
-          label: "Needs attention",
+          state: "unknown",
+          label: "Unknown",
           message: `Could not load Pi status: ${ctx.statusLoadError}`,
           errorLine: ctx.statusLoadError,
         };
@@ -319,16 +321,16 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
       }
       const message = buildPiMessage(connection, installation);
       const errorLine = installation?.error ? `Inventory fallback: ${installation.error}` : null;
-      if (providerStatusConnected("pi", ctx.status)) {
-        return { state: "connected", label: "Connected", message, errorLine };
-      }
-      if (!installation?.installed && !connection?.runtimeDetected) {
-        return { state: "not-installed", label: "Not downloaded", message, errorLine };
-      }
-      if (installation?.installed && !installation.sdkAvailable) {
+      if (installation?.installed && !installation.sdkAvailable && !providerStatusConnected("pi", ctx.status)) {
         return { state: "attention", label: "Needs attention", message, errorLine: errorLine ?? message };
       }
-      return { state: "sign-in", label: "Sign in required", message, errorLine };
+      return signInStatusView({
+        connected: providerStatusConnected("pi", ctx.status),
+        connection,
+        runtimeDetected: Boolean(installation?.installed || connection?.runtimeDetected),
+        message,
+        errorLine,
+      });
     },
     models: (ctx) => (ctx.status?.piInstallation?.availableModelIds ?? []).map((id) => ({ id, label: id })),
     version: (ctx) => {
@@ -352,8 +354,8 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
         const loadFailed = !ctx.loading && ctx.statusLoadError !== null;
         if (loadFailed) {
           return {
-            state: "attention",
-            label: "Needs attention",
+            state: "unknown",
+            label: "Unknown",
             message: "Could not load OpenCode status.",
             errorLine: ctx.statusLoadError,
           };
@@ -376,9 +378,12 @@ export const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
         };
       }
       const connected = ctx.connectedOpenCodeProviders.length;
+      // OpenCode holds no login of its own; it is signed in when one of its
+      // providers is. With none, it still runs (free models), so "Ready".
+      const signedIn = (ctx.status?.opencodeProviders ?? []).some((provider) => provider.signedIn === true);
       return {
         state: "connected",
-        label: "Connected",
+        label: signedIn ? SIGNED_IN_LABEL : "Ready",
         message: connected === 0
           ? "OpenCode is ready. No model providers are connected yet."
           : `OpenCode is ready with ${connected} connected provider${connected === 1 ? "" : "s"}.`,

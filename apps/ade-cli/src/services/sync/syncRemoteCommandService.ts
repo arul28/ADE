@@ -4718,9 +4718,15 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       credentialId: parsed.credentialId,
     });
     const remotePreset = trackedPreset?.preset;
+    // A named account wins; otherwise a new CLI session starts where a new
+    // chat would. A preset or a stored key brings its own sign-in.
+    const namedInstanceId = parsed.instanceId?.trim() || null;
+    const pickedInstanceId = provider !== "shell" && !namedInstanceId && !parsed.presetId && !parsed.credentialId
+      ? args.agentChatService?.pickNewCliSessionAccount(provider, trackedPreset?.model || parsed.modelId || parsed.model || null) ?? null
+      : null;
     const resolvedInstance = provider === "shell"
       ? null
-      : resolveProviderInstanceForLaunch(provider, parsed.instanceId);
+      : resolveProviderInstanceForLaunch(provider, namedInstanceId || pickedInstanceId);
     const userMcp = provider === "shell"
       ? null
       : await resolveTrackedCliUserMcp({
@@ -5264,13 +5270,18 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   // Tracked CLI launch (the Linear batch-launch path). Without it the web
   // client's launch resolved to `null` and reported a launch that never
   // spawned a pty.
-  register("chat.launchCli", { viewerAllowed: true, queueable: true }, async (payload) =>
-    launchAgentChatCli(parseAgentChatLaunchCliArgs(payload), {
+  register("chat.launchCli", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const agentChatService = args.agentChatService;
+    return launchAgentChatCli(parseAgentChatLaunchCliArgs(payload), {
       laneService: args.laneService,
       ptyService: args.ptyService,
       sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
       logger: args.logger,
-    }));
+      ...(agentChatService
+        ? { pickAccount: (provider: string, modelId: string | null) => agentChatService.pickNewCliSessionAccount(provider, modelId) }
+        : {}),
+    });
+  });
   // Auto-lane naming. It degrades to a deterministic name on the client, so an
   // unregistered action was survivable — but every web auto-created lane was
   // silently denied its AI-generated name.

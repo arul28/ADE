@@ -347,6 +347,8 @@ import type {
   AgentCliLoginStatus,
   AgentCliLoginSubmitCodeArgs,
   AiApiKeyVerificationResult,
+  AiProviderSignInCheck,
+  AiVerifyProviderSignInArgs,
   AiConfig,
   AiSettingsStatus,
   OpenCodeOAuthStartResult,
@@ -4567,6 +4569,20 @@ async function clearAround<T>(
   }
 }
 
+/**
+ * The preload half of the "login changed" path. A sign-in that just
+ * succeeded changes the saved logins, so the unpinned status cache drops and
+ * the next read asks again; no caller has to pass `force` after a sign-in.
+ */
+async function clearAiStatusOnSignIn<T>(action: Promise<T>, succeeded: (result: T) => boolean): Promise<T> {
+  const result = await action;
+  if (succeeded(result)) aiStatusCache.clear();
+  return result;
+}
+
+const loginSucceeded = (status: { state: string }): boolean => status.state === "succeeded";
+const antigravitySignInSucceeded = (state: AntigravitySignInState): boolean => state.phase === "succeeded";
+
 async function runProjectRuntimeTransition<T>(
   action: () => Promise<T>,
 ): Promise<T> {
@@ -5729,16 +5745,25 @@ const adeBridge = {
     // agent; start, its status reads, a pasted return URL and cancel all go
     // to that same machine.
     antigravitySignInStatus: async (pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInStatus", {}, () =>
-        ipcRenderer.invoke(IPC.aiAntigravitySignInStatus),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AntigravitySignInState>(pin, "ai", "antigravitySignInStatus", {}, () =>
+          ipcRenderer.invoke(IPC.aiAntigravitySignInStatus),
+        ),
+        antigravitySignInSucceeded,
       ),
     antigravitySignInStart: async (args: AntigravitySignInStartArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInStart", { args }, () =>
-        ipcRenderer.invoke(IPC.aiAntigravitySignInStart, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AntigravitySignInState>(pin, "ai", "antigravitySignInStart", { args }, () =>
+          ipcRenderer.invoke(IPC.aiAntigravitySignInStart, args),
+        ),
+        antigravitySignInSucceeded,
       ),
     antigravitySignInComplete: async (args: AntigravitySignInCompleteArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInComplete", { args }, () =>
-        ipcRenderer.invoke(IPC.aiAntigravitySignInComplete, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AntigravitySignInState>(pin, "ai", "antigravitySignInComplete", { args }, () =>
+          ipcRenderer.invoke(IPC.aiAntigravitySignInComplete, args),
+        ),
+        antigravitySignInSucceeded,
       ),
     antigravitySignInCancel: async (args: AntigravitySignInCancelArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInCancel", { args }, () =>
@@ -5748,16 +5773,25 @@ const adeBridge = {
     // machine that owns it: a pin goes there, else the tab's runtime, else this
     // computer. Keep one pin for a sign-in's start, polls, code and cancel.
     cliLoginStart: async (args: AgentCliLoginStartArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginStart", { args }, () =>
-        ipcRenderer.invoke(IPC.aiCliLoginStart, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AgentCliLoginStatus>(pin, "ai", "cliLoginStart", { args }, () =>
+          ipcRenderer.invoke(IPC.aiCliLoginStart, args),
+        ),
+        loginSucceeded,
       ),
     cliLoginStatus: async (args: AgentCliLoginRefArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginStatus", { args }, () =>
-        ipcRenderer.invoke(IPC.aiCliLoginStatus, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AgentCliLoginStatus>(pin, "ai", "cliLoginStatus", { args }, () =>
+          ipcRenderer.invoke(IPC.aiCliLoginStatus, args),
+        ),
+        loginSucceeded,
       ),
     cliLoginSubmitCode: async (args: AgentCliLoginSubmitCodeArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginSubmitCode", { args }, () =>
-        ipcRenderer.invoke(IPC.aiCliLoginSubmitCode, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AgentCliLoginStatus>(pin, "ai", "cliLoginSubmitCode", { args }, () =>
+          ipcRenderer.invoke(IPC.aiCliLoginSubmitCode, args),
+        ),
+        loginSucceeded,
       ),
     cliLoginCancel: async (args: AgentCliLoginRefArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginCancel", { args }, () =>
@@ -5831,6 +5865,22 @@ const adeBridge = {
             "verifyApiKeyConnection",
             { args: { provider } },
             () => ipcRenderer.invoke(IPC.aiVerifyApiKey, { provider }),
+          ),
+      ),
+    // Runs the provider's own sign-in check on the pinned machine (up to
+    // 20 s), so the status cache is stale on both sides of it.
+    verifyProviderSignIn: async (
+      args: AiVerifyProviderSignInArgs, pin?: OpenProjectBinding | null
+    ): Promise<AiProviderSignInCheck> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callPinnedOrBoundRuntimeActionOr(
+            pin,
+            "ai",
+            "verifyProviderSignIn",
+            { args },
+            () => ipcRenderer.invoke(IPC.aiVerifyProviderSignIn, args),
           ),
       ),
     updateConfig: async (config: Partial<AiConfig>, pin?: OpenProjectBinding | null): Promise<void> =>
@@ -11418,7 +11468,10 @@ const adeBridge = {
         "loginStart",
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesLoginStart, args),
-      ).then(normalizeProviderLoginStatus),
+      ).then(normalizeProviderLoginStatus).then((status) => {
+        if (loginSucceeded(status)) aiStatusCache.clear();
+        return status;
+      }),
     loginStatus: async (
       args: ProviderLoginRefArgs,
       pin?: OpenProjectBinding | null,
@@ -11429,7 +11482,10 @@ const adeBridge = {
         "loginStatus",
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesLoginStatus, args),
-      ).then(normalizeProviderLoginStatus),
+      ).then(normalizeProviderLoginStatus).then((status) => {
+        if (loginSucceeded(status)) aiStatusCache.clear();
+        return status;
+      }),
     loginSubmitCode: async (
       args: ProviderLoginSubmitCodeArgs,
       pin?: OpenProjectBinding | null,
@@ -11440,7 +11496,10 @@ const adeBridge = {
         "loginSubmitCode",
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesLoginSubmitCode, args),
-      ).then(normalizeProviderLoginStatus),
+      ).then(normalizeProviderLoginStatus).then((status) => {
+        if (loginSucceeded(status)) aiStatusCache.clear();
+        return status;
+      }),
     loginCancel: async (
       args: ProviderLoginRefArgs,
       pin?: OpenProjectBinding | null,

@@ -19,6 +19,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { CircleNotch, SignIn } from "@phosphor-icons/react";
 import { isAgentCliLoginProvider, isAntigravitySignInRunning, type AgentCliLoginProvider, type AntigravitySignInState } from "../../../shared/types";
+import { checkProviderSignIn } from "../../lib/providerSignInCheck";
+import { useSettingsMachineScope } from "../settings/SettingsMachineScope";
 import { useAgentCliSignInSheet } from "../settings/providers/AgentCliSignInSheet";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { useAccountSignInSheet } from "../settings/providers/accounts/AddProviderAccountSheet";
@@ -451,16 +453,39 @@ function PlainRailItem(props: RailItemProps) {
   return <Charm {...props} />;
 }
 
-/** Claude Code and Codex: the account sheet Settings uses, on this computer. */
+/**
+ * What every item runs when a sign-in ends. A successful one first runs the
+ * provider's own check on the setup card's machine, as the Settings sheets
+ * do, so the status the card reads next is the checked one.
+ */
+function useAfterSignIn(onChanged: () => void): (provider: string, signedIn: boolean) => void {
+  const { pin } = useSettingsMachineScope();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  return useCallback((provider: string, signedIn: boolean) => {
+    if (!signedIn) {
+      onChanged();
+      return;
+    }
+    // The check never rejects; a failure reads "unknown".
+    void checkProviderSignIn(provider, pinRef.current).finally(onChanged);
+  }, [onChanged]);
+}
+
+/**
+ * Claude Code and Codex: the account sheet Settings uses. The sheet and the
+ * default account read the setup card's machine scope for their pin.
+ */
 function AccountRailItem(props: RailItemProps & { provider: "claude" | "codex" }) {
   const { provider, tile, register, index, onChanged } = props;
   const { instance, reload } = useDefaultProviderInstance(provider);
+  const afterSignIn = useAfterSignIn(onChanged);
   const sheet = useAccountSignInSheet({
     provider,
     providerLabel: tile.agent.label,
-    onChanged: () => {
+    onChanged: (signedIn) => {
       void reload();
-      onChanged();
+      afterSignIn(provider, signedIn);
     },
   });
   const open = sheet.open;
@@ -479,36 +504,40 @@ function AccountRailItem(props: RailItemProps & { provider: "claude" | "codex" }
 
 /** Cursor: its own browser login; the card re-reads status when the window comes back. */
 function CursorRailItem(props: RailItemProps) {
-  const { register, index, onChanged } = props;
+  const { tile, register, index, onChanged } = props;
+  const { pin } = useSettingsMachineScope();
+  const afterSignIn = useAfterSignIn(onChanged);
+  const provider = tile.agent.id;
   const [busy, setBusy] = useState(false);
   const start = useCallback(() => {
     setBusy(true);
-    void window.ade.ai.cursorAuthLogin()
-      .catch(() => {
-        // The charm stays on "Sign in"; Settings shows the full error.
-      })
-      .finally(() => {
+    void window.ade.ai.cursorAuthLogin(pin)
+      // The charm stays on "Sign in" after a failure; Settings shows the full error.
+      .then((result) => result.ok, () => false)
+      .then((signedIn) => {
         setBusy(false);
-        onChanged();
+        afterSignIn(provider, signedIn);
       });
-  }, [onChanged]);
+  }, [afterSignIn, pin, provider]);
   useEffect(() => register(index, { start, busy }), [busy, index, register, start]);
   return <Charm {...props} busy={busy} />;
 }
 
 /**
  * Grok, Devin, Muse, Copilot, Droid and Kimi: the CLI's own login run by ADE
- * in a private PTY on this computer (`ai.cliLoginStart`), in the same sheet
- * Settings uses. Setup runs on the machine it sets up, so no pin.
+ * in a private PTY (`ai.cliLoginStart`), in the same sheet Settings uses, on
+ * the setup card's machine.
  */
 function CliRailItem(props: RailItemProps & { provider: AgentCliLoginProvider }) {
   const { provider, tile, register, index, onChanged } = props;
+  const { pin, isThisMachine } = useSettingsMachineScope();
+  const afterSignIn = useAfterSignIn(onChanged);
   const sheet = useAgentCliSignInSheet({
     provider,
     providerLabel: tile.agent.label,
-    pin: null,
-    isThisMachine: true,
-    onChanged,
+    pin,
+    isThisMachine,
+    onChanged: (signedIn) => afterSignIn(provider, signedIn),
   });
   const open = sheet.open;
   const offered = tile.status.state === "sign-in";
@@ -523,13 +552,19 @@ function CliRailItem(props: RailItemProps & { provider: AgentCliLoginProvider })
 
 /**
  * Antigravity: the agent's own Google sign-in (its ACP `authenticate`), the
- * same `ai.antigravitySignIn*` actions Settings runs, on this computer.
- * Setup runs on the machine it sets up, so these calls take no pin. Google's
- * page opens once per flow; the other methods (Gemini Enterprise, keys) stay
+ * same `ai.antigravitySignIn*` actions Settings runs. The start and every
+ * status read take the setup card's pin, so one flow stays on one machine.
+ * Google's page opens once per flow; the other methods (Gemini Enterprise, keys) stay
  * in Settings.
  */
 function AntigravityRailItem(props: RailItemProps) {
-  const { register, index, onChanged } = props;
+  const { tile, register, index, onChanged } = props;
+  const { pin } = useSettingsMachineScope();
+  const afterSignIn = useAfterSignIn(onChanged);
+  const provider = tile.agent.id;
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const [state, setState] = useState<AntigravitySignInState | null>(null);
   const opened = useRef<string | null>(null);
   const finished = useRef<string | null>(null);
@@ -545,25 +580,25 @@ function AntigravityRailItem(props: RailItemProps) {
     }
     if ((next.phase === "succeeded" || next.phase === "failed" || next.phase === "cancelled") && next.flowId && finished.current !== next.flowId) {
       finished.current = next.flowId;
-      onChanged();
+      afterSignIn(provider, next.phase === "succeeded");
     }
-  }, [onChanged]);
+  }, [afterSignIn, provider]);
 
   useEffect(() => {
     if (!running) return undefined;
     const read = window.ade?.ai?.antigravitySignInStatus;
     if (!read) return undefined;
     const timer = window.setInterval(() => {
-      void read(null).then(apply).catch(() => undefined);
+      void read(pinRef.current).then(apply).catch(() => undefined);
     }, ANTIGRAVITY_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [apply, running]);
+  }, [apply, pinKey, running]);
 
   const start = useCallback(() => {
     const begin = window.ade?.ai?.antigravitySignInStart;
     if (!begin) return;
     setState((old) => ({ ...(old ?? EMPTY_ANTIGRAVITY_STATE), phase: "starting" }));
-    void begin({ method: "oauth-personal" }, null)
+    void begin({ method: "oauth-personal" }, pinRef.current)
       .then(apply)
       .catch(() => {
         setState(null);

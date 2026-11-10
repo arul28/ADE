@@ -51,7 +51,8 @@ export type AddProviderAccountSheetProps = {
   /** The login a new account is meant for, e.g. one being added back. */
   expectedEmail?: string;
   /** Called on every close. `changed` is true once anything was written. */
-  onClose: (changed: boolean) => void;
+  /** `signedIn` is true only when the sign-in succeeded. */
+  onClose: (changed: boolean, signedIn?: boolean) => void;
 };
 
 /** The sentence for a sign-in that could not start. */
@@ -88,6 +89,7 @@ export function AddProviderAccountSheet({
   /** Orders overlapping starts: only the newest one may apply its reply. */
   const startSeqRef = useRef(0);
   const changedRef = useRef(false);
+  const signedInRef = useRef(false);
   const closedRef = useRef(false);
   const aliveRef = useRef(true);
   const codeInputRef = useRef<HTMLInputElement | null>(null);
@@ -116,6 +118,7 @@ export function AddProviderAccountSheet({
     setLogin(next);
     if (next.state === "succeeded") {
       changedRef.current = true;
+      signedInRef.current = true;
       setSignedInAs(next.email ?? null);
       setPhase("success");
     } else if (next.state === "failed") {
@@ -134,7 +137,7 @@ export function AddProviderAccountSheet({
   const close = useCallback(() => {
     if (closedRef.current) return;
     closedRef.current = true;
-    onCloseRef.current(changedRef.current);
+    onCloseRef.current(changedRef.current, signedInRef.current);
   }, []);
 
   const startLogin = useCallback(async (id: string) => {
@@ -537,7 +540,8 @@ export function useAccountSignInSheet({
 }: {
   provider: ProviderInstanceProvider;
   providerLabel: string;
-  onChanged: () => void;
+  /** `signedIn` is true only when the sign-in succeeded. */
+  onChanged: (signedIn: boolean) => void;
 }): { open: (target: AccountSignInTarget) => void; element: React.ReactNode } {
   const [target, setTarget] = useState<AccountSignInTarget | null>(null);
   const element = target ? (
@@ -548,9 +552,9 @@ export function useAccountSignInSheet({
       providerLabel={providerLabel}
       existingInstance={target.existing}
       expectedEmail={target.email}
-      onClose={(changed) => {
+      onClose={(changed, signedIn) => {
         setTarget(null);
-        if (changed) onChanged();
+        if (changed) onChanged(signedIn === true);
       }}
     />
   ) : null;

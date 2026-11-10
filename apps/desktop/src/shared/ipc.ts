@@ -986,6 +986,7 @@ export const IPC = {
   apiCredentialsRemove: "ade.apiCredentials.remove",
   apiCredentialsGet: "ade.apiCredentials.get",
   aiVerifyApiKey: "ade.ai.verifyApiKey",
+  aiVerifyProviderSignIn: "ade.ai.verifyProviderSignIn",
   aiUpdateConfig: "ade.ai.updateConfig",
   aiGetContinueAfterRestart: "ade.ai.getContinueAfterRestart",
   aiSetContinueAfterRestart: "ade.ai.setContinueAfterRestart",

@@ -247,7 +247,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "antigravitySignInCancel", "cliLoginStart", "cliLoginSubmitCode", "cliLoginCancel",
       "museSettings", "museSettingsClose",
       "acpProviderDiagnostics", "storeApiCredential", "removeApiCredential",
-      "verifyApiKeyConnection", "storeApiKey", "deleteApiKey", "updateConfig", "setContinueAfterRestart",
+      "verifyApiKeyConnection", "verifyProviderSignIn", "storeApiKey", "deleteApiKey", "updateConfig", "setContinueAfterRestart",
       "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey",
       "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename",
       "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "testHarnessRoute", "harnessLaunchEnv",

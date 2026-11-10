@@ -13,13 +13,15 @@
  * so a machine that was already signed in does not read as done at once.
  * Signing in again, a rewritten file proves nothing (a running session
  * refreshes its token in the same file), so only the CLI's clean exit with a
- * changed login counts.
+ * changed login counts. Kimi keeps a working login rather than make a new
+ * one, so its clean exit counts with any login in its slot.
  *
  *   const runner = getMachineAgentCliLoginRunner();
  *   const login = await runner.start({ provider: "grok" });
  *   runner.status(login.loginId);   // poll until state is not running/verifying
  */
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import {
   AGENT_CLI_LOGIN_PROVIDERS,
   isAgentCliLoginProvider,
@@ -35,6 +37,7 @@ import {
   LOGIN_FINISHED_RETENTION_MS,
   LOGIN_TIMEOUT_MS,
   lastOutputLine,
+  lastTextLines,
   readLoginOutput,
   writeLoginCode,
 } from "../shared/cliLoginPty";
@@ -45,7 +48,7 @@ const VERIFY_POLL_MS = 2_000;
 const KEYPRESS_DELAY_MS = 300;
 /** Only the latest lines decide whether a prompt is still showing. */
 const PROMPT_TAIL_LINES = 6;
-const EMAIL_PATTERN = /(?:signed|logged) in as\s+([^\s<>"'()]+@[^\s<>"'()]+)/i;
+const EMAIL_PATTERN = /(?:signed|logged)\s+in\s+as\s+([^\s<>"'()]+@[^\s<>"'()]+)/i;
 
 /** The slice of a PTY this runner uses, so a test or a probe can stand one in. */
 export type AgentCliLoginPty = {
@@ -91,7 +94,7 @@ type ProviderLoginSpec = {
   hosts: readonly string[];
   /** Prints a one-time code to confirm or type on the sign-in page. */
   deviceCode: boolean;
-  /** Asks for a code pasted from the browser. */
+  /** Asks for a code pasted from the browser; the box then stays up from the link until a paste. */
   pasteCode: boolean;
   /** Opens the sign-in page in a browser on this machine by itself. */
   opensBrowser: boolean;
@@ -114,6 +117,18 @@ type ProviderLoginSpec = {
    * sign-in failed. Only on that platform; everywhere else the file decides.
    */
   keychainOnly?: { platform: NodeJS.Platform; failure: RegExp };
+  /**
+   * Keeps a working login already in its slot instead of making a new one,
+   * and exits 0 only once a login works: after a clean exit, a login in the
+   * slot it now names counts, changed or not.
+   */
+  keepsWorkingLogin?: boolean;
+  /**
+   * Put the folder of ADE's copy first on the sign-in's PATH. Devin checks
+   * `which devin` after a sign-in and, when that finds nothing, appends a PATH
+   * block to the person's shell file. ADE's copy is not on their PATH.
+   */
+  cliFolderOnPath?: boolean;
 };
 
 const SPECS: Readonly<Record<AgentCliLoginProvider, ProviderLoginSpec>> = {
@@ -128,6 +143,7 @@ const SPECS: Readonly<Record<AgentCliLoginProvider, ProviderLoginSpec>> = {
     deviceCode: false,
     pasteCode: true,
     opensBrowser: false,
+    cliFolderOnPath: true,
   },
   // Prints the device link and code, then waits on Enter before it opens a
   // browser and polls; Enter is pressed for it.
@@ -174,6 +190,10 @@ const SPECS: Readonly<Record<AgentCliLoginProvider, ProviderLoginSpec>> = {
     pasteCode: false,
     // Kimi 2.3.1 prints "Opening browser for Kimi device login: https://www.kimi.ai/code/authorize_device?user_code=…".
     opensBrowser: true,
+    // Kimi 2.3.1 `login` with a token in the slot only refreshes it when due
+    // (`ensureFresh`), writes config.toml, and prints "Logged in": the token
+    // file can be the same one as before.
+    keepsWorkingLogin: true,
   },
 };
 
@@ -206,6 +226,13 @@ function parseKimiRegion(value: unknown): KimiLoginRegion {
   if (value == null || value === "") return "global";
   if (value === "global" || value === "mainland-cn") return value;
   throw new Error(`Unknown Kimi region ${JSON.stringify(value)}; use "global" or "mainland-cn".`);
+}
+
+/** Puts `folder` first on PATH. Windows spells the key `Path`, so the existing key is kept. */
+function prependPathEntry(env: NodeJS.ProcessEnv, folder: string): void {
+  const key = Object.keys(env).find((name) => name.toUpperCase() === "PATH") ?? "PATH";
+  const current = env[key] ?? "";
+  env[key] = current ? `${folder}${path.delimiter}${current}` : folder;
 }
 
 export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
@@ -295,7 +322,8 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
     record.poll = null;
     record.status.state = "verifying";
     record.status.awaitingCode = false;
-    const label = SPECS[record.status.provider].label;
+    const spec = SPECS[record.status.provider];
+    const label = spec.label;
     try {
       const saved = await deps.readSavedLogin(record.status.provider, record.env);
       // A cancel, the timeout, or a new start may have ended it meanwhile.
@@ -304,7 +332,18 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
         succeed(record, saved.account);
         return;
       }
-      const keychain = SPECS[record.status.provider].keychainOnly;
+      if (spec.keepsWorkingLogin && exitCode === 0 && saved.signedIn) {
+        succeed(record, saved.account);
+        return;
+      }
+      if (exitCode === 0 && saved.inKeyring) {
+        finish(record, {
+          state: "failed",
+          message: `${label} saved this login in the system keyring. ADE reads only login files, so it cannot see or check this login.`,
+        });
+        return;
+      }
+      const keychain = spec.keychainOnly;
       if (keychain && (deps.platform ?? process.platform) === keychain.platform && exitCode === 0 && record.status.url && !keychain.failure.test(record.status.output)) {
         succeed(record);
         return;
@@ -324,10 +363,10 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
     const text = readLoginOutput(record, data, {
       hosts: spec.hosts,
       deviceCode: spec.deviceCode,
-      pasteCode: spec.pasteCode,
+      pasteCode: spec.pasteCode ? "while-waiting" : false,
       promptTailLines: PROMPT_TAIL_LINES,
     });
-    const tail = text.split("\n").slice(-PROMPT_TAIL_LINES).join("\n");
+    const tail = lastTextLines(text, PROMPT_TAIL_LINES);
     if (spec.keypress && !record.keypressSent && spec.keypress.when.test(tail)) {
       record.keypressSent = true;
       const pty = record.pty;
@@ -353,6 +392,7 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
     const spec = SPECS[provider];
     const args = [...cli.leadingArgs, ...spec.args({ kimiRegion: record.kimiRegion })];
     const env: NodeJS.ProcessEnv = { ...record.env, ...cli.env, TERM: "xterm-256color" };
+    if (spec.cliFolderOnPath) prependPathEntry(env, path.dirname(cli.command));
     let pty: AgentCliLoginPty;
     try {
       pty = deps.spawnPty(cli.command, args, env);

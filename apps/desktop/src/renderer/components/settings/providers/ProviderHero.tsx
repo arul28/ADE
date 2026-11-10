@@ -154,7 +154,7 @@ export function ProviderHero({
   modelLabel,
 }: {
   descriptor: ProviderDescriptor;
-  status: { state: ProviderStatusState; label: string };
+  status: { state: ProviderStatusState; label: string; account?: string | null };
   version: string | null;
   pin: OpenProjectBinding | null;
   modelLabel: (id: string) => string;
@@ -193,6 +193,7 @@ export function ProviderHero({
               <i style={{ background: providerStatusColor(status.state) }} />
               {status.label}
             </span>
+            {status.account ? <span className="ade-pv-hero-chip">{status.account}</span> : null}
             {version ? <span className="ade-pv-hero-chip">v{version}</span> : null}
             {descriptor.preview ? <span className="ade-pv-hero-chip">Preview</span> : null}
           </div>

@@ -3150,6 +3150,12 @@ export async function createAdeRuntime(args: {
       }
     }
     agentChatServiceHolder.current = agentChatService;
+    // A new CLI session that names no account starts where a new chat would.
+    const chatServiceForCliAccounts = agentChatService;
+    if (chatServiceForCliAccounts) {
+      ptyService.setNewCliSessionAccountPicker((provider, modelId) =>
+        chatServiceForCliAccounts.pickNewCliSessionAccount(provider, modelId));
+    }
     applyFastModePolicyRef = () => agentChatService?.applyFastModePolicy();
     teardown.push(() => agentChatService?.forceDisposeAll?.());
     if (resolvedArgs.chatRuntime === "agent" && agentChatService) {

@@ -11,6 +11,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type {
   AiConfig,
   AiApiKeyVerificationResult,
+  AiProviderSignInCheck,
   AiSettingsStatus,
   ProjectConfigSnapshot,
   CursorSdkAuthEvent,
@@ -32,6 +33,7 @@ import { providerBrand } from "./providers/providerBrand";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { DevinMark } from "../shared/ProviderLogos";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import { checkProviderSignIn } from "../../lib/providerSignInCheck";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
 import {
@@ -163,9 +165,14 @@ function ProviderCard({
   // missing sign-in is a plain status on the tile: the provider's own message
   // can be a terminal command ("Run: codex login"), which belongs on its page.
   const healthy = status.state === "connected";
+  // The chip already says "Not signed in" or "Unknown"; the fact line says
+  // the account or what is wrong, never the chip again.
   const problem = status.errorLine
-    ?? (healthy ? null : status.state === "sign-in" ? "Not signed in" : status.message);
+    ?? (healthy || status.state === "sign-in" || status.state === "unknown" ? null : status.message);
   const metaParts = [
+    // The signed-in account first: it is the half of "Signed in" the chip
+    // has no room for.
+    ...(healthy && status.account ? [status.account] : []),
     // Only when there is more than one: "1 account" is noise on every tile.
     ...(accountCount && accountCount > 1 ? [`${accountCount} accounts`] : []),
     ...(showModelCount ? [`${models.length} model${models.length === 1 ? "" : "s"}`] : []),
@@ -186,7 +193,8 @@ function ProviderCard({
     void window.ade?.ai?.pinnedToolDownload?.({ provider: descriptor.id }, pin).catch(() => undefined);
     onOpen();
   };
-  const action = status.state === "sign-in"
+  // "Unknown" offers the same sign-in: signing in again is the way to know.
+  const action = status.state === "sign-in" || status.state === "unknown"
     ? {
       label: "Sign in",
       aria: `Sign in to ${descriptor.label}`,
@@ -239,6 +247,7 @@ const PROVIDER_TAG_TONE: Record<ProviderDescriptorState, string | undefined> = {
   checking: undefined,
   connected: "ok",
   "sign-in": "warn",
+  unknown: undefined,
   attention: "crit",
   "not-installed": undefined,
   disabled: undefined,
@@ -272,9 +281,10 @@ const STATE_ORDER: Record<ProviderDescriptorState, number> = {
   connected: 0,
   attention: 1,
   "sign-in": 2,
-  checking: 3,
-  "not-installed": 4,
-  disabled: 5,
+  unknown: 3,
+  checking: 4,
+  "not-installed": 5,
+  disabled: 6,
 };
 const UNSET_STATES: ReadonlySet<ProviderDescriptorState> = new Set(["not-installed", "disabled"]);
 
@@ -347,7 +357,7 @@ function providerSummary(descriptors: ProviderDescriptor[], ctx: ProvidersViewCo
   if (ctx.status == null) return `${descriptors.length} coding agents — checking…`;
   const states = descriptors.map((descriptor) => providerStatusFor(descriptor, ctx).state);
   const ready = states.filter((state) => state === "connected").length;
-  const asking = states.filter((state) => state === "sign-in" || state === "attention").length;
+  const asking = states.filter((state) => state === "sign-in" || state === "unknown" || state === "attention").length;
   return [
     `${descriptors.length} coding agents`,
     [`${ready} ready`, asking > 0 ? `${asking} need${asking === 1 ? "s" : ""} you` : null].filter(Boolean).join(", "),
@@ -378,12 +388,10 @@ function buildLocalProviderDrafts(
 }
 
 export function ProvidersSection({
-  forceRefreshOnMount = false,
   providerParam = null,
   onProviderChange,
   harnessesParam = false,
 }: {
-  forceRefreshOnMount?: boolean;
   /** `?provider=<id>` — which provider's page to show, if any. */
   providerParam?: string | null;
   /** Lets the settings shell keep the URL in step with the sub-view. */
@@ -432,6 +440,8 @@ export function ProvidersSection({
   const [acpDoctorBusy, setAcpDoctorBusy] = useState<AcpSettingsProviderId | null>(null);
   const [acpDiagnosticsError, setAcpDiagnosticsError] = useState<Partial<Record<AcpSettingsProviderId, string>>>({});
   const [signInProvider, setSignInProvider] = useState<SettingsProviderId | null>(null);
+  const [signInChecks, setSignInChecks] = useState<Partial<Record<SettingsProviderId, AiProviderSignInCheck>>>({});
+  const [signInCheckBusy, setSignInCheckBusy] = useState<SettingsProviderId | null>(null);
   // Which provider's page is open. Seeded and re-seeded from `?provider=`, but
   // owned here so the section works standalone (and in tests) without a router
   // that writes search params.
@@ -468,42 +478,58 @@ export function ProvidersSection({
       if (!statusKnownRef.current) setStatusLoadError(null);
     }
     setError(null);
-    try {
-      const [nextStatus, nextStoredProviders, nextProjectConfig, nextCursorAuth] = await Promise.all([
-        window.ade.ai.getStatus({
-          force: options?.force === true,
-          refreshOpenCodeInventory: options?.refreshOpenCodeInventory === true,
-        }, pin),
-        window.ade.ai.listApiKeys(pin),
-        window.ade.projectConfig.get(pin),
-        window.ade.ai.cursorAuthStatus(pin).catch(() => null),
-      ]);
-      statusKnownRef.current = true;
-      setStatusLoadError(null);
-      setStatus(nextStatus as AiSettingsStatus);
-      setProjectConfigSnapshot(nextProjectConfig);
-      if (nextCursorAuth) {
-        setCursorAuth(nextCursorAuth);
-        if (nextCursorAuth.loginInProgress) {
+    const reportError = (err: unknown) => setError(err instanceof Error ? err.message : String(err));
+    // Four separate reads, each shown when it lands: the tiles wait only on
+    // the status, never on the config, the key list or Cursor's sign-in.
+    const statusRead = window.ade.ai.getStatus({
+      force: options?.force === true,
+      refreshOpenCodeInventory: options?.refreshOpenCodeInventory === true,
+    }, pin).then(
+      (next) => {
+        statusKnownRef.current = true;
+        setStatusLoadError(null);
+        setStatus(next as AiSettingsStatus);
+        return next as AiSettingsStatus;
+      },
+      (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!statusKnownRef.current) setStatusLoadError(message);
+        setError(message);
+        return null;
+      },
+    ).finally(() => {
+      if (!options?.silent) setLoading(false);
+    });
+    const configRead = window.ade.projectConfig.get(pin).then(
+      (next) => {
+        setProjectConfigSnapshot(next);
+        return next;
+      },
+      (err: unknown) => {
+        reportError(err);
+        return null;
+      },
+    );
+    const keysRead = window.ade.ai.listApiKeys(pin).then(
+      (next) => setStoredProviders(next.map((entry) => entry.trim().toLowerCase()).filter(Boolean)),
+      reportError,
+    );
+    const cursorRead = window.ade.ai.cursorAuthStatus(pin).then(
+      (next) => {
+        if (!next) return;
+        setCursorAuth(next);
+        if (next.loginInProgress) {
           setCursorLoginBusy(true);
-          if (nextCursorAuth.loginUrl) setCursorLoginUrl(nextCursorAuth.loginUrl);
+          if (next.loginUrl) setCursorLoginUrl(next.loginUrl);
         }
-      }
-      if (editingLocalProvider == null && savingLocalProvider == null) {
-        setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus as AiSettingsStatus));
-      }
-      setStoredProviders(nextStoredProviders.map((entry) => entry.trim().toLowerCase()).filter(Boolean));
-      return nextStatus as AiSettingsStatus;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (!statusKnownRef.current) setStatusLoadError(message);
-      setError(message);
-      return null;
-    } finally {
-      if (!options?.silent) {
-        setLoading(false);
-      }
+      },
+      () => undefined,
+    );
+    const [nextStatus, nextProjectConfig] = await Promise.all([statusRead, configRead, keysRead, cursorRead]);
+    if (nextStatus && nextProjectConfig && editingLocalProvider == null && savingLocalProvider == null) {
+      setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus));
     }
+    return nextStatus;
   }, [editingLocalProvider, pin, savingLocalProvider]);
 
   const loadAuthMethods = useCallback(async () => {
@@ -519,21 +545,13 @@ export function ProvidersSection({
   }, [pin]);
 
   useEffect(() => {
-    // Cold paint is disk auth only. OpenCode inventory is a spawn and shares
-    // the 30s runtime budget; OpenCode's Re-check still refreshes it.
-    void (async () => {
-      const next = await refreshStatus({ force: forceRefreshOnMount });
-      void loadAuthMethods();
-      // No cached OpenCode catalog (first run, or a cache from an older
-      // layout): without one probe the provider list is only the fallback
-      // names, and providers such as OpenCode Console cannot be found.
-      if (next?.opencodeBinaryInstalled && !next.opencodeProviders?.length) {
-        await refreshStatus({ force: true, refreshOpenCodeInventory: true, silent: true });
-        void loadAuthMethods();
-      }
-    })();
+    // Cold paint is the plain status read: saved logins off disk and the
+    // caches the main process already holds. It starts no CLI, agent or
+    // server, so the page draws without waiting on any of them.
+    void refreshStatus();
+    void loadAuthMethods();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [forceRefreshOnMount]);
+  }, []);
 
   useEffect(() => {
     if (slugsSeededRef.current) return;
@@ -558,7 +576,9 @@ export function ProvidersSection({
         if (event.state === "success" || event.state === "logged-out" || event.state === "cancelled") {
           setCursorLoginUrl(null);
         }
-        void refreshStatusRef.current({ force: true, refreshOpenCodeInventory: true, silent: true });
+        // Cursor's sign-in says nothing about OpenCode's providers, so this
+        // reads the saved logins again and leaves OpenCode's server alone.
+        void refreshStatusRef.current({ force: true, silent: true });
       }
       if (event.state === "error" && event.error) setError(event.error);
       if (event.state === "success") {
@@ -855,10 +875,21 @@ export function ProvidersSection({
       }
       setVerifyingProvider("cursor");
       invalidateAiDiscoveryCache();
+      // The key check is Cursor's sign-in check: it asks Cursor itself.
       const verification = await window.ade.ai.verifyApiKey("cursor", pin);
       invalidateAiDiscoveryCache();
-      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
+      await refreshStatus({ force: true });
       setVerificationByProvider((prev) => ({ ...prev, cursor: verification }));
+      setSignInChecks((prev) => ({
+        ...prev,
+        cursor: {
+          provider: "cursor",
+          state: verification.ok ? "signed-in" : "unknown",
+          reason: verification.ok ? null : verification.message || null,
+          account: result.email ?? null,
+          checkedAt: verification.verifiedAt,
+        },
+      }));
       if (verification.ok) {
         setNotice(result.email ? `Signed in as ${result.email}.` : "Cursor connection verified.");
         setCursorLoginUrl(null);
@@ -883,8 +914,13 @@ export function ProvidersSection({
         return;
       }
       invalidateAiDiscoveryCache();
-      await refreshStatus({ force: true, refreshOpenCodeInventory: true });
+      await refreshStatus({ force: true });
       setVerificationByProvider((prev) => {
+        const next = { ...prev };
+        delete next.cursor;
+        return next;
+      });
+      setSignInChecks((prev) => {
         const next = { ...prev };
         delete next.cursor;
         return next;
@@ -1089,6 +1125,32 @@ export function ProvidersSection({
     setSignInProvider(provider);
   }, []);
 
+  // Runs only on a click (Re-check) or right after a sign-in, never on a
+  // timer: the check can start the provider's CLI or agent.
+  const verifySignIn = useCallback(async (provider: SettingsProviderId): Promise<AiProviderSignInCheck> => {
+    setSignInCheckBusy(provider);
+    try {
+      const check = await checkProviderSignIn(provider, pin);
+      setSignInChecks((prev) => ({ ...prev, [provider]: check }));
+      await refreshStatus({ force: true, silent: true });
+      return check;
+    } finally {
+      setSignInCheckBusy((current) => (current === provider ? null : current));
+    }
+  }, [pin, refreshStatus]);
+
+  // No OpenCode catalog cached yet (first run, or a cache from an older
+  // layout): the provider list is only the fallback names until OpenCode's
+  // server is asked once. That starts a server, so only its page asks.
+  const openCodeColdProbeRef = useRef(false);
+  const openCodePageOpen = selectedProviderId === "opencode";
+  const openCodeCatalogCold = Boolean(status?.opencodeBinaryInstalled && !status.opencodeProviders?.length);
+  useEffect(() => {
+    if (!openCodePageOpen || !openCodeCatalogCold || openCodeColdProbeRef.current) return;
+    openCodeColdProbeRef.current = true;
+    void refreshStatus({ refreshOpenCodeInventory: true, silent: true }).then(() => loadAuthMethods());
+  }, [loadAuthMethods, openCodeCatalogCold, openCodePageOpen, refreshStatus]);
+
   const ctx = useMemo((): ProvidersViewContext => ({
     status,
     projectConfigSnapshot,
@@ -1123,6 +1185,8 @@ export function ProvidersSection({
     acpDiagnosticsBusy,
     acpDoctorBusy,
     acpDiagnosticsError,
+    signInChecks,
+    signInCheckBusy,
     actions: {
       refreshStatus,
       loadAuthMethods,
@@ -1146,6 +1210,7 @@ export function ProvidersSection({
       loadAcpDiagnostics,
       runAcpDoctor,
       openSignInTerminal,
+      verifySignIn,
     },
   }), [
     apiKeySources, authMethods, authMethodsError, beginEditingLocalRuntime, cancelCursorLogin,
@@ -1161,6 +1226,7 @@ export function ProvidersSection({
     verificationByProvider, verifyApiKey, verifyingProvider,
     disabledProviders, savingDisabledFor, setProviderDisabled, acpDiagnostics, acpDiagnosticsBusy,
     acpDoctorBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor, openSignInTerminal,
+    signInChecks, signInCheckBusy, verifySignIn,
   ]);
 
   const descriptors = useMemo(() => availableProviderDescriptors(), []);
@@ -1247,14 +1313,14 @@ export function ProvidersSection({
           }}
           onSignedIn={() => {
             setNotice(`Signed in to ${signIn.label}.`);
-            invalidateAiDiscoveryCache();
+            // The "login changed" path, then the provider's own check.
+            void verifySignIn(signInProvider);
           }}
           checkSignedIn={async () => {
-            const next = await refreshStatus({ force: true, silent: true });
-            // `authAvailable` is the disk credential the login just wrote —
-            // that is the moment worth closing on. `runtimeAvailable` also
-            // waits on the protocol probe, which is right for the tile and too
-            // slow for a dialog someone is watching.
+            // Polled while the dialog is open, so only the status read, which
+            // reads the saved login off disk. `authAvailable` is the credential
+            // the login just wrote: the moment worth closing on.
+            const next = await window.ade.ai.getStatus({ force: true }, pin).catch(() => null);
             const key = connectionKeyFor(signInProvider);
             return key !== null && next?.providerConnections?.[key]?.authAvailable === true;
           }}

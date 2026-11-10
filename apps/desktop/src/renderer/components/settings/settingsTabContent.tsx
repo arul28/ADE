@@ -158,7 +158,7 @@ function AgentsTabContent() {
   if (providerId) {
     return (
       <WebSettingsSection entryIds={[`agents.provider.${providerId}`]}>
-        <ProvidersSection forceRefreshOnMount providerParam={providerId} onProviderChange={handleProviderChange} />
+        <ProvidersSection providerParam={providerId} onProviderChange={handleProviderChange} />
       </WebSettingsSection>
     );
   }
@@ -167,7 +167,6 @@ function AgentsTabContent() {
     <ModernPage>
       <WebSettingsSection entryIds={["agents.providers"]}>
         <ProvidersSection
-          forceRefreshOnMount
           providerParam={null}
           onProviderChange={handleProviderChange}
           // `#ai-harnesses` deeplinks scroll to the Custom section of this page.

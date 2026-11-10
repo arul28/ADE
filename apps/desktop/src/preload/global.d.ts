@@ -509,6 +509,8 @@ import type {
   AgentCliLoginStatus,
   AgentCliLoginSubmitCodeArgs,
   AiApiKeyVerificationResult,
+  AiProviderSignInCheck,
+  AiVerifyProviderSignInArgs,
   AiConfig,
   AiSettingsStatus,
   OpenCodeOAuthStartResult,
@@ -1779,6 +1781,12 @@ declare global {
         deleteApiKey: (provider: string, pin?: OpenProjectBinding | null) => Promise<void>;
         listApiKeys: (pin?: OpenProjectBinding | null) => Promise<string[]>;
         verifyApiKey: (provider: string, pin?: OpenProjectBinding | null) => Promise<AiApiKeyVerificationResult>;
+        /**
+         * Runs one provider's own sign-in check (up to 20 s): right after a
+         * sign-in and on Re-check only. A remote ADE older than this action
+         * rejects it; callers read that as "unknown".
+         */
+        verifyProviderSignIn: (args: AiVerifyProviderSignInArgs, pin?: OpenProjectBinding | null) => Promise<AiProviderSignInCheck>;
         updateConfig: (config: Partial<AiConfig>, pin?: OpenProjectBinding | null) => Promise<void>;
         /**
          * Optional: shipped after this group did, so an older preload will not

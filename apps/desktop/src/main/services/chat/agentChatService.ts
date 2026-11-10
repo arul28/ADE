@@ -12678,6 +12678,30 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * The account a new session runs on when its caller names none: smart
+   * balance's pick for Claude and Codex (which also counts the session on that
+   * account), else the provider's default. New chats and new CLI sessions both
+   * start here, so a terminal session follows the same account rules as a chat.
+   */
+  const pickNewSessionAccount = (
+    provider: string,
+    modelId: string | null | undefined,
+    logEvent: "chat.account_balance_pick" | "cli.account_balance_pick",
+  ): string | undefined => {
+    if (provider === "claude" || provider === "codex") {
+      const accountUsage = getAccountUsage();
+      if (accountUsage) {
+        const balanced = accountUsage.resolveBalancedInstance(provider, modelId);
+        if (balanced) logger.info(logEvent, { provider, ...balanced });
+        if (balanced?.instanceId) return balanced.instanceId;
+      } else {
+        logger.error("chat.account_balance_unavailable", { provider });
+      }
+    }
+    return currentDefaultInstanceId(provider);
+  };
+
+  /**
    * The account whose config home holds this chat's provider thread: `null`
    * when no account holds it (or the chat has no thread yet), `undefined` when
    * the accounts could not be read, which is not an answer to pin on.
@@ -51246,25 +51270,12 @@ export function createAgentChatService(args: {
       return existing.session;
     }
 
-    let balancedInstance: AccountBalanceResult | null = null;
-    if (!requestedInstanceId?.trim() && (effectiveProvider === "claude" || effectiveProvider === "codex")) {
-      const accountUsage = getAccountUsage();
-      if (accountUsage) {
-        balancedInstance = accountUsage.resolveBalancedInstance(
-          effectiveProvider === "claude" ? "claude" : "codex",
-          normalizedModel,
-        );
-      } else {
-        logger.error("chat.account_balance_unavailable", { provider: effectiveProvider });
-      }
-    }
-    if (balancedInstance) logger.info("chat.account_balance_pick", { provider: effectiveProvider, ...balancedInstance });
     // Every Claude and Codex chat records its account. A chat without one
     // follows the default, and a later default switch would relaunch it on a
     // config home that does not hold its thread.
-    const selectedInstanceId = balancedInstance?.instanceId
-      || requestedAccountId(effectiveProvider, requestedInstanceId)
-      || currentDefaultInstanceId(effectiveProvider);
+    const selectedInstanceId = requestedInstanceId?.trim()
+      ? requestedAccountId(effectiveProvider, requestedInstanceId) || currentDefaultInstanceId(effectiveProvider)
+      : pickNewSessionAccount(effectiveProvider, normalizedModel, "chat.account_balance_pick");
 
     /* A Custom provider's thinking level is part of the preset, and the preset
        is what the user picked — so a chat created on one adopts that level
@@ -78527,6 +78538,9 @@ export function createAgentChatService(args: {
     dismissPendingInput,
     importExternalChatSession,
     launchHeadless,
+    /** The account a new CLI session starts on when none is named; see `pickNewSessionAccount`. */
+    pickNewCliSessionAccount: (provider: string, modelId?: string | null) =>
+      pickNewSessionAccount(provider, modelId, "cli.account_balance_pick"),
     suggestLaneNameFromPrompt,
     generateAutoLaneIdentity,
     handoffSession,

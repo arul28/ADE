@@ -1,8 +1,11 @@
-import type { AiProviderConnectionStatus, AiProviderConnections } from "../../../shared/types";
+import fs from "node:fs";
+import path from "node:path";
+import type { AiProviderConnectionStatus, AiProviderConnections, AiProviderSignInState } from "../../../shared/types";
 import type { CliAuthStatus } from "./authDetector";
 import type { CopilotSdkRuntimeResolution } from "./acpExecutables";
 import {
   isCodexTokenStale,
+  probeClaudeKeychainLogin,
   readClaudeCredentials,
   readCodexCredentials,
 } from "./providerCredentialSources";
@@ -27,7 +30,7 @@ import {
   ACP_PROVIDER_METADATA,
   type AcpProviderId,
 } from "../../../shared/acpProviderMetadata";
-import { COPILOT_TOKEN_ENV_KEYS } from "../shared/providerConfigHomes";
+import { claudeConfigHome, codexConfigHome, COPILOT_TOKEN_ENV_KEYS } from "../shared/providerConfigHomes";
 import { pinnedToolForProvider, pinnedToolState } from "./pinnedProviderTools";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
@@ -135,6 +138,7 @@ function buildCopilotConnection(
     blocker: !runtimeDetected
       ? copilotRuntimeMissingBlocker(cli, authAvailable)
       : !authAvailable ? copilotSignedOutBlocker(probe?.auth ?? null, env) : null,
+    signInState: authAvailable ? "signed-in" : "signed-out",
   };
 }
 
@@ -163,25 +167,127 @@ function createUnavailableStatus(
   };
 }
 
+/** Environment settings Claude Code signs in with, without a saved login. */
+const CLAUDE_AUTH_ENV_KEYS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+] as const;
+
+/**
+ * Codex keeps every kind of login (a ChatGPT sign-in or an API key) in
+ * `auth.json`. `readCodexCredentials` parses only the ChatGPT kind, so a
+ * non-empty file is the sign-in evidence for the rest. Size only; the file
+ * is not read.
+ */
+async function codexAuthFilePresent(env: NodeJS.ProcessEnv): Promise<boolean> {
+  try {
+    const stat = await fs.promises.stat(path.join(codexConfigHome({ env }), "auth.json"));
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** A settings file is a few kilobytes; anything far larger is not one to parse. */
+const CLAUDE_SETTINGS_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The Claude Code settings files that can set `apiKeyHelper`: the managed
+ * file, the user's, and the project's shared and local ones. Chats load
+ * user, project and local, and the managed file applies to every run.
+ */
+function claudeSettingsFiles(env: NodeJS.ProcessEnv, projectRoot: string | null | undefined): string[] {
+  const managed = process.platform === "darwin"
+    ? ["/Library/Application Support/ClaudeCode/managed-settings.json"]
+    : process.platform === "win32"
+      ? [
+          path.join(env.ProgramFiles?.trim() || "C:\\Program Files", "ClaudeCode", "managed-settings.json"),
+          path.join(env.ProgramData?.trim() || "C:\\ProgramData", "ClaudeCode", "managed-settings.json"),
+        ]
+      : ["/etc/claude-code/managed-settings.json"];
+  const root = projectRoot?.trim();
+  return [
+    ...managed,
+    path.join(claudeConfigHome({ env }), "settings.json"),
+    ...(root ? [path.join(root, ".claude", "settings.json"), path.join(root, ".claude", "settings.local.json")] : []),
+  ];
+}
+
+/**
+ * Whether a Claude Code settings file names an `apiKeyHelper`. Claude then
+ * gets its key from that command, so no saved login is needed, but whether
+ * the key works is known only when the command runs. This reads the files;
+ * it never runs the command. Only the key's presence is kept.
+ */
+async function claudeApiKeyHelperConfigured(
+  env: NodeJS.ProcessEnv,
+  projectRoot: string | null | undefined,
+): Promise<boolean> {
+  for (const file of claudeSettingsFiles(env, projectRoot)) {
+    try {
+      const stat = await fs.promises.stat(file);
+      if (!stat.isFile() || stat.size === 0 || stat.size > CLAUDE_SETTINGS_MAX_BYTES) continue;
+      const parsed: unknown = JSON.parse(await fs.promises.readFile(file, "utf8"));
+      const helper = parsed && typeof parsed === "object" ? (parsed as { apiKeyHelper?: unknown }).apiKeyHelper : undefined;
+      if (typeof helper === "string" && helper.trim()) return true;
+    } catch {
+      // Missing, unreadable or not JSON: this file names no helper.
+    }
+  }
+  return false;
+}
+
+/** The sign-in word a tile shows, from what this read saw. Runtime health is applied after. */
+function signInStateFromFlags(flags: { authAvailable: boolean; cliExplicitlyUnauthenticated: boolean }, unknown = false): AiProviderSignInState {
+  if (flags.cliExplicitlyUnauthenticated) return "signed-out";
+  if (flags.authAvailable) return "signed-in";
+  return unknown ? "unknown" : "signed-out";
+}
+
 export async function buildProviderConnections(
   cliStatuses: CliAuthStatus[],
   options?: {
     piInstallation?: PiInstallation | null;
     piInventory?: PiProfileInventory | null;
     copilot?: CopilotSdkAuthProbe | null;
+    /**
+     * Providers with a signed-in ADE account (any config home), from the
+     * provider account store. A login there counts as a sign-in.
+     */
+    signedInAccountProviders?: ReadonlySet<string> | null;
+    /** The open project, whose `.claude` settings can name an `apiKeyHelper`. */
+    projectRoot?: string | null;
   },
 ): Promise<AiProviderConnections> {
   const checkedAt = nowIso();
   const claudeCli = cliStatuses.find((entry) => entry.cli === "claude") ?? null;
   const codexCli = cliStatuses.find((entry) => entry.cli === "codex") ?? null;
-  const [claudeLocalCreds, codexLocalCreds, accountIdentities] = await Promise.all([
+  const [claudeLocalCreds, codexLocalCreds, accountIdentities, codexAuthFile, claudeApiKeyHelper] = await Promise.all([
     readClaudeCredentials(),
     readCodexCredentials(),
     // The same reader the usage poller uses, so Settings > Providers and the
     // Limits cards can never name two different accounts for one provider. It
     // is total by construction, so there is no catch here.
     resolveProviderAccounts(),
+    codexAuthFilePresent(process.env),
+    claudeApiKeyHelperConfigured(process.env, options?.projectRoot),
   ]);
+  const signedInAccounts = options?.signedInAccountProviders ?? null;
+  // A login item the secret read could not parse, or could not read now
+  // (a locked keychain): its attributes still say whether one is there.
+  const claudeKeychain = !claudeLocalCreds && process.platform === "darwin"
+    ? await probeClaudeKeychainLogin()
+    : null;
+  const claudeEnvAuth = CLAUDE_AUTH_ENV_KEYS.some((key) => Boolean(process.env[key]?.trim()));
+  const claudeSavedLogin = Boolean(claudeLocalCreds) || claudeKeychain === "present" || claudeEnvAuth || signedInAccounts?.has("claude") === true;
+  // A helper alone keeps Claude usable, but the read cannot say whether its
+  // key works, so the tile reads "Unknown" until a chat or a Re-check runs it.
+  const claudeHelperOnly = claudeApiKeyHelper && !claudeSavedLogin;
+  const claudeDiskEvidence = claudeSavedLogin || claudeApiKeyHelper;
+  const codexDiskEvidence = codexAuthFile || signedInAccounts?.has("codex") === true;
   const claudeRuntimeHealth = getProviderRuntimeHealth("claude");
   const codexRuntimeHealth = getProviderRuntimeHealth("codex");
   const cursorRuntimeHealth = getProviderRuntimeHealth("cursor");
@@ -191,14 +297,17 @@ export async function buildProviderConnections(
     provider: "claude" | "codex",
     cli: CliAuthStatus | null,
     localCreds: Awaited<ReturnType<typeof readClaudeCredentials>> | Awaited<ReturnType<typeof readCodexCredentials>>,
+    otherEvidence: boolean,
   ) => {
     // `installed` is ADE's own pinned copy, the only one chats run on.
     // Asked first on every poll, so it also sees the disagreement end.
     const runtimeDetected = pinnedRuntimeReadyDespiteSnapshot(provider, cli) || Boolean(cli?.installed);
-    const cliAuthenticated = Boolean(cli?.installed && cli.authenticated);
+    // Only a CLI that answered counts. A status read does not ask it, and
+    // then reports "installed, not checked", which says nothing about a login.
+    const cliAuthenticated = Boolean(cli?.installed && cli.authenticated && cli.verified);
     const cliExplicitlyUnauthenticated = Boolean(cli?.installed && cli.verified && !cli.authenticated);
     const localCredsDetected = Boolean(localCreds);
-    const authAvailable = Boolean(localCreds || cliAuthenticated);
+    const authAvailable = Boolean(localCreds || cliAuthenticated || otherEvidence);
     // Local credential artifacts are only a fallback signal. If the CLI itself
     // has already verified that the user is signed out, do not promote the
     // provider to runtime-ready until the user logs in again.
@@ -206,8 +315,8 @@ export async function buildProviderConnections(
     return { runtimeDetected, cliAuthenticated, cliExplicitlyUnauthenticated, localCredsDetected, authAvailable, runtimeAvailable };
   };
 
-  const claudeFlags = deriveProviderFlags("claude", claudeCli, claudeLocalCreds);
-  const codexFlags = deriveProviderFlags("codex", codexCli, codexLocalCreds);
+  const claudeFlags = deriveProviderFlags("claude", claudeCli, claudeLocalCreds, claudeDiskEvidence);
+  const codexFlags = deriveProviderFlags("codex", codexCli, codexLocalCreds, codexDiskEvidence);
   const codexUsageAvailable = Boolean(codexLocalCreds && !isCodexTokenStale(codexLocalCreds));
 
   function resolveBlocker(
@@ -242,6 +351,9 @@ export async function buildProviderConnections(
     health: ReturnType<typeof getProviderRuntimeHealth> | null,
   ): void {
     if (!health) return;
+    // What a chat or a sign-in check proved outranks what the disk says.
+    if (health.state === "auth-failed") status.signInState = "signed-out";
+    if (health.state === "ready") status.signInState = "signed-in";
     if (health.state === "auth-failed" || health.state === "runtime-failed") {
       status.runtimeAvailable = false;
       if (status.provider !== "cursor") {
@@ -294,6 +406,12 @@ export async function buildProviderConnections(
     status.blocker = args.provider === "claude" || args.provider === "codex"
       ? resolveBlocker(args.provider, args.label, args.loginHint, args.flags, args.cli, args.extraBlocker)
       : args.extraBlocker ?? null;
+    // A Claude login item the keychain would not show right now is neither,
+    // and so is a key that only an `apiKeyHelper` command can produce.
+    status.signInState = args.provider === "claude" && claudeHelperOnly
+      && !args.flags.cliAuthenticated && !args.flags.cliExplicitlyUnauthenticated
+      ? "unknown"
+      : signInStateFromFlags(args.flags, args.provider === "claude" && claudeKeychain === "unreadable");
     // Plain read: `resolveProviderAccounts` already carries the last-known
     // account across a config that exists but could not be read, and already
     // clears it on a real sign-out, so Settings > Providers and the Limits
@@ -430,6 +548,7 @@ export async function buildProviderConnections(
       : [],
     blocker: cursorBlocker,
   };
+  cursor.signInState = cursorFlags.authAvailable ? "signed-in" : "signed-out";
   // Runtime health can only promote the connection, so it must not run once the
   // platform gate has decided Cursor is unavailable.
   if (cursorSupported) applyRuntimeHealth(cursor, cursorRuntimeHealth);
@@ -481,6 +600,7 @@ export async function buildProviderConnections(
       },
     ],
     blocker: droidBlocker,
+    signInState: signInStateFromFlags(droidFlags),
   };
 
   const piInstallation = options?.piInstallation ?? null;
@@ -530,6 +650,7 @@ export async function buildProviderConnections(
           },
         ],
         blocker: piBlocker,
+        signInState: piAuthAvailable ? "signed-in" : "signed-out",
       }
     : undefined;
   if (pi) applyRuntimeHealth(pi, piRuntimeHealth);
@@ -575,6 +696,9 @@ export async function buildProviderConnections(
             ? `No ${metadata.statusLabel} login was detected. Run: ${metadata.loginHint}`
             : `No ${metadata.statusLabel} login was detected: ${metadata.loginHint}.`
           : null,
+      signInState: cli?.installed && cli.verified && !cli.authenticated
+        ? "signed-out"
+        : authAvailable ? "signed-in" : "signed-out",
     };
     applyRuntimeHealth(status, health);
     acpConnections[provider] = status;
@@ -652,5 +776,7 @@ function buildMuseConnection(checkedAt: string): AiProviderConnectionStatus {
       },
     ],
     blocker,
+    // On a Mac with no file the login may be in the Keychain: not known.
+    signInState: authAvailable ? "signed-in" : keychainMayHoldLogin ? "unknown" : "signed-out",
   };
 }

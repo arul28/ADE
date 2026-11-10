@@ -67,6 +67,7 @@ import type {
   AgentCliLoginSubmitCodeArgs,
 } from "../../../shared/types/agentCliLogin";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
+import { noteProviderLoginChanged } from "../ai/providerLoginChanged";
 import { buildHarnessLaunchEnv, listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
 import { testHarnessRoute } from "../chat/harnessRouteTest";
 import { resolveHarnessPresetForLaunch } from "../chat/harnessPresetLaunch";
@@ -957,6 +958,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
           runtime.ptyService,
           "Terminal service not available.",
         ),
+        pickAccount: (provider, modelId) => agentChatService.pickNewCliSessionAccount(provider, modelId),
       }),
     // Object form `{ laneId?, ...options }`, or the desktop's positional
     // `argsList [laneId?, options?]`.
@@ -2669,19 +2671,9 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         providerId,
         ...(args?.method ? { method: args.method } : {}),
       });
-      // Signing in unlocks models, so the readiness cache is stale until it is
-      // dropped. The IPC handler does the same; this keeps the action path
-      // (remote runtime, `ade actions run`) consistent with it.
-      if (result.ok) {
-        try {
-          aiIntegrationService.invalidateProviderReadinessCaches();
-        } catch (error) {
-          runtime.logger.warn("ai.pi_auth_cache_invalidation_failed", {
-            provider: providerId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
+      // The one "login changed" path, here as on the IPC handler, so a
+      // remote runtime or `ade actions run` sign-in reads fresh too.
+      if (result.ok) noteProviderLoginChanged("pi");
       return result;
     },
     piLoginSubmit: (args?: { providerId?: string; requestId?: string; value?: string }) =>
@@ -2697,6 +2689,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     cursorAuthLogin: async () => {
       const result = await loginCursorSdk();
       if (result.ok) {
+        noteProviderLoginChanged("cursor");
         try {
           aiIntegrationService.invalidateProviderReadinessCaches();
         } catch (error) {
@@ -2709,6 +2702,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     cursorAuthLogout: async () => {
       const result = await logoutCursorSdk();
+      if (result.ok) noteProviderLoginChanged("cursor");
       try {
         aiIntegrationService.invalidateProviderReadinessCaches();
       } catch (error) {
@@ -2836,20 +2830,9 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     cliLoginStatus: async (args?: AgentCliLoginRefArgs) => {
       const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
-      const status = getMachineAgentCliLoginRunner().status(requireNonEmptyString(args?.loginId, "loginId"));
-      // Signing in unlocks models, so the readiness cache is stale until it
-      // is dropped; the IPC handler does the same.
-      if (status.state === "succeeded") {
-        try {
-          aiIntegrationService.invalidateProviderReadinessCaches();
-        } catch (error) {
-          runtime.logger.warn("ai.cli_login_cache_invalidation_failed", {
-            provider: status.provider,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-      return status;
+      // A sign-in that succeeded already dropped that provider's cached
+      // answers (the runner's `onSignedIn`); other providers keep theirs.
+      return getMachineAgentCliLoginRunner().status(requireNonEmptyString(args?.loginId, "loginId"));
     },
     cliLoginSubmitCode: async (args?: AgentCliLoginSubmitCodeArgs) => {
       const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
@@ -2883,6 +2866,10 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     verifyApiKeyConnection: (args?: { provider?: string }) =>
       aiIntegrationService.verifyApiKeyConnection(requireNonEmptyString(args?.provider, "provider")),
+    // The one-provider sign-in check: it runs that provider's own check (its
+    // CLI, agent or SDK) on this machine, within 20 s.
+    verifyProviderSignIn: (args?: { provider?: string }) =>
+      aiIntegrationService.verifyProviderSignIn(requireNonEmptyString(args?.provider, "provider")),
     storeApiKey: (args?: { provider?: string; key?: string }) =>
       aiIntegrationService.storeApiKey(
         requireNonEmptyString(args?.provider, "provider"),
@@ -3963,20 +3950,10 @@ export function buildProviderInstancesDomainService(
       };
     },
     loginStatus(args: unknown) {
+      // A sign-in that succeeded already dropped that provider's cached
+      // answers, the signed-out mark a failed turn left included (the
+      // runner's `verify`), so the next send is not refused.
       const login = getMachineProviderLoginRunner().status(String((isRecord(args) ? args.loginId : "") ?? ""));
-      // Signing in unlocks models, and a turn that failed on the sign-in left
-      // the provider marked signed out: drop both, or the next send (a chat's
-      // automatic resend) is refused. The IPC handler does the same.
-      if (login.state === "succeeded") {
-        try {
-          runtime.aiIntegrationService?.invalidateProviderReadinessCaches();
-        } catch (error) {
-          runtime.logger?.warn("provider_instances.login_cache_invalidation_failed", {
-            provider: login.provider,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
       return { login };
     },
     loginSubmitCode(args: unknown) {

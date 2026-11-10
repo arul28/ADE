@@ -7471,7 +7471,12 @@ async function runTool(args: {
       ? await resolveCodexComputerUseMcpConfig()
       : null;
 
-    const launchInstance = resolveProviderInstanceForLaunch(provider, instanceId);
+    // A named account wins; otherwise a new CLI session starts where a new
+    // chat would. A preset or a stored key brings its own sign-in.
+    const pickedInstanceId = !instanceId && !presetId && !credentialId && provider !== "shell"
+      ? runtime.agentChatService?.pickNewCliSessionAccount(provider, model ?? null) ?? null
+      : null;
+    const launchInstance = resolveProviderInstanceForLaunch(provider, instanceId || pickedInstanceId);
     await prepareHarnessLaunch({ provider, presetId, credentialId });
     const trackedPreset = resolveTrackedCliPreset(provider, { presetId, credentialId });
     const userMcp = await resolveTrackedCliUserMcp({
