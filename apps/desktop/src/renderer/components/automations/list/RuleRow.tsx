@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Brain, ClockCounterClockwise, Play, Trash, Warning } from "@phosphor-icons/react";
+import { Brain, ClockCounterClockwise, CloudArrowDown, Play, Trash, Warning } from "@phosphor-icons/react";
 import type { AutomationIngressDelivery, AutomationRule, AutomationRuleSummary, AutomationTriggerDeliveryStatus } from "../../../../shared/types";
 import { triggerDeliveryKeyForType } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
@@ -11,6 +11,7 @@ import { sourceAccent, sourceDef, sourceForTriggerType } from "../triggerCatalog
 import { RuleSentence } from "./RuleSentence";
 import { MachineChip } from "../../shared/MachineChip";
 import type { MachineChipModel } from "../../../state/laneMachineRouting";
+import { ruleSyncLine } from "../ruleSync";
 
 /** Rules written before `origin` existed read as the user's own. */
 export function ruleOrigin(rule: Pick<AutomationRule, "origin">): AutomationRule["origin"] {
@@ -105,6 +106,7 @@ export function RuleRow({
   onDelete,
   machineChip = null,
   offlineMessage = null,
+  elsewhereReason = null,
 }: {
   rule: AutomationRuleSummary;
   delivery: AutomationIngressDelivery | null;
@@ -113,6 +115,8 @@ export function RuleRow({
   machineChip?: MachineChipModel | null;
   /** Set while the rule's machine is unreachable: the row dims and its actions stop. */
   offlineMessage?: string | null;
+  /** Set when Run now and History live on a computer this window can't reach; editing still works. */
+  elsewhereReason?: string | null;
   onSelect: () => void;
   onToggle: (enabled: boolean) => void;
   onRunNow: () => void;
@@ -133,6 +137,12 @@ export function RuleRow({
   const scopeTitle = rule.scope ? rule.scope.sessionTitle?.trim() || "Untitled chat" : null;
   const retirement = oneShotNote(rule);
   const schedule = scheduleHint(rule);
+  const sync = ruleSyncLine(rule);
+  const SyncIcon = sync?.icon ?? null;
+  // Shown on the row only when it says where the rule runs or that it is not
+  // syncing; the ordinary local cases stay off the row.
+  const showSyncOnRow = Boolean(sync && (rule.source === "account" || sync.tone === "notice"));
+  const runBlocked = offlineMessage ?? elsewhereReason;
 
   return (
     <div
@@ -169,6 +179,21 @@ export function RuleRow({
             <Warning size={12} weight="fill" />
           </span>
         ) : null}
+        {rule.needsNewerAde ? (
+          <SmartTooltip
+            content={{ label: "Made with a newer ADE", description: "This ADE can't read all of it, so it's view-only here. Update ADE to edit or run it." }}
+            wrapperClassName="shrink-0"
+          >
+            <span
+              data-testid="rule-needs-newer-ade"
+              tabIndex={0}
+              aria-label="Made with a newer ADE"
+              className="shrink-0 text-amber-300"
+            >
+              <CloudArrowDown size={12} weight="bold" aria-hidden />
+            </span>
+          </SmartTooltip>
+        ) : null}
         {/* Same neutral pill + Brain glyph the Work tab uses for a CTO chat,
             so the CTO reads as one thing across the app. */}
         {isCto ? (
@@ -189,7 +214,7 @@ export function RuleRow({
             id={machineChip ? `rule-toggle-${machineChip.machineId}-${rule.id}` : `rule-toggle-${rule.id}`}
             checked={rule.enabled}
             onChange={onToggle}
-            disabled={Boolean(offlineMessage)}
+            disabled={Boolean(offlineMessage) || rule.needsNewerAde === true}
           />
         </div>
       </div>
@@ -222,6 +247,26 @@ export function RuleRow({
       <div className="mt-1.5 flex min-w-0 items-center gap-x-2 gap-y-1 text-[10.5px] text-muted-fg/55">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
           {machineChip ? <MachineChip machine={machineChip} subject="This rule" className="max-w-full" /> : null}
+          {showSyncOnRow && sync && SyncIcon ? (
+            <SmartTooltip content={{ label: sync.label, description: sync.detail }} wrapperClassName="min-w-0">
+              <span
+                data-testid="rule-sync"
+                data-sync-tone={sync.tone}
+                tabIndex={0}
+                aria-label={sync.label}
+                className={cn(
+                  "inline-flex min-w-0 items-center gap-1",
+                  sync.tone === "notice" ? "text-amber-300/80" : "text-muted-fg/55",
+                )}
+              >
+                <SyncIcon size={11} weight={sync.tone === "notice" ? "bold" : "regular"} className="shrink-0" aria-hidden />
+                {/* The name only when it runs elsewhere and no machine chip says so. */}
+                {!machineChip && rule.source === "account" && rule.home && rule.runsHere === false ? (
+                  <span className="max-w-24 truncate whitespace-nowrap">{rule.home.name}</span>
+                ) : null}
+              </span>
+            </SmartTooltip>
+          ) : null}
           <span className="inline-flex min-w-0 items-center gap-1" title={schedule.title}>
             <span className="shrink-0" style={{ color: sourceAccent(primarySource), opacity: 0.7 }}>
               <SourceIcon size={11} weight="fill" />
@@ -242,9 +287,9 @@ export function RuleRow({
           <button
             type="button"
             onClick={onOpenHistory}
-            title={offlineMessage ?? "History"}
+            title={runBlocked ?? "History"}
             aria-label="History"
-            disabled={Boolean(offlineMessage)}
+            disabled={Boolean(runBlocked)}
             className="rounded p-1 text-muted-fg/60 hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
           >
             <ClockCounterClockwise size={13} weight="regular" />
@@ -252,9 +297,9 @@ export function RuleRow({
           <button
             type="button"
             onClick={onRunNow}
-            title={offlineMessage ?? "Run now"}
+            title={runBlocked ?? "Run now"}
             aria-label="Run now"
-            disabled={Boolean(offlineMessage)}
+            disabled={Boolean(runBlocked)}
             className="rounded p-1 text-muted-fg/60 hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Play size={13} weight="regular" />

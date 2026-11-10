@@ -1499,6 +1499,8 @@ export async function createAdeRuntime(args: {
     let applyFastModePolicyRef: (() => void) | null = null;
     /** Re-reads automation rules after another computer changed them; set once automations exist. */
     let onAccountAutomationRulesChangedRef: (() => void) | null = null;
+    /** Account rows changed (another computer wrote): claim, confirm and re-read rules. */
+    let onAccountAutomationRuleRowsChangedRef: (() => void) | null = null;
     const syncDeviceIdPath = path.join(
       syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
       "sync-device-id",
@@ -1540,7 +1542,7 @@ export async function createAdeRuntime(args: {
       onAccountSettingsChanged: () => {
         pushEvent("runtime", { type: "account_settings_changed" });
         applyFastModePolicyRef?.();
-        onAccountAutomationRulesChangedRef?.();
+        onAccountAutomationRuleRowsChangedRef?.();
       },
       getContexts: () => [{
         project: { rootPath: projectRoot },
@@ -1601,13 +1603,53 @@ export async function createAdeRuntime(args: {
       newLaneSettings,
     });
 
-    // Automation rules follow the account too: one row per rule under the
+    // Automation rules follow the account too: rows per rule under the
     // repository, each run only by its home computer. Rules already in
     // `.ade/local.yaml` move once the store has synced (so another computer's
-    // copy of the same rule is known) and again after a sign-in.
+    // copy of the same rule is known) and again after a sign-in. After every
+    // sync, rules re-homed here are claimed for this checkout and writes
+    // another computer could have raced are confirmed.
     if (accountSettingsStore) {
       const accountStoreForRules = accountSettingsStore;
-      projectConfigService.setAutomationRuleStore(createAutomationRuleAccountStore({
+      let ruleSyncTimer: ReturnType<typeof setTimeout> | null = null;
+      let ruleSyncRunning = false;
+      let ruleSyncAgain = false;
+      const syncAutomationRules = async (): Promise<void> => {
+        if (ruleSyncRunning) {
+          ruleSyncAgain = true;
+          return;
+        }
+        ruleSyncRunning = true;
+        try {
+          do {
+            ruleSyncAgain = false;
+            const confirmed = await ruleStore.syncedEverything();
+            const moved = projectConfigService.migrateAutomationRulesToAccount();
+            const settled = projectConfigService.reconcileAutomationRules({ confirmed: confirmed && moved.moved === 0 });
+            if (moved.moved > 0 || settled.claimed > 0 || settled.readded.length > 0) ruleSyncAgain = true;
+            onAccountAutomationRulesChangedRef?.();
+          } while (ruleSyncAgain);
+        } catch (error) {
+          logger.warn("automations.account_rules_sync_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          ruleSyncRunning = false;
+        }
+      };
+      const scheduleAutomationRuleSync = (delayMs = 1_500) => {
+        if (ruleSyncTimer) return;
+        ruleSyncTimer = setTimeout(() => {
+          ruleSyncTimer = null;
+          void syncAutomationRules();
+        }, delayMs);
+        ruleSyncTimer.unref?.();
+      };
+      teardown.push(() => {
+        if (ruleSyncTimer) clearTimeout(ruleSyncTimer);
+        ruleSyncTimer = null;
+      });
+      const ruleStore = createAutomationRuleAccountStore({
         backend: accountStoreForRules,
         readOriginUrl: createCachedProjectOriginReader(projectRoot),
         thisComputer: () => {
@@ -1619,23 +1661,17 @@ export async function createAdeRuntime(args: {
           }
           return { deviceId: readSyncDeviceId(), name: name ?? os.hostname().replace(/\.local$/i, "") };
         },
-        isSignedIn: () => Boolean(accountAuthService.getStatus().userId),
-        signedOutCopyPath: path.join(paths.adeDir, "automation-rules.account-copy.json"),
+        projectRoot,
+        accountUserId: () => accountAuthService.getStatus().userId ?? null,
+        statePath: path.join(paths.adeDir, "automation-rules.state.json"),
+        // A write another computer may race is confirmed after the next sync.
+        onWrite: () => scheduleAutomationRuleSync(),
         logger,
-      }));
-      const moveAutomationRulesToAccount = () => {
-        void accountStoreForRules.sync()
-          .catch(() => null)
-          .then(() => {
-            const result = projectConfigService.migrateAutomationRulesToAccount();
-            if (result.moved > 0) {
-              void accountStoreForRules.sync().catch(() => null);
-              onAccountAutomationRulesChangedRef?.();
-            }
-          });
-      };
-      moveAutomationRulesToAccount();
-      teardown.push(accountAuthService.onSignedIn(moveAutomationRulesToAccount));
+      });
+      projectConfigService.setAutomationRuleStore(ruleStore);
+      onAccountAutomationRuleRowsChangedRef = () => scheduleAutomationRuleSync(250);
+      void syncAutomationRules();
+      teardown.push(accountAuthService.onSignedIn(() => void syncAutomationRules()));
     }
     laneService.setNewLaneSettingsStore(newLaneSettings, {
       validateTemplateId: (templateId) => {
@@ -3251,6 +3287,16 @@ export async function createAdeRuntime(args: {
         agentChatService: agentChatService ?? undefined,
         prService: headlessLinearServices.prService,
         onEvent: (event) => pushEvent("runtime", { ...event, source: "automations" }),
+        // Read when a rule is listed, after both secret services exist.
+        secretAvailable: (ref) => {
+          try {
+            if (ref.projectSecret) return Boolean(projectSecretService.get({ name: ref.projectSecret }).value);
+            if (ref.secretRef) return Boolean(automationSecretService.getSecret(ref.secretRef));
+          } catch {
+            return false;
+          }
+          return true;
+        },
       })
       : null;
     automationServiceRef = automationService;

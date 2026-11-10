@@ -861,8 +861,9 @@ Renderer — settings:
   key. The `repo_scope_alias` account migration copies a project's secrets and
   settings from the alias key an older ADE used, once per project; a row
   already under the new key wins, and the old rows stay. Automation rules use
-  the same store under the repository key, one row per rule
-  (`automations.rule.<id>`), each run only by its home computer; see
+  the same store under the repository key, a rule row and a home row per
+  rule (`automations.rule.<id>`, `automations.home.<id>`), each run only by its
+  home computer; see
   [Rules follow the account](../automations/README.md#rules-follow-the-account).
   See [Sync and multi-device](../sync-and-multi-device/README.md).
 - `apps/desktop/src/renderer/scene/` and `renderer/styles/scene.css` — the

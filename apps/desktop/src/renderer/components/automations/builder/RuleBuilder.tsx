@@ -133,6 +133,7 @@ export function RuleBuilder({
   saveBlockedReason = null,
   saving,
   testBlockedReason = null,
+  runBlockedReason = null,
   running = false,
   dirty = false,
 }: {
@@ -160,6 +161,8 @@ export function RuleBuilder({
   saving: boolean;
   /** Why Test is unavailable now (a new automation that is not saved yet). */
   testBlockedReason?: string | null;
+  /** Why Run now can't run the rule from this window (it runs on another computer), or null. */
+  runBlockedReason?: string | null;
   running?: boolean;
   dirty?: boolean;
 }) {
@@ -253,7 +256,14 @@ export function RuleBuilder({
             {/* A count, not a control: plain muted text, no border. */}
             <span className="text-[11px] tabular-nums text-muted-fg">{steps.length} step{steps.length === 1 ? "" : "s"}</span>
             {onRunNow ? (
-              <Button size="sm" variant="outline" casing="sentence" disabled={running || saving || !draft.id} onClick={onRunNow} title={draft.id ? "Run this rule now" : "Save first to run"}>
+              <Button
+                size="sm"
+                variant="outline"
+                casing="sentence"
+                disabled={running || saving || !draft.id || Boolean(runBlockedReason)}
+                onClick={onRunNow}
+                title={runBlockedReason ?? (draft.id ? "Run this rule now" : "Save first to run")}
+              >
                 <Play size={12} weight="fill" className={cn(running && "animate-pulse")} />
                 Run now
               </Button>

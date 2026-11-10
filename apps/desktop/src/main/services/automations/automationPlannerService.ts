@@ -1265,6 +1265,7 @@ export function createAutomationPlannerService({
     list: () => { id: string }[];
     syncFromConfig: () => void;
     assertWebhookGatewayReadyForRule?: (rule: Pick<AutomationRule, "name" | "triggers" | "trigger">) => void;
+    homeRunCount?: (id: string) => number | undefined;
   };
 }) {
   const readSuites = (): TestSuiteDefinition[] => {
@@ -1535,7 +1536,11 @@ export function createAutomationPlannerService({
       };
       // Filed in the account when the rule can follow it (keeping its home
       // unless the draft names one), else in `.ade/local.yaml`.
-      projectConfigService.saveAutomationRule(nextRule as ConfigAutomationRule, { home: req.draft.home });
+      projectConfigService.saveAutomationRule(nextRule as ConfigAutomationRule, {
+        home: req.draft.home,
+        // A change of home hands on this computer's run count, so a run limit holds.
+        ...(req.draft.home && idRaw ? { runCount: automationService.homeRunCount?.(id) } : {}),
+      });
       automationService.syncFromConfig();
 
       const effectiveRule = projectConfigService.get().effective.automations.find((r) => r.id === id) ?? null;

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { useSearchParams } from "react-router-dom";
-import { ClockCounterClockwise, PencilSimple, Play, Trash } from "@phosphor-icons/react";
+import { ClockCounterClockwise, CloudArrowDown, PencilSimple, Play, Trash } from "@phosphor-icons/react";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import type {
   AiSettingsStatus,
@@ -31,6 +31,7 @@ import { RuleHistory } from "./history/RuleHistory";
 import { TemplateGallery } from "./templates/TemplateGallery";
 import { RuleMachineField } from "./builder/RuleMachineField";
 import { followsAccount, machineRuleKey, ruleListKey, useAutomationMachines, type MachineRule } from "./useAutomationMachines";
+import { ruleElsewhereReason, ruleSyncLine } from "./ruleSync";
 import type { LaneMachine } from "../../state/laneMachineRouting";
 import { onMachine } from "../../state/projectMachines";
 import { parseMachineScopedId } from "../../state/foreignMachineReads";
@@ -757,7 +758,7 @@ export function AutomationsWorkspace({
     (rule: AutomationRuleSummary) => {
       const entry = entryByRule.get(rule);
       if (!entry) return;
-      const blocked = blockedReason(entry.machine);
+      const blocked = blockedReason(entry.machine) ?? ruleElsewhereReason(entry.rule);
       if (blocked) {
         setError(blocked);
         return;
@@ -965,6 +966,37 @@ export function AutomationsWorkspace({
               }}
             />
           ) : null}
+          {draft && detailView === "builder" && selectedRule?.needsNewerAde ? (
+            <Banner
+              layout="inline"
+              testId="automation-rule-newer-ade"
+              style={{ margin: "8px 16px 0" }}
+              model={{
+                id: "automation-rule-newer-ade",
+                tone: "warning",
+                icon: <CloudArrowDown size={16} weight="duotone" />,
+                title: "Made with a newer ADE",
+                detail: "This ADE can't read all of it, so it's view-only here and left as it is in your account. Update ADE to edit or run it.",
+              }}
+            />
+          ) : null}
+          {draft && detailView === "builder" && !draftMoving && selectedRule?.homeGaps?.length ? (
+            <Banner
+              layout="inline"
+              testId="automation-home-gaps"
+              style={{ margin: "8px 16px 0" }}
+              model={{
+                id: "automation-home-gaps",
+                tone: "warning",
+                title: "This computer is missing something this automation needs",
+                detail: (
+                  <ul className="mt-0.5 space-y-0.5">
+                    {selectedRule.homeGaps.map((gap) => <li key={gap}>{gap}</li>)}
+                  </ul>
+                ),
+              }}
+            />
+          ) : null}
           {draft && detailView === "builder" && draftMachineChosen && draftMachineBlocked ? (
             <Banner
               layout="inline"
@@ -1003,8 +1035,15 @@ export function AutomationsWorkspace({
                 }
                 onSave={() => void saveDraft()}
                 onTest={(kind) => setTestKind(kind)}
-                testBlockedReason={selectedRule ? null : "Save this automation to test it."}
+                testBlockedReason={
+                  !selectedRule
+                    ? "Save this automation to test it."
+                    : selectedRule.needsNewerAde
+                      ? "Made with a newer ADE. Update ADE on this computer to test it."
+                      : null
+                }
                 onRunNow={selectedRule ? () => beginRunRule(selectedRule) : undefined}
+                runBlockedReason={selectedRule ? ruleElsewhereReason(selectedRule) : null}
                 onIngressChanged={() => {
                   // The draft's machine owns its ingress status.
                   if (draftTarget?.pin) setDraftMachineReadNonce((n) => n + 1);
@@ -1022,7 +1061,9 @@ export function AutomationsWorkspace({
                         ? selectedRule.home?.name ?? null
                         : null
                     }
-                    homeGaps={selectedRule?.homeGaps ?? []}
+                    homeName={selectedRule && followsAccount(selectedRule) ? selectedRule.home?.name ?? null : null}
+                    rehoming={draftRehomeChosen}
+                    sync={selectedRule && !draftMoving ? ruleSyncLine(selectedRule) : null}
                     disabled={saving}
                     onChange={(machineId) => {
                       const next = machines.find((machine) => machine.machineId === machineId);
@@ -1034,7 +1075,13 @@ export function AutomationsWorkspace({
                     }}
                   />
                 }
-                saveBlockedReason={draftMachineChosen ? null : CHOOSE_MACHINE_HINT}
+                saveBlockedReason={
+                  selectedRule?.needsNewerAde
+                    ? "Made with a newer ADE. Update ADE on this computer to change it."
+                    : draftMachineChosen || draftRehomeChosen || Boolean(selectedRule && followsAccount(selectedRule))
+                      ? null
+                      : CHOOSE_MACHINE_HINT
+                }
                 cursorCloudConnected={cursorCloudConnected}
                 saving={saving}
                 running={running}

@@ -24,6 +24,7 @@ import type {
   AutomationRuleOrigin,
   AutomationRuleScope,
   AutomationRuleHome,
+  AutomationRuleLocalReason,
   AutomationReviewProfile,
   AutomationRunQueueStatus,
   AutomationToolFamily,
@@ -86,11 +87,8 @@ import { codedError, encodeCodedErrorMessage } from "../../../shared/codedError"
 import { markExpected } from "../../../shared/expectedError";
 import { normalizeAutomationAgentLimits } from "../../../shared/automationLimits";
 import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
-import {
-  automationRuleAccountKey,
-  isChatScopedAutomationRule,
-  type AutomationRuleAccountStore,
-} from "../automations/automationRuleAccountStore";
+import type { AutomationRuleAccountStore } from "../automations/automationRuleAccountStore";
+import { createAutomationRuleAccountSync, type AutomationRuleAccountSync } from "../automations/automationRuleAccountSync";
 
 const VERSION = 1;
 const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
@@ -901,7 +899,17 @@ export function coerceAutomationRuleHome(value: unknown): AutomationRuleHome | u
   const name = asString(value.name)?.trim();
   const chosenAt = asString(value.chosenAt)?.trim();
   if (!deviceId || !name || !chosenAt) return undefined;
-  return { deviceId, name, chosenAt };
+  const checkout = asString(value.checkout)?.trim();
+  const previousDeviceId = asString(value.previousDeviceId)?.trim();
+  const runCount = asNumber(value.runCount);
+  return {
+    deviceId,
+    name,
+    chosenAt,
+    checkout: checkout || null,
+    ...(previousDeviceId ? { previousDeviceId } : {}),
+    ...(runCount != null && Number.isFinite(runCount) && runCount > 0 ? { runCount: Math.floor(runCount) } : {}),
+  };
 }
 
 function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
@@ -3415,16 +3423,14 @@ export function createProjectConfigService({
   // ── Rules that follow the account ─────────────────────────────────────
   //
   // With a rule store attached (the brain, when it has the account settings
-  // store), rules live in the account under the repository, one row per rule,
-  // and `.ade/local.yaml` keeps only what cannot follow the account: rules
-  // scoped to one chat, rules of a project with no remote, and rules saved
-  // while the account refused writes (signed out), until they can move.
-  // `snapshot.local.automations` is the merged view, so every reader sees one
-  // list; nothing that round-trips the snapshot through `save` can write an
-  // account rule back into the file or delete one by leaving it out.
+  // store), rules live in the account under the repository, and
+  // `.ade/local.yaml` keeps only what cannot follow it (chat rules, a project
+  // with no remote, a rule too large, rules saved while signed out). The
+  // account side is `automationRuleAccountSync.ts`; this service merges its
+  // rules into `snapshot.local.automations` and routes every write through it.
 
-  let automationRuleStore: AutomationRuleAccountStore | null = null;
-  let accountRulesCache: { fingerprint: string; rules: ConfigAutomationRule[] } | null = null;
+  let automationRuleSync: AutomationRuleAccountSync | null = null;
+  let automationNotes = new Map<string, { needsNewerAde?: true; localReason?: AutomationRuleLocalReason }>();
 
   /** A rule's own problems, judged alone: one bad rule from another computer must not break this config. */
   const automationRuleProblems = (rule: ConfigAutomationRule): string[] => {
@@ -3439,54 +3445,18 @@ export function createProjectConfigService({
       .map((issue) => `${issue.path}: ${issue.message}`);
   };
 
-  /** The account's rules for this repository, or null when none can be (no store, no remote). */
-  const readAccountRules = (): ConfigAutomationRule[] | null => {
-    const read = automationRuleStore?.read() ?? null;
-    if (!read) return null;
-    if (accountRulesCache?.fingerprint === read.fingerprint) return accountRulesCache.rules;
-    const rules: ConfigAutomationRule[] = [];
-    const seen = new Set<string>();
-    for (const value of read.values) {
-      const rule = coerceAutomationRule(value);
-      if (!rule?.id || seen.has(rule.id) || isChatScopedAutomationRule(rule)) continue;
-      const problems = automationRuleProblems(rule);
-      if (problems.length > 0) {
-        // Most likely saved by a newer ADE with a trigger or step this one
-        // does not know. It is left alone in the account, not deleted.
-        logger.warn("projectConfig.account_rule_skipped", { automationId: rule.id, problems: problems.slice(0, 3) });
-        continue;
-      }
-      seen.add(rule.id);
-      rules.push(rule);
-    }
-    accountRulesCache = { fingerprint: read.fingerprint, rules };
-    return rules;
-  };
-
-  /** The file's rules plus the account's. A file copy of the same id is newer (saved while signed out) and wins. */
+  /** The file's rules plus the account's. */
   const withAccountRules = (local: ProjectConfigFile): ProjectConfigFile => {
-    const accountRules = readAccountRules();
-    if (!accountRules?.length) return local;
-    const fileRules = local.automations ?? [];
-    const fileIds = new Set(fileRules.map((rule) => rule.id));
-    return {
-      ...local,
-      automations: [...structuredClone(accountRules.filter((rule) => !fileIds.has(rule.id))), ...fileRules],
-    };
+    if (!automationRuleSync) return local;
+    const merged = automationRuleSync.merge(local.automations ?? []);
+    automationNotes = merged.notes;
+    return { ...local, automations: merged.rules };
   };
 
-  /** Mark which rules this computer runs: only a rule's home starts it. */
+  /** Mark which rules this computer runs, and why a rule stays here. */
   const stampRunsHere = (snapshot: ProjectConfigSnapshot): void => {
-    if (!automationRuleStore) return;
-    const deviceId = automationRuleStore.thisDeviceId();
-    for (const rule of snapshot.effective.automations) {
-      if (rule.home) rule.runsHere = deviceId != null && rule.home.deviceId === deviceId;
-    }
+    automationRuleSync?.stamp(snapshot.effective.automations, automationNotes);
   };
-
-  /** True when a rule can be filed in the account: a store, a remote, and not tied to one chat. */
-  const canFollowAccount = (rule: ConfigAutomationRule): boolean =>
-    Boolean(automationRuleStore?.scope()) && !isChatScopedAutomationRule(rule);
 
   const writeLocalFile = (local: ProjectConfigFile): void => {
     initializeOrRepairAdeProject(projectRoot, { logger });
@@ -3495,103 +3465,8 @@ export function createProjectConfigService({
     cachedLocalFile = null;
   };
 
-  const ruleContent = (rule: ConfigAutomationRule): string => {
-    const { home: _home, ...rest } = coerceAutomationRule(rule) ?? rule;
-    return toCanonicalYaml({ version: VERSION, testSuites: [], laneOverlayPolicies: [], automations: [rest] });
-  };
-
-  /**
-   * What a generic `save` may do to account rules: add a new one, nothing
-   * else. A caller that read the snapshot a minute ago and saves its AI
-   * settings now carries a stale copy of every rule; letting that copy win
-   * would undo another computer's edit, and leaving a rule out would delete
-   * it. Edits, deletes and home changes go through the rule methods below.
-   */
-  const divertAccountRules = (local: ProjectConfigFile): ProjectConfigFile => {
-    const store = automationRuleStore;
-    if (!store?.scope()) return local;
-    const accountIds = new Set((readAccountRules() ?? []).map((rule) => rule.id));
-    const fileIds = new Set((readConfigFile(localPath).config.automations ?? []).map((rule) => rule.id));
-    const deleted = store.deletedKeys();
-    const kept: ConfigAutomationRule[] = [];
-    for (const rule of local.automations ?? []) {
-      if (!canFollowAccount(rule) || fileIds.has(rule.id)) {
-        kept.push(rule);
-        continue;
-      }
-      if (accountIds.has(rule.id) || deleted.has(automationRuleAccountKey(rule.id))) continue;
-      const home = rule.home ?? store.thisComputerHome();
-      if (home && store.write({ ...rule, home })) continue;
-      kept.push(rule);
-    }
-    return { ...local, automations: kept };
-  };
-
-  /**
-   * Move the file's rules into the account. Runs once the store has synced
-   * (so another computer's rules are known) and again after a sign-in.
-   *
-   * A file rule whose id the account already holds: an offline edit of that
-   * same rule (it carries `home`) replaces it; an identical legacy copy is
-   * dropped (the account's home runs it); a different legacy rule that only
-   * shares the id keeps both, this one under a new id.
-   */
-  const migrateRulesToAccount = (): { moved: number; renamed: string[] } => {
-    const store = automationRuleStore;
-    const here = store?.thisComputerHome() ?? null;
-    if (!store?.scope() || !here) return { moved: 0, renamed: [] };
-    const file = readConfigFile(localPath).config;
-    const fileRules = file.automations ?? [];
-    if (!fileRules.some(canFollowAccount)) return { moved: 0, renamed: [] };
-    const account = new Map((readAccountRules() ?? []).map((rule) => [rule.id, rule]));
-    const takenIds = new Set([...account.keys(), ...fileRules.map((rule) => rule.id)]);
-    const kept: ConfigAutomationRule[] = [];
-    const renamed: string[] = [];
-    let moved = 0;
-    for (const rule of fileRules) {
-      if (!canFollowAccount(rule)) {
-        kept.push(rule);
-        continue;
-      }
-      let target = rule;
-      const existing = account.get(rule.id);
-      if (existing && !rule.home) {
-        if (ruleContent(existing) === ruleContent(rule)) {
-          moved += 1;
-          continue;
-        }
-        const suffix = here.deviceId.replace(/[^A-Za-z0-9]/g, "").slice(0, 6).toLowerCase() || "here";
-        let id = `${rule.id}-${suffix}`;
-        for (let n = 2; takenIds.has(id); n += 1) id = `${rule.id}-${suffix}-${n}`;
-        takenIds.add(id);
-        renamed.push(`${rule.id} -> ${id}`);
-        target = { ...rule, id };
-      }
-      if (!store.write({ ...target, home: target.home ?? here })) {
-        kept.push(rule);
-        continue;
-      }
-      moved += 1;
-    }
-    if (moved > 0 || renamed.length > 0) {
-      writeLocalFile({ ...file, automations: kept });
-      logger.info("projectConfig.automations_moved_to_account", { moved, renamed });
-    }
-    return { moved, renamed };
-  };
-
-  const resolveHome = (
-    requested: AutomationRuleHome | "this-computer" | null | undefined,
-    existing: ConfigAutomationRule | undefined,
-  ): AutomationRuleHome | null => {
-    if (requested === "this-computer") return automationRuleStore?.thisComputerHome() ?? null;
-    if (requested && typeof requested === "object") {
-      const home = coerceAutomationRuleHome({ ...requested, chosenAt: requested.chosenAt || new Date().toISOString() });
-      if (!home) throw new Error("A rule's computer needs a device id and a name.");
-      return home;
-    }
-    return existing?.home ?? automationRuleStore?.thisComputerHome() ?? null;
-  };
+  /** The file's own config, without the account's rules. */
+  const readLocalFileConfig = (): ProjectConfigFile => normalizeConfigFilePaths(readConfigFile(localPath).config, projectRoot);
 
   const validateCandidate = (shared: ProjectConfigFile, local: ProjectConfigFile): ProjectConfigValidationResult => {
     const sharedHash = hashContent(toCanonicalYaml(shared));
@@ -3611,7 +3486,9 @@ export function createProjectConfigService({
       throw invalidConfigError(validation);
     }
     // Account rules never land in the file; a new one is filed in the account.
-    const local = options.divert === false ? candidateLocal : divertAccountRules(candidateLocal);
+    const local = options.divert === false || !automationRuleSync
+      ? candidateLocal
+      : { ...candidateLocal, automations: automationRuleSync.divert(candidateLocal.automations ?? []) };
 
     const localYaml = toCanonicalYaml(local);
 
@@ -3640,9 +3517,6 @@ export function createProjectConfigService({
     return snapshot;
   };
 
-  /** The file's own config, without the account's rules: what a rule kept on this computer is edited in. */
-  const readLocalFileConfig = (): ProjectConfigFile => normalizeConfigFilePaths(readConfigFile(localPath).config, projectRoot);
-
   return {
     /**
      * Attach the account's rule store (the brain does, when it has the
@@ -3650,20 +3524,30 @@ export function createProjectConfigService({
      * live in `.ade/local.yaml` as before.
      */
     setAutomationRuleStore(store: AutomationRuleAccountStore | null): void {
-      automationRuleStore = store;
-      accountRulesCache = null;
+      automationRuleSync = store
+        ? createAutomationRuleAccountSync({
+          store,
+          coerceRule: coerceAutomationRule,
+          coerceHome: coerceAutomationRuleHome,
+          ruleProblems: automationRuleProblems,
+          readFileRules: () => readLocalFileConfig().automations ?? [],
+          writeFileRules: (rules) => writeLocalFile({ ...readLocalFileConfig(), automations: rules }),
+          logger,
+        })
+        : null;
+      automationNotes = new Map();
       cachedLocalFile = null;
     },
 
     /** Changes when the account's rules for this repository do; null without a store or remote. */
     accountAutomationRulesFingerprint(): string | null {
-      return automationRuleStore?.read()?.fingerprint ?? null;
+      return automationRuleSync?.fingerprint() ?? null;
     },
 
-    /** Move rules from `.ade/local.yaml` into the account; see `migrateRulesToAccount`. */
+    /** Move rules from `.ade/local.yaml` into the account; see `AutomationRuleAccountSync.migrate`. */
     migrateAutomationRulesToAccount(): { moved: number; renamed: string[] } {
       try {
-        return migrateRulesToAccount();
+        return automationRuleSync?.migrate() ?? { moved: 0, renamed: [] };
       } catch (error) {
         logger.warn("projectConfig.automations_move_to_account_failed", {
           error: error instanceof Error ? error.message : String(error),
@@ -3672,47 +3556,51 @@ export function createProjectConfigService({
       }
     },
 
+    /** Claim rules homed here and settle raced writes; see `AutomationRuleAccountSync.reconcile`. */
+    reconcileAutomationRules(options: { confirmed: boolean }): { claimed: number; readded: string[] } {
+      try {
+        return automationRuleSync?.reconcile(options) ?? { claimed: 0, readded: [] };
+      } catch (error) {
+        logger.warn("projectConfig.automations_reconcile_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return { claimed: 0, readded: [] };
+      }
+    },
+
     /**
      * Create or replace one rule. A rule that can follow the account is filed
-     * there with its home (the requested one, else the saved rule's, else
-     * this computer); otherwise, or when the account refuses the write
-     * (signed out), it is saved in `.ade/local.yaml` and moves later.
+     * there (with the requested home, else the saved rule's, else this
+     * computer); otherwise it is saved in `.ade/local.yaml`, and a rule saved
+     * there while signed out moves on sign-in.
      */
-    saveAutomationRule(rule: ConfigAutomationRule, options: { home?: AutomationRuleHome | "this-computer" | null } = {}): ProjectConfigSnapshot {
+    saveAutomationRule(
+      rule: ConfigAutomationRule,
+      options: { home?: AutomationRuleHome | "this-computer" | null; runCount?: number } = {},
+    ): ProjectConfigSnapshot {
       const id = rule.id.trim();
       if (!id) throw new Error("Automation id is required");
       const snapshot = readSnapshotFromDisk();
-      const existing = (snapshot.local.automations ?? []).find((entry) => entry.id === id);
       const { home: _ignored, ...ruleWithoutHome } = rule;
-      const store = automationRuleStore;
-      if (store && canFollowAccount(rule)) {
-        const home = resolveHome(options.home, existing);
-        const next: ConfigAutomationRule = { ...ruleWithoutHome, id, ...(home ? { home } : {}) };
-        // Judge it against the whole merged config, as a file save would be.
-        const candidate = { ...snapshot.local, automations: [...(snapshot.local.automations ?? []).filter((entry) => entry.id !== id), next] };
-        const validation = validateCandidate(emptySharedConfig(), normalizeConfigFilePaths(coerceConfigFile(candidate), projectRoot));
-        if (!validation.ok) throw invalidConfigError(validation);
-        if (home && store.write(next as ConfigAutomationRule & Record<string, unknown>)) {
-          // A copy saved while signed out is superseded.
-          const file = readLocalFileConfig();
-          if ((file.automations ?? []).some((entry) => entry.id === id)) {
-            writeLocalFile({ ...file, automations: (file.automations ?? []).filter((entry) => entry.id !== id) });
-          }
-          logger.info("projectConfig.account_rule_saved", { automationId: id, home: home.deviceId });
-          return readSnapshotFromDisk();
-        }
-        // Refused: keep it on this computer, with its home, until it can move.
-        const file = readLocalFileConfig();
-        const rules = [...(file.automations ?? []).filter((entry) => entry.id !== id), next];
-        logger.warn("projectConfig.account_rule_kept_locally", { automationId: id });
-        return saveCandidate({ shared: snapshot.shared, local: { ...file, automations: rules } }, { divert: false });
+      const next: ConfigAutomationRule = { ...ruleWithoutHome, id };
+      // Judged against the whole merged config, as a file save would be.
+      const candidate = { ...snapshot.local, automations: [...(snapshot.local.automations ?? []).filter((entry) => entry.id !== id), next] };
+      const validation = validateCandidate(emptySharedConfig(), normalizeConfigFilePaths(coerceConfigFile(candidate), projectRoot));
+      if (!validation.ok) throw invalidConfigError(validation);
+      const outcome = automationRuleSync?.save(next, options) ?? { handled: false as const };
+      if (outcome.handled) {
+        logger.info("projectConfig.account_rule_saved", { automationId: id });
+        return readSnapshotFromDisk();
       }
       const file = readLocalFileConfig();
+      const keepHome = "keepHome" in outcome ? outcome.keepHome : undefined;
+      const stored: ConfigAutomationRule = keepHome ? { ...next, home: keepHome } : next;
       const rules = [...(file.automations ?? [])];
       const index = rules.findIndex((entry) => entry.id === id);
-      if (index >= 0) rules[index] = { ...ruleWithoutHome, id };
-      else rules.push({ ...ruleWithoutHome, id });
-      return saveCandidate({ shared: snapshot.shared, local: { ...file, automations: rules } });
+      if (index >= 0) rules[index] = stored;
+      else rules.push(stored);
+      if (keepHome) logger.warn("projectConfig.account_rule_kept_locally", { automationId: id });
+      return saveCandidate({ shared: snapshot.shared, local: { ...file, automations: rules } }, { divert: false });
     },
 
     /**
@@ -3724,13 +3612,13 @@ export function createProjectConfigService({
       const id = ruleId.trim();
       const file = readLocalFileConfig();
       const inFile = (file.automations ?? []).some((entry) => entry.id === id);
-      const inAccount = (readAccountRules() ?? []).some((entry) => entry.id === id);
+      const inAccount = automationRuleSync?.remove(id) === true;
       if (!inFile && !inAccount) return { deleted: false };
-      if (inAccount && !automationRuleStore?.remove(id)) {
-        throw new Error("This automation follows your ADE account. Sign in to ADE to delete it.");
-      }
       if (inFile) {
-        saveCandidate({ shared: emptySharedConfig(), local: { ...file, automations: (file.automations ?? []).filter((entry) => entry.id !== id) } });
+        saveCandidate(
+          { shared: emptySharedConfig(), local: { ...file, automations: (file.automations ?? []).filter((entry) => entry.id !== id) } },
+          { divert: false },
+        );
       }
       return { deleted: true };
     },

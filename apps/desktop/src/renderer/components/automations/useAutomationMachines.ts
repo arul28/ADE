@@ -15,6 +15,7 @@ import {
   type MachineReadLoad,
 } from "../../state/foreignMachineReads";
 import type { RuleMachineView } from "./list/RuleList";
+import { ruleElsewhereReason } from "./ruleSync";
 
 /**
  * One rule on one machine. Rules come from every machine that holds the
@@ -121,17 +122,14 @@ export function useAutomationMachines({
   const machineOfRule = useCallback((rule: AutomationRuleSummary): RuleMachineView | null => {
     const entry = entryByRule.get(rule);
     if (!entry) return null;
-    // A rule whose home is not among the machines this window reaches says
-    // where it runs, even on a one-machine list.
-    if (followsAccount(rule) && rule.runsHere === false && rule.home) {
-      return {
-        chip: { machineId: `home:${rule.home.deviceId}`, machineName: rule.home.name, online: false, isThisMachine: false },
-        offlineMessage: null,
-        isActiveBinding: entry.machine.isActiveBinding,
-      };
-    }
+    // A rule that follows the account is listed under the machine that runs
+    // it. When that machine is not among the ones this window reaches, the
+    // copy shown is another machine's: its chip would name the wrong
+    // computer, so the row names the home itself (see `ruleSyncLine`).
+    const homeUnreached = followsAccount(rule) && rule.runsHere === false;
     return {
-      chip: showChips ? machineChipFor(entry.machine) : null,
+      elsewhereReason: ruleElsewhereReason(rule),
+      chip: showChips && !homeUnreached ? machineChipFor(entry.machine) : null,
       offlineMessage: machineBlockedReason(entry.machine),
       isActiveBinding: entry.machine.isActiveBinding,
     };

@@ -1002,7 +1002,28 @@ export type AutomationRuleHome = {
   /** The computer's own name, for showing on computers that cannot reach it. */
   name: string;
   chosenAt: string;
+  /**
+   * Which checkout of the repository on that computer runs it (a hash of its
+   * path). Null until the computer takes the rule, so two checkouts of one
+   * repository on one computer never both run it.
+   */
+  checkout?: string | null;
+  /** The computer that ran it before a change of home; the new home waits a moment so the two never overlap. */
+  previousDeviceId?: string | null;
+  /** Runs the previous home had counted, so a run limit holds across a change of home. */
+  runCount?: number;
 };
+
+/**
+ * Why a rule is kept on this computer only instead of following the account.
+ * - `chat`: it belongs to one chat, which lives on this computer.
+ * - `no-remote`: the project has no remote another computer could match.
+ * - `too-large`: it is over the account's size limit for one setting.
+ * - `signed-out`: saved while signed out; it moves on sign-in.
+ * - `other-account`: saved while another account was signed in; it moves when that account signs in again.
+ * - `pending`: it moves into the account once this computer has synced.
+ */
+export type AutomationRuleLocalReason = "chat" | "no-remote" | "too-large" | "signed-out" | "other-account" | "pending";
 
 export type AutomationRule = {
   id: string;
@@ -1060,11 +1081,23 @@ export type AutomationRule = {
    */
   home?: AutomationRuleHome;
   /**
-   * Whether this computer runs the rule. False when another computer is its
-   * home; this computer then shows and edits it but never starts it. Absent
-   * reads as true.
+   * Whether this computer runs the rule. False when another computer (or
+   * another checkout here) is its home; this computer then shows and edits it
+   * but never starts it. Absent reads as true.
    */
   runsHere?: boolean;
+  /**
+   * After a change of home, when the new home starts triggered runs, so the
+   * old home has synced and stopped first. Run now is not held back.
+   */
+  homeStartsAt?: string;
+  /**
+   * The rule was saved by a newer ADE with something this one does not know.
+   * It is shown but never run or edited here, so an edit cannot strip it.
+   */
+  needsNewerAde?: boolean;
+  /** Set on a rule kept on this computer only; see `AutomationRuleLocalReason`. */
+  localReason?: AutomationRuleLocalReason;
 };
 
 export type ConfigAutomationRule = {

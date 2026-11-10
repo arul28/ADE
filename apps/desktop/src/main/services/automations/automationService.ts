@@ -1520,6 +1520,7 @@ export function createAutomationService({
   githubPollingAvailable,
   prService,
   onEvent,
+  secretAvailable,
   cronScheduler = cron,
 }: {
   db: AdeDb;
@@ -1550,6 +1551,12 @@ export function createAutomationService({
   /** Injectable only for deterministic scheduler tests. */
   cronScheduler?: CronScheduler;
   onEvent?: (payload: AutomationServiceEvent) => void;
+  /**
+   * Whether a secret a rule names exists on this computer. Secrets never move
+   * between computers, so a rule homed here from another one says which it
+   * lacks instead of failing at its first delivery.
+   */
+  secretAvailable?: (ref: { projectSecret?: string; secretRef?: string }) => boolean;
 }) {
   type AutomationIngressStatusPatch = {
     webhookGateway?: Partial<AutomationIngressStatus["webhookGateway"]>;
@@ -1940,7 +1947,18 @@ export function createAutomationService({
   const ruleRunsHere = (rule: AutomationRule): boolean => rule.runsHere !== false;
   const listRunnableRules = (): AutomationRule[] => listRules().filter(ruleRunsHere);
   const notHomeMessage = (rule: AutomationRule): string =>
-    `'${rule.name}' runs on ${rule.home?.name ?? "another computer"}, not this one. Change "Run on" to this computer to run it here.`;
+    rule.needsNewerAde
+      ? `'${rule.name}' was made with a newer ADE. Update ADE on this computer to run it here.`
+      : `'${rule.name}' runs on ${rule.home?.name ?? "another computer"}, not this one. Change "Runs on" to this computer to run it here.`;
+  /**
+   * True while a new home waits for the old one to sync and stop, after a
+   * change of home. Only triggered runs wait; Run now does not.
+   */
+  const inHandover = (rule: AutomationRule): boolean => {
+    if (!rule.homeStartsAt) return false;
+    const startsAt = Date.parse(rule.homeStartsAt);
+    return Number.isFinite(startsAt) && Date.now() < startsAt;
+  };
 
   const updateIngressStatus = (patch: AutomationIngressStatusPatch) => {
     const localWebhook = { ...ingressStatusRef.localWebhook, ...(patch.localWebhook ?? {}) };
@@ -2137,6 +2155,24 @@ export function createAutomationService({
     const gaps: string[] = [];
     const ingress = getIngressSetupError(rule);
     if (ingress) gaps.push(ingress);
+    for (const trigger of rule.triggers) {
+      const hookId = trigger.webhook?.hookId?.trim();
+      if (hookId) {
+        const known = db.get<{ hook_id: string }>(
+          "select hook_id from automation_webhook_hooks where project_id = ? and hook_id = ? limit 1",
+          [projectId, hookId],
+        );
+        if (!known) gaps.push("Its webhook URL was made on another computer. Make a new URL here and give it to the service that calls it.");
+      }
+      const secretName = trigger.webhook?.signature?.secretName?.trim();
+      if (secretName && secretAvailable && !secretAvailable({ projectSecret: secretName })) {
+        gaps.push(`Secret '${secretName}' is not on this computer. Add it in Settings so deliveries can be checked.`);
+      }
+      const secretRef = trigger.secretRef?.trim();
+      if (secretRef && secretAvailable && !secretAvailable({ secretRef })) {
+        gaps.push(`Secret '${secretRef}' is not on this computer.`);
+      }
+    }
     const steps = [
       ...(rule.execution?.kind === "built-in" ? rule.execution.builtIn?.actions ?? [] : []),
       ...(rule.actions ?? []),
@@ -2155,6 +2191,9 @@ export function createAutomationService({
       } catch {
         gaps.push(`Lane '${laneId}' is not on this computer; pick a lane here.`);
       }
+    }
+    for (const cwd of new Set(steps.map((step) => step.cwd?.trim()).filter((value): value is string => Boolean(value)))) {
+      if (path.isAbsolute(cwd) && !fs.existsSync(cwd)) gaps.push(`Folder '${cwd}' does not exist on this computer.`);
     }
     return gaps;
   };
@@ -3053,11 +3092,20 @@ export function createAutomationService({
    */
   const runCountKey = (ruleId: string): string => `automations.run-count.v1:${projectId}:${ruleId}`;
 
-  const bumpRunCount = (ruleId: string): number => {
+  const readRunCount = (ruleId: string): number => {
+    const row = db.get<{ value: string }>(`select value from kv where key = ? limit 1`, [runCountKey(ruleId)]);
+    const value = Number.parseInt(row?.value ?? "0", 10);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  };
+
+  /**
+   * `carried` is the count the previous home had, written onto the rule's
+   * home when it moved here, so a run limit holds across a change of home.
+   */
+  const bumpRunCount = (ruleId: string, carried = 0): number => {
     const key = runCountKey(ruleId);
-    const row = db.get<{ value: string }>(`select value from kv where key = ? limit 1`, [key]);
-    const previous = Number.parseInt(row?.value ?? "0", 10);
-    const next = (Number.isFinite(previous) && previous > 0 ? previous : 0) + 1;
+    const previous = Math.max(readRunCount(ruleId), carried);
+    const next = previous + 1;
     db.run(
       `insert into kv(key, value) values (?, ?) on conflict(key) do update set value = excluded.value`,
       [key, String(next)],
@@ -3214,7 +3262,7 @@ export function createAutomationService({
     if (maxRuns === null) return UNBOUNDED_RUN_BUDGET;
     let runCount: number;
     try {
-      runCount = bumpRunCount(rule.id);
+      runCount = bumpRunCount(rule.id, rule.home && ruleRunsHere(rule) ? rule.home.runCount ?? 0 : 0);
     } catch (error) {
       // Without a trustworthy count we cannot bound the retries, so let the run
       // through and keep the rule rather than refuse work — or delete a rule —
@@ -4692,6 +4740,15 @@ export function createAutomationService({
           if (isManualTrigger) throw new Error(notHomeMessage(currentRule));
           return null;
         }
+        if (currentRule && !isManualTrigger && !runOptions.dryRun && inHandover(currentRule)) {
+          logger.info("automations.trigger.suppressed", {
+            automationId: rule.id,
+            triggerType: trigger.triggerType,
+            reason: "home-handover",
+            startsAt: currentRule.homeStartsAt ?? null,
+          });
+          return null;
+        }
         if (!currentRule || (!isManualTrigger && (!currentRule.enabled || staleSchedule))) {
           logger.info("automations.trigger.suppressed", {
             automationId: rule.id,
@@ -5322,10 +5379,17 @@ export function createAutomationService({
     // rule order) answers it, and the others do not start a second run.
     if (args.linearAgent && matched.length > 1) matched.splice(1);
     if (!matched.length) {
+      // Say so when the rule it was for runs on another computer.
+      const elsewhere = listRules()
+        .filter((rule) => rule.enabled && !ruleRunsHere(rule))
+        .filter((rule) => !args.automationId || rule.id === args.automationId)
+        .find((rule) => rule.triggers.some((candidate) => triggerMatches(candidate, trigger, ingressLaneBranch, ingressLaneName)));
       updateIngressEvent(eventId, {
         automation_ids_json: JSON.stringify([]),
         status: "ignored",
-        summary: args.summary ?? "Ingress delivery did not match any enabled automation rules.",
+        summary: elsewhere
+          ? `Matched '${elsewhere.name}', which ${elsewhere.needsNewerAde ? "needs a newer ADE here" : `runs on ${elsewhere.home?.name ?? "another computer"}`}.`
+          : args.summary ?? "Ingress delivery did not match any enabled automation rules.",
         cursor: args.cursor ?? null,
       });
       return loadIngressEventRow(eventId) ? toIngressEvent(loadIngressEventRow(eventId)!) : null;
@@ -5522,8 +5586,14 @@ export function createAutomationService({
       });
     },
 
+    /** This computer's run count for a rule it runs; handed on with a change of home. */
+    homeRunCount(id: string): number | undefined {
+      const rule = findRule(id.trim());
+      return rule && ruleRunsHere(rule) ? readRunCount(rule.id) : undefined;
+    },
+
     /**
-     * Change which computer runs a rule that follows the account ("Run on").
+     * Change which computer runs a rule that follows the account ("Runs on").
      * No device id means this computer. A rule kept on this computer only
      * (no remote, chat-scoped, signed out) has no other computer to go to.
      */
@@ -5535,8 +5605,11 @@ export function createAutomationService({
       const deviceId = args.deviceId?.trim() || null;
       const name = args.name?.trim() || null;
       if (deviceId && !name) throw new Error("Name the computer too (--name), so other computers can show it.");
+      const current = findRule(id);
       projectConfigService.saveAutomationRule(stored, {
         home: deviceId ? { deviceId, name: name!, chosenAt: nowIso() } : "this-computer",
+        // Handed on, so a run limit holds on the new home.
+        ...(current && ruleRunsHere(current) ? { runCount: readRunCount(id) } : {}),
       });
       const saved = findRule(id);
       if (!saved?.home) {
