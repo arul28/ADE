@@ -244,7 +244,7 @@ import type {
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
 } from "../shared/types";
-import { adeActionAccess } from "../shared/adeActionAccess";
+import { adeActionAccess, thisDesktopOnlyRefusal } from "../shared/adeActionAccess";
 import type {
   ClaudePluginUiActArgs,
   ClaudePluginUiActResult,
@@ -11433,7 +11433,7 @@ const adeBridge = {
      */
     allowKeychain: async (args: { provider: "antigravity"; slot?: "personal" | "business" | null }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> => {
       if (pin?.kind === "remote" || (!pin && await getRemoteProjectBinding())) {
-        throw new Error("Run this on that Mac. ADE reads a Mac's Keychain only on the Mac you are using.");
+        throw new Error(thisDesktopOnlyRefusal("provider_logins", "allowKeychain") ?? "Run this on that Mac.");
       }
       return await ipcRenderer.invoke(IPC.providerLoginsCall, { action: "allowKeychain", args: { ...args } }) as ProviderLoginSyncStatus;
     },

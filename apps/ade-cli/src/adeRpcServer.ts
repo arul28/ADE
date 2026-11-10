@@ -98,6 +98,7 @@ import { runGit } from "../../desktop/src/main/services/git/git";
 import { parseDiffNameOnly, resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
+import { thisDesktopOnlyRefusal } from "../../desktop/src/shared/adeActionAccess";
 import { isSceneParseFailure, parseSceneFence } from "../../desktop/src/shared/chatScene";
 import {
   SCENE_PREVIEW_MAX_SOURCE_BYTES,
@@ -375,6 +376,15 @@ function isUserClientSession(session: SessionState): boolean {
  */
 function mayUseUserOnlyActions(session: SessionState): boolean {
   return isUserClientSession(session) && isDesktopClientName(session.clientName);
+}
+
+/**
+ * Whether a caller may use a this-desktop-only action (`thisDesktopOnlyRefusal`):
+ * only the desktop app of this computer, never a desktop that drives this
+ * computer from another one (`ade-desktop-remote`).
+ */
+function mayUseThisDesktopOnlyActions(session: SessionState): boolean {
+  return isUserClientSession(session) && session.clientName === DESKTOP_CLIENT_NAMES.local;
 }
 
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
@@ -6406,6 +6416,7 @@ async function runTool(args: {
       return listAllowedAdeActionNames(entry, service)
         .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
         .filter((action) => !isUserOnlyAdeAction(entry, action) || mayUseUserOnlyActions(session))
+        .filter((action) => !thisDesktopOnlyRefusal(entry, action) || mayUseThisDesktopOnlyActions(session))
         .filter((action) => entry !== "analytics" || action !== "capture" || isUserClient)
         .filter((action) => !remoteBrainCaller || !isSecretBearingAdeAction(entry, action))
         .map((action) => {
@@ -6580,6 +6591,11 @@ async function runTool(args: {
         `${domain}.${action} is limited to user clients${androidUserOnlyReason(domain, action)}`,
         `run_ade_action:${domain}.${action}`,
       );
+    }
+    const thisDesktopOnly = thisDesktopOnlyRefusal(domain, action);
+    if (thisDesktopOnly && !mayUseThisDesktopOnlyActions(session)) {
+      // It acts on this computer's screen (a macOS prompt): never for a desktop on another computer.
+      throw new JsonRpcError(JsonRpcErrorCode.policyDenied, thisDesktopOnly);
     }
     if (
       domain === "chat"

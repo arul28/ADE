@@ -55,7 +55,7 @@ import {
   type ParsedLogin,
 } from "./providerLoginCarry";
 import {
-  ANTIGRAVITY_KEYCHAIN_ACCOUNTS,
+  antigravityKeychainAccount,
   decodeKeychainSecret,
   readKeychainSecret,
   type AntigravityKeychainSlot,
@@ -1386,7 +1386,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       }
     }
     const read = await readKeychainSecret({
-      account: ANTIGRAVITY_KEYCHAIN_ACCOUNTS[slot],
+      account: antigravityKeychainAccount(slot),
       ...(deps.keychainCommand ? { command: deps.keychainCommand } : {}),
     });
     deps.logger.info("provider_login.keychain_read", { provider: "antigravity", slot, result: read.ok ? "ok" : read.reason });

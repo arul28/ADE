@@ -12,14 +12,15 @@
 
 import { execFile } from "node:child_process";
 
-/** The agent's keychain item (`antigravityAuth.ts` KEYCHAIN_SERVICE / KEYCHAIN_ACCOUNT). */
-export const ANTIGRAVITY_KEYCHAIN_SERVICE = "gemini";
-export const ANTIGRAVITY_KEYCHAIN_ACCOUNTS = {
-  personal: "antigravity-acp",
-  business: "antigravity-acp-business",
-} as const;
+import { ANTIGRAVITY_KEYCHAIN_ACCOUNT, ANTIGRAVITY_KEYCHAIN_SERVICE } from "../ai/antigravityAuth";
 
-export type AntigravityKeychainSlot = keyof typeof ANTIGRAVITY_KEYCHAIN_ACCOUNTS;
+/** The two Google sign-ins of the agent, as the sign-in sync names its slots. */
+export type AntigravityKeychainSlot = "personal" | "business";
+
+/** The account of the agent's Keychain item for a slot (the one table is in `antigravityAuth.ts`). */
+export function antigravityKeychainAccount(slot: AntigravityKeychainSlot): string {
+  return ANTIGRAVITY_KEYCHAIN_ACCOUNT[slot === "business" ? "oauth-business" : "oauth-personal"]!;
+}
 
 /** The real command. The scratch checks pass a fake one; they never run this. */
 export const SECURITY_COMMAND = "/usr/bin/security";
@@ -30,9 +31,16 @@ export type KeychainReadResult =
   | { ok: true; data: Buffer }
   | { ok: false; reason: "not_found" | "denied" | "timeout" | "failed" };
 
-/** `security`'s exit code for "the item is not there" (errSecItemNotFound). */
+/**
+ * `security` exits with the low byte of the OSStatus. 44 is -25300
+ * (errSecItemNotFound): the item is not there.
+ */
 const SECURITY_NOT_FOUND = 44;
-/** Exit codes `security` gives when the person pressed Deny or closed the prompt. */
+/**
+ * The person said no: 51 is -25293 (errSecAuthFailed), 36 is -25308
+ * (errSecInteractionNotAllowed), 128 is -128 (userCanceledErr). The mapping
+ * is consistent with the OSStatus values, but it is not checked on a real Mac.
+ */
 const SECURITY_DENIED = new Set([36, 51, 128]);
 
 /**

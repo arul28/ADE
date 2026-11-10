@@ -18,6 +18,7 @@ import {
 } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
 import { DESKTOP_CLIENT_NAMES, isRemoteBrainCallerClientName } from "../../../../desktop/src/shared/runtimeClientNames";
+import { thisDesktopOnlyRefusal } from "../../../../desktop/src/shared/adeActionAccess";
 
 const MACHINE_ACCOUNT_METHODS = {
   "cloud.call": "cloud",
@@ -75,6 +76,8 @@ export async function runMachineAccountAction(
   // The person's own desktop app on this computer: Settings › the provider always
   // asks this computer's brain, never another one's.
   const localDesktop = userClient && caller.clientName === DESKTOP_CLIENT_NAMES.local;
+  const thisDesktopOnly = thisDesktopOnlyRefusal(domain, action);
+  if (thisDesktopOnly && !localDesktop) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, thisDesktopOnly);
   if (isUserOnlyAdeAction(domain, action) && !localDesktop) {
     throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `${domain}.${action} is limited to the ADE desktop app on this computer.`);
   }
