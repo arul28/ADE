@@ -1974,10 +1974,9 @@ export function registerRuntimeBridge({
       const target = requireRemoteTarget(id);
       const request = normalizeRuntimeStreamEventsRequest(arg?.request);
       // Keys stay on the pin's own id, so a release names the same stream; only
-      // the machine is asked by the id it lists, read at each (re)subscribe.
+      // the machine is asked by the id it lists, found at each (re)subscribe.
       const bindingKey = remoteProjectBindingKey(target.id, projectId);
       const requestKey = runtimeEventRequestKey(bindingKey, request);
-      const routedProjectId = () => remoteConnectionService.projectIdOnMachine(target.id, projectId, projectRootPath);
       const subscribe = (
         onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
         onEnded: () => void,
@@ -1985,7 +1984,7 @@ export function registerRuntimeBridge({
       ) =>
         remoteConnectionService.subscribeEvents(
           target.id,
-          routedProjectId(),
+          projectId,
           {
             cursor: request.cursor,
             limit: request.limit,
@@ -1995,6 +1994,7 @@ export function registerRuntimeBridge({
           onEvent,
           onEnded,
           onSubscribed,
+          { projectRootPath },
         );
       if (request.replay === false) {
         const subscriptionInit = await ensureRuntimeEventSubscription(
@@ -2014,7 +2014,7 @@ export function registerRuntimeBridge({
         };
       }
       const result = withRendererVisibleEvents(
-        await remoteConnectionService.streamEvents(target.id, routedProjectId(), request),
+        await remoteConnectionService.streamEvents(target.id, projectId, request, { projectRootPath }),
       );
       // A pump that started live already has a push stream for this binding and
       // category. A second, replaying one would send every event over the wire
