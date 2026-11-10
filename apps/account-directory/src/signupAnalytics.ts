@@ -27,13 +27,14 @@
  */
 
 import { deleteCloudAccount } from "./cloud/accountDeletion";
+import { closeLaneSharesForAccount } from "./laneShares/routes";
 import { reportCloudFailure } from "./cloud/store";
 
 export type SignupAnalyticsEnv = {
   CLERK_WEBHOOK_SIGNING_SECRET?: string;
   POSTHOG_PROJECT_TOKEN?: string;
   POSTHOG_HOST?: string;
-  /** For `user.deleted`: the account's ADE Cloud computers, plan and saved chats go with it. */
+  /** For `user.deleted`: the account's ADE Cloud computers, plan and saved chats go with it, and its lane shares close. */
   DB?: D1Database;
   CLOUD_CHATS?: R2Bucket;
   AGENT37_API_KEY?: string;
@@ -242,7 +243,14 @@ export async function handleSignupAnalyticsRequest(
   if (!userId || userId.length > 512) return json(400, { error: "bad_user" });
 
   if (payload.type === "user.deleted" && env.DB) {
-    // Before the capture, so a failure here asks Clerk to deliver again.
+    // Before the capture, so a failure here asks Clerk to deliver again. Lane
+    // shares first: one D1 write that must not wait on the provider below.
+    try {
+      await closeLaneSharesForAccount({ DB: env.DB }, userId);
+    } catch (error) {
+      reportCloudFailure("lane_share.account_close_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+      return json(502, { error: "lane_share_close_failed" });
+    }
     try {
       await deleteCloudAccount({ ...env, DB: env.DB }, userId);
     } catch (error) {

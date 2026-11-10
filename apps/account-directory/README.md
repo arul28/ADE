@@ -879,6 +879,34 @@ here (`src/cloud/chats.ts`, routes in `contract.ts`).
 - Rollout: `wrangler r2 bucket create ade-cloud-chats` (and `-production`),
   `wrangler secret put CLOUD_CHAT_MASTER_KEY` on both environments.
 
+## Lane sharing
+
+One account (the giver) gives another account (the receiver) limited access
+to one lane on one of the giver's machines (`src/laneShares/routes.ts`, table
+in migration 0019, routes and shapes in `src/laneShares/contract.ts`). This
+Worker is only the index and the revocation list. It holds no detailed rights
+and a grant here never opens a machine: the host machine keeps the rights and
+calls `POST /lane-shares/host` on every guest connection.
+
+- Every route takes the account bearer and checks the caller's user id against
+  the row. A pending invite matches a caller only through an address Clerk has
+  VERIFIED for that caller, read on each call with `CLERK_SECRET_KEY`. Without
+  that key, invite, accept and open by the invitee answer 503.
+- A grant the caller may not see answers 404, the same as an id that does not
+  exist. The routes ask Clerk before they decide that 404.
+- At most 5 guests (pending and active) per lane. An invite lasts 24 h, on the
+  server clock. A second invite to the same address refreshes the pending one.
+- Limits against spam: 20 invites and re-sends per giver per UTC day, 5 invite
+  emails per address per UTC day, one email per invite per 10 minutes and 5 in
+  its life (`lane_share_invite_days`, as in the Jev bonus).
+- The invite email goes through Resend (`RESEND_API_KEY`). Without the key, or
+  when the send fails, the invite still succeeds and says `emailSent: false`.
+- The host read lists every live grant of the machine. A host drops any cached
+  grant that is not in the list, so a revoke counts at the next connection.
+- Clerk `user.deleted` closes every live grant given by or to the account.
+- The cron writes the clock-derived states, deletes rows closed 90 days ago,
+  and drops budget rows older than a week.
+
 ## Sign-up analytics
 
 `POST /webhooks/clerk` takes Clerk's `user.created` and `user.deleted`

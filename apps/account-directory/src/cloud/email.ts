@@ -1,7 +1,7 @@
 /**
- * ADE Cloud's email through Resend, as a branded page with a plain-text copy.
- * With no `RESEND_API_KEY`, logs the subject and carries on. A failed send never
- * fails the work that asked for it.
+ * This Worker's email through Resend, as a branded page with a plain-text copy:
+ * ADE Cloud notices and lane share invites. With no `RESEND_API_KEY`, logs a
+ * line and carries on. A failed send never fails the work that asked for it.
  */
 
 const RESEND_URL = "https://api.resend.com/emails";
@@ -39,12 +39,29 @@ function hoursMeter(percentUsed: number): string {
 <p style="margin:0 0 24px;font:13px/18px ${FONT};color:#8b8b9a;">${percent}% of this period's hours used</p>`;
 }
 
-function renderCloudEmail(email: CloudEmail): string {
+const CLOUD_FOOTER = "ADE Cloud account notice, sent automatically. Replies to this address aren't read.";
+
+type RenderedEmail = {
+  subject: string;
+  text: string;
+  percentUsed?: number;
+  /** One button under the text. The URL must be one this Worker built. */
+  action?: { label: string; url: string };
+  footer?: string;
+};
+
+function actionButton(action: { label: string; url: string }): string {
+  const href = escapeHtml(action.url);
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:8px 0 16px;"><tr><td bgcolor="#7c3aed" style="background:#7c3aed;border-radius:8px;"><a href="${href}" style="display:inline-block;padding:12px 20px;font:600 15px/20px ${FONT};color:#ffffff;text-decoration:none;">${escapeHtml(action.label)}</a></td></tr></table>`;
+}
+
+function renderCloudEmail(email: RenderedEmail): string {
   const lines = email.text.split("\n").map((line) => line.trim()).filter(Boolean);
   const paragraphs = lines
     .map((line) => `<p style="margin:0 0 16px;font:16px/25px ${FONT};color:#c9c9d4;">${escapeHtml(line)}</p>`)
     .join("\n");
-  const meter = "percentUsed" in email && email.percentUsed != null ? hoursMeter(email.percentUsed) : "";
+  const meter = email.percentUsed != null ? hoursMeter(email.percentUsed) : "";
+  const button = email.action ? actionButton(email.action) : "";
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark"><meta name="supported-color-schemes" content="dark"><title>${escapeHtml(email.subject)}</title></head>
@@ -56,8 +73,9 @@ function renderCloudEmail(email: CloudEmail): string {
 <tr><td bgcolor="#16161e" style="background:#16161e;border:1px solid #27273a;border-radius:12px;padding:32px;">
 <h1 style="margin:0 0 16px;font:600 22px/30px ${FONT};color:#f5f5f7;">${escapeHtml(email.subject)}</h1>
 ${meter}${paragraphs}
+${button}
 </td></tr>
-<tr><td style="padding:20px 4px 0;font:12px/18px ${FONT};color:#6b6b7a;">ADE Cloud account notice, sent automatically. Replies to this address aren't read.<br><a href="${SITE_URL}" style="color:#8b8b9a;text-decoration:underline;">ade-app.dev</a></td></tr>
+<tr><td style="padding:20px 4px 0;font:12px/18px ${FONT};color:#6b6b7a;">${escapeHtml(email.footer ?? CLOUD_FOOTER)}<br><a href="${SITE_URL}" style="color:#8b8b9a;text-decoration:underline;">ade-app.dev</a></td></tr>
 </table></td></tr></table>
 </body></html>`;
 }
@@ -105,5 +123,64 @@ export async function sendCloudEmail(env: CloudEmailEnv, email: CloudEmail): Pro
     logEmail(response.ok ? "cloud.email_sent" : "cloud.email_refused", { target, subject: email.subject, status: response.status });
   } catch {
     logEmail("cloud.email_failed", { target, subject: email.subject });
+  }
+}
+
+export type LaneShareInviteEmail = {
+  /** The invited address, already normalized. */
+  to: string;
+  /** Who shares: a name, or null for "An ADE user". Client text; escaped here. */
+  giverLabel: string | null;
+  projectLabel: string | null;
+  laneLabel: string | null;
+  link: string;
+};
+
+export type DirectEmailOutcome = "sent" | "not_configured" | "failed";
+
+/**
+ * A lane share invite to the address the giver typed. Returns what happened,
+ * so the invite can say whether the email went out; it never throws. The log
+ * line carries the kind and status only: no address, no names, no subject.
+ */
+export async function sendLaneShareInviteEmail(env: CloudEmailEnv, invite: LaneShareInviteEmail): Promise<DirectEmailOutcome> {
+  const resendKey = env.RESEND_API_KEY?.trim();
+  if (!resendKey) {
+    logEmail("lane_share.email_skipped", { reason: "not_configured" });
+    return "not_configured";
+  }
+  const who = invite.giverLabel ?? "An ADE user";
+  const lane = invite.laneLabel ? `the lane "${invite.laneLabel}"` : "a lane";
+  const project = invite.projectLabel ? ` in ${invite.projectLabel}` : "";
+  const subject = `${who} shared a lane with you in ADE`;
+  const text = [
+    `${who} invited you to ${lane}${project}.`,
+    "Open the invite to see what you can do in it. The invite works for 24 hours, and only when you sign in to ADE with this email address.",
+    "If you did not expect this, you can ignore this email.",
+    `Open the invite: ${invite.link}`,
+  ].join("\n");
+  try {
+    const response = await fetch(RESEND_URL, {
+      method: "POST",
+      headers: { authorization: `Bearer ${resendKey}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        from: FROM_ADDRESS,
+        to: [invite.to],
+        subject,
+        text,
+        html: renderCloudEmail({
+          subject,
+          text: text.split("\n").slice(0, -1).join("\n"),
+          action: { label: "Open the invite", url: invite.link },
+          footer: "ADE lane share invite, sent because an ADE user entered this address. Replies to this address aren't read.",
+        }),
+      }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    logEmail(response.ok ? "lane_share.email_sent" : "lane_share.email_refused", { status: response.status });
+    return response.ok ? "sent" : "failed";
+  } catch {
+    logEmail("lane_share.email_failed", {});
+    return "failed";
   }
 }
