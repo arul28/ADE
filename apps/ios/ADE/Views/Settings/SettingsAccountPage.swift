@@ -29,7 +29,12 @@ struct SettingsAccountPage: View {
 
   var body: some View {
     ADESettingsPage(route: .account) {
-      if let identity = account.identity, account.phase == .signedIn {
+      if account.phase == .loading {
+        // A cached session is still restoring; do not offer Sign in yet.
+        ADESettingsRows {
+          ADESettingsLoadingRow(title: "Checking your account…")
+        }
+      } else if let identity = account.identity, account.phase == .signedIn {
         heroSection(identity)
         computersSection
         detailsSection(identity)

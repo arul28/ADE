@@ -28117,6 +28117,9 @@ extension SyncService {
     // The last work hydration before the switch. Only a newer one belongs to
     // the new connection.
     let baselineHydratedAt = domainStatuses[.work]?.lastHydratedAt
+    // Already focused and live: the switch does not reconnect, so no fresh
+    // hydration comes and there is nothing to wait for.
+    let wasAlreadyAttached = machineKey == focusedMachineKey && connectionState == .connected
     guard await switchFocusKeepingPrevious(toMachineKey: machineKey) else { return false }
     let root = normalizedProjectRoot(project.rootPath)
     let target = projects.first { candidate in
@@ -28128,7 +28131,7 @@ extension SyncService {
     // when the project is already active.
     await openProjectForHubChat(target)
     guard focusedMachineKey == machineKey, isActiveProject(target) else { return false }
-    if wasActive {
+    if wasActive && !wasAlreadyAttached {
       // Already active after the focus switch, so nothing waited for the new
       // connection's work rows yet.
       await awaitFreshActiveProjectWorkHydration(
