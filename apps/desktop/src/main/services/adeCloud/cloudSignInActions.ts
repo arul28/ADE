@@ -23,6 +23,8 @@ import {
 } from "../../../shared/cloudSignIns";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import type { UsageSnapshot } from "../../../shared/types/usage";
+import { claudePassAccountUse } from "../claudePass/claudePassUse";
 import { pinnedLoginCliState } from "../pty/pinnedProviderCli";
 import { spawnLoginPty, stopLoginPty } from "../shared/cliLoginPty";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
@@ -109,6 +111,15 @@ function optionalPassKey(args: unknown): string | null {
 }
 
 /** The signed-in Claude accounts of this computer with an email; copies of another account are left out. */
+/** The shown usage of this computer's usage service, when it runs here. No poll, no request. */
+async function machineUsageSnapshot(): Promise<Pick<UsageSnapshot, "windows" | "accounts"> | null> {
+  const [{ peekSharedUsageTrackingService }, { resolveMachineAdeLayout }] = await Promise.all([
+    import("../usage/sharedUsageTracking"),
+    import("../../../../../ade-cli/src/services/projects/machineLayout"),
+  ]);
+  return peekSharedUsageTrackingService(resolveMachineAdeLayout().adeDir)?.getUsageSnapshot() ?? null;
+}
+
 function machineClaudeAccounts(): CloudClaudeLocalAccount[] {
   try {
     return getMachineProviderInstanceStore().list("claude")
@@ -137,9 +148,12 @@ export function buildCloudSignInActions(deps: {
   machine?: () => Promise<ClaudePassMachineStamp | null>;
   /** Which account a pass is for (claudePassVerify.ts). */
   verify?: ClaudeVerify;
+  /** This computer's shown usage (memory only), for the use of each pass. */
+  usageSnapshot?: () => Promise<Pick<UsageSnapshot, "windows" | "accounts"> | null>;
   logger?: Logger;
 }) {
   const localAccounts = deps.localAccounts ?? machineClaudeAccounts;
+  const usageSnapshot = deps.usageSnapshot ?? machineUsageSnapshot;
   const machine = deps.machine ?? localClaudePassMachine;
   const verify: ClaudeVerify = deps.verify ?? ((token, options) => verifyClaudePass(token, { signal: options.signal, logger: deps.logger }));
   const signIn = () => claudeSignIn(deps.logger, verify);
@@ -190,7 +204,15 @@ export function buildCloudSignInActions(deps: {
     } catch {
       // No account list; the sign-in still runs with "Another account".
     }
-    const [saved, passes] = await Promise.all([readCloudSignIns(vaults, deps.logger), readPasses(vaults, accounts)]);
+    const [saved, readPassList, usage] = await Promise.all([
+      readCloudSignIns(vaults, deps.logger),
+      readPasses(vaults, accounts),
+      usageSnapshot().catch(() => null),
+    ]);
+    // Claude's limits belong to the account: a pass shows those of the account
+    // with the same verified email that this computer tracks.
+    const nowMs = Date.now();
+    const passes = readPassList?.map((pass) => (pass.unreadable ? pass : { ...pass, use: claudePassAccountUse(pass, usage, nowMs) })) ?? null;
     let claude = signIn().state();
     // A pass kept only here that has reached the account since: signed in now.
     if (claude?.state === "saved_here" && claude.savedKey) {

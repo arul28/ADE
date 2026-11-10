@@ -192,6 +192,74 @@ export type ClaudePassLabelSource = "checked" | "pressed" | "typed" | "none";
  */
 export type ClaudePassState = "active" | "ending_soon" | "estimate_passed" | "ended";
 
+/**
+ * Where one window of a pass's use comes from. `pass_turn`: the pass's own
+ * turns on a cloud computer (`rate_limit_event`). `account_here`: the Claude
+ * account with the same verified email that one of the person's computers
+ * tracks; Claude's limits belong to the account, so they are the pass's too.
+ * `label`: the computer that read it, or null when the reader is the one asked.
+ */
+export type ClaudePassUseSource = { kind: "pass_turn" | "account_here"; label: string | null };
+
+/** One window of a pass's use. */
+export type ClaudePassUseWindow = {
+  /** 0–100, or null when the source gave no share. */
+  usedPct: number | null;
+  /** Epoch ms, or null. */
+  resetsAt: number | null;
+  /** What Claude said in the turn; null for `account_here` (the usage read gives no status). */
+  status: "allowed" | "allowed_warning" | "rejected" | null;
+  /** Epoch ms of the reading. */
+  seenAt: number;
+  /** The reset time is past: the share is from before the reset, so do not show it. */
+  resetSinceSeen: boolean;
+  from: ClaudePassUseSource;
+};
+
+/** A pass's use: `none_seen` shows "No use seen yet", never 0 %. */
+export type ClaudePassUseView =
+  | { state: "none_seen" }
+  | {
+    state: "seen";
+    /** Epoch ms of the newest window. */
+    lastSeenAt: number;
+    fiveHour: ClaudePassUseWindow | null;
+    weekly: ClaudePassUseWindow | null;
+    models: Partial<Record<"opus" | "sonnet", ClaudePassUseWindow>>;
+    /** The source of the newest window, for a one-line caption. */
+    from: ClaudePassUseSource & { seenAt: number };
+  };
+
+function newerWindow(a: ClaudePassUseWindow | null | undefined, b: ClaudePassUseWindow | null | undefined): ClaudePassUseWindow | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  // A window from before its reset loses to one that is still current.
+  if (a.resetSinceSeen !== b.resetSinceSeen) return a.resetSinceSeen ? b : a;
+  return b.seenAt > a.seenAt ? b : a;
+}
+
+/**
+ * Two readings of one pass's use joined: per window, the newer one by
+ * `seenAt` (a current window beats one from before its reset). For a view
+ * that holds both the cloud computer's `claudePasses[].use` (`pass_turn`) and
+ * the account side's `CloudClaudePass.use` (`account_here`).
+ */
+export function newerClaudePassUse(a: ClaudePassUseView | null | undefined, b: ClaudePassUseView | null | undefined): ClaudePassUseView {
+  if (!a || a.state === "none_seen") return b ?? { state: "none_seen" };
+  if (!b || b.state === "none_seen") return a;
+  const fiveHour = newerWindow(a.fiveHour, b.fiveHour);
+  const weekly = newerWindow(a.weekly, b.weekly);
+  const models: Partial<Record<"opus" | "sonnet", ClaudePassUseWindow>> = {};
+  for (const family of ["opus", "sonnet"] as const) {
+    const window = newerWindow(a.models[family], b.models[family]);
+    if (window) models[family] = window;
+  }
+  const windows = [fiveHour, weekly, models.opus, models.sonnet].filter((window): window is ClaudePassUseWindow => Boolean(window));
+  if (windows.length === 0) return { state: "none_seen" };
+  const newest = windows.reduce((best, window) => (window.seenAt > best.seenAt ? window : best));
+  return { state: "seen", lastSeenAt: newest.seenAt, fiveHour, weekly, models, from: { ...newest.from, seenAt: newest.seenAt } };
+}
+
 /** One Claude pass for ADE Cloud, as a window may see it: never the token. */
 export type CloudClaudePass = {
   /** Vault key, `claude-pass/<12 hex>` or `claude-pass/legacy`. Stable. */
@@ -219,6 +287,14 @@ export type CloudClaudePass = {
   noticeDueAt: number;
   /** The local Claude account on the brain that answered with the same email, or null. */
   localInstanceId: string | null;
+  /**
+   * The limits of the Claude account with the same verified email (`check:
+   * "match"`) that this computer tracks, from its own reading or another of
+   * the person's computers (`from.kind: "account_here"`). `none_seen` when no
+   * such account has numbers. Join it with the cloud computer's
+   * `claudePasses[].use` through `newerClaudePassUse`.
+   */
+  use: ClaudePassUseView;
   /** Not `account`: only on the computer that answered so far. */
   upload: ClaudePassUpload;
   unreadable: false;

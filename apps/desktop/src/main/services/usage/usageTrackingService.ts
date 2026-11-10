@@ -90,7 +90,13 @@ import {
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
 import { getMachineProviderInstanceStore, sameLoginOwner } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
-import { claudePassUsageWindows } from "../claudePass/claudePassUse";
+import {
+  claudePassKeyOfInstance,
+  claudePassUsageWindows,
+  claudePassUseOf,
+  claudePassVerifiedEmail,
+} from "../claudePass/claudePassUse";
+import type { ClaudePassCheck } from "../../../shared/cloudSignIns";
 import { machineProviderUsageHomes } from "./providerUsageHomes";
 import {
   accountBalanceModelWeight,
@@ -1314,18 +1320,37 @@ async function refreshClaudeLoginInBackground(
   return refreshed;
 }
 
+function claudePassOfInstance(instanceId: string): { key: string; email: string | null; check: ClaudePassCheck } | null {
+  try {
+    return getMachineProviderInstanceStore().cloudPassOf(instanceId);
+  } catch {
+    return null;
+  }
+}
+
+function isClaudePassAccount(instanceId: string): boolean {
+  return claudePassOfInstance(instanceId) !== null;
+}
+
+function claudePassUsageIdentity(pass: { email: string | null; check: ClaudePassCheck }): ProviderAccountIdentity {
+  const email = claudePassVerifiedEmail(pass);
+  return email ? { email } : {};
+}
+
+function claudePassMachines(pass: { key: string }, machineLabel: string): UsageAccount["machines"] {
+  const use = claudePassUseOf(pass.key);
+  return [{ label: machineLabel, ...(use.state === "seen" ? { checkedAt: new Date(use.lastSeenAt).toISOString() } : {}) }];
+}
+
+function withoutEmail(account: UsageAccount): UsageAccount {
+  const { email: _email, ...rest } = account;
+  return rest;
+}
+
 /**
  * Quota for ONE Claude account. `null` = this account's config home holds no
  * login, so it has nothing to report.
  */
-function isClaudePassAccount(instanceId: string): boolean {
-  try {
-    return getMachineProviderInstanceStore().cloudPassOf(instanceId) !== null;
-  } catch {
-    return false;
-  }
-}
-
 async function pollClaudeInstance(
   logger: Logger,
   context: UsageProviderPollContext,
@@ -3723,9 +3748,15 @@ async function stampProviderAccounts(
       // a scoped home reports a signed-in machine as signed out), and every
       // other row is read from its own home (stamping the base email on a
       // promoted secondary shows one account under another's address).
-      const identity = isBaseProviderInstance({ id: instance.id, provider: key })
-        ? baseIdentity
-        : await readInstanceAccountIdentity(key, instance);
+      // A Claude pass has no account file: its identity is the email Claude
+      // named at the check, never a typed one, so peers' readings of that
+      // account pool onto it (smart balance before its first turn).
+      const pass = key === "claude" ? claudePassOfInstance(instance.id) : null;
+      const identity = pass
+        ? claudePassUsageIdentity(pass)
+        : isBaseProviderInstance({ id: instance.id, provider: key })
+          ? baseIdentity
+          : await readInstanceAccountIdentity(key, instance);
       if (instance.isDefault) defaultIdentity = identity;
       if (identity.email && instance.account?.email
         && identity.email.trim().toLowerCase() !== instance.account.email.trim().toLowerCase()) {
@@ -3749,7 +3780,8 @@ async function stampProviderAccounts(
         instanceId: instance.id,
         label: instance.label,
         ...(instance.accentColor ? { accentColor: instance.accentColor } : {}),
-        machines,
+        // A pass's reading is as old as its last turn, not as the poll that copied it.
+        machines: pass ? claudePassMachines(pass, machineLabel) : machines,
         ...(url ? { url } : {}),
         ...(resetCredits ? { resetCredits } : {}),
       });
@@ -6430,7 +6462,10 @@ export function createUsageTrackingService({
   function getOwnLiveQuota(): { windows: UsageWindow[]; accounts: UsageAccount[] } {
     return {
       windows: lastSnapshot.windows.slice(0, MAX_LIVE_QUOTA_WINDOWS),
-      accounts: (lastSnapshot.accounts ?? []).slice(0, MAX_LIVE_QUOTA_ACCOUNTS),
+      // A Claude pass gives peers no email, as before: its own numbers reach
+      // the person's computers through its status, named as the pass's.
+      accounts: (lastSnapshot.accounts ?? []).slice(0, MAX_LIVE_QUOTA_ACCOUNTS)
+        .map((account) => (account.email && claudePassKeyOfInstance(account.instanceId) ? withoutEmail(account) : account)),
     };
   }
 

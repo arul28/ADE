@@ -443,6 +443,8 @@ export function summarizeClaudePass(
     noticeDueAt: pass.expiresAt - CLAUDE_PASS_NOTICE_MS,
     unreadable: false,
     localInstanceId: local?.instanceId ?? null,
+    // The account side fills it from this computer's usage (cloudSignInActions.ts).
+    use: { state: "none_seen" },
     upload,
   };
 }

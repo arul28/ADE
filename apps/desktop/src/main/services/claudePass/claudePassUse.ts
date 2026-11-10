@@ -21,7 +21,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { UsageWindow } from "../../../shared/types/usage";
+import type { UsageSnapshot, UsageWindow } from "../../../shared/types/usage";
+import type { ClaudePassCheck, ClaudePassUseSource, ClaudePassUseView, ClaudePassUseWindow } from "../../../shared/cloudSignIns";
 import { normalizeResetsAtMs, utilizationToPercent } from "../../../shared/claudeSessionQuota";
 
 export const CLAUDE_PASS_USE_FILE = "claude-pass-use.json";
@@ -53,23 +54,9 @@ type PassUse = {
   models?: Partial<Record<"opus" | "sonnet", ClaudePassSeenWindow>>;
 };
 
-/** One window as the status shows it. */
-export type ClaudePassUseWindow = ClaudePassSeenWindow & {
-  /** The reset time is past: the share is from before the reset, so it is not shown. */
-  resetSinceSeen: boolean;
-};
+export type { ClaudePassUseView, ClaudePassUseWindow } from "../../../shared/cloudSignIns";
 
-/** A pass's use for `claudePasses[].use`. */
-export type ClaudePassUseView =
-  | { state: "none_seen" }
-  | {
-    state: "seen";
-    /** Epoch ms of the newest event. */
-    lastSeenAt: number;
-    fiveHour: ClaudePassUseWindow | null;
-    weekly: ClaudePassUseWindow | null;
-    models: Partial<Record<"opus" | "sonnet", ClaudePassUseWindow>>;
-  };
+const PASS_TURN: ClaudePassUseSource = { kind: "pass_turn", label: null };
 
 const useByKey = new Map<string, PassUse>();
 let filePath: string | null = null;
@@ -210,7 +197,7 @@ export function keepClaudePassUse(keys: ReadonlySet<string>): void {
 
 function viewWindow(window: ClaudePassSeenWindow | undefined, now: number): ClaudePassUseWindow | null {
   if (!window) return null;
-  return { ...window, resetSinceSeen: window.resetsAt != null && window.resetsAt <= now };
+  return { ...window, resetSinceSeen: window.resetsAt != null && window.resetsAt <= now, from: PASS_TURN };
 }
 
 /** `claudePasses[].use` for one pass key. */
@@ -224,12 +211,79 @@ export function claudePassUseOf(key: string, now: number = Date.now()): ClaudePa
     const window = viewWindow(use.models?.[family], now);
     if (window) models[family] = window;
   }
+  const lastSeenAt = Math.max(...seen.map((window) => window.seenAt));
   return {
     state: "seen",
-    lastSeenAt: Math.max(...seen.map((window) => window.seenAt)),
+    lastSeenAt,
     fiveHour: viewWindow(use.fiveHour, now),
     weekly: viewWindow(use.weekly, now),
     models,
+    from: { ...PASS_TURN, seenAt: lastSeenAt },
+  };
+}
+
+/** The email a pass can be matched by: only one Claude named (`check: "match"`), trimmed and lower-case. */
+export function claudePassVerifiedEmail(pass: { email: string | null | undefined; check: ClaudePassCheck }): string | null {
+  if (pass.check !== "match") return null;
+  const email = pass.email?.trim().toLowerCase() ?? "";
+  return email.includes("@") ? email : null;
+}
+
+function windowSeenAt(window: UsageWindow, fallback: number): number {
+  const read = Date.parse(window.readAt ?? "");
+  return Number.isFinite(read) ? read : fallback;
+}
+
+/**
+ * A pass's use from the Claude account with the same verified email in this
+ * computer's usage snapshot (the shown view: this computer's own accounts,
+ * each with the freshest reading of any of the person's computers, and the
+ * accounts only another computer holds). Pass accounts are never a source.
+ * Two accounts with the email: the one with the newest reading. No match, or
+ * no current window: `none_seen`. Reads memory only.
+ */
+export function claudePassAccountUse(
+  pass: { email: string | null | undefined; check: ClaudePassCheck },
+  snapshot: Pick<UsageSnapshot, "windows" | "accounts"> | null | undefined,
+  now: number = Date.now(),
+): ClaudePassUseView {
+  const email = claudePassVerifiedEmail(pass);
+  if (!email || !snapshot) return { state: "none_seen" };
+  let best: { windows: ClaudePassUseWindow[]; fiveHour: ClaudePassUseWindow | null; weekly: ClaudePassUseWindow | null; seenAt: number } | null = null;
+  for (const account of snapshot.accounts ?? []) {
+    if (account.provider !== "claude" || account.email?.trim().toLowerCase() !== email) continue;
+    if (claudePassKeyOfInstance(account.instanceId)) continue;
+    const machine = account.readingFrom ?? account.machines[0];
+    const checkedAt = Date.parse(machine?.checkedAt ?? "");
+    const from: ClaudePassUseSource = { kind: "account_here", label: machine?.label ?? null };
+    const pick = (windowType: "five_hour" | "weekly"): ClaudePassUseWindow | null => {
+      const window = snapshot.windows.find((candidate) => candidate.accountId === account.id
+        && candidate.windowType === windowType && Date.parse(candidate.resetsAt) > now);
+      if (!window) return null;
+      return {
+        usedPct: Math.max(0, Math.min(100, window.percentUsed)),
+        resetsAt: Date.parse(window.resetsAt),
+        status: null,
+        seenAt: windowSeenAt(window, Number.isFinite(checkedAt) ? checkedAt : 0),
+        resetSinceSeen: false,
+        from,
+      };
+    };
+    const fiveHour = pick("five_hour");
+    const weekly = pick("weekly");
+    const windows = [fiveHour, weekly].filter((window): window is ClaudePassUseWindow => Boolean(window));
+    if (windows.length === 0) continue;
+    const seenAt = Math.max(...windows.map((window) => window.seenAt));
+    if (!best || seenAt > best.seenAt) best = { windows, fiveHour, weekly, seenAt };
+  }
+  if (!best) return { state: "none_seen" };
+  return {
+    state: "seen",
+    lastSeenAt: best.seenAt,
+    fiveHour: best.fiveHour,
+    weekly: best.weekly,
+    models: {},
+    from: { ...best.windows[0]!.from, seenAt: best.seenAt },
   };
 }
 
