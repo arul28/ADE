@@ -11,6 +11,7 @@ import {
   useLocation,
   useNavigate
 } from "react-router-dom";
+import { laneShareGuestPath } from "../laneShare/guest/laneShareGuestRoute";
 import { shallow } from "zustand/shallow";
 import { useShallow } from "zustand/react/shallow";
 
@@ -119,6 +120,9 @@ const AutomationsPage = React.lazy(() =>
 );
 const SettingsPage = React.lazy(() =>
   import("./SettingsPage").then((m) => ({ default: m.SettingsPage }))
+);
+const LaneShareGuestPage = React.lazy(() =>
+  import("../laneShare/guest/LaneShareGuestPage").then((m) => ({ default: m.LaneShareGuestPage }))
 );
 const PersonalChatsPage = React.lazy(() =>
   import("../personalChats/PersonalChatsPage").then((m) => ({ default: m.PersonalChatsPage }))
@@ -849,7 +853,9 @@ function ProjectTabHost() {
   const isBrowserRoute = !webMode && isBrowserTabRoute(location.pathname);
   // Music is machine-level too: Apple Music has nothing to do with a project.
   const isMusicRoute = !webMode && isMusicTabRoute(location.pathname);
-  const isMachineRoute = isPersonalChatsRoute || isBrowserRoute || isMusicRoute;
+  // Lanes other accounts share with me: an account page, not a project's.
+  const isSharedLanesRoute = location.pathname === "/shared";
+  const isMachineRoute = isPersonalChatsRoute || isBrowserRoute || isMusicRoute || isSharedLanesRoute;
   const isAccountRoute = location.pathname === "/account" || location.pathname.startsWith("/account/");
   // Settings with no project open: the welcome screen's own Settings entry
   // sends you here, and the machine-scoped sections of the page are the only
@@ -1189,6 +1195,13 @@ function ProjectTabHost() {
           </React.Suspense>
         </PageErrorBoundary>
       ) : null}
+      {isSharedLanesRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <LaneShareGuestPage />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
       {isAccountRoute && !accountOpensInSettings ? (
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
@@ -1468,6 +1481,12 @@ function AppNavigationBridge() {
         search: search ? `?${search}` : "",
         hash: anchor ? `#${anchor}` : "",
       });
+      return true;
+    }
+
+    if (target.kind === "lane-share") {
+      // An invite link: the shared lanes page opens it (sign in, accept or open).
+      navigate(laneShareGuestPath(target.grantId));
       return true;
     }
 

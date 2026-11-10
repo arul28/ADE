@@ -724,6 +724,11 @@ export type AppNavigationTarget =
       place: string;
     }
   | {
+      /** A lane another account shares with this one (an invite link). No project needed. */
+      kind: "lane-share";
+      grantId: string;
+    }
+  | {
       kind: "linear-issue";
       // Linear coding-tool hand-off. The renderer resolves the actual lane
       // by looking up lane.linearIssue.identifier; if no lane matches, the

@@ -2283,6 +2283,11 @@ export function registerIpc({
         cleaned: "[redacted]",
       };
     }
+    // A lane share ticket opens one guest connection; it is never logged.
+    if (channel === IPC.laneShareGuestConnect) {
+      if (!result || typeof result !== "object" || Array.isArray(result)) return "[redacted]";
+      return { ...(result as Record<string, unknown>), ticket: "[redacted]" };
+    }
     // A webhook URL carries its secret token: whoever has it can ring it.
     if (WEBHOOK_URL_RESULT_CHANNELS.has(channel)) {
       const hideUrl = (entry: unknown) => entry && typeof entry === "object" && !Array.isArray(entry) && "url" in entry
@@ -13110,6 +13115,24 @@ export function registerIpc({
   ipcMain.handle(IPC.accountListMachines, async (): Promise<AdeAccountMachinesResult> => {
     return accountBridge.listMachines();
   });
+
+  // Lane sharing, the guest's side: account calls from this computer to the
+  // account directory, with this computer's own token (it stays in main). No
+  // machine pin: the shared lane's machine is reached only by the renderer's
+  // guest connection, with the one-use ticket `connect` answers. The ticket
+  // is returned to the renderer and never logged or stored.
+  ipcMain.handle(IPC.laneShareGuestListReceived, async () => accountBridge.laneShareGuest().listReceived());
+  ipcMain.handle(IPC.laneShareGuestOpen, async (_event, arg: { grantId?: unknown }) =>
+    accountBridge.laneShareGuest().open({ grantId: String(arg?.grantId ?? "") }));
+  ipcMain.handle(IPC.laneShareGuestAccept, async (_event, arg: { grantId?: unknown }) =>
+    accountBridge.laneShareGuest().accept({ grantId: String(arg?.grantId ?? "") }));
+  ipcMain.handle(IPC.laneShareGuestLeave, async (_event, arg: { grantId?: unknown }) =>
+    accountBridge.laneShareGuest().leave({ grantId: String(arg?.grantId ?? "") }));
+  ipcMain.handle(IPC.laneShareGuestConnect, async (_event, arg: { grantId?: unknown; dpopThumbprint?: unknown }) =>
+    accountBridge.laneShareGuest().connect({
+      grantId: String(arg?.grantId ?? ""),
+      dpopThumbprint: String(arg?.dpopThumbprint ?? ""),
+    }));
 
   ipcMain.handle(
     IPC.accountGetMachineInventory,

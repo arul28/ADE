@@ -11,6 +11,7 @@ import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type {
+  LaneShareGuestBridge,
   LaneShareCreateArgs,
   LaneShareCreateResult,
   LaneShareEvent,
@@ -5232,6 +5233,12 @@ declare global {
         /** `lane_share_event` from the pinned machine, else the bound one. */
         onEvent: (cb: (event: LaneShareEvent) => void, pin?: OpenProjectBinding | null) => () => void;
       };
+      /**
+       * Lane sharing, the guest's side: this account's calls to the account
+       * directory (shares given TO it). Account scope, no pin: desktop asks
+       * from main with its own token, the web client from its account session.
+       */
+      laneShareGuest: LaneShareGuestBridge;
       remoteMcpCall: <T = unknown>(
         action: RemoteMcpAction,
         args?: Record<string, unknown>,

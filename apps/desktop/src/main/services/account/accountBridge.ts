@@ -58,8 +58,16 @@ import type {
 import {
   parseTrustedAccountDirectoryBaseUrl,
   shouldIgnoreDevelopmentAccountDirectoryUrl,
+  trustedAccountRelayBaseUrls,
   warnDevelopmentClerkIgnored,
 } from "../../../shared/accountDirectory";
+import { createLaneShareGuestDirectory } from "../../../shared/laneShareGuestDirectory";
+import type { LaneShareGuestBridge } from "../../../shared/types/laneShare";
+import {
+  LaneShareGrantError,
+  resolveLaneShareDirectoryBase,
+  sendLaneShareDirectoryRequest,
+} from "../../../../../ade-cli/src/services/sync/laneShareGrantService";
 
 type AccountBridgeOptions = {
   /** Resolves the active project root so CLERK_* project secrets win config. */
@@ -489,6 +497,13 @@ export type AccountBridge = {
    * is usually the process that could not read it.
    */
   repairCredentialStore(): Omit<AdeAccountSessionRepairResult, "brainRestarted">;
+  /**
+   * Lane sharing, the guest's side: this machine's account asks the account
+   * directory about grants given TO it, with its own token, here in main.
+   * The token goes only to the trusted directory; a host of another person
+   * sees only the one-use ticket that `connect` returns.
+   */
+  laneShareGuest(): LaneShareGuestBridge;
 };
 
 export type AccountBridgePairMachineOptions = {
@@ -594,6 +609,34 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
   };
 
   const configured = () => isLoginConfigured(options.getProjectRoot());
+  const laneShareDirectoryAccess = {
+    getAccessToken: async (tokenOptions?: { forceRefresh?: boolean }) => {
+      const accountService = service();
+      if (!accountService.getStatus().signedIn) return null;
+      return (await accountService.getAccessToken(tokenOptions)).trim() || null;
+    },
+    getDirectoryBaseUrl: () => resolveDirectoryBaseUrl(options.getProjectRoot()),
+  };
+  const laneShareGuestDirectory = createLaneShareGuestDirectory({
+    send: async (request) => {
+      try {
+        return await sendLaneShareDirectoryRequest(
+          laneShareDirectoryAccess,
+          resolveLaneShareDirectoryBase(laneShareDirectoryAccess),
+          request,
+        );
+      } catch (error) {
+        const code = error instanceof LaneShareGrantError && (error.code === "signed_out" || error.code === "no_directory")
+          ? error.code
+          : "unavailable";
+        throw new Error(`${code}: ${error instanceof Error ? error.message : "The account directory could not be reached."}`);
+      }
+    },
+    // The relay this machine itself uses may be a configured one.
+    trustedRelayBaseUrls: () => trustedAccountRelayBaseUrls(
+      process.env.ADE_TUNNEL_RELAY_URL?.trim() ? [process.env.ADE_TUNNEL_RELAY_URL.trim()] : [],
+    ),
+  });
   const directoryService = () => new AccountMachineDirectoryService(service(), {
     directoryBaseUrl: () => resolveDirectoryBaseUrl(options.getProjectRoot()),
     deviceName: () => `ADE Desktop on ${os.hostname()}`,
@@ -803,6 +846,8 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       reconcileLocalMachines(null);
       return toAccountStatus(status, configured());
     },
+
+    laneShareGuest: () => laneShareGuestDirectory,
 
     listMachines: async (): Promise<AdeAccountMachinesResult> => {
       const result = await directoryService().listMachines();

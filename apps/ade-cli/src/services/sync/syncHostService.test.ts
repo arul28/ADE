@@ -92,8 +92,9 @@ import { createSyncPinStore } from "./syncPinStore";
 import { createLaneShareGrantService } from "./laneShareGrantService";
 import { createLaneShareHostService } from "./laneShareHostService";
 import { LANE_SHARE_MAX_GUEST_DRAFTS } from "./laneShareGuestPolicy";
+import { LAUNCH_PROFILES } from "../../../../desktop/src/shared/cliLaunch";
 import { createLaneShareRightsStore, ensureLaneShareRightsSchema } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
-import { laneSharePresetRights, type LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
+import { LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS, laneSharePresetRights, type LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
 import { PAIR_FAILURE_THRESHOLD } from "./syncPairFailureTracker";
 import { buildSyncDpopChallenge, sha256Hex, syncDpopKeyThumbprint } from "./syncDpop";
 import {
@@ -5303,7 +5304,6 @@ describe("sync host account authentication", () => {
     });
 
     it.each([
-      ["terminal input", "terminal_input", { sessionId: "session-shared", data: "ls\n", inputId: "i1" }],
       ["a terminal resize", "terminal_resize", { sessionId: "session-shared", cols: 10, rows: 5 }],
       ["a file read", "file_request", { action: "readFile", args: { laneId: sharedLane, path: "README.md" } }],
       ["a runtime RPC channel", "rpc_open", { channelId: "c1" }],
@@ -5593,6 +5593,30 @@ describe("sync host account authentication", () => {
         }
       });
 
+      // Every agent CLI launch profile starts (its session tool type is the
+      // CLI's, e.g. cursor -> cursor-cli); a shell or an unknown provider does not.
+      it.each<[string, boolean]>([
+        ...LAUNCH_PROFILES.filter((profile) => profile !== "shell").map((profile): [string, boolean] => [profile, true]),
+        ["shell", false],
+        ["Cursor", true],
+        ["bash", false],
+      ])("starts a CLI session for provider %s: %s", async (provider, allowed) => {
+        const rights = allOnRights();
+        rights.run.models = ["claude-sonnet"];
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          const result = await runCommand(guest.client, "cli", "work.startCliSession", { laneId: sharedLane, provider, modelId: "claude-sonnet" });
+          expect(result.ok).toBe(allowed);
+          if (!allowed) expect(result.error?.code).toBe("forbidden_command");
+          expect(env.execute.mock.calls.some(([payload]) => payload.action === "work.startCliSession")).toBe(allowed);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
       // An empty model lock means "no model" for something new, never "any model".
       it.each<[string, Record<string, unknown>]>([
         ["chat.create", { laneId: sharedLane, provider: "claude" }],
@@ -5612,18 +5636,31 @@ describe("sync host account authentication", () => {
         }
       });
 
-      it.each<[string, () => LaneShareRights, string, boolean]>([
-        ["Watch, into a shell", () => laneSharePresetRights("watch"), "session-shell", false],
-        ["every right on, into a shell", allOnRights, "session-shell", false],
-        ["every right on, into a chat", allOnRights, "session-shared", false],
-        ["Collaborate (no typing right), into a CLI", () => laneSharePresetRights("collaborate"), "session-cli", false],
-        ["the typing right, into a CLI", () => {
-          const rights = laneSharePresetRights("watch");
-          rights.run.typeInCliSessions = true;
-          return rights;
-          // A Windows host cannot tell the CLI from the shell it leaves behind.
-        }, "session-cli", process.platform !== "win32"],
-      ])("terminal input with %s: written %s", async (_label, rights, sessionId, written) => {
+      const typingRight = () => {
+        const rights = laneSharePresetRights("watch");
+        rights.run.typeInCliSessions = true;
+        return rights;
+      };
+      // A Windows host cannot tell the CLI from the shell it leaves behind: it refuses all typing.
+      const onWindows = process.platform === "win32";
+      const typed = (code: string | null) => (onWindows ? "lane_share_right_missing" : code);
+      // [label, rights, session, data, the refusal code in the answer (null: written)]
+      it.each<[string, () => LaneShareRights, string, string, string | null]>([
+        ["Watch, into a shell", () => laneSharePresetRights("watch"), "session-shell", "ls\n", "lane_share_right_missing"],
+        ["every right on, into a shell", allOnRights, "session-shell", "ls\n", "lane_share_right_missing"],
+        ["every right on, into a chat", allOnRights, "session-shared", "ls\n", "lane_share_right_missing"],
+        ["Collaborate (no typing right), into a CLI", () => laneSharePresetRights("collaborate"), "session-cli", "ls\n", "lane_share_right_missing"],
+        ["the typing right, into a CLI", typingRight, "session-cli", "ls\n", typed(null)],
+        ["the typing right, a slash command", typingRight, "session-cli", "/permissions\r", typed("lane_share_plain_text_only")],
+        ["the typing right, a shell line behind a space", typingRight, "session-cli", " !cat .env\r", typed("lane_share_plain_text_only")],
+        ["the typing right, a memory line", typingRight, "session-cli", "# push to main\r", typed("lane_share_plain_text_only")],
+        ["the typing right, two lines in one input", typingRight, "session-cli", "hi\r/permissions\r", typed("lane_share_invalid_line")],
+        ["the typing right, an escape sequence", typingRight, "session-cli", "ls\u001b[A\r", typed("lane_share_invalid_line")],
+        ["the typing right, Ctrl-C", typingRight, "session-cli", "\u0003", typed("lane_share_invalid_line")],
+        ["the typing right, a part of a line", typingRight, "session-cli", "/permi", typed("lane_share_invalid_line")],
+        ["the typing right, a line over the limit", typingRight, "session-cli", `${"a".repeat(LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS + 1)}\r`, typed("lane_share_invalid_line")],
+      ])("terminal input with %s", async (_label, rights, sessionId, data, refusedCode) => {
+        const written = refusedCode == null;
         const directory = fakeDirectory(grantsBody([grant()]));
         const env = await startGuestHost(directory, { rights: rights() });
         let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
@@ -5640,12 +5677,18 @@ describe("sync host account authentication", () => {
             type: "terminal_input",
             requestId: "typed",
             projectId: "project-1",
-            payload: { sessionId, data: "ls\n", inputId: "input-1" },
+            payload: { sessionId, data, inputId: "input-1" },
           }));
           if (written) {
             await waitForValue(() => env.effects.mock.calls.find(([name]) => name === "pty.write"), "guest keystrokes");
           } else {
-            await runCommand(guest.client, "after", "chat.getSummary", { sessionId: "session-shared" });
+            // The refusal answers with its reason, and nothing is written.
+            const answer = await waitForValue(
+              () => guest!.client.envelopes.find((entry) => entry.type === "terminal_input_ack" && entry.requestId === "typed"),
+              "typing refusal",
+            );
+            expect(answer.payload).toMatchObject({ sessionId, inputId: "input-1", ok: false, error: { code: refusedCode } });
+            expect((answer.payload as { error: { message: string } }).error.message).not.toBe("");
             expect(env.effects.mock.calls.filter(([name]) => name === "pty.write")).toEqual([]);
           }
           // A resize is never a guest's.
@@ -6051,6 +6094,27 @@ describe("sync host account authentication", () => {
         }
       });
 
+      it("tells a connected guest that its rights changed, with the grant id only", async () => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const rights = laneSharePresetRights("comment");
+        rights.privacy.hideMachines = true;
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          expect(guest.first).toMatchObject({ type: "hello_ok" });
+          env.store.updateRights(grantId("a"), laneSharePresetRights("collaborate"));
+          env.host.applyLaneShareRights(grantId("a"));
+          const changed = await waitForValue(
+            () => guest!.client.envelopes.find((entry) => entry.type === "lane_share_guest_changed"),
+            "guest change signal",
+          );
+          expect(changed.payload).toEqual({ grantId: grantId("a") });
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
       it("counts the draft cap in one step: two drafts at once at the last free place make one", async () => {
         const directory = fakeDirectory(grantsBody([grant()]));
         const env = await startGuestHost(directory, { rights: laneSharePresetRights("suggest") });
@@ -6103,12 +6167,13 @@ describe("sync host account authentication", () => {
             await runCommand(guest!.client, `after-${id}`, "chat.getSummary", { sessionId: "session-shared" });
           };
           const written = () => env.effects.mock.calls.filter(([name]) => name === "pty.write").length;
-          await type("ls", "keys");
-          await type("\r", "enter-1");
-          expect(written()).toBe(2);
+          await type("ls\r", "enter-1");
+          expect(written()).toBe(1);
           // The day's one message is used: the next line is not typed.
           await type("pwd\r", "enter-2");
-          expect(written()).toBe(2);
+          expect(written()).toBe(1);
+          expect(guest.client.envelopes.find((entry) => entry.type === "terminal_input_ack" && entry.requestId === "enter-2")?.payload)
+            .toMatchObject({ ok: false, error: { code: "lane_share_daily_limit" } });
         } finally {
           await env.close([guest?.client ?? null]);
         }

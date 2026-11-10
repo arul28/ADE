@@ -1,6 +1,9 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type {
+  LaneShareAcceptResult,
+  LaneShareConnectTicket,
+  LaneShareOpenResult,
   LaneShareCreateArgs,
   LaneShareCreateResult,
   LaneShareEvent,
@@ -14493,6 +14496,21 @@ const adeBridge = {
       );
       return removePinned ?? remoteLaneShareEventFanout.subscribe(cb);
     },
+  },
+  // Lane sharing, the guest's side: account calls of THIS computer's account
+  // (main asks the directory with its own token). No pin: no machine is
+  // asked; the shared lane's machine is reached only by the renderer's guest
+  // connection with the one-use ticket `connect` answers.
+  laneShareGuest: {
+    listReceived: (): Promise<LaneShareReceivedResult> => ipcRenderer.invoke(IPC.laneShareGuestListReceived),
+    open: (args: { grantId: string }): Promise<LaneShareOpenResult> =>
+      ipcRenderer.invoke(IPC.laneShareGuestOpen, { grantId: args.grantId }),
+    accept: (args: { grantId: string }): Promise<LaneShareAcceptResult> =>
+      ipcRenderer.invoke(IPC.laneShareGuestAccept, { grantId: args.grantId }),
+    leave: (args: { grantId: string }): Promise<LaneShareLeaveResult> =>
+      ipcRenderer.invoke(IPC.laneShareGuestLeave, { grantId: args.grantId }),
+    connect: (args: { grantId: string; dpopThumbprint: string }): Promise<LaneShareConnectTicket> =>
+      ipcRenderer.invoke(IPC.laneShareGuestConnect, { grantId: args.grantId, dpopThumbprint: args.dpopThumbprint }),
   },
   // ADE MCP is a "This computer" section like keep-awake: no pin means
   // this machine's own brain (through main), a pin means that machine's brain.

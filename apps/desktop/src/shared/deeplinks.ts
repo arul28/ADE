@@ -196,8 +196,22 @@ export type DeeplinkOpenPlaceTarget = {
   place: string;
 };
 
+/**
+ * A lane another account shares with you (lane sharing). An address only:
+ * the grant id names the share, and the account directory decides whether
+ * this account may see it. `https://ade-app.dev/open?type=lane-share&id=<id>`
+ * is the invite link (`laneShareInviteLink`).
+ */
+export type DeeplinkLaneShareTarget = {
+  kind: "lane-share";
+  grantId: string;
+};
+
+const LANE_SHARE_GRANT_ID_RE = /^ls_[0-9a-f]{32}$/;
+
 export type DeeplinkTarget =
   | DeeplinkSettingsTarget
+  | DeeplinkLaneShareTarget
   | DeeplinkOpenPlaceTarget
   | DeeplinkLaneTarget
   | DeeplinkSessionTarget
@@ -486,6 +500,8 @@ function buildAdeUrl(target: DeeplinkTarget): string {
       const base = `${ADE_DEEPLINK_SCHEME}://settings/${encodeURIComponent(target.entryId)}`;
       return target.machineId ? `${base}?machine=${encodeURIComponent(target.machineId)}` : base;
     }
+    case "lane-share":
+      return `${ADE_DEEPLINK_SCHEME}://lane-share/${encodeURIComponent(target.grantId)}`;
     case "open":
       return `${ADE_DEEPLINK_SCHEME}://open/${encodeURIComponent(target.place)}`;
   }
@@ -550,6 +566,10 @@ function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget>)
       params.set("type", "settings");
       params.set("id", target.entryId);
       if (target.machineId) params.set("machine", target.machineId);
+      break;
+    case "lane-share":
+      params.set("type", "lane-share");
+      params.set("id", target.grantId);
       break;
   }
   return `${ADE_DEEPLINK_HTTPS_BASE_URL}?${params.toString()}`;
@@ -686,6 +706,10 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
     return buildSettingsTarget(safeDecode(pathSegments[0]), url.searchParams, rawUrl);
   }
 
+  if (host === "lane-share") {
+    return buildLaneShareTarget(pathSegments.length === 1 ? safeDecode(pathSegments[0]) : "", rawUrl);
+  }
+
   if (host === "open") {
     const place = pathSegments[0] ? safeDecode(pathSegments[0]).toLowerCase() : "";
     if (pathSegments.length !== 1 || !OPEN_PLACE_RE.test(place)) {
@@ -695,6 +719,14 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
   }
 
   return { ok: false, error: { kind: "unknown_type", type: host }, rawUrl };
+}
+
+function buildLaneShareTarget(grantIdRaw: string, rawUrl: string): ParseResult {
+  const grantId = grantIdRaw.trim();
+  if (!LANE_SHARE_GRANT_ID_RE.test(grantId)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid lane share id" }, rawUrl };
+  }
+  return { ok: true, target: { kind: "lane-share", grantId }, rawUrl };
 }
 
 function buildSettingsTarget(entryIdRaw: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
@@ -764,6 +796,7 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
     };
   }
   if (type === "settings") return buildSettingsTarget(url.searchParams.get("id") ?? "", url.searchParams, rawUrl);
+  if (type === "lane-share") return buildLaneShareTarget(url.searchParams.get("id") ?? "", rawUrl);
   return { ok: false, error: { kind: "unknown_type", type }, rawUrl };
 }
 
@@ -970,6 +1003,8 @@ export function describeTarget(target: DeeplinkTarget): string {
       return target.branch ? `${target.issueIdentifier} (${target.branch})` : target.issueIdentifier;
     case "settings":
       return "ADE setting";
+    case "lane-share":
+      return "shared lane";
     case "open":
       return `ADE ${target.place}`;
   }
@@ -1046,6 +1081,8 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
       };
     case "settings":
       return { kind: "settings", entryId: target.entryId, machineId: target.machineId ?? null };
+    case "lane-share":
+      return { kind: "lane-share", grantId: target.grantId };
     case "open":
       return { kind: "open-place", place: target.place };
   }

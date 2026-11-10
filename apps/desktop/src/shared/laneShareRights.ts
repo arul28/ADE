@@ -177,6 +177,8 @@ export function laneShareRightsNone(): LaneShareRights {
  *   share sheet can change or remove it.
  */
 export const LANE_SHARE_DEFAULT_MESSAGES_PER_DAY = 50;
+/** The longest line a guest may type into a CLI session, line end not counted. The host refuses a longer one. */
+export const LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS = 4_000;
 
 export function laneSharePresetRights(preset: LaneSharePresetName): LaneShareRights {
   const rights = laneShareRightsNone();

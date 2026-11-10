@@ -97,6 +97,9 @@ export function targetToWebPath(target: DeeplinkTarget): string {
       // The web client has one machine (the bound one), so `machineId` has
       // no page to pick here; an unknown id opens Settings itself.
       return settingsRouteFor(target.entryId);
+    case "lane-share":
+      params.set("grant", target.grantId);
+      return withQuery("/shared", params);
     case "open": {
       const place = openPlaceById(target.place);
       return place?.target.kind === "route" ? place.target.route : "/work";
@@ -192,6 +195,11 @@ export function parseWebPath(pathAndQuery: string): DeeplinkTarget | null {
       return { kind: "linear-issue", issueIdentifier, ...(branch ? { branch } : {}) };
     }
     return null;
+  }
+
+  if (pathname === "/shared") {
+    const grantId = params.get("grant");
+    return grantId && /^ls_[0-9a-f]{32}$/.test(grantId) ? { kind: "lane-share", grantId } : null;
   }
 
   if (pathname === "/prs") {

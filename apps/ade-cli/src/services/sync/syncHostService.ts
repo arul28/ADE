@@ -8,6 +8,7 @@ import {
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { isClaudePluginUiOnlyMetaEvent } from "../../../../desktop/src/shared/claudePluginUi";
 import { isThreadCommentsOnlyMetaEvent } from "../../../../desktop/src/shared/threadComments";
+import { isLaunchProfile, LAUNCH_PROFILE_TOOL_TYPE } from "../../../../desktop/src/shared/cliLaunch";
 import fs from "node:fs";
 import http from "node:http";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -110,6 +111,8 @@ import type {
   SyncTerminalDataPayload,
   SyncTerminalExitPayload,
   SyncTerminalInputAckPayload,
+  SyncLaneShareGuestChangedPayload,
+  LaneShareTerminalInputRefusalCode,
   SyncTerminalInputPayload,
   SyncTerminalSnapshotPayload,
   SyncTerminalScreenSnapshot,
@@ -265,6 +268,7 @@ import {
   laneShareGuestSessionInfo,
   laneShareGuestSubagentBelongs,
   laneShareGuestTakeRate,
+  laneShareTypedLineRefusal,
   laneShareHistoryCutoff,
   laneShareInputKindRight,
   laneShareScrubFileResponse,
@@ -3332,6 +3336,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       dropLaneShareGuestSubscriptionsOutsideGrants(peer, role);
       applied += 1;
     }
+    notifyLaneShareGuests((role) => role.grantId === grantId);
     // Rights that no longer send or steer, or an end date that has passed:
     // the guest's queued messages go too, connected or not.
     const rights = laneShareRightsFor(grantId);
@@ -3440,6 +3445,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       args.onLaneShareEvent?.({ type: "lane_share_presence_changed", grantId: role.grantId, laneId: role.grants[0]?.laneId ?? null });
     } catch {
       // A listener failure never touches the connection.
+    }
+    // The grant's other devices read who is here again. The new device reads it after hello_ok.
+    notifyLaneShareGuests((other) => other !== role && other.grantId === role.grantId);
+  }
+
+  /**
+   * Tells connected guests that their state changed (presence, rights,
+   * limits). The payload is only the grant id: the guest reads its state
+   * again through `laneShare.getGuestState`, which applies the privacy rules.
+   */
+  function notifyLaneShareGuests(matches: (role: LaneShareGuestRole) => boolean): void {
+    if (laneShareGuestPeersBySocket.size === 0) return;
+    for (const peer of connectedLaneShareGuests()) {
+      const role = peer.laneShareGuest!;
+      if (matches(role)) send(peer, "lane_share_guest_changed", { grantId: role.grantId } satisfies SyncLaneShareGuestChangedPayload);
     }
   }
 
@@ -4069,25 +4089,33 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   /**
-   * Counts each line a guest submits in a CLI session (each Enter in the
-   * typed data) as one message, all or none: one refused line refuses the
-   * whole input and gives back the lines counted before it. Typing with no
-   * Enter counts nothing.
+   * Why the host refuses a guest's terminal input, or null to write it. Only
+   * into a CLI session of the granted lane, with the typing right, never a
+   * shell; one plain line each time (`laneShareTypedLineRefusal`), and each
+   * line counts as one message.
    */
-  function claimLaneShareTypedLines(role: LaneShareGuestRole, data: unknown): boolean {
-    if (typeof data !== "string") return false;
-    const lines = data.match(/\r\n|\r|\n/g)?.length ?? 0;
-    if (lines === 0) return true;
-    const claims: LaneShareMessageClaim[] = [];
-    for (let line = 0; line < lines; line += 1) {
-      const claimed = claimLaneShareMessage(role);
-      if ("refusal" in claimed) {
-        for (const claim of claims) laneShareRights?.refundMessage(claim);
-        return false;
-      }
-      claims.push(claimed.claim);
+  function laneShareGuestTypingRefusal(role: LaneShareGuestRole, payload: Record<string, unknown> | null): LaneShareGuestRefusal | null {
+    const sessionId = payload?.sessionId;
+    if (typeof sessionId !== "string") return { code: "forbidden_command", message: "That session is not part of this shared lane." };
+    // On Windows a CLI starts without exec, so a shell stays when it exits,
+    // and this host cannot tell which program has the terminal.
+    if (process.platform === "win32") {
+      return { code: "lane_share_right_missing", message: "Typing into a CLI is not available on a shared lane of this computer." };
     }
-    return true;
+    if (laneShareRightsEnded(role.rights, Date.now())) return { code: "lane_share_ended", message: "This share has ended." };
+    if (!laneShareGuestTakeRate(role)) return { code: "lane_share_rate_limited", message: "Too many requests at once. Wait a moment, then try again." };
+    if (!laneShareGuestMayTypeInto(role, sessionId, resolveLaneShareSession)) {
+      return { code: "lane_share_right_missing", message: "Your access to this shared lane does not include typing in this session." };
+    }
+    // Cached by the check above: no second session read per line.
+    if (laneShareLaneState(laneShareGuestSessionInfo(role, sessionId, resolveLaneShareSession)?.laneId) !== "active") {
+      return { code: "lane_share_paused", message: "The owner paused this shared lane." };
+    }
+    const line = laneShareTypedLineRefusal(payload?.data);
+    if (line) return line;
+    // Last: the line counts against the limits.
+    const claimed = claimLaneShareMessage(role);
+    return "refusal" in claimed ? claimed.refusal : null;
   }
 
   /** Counts one guest message, before its turn. A refusal carries the daily reset. */
@@ -4212,9 +4240,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return { ok: true, args: { ...gateArgs, modelId, permissionMode }, claim: null };
       }
       case "work.startCliSession": {
-        const provider = toOptionalString(gateArgs.provider);
-        // Never a shell: only the agent CLIs this host tracks.
-        if (laneShareSessionKind(provider) !== "cli") return laneShareRefuse("A guest cannot start a shell.");
+        const provider = toOptionalString(gateArgs.provider)?.toLowerCase() ?? null;
+        // Never a shell: only a launch profile whose session tool type is an
+        // agent CLI this host tracks. An unknown provider is refused.
+        if (!isLaunchProfile(provider) || laneShareSessionKind(LAUNCH_PROFILE_TOOL_TYPE[provider]) !== "cli") {
+          return laneShareRefuse("A guest cannot start a shell.");
+        }
         if (rights.run.models.length === 0) {
           return laneShareRefuse("The owner has not allowed a model for new sessions on this shared lane.", "lane_share_model_locked");
         }
@@ -4660,6 +4691,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     );
     const marker = readLocalPresenceMarker();
     let changed = false;
+    // Lanes where the owner came or went: their guests read who is here again.
+    const toggled = new Set<string>();
+    for (const laneId of localActiveLaneIds) if (!nextLaneIds.has(laneId)) toggled.add(laneId);
+    for (const laneId of nextLaneIds) if (!localActiveLaneIds.has(laneId)) toggled.add(laneId);
     if (marker) {
       for (const laneId of localActiveLaneIds) {
         if (!nextLaneIds.has(laneId)) {
@@ -4677,6 +4712,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       args.onStateChanged?.();
       broadcastBrainStatus();
     }
+    if (toggled.size > 0) notifyLaneShareGuests((role) => role.grants.some((grant) => toggled.has(grant.laneId)));
   };
 
   const buildRemotePresenceMarker = (peer: PeerState): DeviceMarker | null => {
@@ -9043,26 +9079,33 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // a CLI session of the granted lane, with the typing right: never into
       // a shell. Everything else takes the queued path and its guest gate.
       const role = peer.laneShareGuest;
-      const typedSessionId = envelope.type === "terminal_input" ? safeObjectValue(envelope.payload)?.sessionId : null;
-      const typing = typeof typedSessionId === "string"
-        // On Windows a CLI starts without exec, so a shell stays when it
-        // exits, and this host cannot tell which program has the terminal.
-        && process.platform !== "win32"
-        && !laneShareRightsEnded(role.rights, Date.now())
-        && laneShareGuestTakeRate(role)
-        && laneShareGuestMayTypeInto(role, typedSessionId, resolveLaneShareSession)
-        // Cached by the check above: no second session read per keystroke.
-        && laneShareLaneState(laneShareGuestSessionInfo(role, typedSessionId, resolveLaneShareSession)?.laneId) === "active"
-        // Last: each Enter is one message against the limits.
-        && claimLaneShareTypedLines(role, safeObjectValue(envelope.payload)?.data);
-      if (envelope.type === "changeset_ack" || (envelope.type === "terminal_input" && !typing)) {
-        args.logger.warn("sync_host.lane_share_guest_refused_envelope", {
-          type: envelope.type,
-          guestUserId: role.userId,
-        });
+      const refuseEnvelope = (code: string) => {
+        args.logger.warn("sync_host.lane_share_guest_refused_envelope", { type: envelope.type, guestUserId: role.userId, code });
+      };
+      if (envelope.type === "changeset_ack") {
+        refuseEnvelope("forbidden_command");
         return true;
       }
       if (envelope.type !== "terminal_input") return false;
+      const typingPayload = safeObjectValue(envelope.payload);
+      const refusal = laneShareGuestTypingRefusal(role, typingPayload);
+      if (refusal) {
+        refuseEnvelope(refusal.code);
+        // A refused line gets its reason, through the outbound gate (only for a session the guest sees).
+        const sessionId = toOptionalString(typingPayload?.sessionId);
+        const inputId = normalizeTerminalInputId(typingPayload?.inputId);
+        if (sessionId && inputId) {
+          sendRequired(peer, "terminal_input_ack", {
+            sessionId,
+            inputId,
+            ok: false,
+            duplicate: false,
+            // Every guest typing refusal is `lane_share_*` or `forbidden_command`.
+            error: { code: refusal.code as LaneShareTerminalInputRefusalCode, message: refusal.message, retryable: false },
+          } satisfies SyncTerminalInputAckPayload, envelope.requestId);
+        }
+        return true;
+      }
     }
     if (envelope.type === "changeset_ack") {
       // An ack only moves this peer's changeset cursor, so it does not wait in

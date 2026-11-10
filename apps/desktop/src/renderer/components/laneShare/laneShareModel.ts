@@ -1,6 +1,7 @@
 import { parseCodedErrorMessage, isUnsupportedAdeActionError } from "../../../shared/codedError";
 import type { LaneShareRights, LaneShareRiskLevel } from "../../../shared/laneShareRights";
 import type { LaneShareGivenEntry } from "../../../shared/types/laneShare";
+import { LANE_SHARING_UNAVAILABLE, LANE_SHARING_UNAVAILABLE_MESSAGE } from "../../../shared/laneShareGuestDirectory";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { rootAppStoreApi } from "../../state/appStore";
 
@@ -171,6 +172,7 @@ export function laneShareProblem(error: unknown, options: { pin?: OpenProjectBin
     const where = options.machineName ?? options.pin.runtimeName ?? "The lane's computer";
     return { code: "offline", message: `${where} is offline. Sharing opens read only until it is back.`, blocking: true };
   }
+  if (code === LANE_SHARING_UNAVAILABLE) return { code, message: LANE_SHARING_UNAVAILABLE_MESSAGE, blocking: true };
   if (code === "unavailable") {
     return { code, message: "The ADE account directory can't be reached right now. Try again in a moment.", blocking: false };
   }

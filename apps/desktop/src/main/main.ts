@@ -465,6 +465,7 @@ import {
   isRendererFrameNavigationAllowed,
   shouldApplyRendererCsp,
 } from "./rendererCsp";
+import { trustedAccountRelayBaseUrls } from "../shared/accountDirectory";
 import {
   RENDERER_RECOVERY_DELAY_MS,
   RENDERER_RECOVERY_WINDOW_MS,
@@ -1184,7 +1185,13 @@ async function createWindow(args: {
 
   // Set CSP dynamically so it works with both http:// (dev) and file:// (production).
   const isDevMode = !!process.env.VITE_DEV_SERVER_URL;
-  const cspPolicy = buildRendererCspPolicy(isDevMode, { replayConnectSources: sessionReplayConnectSources() });
+  const cspPolicy = buildRendererCspPolicy(isDevMode, {
+    replayConnectSources: sessionReplayConnectSources(),
+    // The lane share guest socket dials only ADE's trusted relays.
+    relayConnectSources: trustedAccountRelayBaseUrls(
+      process.env.ADE_TUNNEL_RELAY_URL?.trim() ? [process.env.ADE_TUNNEL_RELAY_URL.trim()] : [],
+    ).map((base) => new URL(base).origin),
+  });
 
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
     if (

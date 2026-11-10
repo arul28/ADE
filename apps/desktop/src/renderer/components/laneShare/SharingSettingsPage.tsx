@@ -1,12 +1,14 @@
 import React from "react";
-import { ArrowsClockwise, DotsThree, PencilSimple, SignOut, UserMinus } from "@phosphor-icons/react";
+import { ArrowSquareOut, ArrowsClockwise, DotsThree, PencilSimple, SignOut, UserMinus } from "@phosphor-icons/react";
+import { useNavigate } from "react-router-dom";
 import {
   LANE_SHARE_PRESET_NAMES,
   laneSharePresetLabel,
   laneSharePresetRights,
   type LaneSharePresetName,
 } from "../../../shared/laneShareRights";
-import type { LaneShareGivenEntry, LaneShareReceivedEntry, LaneShareReceivedResult } from "../../../shared/types/laneShare";
+import type { LaneShareGivenEntry, LaneShareReceivedEntry } from "../../../shared/types/laneShare";
+import { LANE_SHARING_UNAVAILABLE } from "../../../shared/laneShareGuestDirectory";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { ModernPage, ModernRow, ModernRows, ModernSection } from "../settings/primitives";
 import { ContextMenu, type ContextMenuEntry, type ContextMenuState } from "../ui/ContextMenu";
@@ -29,6 +31,14 @@ import {
   type LaneShareProblem,
 } from "./laneShareModel";
 import { laneShareListKey, openLaneShareSheet, useLaneShareStore } from "./laneShareStore";
+import {
+  acceptLaneShare,
+  laneShareGuestProblem,
+  leaveLaneShare,
+  loadLaneShareReceived,
+  useLaneShareGuestStore,
+} from "./guest/laneShareGuestStore";
+import { laneShareGuestPath } from "./guest/laneShareGuestRoute";
 
 /**
  * Settings › Sharing (account level). "Shared by me": every share the account
@@ -36,8 +46,8 @@ import { laneShareListKey, openLaneShareSheet, useLaneShareStore } from "./laneS
  * machine and project this window is bound to carry rights and usage and can
  * be edited; a share on another computer can be stopped from here (the
  * directory records it at once; that computer drops the guest at its next
- * grant read). "Shared with me": the shares given to this account, with
- * Leave. Opening a shared lane as a guest is not in this build.
+ * grant read). "Shared with me": the shares given to this account (an
+ * account call, no project needed), with Accept, Open and Leave.
  *
  * Every call goes to the tab's bound runtime (no pin): these lists are the
  * account's, and that runtime asks the account directory.
@@ -266,23 +276,43 @@ function SharedByMe() {
   );
 }
 
-function SharedWithMe() {
-  const { boundKey, active } = useBoundRuntimeReady();
-  const [state, setState] = React.useState<ListState<LaneShareReceivedResult>>({ status: "loading", data: null, problem: null });
+/** The state of one received share, as the guest reads it. */
+function receivedStateLabel(entry: LaneShareReceivedEntry, now = Date.now()): { label: string; tone: "ok" | "warn" | "crit" | undefined } {
+  if (entry.state === "pending" && entry.inviteExpiresAt != null && entry.inviteExpiresAt <= now) return { label: "Invite expired", tone: "warn" };
+  if (entry.state === "pending") return { label: "Invite pending", tone: undefined };
+  if (entry.state === "expired") return { label: "Invite expired", tone: "warn" };
+  if (entry.state === "active") return { label: "Active", tone: "ok" };
+  if (entry.state === "ended" || entry.state === "revoked") return { label: "Ended", tone: undefined };
+  return { label: entry.state, tone: undefined };
+}
 
-  const load = React.useCallback(async () => {
-    if (!active) return;
-    try {
-      const result = await window.ade.laneShare.listReceived(null);
-      setState({ status: "ready", data: result, problem: null });
-    } catch (error) {
-      setState((current) => ({ status: "error", data: current.data, problem: laneShareProblem(error) }));
-    }
-  }, [active]);
+function SharedWithMe() {
+  // Account level: the guest calls go from this device to the account
+  // directory (no project and no machine needed). Opening a lane connects
+  // to the owner's computer with a one-use ticket (`/shared`).
+  const navigate = useNavigate();
+  const received = useLaneShareGuestStore((s) => s.received);
+  const status = useLaneShareGuestStore((s) => s.receivedStatus);
+  const problem = useLaneShareGuestStore((s) => s.receivedProblem);
+  const pendingInvitesUnavailable = useLaneShareGuestStore((s) => s.pendingInvitesUnavailable);
+  const connections = useLaneShareGuestStore((s) => s.connections);
+  const [busy, setBusy] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    void load();
-  }, [boundKey, load]);
+    void loadLaneShareReceived({ force: true });
+  }, []);
+
+  const accept = async (entry: LaneShareReceivedEntry) => {
+    setBusy(entry.grantId);
+    try {
+      await acceptLaneShare(entry.grantId);
+      showToast({ tone: "success", title: "Lane added to Shared with me" });
+    } catch (error) {
+      showToast({ tone: "error", title: "Couldn't accept the invite", message: laneShareGuestProblem(error).message, report: false });
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const leave = async (entry: LaneShareReceivedEntry) => {
     const declining = entry.state === "pending";
@@ -294,55 +324,82 @@ function SharedWithMe() {
     });
     if (!ok) return;
     try {
-      await window.ade.laneShare.leave({ grantId: entry.grantId }, null);
+      await leaveLaneShare(entry.grantId);
       showToast({ tone: "success", title: declining ? "Invite declined" : "You left the lane" });
-      await load();
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't leave the lane", message: laneShareProblem(error).message, report: false });
+      showToast({ tone: "error", title: "Couldn't leave the lane", message: laneShareGuestProblem(error).message, report: false });
     }
   };
 
-  if (!boundKey) {
-    return <div className="text-[12px] text-fg/55">Open a project to see lanes shared with you.</div>;
-  }
-  const rows = (state.data?.shares ?? []).filter((entry) => entry.state === "pending" || entry.state === "active");
+  const rows = (received ?? []).filter((entry) => entry.state === "pending" || entry.state === "active" || entry.state === "expired");
   const groups = groupBy(rows);
 
   return (
     <div className="flex min-w-0 flex-col gap-4" data-testid="sharing-with-me">
-      {state.problem ? (
-        <Banner layout="inline" model={{ id: "sharing-with-me-problem", tone: state.problem.blocking ? "warning" : "error", title: state.problem.message, report: false, actions: [{ label: "Try again", onClick: () => { void load(); } }] }} />
+      {problem ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "sharing-with-me-problem",
+            tone: problem.code === "signed_out" || problem.code === "no_directory" || problem.code === LANE_SHARING_UNAVAILABLE ? "info" : "warning",
+            title: problem.message,
+            report: false,
+            actions: [{ label: "Try again", onClick: () => { void loadLaneShareReceived({ force: true, retry: true }); } }],
+          }}
+        />
       ) : null}
-      {state.data?.pendingInvitesUnavailable ? (
+      {pendingInvitesUnavailable ? (
         <div className="text-[11.5px] text-fg/55">Pending invites can't be read right now. Lanes you accepted are listed.</div>
       ) : null}
-      {state.status === "loading" ? <div className="text-[12px] text-fg/50">Loading…</div> : null}
-      {state.status === "ready" && rows.length === 0 ? <div className="text-[12px] text-fg/55">Nobody shares a lane with you.</div> : null}
+      {status === "loading" ? <div className="text-[12px] text-fg/50">Loading…</div> : null}
+      {status === "ready" && rows.length === 0 ? <div className="text-[12px] text-fg/55">Nobody shares a lane with you.</div> : null}
       {groups.map((group) => (
         <section key={group.key} className="flex min-w-0 flex-col gap-1.5">
           <span className="min-w-0 truncate text-[12.5px] font-medium text-fg/85" title={group.title}>{group.title}</span>
           <ModernRows>
-            {group.rows.map((entry) => (
-              <ModernRow
-                key={entry.grantId}
-                title={<span className="block min-w-0 truncate" title={entry.laneLabel ?? undefined}>{entry.laneLabel ?? "Lane"}</span>}
-                hint={
-                  <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-                    <span className="min-w-0 truncate">From {entry.giverLabel ?? "another account"}</span>
-                    <span>{laneSharePresetText(entry.preset)}</span>
-                    {entry.risk ? <span className="kit-tag" data-tone={riskTone(entry.risk)}>{LANE_SHARE_RISK_LABELS[entry.risk]}</span> : null}
-                    <span>{formatLaneShareEnd(entry.endsAt)}</span>
-                    {entry.state === "pending" ? <span className="kit-tag">Invite pending</span> : null}
-                  </span>
-                }
-                control={
-                  <button type="button" className="kit-btn" data-size="sm" onClick={() => { void leave(entry); }}>
-                    <SignOut size={13} />
-                    {entry.state === "pending" ? "Decline" : "Leave"}
-                  </button>
-                }
-              />
-            ))}
+            {group.rows.map((entry) => {
+              const stateLabel = receivedStateLabel(entry);
+              const connection = connections[entry.grantId];
+              const expired = stateLabel.label === "Invite expired";
+              return (
+                <ModernRow
+                  key={entry.grantId}
+                  title={<span className="block min-w-0 truncate" title={entry.laneLabel ?? undefined}>{entry.laneLabel ?? "Lane"}</span>}
+                  hint={
+                    <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className="min-w-0 truncate">From {entry.giverLabel ?? "another account"}</span>
+                      <span>{laneSharePresetText(entry.preset)}</span>
+                      {entry.risk ? <span className="kit-tag" data-tone={riskTone(entry.risk)}>{LANE_SHARE_RISK_LABELS[entry.risk]}</span> : null}
+                      <span>{formatLaneShareEnd(entry.endsAt)}</span>
+                      <span className="kit-tag" data-tone={stateLabel.tone}>{stateLabel.label}</span>
+                      {connection?.kind === "host_offline" ? <span className="kit-tag" data-tone="warn">Owner offline</span> : null}
+                      {connection?.kind === "stopped" && connection.reason === "paused" ? <span className="kit-tag" data-tone="warn">Paused</span> : null}
+                    </span>
+                  }
+                  control={
+                    <span className="flex items-center gap-1.5">
+                      {entry.state === "pending" && !expired ? (
+                        <button type="button" className="kit-btn kit-btn-primary" data-size="sm" disabled={busy === entry.grantId} onClick={() => { void accept(entry); }}>
+                          Accept
+                        </button>
+                      ) : null}
+                      {entry.state === "active" ? (
+                        <button type="button" className="kit-btn kit-btn-primary" data-size="sm" onClick={() => navigate(laneShareGuestPath(entry.grantId))}>
+                          <ArrowSquareOut size={13} />
+                          Open
+                        </button>
+                      ) : null}
+                      {entry.state !== "expired" ? (
+                        <button type="button" className="kit-btn" data-size="sm" onClick={() => { void leave(entry); }}>
+                          <SignOut size={13} />
+                          {entry.state === "pending" ? "Decline" : "Leave"}
+                        </button>
+                      ) : null}
+                    </span>
+                  }
+                />
+              );
+            })}
           </ModernRows>
         </section>
       ))}

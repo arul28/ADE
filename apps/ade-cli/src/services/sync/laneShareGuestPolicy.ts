@@ -1,8 +1,14 @@
 import { createHash } from "node:crypto";
 import {
+  LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS,
   laneShareDisplayName,
   type LaneShareRights,
 } from "../../../../desktop/src/shared/laneShareRights";
+import {
+  LANE_SHARE_PLAIN_TEXT_ONLY,
+  LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE,
+  leadingPromptCommandCharacter,
+} from "../../../../desktop/src/shared/messageAuthor";
 import { isChatToolType } from "../../../../desktop/src/shared/sessionSpawnNesting";
 import { isUserOnlyConsentCard } from "../../../../desktop/src/shared/types/macDesktop";
 import { isTrackedAgentCliToolType, type TerminalToolType } from "../../../../desktop/src/shared/types/sessions";
@@ -337,6 +343,8 @@ export const LANE_SHARE_GUEST_OUTBOUND: ReadonlyMap<string, "always" | "session"
   ["terminal_exit", "session"],
   ["terminal_history", "session"],
   ["terminal_input_ack", "session"],
+  // Only the grant id: the guest reads its state again (`laneShare.getGuestState`).
+  ["lane_share_guest_changed", "always"],
 ] as const);
 
 /**
@@ -996,6 +1004,31 @@ export function filterLaneShareActionHistory(action: string, value: unknown, cut
     default:
       return value;
   }
+}
+
+/** One line and its line end. No other control character: C0, DEL or C1 (escape sequences, Ctrl-C, Tab, Backspace). */
+const LANE_SHARE_TYPED_LINE = /^([^\u0000-\u001f\u007f-\u009f]*)(?:\r\n|\r|\n)$/;
+
+/**
+ * The input a guest types into a CLI session, checked as text: exactly one
+ * line that ends with a line end, no other control character, at most
+ * `LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS`, and no leading character the CLI
+ * reads as a command (`/`, `!`, and `#` for Claude's memory line), as for a
+ * first line (`initialInput`). A whole line each time, so a guest cannot
+ * build a command line from parts sent one by one.
+ */
+export function laneShareTypedLineRefusal(data: unknown): LaneShareGuestRefusal | null {
+  const match = typeof data === "string" ? LANE_SHARE_TYPED_LINE.exec(data) : null;
+  if (!match) {
+    return { code: "lane_share_invalid_line", message: "Type one line of plain text, then Enter. Control keys are not available on a shared lane." };
+  }
+  const line = match[1]!;
+  if (line.length > LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS) {
+    return { code: "lane_share_invalid_line", message: `A line can have at most ${LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS} characters.` };
+  }
+  return leadingPromptCommandCharacter(line, ["#"])
+    ? { code: LANE_SHARE_PLAIN_TEXT_ONLY, message: LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE }
+    : null;
 }
 
 /**

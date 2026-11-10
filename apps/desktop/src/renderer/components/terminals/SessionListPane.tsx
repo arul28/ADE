@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { Archive, ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, WarningCircle, X } from "@phosphor-icons/react";
+import { Archive, ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, UsersThree, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
@@ -107,6 +107,7 @@ import { findGridSetForSession } from "../../lib/workGrid";
 import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
+import { LaneShareGuestShelfRows, useLaneShareGuestShelfShares } from "../laneShare/guest/LaneShareGuestShelf";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { bindingChipLabel, fireBinding, getEffectiveBinding } from "../../lib/keybindings";
@@ -1334,6 +1335,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   // True when the board takes this pane's own list area. With a `boardHost`
   // the board draws elsewhere and this pane keeps behaving as a list.
   const boardReplacesList = isBoard && boardHost === undefined;
+  const guestShares = useLaneShareGuestShelfShares();
   const normalizedFilterLaneId = filterLaneId.trim();
   const laneFilterActive = normalizedFilterLaneId.length > 0 && normalizedFilterLaneId !== "all";
   const chipFiltersActive = !isWorkSessionFilterEmpty(workSessionFilters);
@@ -4327,6 +4329,24 @@ export const SessionListPane = React.memo(function SessionListPane({
         ) : (
           groupedByStatusList
         )}
+        {/* Lanes other accounts share with this one. Their own group, keyed by
+            grant, never mixed with this project's lanes. Absent with no share. */}
+        {!boardReplacesList && guestShares.length > 0 ? (
+          <div className={cn(SESSION_LIST_BLEED_CLASS, "px-1 pb-2")}>
+            <StickyGroupHeader
+              sectionId="lane-shelf:shared-with-me"
+              icon={<UsersThree size={12} weight="bold" aria-hidden className="shrink-0" />}
+              label="Shared with me"
+              variant="quiet-shelf"
+              heading
+              count={guestShares.length}
+              collapsed={isQuietShelfCollapsed(workCollapsedSectionIds, "lane-shelf:shared-with-me")}
+              onToggleCollapsed={() => toggleWorkSectionCollapsed(quietShelfOpenMarker("lane-shelf:shared-with-me"))}
+            >
+              <LaneShareGuestShelfRows shares={guestShares} />
+            </StickyGroupHeader>
+          </div>
+        ) : null}
       </div>
 
       {settleUndo ? (

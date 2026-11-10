@@ -125,6 +125,8 @@ const APP_ROUTE_ROOTS = [
   "/cto",
   "/settings",
   "/chats",
+  // Lanes other accounts share with me: works with no machine of my own.
+  "/shared",
 ];
 
 function isAppRoute(pathname: string): boolean {
@@ -588,14 +590,16 @@ export function WebClientRoot({
         }
       } else {
         const restoredTarget = pendingTargetRef.current ?? readPendingTarget();
-        initialPath = restored
+        // A lane shared with this account needs no machine of its own.
+        const machineFreeTarget = restoredTarget?.kind === "lane-share";
+        initialPath = restored || machineFreeTarget
           ? restoredTarget
             ? targetToWebPath(restoredTarget)
             : isAppRoute(path)
               ? `${path}${window.location.search}`
               : WELCOME_PATH
           : WELCOME_PATH;
-        if (restored) clearPendingTarget();
+        if (restored || machineFreeTarget) clearPendingTarget();
       }
       window.history.replaceState(null, "", initialPath);
       const AppRoot = await loadAppRoot();

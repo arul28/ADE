@@ -158,6 +158,47 @@ export type LaneShareReceivedResult = {
 
 export type LaneShareLeaveResult = { grantId: string; state: string };
 
+// ---------------------------------------------------------------------------
+// The guest's side (`window.ade.laneShareGuest`). Account calls only: they go
+// from THIS device to the account directory with this device's own account
+// token (desktop: the main process; web: the page's account session). No
+// machine is involved, so there is no pin. The shared lane's machine is
+// reached only through the guest connection, with a one-use ticket.
+
+/** How this account relates to one grant (`GET /lane-shares/:id`). `none`: not this account's grant (or no such grant). */
+export type LaneShareOpenRole = "giver" | "receiver" | "invitee" | "none";
+
+export type LaneShareOpenResult = {
+  role: LaneShareOpenRole;
+  /** The grant as this account may see it. Null for `none` and for `giver` (the owner opens its own Sharing list). */
+  grant: LaneShareReceivedEntry | null;
+};
+
+export type LaneShareAcceptResult = { grant: LaneShareReceivedEntry };
+
+/**
+ * How to reach the shared lane's machine, once (`POST /lane-shares/:id/connect`).
+ * The ticket is shown once, lives 2 minutes and is never stored or logged.
+ * `relayUrl` was checked against ADE's trusted relays.
+ */
+export type LaneShareConnectTicket = {
+  grantId: string;
+  laneId: string;
+  repoKey: string | null;
+  relayUrl: string | null;
+  hostOnline: boolean;
+  ticket: string | null;
+  ticketExpiresAt: number | null;
+};
+
+export type LaneShareGuestBridge = {
+  listReceived: () => Promise<LaneShareReceivedResult>;
+  open: (args: { grantId: string }) => Promise<LaneShareOpenResult>;
+  accept: (args: { grantId: string }) => Promise<LaneShareAcceptResult>;
+  leave: (args: { grantId: string }) => Promise<LaneShareLeaveResult>;
+  connect: (args: { grantId: string; dpopThumbprint: string }) => Promise<LaneShareConnectTicket>;
+};
+
 /** What the host pushes on its runtime event stream (`lane_share_event`). */
 export type LaneShareEvent =
   | {

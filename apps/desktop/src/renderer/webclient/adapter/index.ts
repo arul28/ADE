@@ -4,6 +4,7 @@ import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { AdeSyncClient } from "../sync";
 import { BrowserAccountClient } from "../account/client";
 import { createAccountNamespace, createAccountSettingsNamespace } from "./account";
+import { createLaneShareGuestDirectory } from "../../../shared/laneShareGuestDirectory";
 import { createAgentChatNamespace } from "./agentChat";
 import { createArchiveNamespace } from "./archive";
 import { createChatLaunchNamespace } from "./chatLaunch";
@@ -213,6 +214,13 @@ export function createAdeWebAdapter(
       leave: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
       onEvent: () => () => {},
     },
+    // The guest's side of lane sharing needs no machine: this browser's own
+    // account session asks the account directory (the token goes nowhere
+    // else). The shared lane is reached by the guest connection with a ticket.
+    laneShareGuest: createLaneShareGuestDirectory({
+      send: (request) => accountClient.laneShareRequest(request),
+      trustedRelayBaseUrls: () => accountClient.getRelayBaseUrls(),
+    }),
     // ADE MCP belongs to a physical machine; the manifest hides it on web.
     remoteMcpCall: async () => {
       throw new Error("Manage ADE MCP on the computer itself.");

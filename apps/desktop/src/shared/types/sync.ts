@@ -2235,13 +2235,20 @@ export type SyncTerminalInputPayload = {
   inputId?: string;
 };
 
+/**
+ * A lane share host's refusal of a guest's typed line (`lane_share_*`, or
+ * `forbidden_command`). Only a guest connection gets these.
+ */
+export type LaneShareTerminalInputRefusalCode = `lane_share_${string}` | "forbidden_command";
+
 export type SyncTerminalInputAckErrorCode =
   | "invalid_input_id"
   | "not_subscribed"
   | "session_not_live"
   | "project_mismatch"
   | "input_id_conflict"
-  | "dedupe_capacity";
+  | "dedupe_capacity"
+  | LaneShareTerminalInputRefusalCode;
 
 export type SyncTerminalInputAckPayload =
   | {
@@ -3594,6 +3601,12 @@ export type SyncBrainStatusEnvelope = SyncEnvelopeWithPayload<"brain_status", Sy
  */
 export type SyncHostHealthEnvelope = SyncEnvelopeWithPayload<"host_health", SyncHostHealth>;
 export type SyncPrsUpdatedEnvelope = SyncEnvelopeWithPayload<"prs_updated", { updatedAt: string }>;
+/**
+ * Host to a lane share guest only: its presence, rights or limits changed.
+ * Only the grant id; the guest reads `laneShare.getGuestState` again.
+ */
+export type SyncLaneShareGuestChangedPayload = { grantId: string };
+export type SyncLaneShareGuestChangedEnvelope = SyncEnvelopeWithPayload<"lane_share_guest_changed", SyncLaneShareGuestChangedPayload>;
 export type SyncRosterSubscribeEnvelope = SyncEnvelopeWithPayload<"roster_subscribe", SyncRosterSubscribePayload>;
 export type SyncRosterUnsubscribeEnvelope = SyncEnvelopeWithPayload<"roster_unsubscribe", SyncRosterUnsubscribePayload>;
 export type SyncRosterSnapshotEnvelope = SyncEnvelopeWithPayload<"roster_snapshot", SyncRosterSnapshotPayload>;
@@ -3688,6 +3701,7 @@ export type SyncEnvelope =
   | SyncBrainStatusEnvelope
   | SyncHostHealthEnvelope
   | SyncPrsUpdatedEnvelope
+  | SyncLaneShareGuestChangedEnvelope
   | SyncRosterSubscribeEnvelope
   | SyncRosterUnsubscribeEnvelope
   | SyncRosterSnapshotEnvelope

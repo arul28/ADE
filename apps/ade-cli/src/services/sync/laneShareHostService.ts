@@ -9,9 +9,14 @@ import type { LaneShareRightsStore, LaneShareUsage } from "../../../../desktop/s
 import type {
   LaneShareEvent,
   LaneShareGivenEntry,
-  LaneShareReceivedEntry,
   LaneShareReceivedResult,
 } from "../../../../desktop/src/shared/types/laneShare";
+import {
+  LANE_SHARING_UNAVAILABLE,
+  LANE_SHARING_UNAVAILABLE_MESSAGE,
+  laneShareDirectoryNotFound,
+  parseLaneShareReceivedResponse,
+} from "../../../../desktop/src/shared/laneShareGuestDirectory";
 import {
   LaneShareGrantError,
   resolveLaneShareDirectoryBase,
@@ -51,7 +56,8 @@ export type LaneShareHostErrorCode =
   | "directory_refused"
   | "signed_out"
   | "no_directory"
-  | "unavailable";
+  | "unavailable"
+  | typeof LANE_SHARING_UNAVAILABLE;
 
 export class LaneShareHostError extends Error {
   constructor(readonly code: LaneShareHostErrorCode, message: string, readonly directoryCode: string | null = null) {
@@ -94,14 +100,18 @@ function cleanEndsAt(value: unknown, nowMs: number): number | null | undefined {
   return value;
 }
 
-function directoryError(status: number, body: unknown): LaneShareHostError {
+function directoryError(status: number, body: unknown, path: string): LaneShareHostError {
   const error = body && typeof body === "object" ? (body as { error?: { code?: unknown; message?: unknown } }).error : null;
   const code = typeof error?.code === "string" ? error.code.slice(0, 64) : null;
   const message = typeof error?.message === "string" && error.message.trim()
     ? error.message.trim().slice(0, 300)
     : `The account directory answered ${status}.`;
   if (status === 401) return new LaneShareHostError("signed_out", "Sign in to ADE to share lanes.", code);
-  if (status === 404) return new LaneShareHostError("not_found", message, code);
+  if (status === 404) {
+    return laneShareDirectoryNotFound(path, body)
+      ? new LaneShareHostError("not_found", message, code)
+      : new LaneShareHostError(LANE_SHARING_UNAVAILABLE, LANE_SHARING_UNAVAILABLE_MESSAGE, code);
+  }
   if (status >= 500) return new LaneShareHostError("unavailable", message, code);
   return new LaneShareHostError("directory_refused", message, code);
 }
@@ -116,26 +126,6 @@ const riskLabel = (value: unknown): LaneShareRiskLevel | null =>
 function isGrantRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object"
     && typeof (value as { id?: unknown }).id === "string" && GRANT_ID.test((value as { id: string }).id);
-}
-
-/** A received grant as the "Shared with me" list shows it. Display fields only. */
-function receivedEntry(grant: Record<string, unknown>): LaneShareReceivedEntry {
-  return {
-    grantId: grant.id as string,
-    state: str(grant.state) ?? "unknown",
-    laneId: str(grant.laneId) ?? "",
-    repoKey: str(grant.repoKey),
-    projectLabel: str(grant.projectLabel),
-    laneLabel: str(grant.laneLabel),
-    preset: str(grant.preset),
-    risk: riskLabel(grant.risk),
-    giverLabel: str(grant.giverLabel),
-    receiverEmail: str(grant.receiverEmail),
-    endsAt: num(grant.endsAt),
-    inviteExpiresAt: num(grant.inviteExpiresAt),
-    createdAt: num(grant.createdAt),
-    acceptedAt: num(grant.acceptedAt),
-  };
 }
 
 function grantIdOf(body: unknown): string | null {
@@ -185,7 +175,7 @@ export function createLaneShareHostService(options: {
       }
       throw new LaneShareHostError("unavailable", "The account directory could not be reached.");
     }
-    if (answer.status < 200 || answer.status >= 300) throw directoryError(answer.status, answer.body);
+    if (answer.status < 200 || answer.status >= 300) throw directoryError(answer.status, answer.body, path);
     return answer.body;
   };
 
@@ -360,13 +350,7 @@ export function createLaneShareHostService(options: {
 
     /** Shares other accounts gave this account (the "Shared with me" list). Display only. */
     async listReceived(): Promise<LaneShareReceivedResult> {
-      const body = await request("GET", "/lane-shares/received");
-      const record = body && typeof body === "object" ? body as { grants?: unknown; pendingInvitesUnavailable?: unknown } : {};
-      const grants = Array.isArray(record.grants) ? record.grants.filter(isGrantRecord) : [];
-      return {
-        shares: grants.map(receivedEntry),
-        pendingInvitesUnavailable: record.pendingInvitesUnavailable === true,
-      };
+      return parseLaneShareReceivedResponse(await request("GET", "/lane-shares/received"));
     },
 
     /** Leaves a share given to this account, or declines its invite. */
