@@ -387,7 +387,7 @@ import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_A
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
 import { cancelWorkDraftLaneRequest, type WorkDraftModelRequest } from "../../lib/workDraft";
-import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { resolveHarnessLaunchTarget, type HarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle, resolveChatContentWidthPx } from "./chatAppearance";
@@ -665,6 +665,24 @@ function paneLocalChatCommand(args: {
 const SIGN_IN_FOCUS_READ_MIN_INTERVAL_MS = 15_000;
 /** When the last focus read for each machine started, shared by every pane. */
 const signInFocusReadAtByScope = new Map<string, number>();
+
+/**
+ * Whose local login a run through a harness route needs: a stored key or a
+ * picked provider account brings its own credentials (null: no local login to
+ * check); a subscription run in another harness uses that subscription's
+ * provider login; OpenCode signs in its own providers.
+ */
+function routeLoginProvider(target: Pick<HarnessLaunchTarget, "harness" | "source">): string | null {
+  switch (target.source.kind) {
+    case "key":
+    case "account":
+      return null;
+    case "subscription":
+      return target.source.provider;
+    default:
+      return target.harness;
+  }
+}
 
 /**
  * The provider is installed on the machine and only its login is missing.
@@ -4644,6 +4662,10 @@ export function AgentChatPane({
      before the chat exists. Only read while there is no selected session; a
      running chat is named by its own `presetId`. */
   const [draftHarnessPresetId, setDraftHarnessPresetId] = useState<string | null>(restoredDraftPresetId);
+  /* A draft's pick of a stored API key (a provider card's key row), held as
+     state beside the launch ref so the sign-in check sees it: that run
+     authenticates with the key, not the provider's local login. */
+  const [draftCredentialId, setDraftCredentialId] = useState<string | null>(null);
   /* A running chat's model pick, held until Send applies it. It names the
      preset the pick came from, or none for a plain model. The trigger reads it
      so a pick shows at once instead of the chat's old preset, and Send reads
@@ -16899,7 +16921,34 @@ export function AgentChatPane({
       .filter((provider): provider is NonNullable<typeof provider> => Boolean(provider));
     return providers.find((provider) => providerLoginMissing(provider, signInConnections?.[provider])) ?? providers[0] ?? null;
   }, [modelCatalogScopeKey, parallelDraftActive, parallelModelSlots, selectedSession, selectedSessionId, sessionProvider, signInConnections]);
-  const signInConnection = signInProvider ? signInConnections?.[signInProvider] ?? null : null;
+  /**
+   * The provider whose local login a send needs, or null when the composer's
+   * route brings its own credentials. A saved preset or Run-in route decides
+   * it (`routeLoginProvider`); so does a stored key picked for a draft, and an
+   * open chat's own key or provider account while its model is unchanged
+   * (the status reads only the provider's default account). A parallel set
+   * carries no routes, so it checks its models' providers.
+   */
+  const signInLoginProvider = useMemo<string | null>(() => {
+    if (parallelDraftActive) return signInProvider;
+    if (selectedSessionId) {
+      if (!selectedSession) return null;
+      const routePick = sessionRoutePick?.sessionId === selectedSessionId ? sessionRoutePick : null;
+      const target = resolveHarnessLaunchTarget(
+        routePick ? routePick.presetId : selectedSession.presetId ?? null,
+        harnessPresets,
+        modelCatalogScopeKey,
+      );
+      if (target) return routeLoginProvider(target);
+      if (!routePick && !modelSelectionDiffersFromSession && (selectedSession.credentialId || selectedSession.instanceId)) {
+        return null;
+      }
+      return signInProvider;
+    }
+    if (draftLaunchTarget) return routeLoginProvider(draftLaunchTarget);
+    if (draftCredentialId) return null;
+    return signInProvider;
+  }, [draftCredentialId, draftLaunchTarget, harnessPresets, modelCatalogScopeKey, modelSelectionDiffersFromSession, parallelDraftActive, selectedSession, selectedSessionId, sessionRoutePick, signInProvider]);
   /**
    * A draft bound for Cursor Cloud or Devin runs elsewhere, and a CLI draft
    * signs in inside the CLI itself, so this computer's login check does not
@@ -16915,11 +16964,17 @@ export function AgentChatPane({
     if (chatSignInFailure && chatSignInFailure.provider === signInProvider) {
       return { provider: signInProvider, reason: "failed-turn", key: `${machineKey}:${chatSignInFailure.eventKey}` };
     }
-    if (!sessionRunsInACloud && providerLoginMissing(signInProvider, signInConnection)) {
-      return { provider: signInProvider, reason: "no-login", key: `${machineKey}:${signInProvider}:no-login` };
+    if (
+      !sessionRunsInACloud
+      && signInLoginProvider
+      && providerLoginMissing(signInLoginProvider, signInConnections?.[signInLoginProvider])
+    ) {
+      return { provider: signInLoginProvider, reason: "no-login", key: `${machineKey}:${signInLoginProvider}:no-login` };
     }
     return null;
-  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, draftSkipsLocalSignIn, personalScope, sessionRunsInACloud, signInConnection, signInProvider, subagentView, turnActive]);
+  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, draftSkipsLocalSignIn, personalScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
+  // The connection of the provider the card signs in to.
+  const signInConnection = providerSignInNeed ? signInConnections?.[providerSignInNeed.provider] ?? null : null;
   // Not now hides this card until a different reason (another failed turn,
   // another machine) brings one back.
   const [dismissedSignInKey, setDismissedSignInKey] = useState<string | null>(null);
@@ -18688,6 +18743,7 @@ export function AgentChatPane({
     // back to the model's own provider in the trigger — naming a
     // provider the preset does not even run on.
     setDraftHarnessPresetId(options?.presetId ?? null);
+    setDraftCredentialId(options?.presetId ? null : options?.credentialId ?? null);
     // A new model starts on its default context tier unless the pick
     // came from its context chip.
     setCopilotContextTier(options?.copilotContextTier ?? "default");

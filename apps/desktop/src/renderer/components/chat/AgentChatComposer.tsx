@@ -8524,11 +8524,11 @@ function AgentChatComposerImpl({
         </div>
       ) : null}
       {/* Always mounted, so a screen reader hears Send turn off for a
-          sign-in even when the status lands after the box. Keyed on the
-          block itself, not on the typed text, so typing a command never
-          repeats it. */}
+          sign-in even when the status lands after the box. It says what the
+          Send button does: a command that runs anyway (`sendBlockExempt`)
+          clears it. */}
       <div role="status" className="sr-only">
-        {launchBlocked && sendBlockedReason ? `Send is off. ${sendBlockedReason}` : null}
+        {sendBlocked && sendBlockedReason ? `Send is off. ${sendBlockedReason}` : null}
       </div>
       {aboveComposerSlot ? (
         <div

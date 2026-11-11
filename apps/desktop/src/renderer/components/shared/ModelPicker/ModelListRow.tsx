@@ -372,14 +372,15 @@ export const ModelListRow = memo(function ModelListRow({
               {isActive ? (
                 <Check size={12} weight="bold" className="shrink-0 text-fg/90" aria-hidden />
               ) : null}
-              {/* Gives way before the name: the label clips down to the bolt. */}
+              {/* The name comes first: a row narrower than 480 px shows only
+                  the bolt, so the label is never cut to a few letters. */}
               {localBadge ? (
                 <span
-                  className="inline-flex min-w-[20px] shrink-[100] items-center gap-0.5 overflow-hidden rounded-full bg-emerald-500/[0.12] px-1.5 py-px text-[9px] font-semibold uppercase leading-none text-emerald-300/85"
+                  className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-emerald-500/[0.12] px-1.5 py-px text-[9px] font-semibold uppercase leading-none text-emerald-300/85"
                   title="Offline-ready"
                 >
-                  <Lightning size={8} weight="fill" className="shrink-0" />
-                  <span className="min-w-0 overflow-hidden">Local</span>
+                  <Lightning size={8} weight="fill" className="shrink-0" aria-hidden />
+                  <span className="sr-only @[480px]/row:not-sr-only">Local</span>
                 </span>
               ) : null}
               {/* One sign-in control per row: the tag only when the row has no

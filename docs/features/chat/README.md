@@ -2132,7 +2132,12 @@ still-live button invites a second spend.
   use this computer's login, and a CLI draft signs in inside the CLI: no
   strip, no card, Send stays on (`draftSkipsLocalSignIn`). An open Cursor
   Cloud or Devin chat is not held off either. In an open chat the check
-  follows the picked model's provider, not the chat's first one. A parallel draft
+  follows the picked model's provider, not the chat's first one. It also
+  follows the route (`signInLoginProvider`): a stored key or a picked
+  provider account brings its own credentials, so no local login is
+  checked; a subscription run in another harness checks that
+  subscription's provider. A turn that failed on its sign-in keeps its card
+  either way. A parallel draft
   checks its set of models: the first one whose provider has no login shows
   the strip and holds Send. A command that needs no login of the provider,
   or that is the login, still runs while Send is off, and Send looks on for
@@ -2142,7 +2147,8 @@ still-live button invites a second spend.
   with no turn). Any other command is a provider turn and waits like a
   message. "Launch in background" and "Scheduled send" stay off and show
   the same reason. A hidden status region in the composer, always mounted,
-  tells a screen reader that Send is off and why. The status
+  tells a screen reader that Send is off and why, in step with the Send
+  button. The status
   refreshes by three paths, none a timer:
   1. The card's sign-in: Send turns on in the same commit as the card's
      success (`signedInNeedKey`), then a forced re-read on the composer's
