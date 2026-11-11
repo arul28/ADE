@@ -148,20 +148,32 @@ extension EnvironmentValues {
 /// tiers down to `hubStatusBandMinimumWidth` (`HubHeaderRow`); only a band
 /// narrower than that puts the header on a row of its own.
 ///
+/// A real iPhone Duo on iOS 27.2 reports no block at all, though it draws the
+/// clock in the same place. With nothing reported, the display's shape
+/// decides (`hubDisplayIsDuoOuter`) and the block takes its usual place
+/// (`hubStatusBlockUsualWidth`). A pill is then unseen, and the header can
+/// sit under it.
+///
 /// The reading also says, in plain words, what it saw and which check
 /// decided. Settings › Advanced shows that (`HubLayoutDiagnostics`), so a
 /// phone the simulator cannot copy can say which check failed.
 func hubStatusBandReading(_ proxy: GeometryProxy) -> HubStatusBandReading {
   let width = proxy.size.width
-  let facts = "Top space \(Int(proxy.safeAreaInsets.top)), width \(Int(width))."
+  let insets = proxy.safeAreaInsets
+  let facts = "Top space \(Int(insets.top)), width \(Int(width)), height \(Int(proxy.size.height + insets.top + insets.bottom))."
   func reading(_ band: CGFloat?, _ verdict: String, _ extra: String = "") -> HubStatusBandReading {
     HubStatusBandReading(width: band, detail: [verdict, facts, extra].filter { !$0.isEmpty }.joined(separator: " "))
   }
   guard !proxy.isLandscapeIgnoringKeyboard else { return reading(nil, "Full: landscape.") }
-  guard proxy.safeAreaInsets.top >= 64 else { return reading(nil, "Full: top space under 64.") }
+  guard insets.top >= 64 else { return reading(nil, "Full: top space under 64.") }
   #if compiler(>=6.4)
   guard #available(iOS 27.1, *) else { return reading(nil, "Full: iOS older than 27.1.") }
-  let regions = proxy.reservedRegions(kind: .occlusion)
+  // The inactive ones are for the readout only.
+  var regions = proxy.reservedRegions(kind: .occlusion, options: .includeInactive)
+  #if DEBUG
+  // `-adeHubNoStatusBlocks` stands in for a phone that reports no block.
+  if hubDebugNoStatusBlocks { regions = [] }
+  #endif
   let blocks = regions.isEmpty
     ? "No clock block reported."
     : "Blocks: " + regions.map { region in
@@ -174,13 +186,20 @@ func hubStatusBandReading(_ proxy: GeometryProxy) -> HubStatusBandReading {
   let top = regions.filter { region in
     region.isActive && region.frame.minY < 0
   }
-  // A block that reaches the trailing corner, not an island in the middle.
-  guard top.contains(where: { $0.frame.maxX > width * 0.75 }) else {
+  var leading: CGFloat
+  var source = ""
+  if top.contains(where: { $0.frame.maxX > width * 0.75 }) {
+    // A block that reaches the trailing corner, not an island in the middle.
+    // Every pill of the block, the leading one included, ends the band.
+    guard let measured = top.map(\.frame.minX).filter({ $0 > width * 0.25 }).min() else {
+      return reading(nil, "Full: the block starts in the leading quarter.", blocks)
+    }
+    leading = measured
+  } else if top.isEmpty, hubDisplayIsDuoOuter(proxy) {
+    leading = width - hubStatusBlockUsualWidth
+    source = ", from the display's shape"
+  } else {
     return reading(nil, "Full: no block in the top trailing corner.", blocks)
-  }
-  // Every pill of the block, the leading one included, ends the band.
-  guard var leading = top.map(\.frame.minX).filter({ $0 > width * 0.25 }).min() else {
-    return reading(nil, "Full: the block starts in the leading quarter.", blocks)
   }
   #if DEBUG
   // `-adeHubStatusBand <points>` stands in for a call or timer pill, which a
@@ -190,10 +209,28 @@ func hubStatusBandReading(_ proxy: GeometryProxy) -> HubStatusBandReading {
   guard leading >= hubStatusBandMinimumWidth else {
     return reading(nil, "Full: band \(Int(leading)) is under \(Int(hubStatusBandMinimumWidth)).", blocks)
   }
-  return reading(leading, "Compact: band \(Int(leading)).", blocks)
+  return reading(leading, "Compact: band \(Int(leading))\(source).", blocks)
   #else
   return reading(nil, "Full: built without Swift 6.4.")
   #endif
+}
+
+/// The status block's usual width on the Duo's outer display, upright: the
+/// trailing 200 points. The iOS 27.1 simulator reports that block (x 266 to
+/// 466 of 466) and draws its clock 27 points inside it. A real Duo on iOS 27.2
+/// reports none and draws its clock from x 288 of 457: 31 points inside the
+/// same trailing 200.
+private let hubStatusBlockUsualWidth: CGFloat = 200
+
+/// The Duo's outer display, upright, by its shape, for a phone that reports
+/// no status block: 457 by 678 points, far squatter than a bar-shaped iPhone
+/// (each over twice as tall as it is wide). The inner display is squat too,
+/// and wider than any phone's outer display.
+private func hubDisplayIsDuoOuter(_ proxy: GeometryProxy) -> Bool {
+  let insets = proxy.safeAreaInsets
+  let width = proxy.size.width + insets.leading + insets.trailing
+  let height = proxy.size.height + insets.top + insets.bottom
+  return width < 520 && height < width * 1.7
 }
 
 /// `hubStatusBandReading`'s result: the band's width, nil when the header
@@ -220,6 +257,8 @@ private let hubDebugStatusBandWidth: CGFloat? = {
   else { return nil }
   return CGFloat(value)
 }()
+
+private let hubDebugNoStatusBlocks = ProcessInfo.processInfo.arguments.contains("-adeHubNoStatusBlocks")
 #endif
 
 /// The narrowest band beside the clock that the header's tightest tier fits
