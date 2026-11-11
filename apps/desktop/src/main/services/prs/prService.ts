@@ -876,6 +876,8 @@ function latestReviewStatesByUser(reviews: readonly PrReview[]): Map<string, str
 function computeReviewStatus(args: {
   reviewDecision?: PrReviewDecision;
   verdictUnavailable?: { previousStatus: string | null | undefined };
+  /** The reviews list could not be read this time, so an empty list proves nothing. */
+  reviewsUnavailable?: boolean;
   requestedReviewers: string[];
   requestedTeams?: string[];
   reviewStatesByUser: Map<string, string>;
@@ -887,11 +889,13 @@ function computeReviewStatus(args: {
   if (args.verdictUnavailable) {
     const stillApproved = Array.from(args.reviewStatesByUser.values()).includes("APPROVED");
     if (args.verdictUnavailable.previousStatus === "approved" && stillApproved) return "approved";
-    // A blocking verdict outranks a pending request: a failed reviews read
-    // returns an empty list, and nothing there shows the block ended. Keep it
-    // until a read that worked says otherwise, so the status cannot flip
+    // A blocking verdict outranks a pending request while the reviews read
+    // could not say whether it ended. Keep it until a read that worked shows
+    // no visible changes-requested, so the status cannot flip
     // changes_requested → requested → changes_requested on the wire.
-    if (args.verdictUnavailable.previousStatus === "changes_requested") return "changes_requested";
+    if (args.verdictUnavailable.previousStatus === "changes_requested" && args.reviewsUnavailable) {
+      return "changes_requested";
+    }
     // A reviewer named in the REST payload is current evidence, even with no
     // verdict, so an explicit request still overrides a saved `none`. No
     // verdict and no request means keep the last real status: a branch that
@@ -5683,11 +5687,12 @@ export function createPrService({
     const requestedTeams = Array.isArray(pr?.requested_teams) ? pr.requested_teams.map((team: any) => asString(team?.slug)).filter(Boolean) : [];
 
     let checkRunsFetchFailed = false;
+    let reviewsFetchFailed = false;
     const [combinedStatus, checkRuns, reviews, compare, visibility] = shouldFetchLiveStatus
       ? await Promise.all([
           headSha ? bestEffort("refreshOne.fetchCombinedStatus", fetchCombinedStatus(repo, headSha), { state: "", statuses: [] }, () => { checkRunsFetchFailed = true; }) : Promise.resolve({ state: "", statuses: [] }),
           headSha ? bestEffort("refreshOne.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
-          bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), []),
+          bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), [], () => { reviewsFetchFailed = true; }),
           baseSha && headSha ? bestEffort("refreshOne.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
           fetchPrVisibility(repo, Number(row.github_pr_number)),
         ])
@@ -5727,6 +5732,7 @@ export function createPrService({
       ? computeReviewStatus({
         reviewDecision: visibility.reviewDecision,
         ...(visibility.verdictKnown ? {} : { verdictUnavailable: { previousStatus: row.review_status } }),
+        reviewsUnavailable: reviewsFetchFailed,
         requestedReviewers,
         requestedTeams,
         reviewStatesByUser,
@@ -6081,10 +6087,11 @@ export function createPrService({
     const mergeConflicts = mergeConflictsFromPull(pr);
 
     let checkRunsFetchFailed = false;
+    let reviewsFetchFailed = false;
     const [combinedStatus, checkRuns, reviews, compare, mergeState] = await Promise.all([
       restHeadSha ? bestEffort("computeStatus.fetchCombinedStatus", fetchCombinedStatus(repo, restHeadSha), { state: "", statuses: [] }, () => { checkRunsFetchFailed = true; }) : Promise.resolve({ state: "", statuses: [] }),
       restHeadSha ? bestEffort("computeStatus.fetchCheckRuns", fetchCheckRuns(repo, restHeadSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
-      bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), []),
+      bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), [], () => { reviewsFetchFailed = true; }),
       baseSha && restHeadSha ? bestEffort("computeStatus.fetchCompare", fetchCompare(repo, baseSha, restHeadSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
       readCache.whileQuiet(
         repo,
@@ -6119,6 +6126,7 @@ export function createPrService({
     const reviewStatus = computeReviewStatus({
       reviewDecision: mergeState ? mergeState.reviewDecision : visibility?.reviewDecision,
       ...(visibility?.verdictKnown === false ? { verdictUnavailable: { previousStatus: getRowById(prId)?.review_status } } : {}),
+      reviewsUnavailable: reviewsFetchFailed,
       requestedReviewers,
       requestedTeams,
       reviewStatesByUser,
