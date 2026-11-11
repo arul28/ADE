@@ -13,7 +13,8 @@ import {
   ChatCircleDots,
   Globe,
   CircleNotch,
-  DownloadSimple,
+  Stack as CopiesIcon,
+  Desktop,
   Folder,
   FolderOpen,
   GearSix,
@@ -32,14 +33,26 @@ import {
   type ContextMenuEntry,
   type ContextMenuState,
 } from "../ui/ContextMenu";
-import { CloneLocallyDialog, type CloneLocallyTarget } from "../projects/CloneLocallyDialog";
+import type { CloneLocallyTarget } from "../projects/CloneLocallyDialog";
 import { cloneTargetFor, projectMenuSections } from "../projects/projectMenuEntries";
+import { ProjectCopiesMenu } from "../projects/ProjectCopiesMenu";
+import { RemoveProjectDialog, type RemoveProjectResult } from "../projects/RemoveProjectDialog";
+import { repoCopyMayRemain } from "../projects/projectCopies";
+import { subscribeCopyJobReady } from "../projects/projectCopyJobs";
+import { useProjectCopiesMenu } from "../projects/useProjectCopiesMenu";
 import { ProjectIconDialog, type ProjectIconDialogTarget } from "../projects/ProjectIconDialog";
 import {
   getProjectIconFromCache,
+  publishProjectIcon,
   setProjectIconCache,
   subscribeProjectIcon,
 } from "../../lib/projectIconCache";
+import { useProjectRecords } from "../../lib/useProjectRecords";
+import {
+  PROJECT_RECORD_ICON_KEY,
+  PROJECT_RECORD_NAME_KEY,
+  projectRecordScope,
+} from "../../../shared/projectRecord";
 
 import { useAppStore } from "../../state/appStore";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
@@ -75,7 +88,10 @@ import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
 import { pressActivation } from "../../lib/pressActivation";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
-import { forgetExplicitRemotePicks, usePreferLocalCheckout } from "./usePreferLocalCheckout";
+import {
+  forgetExplicitRemotePicks,
+  usePreferLocalCheckout,
+} from "./usePreferLocalCheckout";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { isMac } from "../../lib/platform";
@@ -534,7 +550,7 @@ function fallbackProjectName(rootPath: string): string {
 
 
 
-/** An accent call-to-action in the header, such as Publish or Clone locally. */
+/** An accent call-to-action in the header, such as Publish. */
 function HeaderActionPill({
   icon: Icon,
   label,
@@ -1024,6 +1040,16 @@ export function TopBar({
     fetchRecent({ force: true });
   }, [project?.rootPath, fetchRecent]);
 
+  // A new copy on this computer joins its tab once the recent list has it.
+  // A copy on another machine comes in through the connection snapshot.
+  useEffect(
+    () =>
+      subscribeCopyJobReady((job) => {
+        if (job.machine.targetId == null) fetchRecent({ force: true });
+      }),
+    [fetchRecent],
+  );
+
   useEffect(() => {
     const rootPath = project?.rootPath ?? null;
     if (!rootPath) {
@@ -1181,6 +1207,46 @@ export function TopBar({
   useEffect(() => {
     tabGroupsRef.current = tabGroups;
   }, [tabGroups]);
+
+  // The shared project record: one name and one icon per repository on every
+  // machine of the account. Names show here; when another machine changes a
+  // repository's icon, its tabs ask for the icon again.
+  const recordScopes = useMemo(
+    () => tabGroups.flatMap((group) => {
+      const scope = projectRecordScope(group.origin ?? null);
+      return scope ? [scope] : [];
+    }),
+    [tabGroups],
+  );
+  const refreshRecordIcon = useCallback((scope: string) => {
+    const targets = new Set<string>();
+    for (const group of tabGroupsRef.current) {
+      if (projectRecordScope(group.origin ?? null) !== scope) continue;
+      for (const machine of group.machines) {
+        if (machine.isLocal) {
+          void window.ade.project
+            .resolveIcon(machine.rootPath)
+            .then((icon) => publishProjectIcon(machine.rootPath, icon))
+            .catch(() => {});
+        } else if (machine.binding?.kind === "remote") {
+          targets.add(machine.binding.targetId);
+        }
+      }
+    }
+    // Only a machine already connected is asked: this must never wake one.
+    for (const targetId of targets) {
+      const state = remoteSnapshotRef.current?.connections.find((entry) => entry.target.id === targetId)?.state;
+      if (state === "connected") void window.ade.remoteRuntime.listProjects(targetId).catch(() => {});
+    }
+  }, []);
+  const recordNames = useProjectRecords(recordScopes, refreshRecordIcon);
+  const recordNameFor = useCallback(
+    (group: ProjectTabGroup): string | null => {
+      const scope = projectRecordScope(group.origin ?? null);
+      return scope ? recordNames.get(scope) ?? null : null;
+    },
+    [recordNames],
+  );
 
   useEffect(() => {
     remoteSnapshotRef.current = remoteSnapshot;
@@ -1824,8 +1890,6 @@ export function TopBar({
   const closeTabMenu = useCallback(() => setTabMenu(null), []);
   const [iconDialogTarget, setIconDialogTarget] = useState<ProjectIconDialogTarget | null>(null);
   const closeIconDialog = useCallback(() => setIconDialogTarget(null), []);
-  const [cloneLocallyTarget, setCloneLocallyTarget] = useState<CloneLocallyTarget | null>(null);
-
   /** The host's latest icon per project, so a changed icon shows at once. */
   const hostIconByKey = useMemo(() => {
     const byKey = new Map<string, string | null>();
@@ -1847,13 +1911,125 @@ export function TopBar({
     [remoteOriginByKey],
   );
 
-  const activeCloneTarget = useMemo(() => {
-    if (!remoteBinding) return null;
-    const group = tabGroups.find((entry) =>
-      entry.machines.some((machine) => machine.bindingKey === remoteBinding.key),
-    );
-    return group ? cloneTargetForGroup(group) : null;
-  }, [cloneTargetForGroup, remoteBinding, tabGroups]);
+  const {
+    copiesMenu,
+    setCopiesMenu,
+    closeCopiesMenu,
+    copiesMenuModel,
+    startCopyForRepo,
+    addLocalCopyFromTab,
+    removeTarget,
+    openRemoveDialog,
+    closeRemoveDialog,
+    handleCopiesMenuSwitch,
+    openCopiesMenuFor,
+  } = useProjectCopiesMenu({
+    tabGroups,
+    remoteSnapshot,
+    webMode,
+    recordNameFor,
+    workspaceProjectOpen,
+    projectRootPath: project?.rootPath ?? null,
+    hasOrigin,
+    recentProjects,
+    knownRemoteProjectTabs,
+    handleClonedLocally,
+    handleSwitchProject,
+    handleSwitchRemoteProject,
+  });
+
+  /**
+   * After a removal: the tab moves to another copy of the repository when
+   * one remains (resolveProjectTabFallback), else it closes. A copy whose
+   * result is not known keeps its tab. "Remove from all my machines" also
+   * clears the repository's shared name and icon, but only when no copy of
+   * it may remain on any machine.
+   */
+  const handleProjectCopiesRemoved = useCallback(
+    async (groupId: string, recordScope: string | null, repoKey: string | null, result: RemoveProjectResult) => {
+      const removed = new Set(result.removedBindingKeys);
+      if (removed.size === 0) return;
+      // This computer's recents: the main process already forgot its own
+      // copy; another machine's copy is forgotten here.
+      for (const key of removed) {
+        if (key.startsWith("remote:")) await window.ade.project.forgetRecent(key).catch(() => null);
+      }
+      const freshRecents = await listRecentProjectsCached({ force: true }).catch(() => null);
+      if (freshRecents) setRecentProjects(freshRecents);
+      const clearRecord = result.scope === "all"
+        && recordScope !== null
+        && repoKey !== null
+        && freshRecents !== null
+        && result.unknownBindingKeys.length === 0
+        && !result.cloneRunning
+        && !repoCopyMayRemain(repoKey, { recents: freshRecents, snapshot: remoteSnapshotRef.current }, removed);
+      if (clearRecord) {
+        const removeSetting = window.ade.accountSettings?.remove;
+        for (const key of [PROJECT_RECORD_NAME_KEY, PROJECT_RECORD_ICON_KEY]) {
+          void removeSetting?.({ scope: recordScope, key }).catch(() => undefined);
+        }
+      }
+
+      const group = tabGroupsRef.current.find((entry) => entry.id === groupId);
+      if (!group) return;
+      const openLocal = openProjectTabRootsRef.current;
+      const openRemote = openRemoteProjectTabsRef.current;
+      const removedOpen = group.machines.filter((machine) =>
+        removed.has(machine.bindingKey)
+        && (openLocal.includes(machine.bindingKey) || openRemote.some((entry) => entry.key === machine.bindingKey)));
+      if (removedOpen.length === 0) return;
+      const remaining = group.machines.filter((machine) => !removed.has(machine.bindingKey));
+      const connectedTargetIds = new Set(
+        (remoteSnapshotRef.current?.connections ?? [])
+          .filter((connection) => connection.state === "connected")
+          .map((connection) => connection.target.id),
+      );
+      const fallback = resolveProjectTabFallback({
+        bindingKey: removedOpen[0]!.bindingKey,
+        groups: [{ ...group, machines: [removedOpen[0]!, ...remaining] }],
+        openLocalRoots: openLocal,
+        openRemoteBindingKeys: openRemote.map((entry) => entry.key),
+        connectedTargetIds,
+        excludeTargetId: "",
+      });
+      if (!fallback) {
+        await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+        return;
+      }
+      const state = useAppStore.getState();
+      const activeKey = state.projectBinding?.kind === "remote" ? state.projectBinding.key : state.project?.rootPath ?? null;
+      try {
+        if (activeKey && removed.has(activeKey)) {
+          if (fallback.kind === "local") await state.switchProjectToPath(fallback.rootPath);
+          else await state.switchRemoteProject(fallback.binding.targetId, fallback.binding.projectId);
+        }
+      } catch {
+        // The switch failed: the tab closes rather than pointing at a removed copy.
+        await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+        return;
+      }
+      const nextRemote = [
+        ...openRemoteProjectTabsRef.current.filter((entry) => !removed.has(entry.key)),
+        ...(fallback.kind === "remote" && !openRemoteProjectTabsRef.current.some((entry) => entry.key === fallback.binding.key)
+          ? [fallback.binding]
+          : []),
+      ];
+      openRemoteProjectTabsRef.current = nextRemote;
+      setOpenRemoteProjectTabs(nextRemote);
+      setOpenProjectTabRoots((prev) => {
+        const next = prev.filter((root) => !removed.has(root));
+        if (fallback.kind === "local" && !next.includes(fallback.rootPath)) next.push(fallback.rootPath);
+        return next;
+      });
+      const removedRemoteKeys = new Set([...removed].filter((key) => key.startsWith("remote:")));
+      forgetExplicitRemotePicks(removedRemoteKeys);
+      for (const key of removedRemoteKeys) {
+        useAppStore.getState().evictProjectState(key);
+        removeStoredProjectRoute(key);
+      }
+    },
+    [closeTabGroups, setOpenProjectTabRoots, setOpenRemoteProjectTabs],
+  );
 
   const recentForMachine = useCallback(
     (machine: ProjectTabMachine): RecentProjectSummary | null => {
@@ -1894,7 +2070,7 @@ export function TopBar({
       { webMode },
       {
         onChangeIcon: setIconDialogTarget,
-        onClone: setCloneLocallyTarget,
+        onClone: (target) => addLocalCopyFromTab(target, { x: tabMenu.x, y: tabMenu.y }, group.id),
         onTogglePin: () => {
           if (!recent) return;
           void window.ade.project
@@ -1929,6 +2105,13 @@ export function TopBar({
         : null,
       ...sections.open,
       { kind: "separator", key: "sep-project" },
+      {
+        kind: "item",
+        key: "copies",
+        label: "Copies…",
+        icon: CopiesIcon,
+        onSelect: () => setCopiesMenu({ x: tabMenu.x, y: tabMenu.y, groupId: group.id }),
+      },
       ...sections.project,
       { kind: "separator", key: "sep-copy" },
       ...sections.copy,
@@ -1940,6 +2123,16 @@ export function TopBar({
         onSelect: () => void window.ade.app.writeClipboardText(machine.displayName).catch(() => {}),
       },
       { kind: "separator", key: "sep-close" },
+      ...(!webMode
+        ? [{
+            kind: "item" as const,
+            key: "remove-project",
+            label: "Remove project…",
+            icon: Trash,
+            disabled: isProjectBusy,
+            onSelect: () => openRemoveDialog(group.id),
+          }]
+        : []),
       {
         kind: "item",
         key: "close",
@@ -1971,8 +2164,10 @@ export function TopBar({
     ];
     return entries.filter((entry): entry is ContextMenuEntry => entry != null);
   }, [
+    addLocalCopyFromTab,
     closeTabGroups,
     cloneTargetForGroup,
+    openRemoveDialog,
     handleMoveTabToNewWindow,
     hostIconByKey,
     isProjectBusy,
@@ -2204,7 +2399,7 @@ export function TopBar({
                       // lives. The machine is in the tooltip; only a connection
                       // problem, which stops the tab from loading, is marked.
                       className={cn(
-                        "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] items-center gap-1.5 px-2.5",
+                        "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[260px] items-center gap-1.5 px-2.5",
                         "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
                         "cursor-pointer",
                         isCurrentRemote && "font-semibold",
@@ -2237,8 +2432,25 @@ export function TopBar({
                         }
                       />
                       <span className="min-w-0 flex-1 truncate text-center text-[12px]">
-                        {remoteTab.displayName}
+                        {recordNameFor(group) ?? remoteTab.displayName}
                       </span>
+                      {/* The tab's work is on another machine: its mark names
+                          it and opens the copies of the project. Monochrome,
+                          from the binding the tab already holds. */}
+                      <button
+                        type="button"
+                        className="ade-shell-control inline-flex max-w-[84px] shrink-0 items-center gap-1 rounded px-1 text-[10.5px] font-normal text-current opacity-70 hover:opacity-100 focus-visible:opacity-100"
+                        data-variant="ghost"
+                        aria-haspopup="menu"
+                        aria-expanded={copiesMenu?.groupId === group.id}
+                        aria-label={`On ${remoteTab.runtimeName}. Show copies`}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => openCopiesMenuFor(event, group.id)}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
+                        <Desktop size={11} weight="regular" aria-hidden className="shrink-0" />
+                        <span className="min-w-0 truncate">{remoteTab.runtimeName}</span>
+                      </button>
                       {remoteTabConnecting ? (
                         <CircleNotch
                           size={11}
@@ -2385,7 +2597,7 @@ export function TopBar({
                         isMissing && "line-through",
                       )}
                     >
-                      {rp.displayName}
+                      {recordNameFor(group) ?? rp.displayName}
                     </span>
                     {isMissing ? (
                       <span className="inline-flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
@@ -2635,19 +2847,6 @@ export function TopBar({
         </div>
       ) : null}
 
-      {/* Cloning is to this machine, which the web client has no notion of. */}
-      {!webMode && activeCloneTarget && !isProjectBusy ? (
-        <HeaderActionPill
-          icon={DownloadSimple}
-          label="Clone locally"
-          tooltip={{
-            label: "Clone locally",
-            description: `${activeCloneTarget.displayName} runs on ${activeCloneTarget.machineName}. Clone it to this machine to work on it here too.`,
-          }}
-          onClick={() => setCloneLocallyTarget(activeCloneTarget)}
-        />
-      ) : null}
-
       {showPublishPill ? (
         <HeaderActionPill
           icon={UploadSimple}
@@ -2758,12 +2957,37 @@ export function TopBar({
         label="Project tab"
       />
       <ProjectIconDialog target={iconDialogTarget} onClose={closeIconDialog} />
-      <CloneLocallyDialog
-        target={cloneLocallyTarget}
-        onClose={() => setCloneLocallyTarget(null)}
-        onCloned={(result) => {
-          if (cloneLocallyTarget) void handleClonedLocally(result.rootPath, cloneLocallyTarget.remoteKey);
+      {removeTarget ? (
+        <RemoveProjectDialog
+          key={removeTarget.groupId}
+          target={removeTarget}
+          onClose={closeRemoveDialog}
+          onRemoved={(result) => void handleProjectCopiesRemoved(
+            removeTarget.groupId,
+            removeTarget.recordScope,
+            removeTarget.repoKey,
+            result,
+          )}
+        />
+      ) : null}
+      <ProjectCopiesMenu
+        menu={copiesMenuModel && copiesMenu ? { x: copiesMenu.x, y: copiesMenu.y } : null}
+        projectName={copiesMenuModel?.projectName ?? ""}
+        repoKey={copiesMenuModel?.repoKey ?? null}
+        rows={copiesMenuModel?.rows ?? []}
+        onlyOneMachine={copiesMenuModel?.onlyOneMachine ?? null}
+        // The clone call takes only GitHub repositories, on every machine.
+        canAddCopies={!webMode && Boolean(copiesMenuModel?.repoKey?.startsWith("github.com/"))}
+        onSwitch={handleCopiesMenuSwitch}
+        onAddCopy={(machine) => {
+          if (!copiesMenuModel?.repoKey) return;
+          startCopyForRepo(copiesMenuModel.repoKey, copiesMenuModel.projectName, machine);
         }}
+        onPublish={copiesMenuModel?.canPublish && !isProjectBusy ? () => setPublishOpen(true) : null}
+        onRemove={!webMode && copiesMenuModel && !isProjectBusy
+          ? () => openRemoveDialog(copiesMenuModel.group.id)
+          : null}
+        onClose={closeCopiesMenu}
       />
       <PublishToGitHubDialog
         open={publishOpen}

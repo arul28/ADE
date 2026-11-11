@@ -207,6 +207,8 @@ export const IPC = {
    */
   diagnosticsAckAutoSent: "ade.diagnostics.ackAutoSent",
   projectForgetRecent: "ade.project.forgetRecent",
+  projectInspectRemoval: "ade.project.inspectRemoval",
+  projectRemoveCopy: "ade.project.removeCopy",
   projectReorderRecent: "ade.project.reorderRecent",
   projectSetRecentPinned: "ade.project.setRecentPinned",
   projectMissing: "ade.project.missing",
@@ -236,6 +238,8 @@ export const IPC = {
   remoteRuntimeGetProjectDetail: "ade.remoteRuntime.getProjectDetail",
   remoteRuntimeChooseProjectIcon: "ade.remoteRuntime.chooseProjectIcon",
   remoteRuntimeRemoveProjectIcon: "ade.remoteRuntime.removeProjectIcon",
+  remoteRuntimeInspectProjectRemoval: "ade.remoteRuntime.inspectProjectRemoval",
+  remoteRuntimeRemoveProjectCopy: "ade.remoteRuntime.removeProjectCopy",
   remoteRuntimeGetDefaultParentDir: "ade.remoteRuntime.getDefaultParentDir",
   remoteRuntimeGetHandoffStoragePreflight: "ade.remoteRuntime.getHandoffStoragePreflight",
   remoteRuntimeCreateProject: "ade.remoteRuntime.createProject",
@@ -1124,6 +1128,11 @@ export const IPC = {
   accountCancelDeviceLogin: "ade.account.cancelDeviceLogin",
   accountSignOut: "ade.account.signOut",
   accountListMachines: "ade.account.listMachines",
+  laneShareGuestListReceived: "ade.laneShareGuest.listReceived",
+  laneShareGuestOpen: "ade.laneShareGuest.open",
+  laneShareGuestAccept: "ade.laneShareGuest.accept",
+  laneShareGuestLeave: "ade.laneShareGuest.leave",
+  laneShareGuestConnect: "ade.laneShareGuest.connect",
   accountGetMachineInventory: "ade.account.getMachineInventory",
   accountGetConnectionRoutes: "ade.account.getConnectionRoutes",
   accountGetAvatarDataUrl: "ade.account.getAvatarDataUrl",
@@ -1197,6 +1206,7 @@ export const IPC = {
   accountSettingsList: "ade.accountSettings.list",
   accountSettingsGet: "ade.accountSettings.get",
   accountSettingsSet: "ade.accountSettings.set",
+  accountSettingsRemove: "ade.accountSettings.remove",
   accountSettingsSync: "ade.accountSettings.sync",
   /**
    * The account's provider sign-ins (P5) on this computer's brain, with no

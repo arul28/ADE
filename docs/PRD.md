@@ -46,6 +46,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 | Agent | Model-backed operator. The persistent CTO plus ephemeral lane-bound and personal chat agents. | [agents/README.md](./features/agents/README.md) |
 | Worktree | Git clone dir under `.ade/worktrees/<lane-id>/`, one per lane. | [lanes/worktree-isolation.md](./features/lanes/worktree-isolation.md) |
 | Lane runtime | Per-lane env initialization, ports, proxy, OAuth routing, and diagnostics. | [lanes/runtime.md](./features/lanes/runtime.md) |
+| Lane share | Limited access to one lane for another ADE account, enforced by the machine that holds the lane. | [lanes/lane-sharing.md](./features/lanes/lane-sharing.md) |
 | Session | PTY-backed terminal session pinned to a lane. | [terminals-and-sessions/README.md](./features/terminals-and-sessions/README.md) |
 | Proof | Normalized computer-use artifact (screenshot, recording, network log). | [computer-use/artifact-broker.md](./features/computer-use/artifact-broker.md) |
 
@@ -94,7 +95,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 ### Work execution
 
-- [**Lanes**](./features/lanes/README.md) — Worktree isolation, where new lanes start, catching up with the base, lane runtime, OAuth redirect, diagnostics. Each lane is a sandbox on its own branch. Lane runtime covers ports, env initialization, proxy routing, and health checks.
+- [**Lanes**](./features/lanes/README.md) — Worktree isolation, where new lanes start, catching up with the base, lane runtime, OAuth redirect, diagnostics. Each lane is a sandbox on its own branch. Lane runtime covers ports, env initialization, proxy routing, and health checks. [Lane sharing](./features/lanes/lane-sharing.md) gives another ADE account limited access to one lane.
 - [**Pull Requests**](./features/pull-requests/README.md) — GitHub PRs for lanes: list, detail, checks, reviews, GitHub stacks, and merging. Backed by lanes.
 - [**Conflicts**](./features/conflicts/README.md) — Pre-flight detection (full pairwise matrix up to 15 lanes, prefilter above), live simulation via `git merge-tree`, AI-assisted resolution proposals.
 ### Agents and chat

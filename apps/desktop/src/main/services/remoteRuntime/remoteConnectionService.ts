@@ -55,6 +55,15 @@ import {
   RemoteRuntimeConnectError,
 } from "../../../shared/types";
 import { coerceProjectIcon, coerceProjects } from "./remoteBootstrap";
+import type {
+  ProjectRemovalOutcome,
+  ProjectRemovalReport,
+  ProjectRemovalRequest,
+  RemoteProjectRemovalInspection,
+} from "../../../shared/projectRemoval";
+
+/** A permanent delete of a large folder runs in a separate process with retries; it can take minutes. */
+const PROJECT_REMOVAL_TIMEOUT_MS = 10 * 60_000;
 import {
   parseRemoteAttachmentUploadTicket,
   uploadRemoteAttachment,
@@ -1279,6 +1288,79 @@ export class RemoteConnectionService {
     const icon = coerceProjectIcon(value);
     this.patchProjectIcon(targetId, rootPath, icon);
     return icon;
+  }
+
+  /**
+   * The state of a host's copy of a project, for the remove dialog. Asked
+   * only of a machine that is connected now: this never dials, reconnects or
+   * wakes one. A host without `projects.inspectRemoval` answers
+   * `supported: false`, and the dialog offers entry-only removal there.
+   */
+  async inspectProjectRemoval(
+    targetId: string,
+    projectId: string,
+  ): Promise<RemoteProjectRemovalInspection> {
+    const target = this.requireConnectedTargetForRemoval(targetId);
+    if (this.statusById.get(target.id)?.capabilities?.machineProjects?.removeCopy !== true) {
+      return { supported: false, entryOnly: true };
+    }
+    const value = await this.callMachine(target, "projects.inspectRemoval", { projectId }, {
+      retryOnConnectionError: false,
+    });
+    return { supported: true, report: value as ProjectRemovalReport };
+  }
+
+  /**
+   * Removes a project from a host: its entry, and its folder when asked (the
+   * host deletes it for good: it has no trash). The host checks the copy
+   * again right before a delete and refuses when it changed. A host without
+   * `projects.removeCopy` gets the old `projects.remove` for an entry-only
+   * removal, and a clear refusal for a delete.
+   */
+  async removeProjectCopy(
+    targetId: string,
+    projectId: string,
+    request: ProjectRemovalRequest,
+  ): Promise<ProjectRemovalOutcome> {
+    const target = this.requireConnectedTargetForRemoval(targetId);
+    const machineName = target.name || target.hostname;
+    const supported = this.statusById.get(target.id)?.capabilities?.machineProjects?.removeCopy === true;
+    let outcome: ProjectRemovalOutcome;
+    if (!supported) {
+      if (request.deleteFolder) {
+        return { status: "refused", code: "unsupported", reason: `Update ADE on ${machineName} to delete its folder from here.` };
+      }
+      await this.callMachine(target, "projects.remove", { projectId }, { retryOnConnectionError: false });
+      outcome = { status: "removed", folder: "kept", outsideLaneFolders: [] };
+    } else {
+      outcome = (await this.callMachine(target, "projects.removeCopy", {
+        projectId,
+        deleteFolder: request.deleteFolder,
+        stateToken: request.stateToken,
+        acceptWork: request.acceptWork,
+      }, {
+        // A delete is never replayed: a second try after a dropped answer
+        // could act on a copy nobody checked.
+        retryOnConnectionError: false,
+        timeoutMs: PROJECT_REMOVAL_TIMEOUT_MS,
+      })) as ProjectRemovalOutcome;
+    }
+    if (outcome.status !== "refused") this.dropProject(target.id, projectId);
+    return outcome;
+  }
+
+  private requireConnectedTargetForRemoval(targetId: string): RemoteRuntimeTarget {
+    const target = this.requireTarget(targetId);
+    if (this.statusById.get(target.id)?.state !== "connected") {
+      throw new AdeExpectedError(`${target.name || target.hostname} is offline. It keeps its copy and its entry.`, "user");
+    }
+    return target;
+  }
+
+  private dropProject(targetId: string, projectId: string): void {
+    const projects = this.statusById.get(targetId)?.projects;
+    if (!projects?.some((project) => project.projectId === projectId)) return;
+    this.mergeStatus(targetId, { projects: projects.filter((project) => project.projectId !== projectId) });
   }
 
   private async callProjectIconMethod(

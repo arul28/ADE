@@ -2640,8 +2640,13 @@ func normalizedSystemNoticeKind(from status: String?) -> AgentChatNoticeKind? {
 /// timeline. A move's "ended" notice (`cross_machine_handoff_ended`) says it
 /// all in its message; its detail is the move record, which SyncService folds
 /// into the chat summary from the raw payload, so the decoded notice drops it.
+/// A lane share move's notice (`lane_share_moved`) also says it all in its
+/// message; its detail is only the move id, which no phone surface reads.
 func systemNoticeStatusHidesDetail(_ status: String?) -> Bool {
-  status?.trimmingCharacters(in: .whitespacesAndNewlines) == "cross_machine_handoff_ended"
+  switch status?.trimmingCharacters(in: .whitespacesAndNewlines) {
+  case "cross_machine_handoff_ended", "lane_share_moved": return true
+  default: return false
+  }
 }
 
 enum AgentChatApprovalRequestKind: String, Codable, Equatable {
@@ -3218,6 +3223,11 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// True for a `user_message` a side chat sent to this chat because the user
   /// asked it to (`metadata.sideChat`). The bubble wears a "From side chat" label.
   var userMessageFromSideChat: Bool = false
+  /// The name of the other person who wrote a `user_message` on a shared lane
+  /// (`metadata.author.kind == "guest"`): the bubble says "From <name>", so a
+  /// guest's message never reads as the owner's own. Empty when the guest has
+  /// no public name; nil for the owner's own messages.
+  var userMessageGuestAuthorName: String?
   /// True for the hand-off ADE sends a rebuilt provider thread
   /// (`metadata.kind == "continuity_recovery"`). Never a bubble: the user did
   /// not write it. Same rule as desktop `foldContinuityRecovery`.
@@ -3298,6 +3308,12 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var metadataMarksAdeAuthor = false
     var metadataMarksSideChat = false
     var metadataMarksRecoveryHandOff = false
+    var metadataGuestAuthorName: String?
+
+    private struct MessageAuthor: Decodable {
+      var kind: String?
+      var name: String?
+    }
 
     private struct MetadataKey: CodingKey {
       var stringValue: String
@@ -3352,6 +3368,10 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
           && (try? metadata.decodeNil(forKey: sideChatKey)) == false
         metadataMarksRecoveryHandOff =
           (try? metadata.decodeIfPresent(String.self, forKey: MetadataKey("kind"))) == "continuity_recovery"
+        if let author = try? metadata.decodeIfPresent(MessageAuthor.self, forKey: MetadataKey("author")),
+           author.kind == "guest" {
+          metadataGuestAuthorName = (author.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
       }
     }
   }
@@ -3419,6 +3439,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     stopReason = rawEvent?.stopReason
     userMessageWrittenByAde = rawEvent?.type == "user_message" && rawEvent?.metadataMarksAdeAuthor == true
     userMessageFromSideChat = rawEvent?.type == "user_message" && rawEvent?.metadataMarksSideChat == true
+    userMessageGuestAuthorName = rawEvent?.type == "user_message" ? rawEvent?.metadataGuestAuthorName : nil
     userMessageIsRecoveryHandOff = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRecoveryHandOff == true
     // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
     // not sends the whole result and no flag, and the row behaves exactly as

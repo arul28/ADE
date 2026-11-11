@@ -89,8 +89,14 @@ import type { SyncLoopbackProbeResult } from "./syncLoopbackProbe";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import type { SyncHostSingletonConflict } from "./syncHostSingleton";
 import { createSyncPinStore } from "./syncPinStore";
+import { createLaneShareGrantService } from "./laneShareGrantService";
+import { createLaneShareAgentRate, createLaneShareHostService } from "./laneShareHostService";
+import { LANE_SHARE_MAX_GUEST_DRAFTS } from "./laneShareGuestPolicy";
+import { LAUNCH_PROFILES } from "../../../../desktop/src/shared/cliLaunch";
+import { createLaneShareRightsStore, ensureLaneShareRightsSchema } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
+import { LANE_SHARE_CLI_TYPING_UNAVAILABLE, LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS, laneSharePresetRights, type LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
 import { PAIR_FAILURE_THRESHOLD } from "./syncPairFailureTracker";
-import { buildSyncDpopChallenge, sha256Hex } from "./syncDpop";
+import { buildSyncDpopChallenge, sha256Hex, syncDpopKeyThumbprint } from "./syncDpop";
 import {
   buildRelayReauthorizationChallenge,
   sha256RelayToken,
@@ -4690,6 +4696,2047 @@ describe("sync host account authentication", () => {
    * anywhere. Both handlers now share `syncHelloProtocol`, and this path
    * authenticates accounts the same way the project host does.
    */
+  describe("lane share guests", () => {
+    const guestUserId = "user_lane_guest";
+    const sharedLane = "lane-shared";
+    const privateLane = "lane-private";
+    const laneBySession: Record<string, string> = {
+      "session-shared": sharedLane,
+      "session-private": privateLane,
+      "session-shell": sharedLane,
+      "session-cli": sharedLane,
+      "session-child": sharedLane,
+    };
+    const toolTypeBySession: Record<string, string> = { "session-shell": "shell", "session-cli": "claude" };
+    /** A subagent chat of the shared chat: the host's row names its parent. */
+    const parentBySession: Record<string, string> = { "session-child": "session-shared" };
+    // The share started an hour ago; the lane's sessions half an hour ago.
+    const sharedAgo = 3_600_000;
+    const grantId = (digit: string) => `ls_${digit.repeat(32)}`;
+    const grant = (overrides: Record<string, unknown> = {}) => ({
+      id: grantId("a"),
+      receiverUserId: guestUserId,
+      laneId: sharedLane,
+      repoKey: "repo:github.com/acme/widgets",
+      state: "active",
+      endsAt: null,
+      preset: "comment",
+      risk: "low",
+      version: 2,
+      receiverName: "Guest Person",
+      createdAt: Date.now() - sharedAgo,
+      acceptedAt: Date.now() - sharedAgo,
+      ...overrides,
+    });
+    /** The author the host stamps on the guest's messages (`laneShareGuestAuthor`). */
+    const guestAuthor = { kind: "guest", userId: guestUserId, name: "Guest Person" };
+    /** Every switch on, every lock open: the widest rights object there is. */
+    const allOnRights = (): LaneShareRights => {
+      const rights = laneSharePresetRights("collaborate");
+      const on = (group: Record<string, unknown>) => {
+        for (const key of Object.keys(group)) if (typeof group[key] === "boolean") group[key] = true;
+      };
+      for (const group of [rights.see, rights.speak, rights.run, rights.decide, rights.tools]) on(group as Record<string, unknown>);
+      rights.run.permissionModes = [];
+      return rights;
+    };
+
+    /**
+     * The account directory at the network boundary: `POST /lane-shares/host`
+     * (the list) and `POST /lane-shares/host/redeem` (a ticket, used once,
+     * answered with what the mint recorded and the current list).
+     */
+    function fakeDirectory(initial: { status: number; body: unknown }) {
+      let answer = initial;
+      let hang: Promise<never> | null = null;
+      const tickets = new Map<string, { grantId: string; receiverUserId: string; laneId: string; dpopThumbprint: string; repoKey?: string; used: boolean }>();
+      let minted = 0;
+      const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        if (hang) return hang;
+        const url = String(input);
+        const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+        if (url === "http://127.0.0.1:9/lane-shares/host") return respond(answer.status, answer.body);
+        expect(url).toBe("http://127.0.0.1:9/lane-shares/host/redeem");
+        if (answer.status !== 200) return respond(answer.status, answer.body);
+        const ticket = tickets.get(String((JSON.parse(String(init?.body)) as { ticket?: unknown }).ticket));
+        if (!ticket || ticket.used) return respond(404, { error: { code: "not_found" } });
+        ticket.used = true;
+        const { used: _used, ...redeemed } = ticket;
+        return respond(200, { ...(answer.body as object), redeemed });
+      });
+      return {
+        fetchImpl,
+        answer: (next: { status: number; body: unknown }) => {
+          answer = next;
+        },
+        /** Every read from now on waits forever: a directory that hangs. */
+        hang: () => {
+          hang = new Promise<never>(() => {});
+        },
+        /** What `POST /lane-shares/:id/connect` does for the guest: a ticket bound to its key. */
+        mint: (dpopThumbprint: string, overrides: Partial<{ grantId: string; receiverUserId: string; laneId: string; repoKey: string }> = {}) => {
+          minted += 1;
+          const ticket = `${String(minted).padStart(4, "0")}${"t".repeat(39)}`;
+          tickets.set(ticket, { grantId: grantId("a"), receiverUserId: guestUserId, laneId: sharedLane, dpopThumbprint, used: false, ...overrides });
+          return ticket;
+        },
+      };
+    }
+    const grantsBody = (grants: unknown[], closed: unknown[] = []) => ({
+      status: 200,
+      body: { serverTime: Date.now(), grants, closed },
+    });
+
+    /**
+     * `rights`: the grant's row in the host's own table (default Watch; null: no row).
+     * `chat`: what the host's chat service reports for the shared chat.
+     */
+    async function startGuestHost(directory: ReturnType<typeof fakeDirectory>, options: {
+      rights?: LaneShareRights | null;
+      chat?: {
+        modelId?: string;
+        permissionMode?: string;
+        status?: string;
+        pending?: Array<{ itemId: string; kind: string; providerMetadata?: Record<string, unknown> }>;
+        /** Native mode fields (`claudePermissionMode`, `codexSandbox`, ...) the summary carries. */
+        [field: string]: unknown;
+      };
+      /** The move service port, when a test reads what the host asks of it. */
+      laneShareMoves?: Record<string, unknown>;
+      /** The host's operating system. Default darwin, so a row means the same on every test machine. */
+      platform?: NodeJS.Platform;
+      /** This machine's other open projects, for the routed terminal and file paths. */
+      projectScopes?: { getIfBooted: (projectId: string) => Promise<unknown> | null };
+      /** Runs a file read in another open project (the routed file path). */
+      executeFileRequest?: (...callArgs: unknown[]) => unknown;
+    } = {}) {
+      const { projectRoot, cleanup } = createTempProjectRoot();
+      const baseArgs = createHostArgs(projectRoot, []);
+      const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+      const require_ = createRequire(import.meta.url);
+      const { DatabaseSync } = require_("node:sqlite") as { DatabaseSync: new (p: string) => DatabaseSyncType };
+      const sqlite = new DatabaseSync(":memory:");
+      const storeDb = {
+        run: (sql: string, params: unknown[] = []) => {
+          sqlite.prepare(sql).run(...(params as never[]));
+        },
+        get: (sql: string, params: unknown[] = []) => sqlite.prepare(sql).get(...(params as never[])) ?? null,
+        all: (sql: string, params: unknown[] = []) => sqlite.prepare(sql).all(...(params as never[])),
+      } as never;
+      ensureLaneShareRightsSchema(storeDb);
+      sqlite.exec("create table lanes (id text primary key, archived_at text)");
+      for (const lane of [sharedLane, privateLane]) sqlite.prepare("insert into lanes (id, archived_at) values (?, null)").run(lane);
+      const store = createLaneShareRightsStore({ db: storeDb, now: () => Date.now() });
+      const rights = options.rights === undefined ? laneSharePresetRights("watch") : options.rights;
+      if (rights) store.put({ grantId: grantId("a"), laneId: sharedLane, rights });
+      const execute = vi.fn(async (payload: { action: string; args: Record<string, unknown> }, _context?: unknown) => {
+        if (payload.action === "work.listSessions") {
+          return [
+            { id: "session-shared", laneId: sharedLane },
+            { id: "session-private", laneId: privateLane },
+          ];
+        }
+        if (payload.action === "chat.listSubagents") return [{ taskId: "task-1", agentId: "agent-1" }];
+        if (payload.action === "chat.send" && payload.args.text === "fail") throw new Error("send failed");
+        // A send into a running turn becomes a queued steer; into an idle chat it starts a turn.
+        if (payload.action === "chat.send") return chatState.status === "active" ? { ok: true, queued: true, steerId: "steer-1" } : { ok: true };
+        if (payload.action === "chat.createDraft") return { id: "draft-1" };
+        if (payload.action === "chat.createThreadComment") return { id: "comment-1" };
+        if (payload.action === "chat.listDrafts") return [];
+        if (payload.action === "chat.getTranscript") {
+          return {
+            entries: [
+              { role: "user", text: "before", timestamp: new Date(Date.now() - 2 * sharedAgo).toISOString() },
+              { role: "user", text: "after", timestamp: new Date(Date.now() - 60_000).toISOString() },
+            ],
+            hasMore: true,
+          };
+        }
+        return { ran: payload.action, args: payload.args };
+      });
+      const actions = [
+        "work.listSessions",
+        "chat.listSessions",
+        "chat.getSummary",
+        "chat.getSubagentTranscript",
+        "chat.listSubagents",
+        "chat.getTranscript",
+        "chat.send",
+        "chat.steer",
+        "chat.interrupt",
+        "chat.cancelSteer",
+        "chat.respondToInput",
+        "chat.approve",
+        "chat.dismissPendingInput",
+        "chat.updateSession",
+        "chat.createThreadComment",
+        "chat.createDraft",
+        "chat.updateDraft",
+        "chat.listDrafts",
+        "work.sendToSession",
+        "work.startCliSession",
+        "chat.create",
+        "git.getChanges",
+        "git.getFile",
+        "git.listCommitFiles",
+        "git.getCommitMessage",
+        "work.deleteSession",
+      ];
+      const chatState = {
+        provider: "claude",
+        modelId: "claude-sonnet",
+        permissionMode: "default",
+        status: "idle",
+        pending: [] as Array<{ itemId: string; kind: string; providerMetadata?: Record<string, unknown> }>,
+        ...options.chat,
+      };
+      const chatListeners = new Set<(event: unknown) => void>();
+      // The host's check of a queued guest message, as the chat service runs it when the message starts.
+      let queuedGuestSteerGate: ((input: { sessionId: string; steerId: string; author: typeof guestAuthor; session: Record<string, unknown> }) => boolean) | null = null;
+      const agentChatService = {
+        installQueuedGuestSteerGate: (gate: typeof queuedGuestSteerGate) => {
+          queuedGuestSteerGate = gate;
+          return () => {
+            if (queuedGuestSteerGate === gate) queuedGuestSteerGate = null;
+          };
+        },
+        subscribeToEvents: (listener: (event: unknown) => void) => {
+          chatListeners.add(listener);
+          return () => chatListeners.delete(listener);
+        },
+        getSessionSummary: vi.fn(async (sessionId: string) => {
+          const { pending: _pending, ...fields } = chatState;
+          return { sessionId, laneId: sharedLane, ...fields };
+        }),
+        getAvailableModels: vi.fn(async () => [{ id: "claude-sonnet" }, { id: "claude-opus" }]),
+        listPendingInputs: vi.fn(() => ({ requests: chatState.pending.map((entry) => ({ ...entry, requestId: entry.itemId })) })),
+        cancelSteer: vi.fn(async () => {}),
+        getChatEventHistory: vi.fn(async () => ({ events: [], truncated: false })),
+      };
+      const laneShareEvents = vi.fn();
+      const upsertPeerMetadata = vi.fn();
+      // Every call that would act on the host for a dropped envelope.
+      const effects = vi.fn();
+      const ptyWrite = vi.fn();
+      // The owner verifier: nothing a guest sends may ever reach it.
+      const ownerVerifier = vi.fn(verifyClerkAccountAttestation);
+      const port = await listener.ensureListening([0]);
+      const laneShareGrants = createLaneShareGrantService({
+        getAccessToken: async () => "host-account-token",
+        getDirectoryBaseUrl: () => "http://127.0.0.1:9",
+        getMachineKey: () => "machine-guest-test",
+        fetchImpl: directory.fetchImpl as unknown as typeof fetch,
+      });
+      const host = createSyncHostService({
+        ...baseArgs,
+        ...accountDependencies(),
+        verifyAccountAttestation: ownerVerifier,
+        projectId: "project-1",
+        sharedListener: listener,
+        discoveryEnabled: false,
+        laneShareGrants,
+        laneShareRights: store,
+        getLaneShareRepoKey: () => "repo:github.com/acme/widgets",
+        laneShareMoves: options.laneShareMoves ?? null,
+        platform: options.platform ?? "darwin",
+        ...(options.projectScopes ? { projectScopes: options.projectScopes as never } : {}),
+        ...(options.executeFileRequest ? { remoteCommandExecutor: { executeFileRequest: options.executeFileRequest } as never } : {}),
+        onLaneShareEvent: laneShareEvents,
+        agentChatService,
+        sessionService: {
+          list: () => [],
+          get: (id: string) => (laneBySession[id]
+            ? {
+              id,
+              laneId: laneBySession[id],
+              toolType: toolTypeBySession[id] ?? "claude-chat",
+              startedAt: new Date(Date.now() - sharedAgo / 2).toISOString(),
+              ...(parentBySession[id] ? { orchestrationParentSessionId: parentBySession[id] } : {}),
+            }
+            : null),
+          readTranscriptTail: async () => "",
+        },
+        ptyService: {
+          ...baseArgs.ptyService,
+          write: ptyWrite,
+          writeBySessionId: (...callArgs: unknown[]) => effects("pty.write", ...callArgs),
+          resizeBySessionId: (...callArgs: unknown[]) => effects("pty.resize", ...callArgs),
+          readTranscriptSnapshot: vi.fn(async () => ({ data: "", startOffset: 0, endOffset: 0 })),
+        },
+        fileService: new Proxy({}, {
+          get: (_target, method) => (...callArgs: unknown[]) => effects(`files.${String(method)}`, ...callArgs),
+        }),
+        projectCatalogProvider: {
+          listProjects: async () => {
+            effects("projects.list");
+            return { projects: [] };
+          },
+        },
+        deviceRegistryService: { ...baseArgs.deviceRegistryService, upsertPeerMetadata },
+        remoteCommandService: {
+          getDescriptor: (action: string) => (actions.includes(action)
+            ? { action, scope: "project", policy: { viewerAllowed: true } }
+            : null),
+          getSupportedActions: () => actions,
+          getDescriptors: () => actions.map((action) => ({ action, scope: "project", policy: { viewerAllowed: true } })),
+          execute,
+        },
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      await host.waitUntilListening();
+      return {
+        host,
+        port,
+        proof: listener.getRelayBridgeProof(),
+        execute,
+        effects,
+        ptyWrite,
+        ownerVerifier,
+        upsertPeerMetadata,
+        store,
+        sqlite,
+        agentChatService,
+        chatState,
+        /** The chat service starts a queued guest message: whether the host lets it run (no host check: no). */
+        startQueuedGuestSteer: (steerId: string) =>
+          queuedGuestSteerGate?.({ sessionId: "session-shared", steerId, author: guestAuthor, session: chatState }) ?? false,
+        /** One chat event, as the chat service emits it. */
+        emitChatEvent: (sessionId: string, event: Record<string, unknown>) => {
+          for (const listener of chatListeners) listener({ sessionId, timestamp: new Date().toISOString(), event });
+        },
+        laneShareEvents,
+        close: async (clients: Array<{ ws: WebSocket } | null>) => {
+          for (const client of clients) client?.ws.close();
+          await host.dispose();
+          await listener.close();
+          cleanup();
+        },
+      };
+    }
+
+    type GuestKey = ReturnType<typeof makeDpopKeyPair>;
+    const guestThumbprint = (key: GuestKey) => syncDpopKeyThumbprint(key.publicKeyX963)!;
+
+    /**
+     * A guest hello: the ticket and a DPoP proof over it, nothing else. By
+     * default the directory mints the ticket for the guest's own key.
+     */
+    async function connectGuest(port: number, proof: string | null, directory: ReturnType<typeof fakeDirectory>, options: {
+      key?: GuestKey;
+      /** The key that signs the hello, when it is not the key the ticket was minted for. */
+      signingKey?: GuestKey;
+      ticket?: string;
+      mint?: Partial<{ grantId: string; receiverUserId: string; laneId: string; repoKey: string }>;
+      extraAuth?: Record<string, unknown>;
+      dpop?: boolean;
+    } = {}) {
+      const client = await openAccountClient(port, proof);
+      const key = options.key ?? makeDpopKeyPair();
+      const ticket = options.ticket ?? directory.mint(guestThumbprint(key), options.mint);
+      const signer = options.signingKey ?? key;
+      const peer = {
+        deviceId: "guest-laptop",
+        deviceName: "Owner's iPhone",
+        platform: "macOS",
+        deviceType: "desktop",
+        siteId: "guest-laptop-site",
+        dbVersion: 0,
+        syncRole: "replica",
+      } as unknown as SyncPeerMetadata;
+      client.ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "guest-hello",
+        payload: {
+          peer,
+          auth: {
+            kind: "guest",
+            deviceId: peer.deviceId,
+            ticket,
+            ...(options.dpop === false ? {} : {
+              dpop: signAccountDpop({
+                privateKey: signer.privateKey,
+                publicKeyX963: signer.publicKeyX963,
+                deviceId: peer.deviceId,
+                // The proof signs the ticket.
+                accountToken: ticket,
+              }),
+            }),
+            ...options.extraAuth,
+          },
+        },
+      }));
+      const first = await waitForValue(
+        () => client.envelopes.find((entry) => entry.type === "hello_ok" || entry.type === "hello_error"),
+        "guest hello answer",
+      );
+      return { client, first, ticket, key };
+    }
+
+    /** Sends a command and waits for its result; also the barrier after an unanswered envelope. */
+    async function runCommand(
+      client: { ws: WebSocket; envelopes: ParsedSyncEnvelope[] },
+      requestId: string,
+      action: string,
+      args: Record<string, unknown>,
+    ) {
+      client.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId,
+        projectId: "project-1",
+        payload: { commandId: requestId, action, args },
+      }));
+      return (await waitForValue(
+        () => client.envelopes.find((entry) => entry.type === "command_result" && entry.requestId === requestId),
+        `${action} result`,
+      )).payload as { ok: boolean; result?: unknown; error?: { code: string } };
+    }
+
+    it("accepts a redeemed ticket with nothing beyond the shared lane, and never sees an account token", async () => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        // The ticket's lane is in the project this host serves.
+        guest = await connectGuest(env.port, env.proof, directory, { mint: { repoKey: "repo:github.com/acme/widgets" } });
+        expect(guest.first.type).toBe("hello_ok");
+        const hello = guest.first.payload as Record<string, unknown> & { features: Record<string, unknown> };
+        expect(hello.laneShareGuest).toEqual({ userId: guestUserId, grants: [{ grantId: grantId("a"), laneId: sharedLane }] });
+        expect(hello).not.toHaveProperty("accountPairing");
+        expect(hello).not.toHaveProperty("cloudRelayWssUrl");
+        // No Relay lease to refresh: a guest never sends an account token.
+        expect(hello.relayAuthorization ?? null).toBeNull();
+        expect(hello.projects).toEqual([]);
+        expect(hello.features.rpcChannel ?? false).toBe(false);
+        expect(hello.features).toMatchObject({ projectCatalog: { enabled: false }, roster: { enabled: false } });
+        expect(hello.actions ?? hello.remoteCommandActions ?? []).not.toContainEqual(expect.objectContaining({ action: "chat.send" }));
+        expect(env.upsertPeerMetadata).not.toHaveBeenCalled();
+        // The only directory call is the host's redeem, with the host's token and the ticket alone.
+        expect(directory.fetchImpl).toHaveBeenCalledTimes(1);
+        const init = directory.fetchImpl.mock.calls[0]![1]!;
+        expect(JSON.parse(String(init.body))).toEqual({ ticket: guest.ticket, machineKey: "machine-guest-test" });
+        expect(new Headers(init.headers).get("authorization")).toBe("Bearer host-account-token");
+        // The owner's machine list marks it a guest, under a name the host made.
+        expect(env.host.getPeerStates()).toContainEqual(expect.objectContaining({ laneShareGuest: true, deviceName: "Guest lane_g" }));
+        // A Relay refresh is answered "no lease" without reading what it carries.
+        guest.client.ws.send(encodeSyncEnvelope({
+          type: "relay_reauthorize",
+          requestId: "reauth",
+          payload: { relayAccountToken: await mintAccountToken(guestUserId), challenge: "x", dpop: {} },
+        }));
+        expect((await waitForValue(
+          () => guest!.client.envelopes.find((entry) => entry.type === "relay_reauthorize_result"),
+          "relay reauthorize answer",
+        )).payload).toMatchObject({ ok: false, error: { code: "invalid_request" } });
+        // A read in the granted lane runs; the barrier proves nothing else came first.
+        expect(await runCommand(guest.client, "list", "work.listSessions", { laneId: sharedLane })).toMatchObject({
+          ok: true,
+          result: [{ id: "session-shared", laneId: sharedLane }],
+        });
+        expect(guest.client.envelopes.some((entry) =>
+          entry.type === "changeset_batch" || entry.type === "brain_status" || entry.type === "project_catalog"
+        )).toBe(false);
+        expect(env.ownerVerifier).not.toHaveBeenCalled();
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it.each<[string, { status: number; body: unknown }, (directory: ReturnType<typeof fakeDirectory>) => Parameters<typeof connectGuest>[3], string]>([
+      ["a ticket the directory does not honor (another machine, expired, revoked, not the giver)", grantsBody([grant()]),
+        () => ({ ticket: "x".repeat(43) }), "lane_share_refused"],
+      ["a ticket signed by a key it was not minted for", grantsBody([grant()]),
+        () => ({ signingKey: makeDpopKeyPair() }), "lane_share_refused"],
+      ["a ticket whose grant is gone from the list read with it", grantsBody([]), () => ({}), "lane_share_refused"],
+      ["a ticket of another grant than the guest's active one", grantsBody([grant()]),
+        () => ({ mint: { grantId: grantId("b") } }), "lane_share_refused"],
+      ["a ticket of a pending grant", grantsBody([grant({ state: "pending", receiverUserId: null })]), () => ({}), "lane_share_refused"],
+      ["a ticket of an ended grant", grantsBody([grant({ endsAt: Date.now() - 1_000 })]), () => ({}), "lane_share_refused"],
+      ["a ticket that names the owner's own account", grantsBody([grant({ receiverUserId: ownerUserId })]),
+        () => ({ mint: { receiverUserId: ownerUserId } }), "lane_share_refused"],
+      ["a machine the directory does not list", { status: 404, body: { error: "unknown_machine" } }, () => ({}), "lane_share_refused"],
+      // The brain hosts one project at a time: a lane of another project is not hosted here (the guest tries again).
+      ["a lane of a project this host does not serve", grantsBody([grant()]),
+        () => ({ mint: { repoKey: "repo:github.com/acme/other" } }), "lane_share_unavailable"],
+      ["a directory that is down", { status: 503, body: {} }, () => ({}), "lane_share_unavailable"],
+      ["a malformed answer", { status: 200, body: { serverTime: Date.now(), grants: [{ id: "nope" }] } }, () => ({}), "lane_share_unavailable"],
+    ])("refuses %s", async (_label, answer, options, code) => {
+      const directory = fakeDirectory(answer);
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory, options(directory));
+        expect(guest.first).toMatchObject({ type: "hello_error", payload: { code } });
+        await waitForValue(() => guest!.client.closeEvents[0], "guest close");
+        expect(guest.client.closeEvents[0]?.code).toBe(4003);
+        expect(env.execute).not.toHaveBeenCalled();
+        expect(env.ownerVerifier).not.toHaveBeenCalled();
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it.each<[string, Parameters<typeof connectGuest>[3]]>([
+      ["carries an account token", { extraAuth: { accountToken: "a-real-looking-token" } }],
+      ["carries a relay account token", { extraAuth: { relayAccountToken: "a-real-looking-token" } }],
+      ["has no DPoP proof", { dpop: false }],
+      ["has a malformed ticket", { ticket: "short" }],
+      ["has a DPoP proof that does not sign its ticket", { extraAuth: { ticket: "y".repeat(43) } }],
+    ])("drops a guest hello that %s before any directory call", async (_label, options) => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory, options);
+        expect(guest.first.type).toBe("hello_error");
+        expect((guest.first.payload as { code: string }).code).toMatch(/^(invalid_hello|auth_failed)$/);
+        expect(directory.fetchImpl).not.toHaveBeenCalled();
+        expect(env.ownerVerifier).not.toHaveBeenCalled();
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it("admits one of two hellos that share a ticket, and refuses the reuse", async () => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      const key = makeDpopKeyPair();
+      const ticket = directory.mint(guestThumbprint(key));
+      let guests: Array<Awaited<ReturnType<typeof connectGuest>>> = [];
+      try {
+        // Each hello signs the ticket with a fresh nonce, so only the ticket is shared.
+        guests = await Promise.all([1, 2].map(() => connectGuest(env.port, env.proof, directory, { key, ticket })));
+        expect(guests.map((entry) => entry.first.type).sort()).toEqual(["hello_error", "hello_ok"]);
+        expect(guests.find((entry) => entry.first.type === "hello_error")!.first.payload).toMatchObject({ code: "lane_share_refused" });
+        // A ticket this host already sent never reaches the directory again.
+        expect(directory.fetchImpl).toHaveBeenCalledTimes(1);
+      } finally {
+        await env.close(guests.map((entry) => entry.client));
+      }
+    });
+
+    it("refuses a guest hello that does not come through ADE Relay", async () => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, null, directory);
+        expect(guest.first).toMatchObject({ type: "hello_error", payload: { code: "lane_share_refused" } });
+        expect(directory.fetchImpl).not.toHaveBeenCalled();
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it("ignores a role, grants, a lane or a user id the client claims", async () => {
+      const directory = fakeDirectory(grantsBody([grant(), grant({ id: grantId("b"), laneId: privateLane })]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory, {
+          extraAuth: {
+            role: "owner",
+            guest: false,
+            userId: ownerUserId,
+            grants: [{ grantId: grantId("b"), laneId: privateLane }],
+            laneId: privateLane,
+          },
+        });
+        expect(guest.first.type).toBe("hello_ok");
+        // Only the grant the ticket names, though the account holds another on this host.
+        expect((guest.first.payload as { laneShareGuest: unknown }).laneShareGuest).toEqual({
+          userId: guestUserId,
+          grants: [{ grantId: grantId("a"), laneId: sharedLane }],
+        });
+        expect(await runCommand(guest.client, "claimed", "work.listSessions", { laneId: privateLane })).toMatchObject({
+          ok: false,
+          error: { code: "forbidden_command" },
+        });
+        // A refresh keeps it to that grant too.
+        await env.host.refreshLaneShareGrants();
+        expect(await runCommand(guest.client, "after-refresh", "work.listSessions", { laneId: privateLane })).toMatchObject({
+          ok: false,
+          error: { code: "forbidden_command" },
+        });
+        expect(env.execute).not.toHaveBeenCalled();
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    // With no rights row on this host, a grant gets Watch: read only.
+    it.each([
+      ["send a message", "chat.send", { sessionId: "session-shared", text: "hi" }, "lane_share_right_missing"],
+      ["respond to an approval", "chat.respondToInput", { sessionId: "session-shared", answer: "yes" }, "lane_share_right_missing"],
+      ["update a session", "chat.updateSession", { sessionId: "session-shared", title: "x" }, "lane_share_right_missing"],
+      ["write to a terminal", "work.sendToSession", { sessionId: "session-shared", text: "rm -rf /\n" }, "forbidden_command"],
+      ["create a session", "chat.create", { laneId: sharedLane }, "lane_share_right_missing"],
+      ["read git", "git.getChanges", { laneId: sharedLane }, "lane_share_right_missing"],
+      ["delete a session", "work.deleteSession", { sessionId: "session-shared" }, "forbidden_command"],
+      ["run an unknown action", "runtime.anything", { sessionId: "session-shared" }, "forbidden_command"],
+    ])("refuses a command to %s, even in the shared lane", async (_label, action, args, code) => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory);
+        expect(await runCommand(guest.client, `refused-${action}`, action, args)).toMatchObject({
+          ok: false,
+          error: { code },
+        });
+        expect(env.execute).not.toHaveBeenCalled();
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it.each<[string, string, Record<string, unknown>, Record<string, unknown>]>([
+      ["chat list identity and automation flags", "chat.listSessions",
+        { laneId: sharedLane, includeIdentity: true, includeAutomation: true, includeArchived: true },
+        { laneId: sharedLane, includeArchived: true }],
+      ["the conditional list reply", "work.listSessions",
+        { laneId: sharedLane, conditional: true, headRows: 1, ifNoneMatch: "sig", omitNullFields: true, status: "running" },
+        { laneId: sharedLane, status: "running" }],
+      ["a client lane next to a subagent", "chat.getSubagentTranscript",
+        { sessionId: "session-shared", agentId: "agent-1", laneId: privateLane, projectRoot: "/" },
+        { sessionId: "session-shared", agentId: "agent-1" }],
+    ])("drops arguments outside the guest list: %s", async (_label, action, args, expected) => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory);
+        expect(await runCommand(guest.client, `args-${action}`, action, args)).toMatchObject({ ok: true });
+        expect(env.execute).toHaveBeenCalledWith(
+          expect.objectContaining({ action, args: expected }),
+          expect.objectContaining({ readOnly: true }),
+        );
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it.each<[string, Record<string, unknown>, boolean]>([
+      ["a subagent the host lists for the chat", { agentId: "agent-1" }, true],
+      ["a subagent by its task id", { agentId: "task-1", taskId: "agent-1" }, true],
+      ["a child the host does not list for the chat", { agentId: "thread-of-another-chat" }, false],
+      ["a listed agent with a task id of another child", { agentId: "agent-1", taskId: "task-other" }, false],
+    ])("reads a subagent transcript only for %s", async (_label, child, allowed) => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory);
+        const result = await runCommand(guest.client, "subagent", "chat.getSubagentTranscript", { sessionId: "session-shared", ...child });
+        expect(result.ok).toBe(allowed);
+        const transcriptReads = env.execute.mock.calls.filter(([payload]) => payload.action === "chat.getSubagentTranscript");
+        expect(transcriptReads).toHaveLength(allowed ? 1 : 0);
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    // The host also serves this machine's other open projects (`rosterTerminal`):
+    // a guest's envelope that names one never reaches them.
+    it.each<[string, string, Record<string, unknown>, string?]>([
+      ["a terminal resize", "terminal_resize", { sessionId: "session-shared", cols: 10, rows: 5 }],
+      ["a file read", "file_request", { action: "readFile", args: { laneId: sharedLane, path: "README.md" } }],
+      ["a runtime RPC channel", "rpc_open", { channelId: "c1" }],
+      ["a changeset", "changeset_batch", { batchId: "b1", fromDbVersion: 0, toDbVersion: 1, changes: [] }],
+      ["a roster subscription", "roster_subscribe", {}],
+      ["a project catalog request", "project_catalog_request", {}],
+      ["a terminal subscribe in another open project", "terminal_subscribe", { sessionId: "session-shared", maxBytes: 1_000 }, "project-2"],
+    ])("drops %s from a guest without an answer", async (_label, type, payload, projectId = "project-1") => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const getIfBooted = vi.fn(() => null);
+      const env = await startGuestHost(directory, { projectScopes: { getIfBooted } });
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory);
+        // Subscribed to the shared terminal, so only the guest gates stand
+        // between this envelope and the host.
+        guest.client.ws.send(encodeSyncEnvelope({
+          type: "terminal_subscribe",
+          requestId: "subscribed",
+          projectId: "project-1",
+          payload: { sessionId: "session-shared", maxBytes: 1_000 },
+        }));
+        await waitForValue(
+          () => guest!.client.envelopes.find((entry) => entry.type === "terminal_snapshot"),
+          "shared terminal snapshot",
+        );
+        const before = guest.client.envelopes.length;
+        guest.client.ws.send(encodeSyncEnvelope({
+          type: type as never,
+          requestId: `dropped-${type}`,
+          projectId,
+          payload,
+        }));
+        // Envelopes from one socket are handled in order: the command's result
+        // proves the dropped envelope was handled first.
+        await runCommand(guest.client, "barrier", "chat.getSummary", { sessionId: "session-shared" });
+        const answered = guest.client.envelopes.slice(before).filter((entry) => entry.requestId === `dropped-${type}`);
+        expect(answered).toEqual([]);
+        expect(env.effects).not.toHaveBeenCalled();
+        expect(getIfBooted).not.toHaveBeenCalled();
+        expect(guest.client.ws.readyState).toBe(WebSocket.OPEN);
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it("refuses a read of another lane's session even when the client names the shared lane", async () => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory);
+        expect(await runCommand(guest.client, "private", "chat.getSummary", {
+          sessionId: "session-private",
+          laneId: sharedLane,
+        })).toMatchObject({ ok: false, error: { code: "forbidden_command" } });
+        expect(await runCommand(guest.client, "missing", "chat.getSummary", { sessionId: "session-gone" })).toMatchObject({
+          ok: false,
+          error: { code: "forbidden_command" },
+        });
+        expect(env.execute).not.toHaveBeenCalled();
+        // The same read in the shared lane runs, without the client's lane id.
+        expect(await runCommand(guest.client, "shared", "chat.getSummary", {
+          sessionId: "session-shared",
+          laneId: privateLane,
+        })).toMatchObject({ ok: true });
+        expect(env.execute).toHaveBeenCalledWith(
+          expect.objectContaining({ action: "chat.getSummary", args: { sessionId: "session-shared" } }),
+          expect.anything(),
+        );
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    // A subagent chat of a shared chat needs `see.subagentChats` as well as
+    // `see.chats`: in a list, a read, a subscribe and a live event.
+    it.each<[string, boolean]>([
+      ["with the subagent chat right", true],
+      ["without it", false],
+    ])("keeps only rows of the shared lane in a list result, and a subagent chat %s", async (_label, subagents) => {
+      const rights = laneSharePresetRights("watch");
+      rights.see.subagentChats = subagents;
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory, { rights });
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory);
+        // The fake service ignores the lane filter and returns both lanes.
+        expect(await runCommand(guest.client, "rows", "work.listSessions", { laneId: sharedLane, conditional: true })).toEqual({
+          commandId: "rows",
+          ok: true,
+          result: [{ id: "session-shared", laneId: sharedLane }],
+        });
+        env.execute.mockImplementationOnce((async () => [
+          { id: "session-shared", laneId: sharedLane },
+          { id: "session-child", laneId: sharedLane },
+        ]) as never);
+        const rows = (await runCommand(guest.client, "with-child", "work.listSessions", { laneId: sharedLane })).result as Array<{ id: string }>;
+        expect(rows.map((row) => row.id)).toEqual(subagents ? ["session-shared", "session-child"] : ["session-shared"]);
+        expect((await runCommand(guest.client, "child", "chat.getSummary", { sessionId: "session-child" })).ok).toBe(subagents);
+        guest.client.ws.send(encodeSyncEnvelope({ type: "chat_subscribe", requestId: "sub-child", projectId: "project-1", payload: { sessionId: "session-child" } }));
+        guest.client.ws.send(encodeSyncEnvelope({ type: "chat_subscribe", requestId: "sub-shared", projectId: "project-1", payload: { sessionId: "session-shared" } }));
+        await waitForValue(() => guest!.client.envelopes.find((entry) => entry.type === "chat_subscribe" && (entry.payload as { sessionId?: string }).sessionId === "session-shared"), "shared subscribe");
+        env.emitChatEvent("session-child", { type: "system_notice", message: "child" });
+        env.emitChatEvent("session-shared", { type: "system_notice", message: "parent" });
+        await waitForValue(() => guest!.client.envelopes.find((entry) => entry.type === "chat_event" && (entry.payload as { sessionId?: string }).sessionId === "session-shared"), "parent event");
+        const childSeen = guest.client.envelopes.some((entry) => (entry.payload as { sessionId?: string } | null)?.sessionId === "session-child");
+        expect(childSeen).toBe(subagents);
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it("streams the shared lane's terminal and nothing of another lane", async () => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory);
+        for (const sessionId of ["session-private", "session-shared"]) {
+          guest.client.ws.send(encodeSyncEnvelope({
+            type: "terminal_subscribe",
+            requestId: `sub-${sessionId}`,
+            projectId: "project-1",
+            payload: { sessionId, maxBytes: 1_000 },
+          }));
+        }
+        await runCommand(guest.client, "after-subscribe", "chat.getSummary", { sessionId: "session-shared" });
+        env.host.handlePtyData({ sessionId: "session-private", ptyId: "pty-private", data: "secret", offset: null });
+        env.host.handlePtyData({ sessionId: "session-shared", ptyId: "pty-shared", data: "visible", offset: null });
+        await waitForValue(
+          () => guest!.client.envelopes.find((entry) =>
+            entry.type === "terminal_data" && (entry.payload as { sessionId: string }).sessionId === "session-shared"),
+          "shared terminal data",
+        );
+        const sessionsSeen = guest.client.envelopes
+          .map((entry) => (entry.payload as { sessionId?: string } | null)?.sessionId)
+          .filter(Boolean);
+        expect(sessionsSeen).not.toContain("session-private");
+
+        // The session moves to another lane on the host while the guest is
+        // subscribed: once the host reads its lane again, nothing more goes out.
+        laneBySession["session-shared"] = privateLane;
+        const start = Date.now();
+        vi.spyOn(Date, "now").mockImplementation(() => start + 31_000);
+        env.host.handlePtyData({ sessionId: "session-shared", ptyId: "pty-shared", data: "moved", offset: null });
+        expect(await runCommand(guest.client, "after-move", "chat.getSummary", { sessionId: "session-shared" })).toMatchObject({
+          ok: false,
+        });
+        expect(guest.client.envelopes.some((entry) =>
+          entry.type === "terminal_data" && (entry.payload as { data?: string }).data === "moved")).toBe(false);
+      } finally {
+        laneBySession["session-shared"] = sharedLane;
+        vi.restoreAllMocks();
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it("closes a guest at once when its grant is revoked, when the list goes stale, and when the machine leaves the account", async () => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      const guests: Array<Awaited<ReturnType<typeof connectGuest>>> = [];
+      const realNow = Date.now;
+      try {
+        const revoked = await connectGuest(env.port, env.proof, directory);
+        guests.push(revoked);
+        expect(revoked.first.type).toBe("hello_ok");
+        directory.answer(grantsBody([], [{ id: grantId("a"), state: "revoked" }]));
+        await env.host.refreshLaneShareGrants();
+        await waitForValue(() => revoked.client.closeEvents[0], "revoked guest close");
+        expect(revoked.client.closeEvents[0]).toMatchObject({ code: 4003, reason: "Lane share ended" });
+        // A closed grant's rights go with it.
+        expect(env.store.get(grantId("a"))).toBeNull();
+
+        // A list older than the bound closes the guest on the tick itself,
+        // while the directory read still hangs.
+        env.store.put({ grantId: grantId("a"), laneId: sharedLane, rights: laneSharePresetRights("watch") });
+        directory.answer(grantsBody([grant()]));
+        const stale = await connectGuest(env.port, env.proof, directory);
+        guests.push(stale);
+        expect(stale.first.type).toBe("hello_ok");
+        directory.hang();
+        const start = realNow();
+        vi.spyOn(Date, "now").mockImplementation(() => start + 60_000);
+        void env.host.refreshLaneShareGrants();
+        await runCommand(stale.client, "still-open", "chat.getSummary", { sessionId: "session-shared" });
+        expect(stale.client.ws.readyState).toBe(WebSocket.OPEN);
+        vi.spyOn(Date, "now").mockImplementation(() => start + 91_000);
+        void env.host.refreshLaneShareGrants();
+        await waitForValue(() => stale.client.closeEvents[0], "stale guest close");
+        expect(stale.client.closeEvents[0]?.code).toBe(4003);
+      } finally {
+        vi.restoreAllMocks();
+        await env.close(guests.map((entry) => entry.client));
+      }
+    });
+
+    it("drops every guest at once when the directory stops listing this machine", async () => {
+      const directory = fakeDirectory(grantsBody([grant()]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory);
+        expect(guest.first.type).toBe("hello_ok");
+        directory.answer({ status: 404, body: { error: "unknown_machine" } });
+        await env.host.refreshLaneShareGrants();
+        await waitForValue(() => guest!.client.closeEvents[0], "unknown machine close");
+        expect(guest.client.closeEvents[0]?.code).toBe(4003);
+      } finally {
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    it("stops serving a grant whose end passed, on the host clock, before any refresh", async () => {
+      const endsAt = Date.now() + 60_000;
+      const directory = fakeDirectory(grantsBody([grant({ endsAt })]));
+      const env = await startGuestHost(directory);
+      let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+      const realNow = Date.now;
+      try {
+        guest = await connectGuest(env.port, env.proof, directory);
+        expect(await runCommand(guest.client, "before-end", "chat.getSummary", { sessionId: "session-shared" })).toMatchObject({ ok: true });
+        const start = realNow();
+        vi.spyOn(Date, "now").mockImplementation(() => start + 61_000);
+        expect(await runCommand(guest.client, "after-end", "chat.getSummary", { sessionId: "session-shared" })).toMatchObject({
+          ok: false,
+          error: { code: "forbidden_command" },
+        });
+        expect(directory.fetchImpl).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.restoreAllMocks();
+        await env.close([guest?.client ?? null]);
+      }
+    });
+
+    describe("rights", () => {
+      const anchor = { kind: "text", text: "a line" };
+      // One action of each kind, and whether each preset may run it:
+      // [Watch, Comment, Suggest, Collaborate].
+      const sample: Array<[string, Record<string, unknown>, [boolean, boolean, boolean, boolean]]> = [
+        ["chat.getSummary", { sessionId: "session-shared" }, [true, true, true, true]],
+        ["chat.createThreadComment", { sessionId: "session-shared", messageKey: "m1", anchor, body: "x" }, [false, true, true, true]],
+        ["chat.createDraft", { originSessionId: "session-shared", text: "a draft" }, [false, false, true, true]],
+        ["chat.send", { sessionId: "session-shared", text: "hi" }, [false, false, false, true]],
+        // No preset locks a model, and a new chat takes no provider default.
+        ["chat.create", { laneId: sharedLane, provider: "claude" }, [false, false, false, false]],
+        ["chat.respondToInput", { sessionId: "session-shared", itemId: "approval-1" }, [false, false, false, false]],
+        ["chat.approve", { sessionId: "session-shared", itemId: "approval-1", decision: "accept" }, [false, false, false, false]],
+        ["work.startCliSession", { laneId: sharedLane, provider: "claude" }, [false, false, false, false]],
+        ["work.startCliSession", { laneId: sharedLane, provider: "shell" }, [false, false, false, false]],
+        ["git.getChanges", { laneId: sharedLane }, [false, false, false, false]],
+        ["work.sendToSession", { sessionId: "session-shared", text: "ls\n" }, [false, false, false, false]],
+        ["work.deleteSession", { sessionId: "session-shared" }, [false, false, false, false]],
+      ];
+
+      it.each([0, 1, 2, 3] as const)("lets preset %i run exactly its actions", async (index) => {
+        const preset = (["watch", "comment", "suggest", "collaborate"] as const)[index];
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, {
+          rights: laneSharePresetRights(preset),
+          chat: { pending: [{ itemId: "approval-1", kind: "approval" }] },
+        });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          const outcomes: boolean[] = [];
+          for (const [position, [action, args]] of sample.entries()) {
+            outcomes.push((await runCommand(guest.client, `${preset}-${position}`, action, args)).ok);
+          }
+          expect(outcomes).toEqual(sample.map(([, , allowed]) => allowed[index]));
+          // A refused action never reached the host's command service.
+          const ran = new Set(env.execute.mock.calls.map(([payload]) => payload.action));
+          for (const [action, , allowed] of sample) if (!allowed[index]) expect([action, ran.has(action)]).toEqual([action, false]);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it.each<[string, Record<string, unknown>, string | null, boolean, string[]?, Record<string, unknown>?]>([
+        ["a model outside the lock", { modelId: "claude-opus" }, "lane_share_model_locked", true],
+        ["a permission mode outside the lock", { permissionMode: "full-auto" }, "lane_share_permission_locked", true],
+        ["a reasoning level when none is allowed", { reasoningEffort: "high" }, "lane_share_reasoning_locked", true],
+        ["a locked model this computer does not have", { modelId: "claude-gone" }, "lane_share_model_unavailable", true],
+        ["the locked model", { modelId: "claude-sonnet", permissionMode: "default" }, null, true],
+        // The owner's chats keep the owner's settings, whatever the locks allow.
+        ["the locked model, in a chat the guest did not start", { modelId: "claude-sonnet", permissionMode: "default" }, "lane_share_not_your_chat", false],
+        // An empty mode lock means "no change" from the mode the chat really
+        // runs in, not from a stored label that lags it.
+        ["bypass, named by a stale label, when no mode is allowed", { permissionMode: "full-auto" }, "lane_share_permission_locked", true, [], { permissionMode: "full-auto", claudePermissionMode: "default" }],
+        ["the mode the chat runs in, when no mode is allowed", { permissionMode: "default" }, null, true, [], { permissionMode: "full-auto", claudePermissionMode: "default" }],
+      ])("refuses a session change to %s", async (_label, change, code, guestStarted, permissionModes = ["default"], mode = {}) => {
+        const rights = laneSharePresetRights("collaborate");
+        rights.run.models = ["claude-sonnet", "claude-gone"];
+        rights.run.permissionModes = permissionModes as LaneShareRights["run"]["permissionModes"];
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights, chat: { modelId: "claude-opus", ...mode } });
+        if (guestStarted) env.store.addItem(grantId("a"), "chat", "session-shared", "session-shared");
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          const result = await runCommand(guest.client, "update", "chat.updateSession", { sessionId: "session-shared", ...change });
+          if (code) expect(result).toMatchObject({ ok: false, error: { code } });
+          else expect(result.ok).toBe(true);
+          // A chat the owner set to a model outside the lock takes no guest turn.
+          expect(await runCommand(guest.client, "send", "chat.send", { sessionId: "session-shared", text: "hi" })).toMatchObject({
+            ok: false,
+            error: { code: "lane_share_model_locked" },
+          });
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      // Every agent CLI launch profile starts (its session tool type is the
+      // CLI's, e.g. cursor -> cursor-cli); a shell or an unknown provider does not.
+      it.each<[string, boolean]>([
+        ...LAUNCH_PROFILES.filter((profile) => profile !== "shell").map((profile): [string, boolean] => [profile, true]),
+        ["shell", false],
+        ["Cursor", true],
+        ["bash", false],
+      ])("starts a CLI session for provider %s: %s", async (provider, allowed) => {
+        const rights = allOnRights();
+        rights.run.models = ["claude-sonnet"];
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          const result = await runCommand(guest.client, "cli", "work.startCliSession", { laneId: sharedLane, provider, modelId: "claude-sonnet" });
+          expect(result.ok).toBe(allowed);
+          if (!allowed) expect(result.error?.code).toBe("forbidden_command");
+          expect(env.execute.mock.calls.some(([payload]) => payload.action === "work.startCliSession")).toBe(allowed);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      // An empty model lock means "no model" for something new, never "any
+      // model". A value the guest leaves out is the first one the owner
+      // allowed, never the host's or the CLI's own default.
+      it.each<[string, string, Record<string, unknown>, Partial<LaneShareRights["run"]>, Record<string, unknown> | string, boolean?]>([
+        ["no model allowed", "chat.create", { laneId: sharedLane, provider: "claude" }, { models: [] }, "lane_share_model_locked"],
+        ["no model allowed", "work.startCliSession", { laneId: sharedLane, provider: "claude" }, { models: [] }, "lane_share_model_locked"],
+        ["nothing named, plan and one model allowed", "work.startCliSession", { laneId: sharedLane, provider: "claude" }, { models: ["claude-sonnet"], permissionModes: ["plan"], reasoningLevels: ["low"] }, { modelId: "claude-sonnet", permissionMode: "plan", reasoningEffort: "low" }],
+        // The owner narrows the model lock while the host reads its models: the old pick never runs.
+        ["the locks changed during the checks", "chat.create", { laneId: sharedLane, provider: "claude" }, { models: ["claude-sonnet"] }, "lane_share_rights_changed", true],
+        ["nothing named, plan and one model allowed", "chat.create", { laneId: sharedLane, provider: "claude" }, { models: ["claude-sonnet"], permissionModes: ["plan"], reasoningLevels: ["low"] }, { modelId: "claude-sonnet", permissionMode: "plan", reasoningEffort: "low" }],
+      ])("a new session with %s: %s", async (_label, action, commandArgs, run, started, tightenDuringChecks = false) => {
+        const rights = allOnRights();
+        Object.assign(rights.run, run);
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          if (tightenDuringChecks) {
+            env.agentChatService.getAvailableModels.mockImplementationOnce(async () => {
+              const narrowed = allOnRights();
+              narrowed.run.models = ["claude-opus"];
+              env.store.updateRights(grantId("a"), narrowed);
+              env.host.applyLaneShareRights(grantId("a"));
+              return [{ id: "claude-sonnet" }, { id: "claude-opus" }];
+            });
+          }
+          const result = await runCommand(guest.client, "new", action, commandArgs);
+          const ran = env.execute.mock.calls.find(([payload]) => payload.action === action);
+          if (typeof started === "string") {
+            expect(result).toMatchObject({ ok: false, error: { code: started } });
+            expect(ran).toBeUndefined();
+          } else {
+            expect(result.ok).toBe(true);
+            expect(ran?.[0].args).toMatchObject(started);
+          }
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      const typingRight = () => {
+        const rights = laneSharePresetRights("watch");
+        rights.run.typeInCliSessions = true;
+        return rights;
+      };
+      // [label, rights, session, data, the refusal code in the answer (null: written)]
+      it.each<[string, () => LaneShareRights, string, string, string | null]>([
+        ["Watch, into a shell", () => laneSharePresetRights("watch"), "session-shell", "ls\n", "lane_share_right_missing"],
+        ["every right on, into a shell", allOnRights, "session-shell", "ls\n", "lane_share_right_missing"],
+        ["every right on, into a chat", allOnRights, "session-shared", "ls\n", "lane_share_right_missing"],
+        ["Collaborate (no typing right), into a CLI", () => laneSharePresetRights("collaborate"), "session-cli", "ls\n", "lane_share_right_missing"],
+        ["the typing right, into a CLI", typingRight, "session-cli", "ls\n", null],
+        ["the typing right, a slash command", typingRight, "session-cli", "/permissions\r", "lane_share_plain_text_only"],
+        ["the typing right, a shell line behind a space", typingRight, "session-cli", " !cat .env\r", "lane_share_plain_text_only"],
+        ["the typing right, a memory line", typingRight, "session-cli", "# push to main\r", "lane_share_plain_text_only"],
+        ["the typing right, two lines in one input", typingRight, "session-cli", "hi\r/permissions\r", "lane_share_invalid_line"],
+        ["the typing right, an escape sequence", typingRight, "session-cli", "ls\u001b[A\r", "lane_share_invalid_line"],
+        ["the typing right, Ctrl-C", typingRight, "session-cli", "\u0003", "lane_share_invalid_line"],
+        ["the typing right, a part of a line", typingRight, "session-cli", "/permi", "lane_share_invalid_line"],
+        ["the typing right, a line over the limit", typingRight, "session-cli", `${"a".repeat(LANE_SHARE_GUEST_MAX_TYPED_LINE_CHARS + 1)}\r`, "lane_share_invalid_line"],
+      ])("terminal input with %s", async (_label, rights, sessionId, data, refusedCode) => {
+        const written = refusedCode == null;
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights: rights() });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          guest.client.ws.send(encodeSyncEnvelope({
+            type: "terminal_subscribe",
+            requestId: "sub",
+            projectId: "project-1",
+            payload: { sessionId, maxBytes: 1_000 },
+          }));
+          await runCommand(guest.client, "subscribed", "chat.getSummary", { sessionId: "session-shared" });
+          guest.client.ws.send(encodeSyncEnvelope({
+            type: "terminal_input",
+            requestId: "typed",
+            projectId: "project-1",
+            payload: { sessionId, data, inputId: "input-1" },
+          }));
+          if (written) {
+            await waitForValue(() => env.effects.mock.calls.find(([name]) => name === "pty.write"), "guest keystrokes");
+          } else {
+            // The refusal answers with its reason, and nothing is written.
+            const answer = await waitForValue(
+              () => guest!.client.envelopes.find((entry) => entry.type === "terminal_input_ack" && entry.requestId === "typed"),
+              "typing refusal",
+            );
+            expect(answer.payload).toMatchObject({ sessionId, inputId: "input-1", ok: false, error: { code: refusedCode } });
+            expect((answer.payload as { error: { message: string } }).error.message).not.toBe("");
+            expect(env.effects.mock.calls.filter(([name]) => name === "pty.write")).toEqual([]);
+          }
+          // A resize is never a guest's.
+          guest.client.ws.send(encodeSyncEnvelope({
+            type: "terminal_resize",
+            requestId: "resize",
+            projectId: "project-1",
+            payload: { sessionId, cols: 10, rows: 5 },
+          }));
+          await runCommand(guest.client, "after-resize", "chat.getSummary", { sessionId: "session-shared" });
+          expect(env.effects.mock.calls.filter(([name]) => name === "pty.resize")).toEqual([]);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      // CLI typing is a capability of the host: on Windows ADE starts a CLI
+      // inside a shell without exec, so the host cannot tell which program
+      // reads the keys. Refused there under any rights, with its own code.
+      it.each<[NodeJS.Platform, boolean]>([
+        ["win32", false],
+        ["darwin", true],
+        ["linux", true],
+      ])("CLI typing on a %s host: available %s", async (platform, available) => {
+        const rights = allOnRights();
+        rights.run.models = ["claude-sonnet"];
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights, platform });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          // The guest's state says so, and its rights read as the host enforces them.
+          expect(await runCommand(guest.client, "state", "laneShare.getGuestState", {})).toMatchObject({
+            ok: true,
+            result: {
+              cliTyping: available ? { available: true, reason: null } : { available: false, reason: "windows_host" },
+              rights: { run: { typeInCliSessions: available } },
+            },
+          });
+          // A typed line.
+          guest.client.ws.send(encodeSyncEnvelope({
+            type: "terminal_subscribe",
+            requestId: "sub",
+            projectId: "project-1",
+            payload: { sessionId: "session-cli", maxBytes: 1_000 },
+          }));
+          await runCommand(guest.client, "subscribed", "chat.getSummary", { sessionId: "session-shared" });
+          guest.client.ws.send(encodeSyncEnvelope({
+            type: "terminal_input",
+            requestId: "typed",
+            projectId: "project-1",
+            payload: { sessionId: "session-cli", data: "ls\r", inputId: "input-1" },
+          }));
+          if (available) {
+            await waitForValue(() => env.effects.mock.calls.find(([name]) => name === "pty.write"), "guest keystrokes");
+          } else {
+            const answer = await waitForValue(
+              () => guest!.client.envelopes.find((entry) => entry.type === "terminal_input_ack" && entry.requestId === "typed"),
+              "typing refusal",
+            );
+            expect(answer.payload).toMatchObject({ ok: false, error: { code: LANE_SHARE_CLI_TYPING_UNAVAILABLE } });
+            expect(env.effects.mock.calls.filter(([name]) => name === "pty.write")).toEqual([]);
+          }
+          // A CLI started with a first line.
+          const started = await runCommand(guest.client, "start", "work.startCliSession", { laneId: sharedLane, provider: "claude", initialInput: "hello" });
+          expect(started.ok).toBe(available);
+          if (!available) expect(started.error?.code).toBe(LANE_SHARE_CLI_TYPING_UNAVAILABLE);
+          expect(env.execute.mock.calls.some(([payload]) => payload.action === "work.startCliSession")).toBe(available);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it.each<[string, (rights: LaneShareRights) => void, string, string, boolean]>([
+        ["no Decide right", () => {}, "chat.respondToInput", "approval", false],
+        ["only the questions right", (rights) => {
+          rights.decide.questions = true;
+        }, "chat.respondToInput", "approval", false],
+        ["only the questions right", (rights) => {
+          rights.decide.questions = true;
+        }, "chat.respondToInput", "question", true],
+        ["only the questions right", (rights) => {
+          rights.decide.questions = true;
+        }, "chat.approve", "approval", false],
+        ["the approvals right", (rights) => {
+          rights.decide.approvals = true;
+        }, "chat.respondToInput", "permissions", true],
+      ])("with %s, %s on a pending %s: allowed %s", async (_label, change, action, kind, allowed) => {
+        const rights = laneSharePresetRights("collaborate");
+        change(rights);
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights, chat: { pending: [{ itemId: "card-1", kind }] } });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          const result = await runCommand(guest.client, "decide", action, { sessionId: "session-shared", itemId: "card-1", decision: "accept" });
+          expect(result.ok).toBe(allowed);
+          expect(env.execute.mock.calls.some(([payload]) => payload.action === action)).toBe(allowed);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it("counts each message before its turn, refuses message N+1, and gives back a failed send", async () => {
+        const rights = laneSharePresetRights("collaborate");
+        rights.limits.messagesTotal = 2;
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          const send = (id: string, text: string) => runCommand(guest!.client, id, "chat.send", { sessionId: "session-shared", text });
+          expect((await send("fails", "fail")).ok).toBe(false);
+          expect((await send("one", "first")).ok).toBe(true);
+          expect((await send("two", "second")).ok).toBe(true);
+          expect(await send("three", "third")).toMatchObject({ ok: false, error: { code: "lane_share_total_limit" } });
+          expect(env.execute.mock.calls.filter(([payload]) => payload.action === "chat.send")).toHaveLength(3);
+          expect(await runCommand(guest.client, "state", "laneShare.getGuestState", {})).toMatchObject({
+            ok: true,
+            result: { grantId: grantId("a"), laneId: sharedLane, state: "active", limits: { messagesTotal: 2, messagesLeftTotal: 0 } },
+          });
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it.each<[string, string | null, string | null]>([
+        ["a guest with a name from the directory", "Guest Person", "Co-authored-by: Guest Person <guest-"],
+        ["a guest with no trusted name", null, null],
+      ])("sends as the guest for %s, whatever author the client names", async (_label, receiverName, trailer) => {
+        const directory = fakeDirectory(grantsBody([grant({ receiverName })]));
+        const env = await startGuestHost(directory, { rights: laneSharePresetRights("collaborate") });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          expect((await runCommand(guest.client, "send", "chat.send", {
+            sessionId: "session-shared",
+            text: "hi",
+            displayText: "from the owner",
+            metadata: { author: { kind: "host", userId: ownerUserId, name: "Owner" } },
+          })).ok).toBe(true);
+          const [payload, context] = env.execute.mock.calls.find(([entry]) => entry.action === "chat.send")!;
+          expect(payload.args).toEqual({ sessionId: "session-shared", text: "hi" });
+          expect(context).toMatchObject({ author: { kind: "guest", userId: guestUserId, name: receiverName } });
+          const note = (context as { agentNote?: string | null }).agentNote ?? null;
+          if (trailer) expect(note).toContain(trailer);
+          else expect(note).toBeNull();
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      // A revoke made here, one this host learns from the directory's list
+      // (made on another device, a guest who left, an expiry), and an end
+      // date that passes while the guest is connected (seen on its next
+      // command or move) all remove the guest's queued message before its
+      // records go; the end date also cancels a move of the grant.
+      it.each<[string, "here" | "directory" | "command" | "move"]>([
+        ["revokes at once: closes the guest, removes its queued message, and reports its running turn", "here"],
+        ["a grant the directory lists as closed after its guest left: removes the queued message", "directory"],
+        ["an end date that passed before a command: closes the guest, removes its queued message, cancels its move", "command"],
+        ["an end date that passed before a move step: closes the guest, removes its queued message, cancels its move", "move"],
+      ])("%s", async (_label, via) => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const rights = laneSharePresetRights("collaborate");
+        if (via === "command" || via === "move") rights.limits.endsAt = Date.now() + 60_000;
+        const laneShareMoves = { cancelGrant: vi.fn(() => 0), rightsChanged: vi.fn(), guestView: () => null, guestCommand: vi.fn() };
+        const env = await startGuestHost(directory, { rights, laneShareMoves });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        let clock: { mockRestore(): void } | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          // Its own turn starts; its next message queues behind it.
+          expect((await runCommand(guest.client, "turn", "chat.send", { sessionId: "session-shared", text: "first" })).ok).toBe(true);
+          env.emitChatEvent("session-shared", { type: "user_message", text: "first", turnId: "turn-g", metadata: { author: guestAuthor } });
+          env.emitChatEvent("session-shared", { type: "status", turnStatus: "started", turnId: "turn-g" });
+          env.chatState.status = "active";
+          expect((await runCommand(guest.client, "queued", "chat.send", { sessionId: "session-shared", text: "next" })).ok).toBe(true);
+          if (via === "here") {
+            const closed = await env.host.closeLaneShareGrant(grantId("a"), "Lane share ended");
+            expect(closed).toEqual({ closedConnections: 1, removedQueuedMessages: 1, runningTurnSessionIds: ["session-shared"] });
+            expect(env.laneShareEvents).toHaveBeenCalledWith(expect.objectContaining({
+              type: "lane_share_guest_turn_running",
+              sessionId: "session-shared",
+              message: "A turn started by Guest Person is still running.",
+            }));
+            await waitForValue(() => guest!.client.closeEvents[0], "revoked guest close");
+            expect(guest.client.closeEvents[0]).toMatchObject({ code: 4003, reason: "Lane share ended" });
+          } else if (via === "directory") {
+            // No connection is left to close: only the closed list reaches the queue.
+            guest.client.ws.close();
+            await waitForValue(() => (env.host.laneShareConnectedDevices(grantId("a")) === 0 ? true : undefined), "guest gone");
+            directory.answer(grantsBody([], [{ id: grantId("a"), state: "revoked" }]));
+            await env.host.refreshLaneShareGrants();
+            await waitForValue(() => (env.store.get(grantId("a")) ? undefined : true), "closed grant's records removed");
+          } else {
+            // The end date passes with no rights change: only the next step sees it.
+            const later = Date.now() + 120_000;
+            clock = vi.spyOn(Date, "now").mockReturnValue(later);
+            const step = via === "command"
+              ? await runCommand(guest.client, "late", "chat.getSummary", { sessionId: "session-shared" })
+              : await runCommand(guest.client, "late-move", "laneShare.move", { op: "status", moveId: `lsm_${"1".repeat(32)}` });
+            expect(step).toMatchObject({ ok: false, error: { code: "lane_share_ended" } });
+            await waitForValue(() => guest!.client.closeEvents[0], "ended guest close");
+            expect(guest.client.closeEvents[0]).toMatchObject({ code: 4003, reason: "Lane share ended" });
+            await waitForValue(() => (env.agentChatService.cancelSteer.mock.calls.length ? true : undefined), "queued message removed");
+            expect(laneShareMoves.cancelGrant).toHaveBeenCalledWith(grantId("a"), expect.any(String));
+            expect(laneShareMoves.guestCommand).not.toHaveBeenCalled();
+          }
+          expect(env.agentChatService.cancelSteer).toHaveBeenCalledWith({ sessionId: "session-shared", steerId: "steer-1", requireQueued: true });
+        } finally {
+          clock?.mockRestore();
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it("pauses the share while the lane is archived", async () => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights: laneSharePresetRights("collaborate") });
+        const guests: Array<Awaited<ReturnType<typeof connectGuest>>> = [];
+        try {
+          const first = await connectGuest(env.port, env.proof, directory);
+          guests.push(first);
+          env.sqlite.prepare("update lanes set archived_at = ? where id = ?").run(new Date().toISOString(), sharedLane);
+          expect(await runCommand(first.client, "paused", "chat.getSummary", { sessionId: "session-shared" })).toMatchObject({
+            ok: false,
+            error: { code: "lane_share_paused" },
+          });
+          expect(env.host.closeLaneShareLane(sharedLane, "The owner paused this shared lane")).toBe(1);
+          await waitForValue(() => first.client.closeEvents[0], "paused guest close");
+          const again = await connectGuest(env.port, env.proof, directory);
+          guests.push(again);
+          expect(again.first).toMatchObject({ type: "hello_error", payload: { code: "lane_share_paused", message: "The owner paused this shared lane." } });
+        } finally {
+          await env.close(guests.map((entry) => entry.client));
+        }
+      });
+
+      // The right follows what a message does: a steer into an idle chat
+      // starts a turn (needs send), a send into a running turn steers it
+      // (needs steer), whatever the command's name.
+      it.each<[string, "idle" | "own-running", string, { send: boolean; steer: boolean; any?: boolean }, boolean]>([
+        ["cannot start a turn with a steer without the send right", "idle", "chat.steer", { send: false, steer: true }, false],
+        ["cannot steer its own turn with a send without the steer right", "own-running", "chat.send", { send: true, steer: false }, false],
+        ["cannot start a turn with a steer when it may steer any turn but not send", "idle", "chat.steer", { send: false, steer: true, any: true }, false],
+        ["starts a turn with a send", "idle", "chat.send", { send: true, steer: false }, true],
+      ])("message rights: a guest %s", async (_label, state, action, speak, allowed) => {
+        const rights = laneSharePresetRights("collaborate");
+        rights.speak.send = speak.send;
+        rights.speak.steer = speak.steer;
+        rights.speak.interruptAnyTurn = speak.any === true;
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          if (state === "own-running") {
+            expect((await runCommand(guest.client, "own", "chat.send", { sessionId: "session-shared", text: "go" })).ok).toBe(true);
+            env.emitChatEvent("session-shared", { type: "user_message", text: "go", turnId: "turn-g", metadata: { author: guestAuthor } });
+            env.emitChatEvent("session-shared", { type: "status", turnStatus: "started", turnId: "turn-g" });
+            env.chatState.status = "active";
+          }
+          env.execute.mockClear();
+          const result = await runCommand(guest.client, "act", action, { sessionId: "session-shared", text: "more" });
+          expect(result.ok).toBe(allowed);
+          if (!allowed) expect(result.error?.code).toBe("lane_share_right_missing");
+          expect(env.execute.mock.calls.some(([payload]) => payload.action === action)).toBe(allowed);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      // A guest stops or steers only the turn it started; anyone else's needs
+      // `speak.interruptAnyTurn`. Steps: "own" = the guest's send, and the
+      // `user_message` with the guest as author that starts its turn;
+      // "start"/"end" = the chat's status events; "owner" = the owner's
+      // message starts a turn; "quiet" = the guest's send starts no turn (no
+      // message event).
+      it.each<[string, Array<"own" | "start" | "end" | "owner" | "quiet">, string, boolean, boolean]>([
+        ["stops its own running turn", ["own", "start"], "chat.interrupt", false, true],
+        ["steers its own running turn", ["own", "start"], "chat.steer", false, true],
+        ["stops its own turn before it starts", ["own"], "chat.interrupt", false, true],
+        ["cannot stop the owner's turn", ["owner"], "chat.interrupt", false, false],
+        ["cannot steer the owner's turn", ["owner"], "chat.steer", false, false],
+        ["cannot send into the owner's turn", ["owner"], "chat.send", false, false],
+        ["cannot stop the next turn after its own ended", ["own", "start", "end", "owner", "start"], "chat.interrupt", false, false],
+        // A send that started no turn claims nothing: the owner's next turn stays the owner's.
+        ["cannot stop the owner's turn after its own send started none", ["quiet", "owner", "start"], "chat.interrupt", false, false],
+        ["cannot steer the owner's turn after its own send started none", ["quiet", "owner", "start"], "chat.steer", false, false],
+        ["stops the owner's turn with interruptAnyTurn", ["owner"], "chat.interrupt", true, true],
+        ["steers the owner's turn with interruptAnyTurn", ["owner"], "chat.steer", true, true],
+      ])("turn ownership: a guest %s", async (_label, steps, action, interruptAnyTurn, allowed) => {
+        const rights = laneSharePresetRights("collaborate");
+        rights.speak.interruptAnyTurn = interruptAnyTurn;
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          let turnId = "";
+          for (const [index, step] of steps.entries()) {
+            if (step === "own" || step === "quiet") {
+              expect((await runCommand(guest.client, `${step}-${index}`, "chat.send", { sessionId: "session-shared", text: "go" })).ok).toBe(true);
+            }
+            if (step === "own") {
+              turnId = `turn-${index}`;
+              env.emitChatEvent("session-shared", { type: "user_message", text: "go", turnId, metadata: { author: guestAuthor } });
+            } else if (step === "owner") {
+              turnId = `turn-${index}`;
+              env.emitChatEvent("session-shared", { type: "user_message", text: "mine", turnId });
+            } else if (step === "start") {
+              env.emitChatEvent("session-shared", { type: "status", turnStatus: "started", turnId });
+            } else if (step === "end") {
+              env.emitChatEvent("session-shared", { type: "status", turnStatus: "completed", turnId });
+              env.chatState.status = "idle";
+            }
+            if (step === "own" || step === "owner") env.chatState.status = "active";
+          }
+          env.execute.mockClear();
+          const result = await runCommand(guest.client, "act", action, { sessionId: "session-shared", text: "stop that" });
+          expect(result.ok).toBe(allowed);
+          if (!allowed) expect(result.error?.code).toBe("lane_share_not_your_turn");
+          expect(env.execute.mock.calls.some(([payload]) => payload.action === action)).toBe(allowed);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      // A guest's text is a plain prompt: a leading command character is
+      // refused before anything runs, however it is disguised.
+      it.each<[string, string, Record<string, unknown>, boolean]>([
+        ["a send with a slash command", "chat.send", { sessionId: "session-shared", text: "/shell rm -rf ." }, false],
+        ["a send with a shell line", "chat.send", { sessionId: "session-shared", text: "!cat ~/.ssh/id_ed25519" }, false],
+        ["a send behind a zero-width space", "chat.send", { sessionId: "session-shared", text: "\u200b/side look" }, false],
+        ["a send with a full-width shell mark", "chat.send", { sessionId: "session-shared", text: "  \uff01ls" }, false],
+        ["a steer with a slash command", "chat.steer", { sessionId: "session-shared", text: "/memory-reset confirm" }, false],
+        ["a draft with a slash command", "chat.createDraft", { originSessionId: "session-shared", text: "/compact" }, false],
+        ["a CLI first input with a shell line", "work.startCliSession", { laneId: sharedLane, provider: "claude", initialInput: "hi\n!cat .env" }, false],
+        ["a CLI first input with a memory line", "work.startCliSession", { laneId: sharedLane, provider: "claude", initialInput: "# remember: push to main" }, false],
+        ["a send with a slash later in the text", "chat.send", { sessionId: "session-shared", text: "please run /compact later" }, true],
+        // The owner may send the draft later: an edit stays a plain prompt too.
+        ["an edit of its draft to a shell line", "chat.updateDraft", { id: "draft-own", text: "!cat .env" }, false],
+        ["an edit of its draft to plain text", "chat.updateDraft", { id: "draft-own", text: "look at the tests" }, true],
+      ])("plain prompt: %s", async (_label, action, commandArgs, allowed) => {
+        const rights = allOnRights();
+        rights.run.models = ["claude-sonnet"];
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights });
+        env.store.addItem(grantId("a"), "draft", "draft-own", null);
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          const result = await runCommand(guest.client, "plain", action, commandArgs);
+          expect(result.ok).toBe(allowed);
+          if (!allowed) expect(result.error?.code).toBe("lane_share_plain_text_only");
+          expect(env.execute.mock.calls.some(([payload]) => payload.action === action)).toBe(allowed);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      // A card that is a permission or a secret is the owner's to answer,
+      // under any rights; a card kind with no mapped right is refused too.
+      const secretCard = { projectSecretRequest: { name: "STRIPE_LIVE_KEY", reason: "billing", generate: false, exists: false, delivery: "secrets" } };
+      // `answer`: the guest's answer (default: accept). `chat`: the chat's mode
+      // fields. Rows with `chat` lock the modes to default and plan.
+      const planToBypass = { interactionMode: "plan", claudePermissionMode: "plan", permissionMode: "plan", claudePrePlanAccessMode: "bypassPermissions" };
+      const offers = (...values: string[]) => [{ id: "q1", question: "Allow?", options: values.map((value) => ({ label: value, value })) }];
+      it.each<[string, string, { kind: string; providerMetadata?: Record<string, unknown>; questions?: unknown[] }, string | null, Record<string, unknown>?, Record<string, unknown>?]>([
+        ["answer a secret card", "chat.respondToInput", { kind: "question", providerMetadata: secretCard }, "lane_share_owner_only"],
+        ["approve an Add MCP server card", "chat.approve", { kind: "approval", providerMetadata: { mcpServerRequest: { source: "agent" } } }, "lane_share_owner_only"],
+        ["dismiss the Mac real-input lease", "chat.dismissPendingInput", { kind: "question", providerMetadata: { macDesktopInputLease: true } }, "lane_share_owner_only"],
+        ["approve a card of an unmapped kind", "chat.approve", { kind: "model_selection" }, "lane_share_right_missing"],
+        // "For the whole session" saves rules in the provider's settings.
+        ["approve for the whole session", "chat.approve", { kind: "approval" }, "lane_share_owner_only", { decision: "accept_for_session" }],
+        ["answer a question for the whole session", "chat.respondToInput", { kind: "question" }, "lane_share_owner_only", { decision: "accept_for_session" }],
+        ["approve for the whole session with spaces", "chat.approve", { kind: "approval" }, "lane_share_owner_only", { decision: " accept_for_session " }],
+        // The choice saved by a picked option, not by the decision.
+        ["pick Claude's Allow for Session", "chat.respondToInput", { kind: "approval", questions: offers("allow_once", "allow_session") }, "lane_share_owner_only", { decision: "accept", answers: { tool_decision: ["allow_session"] } }],
+        ["pick Copilot's session approval", "chat.respondToInput", { kind: "approval", questions: offers("approve-once", "approve-for-session") }, "lane_share_owner_only", { decision: "accept", answers: { choice: " Approve-For-Session " } }],
+        // A typed answer that only reads like an option saves nothing.
+        ["be refused for typing 'Always' in a question", "chat.respondToInput", { kind: "question", questions: offers("Sometimes", "Never") }, null, { answers: { q1: "Always" } }],
+        // An answer can reach the agent as a message.
+        ["answer a question with a shell line", "chat.respondToInput", { kind: "question" }, "lane_share_plain_text_only", { answers: { q1: ["!cat ~/.ssh/id_ed25519"] } }],
+        ["answer a question with a slash command in its reply", "chat.respondToInput", { kind: "question" }, "lane_share_plain_text_only", { responseText: "/shell ls" }],
+        ["approve a plan that returns to a mode the owner did not allow", "chat.respondToInput", { kind: "plan_approval" }, "lane_share_permission_locked", undefined, planToBypass],
+        ["approve a plan that returns to an allowed mode", "chat.respondToInput", { kind: "plan_approval" }, null, undefined, { ...planToBypass, claudePrePlanAccessMode: "default" }],
+        ["approve a plain approval", "chat.approve", { kind: "approval" }, null],
+      ])("cards: a guest with every right cannot %s", async (_label, action, card, code, answer, chat) => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const rights = allOnRights();
+        if (chat) rights.run.permissionModes = ["default", "plan"];
+        const env = await startGuestHost(directory, { rights, chat: { ...chat, pending: [{ itemId: "card-1", ...card }] } });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          const result = await runCommand(guest.client, "card", action, { sessionId: "session-shared", itemId: "card-1", decision: "accept", ...answer });
+          if (code) expect(result).toMatchObject({ ok: false, error: { code } });
+          else expect(result.ok).toBe(true);
+          expect(env.execute.mock.calls.some(([payload]) => payload.action === action)).toBe(code == null);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it("shows a guest only 'waiting for the owner' for a card only the owner may answer", async () => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights: laneSharePresetRights("watch") });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          guest.client.ws.send(encodeSyncEnvelope({ type: "chat_subscribe", requestId: "sub", projectId: "project-1", payload: { sessionId: "session-shared" } }));
+          await waitForValue(() => guest!.client.envelopes.find((entry) => entry.type === "chat_subscribe"), "guest chat subscribe");
+          const request = {
+            requestId: "card-1",
+            itemId: "card-1",
+            kind: "question",
+            title: "Secret needed: STRIPE_LIVE_KEY",
+            description: "Secret needed: STRIPE_LIVE_KEY",
+            questions: [{ id: "secret_value", question: "Paste STRIPE_LIVE_KEY", isSecret: true }],
+            providerMetadata: secretCard,
+          };
+          env.emitChatEvent("session-shared", {
+            type: "approval_request",
+            itemId: "card-1",
+            kind: "tool_call",
+            requestKind: "question",
+            description: "Secret needed: STRIPE_LIVE_KEY",
+            detail: { request },
+          });
+          const event = await waitForValue(
+            () => guest!.client.envelopes.find((entry) => entry.type === "chat_event")?.payload as { event: Record<string, unknown> } | undefined,
+            "guest card event",
+          );
+          expect(JSON.stringify(event)).not.toContain("STRIPE_LIVE_KEY");
+          expect(event.event).toMatchObject({ type: "approval_request", itemId: "card-1", detail: { request: { itemId: "card-1", questions: [] } } });
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      // The lock holds the mode a turn really runs in: the provider's own
+      // settings, and for a Claude plan the mode its approval returns to.
+      it.each<[string, Record<string, unknown>, boolean]>([
+        ["Claude plan that returns to bypass", { interactionMode: "plan", claudePermissionMode: "plan", permissionMode: "plan", claudePrePlanAccessMode: "bypassPermissions" }, false],
+        ["Claude plan that returns to default", { interactionMode: "plan", claudePermissionMode: "plan", permissionMode: "plan", claudePrePlanAccessMode: "default" }, true],
+        ["Claude bypass under a default label", { claudePermissionMode: "bypassPermissions", permissionMode: "default" }, false],
+        ["Codex full access under a default label", { provider: "codex", codexApprovalPolicy: "never", codexSandbox: "danger-full-access", permissionMode: "default" }, false],
+        ["a Codex pair that maps to no mode", { provider: "codex", codexApprovalPolicy: "on-request", codexSandbox: "danger-full-access", permissionMode: "default" }, false],
+        ["Codex default", { provider: "codex", codexApprovalPolicy: "on-request", codexSandbox: "workspace-write", permissionMode: "default" }, true],
+        ["Droid's top tier under a default label", { provider: "droid", droidPermissionMode: "auto-high", permissionMode: "default" }, false],
+        ["a Droid tier with no ADE mode", { provider: "droid", droidPermissionMode: "agi", permissionMode: "default" }, false],
+        ["Droid's default tier", { provider: "droid", droidPermissionMode: "auto-medium", permissionMode: "default" }, true],
+        ["Copilot full auto under a default label", { provider: "copilot", copilotPermissionMode: "full-auto", permissionMode: "default" }, false],
+        ["Cursor full auto under a default label", { provider: "cursor", cursorModeId: "full-auto", permissionMode: "default" }, false],
+        ["OpenCode full auto under a default label", { provider: "opencode", opencodePermissionMode: "full-auto", permissionMode: "default" }, false],
+        ["a Droid plan that returns to its top tier", { provider: "droid", interactionMode: "plan", droidPermissionMode: "auto-high", permissionMode: "plan" }, false],
+      ])("mode lock: a guest send into %s", async (_label, mode, allowed) => {
+        const rights = laneSharePresetRights("collaborate");
+        rights.run.permissionModes = ["default", "plan"];
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights, chat: mode });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          const result = await runCommand(guest.client, "send", "chat.send", { sessionId: "session-shared", text: "go" });
+          expect(result.ok).toBe(allowed);
+          if (!allowed) expect(result.error?.code).toBe("lane_share_permission_locked");
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it("refuses a guest whose rights were stored for another lane, and drops those rights", async () => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights: null });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          env.store.put({ grantId: grantId("a"), laneId: privateLane, rights: laneSharePresetRights("collaborate") });
+          guest = await connectGuest(env.port, env.proof, directory);
+          expect(guest.first).toMatchObject({ type: "hello_error", payload: { code: "lane_share_paused" } });
+          expect(env.store.get(grantId("a"))).toBeNull();
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it("ends a share at the end date in its rights: at hello, and for a guest already connected", async () => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const ended = laneSharePresetRights("collaborate");
+        ended.limits.endsAt = Date.now() - 1_000;
+        const env = await startGuestHost(directory, { rights: ended });
+        const guests: Array<Awaited<ReturnType<typeof connectGuest>>> = [];
+        try {
+          const refused = await connectGuest(env.port, env.proof, directory);
+          guests.push(refused);
+          expect(refused.first).toMatchObject({ type: "hello_error", payload: { code: "lane_share_refused" } });
+          const open = laneSharePresetRights("collaborate");
+          open.tools.file = true;
+          open.limits.endsAt = Date.now() + 60_000;
+          env.store.updateRights(grantId("a"), open);
+          const connected = await connectGuest(env.port, env.proof, directory);
+          guests.push(connected);
+          expect(connected.first).toMatchObject({ type: "hello_ok" });
+          open.limits.endsAt = Date.now() - 1;
+          env.store.updateRights(grantId("a"), open);
+          env.host.applyLaneShareRights(grantId("a"));
+          // A file read: not a command, so only the lane check stops it.
+          connected.client.ws.send(encodeSyncEnvelope({
+            type: "file_request",
+            requestId: "late-file",
+            projectId: "project-1",
+            payload: { action: "readFile", args: { workspaceId: sharedLane, path: "README.md" } },
+          }));
+          expect(await runCommand(connected.client, "late", "chat.getSummary", { sessionId: "session-shared" })).toMatchObject({
+            ok: false,
+            error: { code: "lane_share_ended" },
+          });
+          expect(env.execute).not.toHaveBeenCalled();
+          expect(env.effects.mock.calls.filter(([name]) => String(name).startsWith("files."))).toEqual([]);
+        } finally {
+          await env.close(guests.map((entry) => entry.client));
+        }
+      });
+
+      it("tells a connected guest that its rights changed, with the grant id only", async () => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const rights = laneSharePresetRights("comment");
+        rights.privacy.hideMachines = true;
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          expect(guest.first).toMatchObject({ type: "hello_ok" });
+          env.store.updateRights(grantId("a"), laneSharePresetRights("collaborate"));
+          env.host.applyLaneShareRights(grantId("a"));
+          const changed = await waitForValue(
+            () => guest!.client.envelopes.find((entry) => entry.type === "lane_share_guest_changed"),
+            "guest change signal",
+          );
+          expect(changed.payload).toEqual({ grantId: grantId("a") });
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it("counts the draft cap in one step: two drafts at once at the last free place make one", async () => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights: laneSharePresetRights("suggest") });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          for (let index = 0; index < LANE_SHARE_MAX_GUEST_DRAFTS - 1; index += 1) {
+            env.store.addItem(grantId("a"), "draft", `old-${index}`, null);
+          }
+          // Each draft gets its own id, as the draft service gives it: one shared id would hide a second draft.
+          const harness = env.execute.getMockImplementation()!;
+          let made = 0;
+          env.execute.mockImplementation((async (payload: { action: string }, ...rest: unknown[]) => (
+            payload.action === "chat.createDraft" ? { id: `draft-new-${++made}` } : (harness as (...args: unknown[]) => unknown)(payload, ...rest)
+          )) as never);
+          guest = await connectGuest(env.port, env.proof, directory);
+          const results = await Promise.all([
+            runCommand(guest.client, "draft-a", "chat.createDraft", { originSessionId: "session-shared", text: "one" }),
+            runCommand(guest.client, "draft-b", "chat.createDraft", { originSessionId: "session-shared", text: "two" }),
+          ]);
+          expect(results.map((result) => result.ok).sort()).toEqual([false, true]);
+          expect(env.store.countItems(grantId("a"), "draft")).toBe(LANE_SHARE_MAX_GUEST_DRAFTS);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it.skipIf(process.platform === "win32")("counts each line a guest types into a CLI as one message", async () => {
+        const rights = laneSharePresetRights("watch");
+        rights.run.typeInCliSessions = true;
+        rights.limits.messagesPerDay = 1;
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          guest.client.ws.send(encodeSyncEnvelope({
+            type: "terminal_subscribe",
+            requestId: "sub",
+            projectId: "project-1",
+            payload: { sessionId: "session-cli", maxBytes: 1_000 },
+          }));
+          await runCommand(guest.client, "subscribed", "chat.getSummary", { sessionId: "session-shared" });
+          const type = async (data: string, id: string) => {
+            guest!.client.ws.send(encodeSyncEnvelope({
+              type: "terminal_input",
+              requestId: id,
+              projectId: "project-1",
+              payload: { sessionId: "session-cli", data, inputId: id },
+            }));
+            await runCommand(guest!.client, `after-${id}`, "chat.getSummary", { sessionId: "session-shared" });
+          };
+          const written = () => env.effects.mock.calls.filter(([name]) => name === "pty.write").length;
+          await type("ls\r", "enter-1");
+          expect(written()).toBe(1);
+          // The day's one message is used: the next line is not typed.
+          await type("pwd\r", "enter-2");
+          expect(written()).toBe(1);
+          expect(guest.client.envelopes.find((entry) => entry.type === "terminal_input_ack" && entry.requestId === "enter-2")?.payload)
+            .toMatchObject({ ok: false, error: { code: "lane_share_daily_limit" } });
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it("hides the host's model names from a guest in chat events and in reads, except the models it may use", async () => {
+        const rights = laneSharePresetRights("watch");
+        rights.privacy.hideModels = true;
+        rights.run.models = ["claude-sonnet"];
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          guest.client.ws.send(encodeSyncEnvelope({ type: "chat_subscribe", requestId: "sub", projectId: "project-1", payload: { sessionId: "session-shared" } }));
+          await waitForValue(() => guest!.client.envelopes.find((entry) => entry.type === "chat_subscribe"), "guest chat subscribe");
+          env.emitChatEvent("session-shared", { type: "done", status: "completed", model: "claude-opus", modelId: "claude-opus" });
+          env.emitChatEvent("session-shared", { type: "model_handoff", fromProvider: "claude", toProvider: "claude", fromModelId: "claude-sonnet", toModelId: "claude-opus" });
+          env.emitChatEvent("session-shared", { type: "subagent_started", taskId: "t1", description: "look", model: "claude-haiku" });
+          const events = await waitForValue(() => {
+            const sent = guest!.client.envelopes.filter((entry) => entry.type === "chat_event");
+            return sent.length >= 3 ? sent.map((entry) => (entry.payload as { event: Record<string, unknown> }).event) : undefined;
+          }, "guest chat events");
+          expect(events).toEqual([
+            expect.objectContaining({ type: "done", model: null, modelId: null }),
+            expect.objectContaining({ type: "model_handoff", fromModelId: "claude-sonnet", toModelId: null }),
+            expect.objectContaining({ type: "subagent_started", model: null }),
+          ]);
+          env.execute.mockImplementationOnce((async () => ({
+            sessionId: "session-shared",
+            modelId: "claude-opus",
+            presetId: "preset-fast",
+            modelHandoffHistory: [{ fromModelId: "claude-sonnet", toModelId: "claude-opus" }],
+            title: "claude-opus stays in free text",
+          })) as never);
+          expect(await runCommand(guest.client, "summary", "chat.getSummary", { sessionId: "session-shared" })).toMatchObject({
+            ok: true,
+            result: { modelId: null, presetId: null, modelHandoffHistory: null, title: "claude-opus stays in free text" },
+          });
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it("hides the host computer from a guest with hideMachines: in the hello, in chat events and in reads", async () => {
+        const rights = laneSharePresetRights("watch");
+        rights.privacy.hideMachines = true;
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          const brain = (guest.first.payload as { brain: Record<string, unknown> }).brain;
+          expect(brain).toMatchObject({ deviceName: "Shared computer", platform: "unknown", deviceType: "unknown" });
+          expect(String(brain.deviceId)).toMatch(/^shared:/);
+          guest.client.ws.send(encodeSyncEnvelope({ type: "chat_subscribe", requestId: "sub", projectId: "project-1", payload: { sessionId: "session-shared" } }));
+          await waitForValue(() => guest!.client.envelopes.find((entry) => entry.type === "chat_subscribe"), "guest chat subscribe");
+          env.emitChatEvent("session-shared", {
+            type: "system_notice",
+            message: "Moved from the Studio Mac",
+            detail: { sourceMachineName: "Studio Mac", sourceMachineKey: "machine-studio", deviceId: "device-studio" },
+          });
+          const event = await waitForValue(
+            () => (guest!.client.envelopes.find((entry) => entry.type === "chat_event")?.payload as { event: Record<string, unknown> } | undefined)?.event,
+            "guest chat event",
+          );
+          expect(event).toMatchObject({
+            message: "Moved from the Studio Mac",
+            detail: { sourceMachineName: null, sourceMachineKey: null, deviceId: null },
+          });
+          env.execute.mockImplementationOnce((async () => ({
+            sessionId: "session-shared",
+            crossMachineHandoff: { targetMachineName: "Studio Mac", targetMachineKey: "machine-studio" },
+          })) as never);
+          expect(await runCommand(guest.client, "summary", "chat.getSummary", { sessionId: "session-shared" })).toMatchObject({
+            ok: true,
+            result: { sessionId: "session-shared", crossMachineHandoff: { targetMachineName: null, targetMachineKey: null } },
+          });
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it("forgets a rights row that neither directory list names, only after good reads and a long wait", async () => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory);
+        const realNow = Date.now;
+        try {
+          env.store.put({ grantId: grantId("c"), laneId: sharedLane, rights: laneSharePresetRights("watch") });
+          await env.host.refreshLaneShareGrants();
+          const start = realNow();
+          const at = (ms: number) => vi.spyOn(Date, "now").mockImplementation(() => start + ms);
+          const week = 7 * 24 * 3_600_000;
+          // Past the wait, but the directory is down: nothing is forgotten.
+          at(week + 1_000);
+          directory.answer({ status: 503, body: {} });
+          await env.host.refreshLaneShareGrants();
+          expect(env.store.get(grantId("c"))).not.toBeNull();
+          // A good read that names it again starts the wait over.
+          directory.answer(grantsBody([grant(), grant({ id: grantId("c") })]));
+          await env.host.refreshLaneShareGrants();
+          directory.answer(grantsBody([grant()]));
+          await env.host.refreshLaneShareGrants();
+          at(2 * week);
+          await env.host.refreshLaneShareGrants();
+          expect(env.store.get(grantId("c"))).not.toBeNull();
+          at(2 * week + week + 2_000);
+          await env.host.refreshLaneShareGrants();
+          expect(env.store.get(grantId("c"))).toBeNull();
+          expect(env.store.get(grantId("a"))).not.toBeNull();
+        } finally {
+          vi.restoreAllMocks();
+          await env.close([]);
+        }
+      });
+
+      /** The owner's actions on this host, with the directory's owner endpoints at the network boundary. */
+      function ownerService(env: Awaited<ReturnType<typeof startGuestHost>>, answers: { revoke?: number; patch?: number; given?: unknown[] } = {}) {
+        const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+          const url = String(input);
+          const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+          if (url.endsWith("/revoke")) return respond(answers.revoke ?? 200, answers.revoke && answers.revoke >= 300 ? { error: { code: "down", message: "Directory down" } } : { ok: true });
+          if (init?.method === "PATCH") return respond(answers.patch ?? 200, answers.patch && answers.patch >= 300 ? { error: { code: "down", message: "Directory down" } } : { ok: true });
+          if (url.endsWith("/lane-shares/given")) return respond(200, { grants: answers.given ?? [] });
+          throw new Error(`unexpected directory call ${url}`);
+        });
+        return createLaneShareHostService({
+          access: { getAccessToken: async () => "host-account-token", getDirectoryBaseUrl: () => "http://127.0.0.1:9", fetchImpl: fetchImpl as unknown as typeof fetch },
+          getMachineKey: () => "machine-guest-test",
+          store: env.store,
+          getHost: () => env.host,
+          getRepoKey: () => "repo:github.com/acme/widgets",
+          getProjectLabel: () => "widgets",
+          getLaneLabel: () => "shared",
+          agentRate: createLaneShareAgentRate(),
+          readDefaultRights: () => undefined,
+        });
+      }
+
+      it.each<[string, number, boolean]>([
+        ["answers", 200, true],
+        ["is down", 503, false],
+      ])("revoke closes the guest here even when the directory %s, and its next hello is refused", async (_label, status, directoryRevoked) => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights: laneSharePresetRights("collaborate") });
+        const guests: Array<Awaited<ReturnType<typeof connectGuest>>> = [];
+        try {
+          const first = await connectGuest(env.port, env.proof, directory);
+          guests.push(first);
+          expect(first.first.type).toBe("hello_ok");
+          const result = await ownerService(env, { revoke: status }).revoke({ grantId: grantId("a") }, "person");
+          expect(result).toMatchObject({ closedConnections: 1, directoryRevoked });
+          if (!directoryRevoked) expect(result.directoryMessage).toContain("closed on this computer");
+          await waitForValue(() => first.client.closeEvents[0], "revoked guest close");
+          // The directory still lists the grant as active.
+          const again = await connectGuest(env.port, env.proof, directory);
+          guests.push(again);
+          expect(again.first).toMatchObject({ type: "hello_error", payload: { code: "lane_share_paused" } });
+        } finally {
+          await env.close(guests.map((entry) => entry.client));
+        }
+      });
+
+      it("a rights reduction reaches the guest's next action at once, even when the directory write fails", async () => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights: laneSharePresetRights("collaborate") });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          expect((await runCommand(guest.client, "before", "chat.send", { sessionId: "session-shared", text: "hi" })).ok).toBe(true);
+          // Its own turn runs; its next message queues behind it.
+          env.emitChatEvent("session-shared", { type: "user_message", text: "hi", turnId: "turn-g", metadata: { author: guestAuthor } });
+          env.emitChatEvent("session-shared", { type: "status", turnStatus: "started", turnId: "turn-g" });
+          env.chatState.status = "active";
+          expect((await runCommand(guest.client, "queued", "chat.send", { sessionId: "session-shared", text: "next" })).ok).toBe(true);
+          const result = await ownerService(env, { patch: 503 }).updateRights({ grantId: grantId("a"), rights: laneSharePresetRights("watch") }, "person");
+          expect(result).toMatchObject({ appliedConnections: 1, directorySynced: false });
+          // Rights that no longer send or steer take the queued message away.
+          await waitForValue(() => (env.agentChatService.cancelSteer.mock.calls.length > 0 ? true : undefined), "queued message removed");
+          expect(env.agentChatService.cancelSteer).toHaveBeenCalledWith({ sessionId: "session-shared", steerId: "steer-1", requireQueued: true });
+          env.chatState.status = "idle";
+          expect(await runCommand(guest.client, "after", "chat.send", { sessionId: "session-shared", text: "hi" })).toMatchObject({
+            ok: false,
+            error: { code: "lane_share_right_missing" },
+          });
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      // A queued message runs when the turn ends, maybe long after its guest
+      // left: the host checks the share again, from its own records, as it starts.
+      it.each<[string, (env: Awaited<ReturnType<typeof startGuestHost>>) => void, boolean]>([
+        ["the share still allows it", () => {}, true],
+        ["the end date passed while it waited", (env) => {
+          const rights = laneSharePresetRights("collaborate");
+          env.store.updateRights(grantId("a"), { ...rights, limits: { ...rights.limits, endsAt: Date.now() - 1_000 } });
+        }, false],
+        ["the rights no longer send or steer", (env) => { env.store.updateRights(grantId("a"), laneSharePresetRights("watch")); }, false],
+        ["the share was revoked here", (env) => { env.store.deleteRights(grantId("a")); }, false],
+        // Sending is still allowed, but the chat now runs outside the locks.
+        ["the owner narrowed the permission modes while it waited", (env) => {
+          const rights = laneSharePresetRights("collaborate");
+          env.store.updateRights(grantId("a"), { ...rights, run: { ...rights.run, permissionModes: ["plan"] } });
+        }, false],
+        ["the owner locked another model while it waited", (env) => {
+          const rights = laneSharePresetRights("collaborate");
+          env.store.updateRights(grantId("a"), { ...rights, run: { ...rights.run, models: ["claude-opus"] } });
+        }, false],
+        ["the grant list is older than the age bound", () => {
+          const later = Date.now() + 91_000;
+          vi.spyOn(Date, "now").mockReturnValue(later);
+        }, false],
+      ])("a queued guest message starts only when its share allows it: %s", async (_label, change, runs) => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights: laneSharePresetRights("collaborate") });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          expect((await runCommand(guest.client, "first", "chat.send", { sessionId: "session-shared", text: "hi" })).ok).toBe(true);
+          // Its own turn runs; its next message queues behind it.
+          env.emitChatEvent("session-shared", { type: "user_message", text: "hi", turnId: "turn-g", metadata: { author: guestAuthor } });
+          env.emitChatEvent("session-shared", { type: "status", turnStatus: "started", turnId: "turn-g" });
+          env.chatState.status = "active";
+          expect((await runCommand(guest.client, "queued", "chat.send", { sessionId: "session-shared", text: "next" })).ok).toBe(true);
+          guest.client.ws.close();
+          await waitForValue(() => guest!.client.closeEvents[0], "guest gone");
+          change(env);
+          expect(env.startQueuedGuestSteer("steer-1")).toBe(runs);
+          // Started once: the message is no longer the guest's queued message.
+          expect(env.store.hasItem(grantId("a"), "steer", "steer-1")).toBe(false);
+        } finally {
+          vi.restoreAllMocks();
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it("gives a guest nothing for a grant with no rights here, until the owner sets them", async () => {
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights: null });
+        const guests: Array<Awaited<ReturnType<typeof connectGuest>>> = [];
+        try {
+          const refused = await connectGuest(env.port, env.proof, directory);
+          guests.push(refused);
+          expect(refused.first).toMatchObject({ type: "hello_error", payload: { code: "lane_share_paused" } });
+          const owner = ownerService(env, {
+            given: [{ id: grantId("a"), machineKey: "machine-guest-test", laneId: sharedLane, state: "active", receiverEmail: "guest@example.com" }],
+          });
+          expect((await owner.list()).shares).toEqual([expect.objectContaining({ grantId: grantId("a"), rights: null, needsRights: true })]);
+          await owner.updateRights({ grantId: grantId("a"), rights: laneSharePresetRights("watch") }, "person");
+          const admitted = await connectGuest(env.port, env.proof, directory);
+          guests.push(admitted);
+          expect(admitted.first.type).toBe("hello_ok");
+        } finally {
+          await env.close(guests.map((entry) => entry.client));
+        }
+      });
+
+      it.each<[string, boolean, string[]]>([
+        ["hides history from before the share by default", false, ["after"]],
+        ["shows it with the history right", true, ["before", "after"]],
+      ])("%s", async (_label, history, texts) => {
+        const rights = laneSharePresetRights("watch");
+        rights.see.historyBeforeShare = history;
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          const result = await runCommand(guest.client, "transcript", "chat.getTranscript", { sessionId: "session-shared" });
+          const transcript = result.result as { entries: Array<{ text: string }>; hasMore: boolean };
+          expect(transcript.entries.map((entry) => entry.text)).toEqual(texts);
+          expect(transcript.hasMore).toBe(history);
+          // A chat that began before the share: its summary repeats that history.
+          const beforeAt = new Date(Date.now() - 2 * sharedAgo).toISOString();
+          env.execute.mockImplementationOnce((async () => ({
+            sessionId: "session-shared",
+            startedAt: beforeAt,
+            status: "idle",
+            lastOutputPreview: "before",
+            statusNote: "before",
+            attentionMessage: "before",
+            scheduledWork: [{ id: "work-1", title: "nightly", prompt: "before", createdAt: beforeAt }],
+          })) as never);
+          const summary = (await runCommand(guest.client, "summary", "chat.getSummary", { sessionId: "session-shared" })).result as Record<string, unknown>;
+          expect(summary).toMatchObject({ sessionId: "session-shared", status: "idle" });
+          expect(JSON.stringify(summary).includes("before")).toBe(history);
+          // A fresh event that carries the whole comment list: each comment by its own time.
+          guest.client.ws.send(encodeSyncEnvelope({ type: "chat_subscribe", requestId: "sub", projectId: "project-1", payload: { sessionId: "session-shared" } }));
+          await waitForValue(() => guest!.client.envelopes.find((entry) => entry.type === "chat_subscribe"), "guest chat subscribe");
+          env.emitChatEvent("session-shared", {
+            type: "session_meta_updated",
+            threadComments: [
+              { id: "c-old", body: "before", messageExcerpt: "before", createdAt: beforeAt },
+              { id: "c-new", body: "after", createdAt: new Date().toISOString() },
+            ],
+          });
+          const meta = await waitForValue(
+            () => (guest!.client.envelopes.find((entry) => entry.type === "chat_event")?.payload as { event: { threadComments: Array<{ id: string }> } } | undefined)?.event,
+            "guest meta event",
+          );
+          expect(meta.threadComments.map((comment) => comment.id)).toEqual(history ? ["c-old", "c-new"] : ["c-new"]);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      it.each([
+        ["a path that climbs out of the worktree", "git.getFile", { laneId: sharedLane, path: "../other-lane/secret.env", mode: "unstaged" }, false],
+        ["an absolute path", "git.getFile", { laneId: sharedLane, path: "/etc/passwd", mode: "unstaged" }, false],
+        ["a compare ref", "git.getFile", { laneId: sharedLane, path: "src/a.ts", mode: "commit", compareRef: "main" }, false],
+        ["a path in the worktree", "git.getFile", { laneId: sharedLane, path: "src/a.ts", mode: "unstaged" }, true],
+        ["a diff read under .ade", "git.getFile", { laneId: sharedLane, path: ".ade/secrets.json", mode: "unstaged" }, false],
+        ["a file read that climbs out", "file:readFile", { workspaceId: sharedLane, path: "src/../../x" }, false],
+        ["a file read in another lane", "file:readFile", { workspaceId: privateLane, path: "README.md" }, false],
+        ["a file write", "file:writeText", { workspaceId: sharedLane, path: "README.md", text: "x" }, false],
+        ["a file read in the worktree", "file:readFile", { workspaceId: sharedLane, path: "README.md" }, true],
+        // This machine's other open projects are served too: a guest never reaches one.
+        ["a file read that names another open project", "file:readFile", { workspaceId: sharedLane, path: "README.md" }, false, "project-2"],
+        ["a commit read by a name, not a hash", "git.getCommitMessage", { laneId: sharedLane, commitSha: "main" }, false],
+        ["a commit read the git service checks against the lane's history", "git.listCommitFiles", { laneId: sharedLane, commitSha: "a".repeat(40) }, true],
+      ] as Array<[string, string, Record<string, unknown>, boolean, string?]>)("tool reads: refuses %s", async (_label, action, args, allowed, projectId = "project-1") => {
+        const rights = laneSharePresetRights("watch");
+        rights.tools.diff = true;
+        rights.tools.file = true;
+        rights.tools.git = true;
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const getIfBooted = vi.fn(() => Promise.resolve({ runtime: {} }));
+        const executeFileRequest = vi.fn(async () => ({ ok: true }));
+        const env = await startGuestHost(directory, { rights, projectScopes: { getIfBooted }, executeFileRequest });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          if (action.startsWith("file:")) {
+            guest.client.ws.send(encodeSyncEnvelope({
+              type: "file_request",
+              requestId: "file",
+              projectId,
+              payload: { action: action.slice(5), args },
+            }));
+            await runCommand(guest.client, "after-file", "chat.getSummary", { sessionId: "session-shared" });
+            const calls = env.effects.mock.calls.filter(([name]) => String(name).startsWith("files."));
+            expect(calls.length > 0).toBe(allowed);
+            expect(executeFileRequest).not.toHaveBeenCalled();
+            expect(getIfBooted).not.toHaveBeenCalled();
+            if (allowed) expect(calls[0]![1]).toMatchObject({ workspaceId: sharedLane, path: "README.md", includeIgnored: false });
+          } else {
+            const result = await runCommand(guest.client, "git", action, args);
+            expect(result.ok).toBe(allowed);
+            expect(env.execute.mock.calls.filter(([payload]) => payload.action === action).map(([payload]) => payload.args))
+              // The diff service refuses an ignored file (`refuseIgnored`): an unstaged read opens the working tree.
+              // Lanes share one object store: the git service refuses a commit outside the lane's history (`onlyLaneHistory`).
+              .toEqual(!allowed ? [] : "commitSha" in args
+                ? [{ laneId: sharedLane, commitSha: args.commitSha, onlyLaneHistory: true }]
+                : [{ laneId: sharedLane, path: "src/a.ts", mode: "unstaged", refuseIgnored: true }]);
+          }
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+    });
+  });
+
   it("projectless brain: accepts a signed-in web client account hello and adopts a pairing", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, "secrets");

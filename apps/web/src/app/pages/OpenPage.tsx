@@ -14,6 +14,7 @@ import {
   Link2Off,
   MessageSquare,
   Settings,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 
@@ -40,6 +41,7 @@ type OpenTarget =
   | { kind: "pr"; repo?: string; number: number; tab?: string; ownership?: OpenOwnership }
   | { kind: "linear-issue"; issueIdentifier: string; branch?: string }
   | { kind: "settings"; entryId: string; machineId?: string }
+  | { kind: "lane-share"; grantId: string }
   | { kind: "unknown" };
 
 /** The computer and project a link belongs to (`shared/deeplinks.ts` DeeplinkOwnership). */
@@ -56,6 +58,8 @@ const CANONICAL_OPEN_ORIGIN = "https://ade-app.dev";
 
 // The desktop parser's shapes (`shared/deeplinks.ts`): ADE refuses anything else.
 const SETTINGS_ENTRY_ID_RE = /^[a-z0-9][a-z0-9.-]{0,95}$/;
+// A lane share invite names its grant only; the account directory decides who may see it.
+const LANE_SHARE_GRANT_ID_RE = /^ls_[0-9a-f]{32}$/;
 const MACHINE_ID_BAD_RE = /[\x00-\x1f\x7f]/;
 
 function positiveInteger(raw: string | null): number | undefined {
@@ -182,6 +186,10 @@ function parseQuery(search: string): OpenTarget {
         : { kind: "linear-issue", issueIdentifier };
     }
   }
+  if (type === "lane-share") {
+    const grantId = (params.get("id") ?? "").trim();
+    if (LANE_SHARE_GRANT_ID_RE.test(grantId)) return { kind: "lane-share", grantId };
+  }
   if (type === "settings") {
     const entryId = (params.get("id") ?? "").toLowerCase();
     if (SETTINGS_ENTRY_ID_RE.test(entryId)) {
@@ -247,6 +255,8 @@ function buildAdeUrl(target: OpenTarget): string | null {
     }
     case "settings":
       return appendQuery(`ade://settings/${encodeURIComponent(target.entryId)}`, [["machine", target.machineId]]);
+    case "lane-share":
+      return `ade://lane-share/${encodeURIComponent(target.grantId)}`;
     case "unknown":
       return null;
   }
@@ -340,6 +350,11 @@ function describeTarget(target: OpenTarget): { title: string; summary: string; v
         summary: "Opens this setting in ADE's Settings.",
         valueLabel: "Setting",
         value: target.entryId,
+      };
+    case "lane-share":
+      return {
+        title: "Open a shared lane in ADE",
+        summary: "Someone shared a lane with you. Sign in to ADE with the email the invite went to, then accept it.",
       };
     case "unknown":
       return {
@@ -660,6 +675,7 @@ const KIND_ICONS: Record<OpenTarget["kind"], LucideIcon> = {
   branch: GitBranch,
   pr: GitPullRequest,
   "linear-issue": CircleDot,
+  "lane-share": Users,
   settings: Settings,
   unknown: Link2Off,
 };

@@ -7,6 +7,11 @@ import {
   pickLiveCheckout,
   sanitizePortableGitRemote,
 } from "./crossMachineHandoff";
+import {
+  LANE_SHARE_MOVE_PAYLOAD_KEYS,
+  laneShareMovePayloadFromCapsule,
+  parseLaneShareMovePayload,
+} from "./laneShareMove";
 
 describe("cross-machine handoff boundaries", () => {
   it("normalizes equivalent Git remotes and removes every URL credential surface", () => {
@@ -108,5 +113,57 @@ describe("cross-machine handoff boundaries", () => {
     expect(pickLiveCheckout(checkouts)?.id).toBe(picked);
     expect(pickLiveCheckout([...checkouts].reverse())?.id).toBe(picked);
     expect(pickLiveCheckout([])).toBeNull();
+  });
+});
+
+describe("lane share move payload", () => {
+  const moveId = `lsm_${"2".repeat(32)}`;
+  const sha = "a".repeat(40);
+  // A capsule with every field that can carry a sign-in or a secret.
+  const capsule = {
+    source: {
+      title: "Fix the login",
+      laneName: "login",
+      branchRef: "refs/heads/fix/login",
+      headSha: sha,
+      model: "claude-x",
+      machineKey: "SECRET-machine-key",
+      originUrl: "https://user:SECRET-token@github.com/acme/widgets.git",
+      sessionId: "SECRET-provider-session",
+    },
+    target: { targetModelId: "claude-x", claudePermissionMode: "bypassPermissions" },
+    route: { credentialId: "SECRET-credential", instanceId: "SECRET-instance", env: { API_KEY: "SECRET-env" } },
+    forkTransport: { mainFile: { contentBase64Gzip: "SECRET-provider-history" } },
+    transcriptEnvelopes: { contentBase64Gzip: "SECRET-transcript" },
+    mcpServers: [{ name: "x", env: { TOKEN: "SECRET-mcp" } }],
+    brief: "Work on the login form.",
+    continuationPrompt: "Continue.",
+    artifacts: { fileChanges: ["src/login.ts"], commands: ["npm test"], errors: [] },
+    linearIssues: [{ identifier: "ADE-1", title: "Login", url: null }],
+  };
+
+  it("carries only its fixed fields, none of which holds a sign-in", () => {
+    const payload = laneShareMovePayloadFromCapsule(capsule, { moveId, repoKey: "repo:github.com/acme/widgets", bundle: null });
+    expect(Object.keys(payload).sort()).toEqual([...LANE_SHARE_MOVE_PAYLOAD_KEYS].sort());
+    expect(JSON.stringify(payload)).not.toContain("SECRET");
+    expect(payload.branchName).toBe("fix/login");
+  });
+
+  it.each<[string, (payload: Record<string, unknown>) => void]>([
+    ["an env field", (payload) => { payload.env = { API_KEY: "x" }; }],
+    ["a sign-in route", (payload) => { payload.route = { credentialId: "x" }; }],
+    ["an MCP configuration", (payload) => { payload.mcpServers = []; }],
+    ["a field inside the bundle", (payload) => { payload.bundle = { ...(payload.bundle as object), token: "x" }; }],
+    ["a field inside an issue", (payload) => { payload.linearIssues = [{ identifier: "ADE-1", title: "t", url: null, token: "x" }]; }],
+    ["another move id", (payload) => { payload.moveId = `lsm_${"3".repeat(32)}`; }],
+  ])("refuses a payload with %s", (_label, change) => {
+    const payload = JSON.parse(JSON.stringify(laneShareMovePayloadFromCapsule(capsule, {
+      moveId,
+      repoKey: "repo:github.com/acme/widgets",
+      bundle: { bytes: 10, sha256: "b".repeat(64), chunkCount: 1, branchHeadSha: sha, snapshotSha: null, unpushedCommitCount: 1, changedFileCount: 1 },
+    }))) as Record<string, unknown>;
+    expect(() => parseLaneShareMovePayload(payload, moveId)).not.toThrow();
+    change(payload);
+    expect(() => parseLaneShareMovePayload(payload, moveId)).toThrow();
   });
 });

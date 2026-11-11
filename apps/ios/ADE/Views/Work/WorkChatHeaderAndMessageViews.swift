@@ -608,6 +608,9 @@ struct WorkChatMessageBubble: View, Equatable {
         if message.fromSideChat, segment?.isFirst ?? true {
           WorkSideChatFromLabel()
         }
+        if let guest = message.guestAuthorName, segment?.isFirst ?? true {
+          WorkGuestAuthorLabel(name: guest)
+        }
         if hasText || hasAttachments {
           VStack(alignment: .leading, spacing: hasText && hasAttachments ? 8 : 0) {
             if hasText {

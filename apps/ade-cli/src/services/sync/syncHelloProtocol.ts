@@ -1,5 +1,7 @@
+import { LANE_SHARE_TICKET_PATTERN as LANE_SHARE_TICKET } from "../../../../desktop/src/shared/laneShareDirectory";
 import {
   SYNC_PIPELINED_HELLO_MAX_ENVELOPES,
+  type SyncDpopProof,
   type SyncHelloPayload,
   type SyncPairingRequestPayload,
   type SyncPeerMetadata,
@@ -99,6 +101,20 @@ export function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       || !toOptionalString(normalizedAuth.deviceId)
       || !toOptionalString(normalizedAuth.sealed)
     ) return null;
+  } else if (normalizedAuth.kind === "guest") {
+    // Lane sharing. Only the fields a guest hello defines survive: anything
+    // else the client adds (a claimed role, grants, a lane) is dropped here.
+    // A guest never sends an account token to a host: a hello that carries
+    // one is refused, so no guest path can ever read it. A malformed ticket
+    // or a missing proof is refused here, before the host calls the directory.
+    const raw = normalizedAuth as unknown as Record<string, unknown>;
+    if ("accountToken" in raw || "relayAccountToken" in raw || "secret" in raw) return null;
+    const deviceId = toOptionalString(raw.deviceId);
+    const ticket = typeof raw.ticket === "string" && LANE_SHARE_TICKET.test(raw.ticket) ? raw.ticket : null;
+    const dpop = raw.dpop;
+    if (!deviceId || deviceId.length > 256 || !ticket) return null;
+    if (!dpop || typeof dpop !== "object" || Array.isArray(dpop)) return null;
+    normalizedAuth = { kind: "guest", deviceId, ticket, dpop: dpop as SyncDpopProof };
   } else {
     return null;
   }

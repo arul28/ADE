@@ -2067,6 +2067,20 @@ blocked reasons, retries, or scheduled review scans. The existing
 `ade_feature_used` limits cap it at 30 accepted events per minute and 140 per
 UTC day without raising the shared 200-event ceiling.
 
+Lane sharing records the same coarse mutation fact with `feature: "lanes"`,
+through the same ledger, at the brain that runs the `lane_share` runtime
+action, after the action succeeded (`usageActionFromRpcDomain`):
+`lanes.share` (a share made), `lanes.shareEditRights`, `lanes.shareRevoke`,
+`lanes.shareLeave` (a guest leaves), `lanes.shareMoveChat` (the owner offers to move a chat to
+the other person) and `lanes.shareMoveRespond` (the owner answers a move the
+other person offered). Reads, invite re-sends and the transfer steps of a move
+record nothing. No email address, name, grant, lane, rights or user id of
+either person crosses. These are deliberate decisions, a handful per
+installation per day, inside the existing `ade_feature_used` 140-per-day and
+30-per-minute limits; no ceiling was raised and no PostHog definition changed.
+A guest's accept is recorded only by the account directory, which has no
+product-analytics path for it.
+
 The renderer records `template_setup_started` when the setup chat draft opens
 (`from_banner` or `from_settings`), `template_suggestion_hidden` when the prompt
 is hidden (`completed`), and `deps_update_started` when an install terminal

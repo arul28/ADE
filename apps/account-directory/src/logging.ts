@@ -278,3 +278,37 @@ export function logDirectoryLifecycle(args: {
     durationMs: Math.max(0, Math.round(args.durationMs)),
   }));
 }
+
+/**
+ * One line per lane share change or refusal (src/laneShares). The grant id is
+ * the address in an invite link, so only its first eight hex characters go
+ * out. Never an email address, a name, a machine key or a token.
+ */
+export function logLaneShare(args: {
+  event:
+    | "lane_share.invited"
+    | "lane_share.refreshed"
+    | "lane_share.accepted"
+    | "lane_share.revoked"
+    | "lane_share.left"
+    | "lane_share.declined"
+    | "lane_share.edited"
+    | "lane_share.moved"
+    | "lane_share.ticket_minted"
+    | "lane_share.ticket_redeemed"
+    | "lane_share.refused";
+  userId: string;
+  grantId?: string;
+  code?: string;
+  emailSent?: boolean;
+}): void {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: SERVICE,
+    event: args.event,
+    userId: args.userId,
+    ...(args.grantId ? { grant: args.grantId.slice(0, 11) } : {}),
+    ...(args.code ? { code: args.code } : {}),
+    ...(args.emailSent === undefined ? {} : { emailSent: args.emailSent }),
+  }));
+}

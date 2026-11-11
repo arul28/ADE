@@ -126,6 +126,24 @@ export function resolveAdeLayout(projectRoot: string): AdeLayoutPaths {
   return result;
 }
 
+/**
+ * The empty placeholder files ADE writes under `.ade/` so git keeps the shared
+ * folders, relative to `.ade/` with forward slashes.
+ */
+export const ADE_TRACKED_PLACEHOLDER_PATHS = ["templates/.gitkeep", "skills/.gitkeep"] as const;
+
+/**
+ * The files ADE itself writes under `.ade/` when it opens a project, that git
+ * can show as untracked, with the exact content ADE writes. A file at one of
+ * these paths with other content was changed by a person.
+ */
+export function adeScaffoldFileContents(): ReadonlyMap<string, string> {
+  return new Map<string, string>([
+    [".gitignore", buildAdeGitignore()],
+    ...ADE_TRACKED_PLACEHOLDER_PATHS.map((relativePath) => [relativePath, ""] as [string, string]),
+  ]);
+}
+
 export function buildAdeGitignore(): string {
   return [
     "# ADE ignores local runtime state by default.",

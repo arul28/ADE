@@ -1,3 +1,4 @@
+import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
@@ -789,6 +790,80 @@ export class BrowserAccountClient {
       };
       return this.getSnapshot();
     }
+  }
+
+  /**
+   * One lane sharing call to the account directory with this browser's own
+   * account token (the guest's side of lane sharing). Only `/lane-shares`
+   * paths, and never the host-only routes: the token goes to the directory
+   * and nowhere else. Answers the status and the parsed body; throws a coded
+   * error (`signed_out`, `no_directory`, `unavailable`) when it could not ask.
+   */
+  async laneShareRequest(request: {
+    method: "GET" | "POST";
+    path: string;
+    body?: Record<string, unknown>;
+  }): Promise<{ status: number; body: unknown }> {
+    const config = this.config;
+    if (!config) throw new Error(encodeCodedErrorMessage("no_directory", "Account sign-in isn't configured for this web client."));
+    if (!/^\/lane-shares(\/|$)/.test(request.path) || request.path.startsWith("/lane-shares/host")) {
+      throw new Error(encodeCodedErrorMessage("invalid_args", "That account call is not allowed here."));
+    }
+    const signedOut = () => new Error(encodeCodedErrorMessage("signed_out", "Sign in to your ADE account."));
+    let token: string;
+    try {
+      token = await this.getAccessToken();
+    } catch {
+      throw signedOut();
+    }
+    const send = async (accessToken: string): Promise<Response> => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), DIRECTORY_MUTATION_TIMEOUT_MS);
+      try {
+        return await (this.options.fetchImpl ?? fetch)(`${config.directoryBaseUrl}${request.path}`, {
+          method: request.method,
+          headers: {
+            accept: "application/json",
+            ...(request.body ? { "content-type": "application/json" } : {}),
+            authorization: `Bearer ${accessToken}`,
+            "x-ade-correlation-id": createAccountDirectoryCorrelationId(),
+          },
+          ...(request.body ? { body: JSON.stringify(request.body) } : {}),
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          cache: "no-store",
+          redirect: "error",
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    let response: Response;
+    try {
+      response = await send(token);
+      if (response.status === 401) {
+        await response.body?.cancel().catch(() => undefined);
+        let refreshed: string;
+        try {
+          refreshed = await this.getAccessToken({ forceRefresh: true });
+        } catch {
+          throw signedOut();
+        }
+        response = await send(refreshed);
+      }
+    } catch (cause) {
+      if (parseCodedErrorMessage(cause).code === "signed_out") throw cause;
+      throw new Error(encodeCodedErrorMessage("unavailable", "The account directory could not be reached."));
+    }
+    let body: unknown;
+    try {
+      body = await readBoundedAccountDirectoryJson(response);
+    } catch {
+      body = undefined;
+      await response.body?.cancel().catch(() => undefined);
+    }
+    return { status: response.status, body };
   }
 
   async removeMachine(machineKeyValue: string): Promise<AdeAccountMachineRemovalResult> {

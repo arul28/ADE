@@ -367,6 +367,11 @@ const HELLO_CODE_FAILURES: Record<
   connection_attempt_superseded: "superseded",
   invalid_hello: "protocol",
   protocol_version_mismatch: "protocol",
+  // Lane sharing. A desktop runtime dial never sends a guest hello; mapped
+  // so the record stays total.
+  lane_share_refused: "authentication",
+  lane_share_unavailable: "unreachable",
+  lane_share_paused: "authentication",
 };
 
 export function classifyPairedRuntimeFailure(

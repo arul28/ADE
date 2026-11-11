@@ -11,6 +11,7 @@ import {
   useLocation,
   useNavigate
 } from "react-router-dom";
+import { laneShareGuestPath } from "../laneShare/guest/laneShareGuestRoute";
 import { shallow } from "zustand/shallow";
 import { useShallow } from "zustand/react/shallow";
 
@@ -32,6 +33,7 @@ import {
   type InboundDeeplinkTarget,
 } from "./InboundDeeplinkModal";
 import { DialogHost } from "../ui/dialog/confirm";
+import { LaneShareSheetHost } from "../laneShare/LaneShareSheetHost";
 import { BrowserAgentAccessPromptHost } from "./BrowserAgentAccessPrompt";
 import { QuitPromptHost } from "./QuitPromptHost";
 import { GitFolderTrustPromptHost } from "./GitFolderTrustPrompt";
@@ -119,6 +121,9 @@ const AutomationsPage = React.lazy(() =>
 const SettingsPage = React.lazy(() =>
   import("./SettingsPage").then((m) => ({ default: m.SettingsPage }))
 );
+const LaneShareGuestPage = React.lazy(() =>
+  import("../laneShare/guest/LaneShareGuestPage").then((m) => ({ default: m.LaneShareGuestPage }))
+);
 const PersonalChatsPage = React.lazy(() =>
   import("../personalChats/PersonalChatsPage").then((m) => ({ default: m.PersonalChatsPage }))
 );
@@ -183,6 +188,7 @@ import type {
   AppNavigationRequest,
   AppNavigationTarget,
   OpenProjectBinding,
+  ProjectFindForRepoResult,
   ProjectInfo,
 } from "../../../shared/types";
 
@@ -853,7 +859,9 @@ function ProjectTabHost() {
   const isBrowserRoute = !webMode && isBrowserTabRoute(location.pathname);
   // Music is machine-level too: Apple Music has nothing to do with a project.
   const isMusicRoute = !webMode && isMusicTabRoute(location.pathname);
-  const isMachineRoute = isPersonalChatsRoute || isBrowserRoute || isMusicRoute;
+  // Lanes other accounts share with me: an account page, not a project's.
+  const isSharedLanesRoute = location.pathname === "/shared";
+  const isMachineRoute = isPersonalChatsRoute || isBrowserRoute || isMusicRoute || isSharedLanesRoute;
   const isAccountRoute = location.pathname === "/account" || location.pathname.startsWith("/account/");
   // Settings with no project open: the welcome screen's own Settings entry
   // sends you here, and the machine-scoped sections of the page are the only
@@ -1193,6 +1201,13 @@ function ProjectTabHost() {
           </React.Suspense>
         </PageErrorBoundary>
       ) : null}
+      {isSharedLanesRoute ? (
+        <PageErrorBoundary>
+          <React.Suspense fallback={LazyFallback}>
+            <LaneShareGuestPage />
+          </React.Suspense>
+        </PageErrorBoundary>
+      ) : null}
       {isAccountRoute && !accountOpensInSettings ? (
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
@@ -1302,16 +1317,15 @@ function AppNavigationBridge() {
     }
 
     const projectApi = window.ade?.project as typeof window.ade.project & {
-      findForRepo?: (args: { repoOwner: string; repoName: string }) => Promise<{
-        rootPath: string;
-        displayName: string;
-      } | null>;
+      findForRepo?: (args: { repoOwner: string; repoName: string }) => Promise<ProjectFindForRepoResult>;
     };
     const match = await projectApi?.findForRepo?.({
       repoOwner: envelope.repoOwner,
       repoName: envelope.repoName,
     }).catch(() => null);
-    if (match?.rootPath && match.rootPath !== projectRootRef.current) {
+    // The active project is another repository (checked above), so a copy on
+    // another machine is always a switch, even at the same path string.
+    if (match?.rootPath && (match.remote || match.rootPath !== projectRootRef.current)) {
       setInboundTarget({ kind: "switch-project", entity, project: match, original });
       return true;
     }
@@ -1472,6 +1486,12 @@ function AppNavigationBridge() {
         search: search ? `?${search}` : "",
         hash: anchor ? `#${anchor}` : "",
       });
+      return true;
+    }
+
+    if (target.kind === "lane-share") {
+      // An invite link: the shared lanes page opens it (sign in, accept or open).
+      navigate(laneShareGuestPath(target.grantId));
       return true;
     }
 
@@ -1732,6 +1752,8 @@ export function App() {
           </Routes>
           {/* The one host for confirmDialog / promptDialog (ui/dialog). */}
           <DialogHost />
+          {/* The lane share sheet, opened from any lane menu or mark. */}
+          <LaneShareSheetHost />
           {/* The guided tour after first-run setup, then contextual hints; both
               render nothing unless onboarding is on. */}
           <OnboardingTourHost />

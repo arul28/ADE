@@ -23,6 +23,7 @@ import {
 } from "../ui/ContextMenu";
 import { ProjectIconDialog, type ProjectIconDialogTarget } from "./ProjectIconDialog";
 import { CloneLocallyDialog, type CloneLocallyTarget } from "./CloneLocallyDialog";
+import { openProjectCopy } from "./AddProjectForm";
 import { useAppStore } from "../../state/appStore";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { COLORS } from "../lanes/laneDesignTokens";
@@ -938,9 +939,7 @@ export function ProjectWelcomePage() {
       <CloneLocallyDialog
         target={cloneLocallyTarget}
         onClose={() => setCloneLocallyTarget(null)}
-        onCloned={(result) => {
-          void switchProjectToPath(result.rootPath).catch(() => {});
-        }}
+        onOpenProject={openProjectCopy}
       />
 
       {mergeTarget ? (

@@ -28,6 +28,7 @@ import { JiraMark } from "../lanes/jiraBrand";
 import { KeepAwakeSection } from "./KeepAwakeSection";
 import { TerminalShellSection } from "./TerminalShellSection";
 import { AdeMcpPage } from "./AdeMcpPage";
+import { SharingSettingsPage } from "../laneShare/SharingSettingsPage";
 import { BackgroundServiceSection } from "./BackgroundServiceSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
 import { LinearIntegrationSection } from "./LinearIntegrationSection";
@@ -554,6 +555,9 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // brain with no pin and carries no machine kind. Any brain on the account
   // answers for all of them; only the Activity log is this computer's.
   "ade-mcp": [{ entryIds: "tab", render: () => <SettingsColumn wide><AdeMcpPage /></SettingsColumn> }],
+  // Account-wide lists read through the tab's bound runtime (it asks the
+  // account directory); edits of a share go to the machine that holds it.
+  sharing: [{ entryIds: "tab", render: () => <SettingsColumn wide><SharingSettingsPage /></SettingsColumn> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
 };

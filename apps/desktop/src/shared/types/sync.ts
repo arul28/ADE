@@ -238,6 +238,11 @@ export type SyncPeerConnectionState = SyncPeerMetadata & {
   isBrain: boolean;
   isHost?: boolean;
   isAuthenticated: boolean;
+  /**
+   * A lane-sharing guest (another ADE account). Its `deviceName` is set by
+   * the host ("Guest" and a short user id), never the name the guest sent.
+   */
+  laneShareGuest?: boolean;
 };
 
 // Legacy internal/wire role names kept for sync protocol compatibility.
@@ -1659,7 +1664,32 @@ export type SyncHelloAuth =
       v: 1;
       deviceId: string;
       sealed: string;
+    }
+  | {
+      /**
+       * Another ADE account reaching a lane the host's owner shared with it
+       * (lane sharing). Relay only. The guest's account token never comes
+       * here: `ticket` is the one-use ticket the account directory gave the
+       * guest (`POST /lane-shares/:id/connect`). The host redeems it with its
+       * own owner's token, takes the user id from the directory's answer,
+       * and accepts only while that grant is active and `dpop` is signed (over
+       * the ticket) by the key the ticket was minted for. It never writes a
+       * pairing record. A hello that also carries `accountToken` is refused.
+       */
+      kind: "guest";
+      deviceId: string;
+      ticket: string;
+      dpop: SyncDpopProof;
     };
+
+/**
+ * What the host tells a guest about its own access, in `hello_ok`. The host
+ * decided it from its grant list; a client never claims a role.
+ */
+export type SyncLaneShareGuestInfo = {
+  userId: string;
+  grants: Array<{ grantId: string; laneId: string }>;
+};
 
 export type SyncAccountChallengePayload = {
   v: 1;
@@ -1744,6 +1774,8 @@ export type SyncHelloOkPayload = {
     deviceId: string;
     secret: string;
   };
+  /** Set only on a guest connection (lane sharing): the lanes this guest may read. */
+  laneShareGuest?: SyncLaneShareGuestInfo;
   /**
    * Project-host readiness on this connection. Absent on older hosts.
    * Socket-up (`hello_ok`) is not the same as a usable project host.
@@ -1824,6 +1856,14 @@ export type SyncHelloErrorPayload =
        * (`host_update_required` — update it there), or whose account session
        * moved under the handshake (`account_session_changed` — sign in, then
        * retry). None of those is a reason to destroy a saved pairing.
+       *
+       * Lane sharing: `lane_share_refused` means this account has no active
+       * grant on this machine (never shared, pending, revoked, left or ended);
+       * `lane_share_unavailable` means the host could not check its grant list
+       * right now and the guest may retry later. `lane_share_paused` means the
+       * grant is active but the owner must act first: the lane is archived, or
+       * this computer has no rights set for the share (the owner sets them or
+       * revokes the share).
        */
       code:
         | "auth_failed"
@@ -1834,7 +1874,10 @@ export type SyncHelloErrorPayload =
         | "account_session_changed"
         | "invalid_hello"
         | "relay_account_required"
-        | "connection_attempt_superseded";
+        | "connection_attempt_superseded"
+        | "lane_share_refused"
+        | "lane_share_unavailable"
+        | "lane_share_paused";
       message: string;
     })
   | (SyncHelloErrorHost & {
@@ -2223,13 +2266,27 @@ export type SyncTerminalInputPayload = {
   inputId?: string;
 };
 
+/**
+ * A lane share host's refusal of a guest's typed line (`lane_share_*`, or
+ * `forbidden_command`). Only a guest connection gets these.
+ * `lane_share_cli_typing_unavailable`: this host cannot take typed lines at
+ * all (a Windows host), apart from `lane_share_right_missing`. A client that
+ * does not know a code shows the message.
+ */
+export type LaneShareTerminalInputRefusalCode =
+  | "lane_share_cli_typing_unavailable"
+  | "lane_share_right_missing"
+  | `lane_share_${string}`
+  | "forbidden_command";
+
 export type SyncTerminalInputAckErrorCode =
   | "invalid_input_id"
   | "not_subscribed"
   | "session_not_live"
   | "project_mismatch"
   | "input_id_conflict"
-  | "dedupe_capacity";
+  | "dedupe_capacity"
+  | LaneShareTerminalInputRefusalCode;
 
 export type SyncTerminalInputAckPayload =
   | {
@@ -3589,6 +3646,12 @@ export type SyncBrainStatusEnvelope = SyncEnvelopeWithPayload<"brain_status", Sy
  */
 export type SyncHostHealthEnvelope = SyncEnvelopeWithPayload<"host_health", SyncHostHealth>;
 export type SyncPrsUpdatedEnvelope = SyncEnvelopeWithPayload<"prs_updated", { updatedAt: string }>;
+/**
+ * Host to a lane share guest only: its presence, rights or limits changed.
+ * Only the grant id; the guest reads `laneShare.getGuestState` again.
+ */
+export type SyncLaneShareGuestChangedPayload = { grantId: string };
+export type SyncLaneShareGuestChangedEnvelope = SyncEnvelopeWithPayload<"lane_share_guest_changed", SyncLaneShareGuestChangedPayload>;
 export type SyncRosterSubscribeEnvelope = SyncEnvelopeWithPayload<"roster_subscribe", SyncRosterSubscribePayload>;
 export type SyncRosterUnsubscribeEnvelope = SyncEnvelopeWithPayload<"roster_unsubscribe", SyncRosterUnsubscribePayload>;
 export type SyncRosterSnapshotEnvelope = SyncEnvelopeWithPayload<"roster_snapshot", SyncRosterSnapshotPayload>;
@@ -3683,6 +3746,7 @@ export type SyncEnvelope =
   | SyncBrainStatusEnvelope
   | SyncHostHealthEnvelope
   | SyncPrsUpdatedEnvelope
+  | SyncLaneShareGuestChangedEnvelope
   | SyncRosterSubscribeEnvelope
   | SyncRosterUnsubscribeEnvelope
   | SyncRosterSnapshotEnvelope

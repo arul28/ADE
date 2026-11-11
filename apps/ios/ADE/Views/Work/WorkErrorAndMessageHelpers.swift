@@ -180,6 +180,7 @@ struct WorkChatMessageFold {
           processed: processed
         )
         if envelope.userMessageFromSideChat { messages[lastIndex].fromSideChat = true }
+        if let guest = envelope.userMessageGuestAuthorName { messages[lastIndex].guestAuthorName = guest }
       } else if let duplicateIndex = duplicateUserMessageVariantIndex(
         in: messages,
         text: text,
@@ -194,6 +195,7 @@ struct WorkChatMessageFold {
           processed: processed
         )
         if envelope.userMessageFromSideChat { messages[duplicateIndex].fromSideChat = true }
+        if let guest = envelope.userMessageGuestAuthorName { messages[duplicateIndex].guestAuthorName = guest }
       } else {
         metadataTurnKeys.append([])
         messages.append(WorkChatMessage(
@@ -208,6 +210,7 @@ struct WorkChatMessageFold {
           processed: processed,
           writtenByAde: envelope.userMessageWrittenByAde,
           fromSideChat: envelope.userMessageFromSideChat,
+          guestAuthorName: envelope.userMessageGuestAuthorName,
           attachments: attachments
         ))
       }
@@ -1110,6 +1113,7 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
   )
   envelope.userMessageWrittenByAde = entry.userMessageWrittenByAde
   envelope.userMessageFromSideChat = entry.userMessageFromSideChat
+  envelope.userMessageGuestAuthorName = entry.userMessageGuestAuthorName
   envelope.userMessageIsRecoveryHandOff = entry.userMessageIsRecoveryHandOff
   if case .systemNotice(_, _, let detail, _, _) = entry.event {
     envelope.continuityNotice = workContinuityNotice(from: detail)

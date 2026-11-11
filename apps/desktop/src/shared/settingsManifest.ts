@@ -30,6 +30,9 @@ export const SETTINGS_TAB_IDS = [
   "general",
   "account",
   "stats",
+  // Lanes you shared with other accounts, lanes shared with you, and the
+  // rights a new share starts from.
+  "sharing",
   "chat",
   "agents",
   // GitHub, Linear, Jira and the MCP servers, on one page. It took in the
@@ -157,7 +160,7 @@ export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
  * You pages that follow no machine at all: the account's own data, read
  * through this desktop's brain. They show no "settings for <remote>" banner.
  */
-export const ACCOUNT_ONLY_TAB_IDS: readonly SettingsTabId[] = ["ade-mcp"];
+export const ACCOUNT_ONLY_TAB_IDS: readonly SettingsTabId[] = ["ade-mcp", "sharing"];
 
 export function isAccountOnlyTab(tab: SettingsTabId): boolean {
   return ACCOUNT_ONLY_TAB_IDS.includes(tab);
@@ -177,6 +180,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // No description: the page opens on your name and email.
   { id: "account", label: "Account", group: "account" },
   { id: "stats", label: "Usage", description: "Spend and pacing across your providers and machines.", group: "account" },
+  { id: "sharing", label: "Sharing", description: "Lanes you share with other people, and lanes they share with you.", group: "account" },
 
   // ── App ─────────────────────────────────────────────────────────────────
   { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "app" },
@@ -329,6 +333,40 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "account",
     web: "account",
     group: "Account",
+  },
+
+  // ── Sharing ──────────────────────────────────────────────────────────────
+  // Desktop only: the owner's share actions are user-only runtime actions the
+  // web client has no channel for.
+  {
+    id: "sharing.by-me",
+    label: "Lanes shared by me",
+    keywords: ["share", "sharing", "guest", "invite", "revoke", "stop sharing", "collaborate", "access"],
+    tab: "sharing",
+    anchor: "sharing-by-me",
+    scope: "account",
+    web: "hidden",
+    group: "Sharing",
+  },
+  {
+    id: "sharing.with-me",
+    label: "Lanes shared with me",
+    keywords: ["share", "sharing", "guest", "leave", "invited"],
+    tab: "sharing",
+    anchor: "sharing-with-me",
+    scope: "account",
+    web: "hidden",
+    group: "Sharing",
+  },
+  {
+    id: "sharing.defaults",
+    label: "My default rights",
+    keywords: ["share", "sharing", "rights", "preset", "default", "watch", "comment", "suggest", "collaborate"],
+    tab: "sharing",
+    anchor: "sharing-defaults",
+    scope: "account",
+    web: "hidden",
+    group: "Sharing",
   },
 
   // ── MCP servers ──────────────────────────────────────────────────────────

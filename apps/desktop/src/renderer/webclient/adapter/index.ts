@@ -4,6 +4,7 @@ import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { AdeSyncClient } from "../sync";
 import { BrowserAccountClient } from "../account/client";
 import { createAccountNamespace, createAccountSettingsNamespace } from "./account";
+import { createLaneShareGuestDirectory } from "../../../shared/laneShareGuestDirectory";
 import { createAgentChatNamespace } from "./agentChat";
 import { createArchiveNamespace } from "./archive";
 import { createChatLaunchNamespace } from "./chatLaunch";
@@ -203,6 +204,27 @@ export function createAdeWebAdapter(
       ok: false as const,
       target,
       reason: "Switch update tracks in the ADE desktop app on that computer.",
+    }),
+    // The owner shares a lane from the desktop app on the account; the web
+    // client has no runtime action channel for the owner's lane_share verbs.
+    laneShare: {
+      list: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      create: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      updateRights: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      revoke: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      resendInvite: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      listReceived: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      leave: async () => { throw new Error("lane_share_desktop_only: Share lanes from the ADE desktop app."); },
+      // A move lands work through a machine's own runtime; the web client has no such channel.
+      move: async () => { throw new Error("lane_share_desktop_only: Move chats from the ADE desktop app."); },
+      onEvent: () => () => {},
+    },
+    // The guest's side of lane sharing needs no machine: this browser's own
+    // account session asks the account directory (the token goes nowhere
+    // else). The shared lane is reached by the guest connection with a ticket.
+    laneShareGuest: createLaneShareGuestDirectory({
+      send: (request) => accountClient.laneShareRequest(request),
+      trustedRelayBaseUrls: () => accountClient.getRelayBaseUrls(),
     }),
     // ADE MCP belongs to a physical machine; the manifest hides it on web.
     remoteMcpCall: async () => {

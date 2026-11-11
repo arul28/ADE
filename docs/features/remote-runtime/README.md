@@ -1054,7 +1054,36 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   project's `.ade/project-icons` folder, and both methods answer with the icon
   the host now resolves. Older hosts advertise `machineProjects.setIcon:
   false`, so the desktop asks the user to update that machine instead of
-  calling. It also serves
+  calling. A project with a git origin takes its name and icon from the
+  shared project record first (`shared/projectRecord.ts`: rows `project.icon`
+  and `project.name` in the account settings store under `repo:<origin>`,
+  or `.ade/project-record.json` on a brain with sync off), so every machine of
+  the account shows the same ones; a record icon is already a small data URL
+  and costs no worker. `projects.setIcon` writes the record too, and
+  `projects.removeIcon` writes its "no custom icon" value, after which every
+  machine drops its own override and shows the detected icon. A record write
+  the store cannot take (signed out, brain down) stays pending in
+  `.ade/project-record.json`; that machine shows it, and the next record read
+  or write that reaches the store sends it first. `projects.inspectRemoval`
+  reports the state of the host's copy of a project for the remove dialog
+  (changed files and commits no remote has in the main folder and every
+  lane worktree, stashes, ignored `.env` files by name, live chats and
+  terminals). `projects.removeCopy` (cto role, never an agent; another
+  machine reaches it only over the runtime channel, which needs
+  `runtimeHostGranted`) removes the entry and, with `deleteFolder`, the
+  folder: it reads the state again, refuses when it no longer matches the
+  `stateToken` the person saw (or shows work the person did not accept, or
+  something runs). The token covers the work itself, not only its counts:
+  each checkout's HEAD and git status, every branch tip and stash, and the
+  size and time of each changed, untracked and ignored secret file. Over
+  5,000 changed paths in one checkout the token never matches, so a delete
+  of accepted work there is refused. It then checks that the folder is exactly a registered root that
+  holds no home folder, ADE home, other project or running ADE, stops the
+  project, moves the folder aside in one rename and deletes it for good, then
+  drops the entry. Lane worktrees outside the project folder stay. The
+  desktop's own computer asks with `folderMode: "caller"` and moves the folder
+  to the Trash itself. Older hosts lack `machineProjects.removeCopy`; the
+  desktop then offers only entry removal through `projects.remove`. It also serves
   `machine.updateAndRestart` (cto role, runtime endpoint only) and hosts the
   `ProjectlessSyncControls` fallback for `sync.*` on a machine with no project —
   see [sync and multi-device](../sync-and-multi-device/README.md#sync-on-a-machine-with-no-project).

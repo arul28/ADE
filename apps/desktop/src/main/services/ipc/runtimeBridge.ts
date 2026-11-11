@@ -7,6 +7,11 @@ import { localLinkOwnership } from "../../../../../ade-cli/src/services/projects
 import type { DeeplinkOwnership } from "../../../shared/deeplinks";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
+import type {
+  ProjectRemovalOutcome,
+  ProjectRemovalRequest,
+  RemoteProjectRemovalInspection,
+} from "../../../shared/projectRemoval";
 import { describeReportForMachine, type HostReachabilityReport } from "../../../shared/connectionDiagnosis";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
@@ -1450,6 +1455,37 @@ export function registerRuntimeBridge({
         typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       if (!rootPath) throw new Error("Remote project path is required.");
       return await remoteConnectionService.removeProjectIcon(id, rootPath);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeInspectProjectRemoval,
+    async (
+      _event,
+      arg: { id: string; projectId: string },
+    ): Promise<RemoteProjectRemovalInspection> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const projectId = typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      if (!projectId) throw new Error("Remote project id is required.");
+      return await remoteConnectionService.inspectProjectRemoval(id, projectId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeRemoveProjectCopy,
+    async (
+      _event,
+      arg: { id: string; projectId: string; request?: Partial<ProjectRemovalRequest> },
+    ): Promise<ProjectRemovalOutcome> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const projectId = typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      if (!projectId) throw new Error("Remote project id is required.");
+      const request = arg?.request ?? {};
+      return await remoteConnectionService.removeProjectCopy(id, projectId, {
+        deleteFolder: request.deleteFolder === true,
+        stateToken: typeof request.stateToken === "string" ? request.stateToken : null,
+        acceptWork: request.acceptWork === true,
+      });
     },
   );
 

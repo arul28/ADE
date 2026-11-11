@@ -12,7 +12,13 @@ import type {
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
 } from "../../../shared/types";
-import { buildAdeGitignore, ADE_LAYOUT_DEFINITIONS, resolveAdeLayout, type AdeLayoutPaths } from "../../../shared/adeLayout";
+import {
+  ADE_LAYOUT_DEFINITIONS,
+  ADE_TRACKED_PLACEHOLDER_PATHS,
+  buildAdeGitignore,
+  resolveAdeLayout,
+  type AdeLayoutPaths,
+} from "../../../shared/adeLayout";
 import type { Logger } from "../logging/logger";
 import { resolvePathWithinRoot } from "../shared/utils";
 import { createLogIntegrityService, type LogIntegrityService } from "./logIntegrityService";
@@ -63,10 +69,7 @@ const DEFAULT_CTO_IDENTITY = YAML.stringify(
   { indent: 2 },
 );
 
-const TRACKED_PLACEHOLDER_PATHS = [
-  path.join("templates", ".gitkeep"),
-  path.join("skills", ".gitkeep"),
-];
+const TRACKED_PLACEHOLDER_PATHS = ADE_TRACKED_PLACEHOLDER_PATHS.map((relativePath) => path.join(...relativePath.split("/")));
 
 const SHARED_SCAFFOLD_FILES = [
   ".gitignore",

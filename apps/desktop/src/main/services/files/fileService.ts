@@ -924,6 +924,31 @@ export function createFileService({
     return cached?.snapshot ?? emptyGitStatusSnapshot;
   };
 
+  /**
+   * A lane-sharing guest's read (`refuseIgnored`): refuses a file under
+   * `.ade/` (ADE's own state), a file git ignores (`.env`, keys, build
+   * output), and a link that resolves to either. Git answers fresh, not from
+   * the tree's cache; when git cannot answer, the read is refused.
+   */
+  const assertSharedReadable = async (rootPath: string, normalizedRel: string, absPath: string): Promise<void> => {
+    const refuse = (): never => {
+      throw markExpected(new Error("That file is not shared on this lane."), "user");
+    };
+    const candidates = new Set<string>([normalizedRel]);
+    try {
+      const realRoot = await nonAsarFs.promises.realpath(rootPath);
+      const resolved = path.relative(realRoot, absPath).split(path.sep).join("/");
+      if (resolved && !resolved.startsWith("..") && !path.isAbsolute(resolved)) candidates.add(resolved);
+    } catch {
+      refuse();
+    }
+    for (const rel of candidates) {
+      if (rel.split("/")[0]?.toLowerCase() === ".ade") refuse();
+    }
+    const ignored = await runGitCheckIgnoreBatch({ cwd: rootPath, paths: [...candidates] });
+    if (!ignored || [...candidates].some((rel) => ignored.has(normalizeRelative(rel)))) refuse();
+  };
+
   const isIgnoredPath = async (rootPath: string, relPath: string, includeIgnored: boolean): Promise<boolean> => {
     const normalized = normalizeRelative(relPath);
     if (!normalized) return false;
@@ -1182,6 +1207,7 @@ export function createFileService({
     async readFile(args: FilesReadFileArgs): Promise<FileContent> {
       const workspace = resolveWorkspace(args.workspaceId);
       const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
+      if (args.refuseIgnored) await assertSharedReadable(workspace.rootPath, normalizedRel, absPath);
       const stat = await nonAsarFs.promises.stat(absPath);
       if (!stat.isFile()) {
         throw new Error("Path is not a file.");
@@ -1290,6 +1316,7 @@ export function createFileService({
     async readFileRange(args: FilesReadFileRangeArgs): Promise<FilesReadFileRangeResult> {
       const workspace = resolveWorkspace(args.workspaceId);
       const { absPath, normalizedRel } = ensureSafePath(workspace.rootPath, args.path);
+      if (args.refuseIgnored) await assertSharedReadable(workspace.rootPath, normalizedRel, absPath);
       const stat = await nonAsarFs.promises.stat(absPath);
       if (!stat.isFile()) {
         throw new Error("Path is not a file.");
