@@ -468,6 +468,11 @@ export type ProviderSignInNeed = {
   provider: string;
   /** No login on the machine yet, or a turn that just failed on its sign-in. */
   reason: "no-login" | "failed-turn";
+  /**
+   * A failed turn on ADE Cloud waited for this computer to renew the sign-in,
+   * and it did not (`system_notice.providerLogin` "owner_off").
+   */
+  ownerLabel?: string | null;
 };
 
 /**
@@ -560,7 +565,9 @@ export function ProviderSignInComposer({
   const heading = need.reason === "failed-turn" ? `Sign in to ${spec.label} again` : `Sign in to ${spec.label}`;
   const startLabel = spec.via ? `Continue with ${spec.via}` : `Sign in to ${spec.label}`;
   const reason = need.reason === "failed-turn"
-    ? `${spec.label} is signed out on ${where}. Your message sends again as soon as you're back in.`
+    ? need.ownerLabel
+      ? `${need.ownerLabel} didn't renew the ${spec.label} sign-in in time. Sign in on ${where}, or pick another model. Your message sends again as soon as you're back in.`
+      : `${spec.label} is signed out on ${where}. Your message sends again as soon as you're back in.`
     : spec.kind === "settings"
       ? `${spec.label} has no sign-in on ${where} yet. Set it up there, then send.`
       : `${spec.label} isn't signed in on ${where} yet.`;
