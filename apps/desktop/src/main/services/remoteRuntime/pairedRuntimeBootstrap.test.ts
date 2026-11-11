@@ -143,7 +143,8 @@ describe("bootstrapPairedRuntime", () => {
       options: { openTransport: vi.fn(async () => transport()) },
     });
 
-    expect(initializeMock).toHaveBeenCalledWith("ade-desktop-remote", "1.0.0");
+    // The runtime is told who is calling and at which version; its time limit is not the contract.
+    expect(initializeMock.mock.calls[0]?.slice(0, 2)).toEqual(["ade-desktop-remote", "1.0.0"]);
     expect(pairedStore.getForReference).toHaveBeenCalledWith(target.pairedMachine);
     expect(result.result).toMatchObject({
       target: updated,

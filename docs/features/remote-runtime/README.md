@@ -23,6 +23,18 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 - `apps/desktop/src/main/services/adeCloud/` — ADE Cloud
   (the provider seam, New ADE Cloud machine, half-made box cleanup); see [ADE Cloud](../ade-cloud/README.md).
 
+- `apps/desktop/src/main/services/remoteRuntime/remoteBrainStart.ts` — who asked
+  for a connect (`user` or `background`), the `ade brain start` command for a
+  POSIX or Windows remote, and the start-then-retry loop; plus the plain
+  messages for a brain that is not running and an SSH server that refuses a
+  command.
+- `apps/desktop/src/main/services/remoteRuntime/remoteEventSetup.ts` — the
+  2-minute ceiling on an event read or subscribe setup and
+  `REMOTE_EVENT_SETUP_TIMEOUT`, naming the step it was on.
+- `apps/ade-cli/src/lib/brainConnectionLoss.ts` and
+  `apps/desktop/src/shared/brainConnectionLoss.ts` — the relay's
+  `brain_connection_lost` answer and the desktop's field-by-field validation
+  of it.
 - `apps/desktop/src/main/services/remoteRuntime/remoteDialTelemetry.ts` — one
   record per outage of why a dial failed: each route's kind, result, fixed
   error token and duration, matched to the other machine's report by hashed
@@ -1392,6 +1404,66 @@ still probes the isolated Stable and other channel homes and accepts the first
 runtime whose initialization and machine-project capabilities are compatible;
 the selected home is then used consistently for follow-up commands such as the
 SSH-to-paired upgrade.
+
+### A remote machine whose brain is not running
+
+The SSH relay on a POSIX remote runs `ade --socket ... rpc --stdio`, and an
+explicit `--socket` turns off the CLI's own spawn and service repair, so a
+machine with no brain answers with `ENOENT` or `ECONNREFUSED` on its socket.
+Who asked for the connect decides what happens next
+(`remoteBrainStart.ts`; `initiatedBy` on `RemoteConnectionPool.connect`):
+
+- A connect the person asked for (`"user"`: Add machine, Test, Connect, Try
+  again, opening or switching to a project on that machine) runs
+  `ade brain start --text` over SSH, which installs the login service (or ADE's
+  own supervised process where no service manager answers) and waits for the
+  handover, then dials again every 2 seconds for up to 90 seconds
+  (`REMOTE_BRAIN_SOCKET_WAIT_MS`). Disconnecting or removing the target
+  abandons the wait.
+- A background reconnect, the event pump and autoconnect (`"background"`) never
+  start a brain: one the person stopped stays stopped. Neither does a layout
+  whose service install is disabled (`ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1`,
+  and the alpha channel) or a fallback to another channel home.
+- A user connect that joined a background dial which failed because the brain
+  was not running dials once more as its own, so the person's click is not
+  answered with the background dial's refusal.
+
+When the brain still is not running, the error is expected (environment) and
+names the exact command to run on that machine, then asks the person to press
+Try again; when `brain start` ran, it says whether it failed or the brain did
+not accept connections within 90 seconds, with the command's first lines. A
+Windows remote already starts a brain from the relay (no `--socket`), so the
+desktop never runs a start there; the message shows the PowerShell command
+(`$env:ADE_HOME = ...; & '<binary>' brain start`). An SSH server that opened
+the connection but refuses to run a command ("Unable to exec", often
+`MaxSessions` or a forced command) gets a plain message naming the step ADE was
+on and the check to run (`ssh <user>@<host> true`).
+
+Each step of a connect has its own time limit, and an event read or
+subscription has a ceiling over all of them:
+
+| Step | Limit |
+| --- | --- |
+| Paired runtime `ade/initialize` and first `projects.list`, after the hello | 30 s (`PAIRED_RUNTIME_HANDSHAKE_TIMEOUT_MS`) |
+| SSH runtime `ade/initialize` and first `projects.list` | 90 s (`RUNTIME_SERVICE_START_WAIT_MS`) |
+| A `projects.list` read on an open connection | 30 s |
+| Event read or subscribe setup, including a dial it starts or joins | 2 min (`REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS`) |
+
+Past the ceiling the call fails with `REMOTE_EVENT_SETUP_TIMEOUT`, whose message
+names the step that hung (account check, connect, project list, read,
+subscribe, liveness probe, reconnect). The dial itself keeps going for the next
+poll to join, and the pump polls again two seconds later. The IPC budget for
+`ade.remoteRuntime.streamEvents` is 2.5 minutes, just above the ceiling, so
+main always answers with the step before the generic IPC deadline fires.
+
+When the brain's socket drops under an `ade rpc --stdio` relay, the relay
+passes the brain's own typed errors through unchanged and answers calls in
+flight with `brain_connection_lost`. Its `data` is structured only: brain state
+(`alive`, `exited`, `exited_and_replaced`, `unknown`), heartbeat age, the
+socket's errno, and up to six of the brain log's last lines as level, event
+name and error code. Free text never crosses. The desktop re-validates every
+field and reports `remote.brain_connection_lost`
+(see [Logging](../../logging.md#error-tracking-sentry)).
 
 ### When the connect fails, the user reads one sentence
 

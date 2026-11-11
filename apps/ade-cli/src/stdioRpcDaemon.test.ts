@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { createBrainLogger } from "./services/runtime/brainLogger";
 import { BRAIN_CONNECTION_LOST_CODE } from "../../desktop/src/shared/brainConnectionLoss";
 
 type JsonRpcResponse = {
@@ -47,8 +48,18 @@ function fileSha256(filePath: string): string {
  * `path.join(adeHome, "sock", "ade.sock")` off win32 — while giving Windows the
  * address the runtime actually listens on.
  */
+/**
+ * This process's environment without any `ADE_*` variable. Run inside an ADE
+ * chat or terminal, the parent's `ADE_RPC_URL`, `ADE_RPC_SOCKET_PATH`, caller
+ * identity and role point the CLI under test at that machine's real brain;
+ * each test names the ADE variables it means to set.
+ */
+function environmentWithoutAde(): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ADE_")));
+}
+
 function machineRuntimeSocketPath(adeHome: string): string {
-  return resolveMachineAdeLayout({ ...process.env, ADE_HOME: adeHome }).socketPath;
+  return resolveMachineAdeLayout({ ...environmentWithoutAde(), ADE_HOME: adeHome }).socketPath;
 }
 
 /**
@@ -288,7 +299,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const expectedProjectRoot = projectRoot;
     const socketPath = machineRuntimeSocketPath(adeHome);
     const env = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
@@ -346,7 +357,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-version-"));
     const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
@@ -401,7 +412,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-build-"));
     const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
@@ -462,7 +473,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const tcpPort = await getFreeTcpPort();
     const tcpUrl = `tcp://127.0.0.1:${tcpPort}`;
     const baseEnv = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
       ADE_CLI_VERSION: "2.0.0",
@@ -522,7 +533,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-role-"));
     const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
@@ -581,7 +592,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-placeholder-version-"));
     const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
@@ -635,7 +646,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-placeholder-role-"));
     const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
@@ -709,13 +720,17 @@ describe("ade rpc --stdio daemon bridge", () => {
     const exited = spawn(process.execPath, ["-e", ""]);
     await new Promise((resolve) => exited.once("exit", resolve));
     const deadBrainPid = exited.pid!;
-    const runtimeDir = resolveMachineAdeLayout({ ...process.env, ADE_HOME: adeHome }).runtimeDir;
+    const runtimeDir = resolveMachineAdeLayout({ ...environmentWithoutAde(), ADE_HOME: adeHome }).runtimeDir;
     fs.mkdirSync(runtimeDir, { recursive: true });
-    fs.writeFileSync(path.join(runtimeDir, "brain.jsonl"), [
-      JSON.stringify({ ts: "2026-11-11T10:00:00.000Z", level: "info", event: "brain.started" }),
-      JSON.stringify({ ts: "2026-11-11T10:09:59.000Z", level: "error", event: "process.uncaught_exception", err: { message: "ENOSPC: no space left on device, write '/home/tiger/.ade/ade.db-wal'", code: "ENOSPC" } }),
-      "",
-    ].join("\n"));
+    // Written by the brain's own logger, so the lines have the shape a real brain writes.
+    const brainLog = createBrainLogger(path.join(runtimeDir, "brain.jsonl"), {
+      stderr: { write: () => true, on: () => process.stderr } as Pick<NodeJS.WriteStream, "write" | "on">,
+    });
+    brainLog.info("brain.started");
+    brainLog.error("process.uncaught_exception", {
+      err: Object.assign(new Error("ENOSPC: no space left on device, write '/home/tiger/.ade/ade.db-wal'"), { code: "ENOSPC" }),
+    });
+    brainLog.flushSync?.();
     const brain = net.createServer((socket) => {
       brainSockets.add(socket);
       let buffer = "";
@@ -744,7 +759,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     await new Promise<void>((resolve) => brain.listen(port, "127.0.0.1", resolve));
     const child = spawn(process.execPath, [cliPath, "--socket", socketPath, "rpc", "--stdio"], {
       cwd: packageRoot,
-      env: { ...process.env, ADE_HOME: adeHome, ADE_RUNTIME_SOCKET_PATH: socketPath, ADE_CLI_VERSION: "2.0.0", ADE_DEFAULT_ROLE: "cto", NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS) },
+      env: { ...environmentWithoutAde(), ADE_HOME: adeHome, ADE_RUNTIME_SOCKET_PATH: socketPath, ADE_CLI_VERSION: "2.0.0", ADE_DEFAULT_ROLE: "cto", NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS) },
       stdio: ["pipe", "pipe", "pipe"],
     });
     const replies = new Map<number, { result?: unknown; error?: { code?: number; message?: string; data?: unknown; expected?: unknown } }>();

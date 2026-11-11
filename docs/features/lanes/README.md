@@ -55,6 +55,8 @@ The Behind main group's **Catch up all** (`LaneSidebarBulkCatchUpDialog.tsx`) ap
 
 A repository with no commits has no branch to start from. When the start branch does not resolve and the repository has no refs at all, the resolver says "This repository has no commits yet. Make a first commit, then create a lane." instead of "wasn't found". A new project from ADE is still created with no commit (the first-run rule: never block on an initial commit).
 
+When git cannot list a repository's branches, the lane-start error says so and carries git's own first lines (or "Git took too long to answer"), because the branch may well exist. Only a machine with no git or a folder git does not trust is an expected user error; any other listing failure stays a reported issue. A repository with no commits keeps its own plain answer.
+
 Source files: `src/shared/laneStart.ts` defines start choices; `main/services/lanes/laneStartResolver.ts` resolves them; `newLaneSettingsStore.ts` stores defaults and templates; `laneCompareBase.ts` resolves the compare base; `renderer/components/settings/NewLaneSettingsSection.tsx` and `renderer/components/lanes/CreateLaneDialog.tsx` expose the choices.
 
 ## Where this runs

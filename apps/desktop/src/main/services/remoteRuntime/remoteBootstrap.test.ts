@@ -27,6 +27,7 @@ import {
   windowsRuntimeRpcCommand,
   windowsSftpPath,
 } from "./remoteBootstrap";
+import { RemoteConnectionPool } from "./remoteConnectionPool";
 
 const connectSshWithRouteMock = vi.hoisted(() => vi.fn());
 const execSshMock = vi.hoisted(() => vi.fn());
@@ -41,6 +42,10 @@ const guardedUploadCommandPattern = (remoteFilePattern: string): RegExp =>
   new RegExp(
     String.raw`^umask 077; cat >> ${remoteFilePattern} & ade_upload_pid=\$!; .*sleep 75; .*exit "\$ade_upload_status"$`,
   );
+
+// The pool reads the app's path for bundled runtimes; there is none in these tests.
+const electronAppPath = vi.hoisted(() => ({ value: "/nonexistent" }));
+vi.mock("electron", () => ({ app: { getAppPath: () => electronAppPath.value } }));
 
 vi.mock("node:child_process", () => ({
   spawn: spawnMock,
@@ -965,8 +970,8 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       fakeSsh.ssh,
       'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade --socket $HOME/.ade/sock/ade.sock rpc --stdio',
     );
-    expect(initializeMock).toHaveBeenCalledWith("ade-desktop-remote", APP_VERSION);
-    expect(callMock).toHaveBeenCalledWith("projects.list", {});
+    expect(initializeMock.mock.calls[0]?.slice(0, 2)).toEqual(["ade-desktop-remote", APP_VERSION]);
+    expect(callMock.mock.calls.map(([method]) => method)).toContain("projects.list");
     expect(registry.update).toHaveBeenCalledWith("target-1", {
       lastSeenArch: "linux-x64",
       runtimeBinaryVersion: APP_VERSION,
@@ -2333,6 +2338,106 @@ describe("bootstrapRemoteRuntime upload flow", () => {
         detail: expect.stringMatching(/\.ade \[capability_negotiation\].*multi-project/is),
       },
     });
+  });
+});
+
+/**
+ * A remote brain the person stopped stays stopped: only a connect the person
+ * asked for runs `ade brain start` on the machine, never a background
+ * reconnect, never where the install rule forbids a service, and a target
+ * given up mid-start stops dialing. A person's connect that joined a failed
+ * background dial dials once more as theirs, only when that could start the
+ * brain. Real pool and bootstrap; only SSH and the RPC transport are fakes.
+ */
+describe("starting a remote brain on connect", () => {
+  const notRunning = () => new Error(
+    "Remote ADE service connection closed (exit code 1, stderr: connect ENOENT /home/ade/.ade/sock/ade.sock).",
+  );
+  const originalChannel = process.env.ADE_PACKAGE_CHANNEL;
+
+  afterEach(() => {
+    if (originalChannel === undefined) delete process.env.ADE_PACKAGE_CHANNEL;
+    else process.env.ADE_PACKAGE_CHANNEL = originalChannel;
+  });
+
+  it.each([
+    { name: "a background connect never starts it", channel: null, connects: ["background"], removeOnStart: false,
+      outcomes: ["failed"], brainStarts: 0, platformProbes: 1 },
+    { name: "a person's connect starts it, then connects", channel: null, connects: ["user"], removeOnStart: false,
+      outcomes: ["connected"], brainStarts: 1, platformProbes: 1 },
+    { name: "an install that forbids a service never starts it, even for a person", channel: "alpha", connects: ["user"], removeOnStart: false,
+      outcomes: ["failed"], brainStarts: 0, platformProbes: 1 },
+    { name: "removing the machine during the start stops the retries", channel: null, connects: ["user"], removeOnStart: true,
+      outcomes: ["failed"], brainStarts: 1, platformProbes: 1 },
+    { name: "a person who joined a failed background dial dials once more and starts it", channel: null, connects: ["background", "user"], removeOnStart: false,
+      outcomes: ["failed", "connected"], brainStarts: 1, platformProbes: 2 },
+    { name: "a person who joined a failed background dial does not dial again where it cannot start", channel: "alpha", connects: ["background", "user"], removeOnStart: false,
+      outcomes: ["failed", "failed"], brainStarts: 0, platformProbes: 1 },
+  ] as const)("$name", async ({ channel, connects, removeOnStart, outcomes, brainStarts, platformProbes }) => {
+    if (channel) process.env.ADE_PACKAGE_CHANNEL = channel;
+    else delete process.env.ADE_PACKAGE_CHANNEL;
+    const home = channel === "alpha" ? ".ade-alpha" : ".ade";
+    for (const mock of [connectSshWithRouteMock, execSshMock, execSshWithInputMock, openSshRuntimeTransportMock, initializeMock, callMock, runtimeRpcClientMock]) {
+      mock.mockReset();
+    }
+    electronAppPath.value = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-brain-start-"));
+    runtimeRpcClientMock.mockImplementation(() => ({
+      initialize: initializeMock,
+      call: callMock,
+      close: vi.fn(),
+      onDisconnect: vi.fn(() => () => {}),
+      onNotification: vi.fn(() => () => {}),
+      isClosed: () => false,
+      lastInboundAt: () => null,
+    }));
+    openSshRuntimeTransportMock.mockResolvedValue({ onData: vi.fn(), onError: vi.fn(), onClose: vi.fn(), write: vi.fn(), close: vi.fn() });
+    connectSshWithRouteMock.mockImplementation(async () => ({ client: createFakeSsh().ssh, route: uploadRoute }));
+    execSshWithInputMock.mockRejectedValue(new Error("pairing upgrade is not part of this test"));
+    callMock.mockResolvedValue([]);
+    let removed = false;
+    const ran = { brainStarts: 0, platformProbes: 0 };
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      if (command === "uname -sm") {
+        ran.platformProbes += 1;
+        return ok("Linux x86_64\n");
+      }
+      if (isRemoteRuntimeIdentityCommand(command, home)) {
+        return remoteRuntimeIdentityOk({ executableVersion: `ade ${APP_VERSION}`, markerVersion: APP_VERSION });
+      }
+      if (command.startsWith("test -x")) return ok("");
+      if (command.includes(" brain start")) {
+        ran.brainStarts += 1;
+        removed = removeOnStart;
+        return ok("ADE service installed.");
+      }
+      if (command === `mkdir -p $HOME/${home} && df -kP $HOME/${home}`) {
+        return ok("Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test 10485760 1 10485759 1% /home/ade\n");
+      }
+      return defaultRemoteBootstrapCommand(command);
+    });
+    // No brain answers until one is started (and none ever does once the machine is removed).
+    initializeMock.mockImplementation(async () => {
+      if (ran.brainStarts === 0 || removed) throw notRunning();
+      return { runtimeInfo: { version: APP_VERSION, multiProject: true }, capabilities: { projects: true } };
+    });
+    const registry = {
+      ...createRegistry(),
+      get: vi.fn(() => (removed ? null : uploadTarget)),
+    } as unknown as RemoteTargetRegistry;
+    const pool = new RemoteConnectionPool(registry, APP_VERSION, {} as DesktopPairedMachineStore);
+
+    const settled = await Promise.all(connects.map((initiatedBy) =>
+      pool.connect(uploadTarget, { initiatedBy, bypassFailureBackoff: initiatedBy === "user" }).then(
+        () => ({ outcome: "connected" as const, error: null }),
+        (error: unknown) => ({ outcome: "failed" as const, error }),
+      )));
+
+    expect(settled.map(({ outcome }) => outcome)).toEqual(outcomes);
+    expect(ran).toEqual({ brainStarts, platformProbes });
+    for (const { error } of settled) {
+      if (!error) continue;
+      expect(error).toMatchObject({ info: { kind: "generic" }, adeExpected: "environment" });
+    }
   });
 });
 

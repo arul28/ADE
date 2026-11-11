@@ -1756,6 +1756,29 @@ client paging loops provably terminating. A page that claims `hasMore` without
 decreasing the cursor is a retryable protocol failure, not evidence that the
 head was reached.
 
+### A row too large to page
+
+A transcript row larger than the 2 MB page cap (a huge tool result, say) never
+blocks scroll-back. `chatTranscriptHistoryPager.ts` returns that one row as its
+own page whose `startOffset` is the row's start, carrying in the row's place a
+display-only `system_notice` with `status: "history_row_omitted"` and **no
+`sequence`**, and the cursor continues from there. Every client already draws a
+`system_notice` as a quiet info line, so older desktops, the web client and the
+phone show it with no new code. A row up to 8 MB (`SEQUENCE_PROBE_MAX_ROW_BYTES`)
+is read and parsed so the notice can name its size and kind and keep its
+timestamp; a larger row is not parsed and gets a generic notice dated from its
+leading fields (or the epoch). A row that belongs to another chat, or is
+malformed, is dropped as it always was. Because the notice has no sequence, a
+durable log keyed on sequence never stores it as the real row.
+
+A reply to a sequence cursor (`beforeSequence`, `chat.getChatEvents`) always
+holds a sequenced row older than the cursor, or `hasMore: false`: it steps over
+a run of oversized rows without parsing the later ones. If the file shrinks
+while an oversized row is being read, the page fails with the retryable
+`chat_history_changed_during_read`; the caller's cursor has not moved. The
+stand-in folds into the status stand-in in `agentChatService`'s transcript
+reads rather than counting as conversation.
+
 Desktop and personal chat request 256 KiB pages; the desktop
 background fill requests 512 KiB. Desktop and
 personal-chat selected views keep at most 60,000 events / 32 MiB resident; a

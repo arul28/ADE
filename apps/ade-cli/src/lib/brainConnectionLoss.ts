@@ -52,6 +52,20 @@ export function brainConnectionLostError(
 }
 
 /**
+ * The first errno-shaped code a log line's `meta` carries. The file logger
+ * writes `{ ts, level, event, meta }`, and writes an Error inside `meta` as
+ * `{ name, message, stack, code, cause }`; only the code is read.
+ */
+function errorCodeOfLogMeta(meta: unknown): string | undefined {
+  if (!meta || typeof meta !== "object") return undefined;
+  const record = meta as Record<string, unknown>;
+  const codeOf = (value: unknown): unknown =>
+    value && typeof value === "object" ? (value as Record<string, unknown>).code : undefined;
+  const candidates = [record.code, record.errorCode, codeOf(record.err), codeOf(record.error), codeOf(record.cause)];
+  return candidates.find(isErrorCodeShaped) as string | undefined;
+}
+
+/**
  * The brain log's last lines as level, event name and errno-shaped code only
  * (`brainLogTailEntry` drops anything else). Reads the file's last 16 KB.
  */
@@ -68,11 +82,7 @@ function readBrainLogTail(logPath: string): BrainLogTailEntry[] {
     } catch {
       continue;
     }
-    const errorValue = record.err ?? record.error;
-    const code = errorValue && typeof errorValue === "object"
-      ? (errorValue as Record<string, unknown>).code
-      : record.code;
-    const entry = brainLogTailEntry(record.level, record.event, code);
+    const entry = brainLogTailEntry(record.level, record.event, errorCodeOfLogMeta(record.meta));
     if (entry) entries.push(entry);
   }
   return entries;

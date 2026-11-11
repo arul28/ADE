@@ -1214,8 +1214,9 @@ describe("RemoteConnectionPool", () => {
 
     expect(firstSsh.end).toHaveBeenCalledTimes(1);
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
-    expect(firstClient.call).toHaveBeenCalledWith("projects.list", {});
-    expect(secondClient.call).toHaveBeenCalledWith("projects.list", {});
+    // The same read, once on each connection.
+    expect(firstClient.call.mock.calls.map(([method]) => method)).toEqual(["projects.list"]);
+    expect(secondClient.call.mock.calls.map(([method]) => method)).toEqual(["projects.list"]);
   });
 
   it("propagates request timeouts without reconnecting or replaying retryable reads", async () => {
@@ -1235,8 +1236,7 @@ describe("RemoteConnectionPool", () => {
     await expect(pool.projectsForTarget(target)).rejects.toThrow(timeout.message);
 
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(client.call).toHaveBeenCalledTimes(1);
-    expect(client.call).toHaveBeenCalledWith("projects.list", {});
+    expect(client.call.mock.calls.map(([method]) => method)).toEqual(["projects.list"]);
     expect(client.close).not.toHaveBeenCalled();
     expect(ssh.end).not.toHaveBeenCalled();
   });
