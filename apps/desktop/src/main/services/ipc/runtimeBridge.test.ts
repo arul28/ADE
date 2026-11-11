@@ -2344,10 +2344,7 @@ describe("registerIpc usage bridge", () => {
     registerUsageIpc({ openRoots: ["/repo-one"] });
     const handler = ipcHandlers.get(IPC.appPing)!;
     const closing = { ...sender(), isDestroyed: () => true };
-    await expect(handler({
-      sender: closing,
-      senderFrame: { url: "file:///tmp/ade/renderer/index.html" },
-    })).rejects.toMatchObject({ adeExpected: "user" });
+    await expect(handler(eventForSender(closing))).rejects.toMatchObject({ adeExpected: "user" });
   });
 
   it("reads the brain's shared tracker for a window with no project binding", async () => {

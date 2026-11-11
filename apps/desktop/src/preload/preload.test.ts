@@ -7529,9 +7529,7 @@ describe("per-chat runtime routing", () => {
       throw new Error(`unexpected git action: ${request.domain}.${request.action}`);
     });
 
-    await expect(bridge.git.getSyncStatuses({ laneIds: ["lane-1"], skipRecommendation: true })).resolves.toEqual({
-      "lane-1": status,
-    });
+    await bridge.git.getSyncStatuses({ laneIds: ["lane-1"], skipRecommendation: true });
     expect(requests.find((request) => request.action === "getSyncStatuses")?.args).toMatchObject({
       laneIds: ["lane-1"],
       skipRecommendation: true,

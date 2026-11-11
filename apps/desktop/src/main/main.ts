@@ -2138,6 +2138,7 @@ app.whenReady().then(async () => {
       arg: { theme?: WindowsTitleBarOverlayTheme; zoomFactor?: number } = {},
     ): { applied: boolean } => {
       if (process.platform !== "win32") return { applied: false };
+      if (!isTrustedAdeRendererSender(event)) return { applied: false };
       const win = BrowserWindow.fromWebContents(event.sender);
       if (!win || win.isDestroyed()) return { applied: false };
       try {
@@ -2355,7 +2356,10 @@ app.whenReady().then(async () => {
   let remoteUpdateInstaller: RemoteUpdateInstaller | null = null;
   /** Windows: this desktop runs elevated, so the background service cannot reach it. */
   let elevatedDesktop = false;
-  ipcMain.handle(IPC.appGetElevatedDesktop, () => elevatedDesktop);
+  ipcMain.handle(IPC.appGetElevatedDesktop, (event) => {
+    if (!isTrustedAdeRendererSender(event)) return false;
+    return elevatedDesktop;
+  });
   // A link clicked inside ADE that names its computer and project goes through
   // the same owner routing as one from outside, so it opens on that computer.
   ipcMain.handle(IPC.appOpenOwnedDeeplink, (event, url: unknown) => {

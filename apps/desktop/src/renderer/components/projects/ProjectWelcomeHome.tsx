@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChartBar, GitMerge, GitPullRequest, Gauge, Pulse, type Icon } from "@phosphor-icons/react";
+import { Banner } from "../ui/notice";
 import type {
   AdeUsageDailyPoint,
   AdeUsageStats,
@@ -705,12 +706,15 @@ export function PullRequestsCard({
               <div><dd className="kit-num">{recent.length}</dd><dt>merged · 7d</dt></div>
             </dl>
             {prLoadError && open.length + recent.length > 0 ? (
-              <div className="ade-home-empty">
-                <span>{prLoadError}</span>
-                <button type="button" className="ade-home-line-link" onClick={retryPullRequests}>
-                  Retry
-                </button>
-              </div>
+              <Banner
+                layout="inline"
+                model={{
+                  id: "home-prs-read",
+                  tone: "warning",
+                  title: prLoadError,
+                  actions: [{ label: "Retry", onClick: retryPullRequests }],
+                }}
+              />
             ) : null}
             {open.length === 0 && recent.length === 0 ? (
               <div className="ade-home-empty">

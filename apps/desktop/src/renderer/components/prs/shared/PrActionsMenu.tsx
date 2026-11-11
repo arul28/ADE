@@ -163,11 +163,13 @@ export function usePrActionsMenu(context: PrActionsContext) {
 
   // A different PR (or lane) invalidates the cached chat list and any read in
   // flight, so a superseded answer cannot land after the switch.
+  // The owning machine can change without the PR or lane id (a foreign machine
+  // goes offline), so the pin is part of the key too.
   React.useEffect(() => {
     chatsRequestRef.current += 1;
     setFetchedChats(null);
     setFetchedChatsError(null);
-  }, [pr.id, pr.laneId]);
+  }, [pr.id, pr.laneId, onPin]);
 
   // Close and reopen paint the list at once, before the refetch, like a merge.
   const prs = useOptionalPrs();
