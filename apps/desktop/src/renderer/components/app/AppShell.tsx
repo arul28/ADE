@@ -60,6 +60,7 @@ import { ChatLaunchesSlideOut, useChatLaunchSlideOutVisible } from "./ChatLaunch
 import { useChatLaunchSync } from "../../state/useChatLaunchSync";
 import { AutoUpdateBanner } from "./AutoUpdateBanner";
 import { AppBundleOwnershipBanner } from "./AppBundleOwnershipBanner";
+import { CloudSignInEndNotice } from "../settings/providers/cloud/CloudSignInEndNotice";
 import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
 import { AppFallbackBanner } from "./AppFallbackBanner";
 import { FolderSimpleDashed, ShieldWarning } from "@phosphor-icons/react";
@@ -1135,6 +1136,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <AccountSignedOutBanner navigate={navigate} />
       <AutoUpdateBanner />
       <AppBundleOwnershipBanner />
+      <CloudSignInEndNotice navigate={navigate} />
       <BrainRecoveryNotice />
       <AppFallbackBanner />
       {!showWelcome && project?.rootPath ? (

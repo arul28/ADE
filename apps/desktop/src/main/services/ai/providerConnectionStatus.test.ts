@@ -8,6 +8,7 @@ const mockState = vi.hoisted(() => ({
   readClaudeCredentials: vi.fn(),
   readCodexCredentials: vi.fn(),
   isCodexTokenStale: vi.fn(),
+  probeClaudeKeychainLogin: vi.fn(),
   getProviderRuntimeHealth: vi.fn(),
   resolvePiInstallation: vi.fn(),
   probePiProfileInventory: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock("./providerCredentialSources", () => ({
   readClaudeCredentials: (...args: unknown[]) => mockState.readClaudeCredentials(...args),
   readCodexCredentials: (...args: unknown[]) => mockState.readCodexCredentials(...args),
   isCodexTokenStale: (...args: unknown[]) => mockState.isCodexTokenStale(...args),
+  probeClaudeKeychainLogin: (...args: unknown[]) => mockState.probeClaudeKeychainLogin(...args),
 }));
 
 vi.mock("./providerRuntimeHealth", () => ({
@@ -74,6 +76,9 @@ beforeEach(async () => {
 
   mockState.readClaudeCredentials.mockResolvedValue(null);
   mockState.readCodexCredentials.mockResolvedValue(null);
+  mockState.probeClaudeKeychainLogin.mockReset();
+  // No Claude login item in the keychain: a signed-out machine.
+  mockState.probeClaudeKeychainLogin.mockResolvedValue("absent");
   mockState.isCodexTokenStale.mockReturnValue(false);
   mockState.getProviderRuntimeHealth.mockReturnValue(null);
   mockState.resolvePiInstallation.mockReturnValue(null);

@@ -12,6 +12,7 @@ import type {
 } from "../../../shared/types/chat";
 import type { createLaneService } from "../lanes/laneService";
 import type { createPtyService } from "../pty/ptyService";
+import { providerLoginGate } from "../providerLogins/providerLoginHooks";
 import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { resolveTrackedCliPreset } from "./harnessPresetLaunch";
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
@@ -35,6 +36,13 @@ export type AgentChatCliLaunchDeps = {
   /** False when this runtime has no RPC endpoint that accepts activity reports. */
   sessionActivityReportingEnabled?: boolean;
   logger?: LoggerForCliLaunch | null;
+  /**
+   * The account a new session starts on when the launch names none: smart
+   * balance's pick, else the default, the same rule a new chat follows
+   * (`agentChatService.pickNewCliSessionAccount`). Absent where this runtime
+   * has no chat service; the CLI then runs on the machine's own login.
+   */
+  pickAccount?: (provider: string, modelId: string | null) => string | null | undefined;
 };
 
 function resolveLaneWorktreePath(
@@ -78,6 +86,14 @@ export async function launchAgentChatCli(
   if (!isLaunchProfile(providerKey) || providerKey === "shell") {
     throw new Error(`agentChat.launchCli: unsupported provider '${providerKey}'.`);
   }
+  // On a cloud computer, the account's sign-in for this provider is written
+  // before the CLI starts (P5 §4.4). Null everywhere else: no await.
+  const loginGate = providerLoginGate(providerKey);
+  const loginOutcome = loginGate ? await loginGate : null;
+  // A terminal has no card: the lines a chat would show (owner_off) are logged only.
+  if (loginOutcome?.notices?.length) {
+    deps.logger?.info("agentChat.launchCli.provider_login", { provider: providerKey, result: loginOutcome.result, notices: loginOutcome.notices.map((notice) => notice.providerLogin.kind) });
+  }
   const kickoffPrompt =
     typeof arg?.kickoffPrompt === "string" ? arg.kickoffPrompt : "";
   if (!kickoffPrompt.trim().length) {
@@ -113,7 +129,15 @@ export async function launchAgentChatCli(
     .map((issue) => issue?.id)
     .filter((id): id is string => typeof id === "string" && id.length > 0);
 
-  const instance = resolveProviderInstanceForLaunch(providerKey, arg.instanceId);
+  // A named account (`--instance`) wins. Otherwise the session starts where a
+  // new chat would, and its resume metadata keeps that account until it ends.
+  // A harness preset or a stored key brings its own sign-in, so no account is
+  // picked for it.
+  const namedInstanceId = typeof arg.instanceId === "string" ? arg.instanceId.trim() : "";
+  const pickedInstanceId = !namedInstanceId && !presetPlan && !arg.credentialId
+    ? deps.pickAccount?.(providerKey, trackedPreset?.model || arg.model || null) ?? null
+    : null;
+  const instance = resolveProviderInstanceForLaunch(providerKey, namedInstanceId || pickedInstanceId);
   const launch = buildTrackedCliLaunchCommand({
     provider,
     permissionMode,

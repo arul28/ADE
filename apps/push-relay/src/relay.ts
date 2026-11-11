@@ -7,6 +7,7 @@ import {
 import {
   handleAttentionAccountRequest,
   handleAttentionMachinePublish,
+  handleDirectoryAccountPurge,
   inspectAttentionAuthConfiguration,
   machineKeyRevokedAt,
   pruneAttentionState,
@@ -1303,6 +1304,10 @@ async function routeRequest(request: Request, env: PushRelayEnv): Promise<Respon
   if (attentionAccountResponse) {
     return withAllowedAccountCors(attentionAccountResponse);
   }
+  // The directory's account deletion. Not under /attention/account/: it has
+  // no account token and no browser caller, only the directory's secret.
+  const directoryPurgeResponse = await handleDirectoryAccountPurge(request, env, url);
+  if (directoryPurgeResponse) return directoryPurgeResponse;
 
   const route = routeMachine(url.pathname);
   if (!route || !MACHINE_KEY_PATTERN.test(route.machineKey)) return text("not found", 404);

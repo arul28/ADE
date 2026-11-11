@@ -125,6 +125,27 @@ export function claudeKeychainServiceName(configHome?: string): string {
   return `Claude Code-credentials-${digest}`;
 }
 
+/** The account name Claude Code uses when the user name has other characters. */
+const CLAUDE_KEYCHAIN_FALLBACK_ACCOUNT = "claude-code-user";
+
+/**
+ * The Keychain account Claude Code files its login under: `$USER`, else the
+ * OS user name, and `claude-code-user` when that has characters outside
+ * `[A-Za-z0-9._-]`. Claude Code reads and writes with this account, so ADE
+ * must look up the same pair. A lookup by service name alone returns
+ * whichever item macOS finds first, and a stray item under another account
+ * (one named "unknown" was seen) then signs a working login out.
+ */
+function claudeKeychainAccountName(env: NodeJS.ProcessEnv = process.env): string {
+  let name: string;
+  try {
+    name = env.USER || os.userInfo().username;
+  } catch {
+    return CLAUDE_KEYCHAIN_FALLBACK_ACCOUNT;
+  }
+  return /^[a-zA-Z0-9._-]+$/.test(name) ? name : CLAUDE_KEYCHAIN_FALLBACK_ACCOUNT;
+}
+
 /**
  * Where one account's OAuth credentials live.
  *
@@ -165,7 +186,7 @@ export async function probeClaudeKeychainLogin(configHome?: string): Promise<"pr
   if (process.platform !== "darwin") return "present";
   const result = await runReapedCommand(
     "/usr/bin/security",
-    ["find-generic-password", "-s", claudeKeychainServiceName(configHome)],
+    ["find-generic-password", "-a", claudeKeychainAccountName(), "-s", claudeKeychainServiceName(configHome)],
     { timeoutMs: 3_000, maxBuffer: 64 * 1024 },
   );
   if (result.exitCode === 0) return "present";
@@ -197,10 +218,11 @@ async function readClaudeCredentialSource(
     const service = claudeKeychainServiceName(options.configHome);
     try {
       // `security` itself, reaped: a shell around it left `security` running
-      // when the timeout killed the shell.
+      // when the timeout killed the shell. With the account, as Claude Code
+      // reads it: a duplicate item under another account is not this login.
       const result = await runReapedCommand(
         "/usr/bin/security",
-        ["find-generic-password", "-s", service, "-w"],
+        ["find-generic-password", "-a", claudeKeychainAccountName(), "-s", service, "-w"],
         { timeoutMs: 5_000, maxBuffer: 256 * 1024 },
       );
       if (result.exitCode === 0 && result.stdout.trim()) {

@@ -62,7 +62,7 @@ import {
 import { WebSettingsSection } from "./WebScopePill";
 import { IntegrationsHome, type IntegrationsPageId } from "./integrations/IntegrationsHome";
 import { isIntegrationId } from "./integrations/integrationBrand";
-import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
 import {
   SETTINGS_ENTRIES,
   SETTINGS_TAB_IDS,
@@ -131,6 +131,7 @@ function AgentsTabContent() {
   const providerId = requested && providerDescriptor(requested) ? requested : null;
   const harnessesOpen =
     searchParams.get("harnesses") === "1" || decodeSettingsHash(location.hash) === HARNESSES_ANCHOR;
+  const place = useProvidersPlace();
 
   const handleProviderChange = useCallback((next: string | null) => {
     const nextParams = new URLSearchParams(searchParams);
@@ -158,7 +159,7 @@ function AgentsTabContent() {
   if (providerId) {
     return (
       <WebSettingsSection entryIds={[`agents.provider.${providerId}`]}>
-        <ProvidersSection forceRefreshOnMount providerParam={providerId} onProviderChange={handleProviderChange} />
+        <ProvidersSection providerParam={providerId} onProviderChange={handleProviderChange} />
       </WebSettingsSection>
     );
   }
@@ -167,17 +168,19 @@ function AgentsTabContent() {
     <ModernPage>
       <WebSettingsSection entryIds={["agents.providers"]}>
         <ProvidersSection
-          forceRefreshOnMount
           providerParam={null}
           onProviderChange={handleProviderChange}
           // `#ai-harnesses` deeplinks scroll to the Custom section of this page.
           harnessesParam={harnessesOpen}
         />
       </WebSettingsSection>
-      {/* Stored in the machine's `.ade/local.yaml` and enforced by its runtime. */}
-      <WebSettingsSection entryIds={["agents.budget"]}>
-        <BudgetCapSettings />
-      </WebSettingsSection>
+      {/* Stored in the machine's `.ade/local.yaml` and enforced by its runtime;
+          ADE Cloud is not a machine, so it has none. */}
+      {place.kind === "machine" ? (
+        <WebSettingsSection entryIds={["agents.budget"]}>
+          <BudgetCapSettings />
+        </WebSettingsSection>
+      ) : null}
     </ModernPage>
   );
 }

@@ -114,9 +114,11 @@ import {
 import type { AcpChatProvider, ConvertImageToJpegResult } from "../../../shared/types/chat";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
+import { isProviderLoginAction } from "../../../shared/types/providerLogins";
 import type { MachineInventoryDetail } from "../../../shared/types/machineInventory";
 import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { detectCliAuthStatuses } from "../ai/authDetector";
+import { noteProviderLoginChanged } from "../ai/providerLoginChanged";
 import { buildClaudeAvailabilityFromConnection } from "../ai/claudeAvailability";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
@@ -695,6 +697,8 @@ import type {
   AgentCliLoginStatus,
   AgentCliLoginSubmitCodeArgs,
   AiApiKeyVerificationResult,
+  AiProviderSignInCheck,
+  AiVerifyProviderSignInArgs,
   AiConfig,
   AiSettingsStatus,
   OpenCodeAccountActionResult,
@@ -1606,9 +1610,10 @@ const GLOBAL_AI_STATUS_BUDGET_MS = 20_000;
 
 async function buildGlobalAiStatus(args?: { force?: boolean; onPhase?: (phase: string) => void }): Promise<AiSettingsStatus> {
   args?.onPhase?.("cli_auth");
+  // Saved logins only, forced or not: a status read starts no CLI.
   const cliStatuses = await detectCliAuthStatuses({
     force: args?.force === true,
-    skipAuthProbe: args?.force !== true,
+    skipAuthProbe: true,
   });
   args?.onPhase?.("provider_connections");
   // No live sign-in probe here, but ADE's own Copilot runtime still counts as
@@ -5461,9 +5466,8 @@ export function registerIpc({
       let phase = "start";
       const startedAt = Date.now();
       try {
+        // Forced or not, the read starts no probe, so both keep the budget.
         const read = buildGlobalAiStatus({ force, onPhase: (next) => { phase = next; } });
-        // A forced refresh has its own, longer IPC deadline for the probes.
-        if (force) return await read;
         // A failed read is logged as a failure here; null below means only slow.
         const status = await withTimeout(read.catch((error: unknown) => {
           ctx.logger.warn("ai.get_status.global_fallback_failed", { error: getErrorMessage(error) });
@@ -5628,20 +5632,9 @@ export function registerIpc({
   });
   ipcMain.handle(IPC.aiCliLoginStatus, async (_event, arg: AgentCliLoginRefArgs): Promise<AgentCliLoginStatus> => {
     const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
-    const status = getMachineAgentCliLoginRunner().status(arg?.loginId);
-    if (status.state === "succeeded") {
-      try {
-        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
-      } catch (error) {
-        // Matches the action-path twin so both halves of one incident are
-        // searchable under a single event name.
-        getCtx().logger.warn("ai.cli_login_cache_invalidation_failed", {
-          provider: status.provider,
-          error: getErrorMessage(error),
-        });
-      }
-    }
-    return status;
+    // A sign-in that succeeded already dropped that provider's cached answers
+    // (the runner's `onSignedIn`); other providers keep theirs.
+    return getMachineAgentCliLoginRunner().status(arg?.loginId);
   });
   ipcMain.handle(IPC.aiCliLoginSubmitCode, async (_event, arg: AgentCliLoginSubmitCodeArgs): Promise<AgentCliLoginStatus> => {
     const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
@@ -5794,6 +5787,15 @@ export function registerIpc({
       const ctx = getCtx();
       requireAppContextServices(ctx, ["aiIntegrationService"] as const);
       return await ctx.aiIntegrationService.verifyApiKeyConnection(arg.provider);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiVerifyProviderSignIn,
+    async (_event, arg: AiVerifyProviderSignInArgs): Promise<AiProviderSignInCheck> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
+      return await ctx.aiIntegrationService.verifyProviderSignIn(String(arg?.provider ?? ""));
     },
   );
 
@@ -5989,20 +5991,9 @@ export function registerIpc({
   ipcMain.handle(
     IPC.aiPiLoginStart,
     async (_event, arg: { providerId: string; method?: PiLoginMethod }): Promise<PiLoginResult> => {
-      const ctx = getCtx();
       const result = await startPiLogin(arg);
-      if (result.ok) {
-        try {
-          ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
-        } catch (error) {
-          // Matches the action-path twin so both halves of one incident are
-          // searchable under a single event name.
-          ctx.logger.warn("ai.pi_auth_cache_invalidation_failed", {
-            provider: arg.providerId,
-            error: getErrorMessage(error),
-          });
-        }
-      }
+      // The one "login changed" path; the action-path twin does the same.
+      if (result.ok) noteProviderLoginChanged("pi");
       return result;
     },
   );
@@ -6037,6 +6028,7 @@ export function registerIpc({
     const ctx = getCtx();
     const result = await loginCursorSdk();
     if (result.ok) {
+      noteProviderLoginChanged("cursor");
       try {
         ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
       } catch (error) {
@@ -6051,6 +6043,7 @@ export function registerIpc({
   ipcMain.handle(IPC.aiCursorAuthLogout, async (): Promise<{ ok: boolean; error?: string }> => {
     const ctx = getCtx();
     const result = await logoutCursorSdk();
+    if (result.ok) noteProviderLoginChanged("cursor");
     try {
       ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
     } catch (error) {
@@ -7219,20 +7212,9 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.providerInstancesLoginStatus, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
-    const login = getMachineProviderLoginRunner().status(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
-    // The action-path twin explains why: the next send must not meet the
-    // signed-out mark a failed turn left.
-    if (login.state === "succeeded") {
-      try {
-        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
-      } catch (error) {
-        getCtx().logger.warn("provider_instances.login_cache_invalidation_failed", {
-          provider: login.provider,
-          error: getErrorMessage(error),
-        });
-      }
-    }
-    return login;
+    // A sign-in that succeeded already dropped that provider's cached answers,
+    // its signed-out mark included (the runner's `verify`).
+    return getMachineProviderLoginRunner().status(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
   });
 
   ipcMain.handle(IPC.providerInstancesLoginSubmitCode, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
@@ -9141,10 +9123,14 @@ export function registerIpc({
     if (!ctx.ptyService) {
       throw new Error("agentChat.launchCli requires an active terminal (pty) service.");
     }
+    const agentChatService = ctx.agentChatService;
     return launchAgentChatCli(withoutRendererRuntimeActor(arg), {
       laneService: ctx.laneService,
       ptyService: ctx.ptyService,
       logger: ctx.logger,
+      ...(agentChatService
+        ? { pickAccount: (provider: string, modelId: string | null) => agentChatService.pickNewCliSessionAccount(provider, modelId) }
+        : {}),
     });
   });
 
@@ -12535,6 +12521,34 @@ export function registerIpc({
   const accountVaultBridge = createAccountVaultBridge(vaultBridgeOptions);
 
   registerCloudSavedChatsIpc({ logger: getCtx().logger });
+
+  // The account's provider sign-ins with no project bound: this computer's
+  // brain, through its machine route (`providerLogins.call`). The writes there
+  // are refused to anything but this desktop (user-only).
+  ipcMain.handle(IPC.providerLoginsCall, async (_event, arg: unknown): Promise<unknown> => {
+    const request = arg && typeof arg === "object" ? arg as { action?: unknown; args?: unknown } : {};
+    const action = typeof request.action === "string" ? request.action : "";
+    if (!isProviderLoginAction(action)) {
+      throw new Error(`provider_logins has no ${action || "?"} action.`);
+    }
+    const pool = localRuntimeConnectionPool;
+    if (!pool) {
+      throw new AdeExpectedError("ADE's background service isn't running on this computer yet. Try again in a moment.", "environment");
+    }
+    try {
+      const response = await pool.callSync<{ result?: unknown }>("providerLogins.call", {
+        action,
+        ...(request.args && typeof request.args === "object" ? { args: request.args } : {}),
+      }, {
+        // The Keychain and GitHub CLI reads have the long limit in the table: they wait for the person's answer.
+        timeoutMs: localRuntimeActionTimeoutMs("provider_logins", action),
+      });
+      return response?.result;
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      throw carryExpected(error, new Error(stripElectronErrorWrapper(error.message)));
+    }
+  });
 
   // the provider: the account-wide key and new machines made on it (no pin; see the module).
   const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient } = registerCloudIpc({

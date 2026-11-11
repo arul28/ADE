@@ -188,7 +188,7 @@ export function accountSignedOut(
 export function accountIdentityLine(instance: ProviderInstance, signedOut = !instance.signedIn): string {
   if (!providerInstanceHasAccount(instance)) return "Not signed in";
   // The card's title is already the email.
-  const parts = [signedOut ? "Signed out" : instance.account?.plan].filter(
+  const parts = [signedOut ? "Not signed in" : instance.account?.plan].filter(
     (part): part is string => typeof part === "string" && part.trim().length > 0,
   );
   return parts.length ? parts.join(" · ") : "Signed in";

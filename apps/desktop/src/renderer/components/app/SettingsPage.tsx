@@ -27,7 +27,7 @@ import {
   UserCircle,
 } from "@phosphor-icons/react";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
-import { SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
+import { ADE_CLOUD_PLACE_ID, ProvidersPlaceProvider, SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
 import { SettingsSearchAnchorsContext } from "../settings/settingsSearchContext";
 import { useSettingsMachinePage } from "../settings/SettingsMachinesNav";
 import { SettingsMachinesContext, type SettingsMachinesValue } from "../settings/machines/settingsMachinesContext";
@@ -322,6 +322,7 @@ export function SettingsPage({
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const openProvider = searchParams.get("provider")?.trim() || null;
 
   // Follow ?tab= when it changes underneath us (deeplinks, palette, tours).
   useEffect(() => {
@@ -402,7 +403,9 @@ export function SettingsPage({
       : null;
     // On Machines, This computer's own page needs its id; elsewhere it is the
     // default and stays out of the URL.
-    if (targetMachine && (next === "machines" || targetMachine !== THIS_MACHINE_ID)) nextParams.set("machine", targetMachine);
+    // ADE Cloud is a place of Providers only, not a machine of any other page.
+    if (targetMachine === ADE_CLOUD_PLACE_ID && next !== "agents") nextParams.delete("machine");
+    else if (targetMachine && (next === "machines" || targetMachine !== THIS_MACHINE_ID)) nextParams.set("machine", targetMachine);
     else nextParams.delete("machine");
     navigate(
       { pathname: location.pathname, search: `?${nextParams.toString()}`, hash: hash ? `#${hash}` : "" },
@@ -416,6 +419,9 @@ export function SettingsPage({
     if (!active || !location.hash) return;
     const entry = resolveSettingsHash(decodeSettingsHash(location.hash));
     if (!entry || entry.tab !== section) return;
+    // A provider's page is the whole view: it opens at the top (the effect
+    // below), not scrolled to its own anchor under the title.
+    if (openProvider && entry.anchor === `ai-provider-${openProvider}`) return;
     let flashTimer: ReturnType<typeof setTimeout> | null = null;
     let observer: MutationObserver | null = null;
     let giveUpTimer: ReturnType<typeof setTimeout> | null = null;
@@ -458,12 +464,13 @@ export function SettingsPage({
       stopWaiting();
       if (flashTimer) clearTimeout(flashTimer);
     };
-  }, [active, section, location.hash]);
+  }, [active, section, location.hash, openProvider]);
 
-  // A new tab should open at the top, not wherever the last one was scrolled.
+  // A new tab, or a provider's page (on any machine or on ADE Cloud), opens at
+  // the top, not wherever the last view was scrolled.
   useEffect(() => {
     contentRef.current?.scrollTo({ top: 0 });
-  }, [section]);
+  }, [section, openProvider]);
 
   const trimmedQuery = deferredQuery.trim();
   const cloudEnabled = useAdeCloudEnabled();
@@ -634,8 +641,11 @@ export function SettingsPage({
     navigate({ pathname: location.pathname, search: search ? `?${search}` : "", hash: "" }, { replace: true });
   };
   // Providers and Android devices name their machine in the title.
+  // Providers also offers ADE Cloud (`?machine=ade-cloud`), even beside one machine.
+  const offersAdeCloud = section === "agents" && machinesEnabled && cloudEnabled;
+  const adeCloudPlace = offersAdeCloud && machineParam === ADE_CLOUD_PLACE_ID;
   const titlePicker = (section === "agents" || section === "android") && machinesEnabled && !standalone
-    && reachableMachines(machines).length > 1;
+    && (reachableMachines(machines).length > 1 || offersAdeCloud);
   // General and Machines list the machines this page already reads.
   const machinesValue = useMemo<SettingsMachinesValue>(() => ({
     machines,
@@ -764,6 +774,9 @@ export function SettingsPage({
               alignItems: "center",
               justifyContent: "space-between",
               gap: 16,
+              // Too narrow for both: the search goes under the title, never over it.
+              flexWrap: "wrap",
+              rowGap: 8,
               minHeight: 32,
             }}
           >
@@ -814,12 +827,13 @@ export function SettingsPage({
                     selectedId={pageMachine?.machineId ?? THIS_MACHINE_ID}
                     thisMachineName={thisMachineDeviceName}
                     onPick={(machineId) => navigateToTab(section, undefined, machineId)}
+                    adeCloud={offersAdeCloud ? { selected: adeCloudPlace, onPick: () => navigateToTab(section, undefined, ADE_CLOUD_PLACE_ID) } : null}
                   />
                 </span>
               ) : null}
             </div>
 
-            <label className="ade-settings-search">
+            <label className="ade-settings-search" style={{ marginLeft: "auto" }}>
               <MagnifyingGlass size={14} style={{ color: COLORS.textDim, flexShrink: 0 }} />
               <input
                 type="search"
@@ -883,9 +897,11 @@ export function SettingsPage({
             // Keyed by machine so nothing one machine loaded can linger into,
             // or be saved onto, the next machine's page.
             <SettingsMachineScopeProvider key={pageScope.machineId} scope={pageScope}>
-              <SettingsSearchAnchorsContext.Provider value={searchAnchors}>
-                <TabContent tab={section} machine={pageScope} standalone={standalone} />
-              </SettingsSearchAnchorsContext.Provider>
+              <ProvidersPlaceProvider adeCloud={adeCloudPlace}>
+                <SettingsSearchAnchorsContext.Provider value={searchAnchors}>
+                  <TabContent tab={section} machine={pageScope} standalone={standalone} />
+                </SettingsSearchAnchorsContext.Provider>
+              </ProvidersPlaceProvider>
             </SettingsMachineScopeProvider>
           ) : (
             <SettingsSearchAnchorsContext.Provider value={searchAnchors}>

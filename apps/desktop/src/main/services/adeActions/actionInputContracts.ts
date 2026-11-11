@@ -1739,6 +1739,68 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run provider_instances.refresh --input-json '{\"provider\":\"claude\"}' --text",
     },
   },
+  provider_logins: {
+    status: {
+      description:
+        "The provider sign-ins your ADE account keeps for ADE Cloud, and this computer's part: whether it copies its "
+        + "sign-ins (and why not), and what it found for each provider. Never a token, a key or a file's content.",
+      input: "object { provider?: string }",
+      example: "ade actions run provider_logins.status --input-json '{\"provider\":\"grok\"}' --text",
+    },
+    captureNow: {
+      description:
+        "Look at this computer's login files now and copy any changed sign-in into the account, behind the same rules as "
+        + "the background pass (an account with ADE Cloud, sync on, switched on). The user's action; agents are refused.",
+      input: "object { provider?: string }",
+      example: "ade actions run provider_logins.captureNow --text",
+    },
+    allowKeychain: {
+      description:
+        "On a Mac: copy Antigravity's Google sign-in from this Mac's Keychain into the account, once. macOS asks the "
+        + "person first; ADE never reads the Keychain in the background. Refused off macOS and for another computer. "
+        + "Only the ADE desktop app on this Mac calls it.",
+      input: "object { provider: \"antigravity\", slot?: \"personal\" | \"business\" }",
+      example: "(desktop only) provider_logins.allowKeychain {\"provider\":\"antigravity\"}",
+    },
+    allowGitHubCli: {
+      description:
+        "Turn on or off the copy of this computer's GitHub CLI login (github.com) for Copilot on ADE Cloud. Off at the "
+        + "start. On runs one `gh auth token` at once (it can ask to unlock the keychain), so only the ADE desktop app "
+        + "on that computer turns it on; off removes this computer's copy from the account, from any of the person's "
+        + "desktops. Refused on a cloud computer.",
+      input: "object { on: boolean }",
+      example: "(desktop only) provider_logins.allowGitHubCli {\"on\":true}",
+    },
+    use: {
+      description:
+        "Pick the sign-in ADE Cloud uses for a provider: a sign-in's key from status, \"key\" for the saved ADE Cloud key, "
+        + "or null for the newest switched-on sign-in. Only the ADE desktop app calls it; the CLI, agents and outside apps are refused.",
+      input: "object { provider: string, key: string | null, slot?: string }",
+      example: "(desktop only) provider_logins.use {\"provider\":\"codex\",\"key\":\"key\"}",
+    },
+    setCloud: {
+      description: "Switch one sign-in on or off for ADE Cloud. Only the ADE desktop app calls it.",
+      input: "object { key: string, on: boolean }",
+      example: "(desktop only) provider_logins.setCloud {\"key\":\"grok/3f9a0c11d2e4.base\",\"on\":false}",
+    },
+    setCloudAll: {
+      description: "The one off switch for all of ADE Cloud's sign-ins. Only the ADE desktop app calls it.",
+      input: "object { on: boolean }",
+      example: "(desktop only) provider_logins.setCloudAll {\"on\":false}",
+    },
+    setCloudBalance: {
+      description:
+        "Switch Claude's smart balance on or off for ADE Cloud. One switch for ADE Cloud, off at the start, apart from "
+        + "each computer's own switch. Only the ADE desktop app calls it.",
+      input: "object { provider: \"claude\", on: boolean }",
+      example: "(desktop only) provider_logins.setCloudBalance {\"provider\":\"claude\",\"on\":true}",
+    },
+    remove: {
+      description: "Remove one sign-in from the account; every computer hears it. Only the ADE desktop app calls it.",
+      input: "object { key: string }",
+      example: "(desktop only) provider_logins.remove {\"key\":\"grok/3f9a0c11d2e4.base\"}",
+    },
+  },
 };
 
 export function getAdeActionInputContract(

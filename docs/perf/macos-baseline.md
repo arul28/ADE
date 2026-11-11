@@ -2837,3 +2837,30 @@ checked separately for foreign Status and Time rows: correct lane and runtime
 pin, offline guard, attached-shell filing, and **Settle local**. It was removed
 before proof. No paired machine was connected; this is not a live remote,
 Windows, GPU or process-footprint measurement.
+
+### Providers and sign-ins (Cloud 4, 2026-11-11)
+
+Dev app on the lane branch at `a14eb694c` against main at `d6b1696d9`, same
+Mac (MacBook Pro M3 Pro, 18 GB), same steps for both: a fresh launch with sync
+off on the throwaway project `~/Projects/ade-mac-desktop-test`, 20 s settle,
+one General visit, then `route-sweep.mjs` with 20 s idle (no perf run; the
+first visit of each page is dropped). Nothing streamed. ADE Cloud is off in a
+dev app with no account, so the ADE Cloud place and the pass warning were not
+on screen; their reads do not run while ADE Cloud is off.
+
+| Row | Before (main) | After (branch) | Ceiling |
+| --- | --- | --- | --- |
+| Settings › Providers, idle: main-thread work | 0.4–0.5 ms/s | 0.4–0.5 ms/s | 30 ms/s (static tabs) |
+| Settings › Providers: page elements / renderer heap | 738 / 110 MB | 752 / 109 MB | 3k / 220 MB |
+| Claude provider page, idle after its first visit: main-thread work | 0.5 ms/s | 0.5 ms/s | 30 ms/s |
+| Claude provider page: page elements / renderer heap | 1,023 / 112 MB | 1,038 / 110 MB | 3k / 220 MB |
+| Navigation long tasks (both pages) | 0 ms | 0 ms | 100 ms |
+| Processes on the idle Providers page, 30 s (`process-cpu.sh`): CPU main / renderer / brain | 0.4% / 0.1% / 0.7% | 0.4% / 0.1% / 0.7% | the Processes table |
+| Same: RSS main / renderer / brain | 384 / 571 / 406 MB | 383 / 565 / 357 MB | the Processes table |
+| Sign-in sync pass in the brain, nothing changed, 4 sign-ins (scratch bench, fake files and fake vault) | — (new) | 0.23–0.25 ms per pass | 1 ms |
+
+The renderer RSS is over the Processes table's 300 MB on main and on the
+branch alike: a dev build with Vite modules after page visits, not this
+change. One earlier branch run read 5.8 ms/s on Providers after a longer
+session with Work visits; the same-steps pair above is the comparison.
+The sync pass runs on the brain's existing 30 s tick; it adds no timer.

@@ -157,6 +157,12 @@ export type CloudLaneLaunchDeps = {
    * CLI's status). Unset where a window approves.
    */
   onApprovalLink?: (launchId: string, url: string) => void;
+  /**
+   * A launch made a new cloud computer. A brain passes it on to the sign-in
+   * renewal (`providerLoginCloudComputers.ts`), as its maker does. Unset in
+   * the app, where nothing listens.
+   */
+  onComputerCreated?: () => void;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   /** How long after creation the service resumes launches a quit left behind. */
@@ -576,6 +582,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       if (stage) stage.detail = `${tier.label} · ${tier.cpu} CPU, ${tier.memoryGb} GB`;
       publish(record, { persist: false });
       instance = await createComputer(client, record, tier, signal);
+      deps.onComputerCreated?.();
       logger.info("cloud_lane_launch.computer_created", { launchId: record.snapshot.launchId, instanceId: instance.id, tier: tier.id });
     }
     record.snapshot.cloud.instanceId = instance.id;

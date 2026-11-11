@@ -1591,11 +1591,11 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "integrations.ade-cloud-sign-ins",
-    label: "Sign-ins for your cloud machines",
+    label: "Sign-ins on ADE Cloud",
     keywords: ["sign in", "sign-in", "login", "api key", "token", "claude", "codex", "cursor", "droid", "grok", "copilot", "devin", "muse", "openrouter", "new machine", "cloud machine"],
     tab: "integrations",
     anchor: "cloud-sign-ins",
-    // The provider sign-ins every new cloud machine starts with, in the account vault.
+    // The provider sign-ins ADE Cloud uses: one line and one off switch (Settings › Providers › ADE Cloud has the rest).
     scope: "account",
     web: "hidden",
     group: "ADE Cloud",

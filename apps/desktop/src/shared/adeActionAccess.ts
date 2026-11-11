@@ -247,7 +247,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "antigravitySignInCancel", "cliLoginStart", "cliLoginSubmitCode", "cliLoginCancel",
       "museSettings", "museSettingsClose",
       "acpProviderDiagnostics", "storeApiCredential", "removeApiCredential",
-      "verifyApiKeyConnection", "storeApiKey", "deleteApiKey", "updateConfig", "setContinueAfterRestart",
+      "verifyApiKeyConnection", "verifyProviderSignIn", "storeApiKey", "deleteApiKey", "updateConfig", "setContinueAfterRestart",
       "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey",
       "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename",
       "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "testHarnessRoute", "harnessLaunchEnv",
@@ -350,9 +350,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "update", "ready_set", "ready_off", "ready_retry", "set_limits", "lane_launch", "lane_launch_cancel", "tier_request",
       "clear_caches",
       "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
+      "cloud_sign_in_keep",
     ],
     // Claude's sign-in for new machines is a terminal the brain keeps open.
-    live: ["cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel"],
+    live: ["cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_keep"],
   },
   mcp_registry: {
     read: ["list", "chatStatus"],
@@ -745,6 +746,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "loginSubmitCode", "loginCancel", "setSettings", "loginCommand", "refresh",
     ],
   },
+  provider_logins: {
+    read: ["status"],
+    write: ["captureNow", "allowKeychain", "allowGitHubCli", "use", "setCloud", "setCloudAll", "setCloudBalance", "remove"],
+  },
 };
 
 const accessByAction = new Map<string, AdeActionAccess>();
@@ -760,6 +765,52 @@ for (const [domain, declared] of Object.entries(ADE_ACTION_ACCESS)) {
 /** The declared access, or null for an action this table does not know. */
 export function adeActionAccess(domain: string, action: string): AdeActionAccess | null {
   return accessByAction.get(`${domain}.${action}`) ?? null;
+}
+
+/**
+ * Actions that only the ADE desktop app on the computer that runs them may
+ * call, never a desktop driving this computer from another one: the action
+ * acts on what is in front of the person (a macOS prompt on this screen).
+ * Each one is also user-only (`ADE_ACTION_USER_ONLY` in actionPolicy).
+ * The value is the refusal the person sees, the same in the preload and in
+ * the brain.
+ */
+export const ADE_ACTION_THIS_DESKTOP_ONLY: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  provider_logins: {
+    allowKeychain: "Run this on that Mac. ADE reads a Mac's Keychain only on the Mac you are using.",
+  },
+};
+
+/** The refusal for a caller that is not this computer's own desktop app, or null when any user client may call it. */
+export function thisDesktopOnlyRefusal(domain: string, action: string): string | null {
+  return ADE_ACTION_THIS_DESKTOP_ONLY[domain]?.[action] ?? null;
+}
+
+/**
+ * Actions that are this-desktop-only for some inputs: turning Copilot's GitHub
+ * CLI copy on runs `gh`, which can show a keychain or keyring prompt on the
+ * computer that runs it, so only that computer's desktop may turn it on.
+ * Turning it off shows nothing, so any of the person's desktops may (pinned
+ * to that computer). Every input that is not plainly "off" is refused.
+ */
+const ADE_ACTION_THIS_DESKTOP_ONLY_FOR_INPUT: Readonly<Record<string, Readonly<Record<string, { refusal: string; allows: (input: unknown) => boolean }>>>> = {
+  provider_logins: {
+    allowGitHubCli: {
+      refusal: "Turn this on at that computer. The GitHub CLI can ask there to unlock its keychain, so ADE reads it only on the computer you are using.",
+      allows: (input) => Boolean(input) && typeof input === "object" && (input as { on?: unknown }).on === false,
+    },
+  },
+};
+
+/**
+ * `thisDesktopOnlyRefusal` for one call, with its input: also refuses the
+ * inputs `ADE_ACTION_THIS_DESKTOP_ONLY_FOR_INPUT` keeps for this desktop.
+ */
+export function thisDesktopOnlyRefusalFor(domain: string, action: string, input: unknown): string | null {
+  const fixed = thisDesktopOnlyRefusal(domain, action);
+  if (fixed) return fixed;
+  const rule = ADE_ACTION_THIS_DESKTOP_ONLY_FOR_INPUT[domain]?.[action];
+  return rule && !rule.allows(input) ? rule.refusal : null;
 }
 
 /**

@@ -382,7 +382,8 @@ import {
 } from "./chatSessionRetention";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { cardShowsOwnError, readNativeInputCard } from "../../../shared/nativeInputCards";
-import { ProviderSignInComposer, providerSettingsEntryId, providerSignInKnownBeforeSend, providerSignInSpec, type ProviderSignInNeed } from "./ProviderSignInCard";
+import { providerSettingsEntryId, providerSignInKnownBeforeSend, providerSignInSpec, type ProviderSignInNeed } from "./ProviderSignInCard";
+import { AccountSwitchRecoveryCard, ChatSignInCard } from "./ProviderLoginRecoveryCards";
 import { ProviderSignInCardHolder, ProviderSignInStrip } from "./ProviderSignInSlot";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
@@ -403,6 +404,7 @@ import {
   type LaneBindingSource,
 } from "../../lib/chatMachineRouting";
 import { latestChatSignInFailure } from "../../lib/claudeAuthPrompt";
+import { latestOwnerOffNotice, latestSwitchThenFailure } from "../../lib/providerLoginNotices";
 import { takeAgentChatDraftHandoff } from "../../lib/agentChatDraftHandoff";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { armLaneBranchDriftWarning, LaneBranchComposerChip } from "../lanes/LaneBranchDrift";
@@ -7422,6 +7424,16 @@ export function AgentChatPane({
   const claudeUsageAvailable = Boolean(selectedSessionId) && sessionProvider === "claude" && !personalScope;
   // The chat's last turn stopped on its provider being signed out.
   const chatSignInFailure = useMemo(() => latestChatSignInFailure({
+    provider: selectedSession?.provider ?? null,
+    events: selectedEventsForDisplay,
+    turnActive,
+  }), [selectedEventsForDisplay, selectedSession?.provider, turnActive]);
+  // The failed turn waited on ADE Cloud for another computer to renew the sign-in.
+  const chatSignInOwnerOff = useMemo(() => (chatSignInFailure
+    ? latestOwnerOffNotice({ provider: chatSignInFailure.provider, events: selectedEventsForDisplay })
+    : null), [chatSignInFailure, selectedEventsForDisplay]);
+  // The first turn after the chat's account changed failed.
+  const chatAccountSwitchFailure = useMemo(() => latestSwitchThenFailure({
     provider: selectedSession?.provider ?? null,
     events: selectedEventsForDisplay,
     turnActive,
@@ -17297,7 +17309,12 @@ export function AgentChatPane({
     if (!signInProvider || turnActive || subagentView || personalScope || draftSkipsLocalSignIn) return null;
     const machineKey = activeComposerRuntimeBinding?.key ?? "tab";
     if (chatSignInFailure && chatSignInFailure.provider === signInProvider) {
-      return { provider: signInProvider, reason: "failed-turn", key: `${machineKey}:${chatSignInFailure.eventKey}` };
+      return {
+        provider: signInProvider,
+        reason: "failed-turn",
+        ownerLabel: chatSignInOwnerOff?.ownerLabel ?? null,
+        key: `${machineKey}:${chatSignInFailure.eventKey}`,
+      };
     }
     if (
       !sessionRunsInACloud
@@ -17307,7 +17324,7 @@ export function AgentChatPane({
       return { provider: signInLoginProvider, reason: "no-login", key: `${machineKey}:${signInLoginProvider}:no-login` };
     }
     return null;
-  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, draftSkipsLocalSignIn, personalScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
+  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, personalScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
   // The connection of the provider the card signs in to.
   const signInConnection = providerSignInNeed ? signInConnections?.[providerSignInNeed.provider] ?? null : null;
   // Not now hides this card until a different reason (another failed turn,
@@ -17453,8 +17470,62 @@ export function AgentChatPane({
   }, [providerSignInNeed]);
   const signInAccountEmail = signInConnection?.accountEmail?.trim() || null;
   const returnFocusToComposer = useCallback(() => setComposerFocusRequest((current) => current + 1), []);
+  // The failed first turn after an account change: a new thread or the old account.
+  const [dismissedSwitchKey, setDismissedSwitchKey] = useState<string | null>(null);
+  const accountSwitchShown = !providerSignInShown && selectedSessionId && !subagentView && !personalScope
+    && chatAccountSwitchFailure && chatAccountSwitchFailure.eventKey !== dismissedSwitchKey
+    ? chatAccountSwitchFailure
+    : null;
+  /** The chat's last message of the person, for the new thread. */
+  const lastParentUserText = useCallback((): string | null => {
+    const events = selectedEventsForDisplayRef.current;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const evt = events[index]?.event;
+      if (evt != null && isParentUserMessage(evt) && typeof evt.text === "string" && evt.text.trim()) return evt.text;
+    }
+    return null;
+  }, []);
+  const continueSwitchInNewThread = useCallback(async (): Promise<string | null> => {
+    if (!selectedSessionId || !selectedSessionModelId) return "ADE could not tell this chat's model.";
+    const note = lastParentUserText();
+    // A brief hand-off: the new chat gets the history as text, then the message.
+    const result = await agentChatApiRef.current.handoff({
+      sourceSessionId: selectedSessionId,
+      targetModelId: selectedSessionModelId,
+      mode: "brief",
+      ...(note ? { handoffNote: note } : {}),
+    }, chatRuntimePinRef.current);
+    notifySessionCreated(result.session, { source: "handoff" });
+    invalidateCurrentChatSessionList();
+    void refreshSessions({ force: true }).catch(() => {});
+    return null;
+  }, [invalidateCurrentChatSessionList, lastParentUserText, notifySessionCreated, refreshSessions, selectedSessionId, selectedSessionModelId]);
+  const changeSwitchBack = useCallback(async (): Promise<string | null> => {
+    const instanceId = accountSwitchShown?.notice.from?.instanceId;
+    if (!selectedSessionId || !instanceId) return "ADE could not tell the account to change back to.";
+    const result = await agentChatApiRef.current.switchAccount({ sessionId: selectedSessionId, instanceId }, chatRuntimePinRef.current);
+    if (!result.ok) return result.message;
+    const failure = await resendLastUserMessage(selectedSessionId, null);
+    return typeof failure === "string" ? failure : null;
+  }, [accountSwitchShown, resendLastUserMessage, selectedSessionId]);
   // Sits above the prompt box, which stays mounted: typed text never hides.
   const providerSignInSlot = useMemo(() => {
+    if (!providerSignInShown && accountSwitchShown) {
+      const { notice, eventKey } = accountSwitchShown;
+      return (
+        <ProviderSignInCardHolder key={`switch:${eventKey}`} openedFromStrip={false} onReturnFocus={returnFocusToComposer}>
+          <AccountSwitchRecoveryCard
+            provider={notice.provider}
+            fromLabel={notice.from?.label ?? "the old account"}
+            toLabel={notice.to.label}
+            canChangeBack={notice.place === "chat" && Boolean(notice.from?.instanceId)}
+            onNewThread={continueSwitchInNewThread}
+            onChangeBack={changeSwitchBack}
+            onDismiss={() => setDismissedSwitchKey(eventKey)}
+          />
+        </ProviderSignInCardHolder>
+      );
+    }
     if (!providerSignInShown) return null;
     const openedFromStrip = providerSignInShown.key === signInCardKey;
     if (providerSignInShown.reason === "no-login" && !openedFromStrip) {
@@ -17474,7 +17545,7 @@ export function AgentChatPane({
         openedFromStrip={openedFromStrip}
         onReturnFocus={returnFocusToComposer}
       >
-        <ProviderSignInComposer
+        <ChatSignInCard
           need={providerSignInShown}
           pin={composerRuntimePin}
           runsHere={signInRunsHere}
@@ -17488,7 +17559,10 @@ export function AgentChatPane({
       </ProviderSignInCardHolder>
     );
   }, [
+    accountSwitchShown,
+    changeSwitchBack,
     composerRuntimePin,
+    continueSwitchInNewThread,
     handleProviderSignedIn,
     openSignInSettings,
     providerSignInShown,
@@ -17500,19 +17574,23 @@ export function AgentChatPane({
     signInRunsHere,
   ]);
   /**
-   * Above the box: the ADE Cloud label, or the sign-in strip or card. The two
-   * never meet: the label needs an ADE Cloud draft, and a draft that runs in
-   * a cloud has no local sign-in to ask for (`draftSkipsLocalSignIn`).
+   * Above the box, stacked, never one in place of another: the sign-in or
+   * recovery card first (it blocks the send), then the ADE Cloud label, then
+   * a cloud lane's card. The first two rarely meet (a draft that runs in a
+   * cloud has no local sign-in to ask for, `draftSkipsLocalSignIn`), but a
+   * chat on a cloud lane can need a sign-in while its tier change runs.
    */
   // A chat on an ADE Cloud lane: a tier change's steps, or "no computer now", above the box. The chat's own binding.
   const cloudLaneStatusBinding = selectedSessionId ? activeComposerRuntimeBinding : null;
   const composerAboveSlot = useMemo(() => {
-    const own = adeCloudNotice ? <AdeCloudTray notice={adeCloudNotice} onAction={openAdeCloudSettings} /> : providerSignInSlot;
-    if (cloudLaneStatusBinding?.kind !== "remote") return own;
+    const cloudTray = adeCloudNotice ? <AdeCloudTray notice={adeCloudNotice} onAction={openAdeCloudSettings} /> : null;
+    const laneStatus = cloudLaneStatusBinding?.kind === "remote" ? <CloudLaneChatStatus binding={cloudLaneStatusBinding} /> : null;
+    if (!cloudTray && !laneStatus) return providerSignInSlot;
     return (
       <>
-        <CloudLaneChatStatus binding={cloudLaneStatusBinding} />
-        {own}
+        {providerSignInSlot}
+        {cloudTray}
+        {laneStatus}
       </>
     );
   }, [adeCloudNotice, cloudLaneStatusBinding, openAdeCloudSettings, providerSignInSlot]);

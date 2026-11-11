@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { reportProviderRuntimeReady, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
 
 const mockState = vi.hoisted(() => ({
   detectAllAuth: vi.fn(),
@@ -33,6 +34,8 @@ vi.mock("./authDetector", () => ({
   getCachedCliAuthStatuses: (...args: unknown[]) => mockState.getCachedCliAuthStatuses(...args),
   resetLocalProviderDetectionCache: (...args: unknown[]) => mockState.resetLocalProviderDetectionCache(...args),
   verifyProviderApiKey: (...args: unknown[]) => mockState.verifyProviderApiKey(...args),
+  // No recorded Copilot login on disk: the status read names no Copilot account.
+  readCopilotRecordedLogins: vi.fn(async () => []),
 }));
 
 vi.mock("./providerConnectionStatus", () => ({
@@ -74,6 +77,12 @@ vi.mock("../chat/cursorModelSelection", async (importOriginal) => ({
 
 vi.mock("./apiKeyStore", () => ({
   getApiKeyStoreStatus: (...args: unknown[]) => mockState.getApiKeyStoreStatus(...args),
+  // cursorSdkAuth reads these at load time and on Cursor sign-in; no key is stored in these tests.
+  storeApiKey: vi.fn(),
+  deleteApiKey: vi.fn(),
+  getApiKey: vi.fn(() => null),
+  getCursorApiKeyOrigin: vi.fn(() => null),
+  markCursorApiKeyOAuthMinted: vi.fn(),
 }));
 
 vi.mock("./modelsDevService", () => ({
@@ -647,7 +656,7 @@ describe("aiIntegrationService", () => {
     expect(mockState.probeClaudeRuntimeHealth).not.toHaveBeenCalled();
   });
 
-  it("waits for an ACP auth verdict before publishing provider status", async () => {
+  it("counts an ACP provider as signed in only once its runtime reports ready, without starting a probe", async () => {
     const { service } = makeService({
       availability: { claude: false, codex: false, cursor: false, droid: false },
     });
@@ -661,9 +670,7 @@ describe("aiIntegrationService", () => {
       },
     ]);
     mockState.detectAllAuth.mockResolvedValue([]);
-    mockState.probeAllAcpProviderAuth.mockResolvedValue({
-      qwen: { state: "ready", message: null },
-    });
+    reportProviderRuntimeReady("qwen");
     const base = makeProviderConnections({ claude: false, codex: false, cursor: false, droid: false });
     mockState.buildProviderConnections.mockResolvedValue({
       ...base,
@@ -680,12 +687,15 @@ describe("aiIntegrationService", () => {
       },
     });
 
-    const status = await service.getStatus({ force: true });
+    let status: Awaited<ReturnType<typeof service.getStatus>>;
+    try {
+      status = await service.getStatus({ force: true });
+    } finally {
+      resetProviderRuntimeHealth("qwen");
+    }
 
-    expect(mockState.probeAllAcpProviderAuth).toHaveBeenCalledWith(expect.objectContaining({
-      providers: ["qwen"],
-      cwd: "/tmp/project",
-    }));
+    // The status read never starts an ACP agent probe; the runtime verdict is the proof.
+    expect(mockState.probeAllAcpProviderAuth).not.toHaveBeenCalled();
     expect(status.availableProviders.qwen).toBe(true);
     expect(status.detectedAuth).toContainEqual(expect.objectContaining({
       type: "cli-subscription",

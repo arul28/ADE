@@ -141,7 +141,7 @@ function resolveChatAccountNote(input: ChatAccountNoteInput): ChatAccountNoteMod
       email,
       instance?.isDefault ? "Default for new chats" : null,
       plan ? `Plan: ${plan}` : null,
-      instance && instance.loginBroken ? "Signed out: this account needs a new sign-in." : null,
+      instance && instance.loginBroken ? "Not signed in: this account needs a new sign-in." : null,
       sourceLine,
     ]
       .filter(Boolean)

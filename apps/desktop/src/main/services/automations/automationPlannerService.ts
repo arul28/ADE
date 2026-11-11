@@ -52,6 +52,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createLaneService } from "../lanes/laneService";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
+import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { getErrorMessage, quoteIfNeeded, resolvePathWithinRoot } from "../shared/utils";
 import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
 import { customNotificationProblem } from "../../../shared/types/attention";
@@ -621,12 +622,13 @@ async function runClaudeHeadless(args: {
   const claudeExecutable = (await requirePinnedProviderExecutable("claude", () => resolveClaudeCodeExecutable())).path;
   const commandPreview = [quoteIfNeeded(claudeExecutable), ...cliArgs.map(quoteIfNeeded)].join(" ");
 
-  const env = {
+  // No account named: on a cloud computer, the "New chats" Claude pass.
+  const env = withClaudePassEnv({
     ...userProcessEnv(),
     ...providerSelfUpdateEnv("claude"),
     NO_COLOR: "1",
     TERM: "dumb"
-  };
+  });
   const invocation = resolveCliSpawnInvocation(claudeExecutable, cliArgs, env);
   const child = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,

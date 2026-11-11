@@ -52,6 +52,13 @@ export type AcpPoolKeyParts = {
   invocationHash: string;
   /** Set for a `kill_process` dialect. Makes the key private to one session. */
   privateToken?: string | null;
+  /**
+   * The provider's login generation (`providerLoginGeneration`). A sign-in
+   * that changed (applied on a cloud computer, or a new sign-in here) bumps
+   * it, so a new acquire never gets a process that started on the older login
+   * while a running turn still holds that one.
+   */
+  loginGeneration?: number;
 };
 
 /**
@@ -84,7 +91,7 @@ export function hashSpawnInvocation(plan: Pick<AcpSpawnPlan, "command" | "args">
 }
 
 export function buildAcpPoolKey(parts: AcpPoolKeyParts): string {
-  const base = `${parts.providerId}:${parts.cwd}:${parts.envHash}:${parts.invocationHash}`;
+  const base = `${parts.providerId}:${parts.cwd}:${parts.envHash}:${parts.invocationHash}:g${parts.loginGeneration ?? 0}`;
   return parts.privateToken ? `${base}:${parts.privateToken}` : base;
 }
 
@@ -99,6 +106,7 @@ export type AcpPooledConnection = {
 };
 
 type PoolEntry = {
+  providerId: string;
   connection: AcpConnection;
   generation: number;
   refCount: number;
@@ -114,6 +122,12 @@ export type AcpSessionPool = {
   has(poolKey: string): boolean;
   /** End every connection. Call on shutdown. */
   disposeAll(reason: string): void;
+  /**
+   * End this provider's unused connections now instead of after the idle
+   * window: its login changed, so a warm process holds the old one. A
+   * connection a chat still holds is left alone.
+   */
+  disposeIdle(providerId: string, reason: string): number;
 };
 
 export type AcquireAcpConnectionArgs = {
@@ -134,6 +148,8 @@ export type AcquireAcpConnectionArgs = {
   handshakeTimeoutMs?: number;
   /** Test seam, forwarded to `createAcpConnection`. */
   spawnOverride?: Parameters<typeof createAcpConnection>[0]["spawnOverride"];
+  /** See `AcpPoolKeyParts.loginGeneration`. */
+  loginGeneration?: number;
 };
 
 export function createAcpSessionPool(): AcpSessionPool {
@@ -211,6 +227,7 @@ export function createAcpSessionPool(): AcpSessionPool {
     }
     generationCounter += 1;
     const entry: PoolEntry = {
+      providerId: args.dialect.providerId,
       connection,
       generation: generationCounter,
       refCount: 0,
@@ -232,6 +249,7 @@ export function createAcpSessionPool(): AcpSessionPool {
         envHash: hashPoolEnv(args.spawnPlan.env, args.poolEnvKeys),
         invocationHash: hashSpawnInvocation(args.spawnPlan),
         privateToken: args.dialect.oneProcessPerSession ? args.sessionToken : null,
+        loginGeneration: args.loginGeneration ?? 0,
       });
 
       for (;;) {
@@ -258,6 +276,15 @@ export function createAcpSessionPool(): AcpSessionPool {
         dropEntry(poolKey, entry, reason);
       }
       entries.clear();
+    },
+    disposeIdle: (providerId: string, reason: string) => {
+      let ended = 0;
+      for (const [poolKey, entry] of [...entries.entries()]) {
+        if (entry.providerId !== providerId || entry.refCount > 0) continue;
+        dropEntry(poolKey, entry, reason);
+        ended += 1;
+      }
+      return ended;
     },
   };
 }

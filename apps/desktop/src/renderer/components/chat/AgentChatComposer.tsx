@@ -8626,7 +8626,8 @@ function AgentChatComposerImpl({
         <div
           data-composer-above-slot="true"
           // A slot whose parts all render nothing (an ADE Cloud lane with no change running) takes no room.
-          className={cn("mb-1.5 min-w-0 empty:hidden", layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]")}
+          // Its parts stack (a sign-in card above a cloud lane's card).
+          className={cn("mb-1.5 flex min-w-0 flex-col gap-1.5 empty:hidden", layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]")}
         >
           {aboveComposerSlot}
         </div>

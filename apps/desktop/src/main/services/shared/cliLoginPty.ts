@@ -33,8 +33,11 @@ const URL_PATTERN = /https:\/\/[^\s"'<>`]+/g;
 /** A device sign-in's one-time code, e.g. `ABCD-EFGHI`. */
 const DEVICE_CODE_PATTERN_ALL = /\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b/g;
 const DEVICE_CODE_EXACT = /^[A-Z0-9]{4}-[A-Z0-9]{4,6}$/;
-/** A CLI asking for a code pasted from the browser. */
-export const CODE_PROMPT_PATTERN = /paste (the )?(authorization )?code|enter (the )?(authorization )?code|code here/i;
+/**
+ * A CLI asking for a code pasted from the browser. Any run of spaces between
+ * the words: a cursor move and a printed space can both stand in one gap.
+ */
+export const CODE_PROMPT_PATTERN = /paste\s+(?:the\s+)?(?:authorization\s+)?code|enter\s+(?:the\s+)?(?:authorization\s+)?code|code\s+here/i;
 
 const requireFromRuntime = createRequire(
   typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url),
@@ -105,21 +108,33 @@ export function stopLoginPty(pty: Pick<IPty, "pid" | "kill"> | null, options: { 
 
 /**
  * The CLI's raw output as text: no terminal escapes, a lone carriage return
- * or a cursor move to a new row read as a line break, a cursor move forward
- * read as a space, and every pasted code blanked. Windows' ConPTY sends a
- * CLI's blank lines and runs of spaces as cursor moves, and full-screen TUIs
- * (Droid) draw their words apart with them, so without these a link runs into
- * the next word.
+ * or a cursor move to another row read as a line break, a cursor move along
+ * the row read as a space, and every pasted code blanked. Windows' ConPTY
+ * sends a CLI's blank lines and runs of spaces as cursor moves, full-screen
+ * TUIs (Droid) draw their words apart with them, and Claude Code puts each
+ * word of its paste prompt at a column (`ESC[8G`). Without these a link runs
+ * into the next word and a prompt reads as one word.
  */
 export function cleanLoginOutput(raw: string, submittedCodes: readonly string[]): string {
   const input = raw
-    // Cursor position (row;col H / f) starts a new line.
+    // Cursor position (row;col H / f), up, down, next or previous line, and
+    // row (d) or rows down (e) all leave the row: a line break.
     .replace(/\u001b\[\d*(?:;\d*)?[Hf]/g, "\n")
-    // Cursor forward stands in for spaces.
-    .replace(/\u001b\[\d*C/g, " ");
+    .replace(/\u001b\[\d*[ABEFde]/g, "\n")
+    // Forward, back, to a column (G, `) or columns on (a) stay on the row:
+    // a word gap.
+    .replace(/\u001b\[\d*[CDGa`]/g, " ");
   let text = stripAnsi(input).replace(/\r(?!\n)/g, "\n");
   for (const code of submittedCodes) text = text.split(code).join("[code]");
   return text;
+}
+
+/**
+ * The last `count` lines that hold text. Blank lines do not count: a TUI that
+ * redraws moves the cursor up and down, and each move reads as a line break.
+ */
+export function lastTextLines(text: string, count: number): string {
+  return text.split("\n").filter((line) => line.trim()).slice(-count).join("\n");
 }
 
 /** The sign-in link in the CLI's output: one on `hosts` first, else the first link. */
@@ -177,13 +192,17 @@ export type LoginOutputRecord = {
 
 /**
  * Reads one chunk of the CLI's output into the record: the cleaned output,
- * the sign-in link, the device code, and whether it asks for a pasted code
- * (`pasteCode`). Returns the whole cleaned text.
+ * the sign-in link, the device code, and whether it takes a pasted code.
+ * `pasteCode: "prompt"` offers the paste box while the CLI's prompt shows.
+ * `pasteCode: "while-waiting"` offers it from the moment the link is printed
+ * until a code is pasted, for a CLI whose sign-in page always ends in a code
+ * (Claude Code, Devin): a prompt the reader misses must not hide the box.
+ * Returns the whole cleaned text.
  */
 export function readLoginOutput(
   record: LoginOutputRecord,
   data: string,
-  options: { hosts: readonly string[]; deviceCode: boolean; pasteCode: boolean; promptTailLines: number },
+  options: { hosts: readonly string[]; deviceCode: boolean; pasteCode: false | "prompt" | "while-waiting"; promptTailLines: number },
 ): string {
   record.rawOutput = `${record.rawOutput}${data}`.slice(-LOGIN_OUTPUT_LIMIT * 2);
   const text = cleanLoginOutput(record.rawOutput, record.submittedCodes);
@@ -201,7 +220,8 @@ export function readLoginOutput(
     // latest lines decide whether it is still waiting. After a paste, the
     // prompt it answered is still there; only a new one counts.
     const promptText = record.rawSinceSubmit === null ? text : cleanLoginOutput(record.rawSinceSubmit, record.submittedCodes);
-    record.status.awaitingCode = CODE_PROMPT_PATTERN.test(promptText.split("\n").slice(-options.promptTailLines).join("\n"));
+    const waitingForFirstCode = options.pasteCode === "while-waiting" && record.rawSinceSubmit === null && record.status.url !== null;
+    record.status.awaitingCode = waitingForFirstCode || CODE_PROMPT_PATTERN.test(lastTextLines(promptText, options.promptTailLines));
   }
   return text;
 }

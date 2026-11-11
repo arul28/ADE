@@ -19,7 +19,7 @@ import { ipcErrorMessage } from "../../lib/format";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { CloudReadyMachinesCard } from "./CloudReadyMachinesCard";
 import { CloudMachinesCard } from "./CloudMachinesCard";
-import { CloudSignInsCard, useCloudSignIns } from "./CloudSignInsCard";
+import { AdeCloudSignInsRow } from "./providers/cloud/AdeCloudSignInsRow";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
 import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
 import { showToast } from "../app/toast/toastStore";
@@ -92,8 +92,8 @@ export function CloudSection() {
     });
   }, [machines]);
 
-  // Before the early return below: a hook runs on every render.
-  const cloudSignIns = useCloudSignIns(live);
+  // The sign-ins row's count, shared with the ready card's hint (one read, in the row).
+  const [signInCount, setSignInCount] = useState<number | null>(null);
   // The web app reads ADE Cloud through the connected machine but makes no computers.
   const newMachine = () => {
     if (isWebClientMode()) {
@@ -192,17 +192,16 @@ export function CloudSection() {
 
       {live && accountBanner ? <Banner layout="inline" model={{ ...accountBanner, report: false }} /> : null}
 
-      {/* One dashboard tab in place of the column of cards. The older cards stay as its panels until Cloud 4's PR merges. */}
+      {/* One dashboard tab in place of the column of cards; the older cards are its panels. */}
       {live && account ? (
         <CloudDashboard
           account={account}
           machines={machines}
-          // Cloud 4: AdeCloudSignInsRow mounts here once its PR is in main. Until then, today's sign-ins card.
-          signIns={<CloudSignInsCard signIns={cloudSignIns} />}
-          signInsValue={cloudSignInsValue(cloudSignIns.status)}
+          signIns={<AdeCloudSignInsRow onCount={setSignInCount} />}
+          signInsValue={cloudSignInsValue(signInCount)}
           otherComputers={(
             <div className="adecd-other">
-              <CloudReadyMachinesCard cloudSignIns={cloudSignIns.status} />
+              <CloudReadyMachinesCard signInCount={signInCount} />
               <CloudMachinesCard status={status} machines={machines} onNewMachine={newMachine} accountChangedAt={accountChangedAt} />
             </div>
           )}

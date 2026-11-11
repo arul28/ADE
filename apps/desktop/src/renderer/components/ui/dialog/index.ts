@@ -7,6 +7,7 @@
  */
 export {
   Dialog,
+  DialogTitle,
   type DialogAction,
   type DialogLayer,
   type DialogPlacement,

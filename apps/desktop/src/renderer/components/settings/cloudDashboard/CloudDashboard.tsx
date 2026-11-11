@@ -2,8 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArrowLeft, Broom, CaretRight, CreditCard, Desktop, Gauge, MagnifyingGlass, Trash, UserCircle, Warning } from "@phosphor-icons/react";
 import { cloudCatalogOf, formatCloudHours, type CloudAccountState } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../../shared/cloudLaneLaunch";
-import type { CloudSignInStatus } from "../../../../shared/cloudSignIns";
 import { cloudTiers, type CloudTierId } from "../../../../shared/cloudTiers";
+import { resolveSettingsHash } from "../../../../shared/settingsManifest";
+import { useLocation } from "react-router-dom";
 import { ipcErrorMessage } from "../../../lib/format";
 import { useRootAppStore } from "../../../state/appStore";
 import { showToast } from "../../app/toast/toastStore";
@@ -13,6 +14,7 @@ import { confirmDialog } from "../../ui/dialog";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { CloudAgentLimitsCard } from "../CloudAgentLimitsCard";
 import { CloudPlanCard } from "../CloudPlanCard";
+import { decodeSettingsHash } from "../settingsHash";
 import { CloudCity, type CityItem } from "./CloudCity";
 import { CloudFreeUpSpace } from "./CloudFreeUpSpace";
 import {
@@ -43,11 +45,10 @@ export const CLOUD_DASHBOARD_ID = "ade-cloud-dashboard";
 
 const NO_MACHINES: CloudLaneMachine[] = [];
 
-/** The Sign-ins row's value: how many sign-ins new computers get. */
-export function cloudSignInsValue(status: CloudSignInStatus | null): string {
-  if (!status || status.unknown) return "";
-  const saved = status.saved.filter((entry) => entry.saved).length;
-  return saved ? `${saved} kept for new computers` : "None kept yet";
+/** The Sign-ins row's value: how many sign-ins ADE Cloud uses (the count `AdeCloudSignInsRow` reports; null before its read). */
+export function cloudSignInsValue(count: number | null): string {
+  if (count == null) return "";
+  return count ? `${count} in use` : "None in use";
 }
 
 /** Computers that hold no one lane: the "Other computers" row lists them in their older cards. */
@@ -56,6 +57,21 @@ export function cloudOtherComputersCount(machines: CloudMachinesState): number {
   return list.filter((machine) => !machine.lane).length;
 }
 type RowId = "plan" | "signins" | "limits" | "size" | "other";
+
+/** The settings anchors inside the rows: a deep link to one opens its row, so the page can scroll to it. */
+const ROW_FOR_ANCHOR: Record<string, RowId> = {
+  "cloud-plan": "plan",
+  "cloud-sign-ins": "signins",
+  "cloud-agent-limits": "limits",
+  "cloud-ready": "other",
+  "cloud-machines": "other",
+};
+
+function rowForHash(hash: string): RowId | null {
+  if (!hash) return null;
+  const anchor = resolveSettingsHash(decodeSettingsHash(hash))?.anchor;
+  return anchor ? ROW_FOR_ANCHOR[anchor] ?? null : null;
+}
 
 const errorText = (error: unknown) => ipcErrorMessage(error) || `${ADE_CLOUD_NAME} couldn't do that. Try again in a moment.`;
 
@@ -84,14 +100,21 @@ export function CloudDashboard({
   /** The Sign-ins row's panel (see the mount point in `CloudSection`). */
   signIns: ReactNode;
   signInsValue: string;
-  /** The computers that hold no one lane (and ready machines), in their older cards until Cloud 4's PR merges. */
+  /** The computers that hold no one lane (and ready machines), in their older cards. */
   otherComputers: ReactNode;
   otherComputersCount: number;
 }) {
   const [view, setView] = useState<View>("city");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [insideKey, setInsideKey] = useState<string | null>(null);
-  const [openRow, setOpenRow] = useState<RowId | null>(null);
+  const { hash } = useLocation();
+  // Open on the first render when a deep link names a row's card: the settings page scrolls to it once it is there.
+  const [openRow, setOpenRow] = useState<RowId | null>(() => rowForHash(hash));
+  // A later deep link (search, a link from elsewhere) opens its row before the page looks for the card.
+  useLayoutEffect(() => {
+    const linked = rowForHash(hash);
+    if (linked) setOpenRow(linked);
+  }, [hash]);
   const [freeing, setFreeing] = useState(false);
   const [sizing, setSizing] = useState<DashLane | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -337,7 +360,8 @@ export function CloudDashboard({
         <Row id="plan" open={openRow} onToggle={setOpenRow} icon={<CreditCard size={15} />} title="Plan and billing" value={planName(account)}>
           <CloudPlanCard account={account} onChanged={refresh} />
         </Row>
-        <Row id="signins" open={openRow} onToggle={setOpenRow} icon={<UserCircle size={15} />} title="Sign-ins" value={signInsValue}>
+        {/* Kept mounted while closed: the panel reads the count the row shows. */}
+        <Row id="signins" open={openRow} onToggle={setOpenRow} icon={<UserCircle size={15} />} title="Sign-ins" value={signInsValue} keepMounted>
           {signIns}
         </Row>
         <Row id="limits" open={openRow} onToggle={setOpenRow} icon={<Gauge size={15} />} title="Agent limits" value="What agents may start">
@@ -386,6 +410,7 @@ function Row({
   icon,
   title,
   value,
+  keepMounted = false,
   children,
 }: {
   id: RowId;
@@ -394,6 +419,8 @@ function Row({
   icon: ReactNode;
   title: string;
   value: ReactNode;
+  /** Render the panel while closed (hidden), for a panel whose own read feeds the row. */
+  keepMounted?: boolean;
   children: ReactNode;
 }) {
   const expanded = open === id;
@@ -404,7 +431,7 @@ function Row({
         <b>{title}</b>
         <span className="adecd-row-val">{value}<CaretRight size={12} /></span>
       </button>
-      {expanded ? <div className="adecd-row-body">{children}</div> : null}
+      {expanded || keepMounted ? <div className="adecd-row-body" hidden={!expanded}>{children}</div> : null}
     </div>
   );
 }

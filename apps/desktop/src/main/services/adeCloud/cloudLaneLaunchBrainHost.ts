@@ -172,6 +172,8 @@ export function createCloudLaneLaunchBrainHost(deps: {
   base: CloudBrainMakerBase;
   recordsDir: string;
   logger: Logger;
+  /** A launch made a new cloud computer (the brain tells the sign-in renewal). */
+  onComputerCreated?: () => void;
 }): CloudLaneLaunchBrainHost {
   const { logger } = deps;
   const selfApproval = createCloudSelfApproval({ client: deps.base.client, account: deps.base.account, logger });
@@ -235,6 +237,7 @@ export function createCloudLaneLaunchBrainHost(deps: {
       },
     },
     removeAccountMachine: deps.base.removeAccountMachine,
+    ...(deps.onComputerCreated ? { onComputerCreated: deps.onComputerCreated } : {}),
     onApprovalLink: (launchId, url) => {
       approvalLinks.set(launchId, url);
       const name = service.facts(launchId)?.computerName ?? "the new computer";

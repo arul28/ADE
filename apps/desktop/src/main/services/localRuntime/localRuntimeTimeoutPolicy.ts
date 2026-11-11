@@ -116,11 +116,11 @@ export const IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS =
   IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS - 30_000;
 export const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 /**
- * `ai.getStatus`. A forced Settings refresh waits for every installed ACP
- * provider's auth probe (`acpAuthProbe.ts`, in parallel): up to 60 s of
- * handshake, 60 s of `session/new` and 15 s of `authenticate`. On the 30 s
- * default the refresh failed while a slow provider's probe was still running.
- * A plain status read never waits on a probe; this is only its ceiling.
+ * `ai.getStatus`. This ADE's status read starts no probe, forced or not. A
+ * remote ADE from before that still runs every installed ACP provider's auth
+ * probe on a forced read (`acpAuthProbe.ts`, in parallel): up to 60 s of
+ * handshake, 60 s of `session/new` and 15 s of `authenticate`. This is the
+ * ceiling for that older host.
  */
 export const AI_STATUS_TIMEOUT_MS = 150_000;
 export const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
@@ -360,6 +360,10 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // batch can take as long as `lane.unarchive` / `lane.delete` on its own.
   ["archive.restore", ARCHIVE_RESTORE_TIMEOUT_MS],
   ["archive.delete", ARCHIVE_DELETE_TIMEOUT_MS],
+  // The Keychain read and the GitHub CLI read wait for the person to answer a
+  // prompt on that computer (their own limit is 2 min).
+  ["provider_logins.allowKeychain", 150_000],
+  ["provider_logins.allowGitHubCli", 150_000],
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   // Handoff = AI brief generation (bounded at 45s) + session creation +
