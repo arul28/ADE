@@ -2537,7 +2537,9 @@ function emptyLinearQuickView(connection: LinearConnectionStatus): CtoLinearQuic
 }
 
 async function resolveDefaultLaneId(runtime: AdeRuntime): Promise<string> {
-  await runtime.laneService.ensurePrimaryLane().catch(() => {});
+  await runtime.laneService.ensurePrimaryLane().catch((err) => {
+    console.warn(`[adeRpcServer] ensurePrimaryLane failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
   // Every CTO operator action (chat status, list, transcript, create, send)
   // asks this. The primary lane's row answers it; a lane list also runs git
   // and the worktree reconcile, about 80 ms per call on Windows, so it is
@@ -10066,7 +10068,14 @@ export function createAdeRpcRequestHandler(args: {
     }
 
     if (method === "exit") {
-      process.nextTick(() => process.exit(0));
+      process.nextTick(() => {
+        try {
+          handler.dispose();
+        } catch {
+          // Best-effort cleanup before exit.
+        }
+        process.exit(0);
+      });
       return {};
     }
 

@@ -244,6 +244,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [bulkMenu, setBulkMenu] = useState<ContextMenuState>(null);
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
   const [sessionActionError, setSessionActionError] = useState<string | null>(null);
+  // One owner for the 6 s dismiss: a new message (or a reset) cancels the old
+  // timer, and unmount cancels it too, instead of an older timer clearing a
+  // newer message early.
+  useEffect(() => {
+    if (!sessionActionError) return undefined;
+    const timer = window.setTimeout(() => setSessionActionError(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [sessionActionError]);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
@@ -280,7 +288,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           const message = err instanceof Error ? err.message : String(err);
           console.error(`[TerminalsPage] ${options.actionName} failed`, { sessionId, err });
           setSessionActionError(`${options.errorLabel} failed: ${message}`);
-          window.setTimeout(() => setSessionActionError(null), 6000);
         });
     },
     [refreshWork],
@@ -805,7 +812,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         .catch((err: unknown) => {
           console.error("[TerminalsPage] delete chat failed", { sessionId: session.id, err });
           setSessionActionError(formatSessionActionError(err, "Delete"));
-          window.setTimeout(() => setSessionActionError(null), 6000);
         })
         .finally(() => {
           setDeletingSessionId((current) => (current === session.id ? null : current));
@@ -849,7 +855,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         .catch((err: unknown) => {
           console.error("[TerminalsPage] delete session failed", { sessionId: session.id, err });
           setSessionActionError(formatSessionActionError(err, "Delete"));
-          window.setTimeout(() => setSessionActionError(null), 6000);
         })
         .finally(() => {
           setDeletingSessionId((current) => (current === session.id ? null : current));
@@ -893,7 +898,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         } catch (err: unknown) {
           console.error("[TerminalsPage] stop-and-delete session failed", { sessionId: session.id, err });
           setSessionActionError(formatSessionActionError(err, "Stop and delete"));
-          window.setTimeout(() => setSessionActionError(null), 6000);
         } finally {
           setDeletingSessionId((current) => (current === session.id ? null : current));
         }
@@ -965,7 +969,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         const failed = results.filter((result) => result.status === "rejected").length;
         if (failed > 0) {
           setSessionActionError(`Stop failed for ${failed} selected runtime${failed === 1 ? "" : "s"}.`);
-          window.setTimeout(() => setSessionActionError(null), 6000);
         }
         setSelectedSessionIds(new Set());
         setSelectionAnchorId(null);
@@ -975,7 +978,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         setSessionActionError(`Stop failed: ${message}`);
-        window.setTimeout(() => setSessionActionError(null), 6000);
       });
   }, [selectedSessions, work]);
 
@@ -986,7 +988,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // is selected, so reaching here means the selection and the deletable set
       // disagree, and the user is owed a reason rather than a dead button.
       setSessionActionError("Nothing to delete: stop the selected running sessions first, or use Stop & delete.");
-      window.setTimeout(() => setSessionActionError(null), 6000);
       return;
     }
     const confirmed = await confirmDialog({
@@ -1035,12 +1036,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               )
             }`,
           );
-          window.setTimeout(() => setSessionActionError(null), 6000);
         }
       })
       .catch((err: unknown) => {
         setSessionActionError(formatSessionActionError(err, "Delete"));
-        window.setTimeout(() => setSessionActionError(null), 6000);
       })
       .finally(() => {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
@@ -1055,7 +1054,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         setSessionActionError(`Refresh failed: ${message}`);
-        window.setTimeout(() => setSessionActionError(null), 6000);
       })
       .finally(() => {
         setDeletingSessionId((current) => (current === "orphan-refresh" ? null : current));
@@ -1113,11 +1111,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               )
             }`,
           );
-          window.setTimeout(() => setSessionActionError(null), 6000);
         }
       } catch (err: unknown) {
         setSessionActionError(formatSessionActionError(err, "Stop and delete"));
-        window.setTimeout(() => setSessionActionError(null), 6000);
       } finally {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
       }
@@ -1167,7 +1163,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         await finalizeCliResumeResult(session, pin, result);
       } catch (err) {
         setSessionActionError(formatSessionActionError(err, errorLabel));
-        window.setTimeout(() => setSessionActionError(null), 6000);
         throw err;
       }
     },
@@ -2415,7 +2410,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                 setSessionActionError(reason
                   ? `Generate name failed: ${reason}`
                   : "Metadata was not changed because the session or lane changed while it was generating.");
-                window.setTimeout(() => setSessionActionError(null), 6000);
               }
             },
           });

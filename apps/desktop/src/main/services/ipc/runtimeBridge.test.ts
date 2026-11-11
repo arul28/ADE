@@ -201,7 +201,12 @@ function sender(id = 42) {
 }
 
 function eventForSender(nextSender = sender()) {
-  return { sender: nextSender } as any;
+  // A registered channel now refuses anything but ADE's own renderer; these
+  // fake events stand for the main window's frame.
+  return {
+    sender: nextSender,
+    senderFrame: { url: "file:///tmp/ade/renderer/index.html" },
+  } as any;
 }
 
 function localBinding(rootPath = "/repo"): OpenProjectBinding {
@@ -2262,7 +2267,7 @@ describe("registerRuntimeBridge", () => {
 describe("registerIpc usage bridge", () => {
   beforeEach(() => {
     ipcHandlers.clear();
-    browserWindowFromWebContents.mockReset();
+    browserWindowFromWebContents.mockReset().mockReturnValue({ id: 7, isDestroyed: () => false });
   });
 
   const brainSnapshot = {
@@ -2322,6 +2327,15 @@ describe("registerIpc usage bridge", () => {
     });
     return { pool, dormantTracker };
   }
+
+  it("refuses a channel call from a page that is not ADE's renderer", async () => {
+    registerUsageIpc({ openRoots: ["/repo-one"] });
+    const handler = ipcHandlers.get(IPC.appPing)!;
+    await expect(handler({
+      sender: sender(),
+      senderFrame: { url: "https://example.com/" },
+    })).rejects.toThrow(/only available to the ADE window/);
+  });
 
   it("reads the brain's shared tracker for a window with no project binding", async () => {
     const { pool, dormantTracker } = registerUsageIpc({

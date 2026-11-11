@@ -39,6 +39,7 @@ import type {
   GitStashSummary,
   GitSyncArgs,
   GitSyncMode,
+  GitGetSyncStatusArgs,
   GitSyncStatusesArgs,
   GitSyncStatuses,
   GitUpstreamSyncStatus,
@@ -1093,9 +1094,10 @@ export function createGitOperationsService({
       });
     },
 
-    async getSyncStatus(args: { laneId: string }): Promise<GitUpstreamSyncStatus> {
+    async getSyncStatus(args: GitGetSyncStatusArgs): Promise<GitUpstreamSyncStatus> {
       const laneId = args.laneId.trim();
-      return readLaneCached(`sync-status:${laneId}:default`, 2_000, async () => {
+      const skipRecommendation = args.skipRecommendation === true;
+      return readLaneCached(`sync-status:${laneId}:${skipRecommendation ? "counts" : "default"}`, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
         await assertLaneWorktreeRoot(lane);
         const readConfiguredUpstream = async (): Promise<string | null> => {
@@ -1175,20 +1177,26 @@ export function createGitOperationsService({
         } else if (normalizedBehind > 0 && normalizedAhead === 0) {
           recommendedAction = "pull";
         } else if (diverged) {
-          const mergeBaseRes = await runGit(["merge-base", "--is-ancestor", upstreamRef, "HEAD"], {
-            cwd: lane.worktreePath,
-            timeoutMs: 5_000
-          });
-          if (mergeBaseRes.exitCode === 0) {
-            recommendedAction = "force_push_lease";
+          if (skipRecommendation) {
+            // Counts-only callers never show the force-push hint, so the two
+            // extra git process spawns are pure cost. `pull` is the safe answer.
+            recommendedAction = "pull";
           } else {
-            const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
+            const mergeBaseRes = await runGit(["merge-base", "--is-ancestor", upstreamRef, "HEAD"], {
               cwd: lane.worktreePath,
               timeoutMs: 5_000
             });
-            const hasRecentRebase = reflogRes.exitCode === 0 &&
-              reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
-            recommendedAction = hasRecentRebase ? "force_push_lease" : "pull";
+            if (mergeBaseRes.exitCode === 0) {
+              recommendedAction = "force_push_lease";
+            } else {
+              const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
+                cwd: lane.worktreePath,
+                timeoutMs: 5_000
+              });
+              const hasRecentRebase = reflogRes.exitCode === 0 &&
+                reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
+              recommendedAction = hasRecentRebase ? "force_push_lease" : "pull";
+            }
           }
         }
 
@@ -1206,7 +1214,9 @@ export function createGitOperationsService({
 
     async getSyncStatuses(args: GitSyncStatusesArgs): Promise<GitSyncStatuses> {
       const laneIds = normalizeSyncStatusLaneIds(args);
-      return settleLaneSyncStatuses(laneIds, async (laneId) => service.getSyncStatus({ laneId }));
+      const skipRecommendation = args.skipRecommendation === true;
+      return settleLaneSyncStatuses(laneIds, async (laneId) =>
+        service.getSyncStatus(skipRecommendation ? { laneId, skipRecommendation: true } : { laneId }));
     },
 
     async listCommitFiles(args: GitListCommitFilesArgs): Promise<string[]> {

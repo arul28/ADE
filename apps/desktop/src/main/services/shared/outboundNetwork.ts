@@ -139,6 +139,9 @@ export function whenSystemCertificateReadSettles(timeoutMs: number): Promise<voi
     void read.then(() => {
       clearTimeout(timer);
       resolve();
+    }).catch(() => {
+      clearTimeout(timer);
+      resolve();
     });
   });
 }

@@ -478,11 +478,12 @@ const RECENT_PR_WINDOW_MS = 7 * 86_400_000;
  * state. Reloads on PR
  * events and when the window regains focus — never on a timer of its own.
  */
-export type HomePullRequests = { open: HomePr[]; recent: HomePr[]; loaded: boolean; viewer: string | null };
+export type HomePullRequests = { open: HomePr[]; recent: HomePr[]; loaded: boolean; viewer: string | null; error: string | null };
 
 export function usePullRequests(projectRoot: string | null): HomePullRequests {
   const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   const [data, setData] = useState<{ snapshot: GitHubPrSnapshot | null; tracked: PrSummary[] } | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const requestRef = useRef(0);
   // What the last reload returned, as text: PR events arrive every few seconds
   // during a sync, and a reload that changed nothing must not re-render the
@@ -490,19 +491,22 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
   const lastSignatureRef = useRef<string | null>(null);
   useEffect(() => {
     lastSignatureRef.current = null;
+    setLoadError(null);
     const bridge = window.ade?.prs;
     if (!projectRoot || !bridge?.getGitHubSnapshot) {
       setData({ snapshot: null, tracked: [] });
+      setLoadError(null);
       return undefined;
     }
     let timer: number | null = null;
     const load = async () => {
       const request = ++requestRef.current;
+      let failed = false;
       const [snapshot, tracked] = await Promise.all([
         // One page of closed history (cached ten minutes in main) brings the
         // week's merges with it; open PRs come in the same snapshot.
-        getGitHubSnapshotCoalesced({ automaticRefresh: true, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: projectBindingKey }).catch(() => null),
-        listPrsCoalesced({ projectRoot }).catch(() => [] as PrSummary[]),
+        getGitHubSnapshotCoalesced({ automaticRefresh: true, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: projectBindingKey }).catch(() => { failed = true; return null; }),
+        listPrsCoalesced({ projectRoot }).catch(() => { failed = true; return [] as PrSummary[]; }),
       ]);
       if (requestRef.current !== request) return;
       const signature = JSON.stringify([
@@ -515,6 +519,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
       if (signature === lastSignatureRef.current) return;
       lastSignatureRef.current = signature;
       setData({ snapshot, tracked: tracked ?? [] });
+      setLoadError(failed ? "ADE couldn't read this project's pull requests." : null);
     };
     const soon = () => {
       if (timer != null) window.clearTimeout(timer);
@@ -565,8 +570,8 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
     const recent = prs
       .filter((pr) => pr.state === "merged" && Date.parse(pr.mergedAt || pr.updatedAt) >= cutoff)
       .sort((a, b) => (b.mergedAt || b.updatedAt).localeCompare(a.mergedAt || a.updatedAt));
-    return { open, recent, loaded: data != null, viewer };
-  }, [data]);
+    return { open, recent, loaded: data != null, viewer, error: loadError };
+  }, [data, loadError]);
 }
 
 /** GitHub's own state colours, as a `data-state` the stylesheet maps per theme. */
@@ -644,7 +649,7 @@ export function PullRequestsCard({
   prs: HomePullRequests;
   onOpenPrs?: () => void;
 }) {
-  const { open, recent, loaded } = prs;
+  const { open, recent, loaded, error: prLoadError } = prs;
   const counts = useMemo(() => {
     const result = { failing: 0, review: 0, ready: 0 };
     for (const pr of open) {
@@ -679,7 +684,7 @@ export function PullRequestsCard({
             {open.length === 0 && recent.length === 0 ? (
               <div className="ade-home-empty">
                 <GitPullRequest size={18} aria-hidden />
-                <span>{loaded ? "No pull requests this week." : "Reading pull requests…"}</span>
+                <span>{prLoadError ?? (loaded ? "No pull requests this week." : "Reading pull requests…")}</span>
               </div>
             ) : (
               <FitList

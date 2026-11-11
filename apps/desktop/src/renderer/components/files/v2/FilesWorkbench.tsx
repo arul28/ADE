@@ -1719,7 +1719,11 @@ export function FilesWorkbench({
           onCreateFile={(basePath) => setOverlay({ kind: "create", create: "file", baseDir: basePath })}
           onCreateDirectory={(basePath) => setOverlay({ kind: "create", create: "directory", baseDir: basePath })}
           onToggleDirectory={toggleDirectory}
-          onLoadMoreChildren={(path, offset) => { loadMoreChildren(path, offset).catch(() => {}); }}
+          onLoadMoreChildren={(path, offset) => {
+            loadMoreChildren(path, offset).catch((err: unknown) => {
+              setError(err instanceof Error ? err.message : String(err));
+            });
+          }}
           onOpenFile={(path) => void openFile(path, { preview: true })}
           onActivateFile={(path) => void openFile(path, { preview: false })}
           onSelectNode={setSelectedNodePath}
@@ -1781,8 +1785,15 @@ export function FilesWorkbench({
         </div>
       ) : null}
       {error ? (
-        <div className="shrink-0 px-3 py-1 text-xs" style={{ color: COLORS.danger, background: "rgba(255,0,0,0.06)" }}>
-          {error}
+        <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-1 text-xs" style={{ color: COLORS.danger, background: "rgba(255,0,0,0.06)" }}>
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => { void refreshRoot(); }}
+            className="shrink-0 underline-offset-2 hover:underline"
+          >
+            Retry
+          </button>
         </div>
       ) : null}
       {/*

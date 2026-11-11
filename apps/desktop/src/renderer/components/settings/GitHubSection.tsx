@@ -196,6 +196,9 @@ export function GitHubSection() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  // A failed status read left every row on "…" and the credential ladder
+  // offering sign-in to a person who is already signed in. Say it failed.
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [githubTokenDraft, setGithubTokenDraft] = useState("");
   const [githubBusy, setGithubBusy] = useState(false);
   const [showPatSetup, setShowPatSetup] = useState(false);
@@ -214,9 +217,13 @@ export function GitHubSection() {
     window.ade.github
       .getStatus(undefined, pin)
       .then((status) => {
-        if (!cancelled) setGithubStatus(status);
+        if (cancelled) return;
+        setGithubStatus(status);
+        setStatusError(null);
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        if (!cancelled) setStatusError(error instanceof Error ? error.message : String(error));
+      });
     window.ade.projectConfig
       .get(pin)
       .then((snapshot) => {
@@ -242,9 +249,13 @@ export function GitHubSection() {
       window.ade.github
         .getStatus(undefined, pinRef.current)
         .then((status) => {
-          if (!cancelled) setGithubStatus(status);
+          if (cancelled) return;
+          setGithubStatus(status);
+          setStatusError(null);
         })
-        .catch(() => {});
+        .catch((error: unknown) => {
+          if (!cancelled) setStatusError(error instanceof Error ? error.message : String(error));
+        });
     };
     const onVisibility = () => {
       if (document.visibilityState === "visible") reload();
@@ -573,6 +584,27 @@ export function GitHubSection() {
       <div className="ade-ig-alerts">
         {saveNotice ? (
           <Banner layout="inline" model={{ id: "github-save-notice", tone: "success", title: saveNotice }} />
+        ) : null}
+        {statusError ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "github-status-error",
+              tone: "warning",
+              title: "ADE couldn't read GitHub's status on this computer",
+              detail: statusError,
+              actions: [{
+                label: "Retry",
+                onClick: () => {
+                  setStatusError(null);
+                  void window.ade.github
+                    .getStatus(undefined, pinRef.current)
+                    .then((status) => setGithubStatus(status))
+                    .catch((error: unknown) => setStatusError(error instanceof Error ? error.message : String(error)));
+                },
+              }],
+            }}
+          />
         ) : null}
         {actionError ? (
           <Banner layout="inline" model={{ id: "github-action-error", tone: "error", title: actionError }} />

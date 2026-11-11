@@ -402,7 +402,7 @@ export function CreatePrModal({
     }
     let cancelled = false;
     setLaneSyncLoadingById(Object.fromEntries(laneIds.map((laneId) => [laneId, true])));
-    window.ade.git.getSyncStatuses({ laneIds })
+    window.ade.git.getSyncStatuses({ laneIds, skipRecommendation: true })
       .then((statuses) => {
         if (!cancelled) setLaneSyncStatusById(statuses);
       })

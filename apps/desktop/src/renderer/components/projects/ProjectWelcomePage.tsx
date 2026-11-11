@@ -122,6 +122,8 @@ export function ProjectWelcomePage() {
    */
   const [openingRowKey, setOpeningRowKey] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
+  // A failed recents read must not look like "no projects yet".
+  const [recentListError, setRecentListError] = useState<string | null>(null);
   // Kept apart from rowError: the recents-list error banner only renders when
   // there are rows, and a directory retry fails precisely when there are none.
   const [directoryRetryError, setDirectoryRetryError] = useState<string | null>(
@@ -171,20 +173,26 @@ export function ProjectWelcomePage() {
   const forgetTimerRef = useRef<number | null>(null);
   const dragDepthRef = useRef(0);
 
+  const loadRecentProjects = useCallback(() => {
+    window.ade.project
+      .listRecent()
+      .then((rows) => {
+        setRecentProjects(rows);
+        setRecentListError(null);
+      })
+      .catch((error: unknown) => {
+        setRecentListError(error instanceof Error ? error.message : String(error));
+      });
+  }, []);
+
   useEffect(() => {
     if (webMode) return;
-    const load = () => {
-      window.ade.project
-        .listRecent()
-        .then(setRecentProjects)
-        .catch(() => {});
-    };
-    load();
+    loadRecentProjects();
     // First-run setup can add projects while Home is already showing (a
     // replay from the help menu).
-    window.addEventListener(RECENT_PROJECTS_CHANGED_EVENT, load);
-    return () => window.removeEventListener(RECENT_PROJECTS_CHANGED_EVENT, load);
-  }, [webMode]);
+    window.addEventListener(RECENT_PROJECTS_CHANGED_EVENT, loadRecentProjects);
+    return () => window.removeEventListener(RECENT_PROJECTS_CHANGED_EVENT, loadRecentProjects);
+  }, [webMode, loadRecentProjects]);
 
   useEffect(() => {
     if (webMode) return;
@@ -415,7 +423,11 @@ export function ProjectWelcomePage() {
         next = await window.ade.project.forgetRecent(recentKey);
       }
       setRecentProjects(next);
-    })().catch(() => {});
+    })().catch((error: unknown) => {
+      // The row reappears at the end of the undo window; say why instead of
+      // letting it silently come back.
+      setRowError(error instanceof Error ? error.message : String(error));
+    });
     setPendingForgetKeys((prev) => {
       const next = new Set(prev);
       next.delete(key);
@@ -914,6 +926,20 @@ export function ProjectWelcomePage() {
               tone: "error",
               title: <span style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{rowError}</span>,
               ariaLabel: rowError,
+            }}
+          />
+        ) : null}
+        {recentListError ? (
+          <Banner
+            layout="inline"
+            style={{ maxWidth: 520, width: "100%" }}
+            model={{
+              id: "welcome-recents-load-error",
+              tone: "warning",
+              title: "ADE couldn't read your recent projects",
+              detail: recentListError,
+              actions: [{ label: "Retry", onClick: loadRecentProjects }],
+              dismiss: { onDismiss: () => setRecentListError(null) },
             }}
           />
         ) : null}

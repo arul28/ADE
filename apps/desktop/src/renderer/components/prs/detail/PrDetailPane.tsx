@@ -1471,16 +1471,36 @@ export function PrDetailPane({
   // Lane chats back the header's chat chips and the ⋯ menu's chat choice. A
   // local read, and only for a PR that has a lane.
   const [laneChats, setLaneChats] = React.useState<AgentChatSessionSummary[]>([]);
-  React.useEffect(() => {
-    setLaneChats([]);
-    if (!pr.laneId) return undefined;
-    let cancelled = false;
+  const [laneChatsError, setLaneChatsError] = React.useState<string | null>(null);
+  const laneChatsRequestRef = React.useRef(0);
+  const loadLaneChats = React.useCallback(() => {
+    if (!pr.laneId) {
+      setLaneChats([]);
+      setLaneChatsError(null);
+      return;
+    }
+    const request = ++laneChatsRequestRef.current;
     void window.ade.agentChat
       .list({ laneId: pr.laneId, includeArchived: false }, ...onPin)
-      .then((sessions) => { if (!cancelled) setLaneChats(sessions); })
-      .catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [onPin, pr.laneId, pr.id]);
+      .then((sessions) => {
+        if (laneChatsRequestRef.current !== request) return;
+        setLaneChats(sessions);
+        setLaneChatsError(null);
+      })
+      // A rejected pinned read must not read as "this lane has no chats":
+      // that made the header hide every chat chip and offered a new chat in
+      // place of the existing one. Keep the last good list and say it failed.
+      .catch((error: unknown) => {
+        if (laneChatsRequestRef.current !== request) return;
+        setLaneChatsError(extractError(error));
+      });
+  }, [onPin, pr.laneId]);
+  React.useEffect(() => {
+    setLaneChats([]);
+    setLaneChatsError(null);
+    loadLaneChats();
+    return () => { laneChatsRequestRef.current += 1; };
+  }, [loadLaneChats, pr.id, pr.laneId]);
   const linkedChats = React.useMemo(() => linkedPrChats(pr, laneChats), [laneChats, pr]);
   const handleOpenChat = React.useCallback((session: AgentChatSessionSummary) => {
     chatHandoff({ laneId: session.laneId, sessionId: session.sessionId });
@@ -1589,6 +1609,8 @@ export function PrDetailPane({
     failingChecks: failingCheckNames,
     mergeMethod: readLastMergeMethod(mergeMethod),
     laneChats,
+    laneChatsError: laneChatsError ?? undefined,
+    onRetryChats: loadLaneChats,
     onRefresh: handleHeaderRefresh,
     refreshing,
     onChanged: refreshAll,
@@ -1596,8 +1618,8 @@ export function PrDetailPane({
     // The lane dialog needs a live lane; a PR without one has nothing to manage.
     ...(laneForPr ? { onManageLane: handleOpenManageLane } : {}),
   }), [
-    failingCheckNames, handleHeaderRefresh, handleOpenManageLane, laneChats, laneForPr,
-    mergeMethod, openFindings, pr, refreshAll, refreshing, status,
+    failingCheckNames, handleHeaderRefresh, handleOpenManageLane, laneChats, laneChatsError, laneForPr,
+    loadLaneChats, mergeMethod, openFindings, pr, refreshAll, refreshing, status,
   ]);
   const showDetailLoadingPill = (detailLoading || detailBusy) && !hasVisibleDetailData;
 

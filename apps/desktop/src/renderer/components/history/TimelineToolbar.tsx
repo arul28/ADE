@@ -115,6 +115,14 @@ export function TimelineToolbar({
   const lanes = useAppStore((s) => s.lanes ?? []);
   const laneStatusStale = useAppStore((s) => s.laneStatusStale);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
+  // A single dismiss owner: a new notice resets the timer, and leaving History
+  // (this toolbar unmounts) stops it, instead of a stale timer clearing a
+  // newer notice early.
+  useEffect(() => {
+    if (!exportNotice) return undefined;
+    const timer = window.setTimeout(() => setExportNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [exportNotice]);
   /* ── Store ─────────────────────────────────────────────────── */
   const surface = useTimelineStore((s) => s.surface);
   const setSurface = useTimelineStore((s) => s.setSurface);
@@ -183,7 +191,6 @@ export function TimelineToolbar({
     const exportFn = window.ade?.history?.exportOperations;
     if (typeof exportFn !== "function") {
       setExportNotice("Export unavailable (headless)");
-      window.setTimeout(() => setExportNotice(null), 4000);
       return;
     }
     let chosenLimit = 500;
@@ -199,7 +206,6 @@ export function TimelineToolbar({
       const parsed = Number.parseInt(trimmed, 10);
       if (!Number.isFinite(parsed) || parsed <= 0) {
         setExportNotice("Invalid export limit; must be a positive integer");
-        window.setTimeout(() => setExportNotice(null), 4000);
         return;
       }
       chosenLimit = Math.min(10000, Math.max(1, parsed));
@@ -214,17 +220,14 @@ export function TimelineToolbar({
       });
       if (!isHistoryExportResult(result)) {
         setExportNotice("Export unavailable (headless)");
-        window.setTimeout(() => setExportNotice(null), 4000);
         return;
       }
       if (result.cancelled) return;
       setExportNotice(`Exported ${result.rowCount} rows to ${result.savedPath}`);
-      window.setTimeout(() => setExportNotice(null), 5000);
     } catch (err) {
       setExportNotice(
         `Export failed: ${extractError(err)}`,
       );
-      window.setTimeout(() => setExportNotice(null), 5000);
     }
   }, [focusLaneId, focusLaneMachineId, filters.statuses]);
 
@@ -616,6 +619,19 @@ function LaneGitActionsMenu({
   const [conflictState, setConflictState] = useState<GitConflictState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The popover can close while an action is still running; the effect's
+  // cleanup stops these timers on unmount and when a newer message replaces
+  // the old one.
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timer = window.setTimeout(() => setNotice(null), 3500);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+  useEffect(() => {
+    if (!error) return undefined;
+    const timer = window.setTimeout(() => setError(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [error]);
   const actions = buildHistoryLaneActions({ hasLane: Boolean(laneId) && laneHasWorktree, conflictState });
 
   const refreshConflictState = useCallback(async () => {
@@ -651,11 +667,9 @@ function LaneGitActionsMenu({
           laneName,
           onNotice: (message) => {
             setNotice(message);
-            window.setTimeout(() => setNotice(null), 3500);
           },
           onError: (message) => {
             setError(message);
-            window.setTimeout(() => setError(null), 5000);
           },
           onComplete: handleComplete,
           navigate: (path) => navigate(path),
@@ -663,7 +677,6 @@ function LaneGitActionsMenu({
       } catch (err) {
         const message = extractError(err);
         setError(message);
-        window.setTimeout(() => setError(null), 5000);
       } finally {
         setRunningAction(null);
       }

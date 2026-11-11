@@ -117,7 +117,7 @@ export function MachineSettings({
           value="SDK and emulator tools"
           control={reach ? <RowLink onClick={() => openMachine(scope.machineId, "android")} /> : elsewhere}
         />
-        <MachineRow icon={<Cpu size={14} />} title="System" value={[os, arch].filter(Boolean).join(" · ") || "Unknown"} />
+        <MachineRow icon={<Cpu size={14} />} title="System" value={[os, arch].filter(Boolean).join(" · ") || (isThis && local.error ? "Couldn't read" : "Unknown")} />
         {isThis && local.pressure && local.pressure.totalBytes > 0 ? (
           <MachineRow
             icon={<HardDrive size={14} />}
@@ -417,6 +417,7 @@ function KeepAwakeRow({ scope, reach, onOpen }: { scope: SettingsMachinePage; re
 
 function CliRow({ isThis, onOpen }: { isThis: boolean; onOpen: () => void }) {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof window.ade.adeCli.getStatus>> | null>(null);
+  const [statusError, setStatusError] = useState(false);
   useEffect(() => {
     if (!isThis || !isAdeAvailable(window.ade.adeCli?.getStatus)) return undefined;
     let cancelled = false;
@@ -425,7 +426,9 @@ function CliRow({ isThis, onOpen }: { isThis: boolean; onOpen: () => void }) {
       .then((next) => {
         if (!cancelled) setStatus(next);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setStatusError(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -435,7 +438,7 @@ function CliRow({ isThis, onOpen }: { isThis: boolean; onOpen: () => void }) {
     <MachineRow
       icon={<Terminal size={14} />}
       title="ade command"
-      value={isThis ? (status ? (installed ? "In your Terminal" : "Agents only — not in your Terminal") : "…") : null}
+      value={isThis ? (status ? (installed ? "In your Terminal" : "Agents only — not in your Terminal") : statusError ? "Couldn't check" : "…") : null}
       control={isThis ? <RowLink label="Advanced" onClick={onOpen} /> : <RowHint />}
     />
   );

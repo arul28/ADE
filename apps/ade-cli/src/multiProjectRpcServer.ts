@@ -866,7 +866,9 @@ async function createMachineProjectScaffoldService() {
   if (userId) {
     // Recorded before the awaits, so a sign-in as another account meanwhile purges it.
     machineGithubTokenUserId = userId;
-    await account.vault.sync({ maxAgeMs: MACHINE_GITHUB_VAULT_MAX_AGE_MS }).catch(() => {});
+    await account.vault.sync({ maxAgeMs: MACHINE_GITHUB_VAULT_MAX_AGE_MS }).catch((err) => {
+      console.warn(`[multiProjectRpcServer] vault sync failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
     await githubService.hydratePatFromVault();
     // The account changed while the token was read: it is not this account's
     // to keep. A newer request that read the new account's token recorded that
@@ -4206,7 +4208,14 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "exit") {
-      process.nextTick(() => process.exit(0));
+      process.nextTick(() => {
+        try {
+          handler.dispose();
+        } catch {
+          // Best-effort cleanup before exit.
+        }
+        process.exit(0);
+      });
       return {};
     }
 

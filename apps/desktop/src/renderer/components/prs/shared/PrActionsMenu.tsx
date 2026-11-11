@@ -84,6 +84,10 @@ export type PrActionsContext = {
   onManageLane?: () => void;
   /** Lane chats the caller already has. When set, the menu does not fetch them again. */
   laneChats?: AgentChatSessionSummary[];
+  /** The caller's chat read failed; show it instead of pretending there are none. */
+  laneChatsError?: string;
+  /** Re-runs the caller's chat read (paired with `laneChatsError`). */
+  onRetryChats?: () => void;
 };
 
 type PrMenuItem = {
@@ -121,27 +125,38 @@ export function usePrActionsMenu(context: PrActionsContext) {
   const {
     pr, status, findings, failingChecks, mergeMethod, onRefresh, refreshing, onChanged, onError, onManageLane,
     laneChats: providedChats,
+    laneChatsError: providedChatsError,
+    onRetryChats,
   } = context;
   const [fetchedChats, setFetchedChats] = React.useState<AgentChatSessionSummary[] | null>(null);
+  const [fetchedChatsError, setFetchedChatsError] = React.useState<string | null>(null);
   // Every call below reaches the machine that owns the PR's lane.
   const runtimePin = usePrRuntimePin();
   const onPin = React.useMemo(() => pinArg(runtimePin), [runtimePin]);
   // Chat hand-offs keep the lane's machine (a draft or focus on the owner).
   const handOff = usePrChatHandoff();
   const laneChats = providedChats ?? fetchedChats;
+  const chatsError = providedChats !== undefined ? (providedChatsError ?? null) : fetchedChatsError;
   const [busy, setBusy] = React.useState<string | null>(null);
 
   const ensureChats = React.useCallback(() => {
     if (!pr.laneId || laneChats !== null) return;
     void window.ade.agentChat
       .list({ laneId: pr.laneId, includeArchived: false }, ...onPin)
-      .then(setFetchedChats)
-      .catch(() => setFetchedChats([]));
+      .then((sessions) => {
+        setFetchedChats(sessions);
+        setFetchedChatsError(null);
+      })
+      // Do not cache a failed read as an empty list: that would silently offer
+      // "Starts a chat in this lane" to a PR that already has chats and never
+      // retry. Keep `fetchedChats` null so the next open reads again.
+      .catch((error) => setFetchedChatsError(extractError(error)));
   }, [laneChats, onPin, pr.laneId]);
 
   // A different PR (or lane) invalidates the cached chat list.
   React.useEffect(() => {
     setFetchedChats(null);
+    setFetchedChatsError(null);
   }, [pr.id, pr.laneId]);
 
   // Close and reopen paint the list at once, before the refetch, like a merge.
@@ -235,6 +250,23 @@ export function usePrActionsMenu(context: PrActionsContext) {
           id: "update_description", kind: "update_description", label: "Update the description",
           icon: <Sparkle size={14} weight="duotone" />, tone: TONE.chat, description: "Rewrite it from the current diff",
         }));
+      }
+      if (chatsError) {
+        items.push({
+          id: "chats-error",
+          label: "Couldn't read this lane's chats",
+          description: chatsError,
+          icon: <WarningCircle size={14} weight="duotone" />,
+          tone: TONE.danger,
+          onSelect: () => {
+            if (providedChats !== undefined) {
+              onRetryChats?.();
+              return;
+            }
+            setFetchedChatsError(null);
+            ensureChats();
+          },
+        });
       }
       out.push({ id: "chat", label: "Chat", items });
     }
@@ -341,7 +373,7 @@ export function usePrActionsMenu(context: PrActionsContext) {
       });
     }
     return out;
-  }, [busy, failingChecks, findings, handOff, laneChats, mergeMethod, onManageLane, onPin, onRefresh, pr, prs, refreshing, run, status]);
+  }, [busy, chatsError, ensureChats, failingChecks, findings, handOff, laneChats, mergeMethod, onManageLane, onPin, onRefresh, onRetryChats, providedChats, pr, prs, refreshing, run, status]);
 
   return { sections, ensureChats, busy };
 }

@@ -247,7 +247,7 @@ import { createUserActivityProbe } from "../attention/userActivityProbe";
 import type { HostReachabilityReport } from "../../../shared/connectionDiagnosis";
 import { AttentionAccountCoordinator } from "../attention/attentionAccountCoordinator";
 import { describeAttentionOpenFailure } from "../attention/attentionOpenErrors";
-import { isTrustedAdeRendererSender } from "./trustedRendererSender";
+import { createTrustedIpcHandle, isTrustedAdeRendererSender } from "./trustedRendererSender";
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
@@ -2699,6 +2699,13 @@ export function registerIpc({
     tracedIpcMain.__adeTraceWrapped = true;
   }
 
+  /**
+   * Deny by default: every channel this module registers answers only ADE's
+   * own renderer. Declared after the scope/trace wrappers so every
+   * registration gets them too.
+   */
+  const handle = createTrustedIpcHandle(getTraceLogger());
+
   const ensureComputerUseBroker = (): AppContextWith<"computerUseArtifactBrokerService"> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["computerUseArtifactBrokerService"] as const);
@@ -2826,22 +2833,10 @@ export function registerIpc({
     }
   };
 
-  const assertTrustedAppControlSender = (event: IpcMainInvokeEvent, channel: string): void => {
-    if (isTrustedAdeRendererSender(event)) return;
-    const win = BrowserWindow.fromWebContents(event.sender);
-    const senderUrl = event.senderFrame?.url || event.sender.getURL();
-    getCtx().logger.warn("ipc.app_control.untrusted_sender", {
-      channel,
-      windowId: win?.id ?? null,
-      senderUrl: senderUrl || null,
-    });
-    throw new Error("App Control is only available to the ADE renderer.");
-  };
-
-  const assertAppControlRateLimit = (
+  const guardAppControlIpc = (
     event: IpcMainInvokeEvent,
     channel: string,
-    limit: { windowMs: number; max: number },
+    limit: { windowMs: number; max: number } = { windowMs: 10_000, max: 40 },
   ): void => {
     const now = Date.now();
     const key = `${event.sender.id}:${channel}`;
@@ -2868,27 +2863,6 @@ export function registerIpc({
       throw new Error("Too many App Control requests. Try again shortly.");
     }
     bucket.count += 1;
-  };
-
-  const guardAppControlIpc = (
-    event: IpcMainInvokeEvent,
-    channel: string,
-    limit: { windowMs: number; max: number } = { windowMs: 10_000, max: 40 },
-  ): void => {
-    assertTrustedAppControlSender(event, channel);
-    assertAppControlRateLimit(event, channel, limit);
-  };
-
-  const assertTrustedFilesSender = (event: IpcMainInvokeEvent, channel: string): void => {
-    if (isTrustedAdeRendererSender(event)) return;
-    const win = BrowserWindow.fromWebContents(event.sender);
-    const senderUrl = event.senderFrame?.url || event.sender.getURL();
-    getCtx().logger.warn("ipc.files.untrusted_sender", {
-      channel,
-      windowId: win?.id ?? null,
-      senderUrl: senderUrl || null,
-    });
-    throw new Error("Files access is only available to the ADE renderer.");
   };
 
   const assertBuiltInBrowserRateLimit = (
@@ -2929,38 +2903,15 @@ export function registerIpc({
    */
   const builtInBrowserRemoteRequestClaims = createRemoteRequestClaims();
 
-  // The scheme and the sender kind only: a page name can be a local file's.
-  const describeUntrustedSender = (hasWindow: boolean, senderUrl: string | null | undefined): string => {
-    let scheme = "no url";
-    try {
-      if (senderUrl) scheme = new URL(senderUrl).protocol.replace(/:$/, "") || "unknown";
-    } catch {
-      scheme = "unparsable url";
-    }
-    return `${hasWindow ? "window" : "no window"}, ${scheme}`;
-  };
-
   const guardBuiltInBrowserIpc = (
     event: IpcMainInvokeEvent,
     channel: string,
     limit: { windowMs: number; max: number } = { windowMs: 10_000, max: 60 },
   ): BrowserWindow => {
+    // The registration wrapper already proved the sender is live and trusted;
+    // this guard only owns the rate limit and the panel's window.
     const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win || !isTrustedAdeRendererSender(event)) {
-      const refusal = "Built-in browser is only available to the ADE renderer.";
-      // A window closing while its last calls (a preview's stop) are in
-      // flight: nothing is left to serve, so the refusal is its answer.
-      if (event.sender.isDestroyed() || win?.isDestroyed()) throw new AdeExpectedError(refusal, "user");
-      const senderUrl = event.senderFrame?.url || event.sender.getURL();
-      getCtx().logger.warn("ipc.built_in_browser.untrusted_sender", {
-        channel,
-        windowId: win?.id ?? null,
-        senderUrl: senderUrl || null,
-      });
-      // Which sender it was, without its path, so a report says whether ADE's
-      // own renderer was refused (a defect) or another page asked.
-      throw new Error(`${refusal} (sender: ${describeUntrustedSender(win != null, senderUrl)})`);
-    }
+    if (!win) throw new AdeExpectedError("Built-in browser is only available to the ADE renderer.", "user");
     assertBuiltInBrowserRateLimit(event, channel, limit);
     return win;
   };
@@ -3387,12 +3338,12 @@ export function registerIpc({
     args: ComputerUseOwnerSnapshotArgs,
   ): Promise<ComputerUseOwnerSnapshotArgs> => args;
 
-  ipcMain.handle(IPC.appPing, async () => "pong" as const);
+  handle(IPC.appPing, async () => "pong" as const);
 
   // Dock badge = the LOUD attention tier only (sessions deterministically
   // waiting on the user). The renderer's attention rollup pushes count
   // changes; badge clears when nothing needs the user.
-  ipcMain.handle(IPC.appSetDockBadgeCount, async (_event, input: unknown) => {
+  handle(IPC.appSetDockBadgeCount, async (_event, input: unknown) => {
     const count = typeof input === "object" && input !== null
       ? Number((input as { count?: unknown }).count)
       : Number(input);
@@ -3415,7 +3366,7 @@ export function registerIpc({
    * takeover: the renderer turns it off when the pointer lock ends, and the
    * menu works normally everywhere else.
    */
-  ipcMain.handle(IPC.appSetIgnoreMenuShortcuts, async (event, input: unknown) => {
+  handle(IPC.appSetIgnoreMenuShortcuts, async (event, input: unknown) => {
     const ignore = typeof input === "object" && input !== null
       ? (input as { ignore?: unknown }).ignore === true
       : input === true;
@@ -3423,7 +3374,7 @@ export function registerIpc({
     return { ok: true } as const;
   });
 
-  ipcMain.handle(IPC.captureGestureUpdateSettings, async (_event, input: unknown) => {
+  handle(IPC.captureGestureUpdateSettings, async (_event, input: unknown) => {
     const enabled = typeof input === "object" && input !== null
       && (input as { enabled?: unknown }).enabled === true;
     return updateCaptureGestureSettings?.({ enabled })
@@ -3431,42 +3382,42 @@ export function registerIpc({
       ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH;
   });
 
-  ipcMain.handle(IPC.captureGestureGetHealth, async () =>
+  handle(IPC.captureGestureGetHealth, async () =>
     getCaptureGestureHealth?.() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH);
 
-  ipcMain.handle(IPC.captureGestureRetry, async () =>
+  handle(IPC.captureGestureRetry, async () =>
     retryCaptureGesture?.() ?? getCaptureGestureHealth?.() ?? UNAVAILABLE_CAPTURE_GESTURE_HEALTH);
 
-  ipcMain.handle(IPC.captureGestureCaptureNow, async () => ({
+  handle(IPC.captureGestureCaptureNow, async () => ({
     started: captureGestureNow?.() ?? false,
   }));
 
-  ipcMain.handle(
+  handle(
     IPC.attentionGetSnapshot,
     async (_event, input: unknown) => attentionAccountCoordinator.getSnapshot(input),
   );
 
-  ipcMain.handle(
+  handle(
     IPC.attentionAcknowledge,
     async (_event, input: unknown) => attentionAccountCoordinator.acknowledge(input),
   );
 
-  ipcMain.handle(
+  handle(
     IPC.attentionReportPresence,
     async (_event, input: unknown) => attentionAccountCoordinator.reportPresence(input),
   );
 
-  ipcMain.handle(
+  handle(
     IPC.attentionGetPreferences,
     async (_event, input: unknown) => attentionAccountCoordinator.getPreferences(input),
   );
 
-  ipcMain.handle(
+  handle(
     IPC.attentionPutPreferences,
     async (_event, input: unknown) => attentionAccountCoordinator.putPreferences(input),
   );
 
-  ipcMain.handle(
+  handle(
     IPC.attentionPutMachinePreferences,
     async (_event, input: unknown) => {
       const request = input && typeof input === "object" && !Array.isArray(input)
@@ -3484,7 +3435,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.attentionSetSessionMuted,
     async (_event, input: unknown) => {
       const request = input && typeof input === "object" && !Array.isArray(input)
@@ -3498,17 +3449,17 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.attentionOpenAlert, async (_event, itemId: unknown) => {
+  handle(IPC.attentionOpenAlert, async (_event, itemId: unknown) => {
     openDesktopAlert?.(itemId);
   });
 
-  ipcMain.handle(IPC.attentionOpenItem, async (_event, input: unknown) => {
+  handle(IPC.attentionOpenItem, async (_event, input: unknown) => {
     const item = parseAttentionItem(input);
     if (!item) throw new Error("Invalid Activity item.");
     await openAttentionItem?.(item);
   });
 
-  ipcMain.handle(
+  handle(
     IPC.analyticsCapture,
     async (
       _event,
@@ -3534,11 +3485,11 @@ export function registerIpc({
       });
     },
   );
-  ipcMain.handle(
+  handle(
     IPC.analyticsGetStatus,
     async (): Promise<ProductAnalyticsStatus> => productAnalyticsService?.getStatus() ?? fallbackAnalyticsStatus(),
   );
-  ipcMain.handle(
+  handle(
     IPC.analyticsSetEnabled,
     async (_event, enabled: boolean): Promise<ProductAnalyticsStatus> => {
       fallbackAnalyticsEnabled = enabled === true;
@@ -3546,7 +3497,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.localhostProbePort,
     async (_event, args: { port: number }): Promise<boolean> => {
       return probeLocalhostPort(args?.port);
@@ -3555,7 +3506,7 @@ export function registerIpc({
 
   // Dev servers ADE noticed in terminal output. Read-only and in-memory: this
   // never probes a port, it reports what a command already printed.
-  ipcMain.handle(
+  handle(
     IPC.localhostGetDevServers,
     async (_event, args: DevServersArgs = {}): Promise<DevServersResult> => {
       return ensureBuiltInBrowser().getDevServers(args ?? {});
@@ -3565,6 +3516,7 @@ export function registerIpc({
   ipcMain.on(
     IPC.appLogDebugEvent,
     (event, arg: { event?: string; payload?: Record<string, unknown> | null }) => {
+      if (!isTrustedAdeRendererSender(event)) return;
       const ctx = getCtx();
       const rawEvent = typeof arg?.event === "string" ? arg.event.trim() : "";
       if (!rawEvent) return;
@@ -3582,15 +3534,16 @@ export function registerIpc({
   );
 
   ipcMain.on(IPC.appReportRendererMemory, (event, snapshot: unknown) => {
+    if (!isTrustedAdeRendererSender(event)) return;
     noteRendererMemory(event.sender.id, snapshot);
   });
 
-  ipcMain.handle(IPC.appGetProject, async () => {
+  handle(IPC.appGetProject, async () => {
     const ctx = getCtx();
     return ctx.hasUserSelectedProject ? ctx.project : null;
   });
 
-  ipcMain.handle(IPC.appGetWindowSession, async (event) => {
+  handle(IPC.appGetWindowSession, async (event) => {
     // The first window can load before the launch has opened its project.
     await waitForStartupProjectOpen?.();
     // The window can close while the launch is still opening its project.
@@ -3613,12 +3566,12 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.appGetWelcomeVideoState, async (): Promise<AppWelcomeVideoState> => {
+  handle(IPC.appGetWelcomeVideoState, async (): Promise<AppWelcomeVideoState> => {
     const state = readGlobalState(globalStatePath);
     return normalizeWelcomeVideoState(state.welcomeVideo);
   });
 
-  ipcMain.handle(
+  handle(
     IPC.appMarkWelcomeVideoSeen,
     async (_event, arg: { reason?: "completed" | "dismissed" } = {}): Promise<AppWelcomeVideoState> => {
       const state = readGlobalState(globalStatePath);
@@ -3637,16 +3590,16 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.appGetLaunchGateState, async () => ({
+  handle(IPC.appGetLaunchGateState, async () => ({
     resolved: launchGateResolved,
   }));
 
-  ipcMain.handle(IPC.appResolveLaunchGate, async () => {
+  handle(IPC.appResolveLaunchGate, async () => {
     launchGateResolved = true;
     return { resolved: true as const };
   });
 
-  ipcMain.handle(IPC.appSetWindowProjectTabs, async (event, arg: { rootPaths?: string[] } = {}) => {
+  handle(IPC.appSetWindowProjectTabs, async (event, arg: { rootPaths?: string[] } = {}) => {
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     const rootPaths = Array.isArray(arg?.rootPaths)
       ? arg.rootPaths.filter((rootPath): rootPath is string => typeof rootPath === "string")
@@ -3657,13 +3610,13 @@ export function registerIpc({
     return { openProjectTabs };
   });
 
-  ipcMain.handle(IPC.appNewWindow, async () => {
+  handle(IPC.appNewWindow, async () => {
     if (!createWindow) return { windowId: null };
     const result = await createWindow({ projectRoot: null });
     return { windowId: result.windowId };
   });
 
-  ipcMain.handle(
+  handle(
     IPC.appOpenProjectInNewWindow,
     async (_event, arg: { binding?: OpenProjectBinding }) => {
       const binding = arg?.binding;
@@ -3681,7 +3634,7 @@ export function registerIpc({
     return Number.isFinite(x) && Number.isFinite(y) ? { x: Math.round(x), y: Math.round(y) } : null;
   };
 
-  ipcMain.handle(
+  handle(
     IPC.appProjectTabDragStart,
     async (
       event,
@@ -3717,13 +3670,14 @@ export function registerIpc({
   );
 
   // Fire-and-forget: the source window reports the pointer on every move.
-  ipcMain.on(IPC.appProjectTabDragMove, (_event, arg: { x?: number; y?: number } | null) => {
+  ipcMain.on(IPC.appProjectTabDragMove, (event, arg: { x?: number; y?: number } | null) => {
+    if (!isTrustedAdeRendererSender(event)) return;
     const point = screenPointArg(arg);
     if (point) projectTabDrag?.move(point);
   });
 
   // A null point means the renderer cancelled the drag: end it without a drop.
-  ipcMain.handle(IPC.appProjectTabDragEnd, async (event, arg: { point?: { x?: number; y?: number } | null } = {}) => {
+  handle(IPC.appProjectTabDragEnd, async (event, arg: { point?: { x?: number; y?: number } | null } = {}) => {
     if (!projectTabDrag) return { merged: false, intoSender: false };
     const point = screenPointArg(arg?.point);
     const result = projectTabDrag.end(point, { cancelled: point == null });
@@ -3734,7 +3688,7 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.appCloseWindow, async (event, arg: { windowId?: number | null } = {}) => {
+  handle(IPC.appCloseWindow, async (event, arg: { windowId?: number | null } = {}) => {
     const requestedWindowId = Number.isFinite(arg?.windowId)
       ? Number(arg.windowId)
       : BrowserWindow.fromWebContents(event.sender)?.id ?? null;
@@ -3753,14 +3707,14 @@ export function registerIpc({
    * may claim for the built-in browser's tab; when nothing claims it, the
    * renderer asks for this instead.
    */
-  ipcMain.handle(IPC.appRequestWindowClose, async (event): Promise<{ requested: boolean }> => {
+  handle(IPC.appRequestWindowClose, async (event): Promise<{ requested: boolean }> => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return { requested: false };
     win.close();
     return { requested: true };
   });
 
-  ipcMain.handle(IPC.appOpenExternal, async (_event, arg: { url: string }): Promise<void> => {
+  handle(IPC.appOpenExternal, async (_event, arg: { url: string }): Promise<void> => {
     await openExternalUrl(arg?.url);
   });
 
@@ -3771,7 +3725,7 @@ export function registerIpc({
    * renderer-supplied string reach `shell.openExternal`. Resolving a small
    * enum to a vetted constant here keeps the allowlist closed.
    */
-  ipcMain.handle(
+  handle(
     IPC.appOpenSystemSettingsPane,
     async (_event, arg: { paneId?: unknown }): Promise<AppOpenSystemSettingsPaneResult> => {
       const paneId = arg?.paneId;
@@ -3883,7 +3837,7 @@ export function registerIpc({
     attachmentsDir: agentChatTempAttachmentDir(),
   });
 
-  ipcMain.handle(IPC.appRevealPath, async (_event, arg: { path: string }): Promise<void> => {
+  handle(IPC.appRevealPath, async (_event, arg: { path: string }): Promise<void> => {
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
     if (!raw) return;
     const ctx = getCtx();
@@ -3905,7 +3859,7 @@ export function registerIpc({
     shell.showItemInFolder(normalized);
   });
 
-  ipcMain.handle(IPC.appOpenPath, async (_event, arg: { path: string }): Promise<void> => {
+  handle(IPC.appOpenPath, async (_event, arg: { path: string }): Promise<void> => {
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
     if (!raw) return;
     const ctx = getCtx();
@@ -3935,21 +3889,20 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.appWriteClipboardText, async (_event, arg: { text: string }): Promise<void> => {
+  handle(IPC.appWriteClipboardText, async (_event, arg: { text: string }): Promise<void> => {
     const text = typeof arg?.text === "string" ? arg.text : "";
     await clipboard.writeText(text);
   });
 
-  ipcMain.handle(IPC.appReadClipboardText, async (event): Promise<string> => {
-    assertTrustedAppControlSender(event, IPC.appReadClipboardText);
+  handle(IPC.appReadClipboardText, async (): Promise<string> => {
     return (await clipboard.readText()) ?? "";
   });
 
-  ipcMain.handle(IPC.appHasClipboardImage, async (): Promise<boolean> => {
+  handle(IPC.appHasClipboardImage, async (): Promise<boolean> => {
     return !(await readClipboardImage(await readClipboardItem())).isEmpty();
   });
 
-  ipcMain.handle(IPC.appReadClipboardImage, async (): Promise<{ data: string; filename: string; mimeType: string } | null> => {
+  handle(IPC.appReadClipboardImage, async (): Promise<{ data: string; filename: string; mimeType: string } | null> => {
     const image = await readClipboardImage(await readClipboardItem());
     if (image.isEmpty()) return null;
     const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
@@ -3961,13 +3914,12 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(
+  handle(
     IPC.appConvertImageToJpeg,
     async (
       event,
       arg: { data?: string; filename?: string; mimeType?: string | null },
     ): Promise<ConvertImageToJpegResult> => {
-      assertTrustedAppControlSender(event, IPC.appConvertImageToJpeg);
       if (typeof arg?.data !== "string" || !arg.data.length) {
         throw new Error("Image data is required.");
       }
@@ -4004,7 +3956,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.appSaveClipboardImageAttachment, async (): Promise<{ path: string; mimeType: string; previewDataUrl: string | null } | null> => {
+  handle(IPC.appSaveClipboardImageAttachment, async (): Promise<{ path: string; mimeType: string; previewDataUrl: string | null } | null> => {
     const image = await readClipboardImage(await readClipboardItem());
     if (image.isEmpty()) return null;
     const encoded = encodeClipboardImageWithinCap(image, MAX_TEMP_ATTACHMENT_BYTES);
@@ -4018,7 +3970,7 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.appGetImageDataUrl, async (_event, arg: { path: string }): Promise<{ dataUrl: string }> => {
+  handle(IPC.appGetImageDataUrl, async (_event, arg: { path: string }): Promise<{ dataUrl: string }> => {
     const filePath = resolveAllowedRendererPath(arg?.path);
     // Use async fs APIs and a size pre-check so a 10 MB image read never
     // blocks the main process event loop (input dispatch, IPC, window
@@ -4029,7 +3981,7 @@ export function registerIpc({
     return { dataUrl };
   });
 
-  ipcMain.handle(IPC.appWriteClipboardImage, async (_event, arg: { path: string }): Promise<void> => {
+  handle(IPC.appWriteClipboardImage, async (_event, arg: { path: string }): Promise<void> => {
     const filePath = resolveAllowedRendererPath(arg?.path);
     // Apply the same size + magic-byte preflight as `appGetImageDataUrl` so
     // we can't hand `nativeImage.createFromPath` a giant or non-image file
@@ -4045,7 +3997,7 @@ export function registerIpc({
     await writeClipboardFlavors({ image });
   });
 
-  ipcMain.handle(
+  handle(
     IPC.appOpenPathInEditor,
     async (
       _event,
@@ -4128,11 +4080,11 @@ export function registerIpc({
   // not probe it on their own while the brain is connected, so this asks for a
   // fresh answer for that surface. Recovery and reports ask through
   // `getStatusAfterServiceProbe`.
-  ipcMain.handle(IPC.appRefreshServiceHealth, async (): Promise<void> => {
+  handle(IPC.appRefreshServiceHealth, async (): Promise<void> => {
     await localRuntimeConnectionPool?.refreshServiceHealthForView();
   });
 
-  ipcMain.handle(IPC.appGetInfo, async (): Promise<AppInfo> => {
+  handle(IPC.appGetInfo, async (): Promise<AppInfo> => {
     const localRuntimeStatus = localRuntimeConnectionPool
       ? await localRuntimeConnectionPool.getFreshStatus()
       : null;
@@ -4160,7 +4112,7 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.appGetInstalledEditors, async (): Promise<EditorTarget[]> => {
+  handle(IPC.appGetInstalledEditors, async (): Promise<EditorTarget[]> => {
     return await detectInstalledEditorTargets();
   });
 
@@ -4171,7 +4123,7 @@ export function registerIpc({
    * offers ADE's own browser and the system default, so the answer degrades to
    * "no extra browsers" rather than to an error row.
    */
-  ipcMain.handle(IPC.appGetInstalledBrowsers, async (): Promise<InstalledBrowser[]> => {
+  handle(IPC.appGetInstalledBrowsers, async (): Promise<InstalledBrowser[]> => {
     try {
       const detected = await detectBrowsersCached();
       return await Promise.all(
@@ -4194,9 +4146,8 @@ export function registerIpc({
    * agent drove. Cached per name in the main process; a miss is null, never an
    * error, because the row simply draws its glyph.
    */
-  ipcMain.handle(IPC.appGetAppIcon, async (event, arg: { name?: unknown }): Promise<string | null> => {
+  handle(IPC.appGetAppIcon, async (event, arg: { name?: unknown }): Promise<string | null> => {
     // Only ADE's own renderer may ask: the answer says whether an app bundle exists.
-    assertTrustedAppControlSender(event, IPC.appGetAppIcon);
     try {
       return await appIconDataUrlByName(typeof arg?.name === "string" ? arg.name : "");
     } catch {
@@ -4204,14 +4155,14 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(
+  handle(
     IPC.appOpenInBrowser,
     async (_event, arg: { url?: string; browserId?: string }): Promise<void> => {
       await openUrlInBrowser(typeof arg?.url === "string" ? arg.url : "", arg?.browserId);
     },
   );
 
-  ipcMain.handle(IPC.appGetResourceUsage, async (): Promise<AppResourceUsageSnapshot> => {
+  handle(IPC.appGetResourceUsage, async (): Promise<AppResourceUsageSnapshot> => {
     const ctx = getCtx();
     const contexts = getResourceUsageContexts?.() ?? [ctx];
     return getCachedAppResourceUsageSnapshot(
@@ -4223,7 +4174,7 @@ export function registerIpc({
   // Machine-level daemon health (slow-action window). Direct IPC like
   // getResourceUsage: the connection pool lives in Electron main, so there is no
   // action-domain routing and no runtime-backed null-service risk.
-  ipcMain.handle(IPC.appGetRuntimeHealth, async (): Promise<RuntimeHealthSnapshot> => {
+  handle(IPC.appGetRuntimeHealth, async (): Promise<RuntimeHealthSnapshot> => {
     return (
       localRuntimeConnectionPool?.getRuntimeHealth?.()
       ?? { slowActions24h: 0, slowActionP95Ms: null, sampledAt: new Date().toISOString() }
@@ -4237,7 +4188,7 @@ export function registerIpc({
   // restart, so there is no action-domain routing and no null-service risk.
   // Resolves only once the replacement brain answers a ping, and throws when it
   // does not — the renderer cannot observe brain readiness itself.
-  ipcMain.handle(IPC.appRestartBackgroundService, async (): Promise<void> => {
+  handle(IPC.appRestartBackgroundService, async (): Promise<void> => {
     if (!projectRecoveryService) {
       throw new Error("This window does not manage the ADE background service.");
     }
@@ -4248,7 +4199,7 @@ export function registerIpc({
   // monitor, but this computer's disk can still fill up: read the disk ADE's
   // own folder lives on. It samples only when asked, so it costs nothing idle.
   let machineDiskPressureMonitor: DiskPressureMonitor | null = null;
-  ipcMain.handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
+  handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
     let projectMonitor: DiskPressureMonitor | null = null;
     try {
       projectMonitor = getCtx().diskPressureMonitor ?? null;
@@ -4260,7 +4211,7 @@ export function registerIpc({
     return monitor.getSnapshot({ maxAgeMs: 1_000 });
   });
 
-  ipcMain.handle(IPC.storageGetSnapshot, async (
+  handle(IPC.storageGetSnapshot, async (
     _event,
     args: { forceRefresh?: boolean; measureLanes?: boolean } | undefined,
   ): Promise<StorageSnapshot> => {
@@ -4268,7 +4219,7 @@ export function registerIpc({
     return service.getSnapshot(args ?? {});
   });
 
-  ipcMain.handle(IPC.projectHealthGetReport, async (
+  handle(IPC.projectHealthGetReport, async (
     _event,
     args: { forceRefresh?: boolean } | undefined,
   ): Promise<ProjectHealthReport> => {
@@ -4276,29 +4227,29 @@ export function registerIpc({
     return service.getReport(args ?? {});
   });
 
-  ipcMain.handle(IPC.projectHealthFix, async (_event, args: ProjectHealthFixArgs): Promise<ProjectHealthFixResult> => {
+  handle(IPC.projectHealthFix, async (_event, args: ProjectHealthFixArgs): Promise<ProjectHealthFixResult> => {
     const service = requireAppContextValue(getCtx(), "projectHealthService");
     const result = await service.fix(args);
     captureProjectDataRecovery("project_health_fix", result.ok ? "completed" : "failed");
     return result;
   });
 
-  ipcMain.handle(IPC.storageCompressNow, async (): Promise<StorageCompressionResult> => {
+  handle(IPC.storageCompressNow, async (): Promise<StorageCompressionResult> => {
     const service = requireAppContextValue(getCtx(), "storageInsightsService");
     return service.compressNow();
   });
 
-  ipcMain.handle(IPC.storageRunMaintenanceNow, async (): Promise<MaintenanceRunReport> => {
+  handle(IPC.storageRunMaintenanceNow, async (): Promise<MaintenanceRunReport> => {
     const service = requireAppContextValue(getCtx(), "storageInsightsService");
     return service.runMaintenanceNow();
   });
 
-  ipcMain.handle(IPC.storageDeletedLaneChatsSummary, async (): Promise<DeletedLaneChatsSummary> => {
+  handle(IPC.storageDeletedLaneChatsSummary, async (): Promise<DeletedLaneChatsSummary> => {
     const service = requireAppContextValue(getCtx(), "storageInsightsService");
     return service.deletedLaneChatsSummary();
   });
 
-  ipcMain.handle(IPC.storageLaneBuildOutputRemoved, async (
+  handle(IPC.storageLaneBuildOutputRemoved, async (
     _event,
     arg: { laneId?: string },
   ): Promise<StorageItem["buildOutputRemoved"] | null> => {
@@ -4308,7 +4259,7 @@ export function registerIpc({
     return await service.laneBuildOutputRemoved(laneId);
   });
 
-  ipcMain.handle(IPC.storageCleanupPreview, async (
+  handle(IPC.storageCleanupPreview, async (
     _event,
     targets: StorageCleanupTarget[],
   ): Promise<StorageCleanupPreview> => {
@@ -4316,7 +4267,7 @@ export function registerIpc({
     return service.cleanupPreview(targets);
   });
 
-  ipcMain.handle(IPC.storageCleanup, async (
+  handle(IPC.storageCleanup, async (
     _event,
     args: { targets: StorageCleanupTarget[]; preview: StorageCleanupPreview },
   ): Promise<StorageCleanupResult> => {
@@ -4324,7 +4275,7 @@ export function registerIpc({
     return service.cleanup(args.targets, { preview: args.preview });
   });
 
-  ipcMain.handle(IPC.appGetLatestRelease, async (): Promise<LatestReleaseInfo | null> => {
+  handle(IPC.appGetLatestRelease, async (): Promise<LatestReleaseInfo | null> => {
     if (app.isPackaged) {
       const snapshot = getCtx().autoUpdateService?.getSnapshot();
       const version = snapshot?.latestKnownVersion?.trim() ?? "";
@@ -4357,7 +4308,7 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.projectOpenRepo, async (
+  handle(IPC.projectOpenRepo, async (
     event,
     args: { rootPath?: string; trustGitOwnership?: boolean } = {},
   ): Promise<ProjectInfo | null> => {
@@ -4396,7 +4347,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(
+  handle(
     IPC.projectChooseDirectory,
     async (event, args: { title?: string; defaultPath?: string } = {}): Promise<string | null> => {
       const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
@@ -4411,7 +4362,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(
+  handle(
     IPC.projectBrowseDirectories,
     async (_event, args: ProjectBrowseInput = {}): Promise<ProjectBrowseResult> =>
       browseProjectDirectories(args)
@@ -4457,7 +4408,7 @@ export function registerIpc({
     return promise;
   };
 
-  ipcMain.handle(
+  handle(
     IPC.projectGetDetail,
     async (_event, args: { rootPath: string }): Promise<ProjectDetail> => {
       const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
@@ -4466,7 +4417,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(
+  handle(
     IPC.projectInspectPath,
     async (_event, arg: { path?: unknown; fresh?: unknown } = {}): Promise<ProjectPathInspection> =>
       inspectProjectPathCached(String(arg?.path ?? ""), { fresh: arg?.fresh === true }),
@@ -4528,7 +4479,7 @@ export function registerIpc({
     return resolveProjectIcon(root, resolveOptions);
   };
 
-  ipcMain.handle(
+  handle(
     IPC.projectResolveIcon,
     async (_event, args: { rootPath: string }): Promise<ProjectIcon> => {
       const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
@@ -4550,7 +4501,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.projectChooseIcon,
     async (event, args: { rootPath: string }): Promise<ProjectIcon | null> => {
       const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
@@ -4591,7 +4542,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.projectRemoveIcon,
     async (_event, args: { rootPath: string }): Promise<ProjectIcon> => {
       const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
@@ -4610,12 +4561,12 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.projectOpenAdeFolder, async (): Promise<void> => {
+  handle(IPC.projectOpenAdeFolder, async (): Promise<void> => {
     const ctx = getCtx();
     await shell.openPath(ctx.adeDir);
   });
 
-  ipcMain.handle(IPC.projectClearLocalData, async (_event, arg: ClearLocalAdeDataArgs = {}): Promise<ClearLocalAdeDataResult> => {
+  handle(IPC.projectClearLocalData, async (_event, arg: ClearLocalAdeDataArgs = {}): Promise<ClearLocalAdeDataResult> => {
     const ctx = getCtx();
     if (ctx.adeProjectService) {
       return ctx.adeProjectService.clearLocalData(arg);
@@ -4684,7 +4635,7 @@ export function registerIpc({
     recentProjectSummaryCache = null;
   };
 
-  ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> =>
+  handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> =>
     listRecentProjectSummaries()
   );
 
@@ -4694,13 +4645,13 @@ export function registerIpc({
   const localRecentRoots = (): string[] => (readGlobalState(globalStatePath).recentProjects ?? [])
     .filter((entry) => !entry.remote)
     .map((entry) => entry.rootPath);
-  ipcMain.handle(IPC.appDiscoverOnboardingProjects, async (): Promise<OnboardingProjectDiscovery> =>
+  handle(IPC.appDiscoverOnboardingProjects, async (): Promise<OnboardingProjectDiscovery> =>
     discoverOnboardingProjects({ knownRoots: localRecentRoots(), logger: getCtx().logger }));
 
   // A folder the user picked in setup, as the project it belongs to (a
   // subfolder resolves to its checkout, a lane or worktree to its project), or
   // null when it is not in a git checkout. Reads a few files; no git.
-  ipcMain.handle(
+  handle(
     IPC.appResolveOnboardingFolder,
     async (_event, arg: { folder?: unknown } = {}): Promise<OnboardingProjectCandidate | null> => {
       const folder = typeof arg?.folder === "string" ? arg.folder.trim() : "";
@@ -4711,7 +4662,7 @@ export function registerIpc({
 
   // One project's importable chats on this computer, for setup's per-chat
   // picker. Read when the picker opens, before any project is open.
-  ipcMain.handle(
+  handle(
     IPC.appListOnboardingProjectChats,
     async (_event, arg: { rootPath?: unknown } = {}): Promise<OnboardingProjectChat[]> => {
       const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
@@ -4720,7 +4671,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.appAddOnboardingProjects,
     async (_event, arg: { rootPaths?: unknown } = {}): Promise<RecentProjectSummary[]> => {
       const roots = (Array.isArray(arg?.rootPaths) ? arg.rootPaths : [])
@@ -4749,7 +4700,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.projectFindForRepo,
     async (_event, arg: { repoOwner?: string; repoName?: string } = {}): Promise<{ rootPath: string; displayName: string } | null> => {
       const repoOwner = typeof arg?.repoOwner === "string" ? arg.repoOwner.trim() : "";
@@ -4837,7 +4788,7 @@ export function registerIpc({
     localRuntimeConnectionPool,
   });
 
-  ipcMain.handle(
+  handle(
     IPC.projectCreateLocal,
     async (_event, arg: CreateProjectInput): Promise<CreateProjectResult> => {
       const name = typeof arg?.name === "string" ? arg.name.trim() : "";
@@ -4853,7 +4804,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.projectClone,
     async (_event, arg: CloneProjectInput): Promise<CloneProjectResult> => {
       const url = typeof arg?.url === "string" ? arg.url.trim() : "";
@@ -4893,12 +4844,12 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.projectGetDefaultParentDir, async (): Promise<string> => {
+  handle(IPC.projectGetDefaultParentDir, async (): Promise<string> => {
     const ctx = getCtx();
     return ctx.projectScaffoldService.getDefaultParentDir(listLocalRecentProjectSummaries());
   });
 
-  ipcMain.handle(IPC.projectCloseCurrent, async (): Promise<void> => {
+  handle(IPC.projectCloseCurrent, async (): Promise<void> => {
     await closeCurrentProject();
   });
 
@@ -4952,7 +4903,7 @@ export function registerIpc({
     }
   };
 
-  ipcMain.handle(IPC.projectForgetRecent, async (_event, arg: { rootPath?: string; key?: string }): Promise<RecentProjectSummary[]> => {
+  handle(IPC.projectForgetRecent, async (_event, arg: { rootPath?: string; key?: string }): Promise<RecentProjectSummary[]> => {
     // `key` is the stable recent identity (rootPath for local, remote:… for
     // remote). Older callers pass only `rootPath`; for local entries the key
     // and the rootPath are identical, so this stays backward compatible.
@@ -4983,13 +4934,13 @@ export function registerIpc({
     logger: { warn: (event, fields) => getCtx().logger.warn(event, fields) },
   });
 
-  ipcMain.handle(IPC.projectInspectRemoval, async (_event, arg: { rootPath?: string }): Promise<ProjectRemovalReport> => {
+  handle(IPC.projectInspectRemoval, async (_event, arg: { rootPath?: string }): Promise<ProjectRemovalReport> => {
     const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
     if (!rootPath) throw new Error("Project path is required.");
     return await projectRemoval.inspect(rootPath);
   });
 
-  ipcMain.handle(
+  handle(
     IPC.projectRemoveCopy,
     async (_event, arg: { rootPath?: string; request?: Partial<ProjectRemovalRequest> }): Promise<ProjectRemovalOutcome> => {
       const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
@@ -5002,7 +4953,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.projectSetRecentPinned, async (_event, arg: { key?: string; pinned?: boolean }): Promise<RecentProjectSummary[]> => {
+  handle(IPC.projectSetRecentPinned, async (_event, arg: { key?: string; pinned?: boolean }): Promise<RecentProjectSummary[]> => {
     const key = typeof arg?.key === "string" ? arg.key.trim() : "";
     if (!key) {
       return listRecentProjectSummaries();
@@ -5014,7 +4965,7 @@ export function registerIpc({
     return listRecentProjectSummaries({ force: true });
   });
 
-  ipcMain.handle(IPC.projectReorderRecent, async (_event, arg: { orderedPaths: string[] }): Promise<RecentProjectSummary[]> => {
+  handle(IPC.projectReorderRecent, async (_event, arg: { orderedPaths: string[] }): Promise<RecentProjectSummary[]> => {
     const orderedPaths = Array.isArray(arg?.orderedPaths) ? arg.orderedPaths.filter((p): p is string => typeof p === "string" && p.length > 0) : [];
     if (orderedPaths.length === 0) {
       return listRecentProjectSummaries();
@@ -5026,7 +4977,7 @@ export function registerIpc({
     return listRecentProjectSummaries({ force: true });
   });
 
-  ipcMain.handle(IPC.projectSwitchToPath, async (event, arg: { rootPath: string }): Promise<ProjectInfo> => {
+  handle(IPC.projectSwitchToPath, async (event, arg: { rootPath: string }): Promise<ProjectInfo> => {
     try {
       const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       if (!rootPath) return getCtx().project;
@@ -5086,7 +5037,7 @@ export function registerIpc({
     return { projectRoot, service: projectRecoveryService };
   };
 
-  ipcMain.handle(IPC.recoveryDiagnose, async (_event, arg: { projectRoot: string }): Promise<ProjectRecoveryDiagnosis> => {
+  handle(IPC.recoveryDiagnose, async (_event, arg: { projectRoot: string }): Promise<ProjectRecoveryDiagnosis> => {
     const { projectRoot, service } = recoveryTarget(arg);
     return await service.diagnose(projectRoot);
   });
@@ -5095,7 +5046,7 @@ export function registerIpc({
   // step is ALSO pushed to the calling window as it finishes. A repair can
   // legitimately wait a minute or more for the background service to answer,
   // and a spinner with no steps for that long reads as a hang.
-  ipcMain.handle(IPC.recoveryRepair, async (event, arg: { projectRoot: string }): Promise<ProjectRepairReport> => {
+  handle(IPC.recoveryRepair, async (event, arg: { projectRoot: string }): Promise<ProjectRepairReport> => {
     const { projectRoot, service } = recoveryTarget(arg);
     return await service.repair(projectRoot, {
       onStep: (step) => {
@@ -5126,7 +5077,7 @@ export function registerIpc({
     }
   };
 
-  ipcMain.handle(IPC.recoveryRestoreProjectData, async (_event, arg: { projectRoot: string }): Promise<ProjectDataRestoreResult> => {
+  handle(IPC.recoveryRestoreProjectData, async (_event, arg: { projectRoot: string }): Promise<ProjectDataRestoreResult> => {
     const { projectRoot, service } = recoveryTarget(arg);
     let result: ProjectDataRestoreResult;
     try {
@@ -5139,7 +5090,7 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.recoveryStartFresh, async (_event, arg: { projectRoot: string }): Promise<void> => {
+  handle(IPC.recoveryStartFresh, async (_event, arg: { projectRoot: string }): Promise<void> => {
     const { projectRoot, service } = recoveryTarget(arg);
     try {
       await service.startFresh(projectRoot);
@@ -5164,12 +5115,12 @@ export function registerIpc({
     if (typeof value !== "string" || !path.isAbsolute(value.trim())) throw new Error("Pick a folder for the project.");
     return path.resolve(value.trim());
   };
-  ipcMain.handle(IPC.projectMoveListVolumes, async () => projectMoveController?.listVolumes() ?? []);
-  ipcMain.handle(IPC.projectMovePreflight, async (_event, arg: { projectRoot?: unknown; destinationRoot?: unknown }) => {
+  handle(IPC.projectMoveListVolumes, async () => projectMoveController?.listVolumes() ?? []);
+  handle(IPC.projectMovePreflight, async (_event, arg: { projectRoot?: unknown; destinationRoot?: unknown }) => {
     const { root, controller } = projectMoveRoot(arg?.projectRoot);
     return controller.preflight({ projectRoot: root, destinationRoot: requireDestination(arg?.destinationRoot) });
   });
-  ipcMain.handle(IPC.projectMoveStart, async (event, arg: { projectRoot?: unknown; destinationRoot?: unknown; moveAgentHistory?: unknown; copyDependencies?: unknown }) => {
+  handle(IPC.projectMoveStart, async (event, arg: { projectRoot?: unknown; destinationRoot?: unknown; moveAgentHistory?: unknown; copyDependencies?: unknown }) => {
     const { root, controller } = projectMoveRoot(arg?.projectRoot);
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     const result = await controller.start(
@@ -5186,13 +5137,13 @@ export function registerIpc({
     if (result.record) captureProjectDataRecovery("project_move", result.ok ? "completed" : "failed");
     return result;
   });
-  ipcMain.handle(IPC.projectMoveStatus, async (_event, arg: { projectRoot?: unknown }) => {
+  handle(IPC.projectMoveStatus, async (_event, arg: { projectRoot?: unknown }) => {
     if (!projectMoveController) return null;
     const { root, controller } = projectMoveRoot(arg?.projectRoot);
     return controller.status(root);
   });
-  ipcMain.handle(IPC.projectMoveAttention, async () => projectMoveController?.attention() ?? { records: [], nextReminderAt: null });
-  ipcMain.handle(IPC.projectMoveCleanup, async (_event, arg: ProjectMoveCleanupArgs) => {
+  handle(IPC.projectMoveAttention, async () => projectMoveController?.attention() ?? { records: [], nextReminderAt: null });
+  handle(IPC.projectMoveCleanup, async (_event, arg: ProjectMoveCleanupArgs) => {
     if (!projectMoveController) throw new Error("Moving projects isn't available here.");
     if (!arg || typeof arg.moveId !== "string") throw new Error("A move is required.");
     if (arg.choice === "remind" && !(typeof arg.remindInMs === "number" && Number.isFinite(arg.remindInMs))) {
@@ -5201,12 +5152,12 @@ export function registerIpc({
     if (arg.choice !== "delete" && arg.choice !== "remind" && arg.choice !== "keep") throw new Error("Unknown choice.");
     return projectMoveController.cleanup(arg);
   });
-  ipcMain.handle(IPC.projectMoveReveal, async (_event, arg: { moveId?: unknown; which?: unknown }) => {
+  handle(IPC.projectMoveReveal, async (_event, arg: { moveId?: unknown; which?: unknown }) => {
     if (!projectMoveController || typeof arg?.moveId !== "string") return;
     const target = projectMoveController.revealTarget(arg.moveId, arg.which === "original" ? "original" : "moved");
     if (target) shell.showItemInFolder(target);
   });
-  ipcMain.handle(IPC.projectMoveChooseFolder, async (event, arg: { defaultPath?: unknown }) => {
+  handle(IPC.projectMoveChooseFolder, async (event, arg: { defaultPath?: unknown }) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     const options: Electron.OpenDialogOptions = {
       title: "Choose where to move the project",
@@ -5221,7 +5172,7 @@ export function registerIpc({
   // With no root: the project that failed to reopen at launch. A window asks
   // when it loads and whenever its project changes, so a reload or a second
   // window still shows the recovery screen.
-  ipcMain.handle(IPC.recoveryProjectDataStatus, async (_event, arg?: { projectRoot?: string }): Promise<ProjectDataStatus | null> => {
+  handle(IPC.recoveryProjectDataStatus, async (_event, arg?: { projectRoot?: string }): Promise<ProjectDataStatus | null> => {
     if (!projectRecoveryService) return null;
     if (typeof arg?.projectRoot !== "string" || !arg.projectRoot.trim()) {
       await waitForStartupProjectOpen?.();
@@ -5234,7 +5185,7 @@ export function registerIpc({
   // The one place "Allow in the Background" can be switched back on. Apple's
   // own opener first (it lands on the right pane on every macOS that has
   // one); the settings URL is the fallback for a Mac where the bridge fails.
-  ipcMain.handle(IPC.recoveryOpenBackgroundSettings, async (): Promise<{ opened: boolean }> => {
+  handle(IPC.recoveryOpenBackgroundSettings, async (): Promise<{ opened: boolean }> => {
     if (process.platform !== "darwin") return { opened: false };
     const openedViaServiceManagement = await new Promise<boolean>((resolve) => {
       execFile(
@@ -5255,14 +5206,14 @@ export function registerIpc({
 
   // The hard reset. The plan and the work both run in the CLI engine; this
   // process only shows the plan, hands off, and gets out of the way.
-  ipcMain.handle(IPC.machineResetPlan, async (): Promise<MachineResetPlan> => {
+  handle(IPC.machineResetPlan, async (): Promise<MachineResetPlan> => {
     return await planMachineResetFromDesktop(app.getVersion());
   });
 
   // One confirmation at a time: a second call while the dialog is up would
   // otherwise start a second detached reset once both are answered.
   let machineResetConfirmPending = false;
-  ipcMain.handle(IPC.machineResetStart, async (event, arg: MachineResetOptions): Promise<{ started: boolean; cancelled?: boolean; error?: string }> => {
+  handle(IPC.machineResetStart, async (event, arg: MachineResetOptions): Promise<{ started: boolean; cancelled?: boolean; error?: string }> => {
     const rescue = arg?.rescue === "move" || arg?.rescue === "none" ? arg.rescue : "commit";
     const rescueDir = typeof arg?.rescueDir === "string" && arg.rescueDir.trim() ? path.resolve(arg.rescueDir.trim()) : null;
     // The typed RESET lives in the renderer, which this process does not
@@ -5297,7 +5248,7 @@ export function registerIpc({
     return { started: true };
   });
 
-  ipcMain.handle(IPC.machineResetChooseRescueDir, async (event): Promise<string | null> => {
+  handle(IPC.machineResetChooseRescueDir, async (event): Promise<string | null> => {
     const owner = BrowserWindow.fromWebContents(event.sender);
     const options: Electron.OpenDialogOptions = {
       title: "Where should ADE move the lane folders?",
@@ -5369,7 +5320,7 @@ export function registerIpc({
     );
   };
 
-  ipcMain.handle(
+  handle(
     IPC.diagnosticsOpenIssue,
     async (_event, arg: DiagnosticReportRequestPayload): Promise<DiagnosticReportPayload> => {
       const result = await buildDiagnosticsReport(arg);
@@ -5419,7 +5370,7 @@ export function registerIpc({
    * already has open, or none. The manual `openIssue` path is unchanged: there
    * a person is choosing to file about the screen they are looking at.
    */
-  ipcMain.handle(
+  handle(
     IPC.diagnosticsAutoReport,
     async (_event, arg: DiagnosticReportRequestPayload | undefined): Promise<void> => {
       const code = typeof arg?.code === "string" ? arg.code : "";
@@ -5451,7 +5402,7 @@ export function registerIpc({
    * runtime mode without it): the caller renders a plain sentence instead of
    * an exception it would have to translate.
    */
-  ipcMain.handle(
+  handle(
     IPC.diagnosticsSendManual,
     async (
       _event,
@@ -5505,10 +5456,10 @@ export function registerIpc({
       manualLimit: MAX_MANUAL_DIAGNOSTICS_PER_WINDOW,
     };
 
-  ipcMain.handle(IPC.diagnosticsGetSharing, async (): Promise<DiagnosticsSharingStatus> =>
+  handle(IPC.diagnosticsGetSharing, async (): Promise<DiagnosticsSharingStatus> =>
     diagnosticsSharingStatus());
 
-  ipcMain.handle(
+  handle(
     IPC.diagnosticsSetSharing,
     async (_event, arg: { enabled?: boolean } | undefined): Promise<DiagnosticsSharingStatus> => {
       autoDiagnosticsService?.setEnabled(arg?.enabled === true);
@@ -5526,7 +5477,7 @@ export function registerIpc({
    * (`diagnosticsAckAutoSent`), and that is the only thing that retires a
    * notice.
    */
-  ipcMain.handle(IPC.diagnosticsFlushAutoSent, async (event): Promise<void> => {
+  handle(IPC.diagnosticsFlushAutoSent, async (event): Promise<void> => {
     const pending = autoDiagnosticsService?.listPendingNotices() ?? [];
     for (const notice of pending) {
       try {
@@ -5542,7 +5493,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(
+  handle(
     IPC.diagnosticsAckAutoSent,
     async (_event, arg: { references?: unknown } | undefined): Promise<void> => {
       const references = Array.isArray(arg?.references)
@@ -5572,7 +5523,7 @@ export function registerIpc({
    * present for. Allowing only the desktop's root left "View" on every brain
    * toast throwing on click.
    */
-  ipcMain.handle(
+  handle(
     IPC.diagnosticsRevealReport,
     async (_event, arg: { reportPath?: string } | undefined): Promise<void> => {
       const raw = typeof arg?.reportPath === "string" ? arg.reportPath.trim() : "";
@@ -5589,37 +5540,37 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.projectStateGetSnapshot, async (): Promise<AdeProjectSnapshot> => {
+  handle(IPC.projectStateGetSnapshot, async (): Promise<AdeProjectSnapshot> => {
     const ctx = getCtx();
     if (!ctx.adeProjectService) throw new Error("Project state service unavailable.");
     return ctx.adeProjectService.getSnapshot();
   });
 
-  ipcMain.handle(IPC.projectStateInitializeOrRepair, async (): Promise<AdeCleanupResult> => {
+  handle(IPC.projectStateInitializeOrRepair, async (): Promise<AdeCleanupResult> => {
     const ctx = getCtx();
     if (!ctx.adeProjectService) throw new Error("Project state service unavailable.");
     return ctx.adeProjectService.initializeOrRepair();
   });
 
-  ipcMain.handle(IPC.projectStateRunIntegrityCheck, async (): Promise<AdeCleanupResult> => {
+  handle(IPC.projectStateRunIntegrityCheck, async (): Promise<AdeCleanupResult> => {
     const ctx = getCtx();
     if (!ctx.adeProjectService) throw new Error("Project state service unavailable.");
     return ctx.adeProjectService.runIntegrityCheck();
   });
 
-  ipcMain.handle(IPC.keybindingsGet, async (): Promise<KeybindingsSnapshot> => {
+  handle(IPC.keybindingsGet, async (): Promise<KeybindingsSnapshot> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["keybindingsService"] as const);
     return ctx.keybindingsService.get();
   });
 
-  ipcMain.handle(IPC.keybindingsSet, async (_event, arg: { overrides: KeybindingOverride[] }): Promise<KeybindingsSnapshot> => {
+  handle(IPC.keybindingsSet, async (_event, arg: { overrides: KeybindingOverride[] }): Promise<KeybindingsSnapshot> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["keybindingsService"] as const);
     return ctx.keybindingsService.set({ overrides: arg?.overrides ?? [] });
   });
 
-  ipcMain.handle(IPC.aiGetStatus, async (_event, arg?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus> => {
+  handle(IPC.aiGetStatus, async (_event, arg?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<AiSettingsStatus> => {
     const ctx = getCtx();
     const aiIntegrationService = ctx.aiIntegrationService;
     if (!aiIntegrationService) {
@@ -5688,7 +5639,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.aiGetOpenCodeRuntimeDiagnostics, async (): Promise<OpenCodeRuntimeSnapshot> => {
+  handle(IPC.aiGetOpenCodeRuntimeDiagnostics, async (): Promise<OpenCodeRuntimeSnapshot> => {
     const { getOpenCodeRuntimeDiagnostics } = await import("../opencode/openCodeServer");
     const { servers } = getOpenCodeRuntimeDiagnostics();
     const sharedCount = servers.filter((server) => server.shared).length;
@@ -5698,7 +5649,7 @@ export function registerIpc({
   // Cheap binary-only check (no probe, no server boot). Used by the renderer
   // for instant first-paint of OpenCode-gated UI without waiting on the full
   // ~2s getStatus() roundtrip.
-  ipcMain.handle(IPC.aiIsOpenCodeInstalled, async (): Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }> => {
+  handle(IPC.aiIsOpenCodeInstalled, async (): Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }> => {
     const { resolveOpenCodeBinary } = await import("../opencode/openCodeBinaryManager");
     const info = resolveOpenCodeBinary();
     return { installed: Boolean(info.path), source: info.source };
@@ -5706,12 +5657,12 @@ export function registerIpc({
 
   // The unpinned route: this machine's pinned Muse binary. A pinned call goes
   // to the owning machine's `ai.museBinaryStatus` / `ai.ensureMuseBinary`.
-  ipcMain.handle(IPC.aiMuseBinaryStatus, async (): Promise<MuseBinaryStatus> => {
+  handle(IPC.aiMuseBinaryStatus, async (): Promise<MuseBinaryStatus> => {
     const { getMuseBinaryStatus } = await import("../ai/museExecutable");
     return getMuseBinaryStatus();
   });
 
-  ipcMain.handle(IPC.aiEnsureMuseBinary, async (): Promise<MuseBinaryStatus> => {
+  handle(IPC.aiEnsureMuseBinary, async (): Promise<MuseBinaryStatus> => {
     const { startMuseBinaryFetch } = await import("../ai/museExecutable");
     return startMuseBinaryFetch();
   });
@@ -5719,7 +5670,7 @@ export function registerIpc({
   // The unpinned route: ADE's pinned copy of a provider's tool on this
   // machine. A pinned call goes to the owning machine's `ai.pinnedToolStatus`
   // / `ai.pinnedToolDownload`.
-  ipcMain.handle(IPC.aiPinnedToolStatus, async (_event, arg: { provider: string }): Promise<PinnedProviderToolStatus> => {
+  handle(IPC.aiPinnedToolStatus, async (_event, arg: { provider: string }): Promise<PinnedProviderToolStatus> => {
     const { getPinnedProviderToolStatus } = await import("../ai/pinnedProviderTools");
     return getPinnedProviderToolStatus(arg.provider);
   });
@@ -5727,7 +5678,7 @@ export function registerIpc({
   // The unpinned route for a provider page's Initial context window when this window has
   // no runtime; a pinned call goes to the owning machine's
   // `ai.getProviderContextInventory`.
-  ipcMain.handle(IPC.aiGetProviderContextInventory, async (_event, arg: unknown) => {
+  handle(IPC.aiGetProviderContextInventory, async (_event, arg: unknown) => {
     const ctx = getCtx();
     const { getProviderContextInventory } = await import("../ai/providerContextInventory");
     return getProviderContextInventory(
@@ -5747,7 +5698,7 @@ export function registerIpc({
    * out on purpose. This one accepts only those homes, the project and ADE's
    * own folders (see providerContextReveal.ts).
    */
-  ipcMain.handle(IPC.aiRevealProviderContextPath, async (_event, arg: { path?: string } | undefined): Promise<void> => {
+  handle(IPC.aiRevealProviderContextPath, async (_event, arg: { path?: string } | undefined): Promise<void> => {
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
     if (!raw) return;
     const { providerContextRevealRoots, resolveProviderContextRevealTarget } = await import("../ai/providerContextReveal");
@@ -5759,27 +5710,27 @@ export function registerIpc({
     shell.showItemInFolder(resolveProviderContextRevealTarget(roots, raw));
   });
 
-  ipcMain.handle(IPC.aiPinnedToolDownload, async (_event, arg: { provider: string }): Promise<PinnedProviderToolStatus> => {
+  handle(IPC.aiPinnedToolDownload, async (_event, arg: { provider: string }): Promise<PinnedProviderToolStatus> => {
     const { startPinnedProviderToolDownload } = await import("../ai/pinnedProviderTools");
     return startPinnedProviderToolDownload(arg.provider);
   });
 
   // The unpinned route for Antigravity sign-in on this machine; a pinned call
   // goes to the owning machine's `ai.antigravitySignIn*` actions.
-  ipcMain.handle(IPC.aiAntigravitySignInStatus, async (): Promise<AntigravitySignInState> => {
+  handle(IPC.aiAntigravitySignInStatus, async (): Promise<AntigravitySignInState> => {
     const { getAntigravitySignInState } = await import("../ai/antigravitySignIn");
     return getAntigravitySignInState();
   });
-  ipcMain.handle(IPC.aiAntigravitySignInStart, async (_event, arg: AntigravitySignInStartArgs): Promise<AntigravitySignInState> => {
+  handle(IPC.aiAntigravitySignInStart, async (_event, arg: AntigravitySignInStartArgs): Promise<AntigravitySignInState> => {
     const { startAntigravitySignIn, setAntigravitySignInLogger } = await import("../ai/antigravitySignIn");
     setAntigravitySignInLogger(getCtx().logger);
     return startAntigravitySignIn(arg);
   });
-  ipcMain.handle(IPC.aiAntigravitySignInComplete, async (_event, arg: AntigravitySignInCompleteArgs): Promise<AntigravitySignInState> => {
+  handle(IPC.aiAntigravitySignInComplete, async (_event, arg: AntigravitySignInCompleteArgs): Promise<AntigravitySignInState> => {
     const { completeAntigravitySignIn } = await import("../ai/antigravitySignIn");
     return completeAntigravitySignIn(arg);
   });
-  ipcMain.handle(IPC.aiAntigravitySignInCancel, async (_event, arg: AntigravitySignInCancelArgs): Promise<AntigravitySignInState> => {
+  handle(IPC.aiAntigravitySignInCancel, async (_event, arg: AntigravitySignInCancelArgs): Promise<AntigravitySignInState> => {
     const { cancelAntigravitySignIn } = await import("../ai/antigravitySignIn");
     return cancelAntigravitySignIn(arg);
   });
@@ -5787,28 +5738,28 @@ export function registerIpc({
   // The unpinned route for an agent CLI's sign-in (Grok, Devin, Muse,
   // Copilot, Droid, Kimi) on this machine; a pinned call goes to the owning
   // machine's `ai.cliLogin*` actions.
-  ipcMain.handle(IPC.aiCliLoginStart, async (_event, arg: AgentCliLoginStartArgs): Promise<AgentCliLoginStatus> => {
+  handle(IPC.aiCliLoginStart, async (_event, arg: AgentCliLoginStartArgs): Promise<AgentCliLoginStatus> => {
     const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
     return getMachineAgentCliLoginRunner().start(arg);
   });
-  ipcMain.handle(IPC.aiCliLoginStatus, async (_event, arg: AgentCliLoginRefArgs): Promise<AgentCliLoginStatus> => {
+  handle(IPC.aiCliLoginStatus, async (_event, arg: AgentCliLoginRefArgs): Promise<AgentCliLoginStatus> => {
     const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
     // A sign-in that succeeded already dropped that provider's cached answers
     // (the runner's `onSignedIn`); other providers keep theirs.
     return getMachineAgentCliLoginRunner().status(arg?.loginId);
   });
-  ipcMain.handle(IPC.aiCliLoginSubmitCode, async (_event, arg: AgentCliLoginSubmitCodeArgs): Promise<AgentCliLoginStatus> => {
+  handle(IPC.aiCliLoginSubmitCode, async (_event, arg: AgentCliLoginSubmitCodeArgs): Promise<AgentCliLoginStatus> => {
     const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
     return getMachineAgentCliLoginRunner().submitCode(arg?.loginId, arg?.code);
   });
-  ipcMain.handle(IPC.aiCliLoginCancel, async (_event, arg: AgentCliLoginRefArgs): Promise<AgentCliLoginStatus> => {
+  handle(IPC.aiCliLoginCancel, async (_event, arg: AgentCliLoginRefArgs): Promise<AgentCliLoginStatus> => {
     const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
     return getMachineAgentCliLoginRunner().cancel(arg?.loginId);
   });
 
   // The unpinned route for Settings > Muse Code on this machine; a pinned call
   // goes to the owning machine's `ai.museSettings` / `ai.museSettingsClose`.
-  ipcMain.handle(IPC.aiMuseSettings, async (_event, args: unknown): Promise<MuseSettingsResult> => {
+  handle(IPC.aiMuseSettings, async (_event, args: unknown): Promise<MuseSettingsResult> => {
     const { runMuseSettingsFor, parseMuseSettingsRunArgs } = await import("../ai/museSettingsService");
     const ctx = getCtx();
     return runMuseSettingsFor(
@@ -5821,7 +5772,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.aiMuseSettingsClose, async (_event, args: { handleId?: string }): Promise<{ ok: true }> => {
+  handle(IPC.aiMuseSettingsClose, async (_event, args: { handleId?: string }): Promise<{ ok: true }> => {
     const { closeMuseSettingsHost } = await import("../ai/museSettingsService");
     const handleId = typeof args?.handleId === "string" ? args.handleId.trim() : "";
     if (handleId) await closeMuseSettingsHost(handleId);
@@ -5831,19 +5782,19 @@ export function registerIpc({
   // The fetched agent-CLI cache belongs to THIS machine's install, not to the
   // bound project's runtime, so these are deliberately not routed through a
   // runtime action the way the project-scoped `ai` calls are.
-  ipcMain.handle(IPC.aiGetToolsCache, (): AgentToolsCacheSnapshot => {
+  handle(IPC.aiGetToolsCache, (): AgentToolsCacheSnapshot => {
     return getCtx().agentToolsCacheService?.getSnapshot() ?? EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT;
   });
 
   // Retry entry point for onboarding. `ensureMissing` coalesces, so a user
   // mashing Retry cannot start a second download of the same tarball.
-  ipcMain.handle(IPC.aiEnsureToolsCache, async (): Promise<AgentToolsCacheSnapshot> => {
+  handle(IPC.aiEnsureToolsCache, async (): Promise<AgentToolsCacheSnapshot> => {
     const service = getCtx().agentToolsCacheService;
     if (!service) return EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT;
     return service.ensureMissing();
   });
 
-  ipcMain.handle(IPC.aiStoreApiKey, async (_event, arg: { provider: string; key: string }): Promise<void> => {
+  handle(IPC.aiStoreApiKey, async (_event, arg: { provider: string; key: string }): Promise<void> => {
     const ctx = getCtx();
     const { storeApiKey } = await import("../ai/apiKeyStore");
     storeApiKey(arg.provider, arg.key);
@@ -5859,7 +5810,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.aiDeleteApiKey, async (_event, arg: { provider: string }): Promise<void> => {
+  handle(IPC.aiDeleteApiKey, async (_event, arg: { provider: string }): Promise<void> => {
     const ctx = getCtx();
     const { deleteApiKey } = await import("../ai/apiKeyStore");
     deleteApiKey(arg.provider);
@@ -5875,7 +5826,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.aiListApiKeys, async (): Promise<string[]> => {
+  handle(IPC.aiListApiKeys, async (): Promise<string[]> => {
     const { listStoredProviders } = await import("../ai/apiKeyStore");
     return listStoredProviders();
   });
@@ -5889,7 +5840,7 @@ export function registerIpc({
    * Nothing here returns a secret: `get` answers with the same non-secret
    * summary `list` does, so the renderer never has a way to read a key back.
    */
-  ipcMain.handle(
+  handle(
     IPC.apiCredentialsList,
     async (_event, arg: ApiCredentialListArgs = {}): Promise<ApiCredentialSummary[]> => {
       const { listApiCredentials } = await import("../ai/apiKeyStore");
@@ -5897,7 +5848,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.apiCredentialsGet,
     async (_event, arg: ApiCredentialGetArgs): Promise<ApiCredentialSummary | null> => {
       const { getApiCredentialSummary } = await import("../ai/apiKeyStore");
@@ -5905,7 +5856,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.apiCredentialsStore,
     async (_event, arg: ApiCredentialStoreArgs): Promise<ApiCredentialSummary | null> => {
       const ctx = getCtx();
@@ -5925,7 +5876,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.apiCredentialsRemove,
     async (_event, arg: ApiCredentialRemoveArgs): Promise<void> => {
       const ctx = getCtx();
@@ -5942,7 +5893,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiVerifyApiKey,
     async (_event, arg: { provider: string }): Promise<AiApiKeyVerificationResult> => {
       const ctx = getCtx();
@@ -5951,7 +5902,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiVerifyProviderSignIn,
     async (_event, arg: AiVerifyProviderSignInArgs): Promise<AiProviderSignInCheck> => {
       const ctx = getCtx();
@@ -5960,7 +5911,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiAcpProviderDiagnostics,
     async (
       _event,
@@ -5980,19 +5931,19 @@ export function registerIpc({
 
   // "Continue chats after restarts" for This computer: one value per machine,
   // in ~/.ade, which this computer's brain reads when it decides a resume.
-  ipcMain.handle(IPC.aiGetContinueAfterRestart, async (): Promise<{ enabled: boolean }> => ({
+  handle(IPC.aiGetContinueAfterRestart, async (): Promise<{ enabled: boolean }> => ({
     enabled: resolveContinueAfterRestart(),
   }));
-  ipcMain.handle(IPC.aiGetMachineUpdateTrack, async (): Promise<{ track: "stable" | "beta" | null }> => ({
+  handle(IPC.aiGetMachineUpdateTrack, async (): Promise<{ track: "stable" | "beta" | null }> => ({
     track: readSavedUpdateTrack()?.track ?? null,
   }));
-  ipcMain.handle(IPC.aiSetContinueAfterRestart, async (_event, args: { enabled?: unknown }): Promise<{ enabled: boolean }> => {
+  handle(IPC.aiSetContinueAfterRestart, async (_event, args: { enabled?: unknown }): Promise<{ enabled: boolean }> => {
     if (typeof args?.enabled !== "boolean") throw new Error("enabled must be true or false.");
     writeSavedContinueAfterRestart(args.enabled);
     return { enabled: args.enabled };
   });
 
-  ipcMain.handle(IPC.aiUpdateConfig, async (_event, partial: Partial<AiConfig>): Promise<void> => {
+  handle(IPC.aiUpdateConfig, async (_event, partial: Partial<AiConfig>): Promise<void> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectConfigService"] as const);
     ctx.projectConfigService.updateAiConfig(partial);
@@ -6026,14 +5977,14 @@ export function registerIpc({
     };
   };
 
-  ipcMain.handle(
+  handle(
     IPC.aiOpencodeAuthMethods,
     async (): Promise<{ methods: OpenCodeProviderAuthMethods }> => {
       return await listOpenCodeAuthMethods(buildOpenCodeAuthDeps());
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiOpencodeOAuthStart,
     async (
       _event,
@@ -6043,14 +5994,14 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiOpencodeOAuthCancel,
     async (_event, arg: { providerId: string }): Promise<void> => {
       cancelOpenCodeOAuth(arg);
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiSetOpencodeProviderKey,
     async (
       _event,
@@ -6072,7 +6023,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiClearOpencodeProviderKey,
     async (
       _event,
@@ -6104,27 +6055,27 @@ export function registerIpc({
     if (result.ok) captureOpenCodeAccount(action, "completed", "opencode");
     return result;
   };
-  ipcMain.handle(
+  handle(
     IPC.aiOpencodeAccounts,
     async (_event, arg?: { providerId?: string | null }): Promise<OpenCodeAccountsResult> =>
       await listOpenCodeAccounts(buildOpenCodeAuthDeps(), { providerId: arg?.providerId ?? null }),
   );
-  ipcMain.handle(
+  handle(
     IPC.aiOpencodeAccountActivate,
     async (_event, arg: { id: string }): Promise<OpenCodeAccountActionResult> =>
       captureOpenCodeAccountOutcome("default_selected", await activateOpenCodeAccount(buildOpenCodeAuthDeps(), arg)),
   );
-  ipcMain.handle(
+  handle(
     IPC.aiOpencodeAccountRename,
     async (_event, arg: { id: string; label: string }): Promise<OpenCodeAccountActionResult> =>
       await renameOpenCodeAccount(buildOpenCodeAuthDeps(), arg),
   );
-  ipcMain.handle(
+  handle(
     IPC.aiOpencodeAccountRemove,
     async (_event, arg: { id: string }): Promise<OpenCodeAccountActionResult> =>
       captureOpenCodeAccountOutcome("account_signed_out", await removeOpenCodeAccount(buildOpenCodeAuthDeps(), arg)),
   );
-  ipcMain.handle(
+  handle(
     IPC.aiOpencodeCloudConnect,
     async (
       _event,
@@ -6145,11 +6096,11 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.aiPiLoginProviders, async (): Promise<PiLoginProvider[]> => {
+  handle(IPC.aiPiLoginProviders, async (): Promise<PiLoginProvider[]> => {
     return await listPiLoginProviders();
   });
 
-  ipcMain.handle(
+  handle(
     IPC.aiPiLoginStart,
     async (_event, arg: { providerId: string; method?: PiLoginMethod }): Promise<PiLoginResult> => {
       const result = await startPiLogin(arg);
@@ -6159,7 +6110,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiPiLoginSubmit,
     async (
       _event,
@@ -6167,7 +6118,7 @@ export function registerIpc({
     ): Promise<{ ok: boolean; error?: string }> => submitPiLoginPrompt(arg),
   );
 
-  ipcMain.handle(IPC.aiPiLoginCancel, async (_event, arg: { providerId: string }): Promise<void> => {
+  handle(IPC.aiPiLoginCancel, async (_event, arg: { providerId: string }): Promise<void> => {
     cancelPiLogin(arg);
   });
 
@@ -6181,11 +6132,11 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.aiCursorAuthStatus, async (): Promise<CursorSdkAuthStatus> => {
+  handle(IPC.aiCursorAuthStatus, async (): Promise<CursorSdkAuthStatus> => {
     return await getCursorSdkAuthStatus();
   });
 
-  ipcMain.handle(IPC.aiCursorAuthLogin, async (): Promise<CursorSdkLoginResult> => {
+  handle(IPC.aiCursorAuthLogin, async (): Promise<CursorSdkLoginResult> => {
     const ctx = getCtx();
     const result = await loginCursorSdk();
     if (result.ok) {
@@ -6201,7 +6152,7 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.aiCursorAuthLogout, async (): Promise<{ ok: boolean; error?: string }> => {
+  handle(IPC.aiCursorAuthLogout, async (): Promise<{ ok: boolean; error?: string }> => {
     const ctx = getCtx();
     const result = await logoutCursorSdk();
     if (result.ok) noteProviderLoginChanged("cursor");
@@ -6215,19 +6166,19 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.aiCursorAuthCancel, async (): Promise<void> => {
+  handle(IPC.aiCursorAuthCancel, async (): Promise<void> => {
     cancelCursorSdkLogin();
   });
 
-  ipcMain.handle(IPC.aiListHarnessRoutes, async (): Promise<HarnessRouteCatalog> => listHarnessRouteCatalog());
+  handle(IPC.aiListHarnessRoutes, async (): Promise<HarnessRouteCatalog> => listHarnessRouteCatalog());
 
-  ipcMain.handle(
+  handle(
     IPC.aiTestHarnessRoute,
     async (_event, args: { harness?: unknown; source?: unknown; model?: unknown } | undefined): Promise<HarnessRouteTestResult> =>
       testHarnessRoute({ harness: args?.harness, source: args?.source, model: args?.model }),
   );
 
-  ipcMain.handle(IPC.aiRefreshModelsDev, async (): Promise<{ lastFetchedAt: number | null }> => {
+  handle(IPC.aiRefreshModelsDev, async (): Promise<{ lastFetchedAt: number | null }> => {
     const ctx = getCtx();
     try {
       await refreshModelsDevNow();
@@ -6237,38 +6188,38 @@ export function registerIpc({
     return { lastFetchedAt: getModelsDevLastFetchedAt() };
   });
 
-  ipcMain.handle(IPC.projectSecretsList, async (): Promise<ProjectSecretsListResult> => {
+  handle(IPC.projectSecretsList, async (): Promise<ProjectSecretsListResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
     // Same freshness as the `project_secret` action domain (adeActions/registry.ts).
     return await ctx.projectSecretService.listFresh();
   });
 
-  ipcMain.handle(IPC.projectSecretsGet, async (_event, arg: ProjectSecretGetArgs): Promise<ProjectSecretValueResult> => {
+  handle(IPC.projectSecretsGet, async (_event, arg: ProjectSecretGetArgs): Promise<ProjectSecretValueResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
     return await ctx.projectSecretService.getFresh(arg);
   });
 
-  ipcMain.handle(IPC.projectSecretsSet, async (_event, arg: ProjectSecretSetArgs): Promise<ProjectSecretSummary> => {
+  handle(IPC.projectSecretsSet, async (_event, arg: ProjectSecretSetArgs): Promise<ProjectSecretSummary> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
     return ctx.projectSecretService.set(arg);
   });
 
-  ipcMain.handle(IPC.projectSecretsDelete, async (_event, arg: ProjectSecretDeleteArgs): Promise<{ deleted: boolean; name: string }> => {
+  handle(IPC.projectSecretsDelete, async (_event, arg: ProjectSecretDeleteArgs): Promise<{ deleted: boolean; name: string }> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
     return ctx.projectSecretService.delete(arg);
   });
 
-  ipcMain.handle(IPC.projectSecretsPullFromAccount, async (): Promise<ProjectSecretPullResult> => {
+  handle(IPC.projectSecretsPullFromAccount, async (): Promise<ProjectSecretPullResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
     return await ctx.projectSecretService.pullFromAccount();
   });
 
-  ipcMain.handle(IPC.projectSecretsChooseEnvFile, async (event): Promise<ProjectSecretEnvFile | null> => {
+  handle(IPC.projectSecretsChooseEnvFile, async (event): Promise<ProjectSecretEnvFile | null> => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     const options: Electron.OpenDialogOptions = {
       title: "Import ADE secrets from .env",
@@ -6287,25 +6238,25 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.projectSecretsPreviewEnvImport, async (_event, arg: ProjectSecretEnvFile): Promise<ProjectSecretsImportPreview> => {
+  handle(IPC.projectSecretsPreviewEnvImport, async (_event, arg: ProjectSecretEnvFile): Promise<ProjectSecretsImportPreview> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
     return ctx.projectSecretService.previewEnvImport(arg);
   });
 
-  ipcMain.handle(IPC.projectSecretsImportEnv, async (_event, arg: ProjectSecretsImportArgs): Promise<ProjectSecretsImportResult> => {
+  handle(IPC.projectSecretsImportEnv, async (_event, arg: ProjectSecretsImportArgs): Promise<ProjectSecretsImportResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
     return ctx.projectSecretService.importEnv(arg);
   });
 
-  ipcMain.handle(IPC.projectSecretsExportEnv, async (): Promise<ProjectSecretsExportResult> => {
+  handle(IPC.projectSecretsExportEnv, async (): Promise<ProjectSecretsExportResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
     return ctx.projectSecretService.exportEnv();
   });
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudListRepositories,
     async (_event, arg?: { refresh?: boolean }): Promise<CursorCloudRepository[]> => {
       const ctx = getCtx();
@@ -6314,7 +6265,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudListAgents,
     async (_event, arg: { includeArchived?: boolean; limit?: number; cursor?: string | null }): Promise<CursorCloudListAgentsResult> => {
       const ctx = getCtx();
@@ -6323,7 +6274,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudListRuns,
     async (_event, arg: { agentId: string; limit?: number; cursor?: string | null }): Promise<CursorCloudListRunsResult> => {
       const ctx = getCtx();
@@ -6332,7 +6283,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudCreateRun,
     async (_event, arg: CursorCloudCreateRunRequest): Promise<CursorCloudCreateRunResult> => {
       const ctx = getCtx();
@@ -6343,7 +6294,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudGetLaneSecretNames,
     async (_event, arg: { laneId: string }): Promise<string[]> => {
       const ctx = getCtx();
@@ -6352,28 +6303,28 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.aiCursorCloudArchiveAgent, async (_event, arg: { agentId: string }): Promise<void> => {
+  handle(IPC.aiCursorCloudArchiveAgent, async (_event, arg: { agentId: string }): Promise<void> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["aiIntegrationService"] as const);
     await ctx.aiIntegrationService.archiveCursorCloudAgent(arg.agentId);
     ctx.cursorCloudFleetService?.invalidateCache();
   });
 
-  ipcMain.handle(IPC.aiCursorCloudUnarchiveAgent, async (_event, arg: { agentId: string }): Promise<void> => {
+  handle(IPC.aiCursorCloudUnarchiveAgent, async (_event, arg: { agentId: string }): Promise<void> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["aiIntegrationService"] as const);
     await ctx.aiIntegrationService.unarchiveCursorCloudAgent(arg.agentId);
     ctx.cursorCloudFleetService?.invalidateCache();
   });
 
-  ipcMain.handle(IPC.aiCursorCloudDeleteAgent, async (_event, arg: { agentId: string }): Promise<void> => {
+  handle(IPC.aiCursorCloudDeleteAgent, async (_event, arg: { agentId: string }): Promise<void> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["aiIntegrationService"] as const);
     await ctx.aiIntegrationService.deleteCursorCloudAgent(arg.agentId);
     ctx.cursorCloudFleetService?.invalidateCache();
   });
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudGetAgent,
     async (_event, arg: { agentId: string }): Promise<CursorCloudAgentSummary | null> => {
       const ctx = getCtx();
@@ -6382,7 +6333,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudGetUsage,
     async (_event, arg: CursorAgentUsageRequest): Promise<CursorAgentUsage> => {
       const ctx = getCtx();
@@ -6391,7 +6342,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudListArtifacts,
     async (_event, arg: { agentId: string }): Promise<CursorCloudArtifactSummary[]> => {
       const ctx = getCtx();
@@ -6406,7 +6357,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudDownloadArtifact,
     async (_event, arg: { agentId: string; path: string }): Promise<CursorCloudArtifactDownload> => {
       const ctx = getCtx();
@@ -6415,7 +6366,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudCancelRun,
     async (_event, arg: { agentId: string; runId: string }): Promise<void> => {
       const ctx = getCtx();
@@ -6425,7 +6376,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudFollowUp,
     async (_event, arg: CursorCloudFollowUpRequest): Promise<CursorCloudFollowUpResult> => {
       const ctx = getCtx();
@@ -6436,7 +6387,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudOpenChat,
     async (_event, arg: CursorCloudOpenChatRequest): Promise<CursorCloudOpenChatResult> => {
       const ctx = getCtx();
@@ -6453,7 +6404,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudWatchMirror,
     async (_event, arg: CursorCloudWatchMirrorRequest): Promise<void> => {
       const ctx = getCtx();
@@ -6465,7 +6416,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudFleet,
     async (_event, arg?: { includeArchived?: boolean; limit?: number }): Promise<CursorCloudFleetResult> => {
       const ctx = getCtx();
@@ -6474,7 +6425,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudPullIntoLane,
     async (_event, arg: { agentId: string }): Promise<CursorCloudPullIntoLaneResult> => {
       const ctx = getCtx();
@@ -6483,7 +6434,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudResolveLane,
     async (_event, arg: { agentId: string }): Promise<{ laneId: string; laneName: string; created: boolean }> => {
       const ctx = getCtx();
@@ -6492,7 +6443,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudStopRun,
     async (_event, arg: { agentId: string }): Promise<{ stopped: boolean }> => {
       const ctx = getCtx();
@@ -6501,7 +6452,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.aiCursorCloudStreamRun,
     async (_event, arg: unknown): Promise<CursorCloudStreamRunResult> => {
       // Subscription is opportunistic: events flow through the existing session
@@ -6519,27 +6470,27 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.cloudAgentsList, async (_event, arg: CloudAgentListArgs): Promise<CloudAgentList> => {
+  handle(IPC.cloudAgentsList, async (_event, arg: CloudAgentListArgs): Promise<CloudAgentList> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["cloudAgentsService"] as const);
     return await ctx.cloudAgentsService.list(arg);
   });
-  ipcMain.handle(IPC.cloudAgentsOpen, async (_event, arg: CloudAgentRef): Promise<CloudAgentOpenResult> => {
+  handle(IPC.cloudAgentsOpen, async (_event, arg: CloudAgentRef): Promise<CloudAgentOpenResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["cloudAgentsService"] as const);
     return await ctx.cloudAgentsService.open(arg);
   });
-  ipcMain.handle(IPC.cloudAgentsStop, async (_event, arg: CloudAgentRef): Promise<{ stopped: true }> => {
+  handle(IPC.cloudAgentsStop, async (_event, arg: CloudAgentRef): Promise<{ stopped: true }> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["cloudAgentsService"] as const);
     return await ctx.cloudAgentsService.stop(arg);
   });
-  ipcMain.handle(IPC.cloudAgentsLaunch, async (_event, arg: CloudAgentLaunchArgs): Promise<CloudAgentOpenResult> => {
+  handle(IPC.cloudAgentsLaunch, async (_event, arg: CloudAgentLaunchArgs): Promise<CloudAgentOpenResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["cloudAgentsService"] as const);
     return await ctx.cloudAgentsService.launch(arg);
   });
-  ipcMain.handle(IPC.cloudAgentsArchive, async (_event, arg: CloudAgentArchiveArgs): Promise<{ archived: boolean }> => {
+  handle(IPC.cloudAgentsArchive, async (_event, arg: CloudAgentArchiveArgs): Promise<{ archived: boolean }> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["cloudAgentsService"] as const);
     return await ctx.cloudAgentsService.archive(arg);
@@ -6582,7 +6533,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.syncGetLocalStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+  handle(IPC.syncGetLocalStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
     const snapshot = await syncStatusReaders.readMachine(arg);
     observeMachineRegisterRefusal(snapshot);
     return snapshot;
@@ -6590,7 +6541,7 @@ export function registerIpc({
 
   // This computer only, like getLocalStatus: the check is "can other devices
   // reach the computer you are sitting at", answered by its own brain.
-  ipcMain.handle(IPC.syncCheckLocalReachability, async (): Promise<HostReachabilityReport> => {
+  handle(IPC.syncCheckLocalReachability, async (): Promise<HostReachabilityReport> => {
     if (!localRuntimeConnectionPool) {
       throw new Error("ADE's background service isn't running on this computer. Restart ADE, then check again.");
     }
@@ -6601,7 +6552,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+  handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
     const rootKey = localRuntimeConnectionPool ? getLocalRuntimeRootForEvent(event) : null;
     return await syncStatusReaders.readProject(rootKey, arg, async (params) => {
       const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
@@ -6627,7 +6578,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.syncRefreshDiscovery, async (event): Promise<SyncRoleSnapshot> => {
+  handle(IPC.syncRefreshDiscovery, async (event): Promise<SyncRoleSnapshot> => {
     const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
       event,
       "sync.refreshDiscovery",
@@ -6640,7 +6591,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.syncListDevices, async (event): Promise<SyncDeviceRuntimeState[]> => {
+  handle(IPC.syncListDevices, async (event): Promise<SyncDeviceRuntimeState[]> => {
     const runtimeDevices = await tryRuntimeSync<SyncDeviceRuntimeState[]>(
       event,
       "sync.listDevices",
@@ -6653,7 +6604,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(
+  handle(
     IPC.syncUpdateLocalDevice,
     async (
       event,
@@ -6676,7 +6627,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.syncConnectToBrain,
     async (event, arg: SyncDesktopConnectionDraft): Promise<SyncRoleSnapshot> => {
       const params = (arg ?? {}) as unknown as Record<string, unknown>;
@@ -6695,7 +6646,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.syncDisconnectFromBrain, async (event): Promise<SyncRoleSnapshot> => {
+  handle(IPC.syncDisconnectFromBrain, async (event): Promise<SyncRoleSnapshot> => {
     // Disconnect acts on the project this window shows, and on no other, and it
     // never boots one. With no such project there is nothing to act on, so it
     // fails closed: no unscoped runtime call (the brain refuses those), and no
@@ -6717,7 +6668,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.syncForgetDevice, async (event, arg: { deviceId: string }): Promise<SyncRoleSnapshot> => {
+  handle(IPC.syncForgetDevice, async (event, arg: { deviceId: string }): Promise<SyncRoleSnapshot> => {
     const deviceId = typeof arg?.deviceId === "string" ? arg.deviceId : "";
     const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
       event,
@@ -6731,7 +6682,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.syncGetTransferReadiness, async (event): Promise<SyncTransferReadiness> => {
+  handle(IPC.syncGetTransferReadiness, async (event): Promise<SyncTransferReadiness> => {
     const runtimeReadiness = await tryRuntimeSync<SyncTransferReadiness>(
       event,
       "sync.getTransferReadiness",
@@ -6746,7 +6697,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.syncTransferBrainToLocal, async (event): Promise<SyncRoleSnapshot> => {
+  handle(IPC.syncTransferBrainToLocal, async (event): Promise<SyncRoleSnapshot> => {
     const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
       event,
       "sync.transferBrainToLocal",
@@ -6757,7 +6708,7 @@ export function registerIpc({
     return await (await requireSyncService()).transferBrainToLocal();
   });
 
-  ipcMain.handle(IPC.syncGetPin, async (event): Promise<{ pin: string | null }> => {
+  handle(IPC.syncGetPin, async (event): Promise<{ pin: string | null }> => {
     const runtimePin = await tryRuntimeSync<{ pin: string | null }>(
       event,
       "sync.getPin",
@@ -6770,7 +6721,7 @@ export function registerIpc({
     }));
   });
 
-  ipcMain.handle(IPC.syncSetPin, async (event, pin: string): Promise<SyncRoleSnapshot> => {
+  handle(IPC.syncSetPin, async (event, pin: string): Promise<SyncRoleSnapshot> => {
     const normalizedPin = typeof pin === "string" ? pin : "";
     const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
       event,
@@ -6784,7 +6735,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.syncGeneratePin, async (event): Promise<SyncRoleSnapshot> => {
+  handle(IPC.syncGeneratePin, async (event): Promise<SyncRoleSnapshot> => {
     const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
       event,
       "sync.generatePin",
@@ -6797,7 +6748,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.syncClearPin, async (event): Promise<SyncRoleSnapshot> => {
+  handle(IPC.syncClearPin, async (event): Promise<SyncRoleSnapshot> => {
     const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
       event,
       "sync.clearPin",
@@ -6810,7 +6761,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.syncGetRuntimeName, async (event): Promise<{ runtimeName: string | null }> => {
+  handle(IPC.syncGetRuntimeName, async (event): Promise<{ runtimeName: string | null }> => {
     const runtimeName = await tryRuntimeSync<{ runtimeName: string | null }>(
       event,
       "sync.getRuntimeName",
@@ -6825,7 +6776,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.syncSetRuntimeName, async (event, name: string): Promise<SyncRoleSnapshot> => {
+  handle(IPC.syncSetRuntimeName, async (event, name: string): Promise<SyncRoleSnapshot> => {
     const normalizedName = typeof name === "string" ? name : "";
     const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
       event,
@@ -6841,7 +6792,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.syncClearRuntimeName, async (event): Promise<SyncRoleSnapshot> => {
+  handle(IPC.syncClearRuntimeName, async (event): Promise<SyncRoleSnapshot> => {
     const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
       event,
       "sync.clearRuntimeName",
@@ -6854,7 +6805,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(
+  handle(
     IPC.syncSetActiveLanePresence,
     async (event, arg: { laneIds?: string[] | null }): Promise<void> => {
       const laneIds = Array.isArray(arg?.laneIds) ? arg.laneIds : [];
@@ -6881,7 +6832,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.syncGetCloudRelayStatus, async (event): Promise<SyncCloudRelayStatus> => {
+  handle(IPC.syncGetCloudRelayStatus, async (event): Promise<SyncCloudRelayStatus> => {
     const runtimeResult = await tryRuntimeSync<SyncCloudRelayStatus>(
       event,
       "sync.getCloudRelayStatus",
@@ -6894,23 +6845,23 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
+  handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["agentToolsService"] as const);
     return ctx.agentToolsService.detect();
   });
 
-  ipcMain.handle(IPC.adeCliGetStatus, async () => {
+  handle(IPC.adeCliGetStatus, async () => {
     const ctx = getCtx();
     return ctx.adeCliService.getStatus();
   });
 
-  ipcMain.handle(IPC.adeCliInstallForUser, async () => {
+  handle(IPC.adeCliInstallForUser, async () => {
     const ctx = getCtx();
     return ctx.adeCliService.installForUser();
   });
 
-  ipcMain.handle(IPC.devToolsDetect, async (_event: unknown, arg?: { force?: boolean }) => {
+  handle(IPC.devToolsDetect, async (_event: unknown, arg?: { force?: boolean }) => {
     const ctx = getCtx();
     if (!ctx.devToolsService) {
       const result: DevToolsCheckResult = {
@@ -6932,7 +6883,7 @@ export function registerIpc({
     return ctx.devToolsService.detect(arg?.force);
   });
 
-  ipcMain.handle(IPC.onboardingGetStatus, async (): Promise<OnboardingStatus> => {
+  handle(IPC.onboardingGetStatus, async (): Promise<OnboardingStatus> => {
     const ctx = getCtx();
     if (!ctx.onboardingService) {
       return { completedAt: null, dismissedAt: null };
@@ -6940,7 +6891,7 @@ export function registerIpc({
     return ctx.onboardingService.getStatus();
   });
 
-  ipcMain.handle(IPC.onboardingDetectDefaults, async (): Promise<OnboardingDetectionResult> => {
+  handle(IPC.onboardingDetectDefaults, async (): Promise<OnboardingDetectionResult> => {
     const ctx = getCtx();
     if (!ctx.onboardingService) {
       return {
@@ -6958,7 +6909,7 @@ export function registerIpc({
     return await ctx.onboardingService.detectDefaults();
   });
 
-  ipcMain.handle(IPC.onboardingSetDismissed, async (_event, arg: { dismissed: boolean }): Promise<OnboardingStatus> => {
+  handle(IPC.onboardingSetDismissed, async (_event, arg: { dismissed: boolean }): Promise<OnboardingStatus> => {
     const ctx = getCtx();
     if (!ctx.onboardingService) {
       return { completedAt: null, dismissedAt: arg.dismissed ? new Date().toISOString() : null };
@@ -6966,7 +6917,7 @@ export function registerIpc({
     return ctx.onboardingService.setDismissed(arg.dismissed);
   });
 
-  ipcMain.handle(IPC.onboardingComplete, async (): Promise<OnboardingStatus> => {
+  handle(IPC.onboardingComplete, async (): Promise<OnboardingStatus> => {
     const ctx = getCtx();
     if (!ctx.onboardingService) {
       return { completedAt: null, dismissedAt: null };
@@ -6986,22 +6937,22 @@ export function registerIpc({
     return ctx;
   };
 
-  ipcMain.handle(IPC.automationsList, async (): Promise<AutomationRuleSummary[]> => {
+  handle(IPC.automationsList, async (): Promise<AutomationRuleSummary[]> => {
     const ctx = ensureAutomationContext();
     return ctx.automationService.list();
   });
 
-  ipcMain.handle(IPC.automationsToggle, async (_event, arg: { id: string; enabled: boolean }): Promise<AutomationRuleSummary[]> => {
+  handle(IPC.automationsToggle, async (_event, arg: { id: string; enabled: boolean }): Promise<AutomationRuleSummary[]> => {
     const ctx = ensureAutomationContext();
     return ctx.automationService.toggle({ id: arg?.id ?? "", enabled: Boolean(arg?.enabled) });
   });
 
-  ipcMain.handle(IPC.automationsDeleteRule, async (_event, arg: { id: string }): Promise<AutomationRuleSummary[]> => {
+  handle(IPC.automationsDeleteRule, async (_event, arg: { id: string }): Promise<AutomationRuleSummary[]> => {
     const ctx = ensureAutomationContext();
     return ctx.automationService.deleteRule({ id: arg?.id ?? "" });
   });
 
-  ipcMain.handle(IPC.automationsTriggerManually, async (_event, arg: AutomationManualTriggerRequest): Promise<AutomationRun> => {
+  handle(IPC.automationsTriggerManually, async (_event, arg: AutomationManualTriggerRequest): Promise<AutomationRun> => {
     const ctx = ensureAutomationContext();
     return await ctx.automationService.triggerManually({
       id: arg?.id ?? "",
@@ -7012,12 +6963,12 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.automationsPlanTest, async (_event, arg: AutomationTestRequest): Promise<AutomationTestPlan> => {
+  handle(IPC.automationsPlanTest, async (_event, arg: AutomationTestRequest): Promise<AutomationTestPlan> => {
     const ctx = ensureAutomationContext();
     return await ctx.automationService.planTest(arg);
   });
 
-  ipcMain.handle(IPC.automationsRunTest, async (_event, arg: AutomationTestRequest): Promise<AutomationRun> => {
+  handle(IPC.automationsRunTest, async (_event, arg: AutomationTestRequest): Promise<AutomationRun> => {
     const ctx = ensureAutomationContext();
     const mode = arg?.mode === "live" ? "live" : "safe";
     try {
@@ -7030,72 +6981,72 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.automationsCleanUpTestRun, async (_event, arg: { runId: string }): Promise<AutomationTestCleanupResult> => {
+  handle(IPC.automationsCleanUpTestRun, async (_event, arg: { runId: string }): Promise<AutomationTestCleanupResult> => {
     const ctx = ensureAutomationContext();
     return await ctx.automationService.cleanUpTestRun({ runId: arg?.runId ?? "" });
   });
 
-  ipcMain.handle(IPC.automationsGetHistory, async (_event, arg: { id: string; limit?: number }): Promise<AutomationRun[]> => {
+  handle(IPC.automationsGetHistory, async (_event, arg: { id: string; limit?: number }): Promise<AutomationRun[]> => {
     const ctx = ensureAutomationContext();
     return ctx.automationService.getHistory({ id: arg?.id ?? "", limit: arg?.limit });
   });
 
-  ipcMain.handle(IPC.automationsListRuns, async (_event, arg: AutomationRunListArgs = {}): Promise<AutomationRun[]> => {
+  handle(IPC.automationsListRuns, async (_event, arg: AutomationRunListArgs = {}): Promise<AutomationRun[]> => {
     const ctx = ensureAutomationContext();
     return ctx.automationService.listRuns(arg);
   });
 
-  ipcMain.handle(IPC.automationsGetRunDetail, async (_event, arg: { runId: string }): Promise<AutomationRunDetail | null> => {
+  handle(IPC.automationsGetRunDetail, async (_event, arg: { runId: string }): Promise<AutomationRunDetail | null> => {
     const ctx = ensureAutomationContext();
     return ctx.automationService.getRunDetail({ runId: arg?.runId ?? "" });
   });
 
-  ipcMain.handle(IPC.automationsGetIngressStatus, async (): Promise<AutomationIngressStatus> => {
+  handle(IPC.automationsGetIngressStatus, async (): Promise<AutomationIngressStatus> => {
     const ctx = ensureAutomationContext();
     return ctx.automationService.getIngressStatus();
   });
 
-  ipcMain.handle(IPC.automationsRefreshWebhookGatewayStatus, async (): Promise<AutomationIngressStatus["webhookGateway"]> => {
+  handle(IPC.automationsRefreshWebhookGatewayStatus, async (): Promise<AutomationIngressStatus["webhookGateway"]> => {
     const ctx = ensureAutomationContext();
     return await ctx.automationService.refreshWebhookGatewayStatus();
   });
 
-  ipcMain.handle(IPC.automationsSetWebhookGatewayPublicUrl, async (_event, arg: { publicUrl?: string | null } | undefined): Promise<AutomationIngressStatus["webhookGateway"]> => {
+  handle(IPC.automationsSetWebhookGatewayPublicUrl, async (_event, arg: { publicUrl?: string | null } | undefined): Promise<AutomationIngressStatus["webhookGateway"]> => {
     const ctx = ensureAutomationContext();
     return await ctx.automationService.setWebhookGatewayPublicUrl(arg ?? {});
   });
 
-  ipcMain.handle(IPC.automationsListIngressEvents, async (_event, arg: { limit?: number } | undefined): Promise<AutomationIngressEventRecord[]> => {
+  handle(IPC.automationsListIngressEvents, async (_event, arg: { limit?: number } | undefined): Promise<AutomationIngressEventRecord[]> => {
     const ctx = ensureAutomationContext();
     return ctx.automationService.listIngressEvents(arg?.limit);
   });
 
-  ipcMain.handle(IPC.automationsParseNaturalLanguage, async (_event, arg: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> => {
+  handle(IPC.automationsParseNaturalLanguage, async (_event, arg: AutomationParseNaturalLanguageRequest): Promise<AutomationParseNaturalLanguageResult> => {
     const ctx = ensureAutomationPlannerContext();
     return await ctx.automationPlannerService.parseNaturalLanguage(arg);
   });
 
-  ipcMain.handle(IPC.automationsValidateDraft, async (_event, arg: AutomationValidateDraftRequest): Promise<AutomationValidateDraftResult> => {
+  handle(IPC.automationsValidateDraft, async (_event, arg: AutomationValidateDraftRequest): Promise<AutomationValidateDraftResult> => {
     const ctx = ensureAutomationPlannerContext();
     return ctx.automationPlannerService.validateDraft(arg);
   });
 
-  ipcMain.handle(IPC.automationsSaveDraft, async (_event, arg: AutomationSaveDraftRequest): Promise<AutomationSaveDraftResult> => {
+  handle(IPC.automationsSaveDraft, async (_event, arg: AutomationSaveDraftRequest): Promise<AutomationSaveDraftResult> => {
     const ctx = ensureAutomationPlannerContext();
     return ctx.automationPlannerService.saveDraft(arg);
   });
 
-  ipcMain.handle(IPC.automationsSimulate, async (_event, arg: AutomationSimulateRequest): Promise<AutomationSimulateResult> => {
+  handle(IPC.automationsSimulate, async (_event, arg: AutomationSimulateRequest): Promise<AutomationSimulateResult> => {
     const ctx = ensureAutomationPlannerContext();
     return ctx.automationPlannerService.simulate(arg);
   });
 
-  ipcMain.handle(IPC.automationsListScheduledCleanups, async (): Promise<AutomationScheduledCleanup[]> => {
+  handle(IPC.automationsListScheduledCleanups, async (): Promise<AutomationScheduledCleanup[]> => {
     const ctx = ensureAutomationContext();
     return ctx.automationService.listScheduledCleanups();
   });
 
-  ipcMain.handle(IPC.automationsCancelScheduledCleanup, async (_event, arg: { id: string }): Promise<boolean> => {
+  handle(IPC.automationsCancelScheduledCleanup, async (_event, arg: { id: string }): Promise<boolean> => {
     const ctx = ensureAutomationContext();
     return ctx.automationService.cancelScheduledCleanup(arg.id);
   });
@@ -7106,22 +7057,22 @@ export function registerIpc({
     return ctx;
   };
 
-  ipcMain.handle(IPC.automationsLinearIngressGetStatus, async (): Promise<LinearIngressStatus> => {
+  handle(IPC.automationsLinearIngressGetStatus, async (): Promise<LinearIngressStatus> => {
     const ctx = ensureLinearIngressContext();
     return ctx.linearIngressService.getStatus();
   });
 
-  ipcMain.handle(IPC.automationsLinearIngressSetup, async (): Promise<LinearIngressStatus> => {
+  handle(IPC.automationsLinearIngressSetup, async (): Promise<LinearIngressStatus> => {
     const ctx = ensureLinearIngressContext();
     return ctx.linearIngressService.setup();
   });
 
-  ipcMain.handle(IPC.automationsLinearIngressTeardown, async (): Promise<LinearIngressStatus> => {
+  handle(IPC.automationsLinearIngressTeardown, async (): Promise<LinearIngressStatus> => {
     const ctx = ensureLinearIngressContext();
     return ctx.linearIngressService.teardown();
   });
 
-  ipcMain.handle(IPC.automationsLinearIngressPollNow, async (): Promise<LinearIngressStatus> => {
+  handle(IPC.automationsLinearIngressPollNow, async (): Promise<LinearIngressStatus> => {
     const ctx = ensureLinearIngressContext();
     await ctx.linearIngressService.pollNow();
     return ctx.linearIngressService.getStatus();
@@ -7132,7 +7083,7 @@ export function registerIpc({
     if (!service) throw new Error("Automation ingress service is not available.");
     return service.webhooks;
   };
-  ipcMain.handle(IPC.automationsWebhookList, async () => {
+  handle(IPC.automationsWebhookList, async () => {
     const ctx = getCtx();
     if (!ctx.automationService) return [];
     const webhooks = requireWebhookIngress();
@@ -7142,25 +7093,25 @@ export function registerIpc({
       projectSecrets: ctx.projectSecretService,
     });
   });
-  ipcMain.handle(IPC.automationsWebhookCreateEndpoint, async (_event, arg?: { label?: string | null }) => {
+  handle(IPC.automationsWebhookCreateEndpoint, async (_event, arg?: { label?: string | null }) => {
     const endpoint = await requireWebhookIngress().createEndpoint(arg ?? {});
     captureWebhookUrlCreatedAnalytics({ analytics: productAnalyticsService, surface: "desktop" });
     return endpoint;
   });
-  ipcMain.handle(IPC.automationsWebhookGetEndpoint, async (_event, arg: { hookId: string }) =>
+  handle(IPC.automationsWebhookGetEndpoint, async (_event, arg: { hookId: string }) =>
     requireWebhookIngress().getEndpoint(arg));
-  ipcMain.handle(IPC.automationsWebhookRotateEndpoint, async (_event, arg: { hookId: string }) =>
+  handle(IPC.automationsWebhookRotateEndpoint, async (_event, arg: { hookId: string }) =>
     requireWebhookIngress().rotateEndpoint(arg));
-  ipcMain.handle(IPC.automationsWebhookListDeliveries, async (_event, arg: { hookId: string; limit?: number }) =>
+  handle(IPC.automationsWebhookListDeliveries, async (_event, arg: { hookId: string; limit?: number }) =>
     requireWebhookIngress().listDeliveries(arg));
-  ipcMain.handle(IPC.automationsWebhookGetDelivery, async (_event, arg: { id: string }) =>
+  handle(IPC.automationsWebhookGetDelivery, async (_event, arg: { id: string }) =>
     requireWebhookIngress().getDelivery(arg));
-  ipcMain.handle(IPC.automationsWebhookReplayDelivery, async (_event, arg: { id: string }) =>
+  handle(IPC.automationsWebhookReplayDelivery, async (_event, arg: { id: string }) =>
     requireWebhookIngress().replayDelivery(arg));
-  ipcMain.handle(IPC.automationsWebhookSendTest, async (_event, arg: AutomationWebhookTestRequest & { config?: AutomationWebhookTriggerConfig | null }) =>
+  handle(IPC.automationsWebhookSendTest, async (_event, arg: AutomationWebhookTestRequest & { config?: AutomationWebhookTriggerConfig | null }) =>
     requireWebhookIngress().sendTest(arg));
 
-  ipcMain.handle(IPC.adeActionsListRegistry, async (): Promise<AdeActionRegistryEntry[]> => {
+  handle(IPC.adeActionsListRegistry, async (): Promise<AdeActionRegistryEntry[]> => {
     const ctx = getCtx();
     const services = getAdeActionDomainServices(ctx as unknown as AdeRuntime);
     const entries: AdeActionRegistryEntry[] = [];
@@ -7214,19 +7165,19 @@ export function registerIpc({
     };
   };
 
-  ipcMain.handle(IPC.externalSessionsList, async (_event, arg: unknown): Promise<ExternalSessionSummary[]> => {
+  handle(IPC.externalSessionsList, async (_event, arg: unknown): Promise<ExternalSessionSummary[]> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["externalSessionsService"]);
     return ctx.externalSessionsService.list(normalizeExternalSessionListArgs(arg));
   });
 
-  ipcMain.handle(IPC.externalSessionsImport, async (_event, arg: unknown): Promise<ExternalSessionImportResult> => {
+  handle(IPC.externalSessionsImport, async (_event, arg: unknown): Promise<ExternalSessionImportResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["externalSessionsService"]);
     return ctx.externalSessionsService.importExternalSession(normalizeExternalSessionImportArgs(arg));
   });
 
-  ipcMain.handle(IPC.externalSessionsGetDetail, async (_event, arg: unknown): Promise<ExternalSessionDetail> => {
+  handle(IPC.externalSessionsGetDetail, async (_event, arg: unknown): Promise<ExternalSessionDetail> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["externalSessionsService"]);
     return ctx.externalSessionsService.getDetail(normalizeExternalSessionDetailArgs(arg));
@@ -7234,7 +7185,7 @@ export function registerIpc({
 
   const detailWatchCleanupSenders = new Set<number>();
 
-  ipcMain.handle(IPC.externalSessionsWatchDetail, async (event, arg: unknown): Promise<ExternalSessionDetail> => {
+  handle(IPC.externalSessionsWatchDetail, async (event, arg: unknown): Promise<ExternalSessionDetail> => {
     const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : {};
     const watchId = typeof record.watchId === "string" ? record.watchId.trim() : "";
     if (!watchId) throw new Error("external session detail watchId must be a string.");
@@ -7269,7 +7220,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.externalSessionsUnwatchDetail, async (event, arg: unknown): Promise<{ ok: true }> => {
+  handle(IPC.externalSessionsUnwatchDetail, async (event, arg: unknown): Promise<{ ok: true }> => {
     const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : {};
     const watchId = typeof record.watchId === "string" ? record.watchId.trim() : "";
     if (!watchId) throw new Error("external session detail watchId must be a string.");
@@ -7309,7 +7260,7 @@ export function registerIpc({
     return value;
   };
 
-  ipcMain.handle(IPC.providerInstancesList, async (_event, arg: unknown): Promise<ProviderInstance[]> => {
+  handle(IPC.providerInstancesList, async (_event, arg: unknown): Promise<ProviderInstance[]> => {
     const provider = providerInstanceArgs(arg).provider;
     return getMachineProviderInstanceStore().list(
       provider == null ? undefined : providerInstanceProvider(provider),
@@ -7320,7 +7271,7 @@ export function registerIpc({
   // `providerAccountAnalyticsCapture` for why the capture lives here.
   const captureProviderAccount = providerAccountAnalyticsCapture(productAnalyticsService, "desktop");
 
-  ipcMain.handle(IPC.providerInstancesCreate, async (_event, arg: unknown): Promise<ProviderInstanceCreateResult> => {
+  handle(IPC.providerInstancesCreate, async (_event, arg: unknown): Promise<ProviderInstanceCreateResult> => {
     const record = providerInstanceArgs(arg);
     const result = getMachineProviderInstanceStore().create({
       provider: record.provider,
@@ -7331,7 +7282,7 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.providerInstancesRemove, async (_event, arg: unknown): Promise<ProviderInstanceRemoveResult> => {
+  handle(IPC.providerInstancesRemove, async (_event, arg: unknown): Promise<ProviderInstanceRemoveResult> => {
     const store = getMachineProviderInstanceStore();
     const id = providerInstanceId(arg);
     // Read the provider before the removal: afterwards the record is gone.
@@ -7341,13 +7292,13 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.providerInstancesSetDefault, async (_event, arg: unknown): Promise<ProviderInstance> => {
+  handle(IPC.providerInstancesSetDefault, async (_event, arg: unknown): Promise<ProviderInstance> => {
     const instance = getMachineProviderInstanceStore().setDefault(providerInstanceId(arg));
     captureProviderAccount("default_selected", "completed", instance.provider);
     return instance;
   });
 
-  ipcMain.handle(IPC.providerInstancesSetAccent, async (_event, arg: unknown): Promise<ProviderInstance> => {
+  handle(IPC.providerInstancesSetAccent, async (_event, arg: unknown): Promise<ProviderInstance> => {
     const raw = providerInstanceArgs(arg).accentColor;
     // `undefined` and `null` both mean "clear it": a renderer that omits the
     // field is asking for the same thing as one that sends null, and the store
@@ -7356,29 +7307,29 @@ export function registerIpc({
     return getMachineProviderInstanceStore().setAccent(providerInstanceId(arg), accentColor);
   });
 
-  ipcMain.handle(IPC.providerInstancesSignOut, async (_event, arg: unknown): Promise<ProviderInstance | null> => {
+  handle(IPC.providerInstancesSignOut, async (_event, arg: unknown): Promise<ProviderInstance | null> => {
     const instance = await signOutProviderAccount(providerInstanceId(arg), getCtx().usageTrackingService);
     captureProviderAccount("account_signed_out", "completed", instance?.provider);
     return instance;
   });
 
-  ipcMain.handle(IPC.providerInstancesDismissReplaced, async (_event, arg: unknown): Promise<ProviderInstance> => {
+  handle(IPC.providerInstancesDismissReplaced, async (_event, arg: unknown): Promise<ProviderInstance> => {
     return getMachineProviderInstanceStore().dismissReplaced(providerInstanceId(arg));
   });
 
-  ipcMain.handle(IPC.providerInstancesLoginStart, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+  handle(IPC.providerInstancesLoginStart, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
     return getMachineProviderLoginRunner().start(providerInstanceId(arg), {
       deviceAuth: providerInstanceArgs(arg).deviceAuth === true,
     });
   });
 
-  ipcMain.handle(IPC.providerInstancesLoginStatus, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+  handle(IPC.providerInstancesLoginStatus, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
     // A sign-in that succeeded already dropped that provider's cached answers,
     // its signed-out mark included (the runner's `verify`).
     return getMachineProviderLoginRunner().status(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
   });
 
-  ipcMain.handle(IPC.providerInstancesLoginSubmitCode, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+  handle(IPC.providerInstancesLoginSubmitCode, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
     const args = providerInstanceArgs(arg);
     return getMachineProviderLoginRunner().submitCode(
       providerLoginString(args.loginId, "id"),
@@ -7386,16 +7337,16 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.providerInstancesLoginCancel, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
+  handle(IPC.providerInstancesLoginCancel, async (_event, arg: unknown): Promise<ProviderLoginStatus> => {
     return getMachineProviderLoginRunner().cancel(providerLoginString(providerInstanceArgs(arg).loginId, "id"));
   });
 
-  ipcMain.handle(IPC.providerInstancesGetSettings, async (_event, arg: unknown): Promise<ProviderInstanceSettings> => {
+  handle(IPC.providerInstancesGetSettings, async (_event, arg: unknown): Promise<ProviderInstanceSettings> => {
     return getMachineProviderInstanceStore()
       .getProviderSettings(providerInstanceProvider(providerInstanceArgs(arg).provider));
   });
 
-  ipcMain.handle(IPC.providerInstancesSetSettings, async (_event, arg: unknown): Promise<ProviderInstanceSettings> => {
+  handle(IPC.providerInstancesSetSettings, async (_event, arg: unknown): Promise<ProviderInstanceSettings> => {
     const record = providerInstanceArgs(arg);
     const settings = record.settings && typeof record.settings === "object" && !Array.isArray(record.settings)
       ? record.settings as ProviderInstanceSettingsPatch
@@ -7408,11 +7359,11 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.providerInstancesLoginCommand, async (_event, arg: unknown): Promise<ProviderInstanceLoginCommand> => {
+  handle(IPC.providerInstancesLoginCommand, async (_event, arg: unknown): Promise<ProviderInstanceLoginCommand> => {
     return getMachineProviderInstanceStore().loginCommand(providerInstanceId(arg));
   });
 
-  ipcMain.handle(IPC.providerInstancesRefresh, async (_event, arg: unknown): Promise<ProviderInstance[]> => {
+  handle(IPC.providerInstancesRefresh, async (_event, arg: unknown): Promise<ProviderInstance[]> => {
     const args = providerInstanceArgs(arg);
     const provider = args.provider == null ? undefined : providerInstanceProvider(args.provider);
     const instanceId = typeof args.instanceId === "string" ? args.instanceId : undefined;
@@ -7490,7 +7441,7 @@ export function registerIpc({
     return { handled: true, result: machine.result as AdeUsageStats };
   };
 
-  ipcMain.handle(IPC.usageGetAdeStats, async (_event, arg: GetAdeUsageStatsArgs | undefined): Promise<AdeUsageStats | null> => {
+  handle(IPC.usageGetAdeStats, async (_event, arg: GetAdeUsageStatsArgs | undefined): Promise<AdeUsageStats | null> => {
     const ctx = getCtx();
     if (arg != null && !isRecord(arg)) throw new Error("usage stats expects an object payload.");
     if (arg?.preset != null && !isAdeUsageRangePreset(arg.preset)) {
@@ -7521,34 +7472,34 @@ export function registerIpc({
 
   // The signed-in user's GitHub calendar, across every repository: a
   // machine-level read (this computer's `gh`), cached in the reader.
-  ipcMain.handle(IPC.usageGetGithubContributions, async (): Promise<GithubContributionCalendar | null> =>
+  handle(IPC.usageGetGithubContributions, async (): Promise<GithubContributionCalendar | null> =>
     readGithubContributionCalendar());
 
-  ipcMain.handle(IPC.usageGetSnapshot, async (): Promise<UsageSnapshot | null> => {
+  handle(IPC.usageGetSnapshot, async (): Promise<UsageSnapshot | null> => {
     const machine = await callMachineUsageSnapshot("getUsageSnapshot");
     if (machine.handled) return machine.result;
     return getCtx().usageTrackingService?.getUsageSnapshot() ?? null;
   });
 
-  ipcMain.handle(IPC.usageRefresh, async (): Promise<UsageSnapshot | null> => {
+  handle(IPC.usageRefresh, async (): Promise<UsageSnapshot | null> => {
     const machine = await callMachineUsageSnapshot("forceRefresh");
     if (machine.handled) return machine.result;
     return (await getCtx().usageTrackingService?.forceRefresh()) ?? null;
   });
 
-  ipcMain.handle(IPC.usageRefreshHistory, async (): Promise<UsageSnapshot | null> => {
+  handle(IPC.usageRefreshHistory, async (): Promise<UsageSnapshot | null> => {
     const machine = await callMachineUsageSnapshot("refreshHistory");
     if (machine.handled) return machine.result;
     return (await getCtx().usageTrackingService?.refreshHistory()) ?? null;
   });
 
-  ipcMain.handle(IPC.usageNoteDemand, async (): Promise<UsageSnapshot | null> => {
+  handle(IPC.usageNoteDemand, async (): Promise<UsageSnapshot | null> => {
     const machine = await callMachineUsageSnapshot("noteQuotaDemand");
     if (machine.handled) return machine.result;
     return getCtx().usageTrackingService?.noteQuotaDemand() ?? null;
   });
 
-  ipcMain.handle(
+  handle(
     IPC.usageGetCostBreakdown,
     async (_event, arg: GetAdeUsageCostBreakdownArgs): Promise<AdeUsageCostBreakdown | null> => {
       if (!isRecord(arg)) throw new Error("usage cost breakdown expects an object payload.");
@@ -7556,7 +7507,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.usageGetModelDetail,
     async (_event, arg: GetAdeUsageModelDetailArgs): Promise<AdeUsageModelDetail | null> => {
       if (!isRecord(arg) || typeof arg.provider !== "string" || typeof arg.model !== "string") {
@@ -7566,12 +7517,12 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.usageGetModelPriceOverrides,
     async (): Promise<AdeUsagePriceOverrides | null> => getCtx().usageTrackingService?.getModelPriceOverrides() ?? null,
   );
 
-  ipcMain.handle(
+  handle(
     IPC.usageSetModelPriceOverride,
     async (_event, arg: SetAdeUsageModelPriceArgs): Promise<AdeUsagePriceOverrides> => {
       const service = getCtx().usageTrackingService;
@@ -7589,7 +7540,7 @@ export function registerIpc({
    * success it did not perform: a fake "reset applied" would tell the user
    * their windows cleared when they did not.
    */
-  ipcMain.handle(
+  handle(
     IPC.usageConsumeResetCredit,
     async (_event, arg: { accountId: string }): Promise<UsageResetCreditResult> => {
       const accountId = typeof arg?.accountId === "string" ? arg.accountId.trim() : "";
@@ -7607,7 +7558,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(
+  handle(
     IPC.usageCheckBudget,
     async (
       _event,
@@ -7623,7 +7574,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(
+  handle(
     IPC.usageGetCumulativeUsage,
     async (
       _event,
@@ -7641,12 +7592,12 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(IPC.usageGetBudgetConfig, async (): Promise<BudgetCapConfig> => {
+  handle(IPC.usageGetBudgetConfig, async (): Promise<BudgetCapConfig> => {
     const ctx = getCtx();
     return ctx.budgetCapService?.getConfig() ?? {};
   });
 
-  ipcMain.handle(IPC.usageSaveBudgetConfig, async (_event, arg: BudgetCapConfig): Promise<BudgetCapConfig> => {
+  handle(IPC.usageSaveBudgetConfig, async (_event, arg: BudgetCapConfig): Promise<BudgetCapConfig> => {
     const ctx = getCtx();
     return ctx.budgetCapService?.updateConfig(arg ?? {}) ?? {};
   });
@@ -7657,14 +7608,14 @@ export function registerIpc({
     return ctx;
   };
 
-  ipcMain.handle(IPC.layoutGet, async (_event, arg: { layoutId: string }): Promise<DockLayout | null> => {
+  handle(IPC.layoutGet, async (_event, arg: { layoutId: string }): Promise<DockLayout | null> => {
     const ctx = ensureDbContext();
     const key = `dock_layout:${arg.layoutId}`;
     const value = ctx.db.getJson<DockLayout>(key);
     return value;
   });
 
-  ipcMain.handle(IPC.layoutSet, async (_event, arg: { layoutId: string; layout: DockLayout }): Promise<void> => {
+  handle(IPC.layoutSet, async (_event, arg: { layoutId: string; layout: DockLayout }): Promise<void> => {
     const ctx = ensureDbContext();
     const key = `dock_layout:${arg.layoutId}`;
     const safe = clampLayout(arg.layout);
@@ -7672,14 +7623,14 @@ export function registerIpc({
     ctx.logger.debug("layout.set", { key, panels: Object.keys(safe).length });
   });
 
-  ipcMain.handle(IPC.tilingTreeGet, async (_event, arg: { layoutId: string }): Promise<unknown> => {
+  handle(IPC.tilingTreeGet, async (_event, arg: { layoutId: string }): Promise<unknown> => {
     const ctx = ensureDbContext();
     const key = `tiling_tree:${arg.layoutId}`;
     const value = ctx.db.getJson<unknown>(key);
     return value;
   });
 
-  ipcMain.handle(IPC.tilingTreeSet, async (_event, arg: { layoutId: string; tree: unknown }): Promise<void> => {
+  handle(IPC.tilingTreeSet, async (_event, arg: { layoutId: string; tree: unknown }): Promise<void> => {
     const ctx = ensureDbContext();
     const key = `tiling_tree:${arg.layoutId}`;
     ctx.db.setJson(key, arg.tree);
@@ -7692,7 +7643,7 @@ export function registerIpc({
     return ctx;
   };
 
-  ipcMain.handle(IPC.lanesList, async (_event, arg: ListLanesArgs): Promise<LaneSummary[]> => {
+  handle(IPC.lanesList, async (_event, arg: ListLanesArgs): Promise<LaneSummary[]> => {
     const ctx = ensureLaneContext();
     const devicesOpenByLaneId = buildLanePresenceByLaneId(getOptionalSyncService());
     return await withIpcTiming(
@@ -7709,7 +7660,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.lanesListSnapshots, async (_event, arg: ListLanesArgs): Promise<LaneListSnapshot[]> => {
+  handle(IPC.lanesListSnapshots, async (_event, arg: ListLanesArgs): Promise<LaneListSnapshot[]> => {
     const ctx = ensureLaneContext();
     requireAppContextServices(ctx, ["sessionService", "ptyService"] as const);
     return await withIpcTiming(
@@ -7732,7 +7683,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.lanesCreate, async (_event, arg: CreateLaneArgs): Promise<LaneSummary> => {
+  handle(IPC.lanesCreate, async (_event, arg: CreateLaneArgs): Promise<LaneSummary> => {
     const ctx = ensureLaneContext();
     const lane = await ctx.laneService.create({
       name: arg.name,
@@ -7751,7 +7702,7 @@ export function registerIpc({
     return lane;
   });
 
-  ipcMain.handle(IPC.lanesImportBranch, async (_event, arg: ImportBranchLaneArgs): Promise<LaneSummary> => {
+  handle(IPC.lanesImportBranch, async (_event, arg: ImportBranchLaneArgs): Promise<LaneSummary> => {
     const ctx = ensureLaneContext();
     const lane = await ctx.laneService.importBranch(arg);
     await ensureActiveLanePortLease(ctx, lane.id);
@@ -7759,43 +7710,43 @@ export function registerIpc({
     return lane;
   });
 
-  ipcMain.handle(IPC.lanesPreviewBranchSwitch, async (_event, arg: LaneBranchSwitchArgs): Promise<LaneBranchSwitchPreview> => {
+  handle(IPC.lanesPreviewBranchSwitch, async (_event, arg: LaneBranchSwitchArgs): Promise<LaneBranchSwitchPreview> => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.previewBranchSwitch(arg);
   });
 
-  ipcMain.handle(IPC.lanesSwitchBranch, async (_event, arg: LaneBranchSwitchArgs): Promise<LaneBranchSwitchResult> => {
+  handle(IPC.lanesSwitchBranch, async (_event, arg: LaneBranchSwitchArgs): Promise<LaneBranchSwitchResult> => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.switchBranch(arg);
   });
 
-  ipcMain.handle(IPC.lanesGetBranchDrift, async (_event, arg: { laneId: string }): Promise<LaneBranchDrift | null> => {
+  handle(IPC.lanesGetBranchDrift, async (_event, arg: { laneId: string }): Promise<LaneBranchDrift | null> => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.getBranchDrift(arg);
   });
 
-  ipcMain.handle(IPC.lanesResolveBranchDrift, async (_event, arg: ResolveLaneBranchDriftArgs): Promise<ResolveLaneBranchDriftResult> => {
+  handle(IPC.lanesResolveBranchDrift, async (_event, arg: ResolveLaneBranchDriftArgs): Promise<ResolveLaneBranchDriftResult> => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.resolveBranchDrift(arg);
   });
 
-  ipcMain.handle(IPC.lanesRename, async (_event, arg: RenameLaneArgs): Promise<void> => {
+  handle(IPC.lanesRename, async (_event, arg: RenameLaneArgs): Promise<void> => {
     const ctx = ensureLaneContext();
     ctx.laneService.rename(arg);
   });
 
-  ipcMain.handle(IPC.lanesRenameBranch, async (_event, arg: RenameLaneBranchArgs): Promise<RenameLaneBranchResult> =>
+  handle(IPC.lanesRenameBranch, async (_event, arg: RenameLaneBranchArgs): Promise<RenameLaneBranchResult> =>
     ensureLaneContext().laneService.renameBranch(arg));
 
-  ipcMain.handle(IPC.lanesCheckBranchName, async (_event, arg: { name: string }): Promise<LaneBranchNameCheck> =>
+  handle(IPC.lanesCheckBranchName, async (_event, arg: { name: string }): Promise<LaneBranchNameCheck> =>
     ensureLaneContext().laneService.checkBranchName(arg));
 
-  ipcMain.handle(IPC.lanesUpdateAppearance, async (_event, arg: UpdateLaneAppearanceArgs): Promise<void> => {
+  handle(IPC.lanesUpdateAppearance, async (_event, arg: UpdateLaneAppearanceArgs): Promise<void> => {
     const ctx = ensureLaneContext();
     ctx.laneService.updateAppearance(arg);
   });
 
-  ipcMain.handle(IPC.lanesArchive, async (_event, arg: ArchiveLaneArgs): Promise<void> => {
+  handle(IPC.lanesArchive, async (_event, arg: ArchiveLaneArgs): Promise<void> => {
     const ctx = ensureLaneContext();
     const lane = await ctx.laneService
       .list({ includeArchived: true, includeStatus: false })
@@ -7811,7 +7762,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(
+  handle(
     IPC.lanesArchiveAndReclaim,
     async (_event, arg: ArchiveAndReclaimLaneArgs): Promise<ArchiveAndReclaimLaneResult> => {
       const ctx = ensureLaneContext();
@@ -7836,7 +7787,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.lanesUnarchive, async (_event, arg: ArchiveLaneArgs): Promise<RestoreLaneResult> => {
+  handle(IPC.lanesUnarchive, async (_event, arg: ArchiveLaneArgs): Promise<RestoreLaneResult> => {
     const ctx = ensureLaneContext();
     const result = await ctx.laneService.unarchive(arg);
     try {
@@ -7855,49 +7806,49 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
+  handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
     const ctx = ensureLaneContext();
     const teardownEnv = await buildLaneEnvTeardown(ctx, arg.laneId, { includeArchived: true });
     await ctx.laneService.delete(arg, { teardownEnv });
     releaseLaneRuntimeResources(ctx, arg.laneId);
   });
 
-  ipcMain.handle(IPC.lanesDeleteCancel, async (_event, arg: { laneId: string }) => {
+  handle(IPC.lanesDeleteCancel, async (_event, arg: { laneId: string }) => {
     const ctx = ensureLaneContext();
     return ctx.laneService.cancelDelete(arg.laneId);
   });
 
-  ipcMain.handle(IPC.lanesCancelGitWrite, async (_event, arg: CancelLaneGitWriteArgs) => {
+  handle(IPC.lanesCancelGitWrite, async (_event, arg: CancelLaneGitWriteArgs) => {
     const ctx = ensureLaneContext();
     return ctx.laneService.cancelGitWrite(arg);
   });
 
-  ipcMain.handle(IPC.lanesListDeleteProgress, async () => {
+  handle(IPC.lanesListDeleteProgress, async () => {
     const ctx = ensureLaneContext();
     return ctx.laneService.listDeleteProgress();
   });
 
-  ipcMain.handle(IPC.lanesListDeleted, async () => ensureLaneContext().laneService.listDeletedLanes());
+  handle(IPC.lanesListDeleted, async () => ensureLaneContext().laneService.listDeletedLanes());
 
-  ipcMain.handle(IPC.lanesRestoreDeleted, async (_event, arg: RestoreDeletedLaneArgs) =>
+  handle(IPC.lanesRestoreDeleted, async (_event, arg: RestoreDeletedLaneArgs) =>
     ensureLaneContext().laneService.restoreDeletedLane(arg));
 
-  ipcMain.handle(IPC.lanesRemoveDeleted, async (_event, arg: { id: string }) =>
+  handle(IPC.lanesRemoveDeleted, async (_event, arg: { id: string }) =>
     ensureLaneContext().laneService.removeDeletedLane(arg));
 
-  ipcMain.handle(IPC.lanesGetDeleteRisk, async (_event, arg: { laneId: string }) => {
+  handle(IPC.lanesGetDeleteRisk, async (_event, arg: { laneId: string }) => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.getDeleteRisk(arg.laneId);
   });
 
-  ipcMain.handle(IPC.lanesGetReclaimRisk, async (
+  handle(IPC.lanesGetReclaimRisk, async (
     _event,
     arg: { laneId: string },
   ): Promise<LaneReclaimRisk> => {
     return ensureLaneContext().laneService.getReclaimRisk({ laneId: arg.laneId });
   });
 
-  ipcMain.handle(IPC.lanesAttachLinearIssueToSession, async (
+  handle(IPC.lanesAttachLinearIssueToSession, async (
     _event,
     arg: { chatSessionId: string; issues: LaneLinearIssue[] },
   ): Promise<SessionLinearIssueLink[]> => {
@@ -7905,7 +7856,7 @@ export function registerIpc({
     return ctx.laneService.attachLinearIssueToSession(arg);
   });
 
-  ipcMain.handle(IPC.lanesDetachLinearIssueFromSession, async (
+  handle(IPC.lanesDetachLinearIssueFromSession, async (
     _event,
     arg: { chatSessionId: string; issueId?: string },
   ): Promise<boolean> => {
@@ -7913,7 +7864,7 @@ export function registerIpc({
     return ctx.laneService.detachLinearIssueFromSession(arg);
   });
 
-  ipcMain.handle(IPC.lanesListLinearIssuesForSession, async (
+  handle(IPC.lanesListLinearIssuesForSession, async (
     _event,
     arg: { chatSessionId: string },
   ): Promise<SessionLinearIssueLink[]> => {
@@ -7921,7 +7872,7 @@ export function registerIpc({
     return ctx.laneService.listLinearIssuesForSession(arg);
   });
 
-  ipcMain.handle(IPC.lanesListLinearIssuesForLaneSessions, async (
+  handle(IPC.lanesListLinearIssuesForLaneSessions, async (
     _event,
     arg: { laneId: string },
   ): Promise<SessionLinearIssueLink[]> => {
@@ -7929,7 +7880,7 @@ export function registerIpc({
     return ctx.laneService.listLinearIssuesForLaneSessions(arg);
   });
 
-  ipcMain.handle(IPC.lanesAttachGitHubIssueToSession, async (
+  handle(IPC.lanesAttachGitHubIssueToSession, async (
     _event,
     arg: { chatSessionId: string; issues: LaneGitHubIssue[] },
   ): Promise<SessionGitHubIssueLink[]> => {
@@ -7937,7 +7888,7 @@ export function registerIpc({
     return ctx.laneService.attachGitHubIssueToSession(arg);
   });
 
-  ipcMain.handle(IPC.lanesDetachGitHubIssueFromSession, async (
+  handle(IPC.lanesDetachGitHubIssueFromSession, async (
     _event,
     arg: { chatSessionId: string; issueId?: string },
   ): Promise<boolean> => {
@@ -7945,7 +7896,7 @@ export function registerIpc({
     return ctx.laneService.detachGitHubIssueFromSession(arg);
   });
 
-  ipcMain.handle(IPC.lanesListGitHubIssuesForSession, async (
+  handle(IPC.lanesListGitHubIssuesForSession, async (
     _event,
     arg: { chatSessionId: string },
   ): Promise<SessionGitHubIssueLink[]> => {
@@ -7953,7 +7904,7 @@ export function registerIpc({
     return ctx.laneService.listGitHubIssuesForSession(arg);
   });
 
-  ipcMain.handle(IPC.lanesListGitHubIssuesForLaneSessions, async (
+  handle(IPC.lanesListGitHubIssuesForLaneSessions, async (
     _event,
     arg: { laneId: string },
   ): Promise<SessionGitHubIssueLink[]> => {
@@ -7961,7 +7912,7 @@ export function registerIpc({
     return ctx.laneService.listGitHubIssuesForLaneSessions(arg);
   });
 
-  ipcMain.handle(IPC.lanesAttachJiraIssueToSession, async (
+  handle(IPC.lanesAttachJiraIssueToSession, async (
     _event,
     arg: { chatSessionId: string; issues: LaneJiraIssue[] },
   ): Promise<SessionJiraIssueLink[]> => {
@@ -7969,7 +7920,7 @@ export function registerIpc({
     return ctx.laneService.attachJiraIssueToSession(arg);
   });
 
-  ipcMain.handle(IPC.lanesDetachJiraIssueFromSession, async (
+  handle(IPC.lanesDetachJiraIssueFromSession, async (
     _event,
     arg: { chatSessionId: string; issueId?: string },
   ): Promise<boolean> => {
@@ -7977,7 +7928,7 @@ export function registerIpc({
     return ctx.laneService.detachJiraIssueFromSession(arg);
   });
 
-  ipcMain.handle(IPC.lanesListJiraIssuesForSession, async (
+  handle(IPC.lanesListJiraIssuesForSession, async (
     _event,
     arg: { chatSessionId: string },
   ): Promise<SessionJiraIssueLink[]> => {
@@ -7985,7 +7936,7 @@ export function registerIpc({
     return ctx.laneService.listJiraIssuesForSession(arg);
   });
 
-  ipcMain.handle(IPC.lanesListJiraIssuesForLaneSessions, async (
+  handle(IPC.lanesListJiraIssuesForLaneSessions, async (
     _event,
     arg: { laneId: string },
   ): Promise<SessionJiraIssueLink[]> => {
@@ -7993,7 +7944,7 @@ export function registerIpc({
     return ctx.laneService.listJiraIssuesForLaneSessions(arg);
   });
 
-  ipcMain.handle(IPC.lanesUnlinkLinearIssues, async (
+  handle(IPC.lanesUnlinkLinearIssues, async (
     _event,
     arg: { laneId: string; issueId?: string },
   ): Promise<boolean> => {
@@ -8001,22 +7952,22 @@ export function registerIpc({
     return ctx.laneService.unlinkLinearIssues(arg);
   });
 
-  ipcMain.handle(IPC.lanesRebaseStart, async (_event, arg: RebaseStartArgs): Promise<RebaseStartResult> => {
+  handle(IPC.lanesRebaseStart, async (_event, arg: RebaseStartArgs): Promise<RebaseStartResult> => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.rebaseStart(arg);
   });
 
-  ipcMain.handle(IPC.lanesRebasePush, async (_event, arg: RebasePushArgs): Promise<RebaseRun> => {
+  handle(IPC.lanesRebasePush, async (_event, arg: RebasePushArgs): Promise<RebaseRun> => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.rebasePush(arg);
   });
 
-  ipcMain.handle(IPC.lanesRebaseRollback, async (_event, arg: RebaseRollbackArgs): Promise<RebaseRun> => {
+  handle(IPC.lanesRebaseRollback, async (_event, arg: RebaseRollbackArgs): Promise<RebaseRun> => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.rebaseRollback(arg);
   });
 
-  ipcMain.handle(IPC.lanesRebaseAbort, async (_event, arg: RebaseAbortArgs): Promise<RebaseRun> => {
+  handle(IPC.lanesRebaseAbort, async (_event, arg: RebaseAbortArgs): Promise<RebaseRun> => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.rebaseAbort(arg);
   });
@@ -8085,21 +8036,21 @@ export function registerIpc({
     return laneService?.getLeftoverWorktree(laneId) ?? null;
   };
 
-  ipcMain.handle(IPC.lanesRevealWorktree, async (event, arg: { laneId: string }): Promise<void> => {
+  handle(IPC.lanesRevealWorktree, async (event, arg: { laneId: string }): Promise<void> => {
     const worktreePath = await readLaneWorktreePath(event, arg.laneId);
     if (!worktreePath) throw new Error("Lane worktree path is not available.");
     if (!fs.existsSync(worktreePath)) throw new Error("Lane worktree is missing.");
     shell.showItemInFolder(worktreePath);
   });
 
-  ipcMain.handle(IPC.lanesRevealLeftoverWorktree, async (event, arg: { laneId: string; rootPath?: string }): Promise<void> => {
+  handle(IPC.lanesRevealLeftoverWorktree, async (event, arg: { laneId: string; rootPath?: string }): Promise<void> => {
     const leftover = await readLeftoverWorktree(event, arg.laneId, leftoverProjectRoot(arg?.rootPath));
     if (!leftover?.path) throw new Error("That folder is no longer available to reveal.");
     if (!fs.existsSync(leftover.path)) throw new Error("That folder is no longer on disk.");
     shell.showItemInFolder(leftover.path);
   });
 
-  ipcMain.handle(IPC.lanesDeleteLeftoverWorktree, async (event, arg: { laneId: string; rootPath?: string }): Promise<{ removed: boolean }> => {
+  handle(IPC.lanesDeleteLeftoverWorktree, async (event, arg: { laneId: string; rootPath?: string }): Promise<{ removed: boolean }> => {
     const { runtimeResult, laneService } = await leftoverLaneTarget(
       event,
       leftoverProjectRoot(arg?.rootPath),
@@ -8111,7 +8062,7 @@ export function registerIpc({
     return laneService.deleteLeftoverWorktree(arg.laneId);
   });
 
-  ipcMain.handle(IPC.lanesOpenFolder, async (event, arg: { laneId: string }): Promise<void> => {
+  handle(IPC.lanesOpenFolder, async (event, arg: { laneId: string }): Promise<void> => {
     const ctx = getCtx();
     let worktreePath: string | null = null;
     if (ctx.laneService) {
@@ -8135,48 +8086,48 @@ export function registerIpc({
     await shell.openPath(worktreePath);
   });
 
-  ipcMain.handle(IPC.lanesInitEnv, async (_event, args: { laneId: string }) => {
+  handle(IPC.lanesInitEnv, async (_event, args: { laneId: string }) => {
     const ctx = getCtx();
     return await runLaneEnvironmentSetup(laneEnvironmentSetupDepsForCtx(ctx), { laneId: args.laneId, includeArchived: false });
   });
 
-  ipcMain.handle(IPC.lanesGetEnvStatus, async (_event, args: { laneId: string }) => {
+  handle(IPC.lanesGetEnvStatus, async (_event, args: { laneId: string }) => {
     const ctx = getCtx();
     return ctx.laneEnvironmentService?.getProgress(args.laneId) ?? null;
   });
 
-  ipcMain.handle(IPC.lanesGetOverlay, async (_event, args: { laneId: string }) => {
+  handle(IPC.lanesGetOverlay, async (_event, args: { laneId: string }) => {
     const ctx = getCtx();
     const { overrides } = await resolveLaneOverlayContextForCtx(ctx, args.laneId);
     return overrides;
   });
 
-  ipcMain.handle(IPC.lanesListTemplates, async () => {
+  handle(IPC.lanesListTemplates, async () => {
     const ctx = getCtx();
     return ctx.laneTemplateService?.listTemplates() ?? [];
   });
 
-  ipcMain.handle(IPC.lanesGetTemplate, async (_event, args: { templateId: string }) => {
+  handle(IPC.lanesGetTemplate, async (_event, args: { templateId: string }) => {
     const ctx = getCtx();
     return ctx.laneTemplateService?.getTemplate(args.templateId) ?? null;
   });
 
-  ipcMain.handle(IPC.lanesGetDefaultTemplate, async () => {
+  handle(IPC.lanesGetDefaultTemplate, async () => {
     const ctx = getCtx();
     return ctx.laneTemplateService?.getDefaultTemplateId() ?? null;
   });
 
-  ipcMain.handle(IPC.lanesGetNewLaneDefaults, async () => ensureLaneContext().laneService.getNewLaneDefaults());
+  handle(IPC.lanesGetNewLaneDefaults, async () => ensureLaneContext().laneService.getNewLaneDefaults());
 
-  ipcMain.handle(IPC.lanesSetNewLaneDefaults, async (_event, args: { defaults: Partial<NewLaneDefaults> }) =>
+  handle(IPC.lanesSetNewLaneDefaults, async (_event, args: { defaults: Partial<NewLaneDefaults> }) =>
     ensureLaneContext().laneService.setNewLaneDefaults(args));
 
-  ipcMain.handle(IPC.lanesSetDefaultTemplate, async (_event, args: { templateId: string | null }) => {
+  handle(IPC.lanesSetDefaultTemplate, async (_event, args: { templateId: string | null }) => {
     const ctx = getCtx();
     ctx.laneTemplateService?.setDefaultTemplateId(args.templateId);
   });
 
-  ipcMain.handle(IPC.lanesApplyTemplate, async (_event, args: { laneId: string; templateId: string }) => {
+  handle(IPC.lanesApplyTemplate, async (_event, args: { laneId: string; templateId: string }) => {
     const ctx = getCtx();
     return await runLaneEnvironmentSetup(laneEnvironmentSetupDepsForCtx(ctx), {
       laneId: args.laneId,
@@ -8185,13 +8136,13 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.lanesSaveTemplate, async (_event, args: { template: LaneTemplate }) => {
+  handle(IPC.lanesSaveTemplate, async (_event, args: { template: LaneTemplate }) => {
     const ctx = getCtx();
     if (!ctx.laneTemplateService) throw new Error("Lane template service not available");
     ctx.laneTemplateService.saveTemplate(args.template);
   });
 
-  ipcMain.handle(IPC.lanesDeleteTemplate, async (_event, args: { templateId: string }) => {
+  handle(IPC.lanesDeleteTemplate, async (_event, args: { templateId: string }) => {
     const ctx = getCtx();
     if (!ctx.laneTemplateService) throw new Error("Lane template service not available");
     ctx.laneTemplateService.deleteTemplate(args.templateId);
@@ -8199,24 +8150,24 @@ export function registerIpc({
 
   // --- Port Allocation (Phase 5 W3) ---
 
-  ipcMain.handle(IPC.lanesPortGetLease, async (_event, args: { laneId: string }) => {
+  handle(IPC.lanesPortGetLease, async (_event, args: { laneId: string }) => {
     const ctx = ensureLaneContext();
     await ensureActiveLanePortLease(ctx, args.laneId);
     return ctx.portAllocationService?.getLease(args.laneId) ?? null;
   });
 
-  ipcMain.handle(IPC.lanesPortListLeases, async () => {
+  handle(IPC.lanesPortListLeases, async () => {
     const ctx = getCtx();
     return ctx.portAllocationService?.listLeases() ?? [];
   });
 
-  ipcMain.handle(IPC.lanesPortAcquire, async (_event, args: { laneId: string }) => {
+  handle(IPC.lanesPortAcquire, async (_event, args: { laneId: string }) => {
     const ctx = ensureLaneContext();
     if (!ctx.portAllocationService) throw new Error("Port allocation service not available");
     return (await ensureActiveLanePortLease(ctx, args.laneId))!;
   });
 
-  ipcMain.handle(IPC.lanesPortRelease, async (_event, args: { laneId: string }) => {
+  handle(IPC.lanesPortRelease, async (_event, args: { laneId: string }) => {
     const ctx = ensureLaneContext();
     await ctx.laneService.list({ includeArchived: true, includeStatus: false }).then((lanes) => {
       if (!lanes.some((lane) => lane.id === args.laneId)) {
@@ -8226,12 +8177,12 @@ export function registerIpc({
     releaseLaneRuntimeResources(ctx, args.laneId);
   });
 
-  ipcMain.handle(IPC.lanesPortListConflicts, async () => {
+  handle(IPC.lanesPortListConflicts, async () => {
     const ctx = getCtx();
     return ctx.portAllocationService?.listConflicts() ?? [];
   });
 
-  ipcMain.handle(IPC.lanesPortRecoverOrphans, async () => {
+  handle(IPC.lanesPortRecoverOrphans, async () => {
     const ctx = ensureLaneContext();
     if (!ctx.portAllocationService) return [];
     const lanes = await ctx.laneService.list({ includeArchived: false, includeStatus: false });
@@ -8296,18 +8247,18 @@ export function registerIpc({
     return ctx.laneProxyService.getPreviewInfo(laneId);
   };
 
-  ipcMain.handle(IPC.lanesProxyGetStatus, async () => {
+  handle(IPC.lanesProxyGetStatus, async () => {
     const ctx = getCtx();
     return ctx.laneProxyService?.getStatus() ?? { running: false, proxyPort: 8080, routes: [] };
   });
 
-  ipcMain.handle(IPC.lanesProxyStart, async (_event, args?: { port?: number }) => {
+  handle(IPC.lanesProxyStart, async (_event, args?: { port?: number }) => {
     const ctx = getCtx();
     if (!ctx.laneProxyService) throw new Error("Proxy service not available");
     return ctx.laneProxyService.start(args?.port);
   });
 
-  ipcMain.handle(IPC.lanesProxyStop, async () => {
+  handle(IPC.lanesProxyStop, async () => {
     const ctx = getCtx();
     if (!ctx.laneProxyService) return;
     await ctx.laneProxyService.stop();
@@ -8320,32 +8271,32 @@ export function registerIpc({
     return service;
   };
 
-  ipcMain.handle(IPC.proxyStatus, async () => getSubscriptionProxy().status());
-  ipcMain.handle(IPC.proxyEnsureRunning, async () => getSubscriptionProxy().ensureRunning());
-  ipcMain.handle(IPC.proxySignIn, async (_event, args: SubscriptionProxySignInArgs) =>
+  handle(IPC.proxyStatus, async () => getSubscriptionProxy().status());
+  handle(IPC.proxyEnsureRunning, async () => getSubscriptionProxy().ensureRunning());
+  handle(IPC.proxySignIn, async (_event, args: SubscriptionProxySignInArgs) =>
     getSubscriptionProxy().signIn(args));
-  ipcMain.handle(IPC.proxySignOut, async (_event, args: SubscriptionProxySignOutArgs) =>
+  handle(IPC.proxySignOut, async (_event, args: SubscriptionProxySignOutArgs) =>
     getSubscriptionProxy().signOut(args));
-  ipcMain.handle(IPC.proxySetDisabled, async (_event, args: SubscriptionProxySetDisabledArgs) =>
+  handle(IPC.proxySetDisabled, async (_event, args: SubscriptionProxySetDisabledArgs) =>
     getSubscriptionProxy().setDisabled(args));
 
-  ipcMain.handle(IPC.lanesProxyAddRoute, async (_event, args: { laneId: string; targetPort: number }) => {
+  handle(IPC.lanesProxyAddRoute, async (_event, args: { laneId: string; targetPort: number }) => {
     const ctx = ensureLaneContext();
     if (!ctx.laneProxyService) throw new Error("Proxy service not available");
     const lane = (await ctx.laneService.list({ includeArchived: false, includeStatus: false })).find((l) => l.id === args.laneId);
     return ctx.laneProxyService.addRoute(args.laneId, args.targetPort, lane?.name);
   });
 
-  ipcMain.handle(IPC.lanesProxyRemoveRoute, async (_event, args: { laneId: string }) => {
+  handle(IPC.lanesProxyRemoveRoute, async (_event, args: { laneId: string }) => {
     const ctx = getCtx();
     ctx.laneProxyService?.removeRoute(args.laneId);
   });
 
-  ipcMain.handle(IPC.lanesProxyGetPreviewInfo, async (_event, args: { laneId: string }) => {
+  handle(IPC.lanesProxyGetPreviewInfo, async (_event, args: { laneId: string }) => {
     return ensureLanePreviewInfo(args.laneId);
   });
 
-  ipcMain.handle(IPC.lanesProxyOpenPreview, async (_event, args: { laneId: string }) => {
+  handle(IPC.lanesProxyOpenPreview, async (_event, args: { laneId: string }) => {
     const info = await ensureLanePreviewInfo(args.laneId);
     if (!info) throw new Error(`No preview route for lane: ${args.laneId}`);
     const { shell } = await import("electron");
@@ -8704,7 +8655,7 @@ export function registerIpc({
   const agentChatParallelLaunchStateKey = (projectRoot: string, parentLaneId: string): string =>
     `agent-chat-parallel-launch:${projectRoot}:${parentLaneId}`;
 
-  ipcMain.handle(IPC.lanesOAuthGetStatus, async () => {
+  handle(IPC.lanesOAuthGetStatus, async () => {
     const ctx = getCtx();
     return ctx.oauthRedirectService?.getStatus() ?? {
       enabled: false,
@@ -8714,20 +8665,20 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.lanesOAuthUpdateConfig, async (_event, args: unknown) => {
+  handle(IPC.lanesOAuthUpdateConfig, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.oauthRedirectService) throw new Error("OAuth redirect service not available");
     ctx.oauthRedirectService.updateConfig(parseOAuthUpdateConfigArgs(args));
   });
 
-  ipcMain.handle(IPC.lanesOAuthGenerateRedirectUris, async (_event, args: unknown) => {
+  handle(IPC.lanesOAuthGenerateRedirectUris, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.oauthRedirectService) return [];
     const request = parseGenerateRedirectUrisArgs(args);
     return ctx.oauthRedirectService.generateRedirectUris(request.provider);
   });
 
-  ipcMain.handle(IPC.lanesOAuthEncodeState, async (_event, args: unknown) => {
+  handle(IPC.lanesOAuthEncodeState, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.oauthRedirectService) throw new Error("OAuth redirect service not available");
     const request = parseEncodeOAuthStateArgs(args);
@@ -8737,21 +8688,21 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.lanesOAuthDecodeState, async (_event, args: unknown) => {
+  handle(IPC.lanesOAuthDecodeState, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.oauthRedirectService) return null;
     const request = parseDecodeOAuthStateArgs(args);
     return ctx.oauthRedirectService.decodeState(request.encodedState);
   });
 
-  ipcMain.handle(IPC.lanesOAuthListSessions, async () => {
+  handle(IPC.lanesOAuthListSessions, async () => {
     const ctx = getCtx();
     return ctx.oauthRedirectService?.listSessions() ?? [];
   });
 
   // --- Runtime Diagnostics (Phase 5 W6) ---
 
-  ipcMain.handle(IPC.lanesDiagnosticsGetStatus, async () => {
+  handle(IPC.lanesDiagnosticsGetStatus, async () => {
     const ctx = getCtx();
     if (!ctx.runtimeDiagnosticsService) {
       const proxyStatus = ctx.laneProxyService?.getStatus();
@@ -8769,20 +8720,20 @@ export function registerIpc({
     return ctx.runtimeDiagnosticsService.getStatus(lanes.map((l) => l.id));
   });
 
-  ipcMain.handle(IPC.lanesDiagnosticsGetLaneHealth, async (_event, args: unknown) => {
+  handle(IPC.lanesDiagnosticsGetLaneHealth, async (_event, args: unknown) => {
     const ctx = getCtx();
     const request = parseDiagnosticsLaneIdArgs(args);
     return ctx.runtimeDiagnosticsService?.getLaneHealth(request.laneId) ?? null;
   });
 
-  ipcMain.handle(IPC.lanesDiagnosticsRunHealthCheck, async (_event, args: unknown) => {
+  handle(IPC.lanesDiagnosticsRunHealthCheck, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.runtimeDiagnosticsService) throw new Error("Diagnostics service not available");
     const request = parseDiagnosticsLaneIdArgs(args);
     return ctx.runtimeDiagnosticsService.checkLaneHealth(request.laneId);
   });
 
-  ipcMain.handle(IPC.lanesDiagnosticsRunFullCheck, async () => {
+  handle(IPC.lanesDiagnosticsRunFullCheck, async () => {
     const ctx = getCtx();
     if (!ctx.runtimeDiagnosticsService) return [];
     requireAppContextServices(ctx, ["laneService"] as const);
@@ -8790,14 +8741,14 @@ export function registerIpc({
     return ctx.runtimeDiagnosticsService.checkAllLanes(lanes.map((l) => l.id));
   });
 
-  ipcMain.handle(IPC.lanesDiagnosticsActivateFallback, async (_event, args: unknown) => {
+  handle(IPC.lanesDiagnosticsActivateFallback, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.runtimeDiagnosticsService) throw new Error("Diagnostics service not available");
     const request = parseDiagnosticsLaneIdArgs(args);
     ctx.runtimeDiagnosticsService.activateFallback(request.laneId);
   });
 
-  ipcMain.handle(IPC.lanesDiagnosticsDeactivateFallback, async (_event, args: unknown) => {
+  handle(IPC.lanesDiagnosticsDeactivateFallback, async (_event, args: unknown) => {
     const ctx = getCtx();
     if (!ctx.runtimeDiagnosticsService) throw new Error("Diagnostics service not available");
     const request = parseDiagnosticsLaneIdArgs(args);
@@ -8822,7 +8773,7 @@ export function registerIpc({
     return ctx;
   };
 
-  ipcMain.handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {
+  handle(IPC.sessionsList, async (_event, arg: ListSessionsArgs): Promise<TerminalSessionSummary[]> => {
     const ctx = ensureSessionContext();
     const ptyService = requirePtyService();
     return await withIpcTiming(
@@ -8836,13 +8787,13 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.sessionsGet, async (_event, arg: { sessionId: string }): Promise<TerminalSessionDetail | null> => {
+  handle(IPC.sessionsGet, async (_event, arg: { sessionId: string }): Promise<TerminalSessionDetail | null> => {
     const ctx = ensureSessionContext();
     const ptyService = requirePtyService();
     return getSessionWithChatProjection({ ...ctx, ptyService }, arg.sessionId);
   });
 
-  ipcMain.handle(IPC.sessionsDelete, async (_event, arg: DeleteSessionArgs): Promise<void> => {
+  handle(IPC.sessionsDelete, async (_event, arg: DeleteSessionArgs): Promise<void> => {
     const ctx = ensureSessionContext();
     const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
     if (!sessionId) {
@@ -8855,7 +8806,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.sessionsUpdateMeta, async (_event, arg: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> => {
+  handle(IPC.sessionsUpdateMeta, async (_event, arg: UpdateSessionMetaArgs): Promise<TerminalSessionSummary | null> => {
     const ctx = ensureSessionContext();
     await assertCursorCloudRenameAllowed(
       ctx.agentChatService
@@ -8866,7 +8817,7 @@ export function registerIpc({
     return ctx.sessionService.updateMeta(arg);
   });
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsSettle,
     async (
       _event,
@@ -8893,7 +8844,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsUnsettle,
     async (_event, arg: { sessionId?: unknown }): Promise<void> => {
       const ctx = ensureSessionContext();
@@ -8903,7 +8854,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsSettleMany,
     async (_event, arg: { sessionIds?: unknown }): Promise<string[]> => {
       const ctx = ensureSessionContext();
@@ -8914,7 +8865,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsUnsettleMany,
     async (_event, arg: { sessionIds?: unknown }): Promise<void> => {
       const ctx = ensureSessionContext();
@@ -8926,7 +8877,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsSnooze,
     async (_event, arg: { sessionId?: unknown; untilIso?: unknown }): Promise<boolean> => {
       const ctx = ensureSessionContext();
@@ -8937,7 +8888,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsLifecycleSettingsGet,
     (): SessionLifecycleSettings => {
       const ctx = getCtx();
@@ -8946,7 +8897,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsWake,
     async (_event, arg: { sessionId?: unknown; reason?: unknown }): Promise<boolean> => {
       const ctx = ensureSessionContext();
@@ -8957,7 +8908,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsSnoozeMany,
     async (_event, arg: { sessionIds?: unknown; untilIso?: unknown }): Promise<string[]> => {
       const ctx = ensureSessionContext();
@@ -8970,7 +8921,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsWakeMany,
     async (_event, arg: { sessionIds?: unknown; reason?: unknown }): Promise<string[]> => {
       const ctx = ensureSessionContext();
@@ -8983,7 +8934,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsSetSettleOverride,
     async (_event, arg: { sessionId?: unknown; override?: unknown }): Promise<boolean> => {
       const ctx = ensureSessionContext();
@@ -9012,7 +8963,7 @@ export function registerIpc({
     });
   };
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsMoveOnBoard,
     async (_event, arg: { sessionId?: unknown; to?: unknown }): Promise<unknown> => {
       const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
@@ -9021,7 +8972,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsUndoBoardMove,
     async (_event, arg: { sessionId?: unknown; moveId?: unknown }): Promise<unknown> => {
       const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
@@ -9032,7 +8983,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsClearWokeMarker,
     async (_event, arg: { sessionId?: unknown }): Promise<boolean> => {
       const ctx = ensureSessionContext();
@@ -9042,7 +8993,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.sessionsLifecycleSettingsUpdate,
     (_event, settings: unknown): SessionLifecycleSettings => {
       if (
@@ -9063,7 +9014,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.sessionsReadTranscriptTail, async (_event, arg: { sessionId: string; maxBytes?: number; raw?: boolean }): Promise<string> => {
+  handle(IPC.sessionsReadTranscriptTail, async (_event, arg: { sessionId: string; maxBytes?: number; raw?: boolean }): Promise<string> => {
     const ctx = ensureSessionContext();
     const session = ctx.sessionService.get(arg.sessionId);
     if (!session) return "";
@@ -9077,7 +9028,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.sessionsGetDelta, async (_event, arg: { sessionId: string }): Promise<SessionDeltaSummary | null> => {
+  handle(IPC.sessionsGetDelta, async (_event, arg: { sessionId: string }): Promise<SessionDeltaSummary | null> => {
     const ctx = getCtx();
     return ctx.sessionDeltaService?.getSessionDelta(arg.sessionId) ?? null;
   });
@@ -9143,7 +9094,7 @@ export function registerIpc({
     return buffer;
   };
 
-  ipcMain.handle(
+  handle(
     IPC.transcriptionTranscribe,
     async (
       _event,
@@ -9174,7 +9125,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.transcriptionStatus, async (): Promise<TranscriptionStatus> => {
+  handle(IPC.transcriptionStatus, async (): Promise<TranscriptionStatus> => {
     const service = getCtx().transcriptionService;
     if (!service) {
       return {
@@ -9191,7 +9142,7 @@ export function registerIpc({
 
   // Download the ~464 MB speech model on demand (first dictation). Streams to
   // disk in the main process; progress is pushed to the requesting renderer.
-  ipcMain.handle(
+  handle(
     IPC.transcriptionDownloadModel,
     async (event): Promise<TranscriptionStatus> => {
       const service = getCtx().transcriptionService;
@@ -9220,7 +9171,7 @@ export function registerIpc({
   // the system-level permission explicitly (electron/electron#23792, #42714).
   // Windows exposes the global Win32 microphone privacy switch through
   // getMediaAccessStatus; Chromium owns any per-origin prompt.
-  ipcMain.handle(
+  handle(
     IPC.transcriptionRequestMicAccess,
     async (): Promise<MicrophoneAccessResult> => {
       // `isPackaged` changes the ANSWER, not the wording: an unsigned build has
@@ -9232,7 +9183,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.agentChatList, async (_event, arg: AgentChatListArgs = {}): Promise<AgentChatSessionSummary[]> => {
+  handle(IPC.agentChatList, async (_event, arg: AgentChatListArgs = {}): Promise<AgentChatSessionSummary[]> => {
     const ctx = getCtx();
     const service = ctx.agentChatService;
     if (!service || typeof (service as unknown as { listSessions?: unknown }).listSessions !== "function") {
@@ -9255,17 +9206,17 @@ export function registerIpc({
     }).listSessions(laneId || undefined, listOptions);
   });
 
-  ipcMain.handle(IPC.agentChatGetSummary, async (_event, arg: AgentChatGetSummaryArgs): Promise<AgentChatSessionSummary | null> => {
+  handle(IPC.agentChatGetSummary, async (_event, arg: AgentChatGetSummaryArgs): Promise<AgentChatSessionSummary | null> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.getSessionSummary(arg?.sessionId ?? "");
   });
 
-  ipcMain.handle(IPC.agentChatCreate, async (_event, arg: AgentChatCreateArgs): Promise<AgentChatSession> => {
+  handle(IPC.agentChatCreate, async (_event, arg: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.createSession(withoutRendererRuntimeActor(arg));
   });
 
-  ipcMain.handle(IPC.agentChatLaunch, async (_event, arg: AgentChatLaunchArgs): Promise<AgentChatSession> => {
+  handle(IPC.agentChatLaunch, async (_event, arg: AgentChatLaunchArgs): Promise<AgentChatSession> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.launchHeadless(withoutRendererRuntimeActor(arg));
   });
@@ -9276,7 +9227,7 @@ export function registerIpc({
   // ADE_LINEAR_CONTEXT_FILE into the PTY env (the agent reads/updates its issue
   // via `ade linear`, no token needed). The kickoff prompt is built into the
   // provider's startup command / initialInput.
-  ipcMain.handle(IPC.agentChatLaunchCli, async (_event, arg: AgentChatLaunchCliArgs): Promise<AgentChatLaunchCliResult> => {
+  handle(IPC.agentChatLaunchCli, async (_event, arg: AgentChatLaunchCliArgs): Promise<AgentChatLaunchCliResult> => {
     const ctx = getCtx();
     if (!ctx.laneService) {
       throw new Error("agentChat.launchCli requires an active project runtime lane service.");
@@ -9295,11 +9246,11 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.agentChatSuggestLaneName, async (_event, arg: unknown): Promise<string> => {
+  handle(IPC.agentChatSuggestLaneName, async (_event, arg: unknown): Promise<string> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.suggestLaneNameFromPrompt(parseAgentChatSuggestLaneNameArgs(arg));
   });
-  ipcMain.handle(IPC.agentChatGenerateAutoLaneIdentity, async (
+  handle(IPC.agentChatGenerateAutoLaneIdentity, async (
     _event,
     arg: unknown,
   ): Promise<AutoLaneIdentitySuggestion> => {
@@ -9307,7 +9258,7 @@ export function registerIpc({
     return await ctx.agentChatService.generateAutoLaneIdentity(parseAgentChatSuggestLaneNameArgs(arg));
   });
 
-  ipcMain.handle(IPC.agentChatParallelLaunchStateGet, async (_event, arg: unknown): Promise<AgentChatParallelLaunchState | null> => {
+  handle(IPC.agentChatParallelLaunchStateGet, async (_event, arg: unknown): Promise<AgentChatParallelLaunchState | null> => {
     const ctx = ensureDbContext();
     const { projectRoot, parentLaneId } = parseAgentChatParallelLaunchStateArgs(arg);
     const key = agentChatParallelLaunchStateKey(projectRoot, parentLaneId);
@@ -9317,7 +9268,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.agentChatParallelLaunchStateSet, async (_event, arg: AgentChatSetParallelLaunchStateArgs): Promise<void> => {
+  handle(IPC.agentChatParallelLaunchStateSet, async (_event, arg: AgentChatSetParallelLaunchStateArgs): Promise<void> => {
     const ctx = ensureDbContext();
     const { projectRoot, parentLaneId } = parseAgentChatParallelLaunchStateArgs(arg);
     const key = agentChatParallelLaunchStateKey(projectRoot, parentLaneId);
@@ -9325,61 +9276,61 @@ export function registerIpc({
     ctx.db.setJson(key, nextState);
   });
 
-  ipcMain.handle(IPC.agentChatDraftsList, async (): Promise<DraftEntry[]> => {
+  handle(IPC.agentChatDraftsList, async (): Promise<DraftEntry[]> => {
     return listDrafts(ensureDbContext().db);
   });
 
-  ipcMain.handle(IPC.agentChatDraftsCreate, async (
+  handle(IPC.agentChatDraftsCreate, async (
     _event,
     arg: DraftCreateArgs,
   ): Promise<DraftEntry> => {
     return createDraft(ensureDbContext().db, arg);
   });
 
-  ipcMain.handle(IPC.agentChatDraftsDelete, async (
+  handle(IPC.agentChatDraftsDelete, async (
     _event,
     arg: DraftDeleteArgs,
   ): Promise<boolean> => {
     return deleteDraft(ensureDbContext().db, arg?.id ?? "");
   });
 
-  ipcMain.handle(IPC.agentChatDraftsUpdate, async (
+  handle(IPC.agentChatDraftsUpdate, async (
     _event,
     arg: DraftUpdateArgs,
   ): Promise<DraftEntry | null> => {
     return updateDraft(ensureDbContext().db, arg);
   });
 
-  ipcMain.handle(IPC.agentChatDraftsClaim, async (
+  handle(IPC.agentChatDraftsClaim, async (
     _event,
     arg: DraftClaimArgs,
   ): Promise<DraftEntry | null> => {
     return claimDraft(ensureDbContext().db, arg?.id ?? "");
   });
 
-  ipcMain.handle(IPC.agentChatDraftsSendNow, async (
+  handle(IPC.agentChatDraftsSendNow, async (
     _event,
     arg: DraftDeleteArgs,
   ): Promise<{ ok: boolean; error?: string }> => {
     return await ensureAgentChatContext().agentChatService.sendDraftNow(arg?.id ?? "");
   });
 
-  ipcMain.handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
+  handle(IPC.agentChatHandoff, async (_event, arg: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.handoffSession(withoutRendererRuntimeActor(arg));
   });
 
-  ipcMain.handle(IPC.agentChatStartSideChat, async (_event, arg: AgentChatStartSideChatArgs): Promise<AgentChatStartSideChatResult> => {
+  handle(IPC.agentChatStartSideChat, async (_event, arg: AgentChatStartSideChatArgs): Promise<AgentChatStartSideChatResult> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.startSideChat(withoutRendererRuntimeActor(arg));
   });
 
-  ipcMain.handle(IPC.agentChatEndSideChat, async (_event, arg: AgentChatEndSideChatArgs): Promise<AgentChatEndSideChatResult> => {
+  handle(IPC.agentChatEndSideChat, async (_event, arg: AgentChatEndSideChatArgs): Promise<AgentChatEndSideChatResult> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.endSideChat(arg);
   });
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatPrepareCrossMachineHandoff,
     async (_event, arg: AgentChatPrepareCrossMachineHandoffArgs): Promise<AgentChatPrepareCrossMachineHandoffResult> => {
       const ctx = ensureAgentChatContext();
@@ -9387,7 +9338,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatValidateCrossMachineSource,
     async (_event, arg: AgentChatValidateCrossMachineSourceArgs): Promise<void> => {
       const ctx = ensureAgentChatContext();
@@ -9395,7 +9346,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatMarkCrossMachineHandoff,
     async (_event, arg: AgentChatMarkCrossMachineHandoffArgs): Promise<void> => {
       const ctx = ensureAgentChatContext();
@@ -9407,17 +9358,17 @@ export function registerIpc({
   // (the preload routes a bound or pinned chat to its brain first); the
   // desktop's in-process service has no transport, so `start` refuses there
   // with a plain message rather than pretending to move anything.
-  ipcMain.handle(
+  handle(
     IPC.agentChatGetCrossMachineHandoffOptions,
     async (_event, arg: AgentChatCrossMachineHandoffSessionArgs): Promise<AgentChatCrossMachineHandoffOptionsResult> =>
       await ensureAgentChatContext().agentChatService.getCrossMachineHandoffOptions(arg),
   );
-  ipcMain.handle(
+  handle(
     IPC.agentChatPreviewCrossMachineHandoff,
     async (_event, arg: AgentChatPreviewCrossMachineHandoffArgs): Promise<AgentChatPreviewCrossMachineHandoffResult> =>
       await ensureAgentChatContext().agentChatService.previewCrossMachineHandoff(arg),
   );
-  ipcMain.handle(
+  handle(
     IPC.agentChatStartCrossMachineHandoff,
     async (_event, arg: AgentChatStartCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord> => {
       // Who asked is never taken from the renderer: a window is the person.
@@ -9427,27 +9378,27 @@ export function registerIpc({
       });
     },
   );
-  ipcMain.handle(
+  handle(
     IPC.agentChatCancelCrossMachineHandoff,
     async (_event, arg: AgentChatCrossMachineHandoffSessionArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
       await ensureAgentChatContext().agentChatService.cancelCrossMachineHandoff(arg),
   );
-  ipcMain.handle(
+  handle(
     IPC.agentChatRetryCrossMachineHandoff,
     async (_event, arg: AgentChatCrossMachineHandoffSessionArgs): Promise<AgentChatCrossMachineHandoffRecord> =>
       await ensureAgentChatContext().agentChatService.retryCrossMachineHandoff(arg),
   );
-  ipcMain.handle(
+  handle(
     IPC.agentChatResolveCrossMachineHandoffApproval,
     async (_event, arg: AgentChatResolveCrossMachineHandoffApprovalArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
       await ensureAgentChatContext().agentChatService.resolveCrossMachineHandoffApproval(arg),
   );
-  ipcMain.handle(
+  handle(
     IPC.agentChatAcknowledgeCrossMachineHandoff,
     async (_event, arg: AgentChatAcknowledgeCrossMachineHandoffArgs): Promise<AgentChatCrossMachineHandoffRecord | null> =>
       await ensureAgentChatContext().agentChatService.acknowledgeCrossMachineHandoff(arg),
   );
-  ipcMain.handle(
+  handle(
     IPC.agentChatStartCrossMachineBatchMove,
     async (_event, arg: AgentChatCrossMachineBatchMoveArgs): Promise<AgentChatCrossMachineBatchMoveRecord> =>
       // A window is the person; who asked is never taken from the renderer.
@@ -9456,23 +9407,23 @@ export function registerIpc({
         requestedBy: "user",
       }),
   );
-  ipcMain.handle(
+  handle(
     IPC.agentChatGetCrossMachineBatchMove,
     async (_event, arg: AgentChatGetCrossMachineBatchMoveArgs): Promise<AgentChatCrossMachineBatchMoveRecord | null> =>
       await ensureAgentChatContext().agentChatService.getCrossMachineBatchMove(arg),
   );
-  ipcMain.handle(
+  handle(
     IPC.agentChatRetryCrossMachineBatchMove,
     async (_event, arg: AgentChatRetryCrossMachineBatchMoveArgs): Promise<AgentChatCrossMachineBatchMoveRecord> =>
       await ensureAgentChatContext().agentChatService.retryCrossMachineBatchMove(arg),
   );
-  ipcMain.handle(
+  handle(
     IPC.agentChatResolveCrossMachineBatchMoveApproval,
     async (_event, arg: AgentChatResolveCrossMachineBatchMoveApprovalArgs): Promise<AgentChatCrossMachineBatchMoveRecord> =>
       await ensureAgentChatContext().agentChatService.resolveCrossMachineBatchMoveApproval(arg),
   );
 
-  ipcMain.handle(IPC.agentChatSend, async (_event, arg: AgentChatSendArgs): Promise<void> => {
+  handle(IPC.agentChatSend, async (_event, arg: AgentChatSendArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
     // Host-only metadata is stripped at the boundary. `scheduledWake` and
     // `usageLimitResume: "manual"` exempt a message from the auto-resume cancel
@@ -9490,7 +9441,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.agentChatSteer, async (_event, arg: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
+  handle(IPC.agentChatSteer, async (_event, arg: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
     const ctx = ensureAgentChatContext();
     // Same boundary strip as `agentChatSend`: the accepted branch of the steer
     // queue is a dispatch commit point too, so a caller-asserted host-only
@@ -9503,32 +9454,32 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.agentChatCancelSteer, async (_event, arg: unknown): Promise<void> => {
+  handle(IPC.agentChatCancelSteer, async (_event, arg: unknown): Promise<void> => {
     const ctx = ensureAgentChatContext();
     await ctx.agentChatService.cancelSteer(parseAgentChatCancelSteerArgs(arg));
   });
 
-  ipcMain.handle(IPC.agentChatEditSteer, async (_event, arg: unknown): Promise<void> => {
+  handle(IPC.agentChatEditSteer, async (_event, arg: unknown): Promise<void> => {
     const ctx = ensureAgentChatContext();
     await ctx.agentChatService.editSteer(parseAgentChatEditSteerArgs(arg));
   });
 
-  ipcMain.handle(IPC.agentChatMoveSteer, async (_event, arg: unknown): Promise<void> => {
+  handle(IPC.agentChatMoveSteer, async (_event, arg: unknown): Promise<void> => {
     const ctx = ensureAgentChatContext();
     await ctx.agentChatService.moveSteer(parseAgentChatMoveSteerArgs(arg));
   });
 
-  ipcMain.handle(IPC.agentChatDispatchSteer, async (_event, arg: unknown): Promise<AgentChatDispatchSteerResult> => {
+  handle(IPC.agentChatDispatchSteer, async (_event, arg: unknown): Promise<AgentChatDispatchSteerResult> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.dispatchSteer(parseAgentChatDispatchSteerArgs(arg));
   });
 
-  ipcMain.handle(IPC.agentChatCancelDispatchedSteer, async (_event, arg: unknown): Promise<AgentChatCancelDispatchedSteerResult> => {
+  handle(IPC.agentChatCancelDispatchedSteer, async (_event, arg: unknown): Promise<AgentChatCancelDispatchedSteerResult> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.cancelDispatchedSteer(parseAgentChatCancelDispatchedSteerArgs(arg));
   });
 
-  ipcMain.handle(IPC.agentChatInterrupt, async (_event, arg: unknown): Promise<AgentChatInterruptResult> => {
+  handle(IPC.agentChatInterrupt, async (_event, arg: unknown): Promise<AgentChatInterruptResult> => {
     const ctx = ensureAgentChatContext();
     if (!arg || typeof arg !== "object" || typeof (arg as { sessionId?: unknown }).sessionId !== "string") {
       throw new Error("A chat session id is required.");
@@ -9544,7 +9495,7 @@ export function registerIpc({
     return await ctx.agentChatService.interrupt(request);
   });
 
-  ipcMain.handle(IPC.agentChatRestartSession, async (_event, arg: unknown): Promise<AgentChatRestartSessionResult> => {
+  handle(IPC.agentChatRestartSession, async (_event, arg: unknown): Promise<AgentChatRestartSessionResult> => {
     const ctx = ensureAgentChatContext();
     const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : null;
     if (!record || typeof record.sessionId !== "string" || !record.sessionId.trim()) {
@@ -9557,7 +9508,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.agentChatStopTask, async (_event, arg: unknown): Promise<AgentChatStopTaskResult> => {
+  handle(IPC.agentChatStopTask, async (_event, arg: unknown): Promise<AgentChatStopTaskResult> => {
     const ctx = ensureAgentChatContext();
     if (
       !arg
@@ -9573,7 +9524,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.agentChatMessageSubagent, async (_event, arg: unknown): Promise<AgentChatMessageSubagentResult> => {
+  handle(IPC.agentChatMessageSubagent, async (_event, arg: unknown): Promise<AgentChatMessageSubagentResult> => {
     const ctx = ensureAgentChatContext();
     const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : null;
     if (!record || typeof record.sessionId !== "string" || typeof record.taskId !== "string" || typeof record.text !== "string") {
@@ -9586,7 +9537,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.agentChatControlSubagent, async (_event, arg: unknown): Promise<AgentChatControlSubagentResult> => {
+  handle(IPC.agentChatControlSubagent, async (_event, arg: unknown): Promise<AgentChatControlSubagentResult> => {
     const ctx = ensureAgentChatContext();
     const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : null;
     if (!record || typeof record.sessionId !== "string" || typeof record.taskId !== "string" || typeof record.action !== "string") {
@@ -9607,7 +9558,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.agentChatRestoreCancelledQueue, async (
+  handle(IPC.agentChatRestoreCancelledQueue, async (
     _event,
     arg: unknown,
   ): Promise<AgentChatRestoreCancelledQueueResult> => {
@@ -9626,7 +9577,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.agentChatRecoverTurn, async (
+  handle(IPC.agentChatRecoverTurn, async (
     _event,
     arg: unknown,
   ): Promise<AgentChatRecoverTurnResult> => {
@@ -9639,7 +9590,7 @@ export function registerIpc({
     return await ctx.agentChatService.recoverTurn(request);
   });
 
-  ipcMain.handle(IPC.agentChatRecoverCodexTurn, async (
+  handle(IPC.agentChatRecoverCodexTurn, async (
     _event,
     arg: unknown,
   ): Promise<AgentChatRecoverCodexTurnResult> => {
@@ -9652,7 +9603,7 @@ export function registerIpc({
     return await ctx.agentChatService.recoverCodexTurn(request);
   });
 
-  ipcMain.handle(IPC.agentChatResolveUnprocessedMessage, async (
+  handle(IPC.agentChatResolveUnprocessedMessage, async (
     _event,
     arg: unknown,
   ): Promise<AgentChatResolveUnprocessedMessageResult> => {
@@ -9665,37 +9616,37 @@ export function registerIpc({
     return await ctx.agentChatService.resolveUnprocessedMessage(request);
   });
 
-  ipcMain.handle(IPC.agentChatApprove, async (_event, arg: AgentChatApproveArgs): Promise<void> => {
+  handle(IPC.agentChatApprove, async (_event, arg: AgentChatApproveArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
     await ctx.agentChatService.approveToolUse(arg);
   });
 
-  ipcMain.handle(IPC.agentChatRespondToInput, async (_event, arg: AgentChatRespondToInputArgs): Promise<void> => {
+  handle(IPC.agentChatRespondToInput, async (_event, arg: AgentChatRespondToInputArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
     await ctx.agentChatService.respondToInput(arg);
   });
 
-  ipcMain.handle(IPC.agentChatGetMcpApp, async (_event, arg: McpAppGetArgs): Promise<McpAppGetResult> => {
+  handle(IPC.agentChatGetMcpApp, async (_event, arg: McpAppGetArgs): Promise<McpAppGetResult> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getMcpApp(arg);
   });
 
-  ipcMain.handle(IPC.agentChatMcpAppRequest, async (_event, arg: McpAppRequestArgs): Promise<McpAppRequestResult> => {
+  handle(IPC.agentChatMcpAppRequest, async (_event, arg: McpAppRequestArgs): Promise<McpAppRequestResult> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.mcpAppRequest(arg);
   });
 
-  ipcMain.handle(IPC.agentChatListMcpAppGrants, async (_event, arg: McpAppGrantsArgs): Promise<McpAppGrantsResult> => {
+  handle(IPC.agentChatListMcpAppGrants, async (_event, arg: McpAppGrantsArgs): Promise<McpAppGrantsResult> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listMcpAppGrants(arg);
   });
 
-  ipcMain.handle(IPC.agentChatRevokeMcpAppGrant, async (_event, arg: McpAppRevokeGrantArgs): Promise<McpAppGrantsResult> => {
+  handle(IPC.agentChatRevokeMcpAppGrant, async (_event, arg: McpAppRevokeGrantArgs): Promise<McpAppGrantsResult> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.revokeMcpAppGrant(arg);
   });
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatDismissPendingInput,
     async (_event, arg: AgentChatDismissPendingInputArgs): Promise<void> => {
       const ctx = ensureAgentChatContext();
@@ -9703,46 +9654,46 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.agentChatLaunchDefaults, async (): Promise<AgentChatLaunchDefaults | null> => {
+  handle(IPC.agentChatLaunchDefaults, async (): Promise<AgentChatLaunchDefaults | null> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getLaunchDefaults();
   });
 
-  ipcMain.handle(IPC.agentChatModels, async (_event, arg: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> => {
+  handle(IPC.agentChatModels, async (_event, arg: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.getAvailableModels(arg);
   });
 
-  ipcMain.handle(IPC.agentChatModelCatalog, async (_event, arg: unknown) => {
+  handle(IPC.agentChatModelCatalog, async (_event, arg: unknown) => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.getModelCatalog(arg && typeof arg === "object" ? arg as never : undefined);
   });
 
-  ipcMain.handle(IPC.agentChatArchive, async (_event, arg: AgentChatArchiveArgs): Promise<void> => {
+  handle(IPC.agentChatArchive, async (_event, arg: AgentChatArchiveArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
     await ctx.agentChatService.archiveSession(arg);
   });
 
-  ipcMain.handle(IPC.agentChatUnarchive, async (_event, arg: AgentChatArchiveArgs): Promise<void> => {
+  handle(IPC.agentChatUnarchive, async (_event, arg: AgentChatArchiveArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
     await ctx.agentChatService.unarchiveSession(arg);
   });
 
-  ipcMain.handle(IPC.agentChatDelete, async (_event, arg: AgentChatDeleteArgs): Promise<AgentChatDeleteResult> => {
+  handle(IPC.agentChatDelete, async (_event, arg: AgentChatDeleteArgs): Promise<AgentChatDeleteResult> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.deleteSession(arg);
   });
 
-  ipcMain.handle(IPC.agentChatListDeleted, async (_event, arg: DeletedChatListArgs): Promise<DeletedChatListResult> =>
+  handle(IPC.agentChatListDeleted, async (_event, arg: DeletedChatListArgs): Promise<DeletedChatListResult> =>
     ensureAgentChatContext().agentChatService.listDeletedChats(arg ?? {}));
 
-  ipcMain.handle(IPC.agentChatGetDeletedDetail, async (_event, arg: DeletedChatDetailArgs): Promise<ExternalSessionDetail> =>
+  handle(IPC.agentChatGetDeletedDetail, async (_event, arg: DeletedChatDetailArgs): Promise<ExternalSessionDetail> =>
     ensureAgentChatContext().agentChatService.getDeletedChatDetail(arg));
 
-  ipcMain.handle(IPC.agentChatReopenDeleted, async (_event, arg: DeletedChatReopenArgs): Promise<DeletedChatReopenResult> =>
+  handle(IPC.agentChatReopenDeleted, async (_event, arg: DeletedChatReopenArgs): Promise<DeletedChatReopenResult> =>
     ensureAgentChatContext().agentChatService.reopenDeletedChat(arg));
 
-  ipcMain.handle(IPC.agentChatRemoveDeleted, async (_event, arg: DeletedChatRemoveArgs): Promise<DeletedChatRemoveResult> =>
+  handle(IPC.agentChatRemoveDeleted, async (_event, arg: DeletedChatRemoveArgs): Promise<DeletedChatRemoveResult> =>
     ensureAgentChatContext().agentChatService.removeDeletedChats(arg));
 
   // One archive across lanes, chats, and shells (Settings → Archive). Built
@@ -9754,48 +9705,48 @@ export function registerIpc({
     return createArchiveService(ctx);
   };
 
-  ipcMain.handle(IPC.archiveList, async (_event, arg: unknown): Promise<ArchiveListResult> =>
+  handle(IPC.archiveList, async (_event, arg: unknown): Promise<ArchiveListResult> =>
     ensureArchiveService().list(arg));
 
-  ipcMain.handle(IPC.archiveSummary, async (_event, arg: unknown): Promise<ArchiveSummary> =>
+  handle(IPC.archiveSummary, async (_event, arg: unknown): Promise<ArchiveSummary> =>
     ensureArchiveService().summary(arg));
 
-  ipcMain.handle(IPC.archiveRestore, async (_event, arg: unknown): Promise<ArchiveActionResult> =>
+  handle(IPC.archiveRestore, async (_event, arg: unknown): Promise<ArchiveActionResult> =>
     ensureArchiveService().restore(arg));
 
-  ipcMain.handle(IPC.archiveDelete, async (_event, arg: unknown): Promise<ArchiveActionResult> =>
+  handle(IPC.archiveDelete, async (_event, arg: unknown): Promise<ArchiveActionResult> =>
     ensureArchiveService().delete(arg));
 
-  ipcMain.handle(IPC.agentChatClaudePluginUiGet, async (_event, arg: ClaudePluginUiGetArgs): Promise<ClaudePluginUiSnapshot> => {
+  handle(IPC.agentChatClaudePluginUiGet, async (_event, arg: ClaudePluginUiGetArgs): Promise<ClaudePluginUiSnapshot> => {
     return ensureAgentChatContext().agentChatService.getClaudePluginUi(arg);
   });
 
-  ipcMain.handle(IPC.agentChatClaudePluginUiAct, async (_event, arg: ClaudePluginUiActArgs): Promise<ClaudePluginUiActResult> => {
+  handle(IPC.agentChatClaudePluginUiAct, async (_event, arg: ClaudePluginUiActArgs): Promise<ClaudePluginUiActResult> => {
     return ensureAgentChatContext().agentChatService.actOnClaudePluginUi(arg);
   });
 
-  ipcMain.handle(IPC.agentChatThreadCommentsList, async (_event, arg: ChatThreadCommentListArgs): Promise<ChatThreadComment[]> => {
+  handle(IPC.agentChatThreadCommentsList, async (_event, arg: ChatThreadCommentListArgs): Promise<ChatThreadComment[]> => {
     return ensureAgentChatContext().agentChatService.listThreadComments(arg);
   });
 
-  ipcMain.handle(IPC.agentChatThreadCommentsCreate, async (_event, arg: ChatThreadCommentCreateArgs): Promise<ChatThreadComment> => {
+  handle(IPC.agentChatThreadCommentsCreate, async (_event, arg: ChatThreadCommentCreateArgs): Promise<ChatThreadComment> => {
     return ensureAgentChatContext().agentChatService.createThreadComment(arg);
   });
 
-  ipcMain.handle(IPC.agentChatThreadCommentsUpdate, async (_event, arg: ChatThreadCommentUpdateArgs): Promise<ChatThreadComment> => {
+  handle(IPC.agentChatThreadCommentsUpdate, async (_event, arg: ChatThreadCommentUpdateArgs): Promise<ChatThreadComment> => {
     return ensureAgentChatContext().agentChatService.updateThreadComment(arg);
   });
 
-  ipcMain.handle(IPC.agentChatThreadCommentsDelete, async (_event, arg: ChatThreadCommentDeleteArgs): Promise<{ deleted: boolean }> => {
+  handle(IPC.agentChatThreadCommentsDelete, async (_event, arg: ChatThreadCommentDeleteArgs): Promise<{ deleted: boolean }> => {
     return ensureAgentChatContext().agentChatService.deleteThreadComment(arg);
   });
 
-  ipcMain.handle(IPC.agentChatUpdateSession, async (_event, arg: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
+  handle(IPC.agentChatUpdateSession, async (_event, arg: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.updateSession(withoutRendererRuntimeActor(arg));
   });
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatRegenerateSessionMetadata,
     async (_event, arg: AgentChatRegenerateSessionMetadataArgs): Promise<AgentChatRegenerateSessionMetadataResult> => {
       const ctx = ensureAgentChatContext();
@@ -9803,7 +9754,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatRecoverContinuity,
     async (_event, arg: AgentChatRecoverContinuityArgs): Promise<AgentChatContinuityRecoveryResult> => {
       const ctx = ensureAgentChatContext();
@@ -9811,7 +9762,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatCreateScheduledWork,
     async (_event, arg: AgentChatCreateScheduledWorkArgs): Promise<AgentChatCreateScheduledWorkResult> => {
       const ctx = ensureAgentChatContext();
@@ -9819,7 +9770,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatListScheduledWork,
     async (_event, arg: AgentChatListScheduledWorkArgs): Promise<AgentChatScheduledWorkItem[]> => {
       const ctx = ensureAgentChatContext();
@@ -9827,7 +9778,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatCancelScheduledWork,
     async (_event, arg: AgentChatCancelScheduledWorkArgs): Promise<AgentChatCancelScheduledWorkResult> => {
       const ctx = ensureAgentChatContext();
@@ -9835,7 +9786,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatResumeUsageLimitNow,
     async (
       _event,
@@ -9846,7 +9797,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatContinueUsageLimitOnAlternate,
     async (
       _event,
@@ -9857,7 +9808,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatSwitchAccount,
     async (_event, arg: AgentChatSwitchAccountArgs): Promise<AgentChatSwitchAccountResult> => {
       const ctx = ensureAgentChatContext();
@@ -9865,7 +9816,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatSetScheduledWorkPaused,
     async (_event, arg: AgentChatSetScheduledWorkPausedArgs): Promise<AgentChatSetScheduledWorkPausedResult> => {
       const ctx = ensureAgentChatContext();
@@ -9873,22 +9824,22 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.agentChatWarmupModel, async (_event, arg: { sessionId: string; modelId: string }): Promise<void> => {
+  handle(IPC.agentChatWarmupModel, async (_event, arg: { sessionId: string; modelId: string }): Promise<void> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.warmupModel(arg);
   });
 
-  ipcMain.handle(IPC.agentChatSlashCommands, async (_event, arg: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> => {
+  handle(IPC.agentChatSlashCommands, async (_event, arg: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getSlashCommands(arg);
   });
 
-  ipcMain.handle(IPC.agentChatCodexGetGoal, async (_event, arg: AgentChatCodexGetGoalArgs): Promise<CodexThreadGoal | null> => {
+  handle(IPC.agentChatCodexGetGoal, async (_event, arg: AgentChatCodexGetGoalArgs): Promise<CodexThreadGoal | null> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getCodexGoal(arg);
   });
 
-  ipcMain.handle(IPC.agentChatCodexSetGoal, async (_event, arg: AgentChatCodexSetGoalArgs): Promise<CodexThreadGoal | null> => {
+  handle(IPC.agentChatCodexSetGoal, async (_event, arg: AgentChatCodexSetGoalArgs): Promise<CodexThreadGoal | null> => {
     const ctx = ensureAgentChatContext();
     // The goal RPCs record whether a person or the harness acted, so a renderer
     // must not be able to claim it was an agent — the same rule as the actor
@@ -9896,12 +9847,12 @@ export function registerIpc({
     return ctx.agentChatService.setCodexGoal(withoutRendererRuntimeActor(arg));
   });
 
-  ipcMain.handle(IPC.agentChatCodexSetGoalStatus, async (_event, arg: AgentChatCodexSetGoalStatusArgs): Promise<CodexThreadGoal | null> => {
+  handle(IPC.agentChatCodexSetGoalStatus, async (_event, arg: AgentChatCodexSetGoalStatusArgs): Promise<CodexThreadGoal | null> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.setCodexGoalStatus(withoutRendererRuntimeActor(arg));
   });
 
-  ipcMain.handle(IPC.agentChatCodexRealtimeStart, async (_event, arg: AgentChatCodexRealtimeStartArgs): Promise<AgentChatCodexRealtimeStartResult> => {
+  handle(IPC.agentChatCodexRealtimeStart, async (_event, arg: AgentChatCodexRealtimeStartArgs): Promise<AgentChatCodexRealtimeStartResult> => {
     const ctx = ensureAgentChatContext();
     if (!arg || typeof arg.sessionId !== "string" || typeof arg.sdp !== "string") {
       throw new Error("A chat session id and a WebRTC offer are required.");
@@ -9913,7 +9864,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.agentChatCodexRealtimeStop, async (_event, arg: AgentChatCodexRealtimeStopArgs): Promise<void> => {
+  handle(IPC.agentChatCodexRealtimeStop, async (_event, arg: AgentChatCodexRealtimeStopArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
     if (!arg || typeof arg.sessionId !== "string") throw new Error("A chat session id is required.");
     await ctx.agentChatService.stopCodexRealtime({
@@ -9922,7 +9873,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.agentChatCodexRealtimeState, async (_event, arg: AgentChatCodexRealtimeStateArgs): Promise<AgentChatCodexRealtimeState> => {
+  handle(IPC.agentChatCodexRealtimeState, async (_event, arg: AgentChatCodexRealtimeStateArgs): Promise<AgentChatCodexRealtimeState> => {
     const ctx = ensureAgentChatContext();
     if (!arg || typeof arg.sessionId !== "string" || typeof arg.token !== "string") {
       throw new Error("A chat session id and voice token are required.");
@@ -9930,62 +9881,62 @@ export function registerIpc({
     return ctx.agentChatService.getCodexRealtimeState({ sessionId: arg.sessionId, token: arg.token });
   });
 
-  ipcMain.handle(IPC.agentChatCodexClearGoal, async (_event, arg: AgentChatCodexClearGoalArgs): Promise<CodexThreadGoal | null> => {
+  handle(IPC.agentChatCodexClearGoal, async (_event, arg: AgentChatCodexClearGoalArgs): Promise<CodexThreadGoal | null> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.clearCodexGoal(withoutRendererRuntimeActor(arg));
   });
 
-  ipcMain.handle(IPC.agentChatCodexResetMemory, async (_event, arg: AgentChatCodexResetMemoryArgs): Promise<void> => {
+  handle(IPC.agentChatCodexResetMemory, async (_event, arg: AgentChatCodexResetMemoryArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.resetCodexMemory(arg);
   });
 
-  ipcMain.handle(IPC.agentChatCodexTerminateBackgroundTerminal, async (_event, arg: AgentChatCodexTerminateBackgroundTerminalArgs): Promise<void> => {
+  handle(IPC.agentChatCodexTerminateBackgroundTerminal, async (_event, arg: AgentChatCodexTerminateBackgroundTerminalArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.terminateCodexBackgroundTerminal(arg);
   });
 
-  ipcMain.handle(IPC.agentChatListClaudePlugins, async (_event, arg: AgentChatClaudePluginsArgs = {}): Promise<AgentChatClaudePlugin[]> => {
+  handle(IPC.agentChatListClaudePlugins, async (_event, arg: AgentChatClaudePluginsArgs = {}): Promise<AgentChatClaudePlugin[]> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listClaudePlugins(arg);
   });
 
-  ipcMain.handle(IPC.agentChatListCodexPlugins, async (_event, arg: AgentChatCodexPluginsArgs = {}): Promise<AgentChatCodexPlugin[]> => {
+  handle(IPC.agentChatListCodexPlugins, async (_event, arg: AgentChatCodexPluginsArgs = {}): Promise<AgentChatCodexPlugin[]> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listCodexPlugins(arg);
   });
 
-  ipcMain.handle(IPC.agentChatReloadClaudePlugins, async (_event, arg: AgentChatReloadClaudePluginsArgs): Promise<AgentChatReloadClaudePluginsResult> => {
+  handle(IPC.agentChatReloadClaudePlugins, async (_event, arg: AgentChatReloadClaudePluginsArgs): Promise<AgentChatReloadClaudePluginsResult> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.reloadClaudePlugins(arg);
   });
 
-  ipcMain.handle(IPC.agentChatListClaudeOutputStyles, async (_event, arg: AgentChatClaudeOutputStylesArgs = {}): Promise<AgentChatClaudeOutputStyle[]> => {
+  handle(IPC.agentChatListClaudeOutputStyles, async (_event, arg: AgentChatClaudeOutputStylesArgs = {}): Promise<AgentChatClaudeOutputStyle[]> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listClaudeOutputStyles(arg);
   });
 
-  ipcMain.handle(IPC.agentChatSetClaudeOutputStyle, async (_event, arg: AgentChatSetClaudeOutputStyleArgs): Promise<AgentChatSession> => {
+  handle(IPC.agentChatSetClaudeOutputStyle, async (_event, arg: AgentChatSetClaudeOutputStyleArgs): Promise<AgentChatSession> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.setClaudeOutputStyle(arg);
   });
 
-  ipcMain.handle(IPC.agentChatListClaudeSessions, async (_event, arg: AgentChatClaudeSessionListArgs = {}): Promise<AgentChatClaudeSessionInfo[]> => {
+  handle(IPC.agentChatListClaudeSessions, async (_event, arg: AgentChatClaudeSessionListArgs = {}): Promise<AgentChatClaudeSessionInfo[]> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listClaudeSessions(arg);
   });
 
-  ipcMain.handle(IPC.agentChatGetClaudeSessionInfo, async (_event, arg: AgentChatClaudeSessionInfoArgs): Promise<AgentChatClaudeSessionInfo | null> => {
+  handle(IPC.agentChatGetClaudeSessionInfo, async (_event, arg: AgentChatClaudeSessionInfoArgs): Promise<AgentChatClaudeSessionInfo | null> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getClaudeSessionInfo(arg);
   });
 
-  ipcMain.handle(IPC.agentChatGetClaudeSessionMessages, async (_event, arg: AgentChatClaudeSessionMessagesArgs): Promise<AgentChatClaudeSessionMessage[]> => {
+  handle(IPC.agentChatGetClaudeSessionMessages, async (_event, arg: AgentChatClaudeSessionMessagesArgs): Promise<AgentChatClaudeSessionMessage[]> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getClaudeSessionMessages(arg);
   });
 
-  ipcMain.handle(IPC.agentChatGetMainTranscript, async (_event, arg: AgentChatMainTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
+  handle(IPC.agentChatGetMainTranscript, async (_event, arg: AgentChatMainTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
     if (!arg || typeof arg.sessionId !== "string" || !arg.sessionId.trim().length) {
       throw new Error("sessionId is required.");
     }
@@ -9993,27 +9944,27 @@ export function registerIpc({
     return ctx.agentChatService.getMainTranscript(arg);
   });
 
-  ipcMain.handle(IPC.agentChatGetSubagentTranscript, async (_event, arg: AgentChatSubagentTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
+  handle(IPC.agentChatGetSubagentTranscript, async (_event, arg: AgentChatSubagentTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getSubagentTranscript(arg);
   });
 
-  ipcMain.handle(IPC.agentChatGetContextUsage, async (_event, arg: AgentChatContextUsageArgs): Promise<AgentChatContextUsage | null> => {
+  handle(IPC.agentChatGetContextUsage, async (_event, arg: AgentChatContextUsageArgs): Promise<AgentChatContextUsage | null> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getContextUsage(arg);
   });
 
-  ipcMain.handle(IPC.agentChatGetClaudeUsage, async (_event, arg: AgentChatClaudeUsageArgs): Promise<ClaudeUsageReport> => {
+  handle(IPC.agentChatGetClaudeUsage, async (_event, arg: AgentChatClaudeUsageArgs): Promise<ClaudeUsageReport> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getClaudeUsage(arg);
   });
 
-  ipcMain.handle(IPC.agentChatRewindFiles, async (_event, arg: AgentChatRewindFilesArgs): Promise<AgentChatRewindFilesResult> => {
+  handle(IPC.agentChatRewindFiles, async (_event, arg: AgentChatRewindFilesArgs): Promise<AgentChatRewindFilesResult> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.rewindFiles(arg);
   });
 
-  ipcMain.handle(IPC.agentChatFileSearch, async (_event, arg: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> => {
+  handle(IPC.agentChatFileSearch, async (_event, arg: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> => {
     const ctx = ensureAgentChatFileContext();
     const session = (await ctx.agentChatService.listSessions()).find((entry) => entry.sessionId === arg.sessionId);
     if (!session?.laneId) return [];
@@ -10028,22 +9979,22 @@ export function registerIpc({
     }));
   });
 
-  ipcMain.handle(IPC.agentChatListSubagents, async (_event, arg: AgentChatSubagentListArgs): Promise<AgentChatSubagentSnapshot[]> => {
+  handle(IPC.agentChatListSubagents, async (_event, arg: AgentChatSubagentListArgs): Promise<AgentChatSubagentSnapshot[]> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listSubagents(arg);
   });
 
-  ipcMain.handle(IPC.agentChatKillDroidWorker, async (_event, arg: AgentChatKillDroidWorkerArgs): Promise<void> => {
+  handle(IPC.agentChatKillDroidWorker, async (_event, arg: AgentChatKillDroidWorkerArgs): Promise<void> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.killDroidWorker(arg);
   });
 
-  ipcMain.handle(IPC.agentChatGetSessionCapabilities, async (_event, arg: AgentChatSessionCapabilitiesArgs): Promise<AgentChatSessionCapabilities> => {
+  handle(IPC.agentChatGetSessionCapabilities, async (_event, arg: AgentChatSessionCapabilitiesArgs): Promise<AgentChatSessionCapabilities> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.getSessionCapabilities(arg);
   });
 
-  ipcMain.handle(IPC.agentChatSaveTempAttachment, async (_event, arg: { data: string; filename: string }): Promise<{ path: string }> => {
+  handle(IPC.agentChatSaveTempAttachment, async (_event, arg: { data: string; filename: string }): Promise<{ path: string }> => {
     const maxEncodedLength = maxBase64EncodedLength(MAX_TEMP_ATTACHMENT_BYTES);
     if (typeof arg.data === "string" && arg.data.length > maxEncodedLength) {
       throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
@@ -10052,13 +10003,13 @@ export function registerIpc({
     return saveAgentChatTempAttachmentBuffer(content, arg.filename);
   });
 
-  ipcMain.handle(
+  handle(
     IPC.agentChatCopyTempAttachment,
     async (_event, arg: AgentChatCopyTempAttachmentArgs): Promise<{ path: string }> =>
       copyAgentChatTempAttachmentFile(arg?.sourcePath ?? "", arg?.filename ?? ""),
   );
 
-  ipcMain.handle(IPC.agentChatGetTurnFileDiff, async (_event, arg: AgentChatGetTurnFileDiffArgs) => {
+  handle(IPC.agentChatGetTurnFileDiff, async (_event, arg: AgentChatGetTurnFileDiffArgs) => {
     const ctx = getCtx();
     const cwd = ctx.project?.rootPath;
     if (!cwd) throw new Error("No project root");
@@ -10070,7 +10021,7 @@ export function registerIpc({
     return getTurnFileDiffFromGit(cwd, arg);
   });
 
-  ipcMain.handle(IPC.agentChatGetEventHistory, async (
+  handle(IPC.agentChatGetEventHistory, async (
     _event,
     arg: { sessionId?: string; maxEvents?: number; maxBytes?: number; afterOffset?: number; historyGeneration?: number },
   ): Promise<AgentChatEventHistorySnapshot> => {
@@ -10109,7 +10060,7 @@ export function registerIpc({
     return await service.getChatEventHistory(sessionId, options);
   });
 
-  ipcMain.handle(IPC.agentChatGetEventHistoryPage, async (
+  handle(IPC.agentChatGetEventHistoryPage, async (
     _event,
     arg: { sessionId?: string; beforeOffset?: number; maxBytes?: number },
   ): Promise<AgentChatEventHistoryPage> => {
@@ -10136,7 +10087,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.agentChatReadTranscript, async (
+  handle(IPC.agentChatReadTranscript, async (
     _event,
     arg: { sessionId: string; limit?: number; since?: string },
   ) => {
@@ -10156,12 +10107,12 @@ export function registerIpc({
     }).readTranscript(sessionId, arg?.limit, arg?.since);
   });
 
-  ipcMain.handle(IPC.computerUseListArtifacts, async (_event, arg: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> => {
+  handle(IPC.computerUseListArtifacts, async (_event, arg: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> => {
     const ctx = ensureComputerUseBroker();
     return ctx.computerUseArtifactBrokerService.listArtifacts(arg);
   });
 
-  ipcMain.handle(IPC.computerUseGetOwnerSnapshot, async (_event, arg: ComputerUseOwnerSnapshotArgs): Promise<ComputerUseOwnerSnapshot> => {
+  handle(IPC.computerUseGetOwnerSnapshot, async (_event, arg: ComputerUseOwnerSnapshotArgs): Promise<ComputerUseOwnerSnapshot> => {
     const ctx = ensureComputerUseBroker();
     const resolved = await resolveComputerUseOwnerSnapshotArgs(ctx, arg);
     return buildComputerUseOwnerSnapshot({
@@ -10171,32 +10122,32 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.computerUseDeleteArtifacts, async (_event, arg: ComputerUseArtifactDeleteArgs): Promise<ComputerUseArtifactDeleteResult> => {
+  handle(IPC.computerUseDeleteArtifacts, async (_event, arg: ComputerUseArtifactDeleteArgs): Promise<ComputerUseArtifactDeleteResult> => {
     const ctx = ensureComputerUseBroker();
     return ctx.computerUseArtifactBrokerService.deleteArtifacts(arg);
   });
 
-  ipcMain.handle(IPC.computerUseListBrokenArtifacts, async (_event, arg: { limit?: number } = {}): Promise<ComputerUseArtifactBrokenRecord[]> => {
+  handle(IPC.computerUseListBrokenArtifacts, async (_event, arg: { limit?: number } = {}): Promise<ComputerUseArtifactBrokenRecord[]> => {
     const ctx = ensureComputerUseBroker();
     return ctx.computerUseArtifactBrokerService.listBrokenArtifacts(arg);
   });
 
-  ipcMain.handle(IPC.computerUsePruneBrokenArtifacts, async (): Promise<ComputerUseArtifactDeleteResult> => {
+  handle(IPC.computerUsePruneBrokenArtifacts, async (): Promise<ComputerUseArtifactDeleteResult> => {
     const ctx = ensureComputerUseBroker();
     return ctx.computerUseArtifactBrokerService.pruneBrokenArtifacts();
   });
 
-  ipcMain.handle(IPC.computerUseRecoverArtifact, async (_event, arg: { artifactId: string }): Promise<ComputerUseArtifactView> => {
+  handle(IPC.computerUseRecoverArtifact, async (_event, arg: { artifactId: string }): Promise<ComputerUseArtifactView> => {
     const ctx = ensureComputerUseBroker();
     return ctx.computerUseArtifactBrokerService.recoverArtifact(arg);
   });
 
-  ipcMain.handle(IPC.computerUseUpdateArtifactReview, async (_event, arg: ComputerUseArtifactReviewArgs): Promise<ComputerUseArtifactView> => {
+  handle(IPC.computerUseUpdateArtifactReview, async (_event, arg: ComputerUseArtifactReviewArgs): Promise<ComputerUseArtifactView> => {
     const ctx = ensureComputerUseBroker();
     return ctx.computerUseArtifactBrokerService.updateArtifactReview(arg);
   });
 
-  ipcMain.handle(IPC.computerUseReadArtifactPreview, async (_event, arg: { uri: string }): Promise<string | null> => {
+  handle(IPC.computerUseReadArtifactPreview, async (_event, arg: { uri: string }): Promise<string | null> => {
     const ctx = ensureComputerUseBroker();
     return ctx.computerUseArtifactBrokerService.readArtifactPreview(arg);
   });
@@ -10231,8 +10182,7 @@ export function registerIpc({
    * Nothing is written to disk and nothing in the URL is a path — the id is a
    * key into an in-memory map that the `ade-scene:` handler reads.
    */
-  ipcMain.handle(IPC.scenePrepare, async (event, arg: { html?: unknown } | string): Promise<string> => {
-    assertTrustedAppControlSender(event, IPC.scenePrepare);
+  handle(IPC.scenePrepare, async (event, arg: { html?: unknown } | string): Promise<string> => {
     const html = typeof arg === "string" ? arg : typeof arg?.html === "string" ? arg.html : "";
     if (!html.length) throw new Error("A scene document is required.");
     // The renderer checks its own ceiling before it ever gets here; this is the
@@ -10253,8 +10203,7 @@ export function registerIpc({
    * sanitizes it again. The page lives in its own store, under its own URL
    * host, so no scene URL can ever answer with it.
    */
-  ipcMain.handle(IPC.mcpAppPrepare, async (event, arg: { html?: unknown; csp?: unknown }): Promise<string> => {
-    assertTrustedAppControlSender(event, IPC.mcpAppPrepare);
+  handle(IPC.mcpAppPrepare, async (event, arg: { html?: unknown; csp?: unknown }): Promise<string> => {
     const html = typeof arg?.html === "string" ? arg.html : "";
     if (!html.length) throw new Error("An app document is required.");
     if (Buffer.byteLength(html, "utf8") > MCP_APP_LIMITS.maxDocumentBytes) {
@@ -10272,7 +10221,7 @@ export function registerIpc({
    * minimized captures empty (the known WebContentsView gotcha), so it answers
    * null rather than filing a blank image.
    */
-  ipcMain.handle(
+  handle(
     IPC.sceneSnapshot,
     async (event, arg: SceneCaptureRect | null): Promise<string | null> => {
       try {
@@ -10324,7 +10273,7 @@ export function registerIpc({
     claimedSessionId: claimed,
   });
 
-  ipcMain.handle(
+  handle(
     IPC.sceneAttachProof,
     async (_event, arg: { dataUrl?: string | null; title?: string | null; sessionId?: string | null }): Promise<boolean> => {
       try {
@@ -10464,7 +10413,7 @@ export function registerIpc({
    * a project-relative uri, so `ade-artifact://project/` can resolve it without
    * this process ever trusting a path from the other side.
    */
-  ipcMain.handle(
+  handle(
     IPC.sceneStoreStill,
     async (
       _event,
@@ -10561,16 +10510,16 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.iosSimulatorGetStatus, async () => ensureIosSimulator().getStatus());
+  handle(IPC.iosSimulatorGetStatus, async () => ensureIosSimulator().getStatus());
 
-  ipcMain.handle(IPC.iosSimulatorListDevices, async () => ensureIosSimulator().listDevices());
+  handle(IPC.iosSimulatorListDevices, async () => ensureIosSimulator().listDevices());
 
-  ipcMain.handle(IPC.iosSimulatorListLaunchTargets, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorListLaunchTargets, async (_event, arg = {}) =>
     ensureIosSimulator().listLaunchTargets(arg));
 
-  ipcMain.handle(IPC.iosSimulatorLaunch, async (_event, arg = {}) => ensureIosSimulator().launch(arg));
+  handle(IPC.iosSimulatorLaunch, async (_event, arg = {}) => ensureIosSimulator().launch(arg));
 
-  ipcMain.handle(IPC.iosSimulatorAttachToChatSession, async (_event, arg) => {
+  handle(IPC.iosSimulatorAttachToChatSession, async (_event, arg) => {
     // Tolerate null/undefined payloads (treated as detach) and reject malformed
     // shapes with a clear error rather than throwing on a property dereference.
     if (arg !== undefined && arg !== null && typeof arg !== "object") {
@@ -10588,39 +10537,39 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) => ensureIosSimulator().shutdown(arg));
+  handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) => ensureIosSimulator().shutdown(arg));
 
-  ipcMain.handle(IPC.iosSimulatorScreenshot, async (_event, arg = {}) => ensureIosSimulator().screenshot(arg));
+  handle(IPC.iosSimulatorScreenshot, async (_event, arg = {}) => ensureIosSimulator().screenshot(arg));
 
-  ipcMain.handle(IPC.iosSimulatorGetScreenSnapshot, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorGetScreenSnapshot, async (_event, arg = {}) =>
     ensureIosSimulator().getScreenSnapshot(arg));
 
-  ipcMain.handle(IPC.iosSimulatorGetInspectorSnapshot, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorGetInspectorSnapshot, async (_event, arg = {}) =>
     ensureIosSimulator().getInspectorSnapshot(arg));
 
-  ipcMain.handle(IPC.iosSimulatorInspectPoint, async (_event, arg) => ensureIosSimulator().inspectPoint(arg));
+  handle(IPC.iosSimulatorInspectPoint, async (_event, arg) => ensureIosSimulator().inspectPoint(arg));
 
-  ipcMain.handle(IPC.iosSimulatorGetPreviewCapability, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorGetPreviewCapability, async (_event, arg = {}) =>
     ensureIosSimulator().getPreviewCapability(arg));
 
-  ipcMain.handle(IPC.iosSimulatorListPreviewTargets, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorListPreviewTargets, async (_event, arg = {}) =>
     ensureIosSimulator().listPreviewTargets(arg));
 
-  ipcMain.handle(IPC.iosSimulatorResolvePreviewMatch, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorResolvePreviewMatch, async (_event, arg = {}) =>
     ensureIosSimulator().resolvePreviewMatch(arg));
 
-  ipcMain.handle(IPC.iosSimulatorEnsurePreviewWorkspace, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorEnsurePreviewWorkspace, async (_event, arg = {}) =>
     ensureIosSimulator().ensurePreviewWorkspace(arg));
 
-  ipcMain.handle(IPC.iosSimulatorRenderCurrentPreview, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorRenderCurrentPreview, async (_event, arg = {}) =>
     ensureIosSimulator().renderCurrentPreview(arg));
 
-  ipcMain.handle(IPC.iosSimulatorRenderPreview, async (_event, arg) => ensureIosSimulator().renderPreview(arg));
+  handle(IPC.iosSimulatorRenderPreview, async (_event, arg) => ensureIosSimulator().renderPreview(arg));
 
-  ipcMain.handle(IPC.iosSimulatorOpenPreviewWorkspace, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorOpenPreviewWorkspace, async (_event, arg = {}) =>
     ensureIosSimulator().openPreviewWorkspace(arg));
 
-  ipcMain.handle(IPC.iosSimulatorStartStream, async (_event, arg = {}) => {
+  handle(IPC.iosSimulatorStartStream, async (_event, arg = {}) => {
     const status = await ensureIosSimulator().startStream(arg);
     // A renderer on this machine is watching this lane. The Apple stream relay
     // asks before it stops a capture for its last REMOTE viewer, and without
@@ -10631,7 +10580,7 @@ export function registerIpc({
     return status;
   });
 
-  ipcMain.handle(IPC.iosSimulatorStopStream, async (_event, arg = {}) => {
+  handle(IPC.iosSimulatorStopStream, async (_event, arg = {}) => {
     // A renderer viewer let go. Told to the local-viewer registry BEFORE the
     // stop, so the relay's `closeSource` can never see a lane as unwatched
     // while this call is still in flight.
@@ -10639,122 +10588,122 @@ export function registerIpc({
     return ensureIosSimulator().stopStream(arg);
   });
 
-  ipcMain.handle(IPC.iosSimulatorGetStreamStatus, async (_event, arg = {}) => ensureIosSimulator().getStreamStatus(arg));
+  handle(IPC.iosSimulatorGetStreamStatus, async (_event, arg = {}) => ensureIosSimulator().getStreamStatus(arg));
 
   /* Per-lane devices and recordings. */
-  ipcMain.handle(IPC.iosSimulatorDeviceCreate, async (_event, arg = {}) => ensureIosSimulator().deviceCreate(arg));
-  ipcMain.handle(IPC.iosSimulatorDeviceAttach, async (_event, arg) => ensureIosSimulator().deviceAttach(arg));
-  ipcMain.handle(IPC.iosSimulatorDeviceStart, async (_event, arg = {}) => ensureIosSimulator().deviceStart(arg));
-  ipcMain.handle(IPC.iosSimulatorDeviceStop, async (_event, arg = {}) => ensureIosSimulator().deviceStop(arg));
-  ipcMain.handle(IPC.iosSimulatorDeviceList, async (_event, arg = {}) => ensureIosSimulator().deviceList(arg));
-  ipcMain.handle(IPC.iosSimulatorDeviceDelete, async (_event, arg = {}) => ensureIosSimulator().deviceDelete(arg));
-  ipcMain.handle(IPC.iosSimulatorDeviceDetach, async (_event, arg = {}) => ensureIosSimulator().deviceDetach(arg));
-  ipcMain.handle(IPC.iosSimulatorDeviceDeleteInstalled, async (_event, arg) => ensureIosSimulator().deviceDeleteInstalled(arg));
-  ipcMain.handle(IPC.iosSimulatorDeviceCleanup, async (_event, arg = {}) => ensureIosSimulator().deviceCleanup(arg));
-  ipcMain.handle(IPC.iosSimulatorRuntimeList, async () => ensureIosSimulator().runtimeList());
-  ipcMain.handle(IPC.iosSimulatorRuntimeInstall, async (_event, arg = {}) => ensureIosSimulator().runtimeInstall(arg));
-  ipcMain.handle(IPC.iosSimulatorRuntimeInstallCancel, async () => ensureIosSimulator().runtimeInstallCancel());
-  ipcMain.handle(IPC.iosSimulatorRuntimeDelete, async (_event, arg) => ensureIosSimulator().runtimeDelete(arg));
-  ipcMain.handle(IPC.iosSimulatorRuntimePrune, async (_event, arg) => ensureIosSimulator().runtimePrune(arg));
-  ipcMain.handle(IPC.iosSimulatorXcodeRunFirstLaunch, async (_event, arg = {}) => ensureIosSimulator().xcodeRunFirstLaunch(arg));
-  ipcMain.handle(IPC.iosSimulatorFrame, async (_event, arg = {}) => ensureIosSimulator().frame(arg));
-  ipcMain.handle(IPC.iosSimulatorRecordStart, async (_event, arg = {}) => ensureIosSimulator().recordStart(arg));
-  ipcMain.handle(IPC.iosSimulatorRecordStop, async (_event, arg = {}) => ensureIosSimulator().recordStop(arg));
-  ipcMain.handle(IPC.iosSimulatorRecordList, async (_event, arg = {}) => ensureIosSimulator().recordList(arg));
-  ipcMain.handle(IPC.iosSimulatorRecordDelete, async (_event, arg) => ensureIosSimulator().recordDelete(arg));
+  handle(IPC.iosSimulatorDeviceCreate, async (_event, arg = {}) => ensureIosSimulator().deviceCreate(arg));
+  handle(IPC.iosSimulatorDeviceAttach, async (_event, arg) => ensureIosSimulator().deviceAttach(arg));
+  handle(IPC.iosSimulatorDeviceStart, async (_event, arg = {}) => ensureIosSimulator().deviceStart(arg));
+  handle(IPC.iosSimulatorDeviceStop, async (_event, arg = {}) => ensureIosSimulator().deviceStop(arg));
+  handle(IPC.iosSimulatorDeviceList, async (_event, arg = {}) => ensureIosSimulator().deviceList(arg));
+  handle(IPC.iosSimulatorDeviceDelete, async (_event, arg = {}) => ensureIosSimulator().deviceDelete(arg));
+  handle(IPC.iosSimulatorDeviceDetach, async (_event, arg = {}) => ensureIosSimulator().deviceDetach(arg));
+  handle(IPC.iosSimulatorDeviceDeleteInstalled, async (_event, arg) => ensureIosSimulator().deviceDeleteInstalled(arg));
+  handle(IPC.iosSimulatorDeviceCleanup, async (_event, arg = {}) => ensureIosSimulator().deviceCleanup(arg));
+  handle(IPC.iosSimulatorRuntimeList, async () => ensureIosSimulator().runtimeList());
+  handle(IPC.iosSimulatorRuntimeInstall, async (_event, arg = {}) => ensureIosSimulator().runtimeInstall(arg));
+  handle(IPC.iosSimulatorRuntimeInstallCancel, async () => ensureIosSimulator().runtimeInstallCancel());
+  handle(IPC.iosSimulatorRuntimeDelete, async (_event, arg) => ensureIosSimulator().runtimeDelete(arg));
+  handle(IPC.iosSimulatorRuntimePrune, async (_event, arg) => ensureIosSimulator().runtimePrune(arg));
+  handle(IPC.iosSimulatorXcodeRunFirstLaunch, async (_event, arg = {}) => ensureIosSimulator().xcodeRunFirstLaunch(arg));
+  handle(IPC.iosSimulatorFrame, async (_event, arg = {}) => ensureIosSimulator().frame(arg));
+  handle(IPC.iosSimulatorRecordStart, async (_event, arg = {}) => ensureIosSimulator().recordStart(arg));
+  handle(IPC.iosSimulatorRecordStop, async (_event, arg = {}) => ensureIosSimulator().recordStop(arg));
+  handle(IPC.iosSimulatorRecordList, async (_event, arg = {}) => ensureIosSimulator().recordList(arg));
+  handle(IPC.iosSimulatorRecordDelete, async (_event, arg) => ensureIosSimulator().recordDelete(arg));
   // One number, read from the recorder's own sidecars. The Diagnostics row it
   // feeds used to get it by walking `.ade/artifacts/apple-recordings/` through
   // the files API — a recursive tree listing to add up sizes the recorder
   // already knows.
-  ipcMain.handle(IPC.iosSimulatorRecordingsTotalBytes, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorRecordingsTotalBytes, async (_event, arg = {}) =>
     ensureIosSimulator().recordingsTotalBytes(arg));
 
-  ipcMain.handle(IPC.iosSimulatorTap, async (_event, arg) => ensureIosSimulator().tap(arg));
-  ipcMain.handle(IPC.iosSimulatorLongPress, async (_event, arg) => ensureIosSimulator().longPress(arg));
+  handle(IPC.iosSimulatorTap, async (_event, arg) => ensureIosSimulator().tap(arg));
+  handle(IPC.iosSimulatorLongPress, async (_event, arg) => ensureIosSimulator().longPress(arg));
 
-  ipcMain.handle(IPC.iosSimulatorPressButton, async (_event, arg) => ensureIosSimulator().pressButton(arg));
+  handle(IPC.iosSimulatorPressButton, async (_event, arg) => ensureIosSimulator().pressButton(arg));
 
-  ipcMain.handle(IPC.iosSimulatorRotate, async (_event, arg) => ensureIosSimulator().rotate(arg));
-  ipcMain.handle(IPC.iosSimulatorSetPosture, async (_event, arg) => ensureIosSimulator().setPosture(arg));
-  ipcMain.handle(IPC.iosSimulatorGetPosture, async (_event, arg = {}) => ensureIosSimulator().getPosture(arg));
-  ipcMain.handle(IPC.iosSimulatorGetDuoModel, async () => ensureIosSimulator().getDuoModel());
-  ipcMain.handle(IPC.iosSimulatorDuoAppStoreScreenshots, async (_event, arg = {}) => ensureIosSimulator().duoAppStoreScreenshots(arg));
-  ipcMain.handle(IPC.iosSimulatorAddDuoSkill, async (_event, arg = {}) => ensureIosSimulator().addDuoSkill(arg));
-  ipcMain.handle(IPC.iosSimulatorAttachRenderProof, async (_event, arg = {}) => ensureIosSimulator().attachRenderProof(arg));
-  ipcMain.handle(IPC.iosSimulatorRenderAck, async (_event, arg = {}) => ensureIosSimulator().renderAck(arg));
-  ipcMain.handle(IPC.iosSimulatorRenderComplete, async (_event, arg = {}) => ensureIosSimulator().renderComplete(arg));
-  ipcMain.handle(IPC.iosSimulatorScroll, async (_event, arg) => ensureIosSimulator().scroll(arg));
+  handle(IPC.iosSimulatorRotate, async (_event, arg) => ensureIosSimulator().rotate(arg));
+  handle(IPC.iosSimulatorSetPosture, async (_event, arg) => ensureIosSimulator().setPosture(arg));
+  handle(IPC.iosSimulatorGetPosture, async (_event, arg = {}) => ensureIosSimulator().getPosture(arg));
+  handle(IPC.iosSimulatorGetDuoModel, async () => ensureIosSimulator().getDuoModel());
+  handle(IPC.iosSimulatorDuoAppStoreScreenshots, async (_event, arg = {}) => ensureIosSimulator().duoAppStoreScreenshots(arg));
+  handle(IPC.iosSimulatorAddDuoSkill, async (_event, arg = {}) => ensureIosSimulator().addDuoSkill(arg));
+  handle(IPC.iosSimulatorAttachRenderProof, async (_event, arg = {}) => ensureIosSimulator().attachRenderProof(arg));
+  handle(IPC.iosSimulatorRenderAck, async (_event, arg = {}) => ensureIosSimulator().renderAck(arg));
+  handle(IPC.iosSimulatorRenderComplete, async (_event, arg = {}) => ensureIosSimulator().renderComplete(arg));
+  handle(IPC.iosSimulatorScroll, async (_event, arg) => ensureIosSimulator().scroll(arg));
 
-  ipcMain.handle(IPC.iosSimulatorTypeText, async (_event, arg) => ensureIosSimulator().typeText(arg));
+  handle(IPC.iosSimulatorTypeText, async (_event, arg) => ensureIosSimulator().typeText(arg));
 
-  ipcMain.handle(IPC.iosSimulatorDrag, async (_event, arg) => ensureIosSimulator().drag(arg));
+  handle(IPC.iosSimulatorDrag, async (_event, arg) => ensureIosSimulator().drag(arg));
 
-  ipcMain.handle(IPC.iosSimulatorSwipe, async (_event, arg) => ensureIosSimulator().swipe(arg));
+  handle(IPC.iosSimulatorSwipe, async (_event, arg) => ensureIosSimulator().swipe(arg));
 
-  ipcMain.handle(IPC.iosSimulatorSelectPoint, async (_event, arg) => ensureIosSimulator().selectPoint(arg));
+  handle(IPC.iosSimulatorSelectPoint, async (_event, arg) => ensureIosSimulator().selectPoint(arg));
 
   // Device hub channels. None of these touch the Simulator.app window, so none
   // of them arm or release the window-parking follow.
-  ipcMain.handle(IPC.iosSimulatorOpenDevice, async (_event, arg = {}) => ensureIosSimulator().openDevice(arg));
+  handle(IPC.iosSimulatorOpenDevice, async (_event, arg = {}) => ensureIosSimulator().openDevice(arg));
 
-  ipcMain.handle(IPC.iosSimulatorCloseDevice, async (_event, arg = {}) => ensureIosSimulator().closeDevice(arg));
+  handle(IPC.iosSimulatorCloseDevice, async (_event, arg = {}) => ensureIosSimulator().closeDevice(arg));
 
-  ipcMain.handle(IPC.iosSimulatorGetDeviceSettings, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorGetDeviceSettings, async (_event, arg = {}) =>
     ensureIosSimulator().getDeviceSettings(arg));
 
-  ipcMain.handle(IPC.iosSimulatorSetAppearance, async (_event, arg) => ensureIosSimulator().setAppearance(arg));
+  handle(IPC.iosSimulatorSetAppearance, async (_event, arg) => ensureIosSimulator().setAppearance(arg));
 
-  ipcMain.handle(IPC.iosSimulatorSetContentSize, async (_event, arg) => ensureIosSimulator().setContentSize(arg));
+  handle(IPC.iosSimulatorSetContentSize, async (_event, arg) => ensureIosSimulator().setContentSize(arg));
 
-  ipcMain.handle(IPC.iosSimulatorSetAccessibilityOption, async (_event, arg) =>
+  handle(IPC.iosSimulatorSetAccessibilityOption, async (_event, arg) =>
     ensureIosSimulator().setAccessibilityOption(arg));
 
-  ipcMain.handle(IPC.iosSimulatorSetLocation, async (_event, arg) => ensureIosSimulator().setLocation(arg));
+  handle(IPC.iosSimulatorSetLocation, async (_event, arg) => ensureIosSimulator().setLocation(arg));
 
-  ipcMain.handle(IPC.iosSimulatorClearLocation, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorClearLocation, async (_event, arg = {}) =>
     ensureIosSimulator().clearLocation(arg));
 
-  ipcMain.handle(IPC.iosSimulatorSetPermission, async (_event, arg) => ensureIosSimulator().setPermission(arg));
+  handle(IPC.iosSimulatorSetPermission, async (_event, arg) => ensureIosSimulator().setPermission(arg));
 
-  ipcMain.handle(IPC.iosSimulatorSendPushNotification, async (_event, arg) =>
+  handle(IPC.iosSimulatorSendPushNotification, async (_event, arg) =>
     ensureIosSimulator().sendPushNotification(arg));
 
-  ipcMain.handle(IPC.iosSimulatorOpenUrl, async (_event, arg) => ensureIosSimulator().openUrl(arg));
+  handle(IPC.iosSimulatorOpenUrl, async (_event, arg) => ensureIosSimulator().openUrl(arg));
 
-  ipcMain.handle(IPC.iosSimulatorRelaunchApp, async (_event, arg) => ensureIosSimulator().relaunchApp(arg));
+  handle(IPC.iosSimulatorRelaunchApp, async (_event, arg) => ensureIosSimulator().relaunchApp(arg));
 
-  ipcMain.handle(IPC.iosSimulatorTerminateApp, async (_event, arg) => ensureIosSimulator().terminateApp(arg));
+  handle(IPC.iosSimulatorTerminateApp, async (_event, arg) => ensureIosSimulator().terminateApp(arg));
 
-  ipcMain.handle(IPC.iosSimulatorUninstallApp, async (_event, arg) => ensureIosSimulator().uninstallApp(arg));
+  handle(IPC.iosSimulatorUninstallApp, async (_event, arg) => ensureIosSimulator().uninstallApp(arg));
 
-  ipcMain.handle(IPC.iosSimulatorSetStatusBar, async (_event, arg) => ensureIosSimulator().setStatusBar(arg));
+  handle(IPC.iosSimulatorSetStatusBar, async (_event, arg) => ensureIosSimulator().setStatusBar(arg));
 
-  ipcMain.handle(IPC.iosSimulatorClearStatusBar, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorClearStatusBar, async (_event, arg = {}) =>
     ensureIosSimulator().clearStatusBar(arg));
 
-  ipcMain.handle(IPC.iosSimulatorGetAppState, async (_event, arg) => ensureIosSimulator().getAppState(arg));
-  ipcMain.handle(IPC.iosSimulatorGetForegroundApp, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorGetAppState, async (_event, arg) => ensureIosSimulator().getAppState(arg));
+  handle(IPC.iosSimulatorGetForegroundApp, async (_event, arg = {}) =>
     ensureIosSimulator().getForegroundApp(arg));
 
-  ipcMain.handle(IPC.iosSimulatorStartEventLog, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorStartEventLog, async (_event, arg = {}) =>
     ensureIosSimulator().startEventLog(arg));
 
-  ipcMain.handle(IPC.iosSimulatorStopEventLog, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorStopEventLog, async (_event, arg = {}) =>
     ensureIosSimulator().stopEventLog(arg));
 
-  ipcMain.handle(IPC.iosSimulatorGetEventLog, async (_event, arg = {}) => ensureIosSimulator().getEventLog(arg));
+  handle(IPC.iosSimulatorGetEventLog, async (_event, arg = {}) => ensureIosSimulator().getEventLog(arg));
 
-  ipcMain.handle(IPC.iosSimulatorFindElement, async (_event, arg) => ensureIosSimulator().findElement(arg));
+  handle(IPC.iosSimulatorFindElement, async (_event, arg) => ensureIosSimulator().findElement(arg));
 
-  ipcMain.handle(IPC.iosSimulatorTapElement, async (_event, arg) => ensureIosSimulator().tapElement(arg));
+  handle(IPC.iosSimulatorTapElement, async (_event, arg) => ensureIosSimulator().tapElement(arg));
 
-  ipcMain.handle(IPC.iosSimulatorFillElement, async (_event, arg) => ensureIosSimulator().fillElement(arg));
+  handle(IPC.iosSimulatorFillElement, async (_event, arg) => ensureIosSimulator().fillElement(arg));
 
-  ipcMain.handle(IPC.iosSimulatorWaitForElement, async (_event, arg) => ensureIosSimulator().waitForElement(arg));
+  handle(IPC.iosSimulatorWaitForElement, async (_event, arg) => ensureIosSimulator().waitForElement(arg));
 
-  ipcMain.handle(IPC.iosSimulatorAssertVisible, async (_event, arg) => ensureIosSimulator().assertVisible(arg));
+  handle(IPC.iosSimulatorAssertVisible, async (_event, arg) => ensureIosSimulator().assertVisible(arg));
 
-  ipcMain.handle(IPC.iosSimulatorCaptureProofBundle, async (_event, arg = {}) =>
+  handle(IPC.iosSimulatorCaptureProofBundle, async (_event, arg = {}) =>
     ensureIosSimulator().captureProofBundle(arg));
 
   // ── Mac Desktop ─────────────────────────────────────────────────────────
@@ -10765,42 +10714,42 @@ export function registerIpc({
   // runtime) and falls back to these channels, exactly as `iosSimulator` does.
   // A runtime-backed build therefore never reaches `ensureMacDesktop` at all,
   // and a dev build that does gets a sentence rather than a null crash.
-  ipcMain.handle(IPC.macDesktopGetStatus, async (_event, arg = {}) => ensureMacDesktop().getStatus(arg));
-  ipcMain.handle(IPC.macDesktopRecheckPermissions, async (_event, arg = {}) =>
+  handle(IPC.macDesktopGetStatus, async (_event, arg = {}) => ensureMacDesktop().getStatus(arg));
+  handle(IPC.macDesktopRecheckPermissions, async (_event, arg = {}) =>
     ensureMacDesktop().recheckPermissions(arg));
-  ipcMain.handle(IPC.macDesktopRequestPermission, async (_event, arg) =>
+  handle(IPC.macDesktopRequestPermission, async (_event, arg) =>
     ensureMacDesktop().requestPermission(arg));
-  ipcMain.handle(IPC.macDesktopSetupWindows, async (_event, arg) =>
+  handle(IPC.macDesktopSetupWindows, async (_event, arg) =>
     ensureMacDesktop().setupWindowsDesktop(arg ?? { allowPrompt: false }));
-  ipcMain.handle(IPC.macDesktopTakeoverWindows, async (_event, arg) =>
+  handle(IPC.macDesktopTakeoverWindows, async (_event, arg) =>
     ensureMacDesktop().takeoverWindowsDesktop(arg));
-  ipcMain.handle(IPC.macDesktopUseSharedDesktop, async (_event, arg) =>
+  handle(IPC.macDesktopUseSharedDesktop, async (_event, arg) =>
     ensureMacDesktop().start({ ...arg, seatMode: "shared", sharedDesktopConsent: true }));
-  ipcMain.handle(IPC.macDesktopStart, async (_event, arg) => ensureMacDesktop().start(arg));
-  ipcMain.handle(IPC.macDesktopStop, async (_event, arg) => ensureMacDesktop().stop(arg));
-  ipcMain.handle(IPC.macDesktopListWindows, async (_event, arg = {}) => ensureMacDesktop().listWindows(arg));
-  ipcMain.handle(IPC.macDesktopOpen, async (_event, arg) => ensureMacDesktop().open(arg));
-  ipcMain.handle(IPC.macDesktopClaimWindow, async (_event, arg) => ensureMacDesktop().claimWindow(arg));
-  ipcMain.handle(IPC.macDesktopReleaseWindow, async (_event, arg) => ensureMacDesktop().releaseWindow(arg));
-  ipcMain.handle(IPC.macDesktopCloseWindow, async (_event, arg) => ensureMacDesktop().closeWindow(arg));
-  ipcMain.handle(IPC.macDesktopObserve, async (_event, arg) => ensureMacDesktop().observe(arg));
-  ipcMain.handle(IPC.macDesktopClick, async (_event, arg) => ensureMacDesktop().click(arg));
-  ipcMain.handle(IPC.macDesktopType, async (_event, arg) => ensureMacDesktop().type(arg));
-  ipcMain.handle(IPC.macDesktopPress, async (_event, arg) => ensureMacDesktop().press(arg));
-  ipcMain.handle(IPC.macDesktopScroll, async (_event, arg) => ensureMacDesktop().scroll(arg));
-  ipcMain.handle(IPC.macDesktopDrag, async (_event, arg) => ensureMacDesktop().drag(arg));
-  ipcMain.handle(IPC.macDesktopMove, async (_event, arg) => ensureMacDesktop().move(arg));
-  ipcMain.handle(IPC.macDesktopWait, async (_event, arg) => ensureMacDesktop().wait(arg));
-  ipcMain.handle(IPC.macDesktopScreenshot, async (_event, arg) => ensureMacDesktop().screenshot(arg));
-  ipcMain.handle(IPC.macDesktopStartRecording, async (_event, arg) => ensureMacDesktop().startRecording(arg));
-  ipcMain.handle(IPC.macDesktopStopRecording, async (_event, arg) => ensureMacDesktop().stopRecording(arg));
-  ipcMain.handle(IPC.macDesktopStartStream, async (_event, arg) => ensureMacDesktop().startStream(arg));
-  ipcMain.handle(IPC.macDesktopStopStream, async (_event, arg) => ensureMacDesktop().stopStream(arg));
-  ipcMain.handle(IPC.macDesktopGetStreamStatus, async (_event, arg) => ensureMacDesktop().getStreamStatus(arg));
-  ipcMain.handle(IPC.macDesktopTakeControl, async (_event, arg) => ensureMacDesktop().takeControl(arg));
-  ipcMain.handle(IPC.macDesktopReturnControl, async (_event, arg) => ensureMacDesktop().returnControl(arg));
-  ipcMain.handle(IPC.macDesktopRenewLease, async (_event, arg) => ensureMacDesktop().renewLease(arg));
-  ipcMain.handle(IPC.macDesktopPresent, async (_event, arg) => ensureMacDesktop().present(arg));
+  handle(IPC.macDesktopStart, async (_event, arg) => ensureMacDesktop().start(arg));
+  handle(IPC.macDesktopStop, async (_event, arg) => ensureMacDesktop().stop(arg));
+  handle(IPC.macDesktopListWindows, async (_event, arg = {}) => ensureMacDesktop().listWindows(arg));
+  handle(IPC.macDesktopOpen, async (_event, arg) => ensureMacDesktop().open(arg));
+  handle(IPC.macDesktopClaimWindow, async (_event, arg) => ensureMacDesktop().claimWindow(arg));
+  handle(IPC.macDesktopReleaseWindow, async (_event, arg) => ensureMacDesktop().releaseWindow(arg));
+  handle(IPC.macDesktopCloseWindow, async (_event, arg) => ensureMacDesktop().closeWindow(arg));
+  handle(IPC.macDesktopObserve, async (_event, arg) => ensureMacDesktop().observe(arg));
+  handle(IPC.macDesktopClick, async (_event, arg) => ensureMacDesktop().click(arg));
+  handle(IPC.macDesktopType, async (_event, arg) => ensureMacDesktop().type(arg));
+  handle(IPC.macDesktopPress, async (_event, arg) => ensureMacDesktop().press(arg));
+  handle(IPC.macDesktopScroll, async (_event, arg) => ensureMacDesktop().scroll(arg));
+  handle(IPC.macDesktopDrag, async (_event, arg) => ensureMacDesktop().drag(arg));
+  handle(IPC.macDesktopMove, async (_event, arg) => ensureMacDesktop().move(arg));
+  handle(IPC.macDesktopWait, async (_event, arg) => ensureMacDesktop().wait(arg));
+  handle(IPC.macDesktopScreenshot, async (_event, arg) => ensureMacDesktop().screenshot(arg));
+  handle(IPC.macDesktopStartRecording, async (_event, arg) => ensureMacDesktop().startRecording(arg));
+  handle(IPC.macDesktopStopRecording, async (_event, arg) => ensureMacDesktop().stopRecording(arg));
+  handle(IPC.macDesktopStartStream, async (_event, arg) => ensureMacDesktop().startStream(arg));
+  handle(IPC.macDesktopStopStream, async (_event, arg) => ensureMacDesktop().stopStream(arg));
+  handle(IPC.macDesktopGetStreamStatus, async (_event, arg) => ensureMacDesktop().getStreamStatus(arg));
+  handle(IPC.macDesktopTakeControl, async (_event, arg) => ensureMacDesktop().takeControl(arg));
+  handle(IPC.macDesktopReturnControl, async (_event, arg) => ensureMacDesktop().returnControl(arg));
+  handle(IPC.macDesktopRenewLease, async (_event, arg) => ensureMacDesktop().renewLease(arg));
+  handle(IPC.macDesktopPresent, async (_event, arg) => ensureMacDesktop().present(arg));
 
   /**
    * The machine-wide Escape behind a takeover on THIS Mac.
@@ -10810,7 +10759,7 @@ export function registerIpc({
    * the display. A remote lane leaves it disarmed on purpose — focus stays in
    * the ADE window there, so the pane's own listener already works.
    */
-  ipcMain.handle(IPC.macDesktopSetEscapeHotkey, async (event, arg) => {
+  handle(IPC.macDesktopSetEscapeHotkey, async (event, arg) => {
     const request = (arg ?? {}) as { laneId?: unknown; armed?: unknown };
     const laneId = typeof request.laneId === "string" ? request.laneId.trim() : "";
     if (request.armed === true && laneId) macDesktopEscapeHotkey.arm(event.sender.id, laneId);
@@ -10823,36 +10772,36 @@ export function registerIpc({
   // The LOCAL arm behind the `android_emulator` action domain, one handler per
   // `AndroidEmulatorPreloadApi` method that reaches the service. The preload
   // routes a pinned or remote-bound call through the action domain first.
-  ipcMain.handle(IPC.androidEmulatorGetStatus, async (_event, arg = {}) => ensureAndroidEmulator().getStatus(arg ?? {}));
-  ipcMain.handle(IPC.androidEmulatorListDevices, async (_event, arg = {}) => ensureAndroidEmulator().listDevices(arg ?? {}));
-  ipcMain.handle(IPC.androidEmulatorCreateDevice, async (_event, arg) => ensureAndroidEmulator().createDevice(arg));
-  ipcMain.handle(IPC.androidEmulatorAttachDevice, async (_event, arg) => ensureAndroidEmulator().attachDevice(arg));
-  ipcMain.handle(IPC.androidEmulatorStart, async (_event, arg) => ensureAndroidEmulator().start(arg));
-  ipcMain.handle(IPC.androidEmulatorStop, async (_event, arg) => ensureAndroidEmulator().stop(arg));
-  ipcMain.handle(IPC.androidEmulatorReleaseDevice, async (_event, arg) => ensureAndroidEmulator().releaseDevice(arg));
-  ipcMain.handle(IPC.androidEmulatorDeleteDevice, async (_event, arg) => ensureAndroidEmulator().deleteDevice(arg));
-  ipcMain.handle(IPC.androidEmulatorStartStream, async (_event, arg) => ensureAndroidEmulator().startStream(arg));
-  ipcMain.handle(IPC.androidEmulatorStopStream, async (_event, arg) => ensureAndroidEmulator().stopStream(arg));
-  ipcMain.handle(IPC.androidEmulatorGetStreamStatus, async (_event, arg) => ensureAndroidEmulator().getStreamStatus(arg));
-  ipcMain.handle(IPC.androidEmulatorSendTouch, async (_event, arg) => ensureAndroidEmulator().sendTouch(arg));
-  ipcMain.handle(IPC.androidEmulatorSendKey, async (_event, arg) => ensureAndroidEmulator().sendKey(arg));
-  ipcMain.handle(IPC.androidEmulatorSendText, async (_event, arg) => ensureAndroidEmulator().sendText(arg));
-  ipcMain.handle(IPC.androidEmulatorRotate, async (_event, arg) => ensureAndroidEmulator().rotate(arg));
-  ipcMain.handle(IPC.androidEmulatorScreenshot, async (_event, arg) => ensureAndroidEmulator().screenshot(arg));
+  handle(IPC.androidEmulatorGetStatus, async (_event, arg = {}) => ensureAndroidEmulator().getStatus(arg ?? {}));
+  handle(IPC.androidEmulatorListDevices, async (_event, arg = {}) => ensureAndroidEmulator().listDevices(arg ?? {}));
+  handle(IPC.androidEmulatorCreateDevice, async (_event, arg) => ensureAndroidEmulator().createDevice(arg));
+  handle(IPC.androidEmulatorAttachDevice, async (_event, arg) => ensureAndroidEmulator().attachDevice(arg));
+  handle(IPC.androidEmulatorStart, async (_event, arg) => ensureAndroidEmulator().start(arg));
+  handle(IPC.androidEmulatorStop, async (_event, arg) => ensureAndroidEmulator().stop(arg));
+  handle(IPC.androidEmulatorReleaseDevice, async (_event, arg) => ensureAndroidEmulator().releaseDevice(arg));
+  handle(IPC.androidEmulatorDeleteDevice, async (_event, arg) => ensureAndroidEmulator().deleteDevice(arg));
+  handle(IPC.androidEmulatorStartStream, async (_event, arg) => ensureAndroidEmulator().startStream(arg));
+  handle(IPC.androidEmulatorStopStream, async (_event, arg) => ensureAndroidEmulator().stopStream(arg));
+  handle(IPC.androidEmulatorGetStreamStatus, async (_event, arg) => ensureAndroidEmulator().getStreamStatus(arg));
+  handle(IPC.androidEmulatorSendTouch, async (_event, arg) => ensureAndroidEmulator().sendTouch(arg));
+  handle(IPC.androidEmulatorSendKey, async (_event, arg) => ensureAndroidEmulator().sendKey(arg));
+  handle(IPC.androidEmulatorSendText, async (_event, arg) => ensureAndroidEmulator().sendText(arg));
+  handle(IPC.androidEmulatorRotate, async (_event, arg) => ensureAndroidEmulator().rotate(arg));
+  handle(IPC.androidEmulatorScreenshot, async (_event, arg) => ensureAndroidEmulator().screenshot(arg));
   // P1 look.
-  ipcMain.handle(IPC.androidEmulatorSetDeviceColor, async (_event, arg) => ensureAndroidEmulator().setDeviceColor(arg));
-  ipcMain.handle(IPC.androidEmulatorRenderAck, async (_event, arg) => ensureAndroidEmulator().renderAck(arg));
-  ipcMain.handle(IPC.androidEmulatorRenderComplete, async (_event, arg) => ensureAndroidEmulator().renderComplete(arg));
-  ipcMain.handle(IPC.androidEmulatorAttachRenderProof, async (_event, arg) => ensureAndroidEmulator().attachRenderProof(arg));
-  ipcMain.handle(IPC.androidEmulatorGetSdkSetupPlan, async (_event, arg = {}) => ensureAndroidEmulator().getSdkSetupPlan(arg ?? {}));
-  ipcMain.handle(IPC.androidEmulatorInstallSdk, async (_event, arg) => ensureAndroidEmulator().installSdk(arg));
-  ipcMain.handle(IPC.androidEmulatorCancelSdkInstall, async () => ensureAndroidEmulator().cancelSdkInstall());
-  ipcMain.handle(IPC.androidEmulatorGetSdkInstallState, async () => ensureAndroidEmulator().getSdkInstallState());
-  ipcMain.handle(IPC.androidEmulatorSetSdkPath, async (_event, arg) => ensureAndroidEmulator().setSdkPath(arg));
-  ipcMain.handle(IPC.androidEmulatorGetMachinePreferences, async () => ensureAndroidEmulator().getMachinePreferences({}));
-  ipcMain.handle(IPC.androidEmulatorSetMachinePreferences, async (_event, arg) => ensureAndroidEmulator().setMachinePreferences(arg ?? {}));
+  handle(IPC.androidEmulatorSetDeviceColor, async (_event, arg) => ensureAndroidEmulator().setDeviceColor(arg));
+  handle(IPC.androidEmulatorRenderAck, async (_event, arg) => ensureAndroidEmulator().renderAck(arg));
+  handle(IPC.androidEmulatorRenderComplete, async (_event, arg) => ensureAndroidEmulator().renderComplete(arg));
+  handle(IPC.androidEmulatorAttachRenderProof, async (_event, arg) => ensureAndroidEmulator().attachRenderProof(arg));
+  handle(IPC.androidEmulatorGetSdkSetupPlan, async (_event, arg = {}) => ensureAndroidEmulator().getSdkSetupPlan(arg ?? {}));
+  handle(IPC.androidEmulatorInstallSdk, async (_event, arg) => ensureAndroidEmulator().installSdk(arg));
+  handle(IPC.androidEmulatorCancelSdkInstall, async () => ensureAndroidEmulator().cancelSdkInstall());
+  handle(IPC.androidEmulatorGetSdkInstallState, async () => ensureAndroidEmulator().getSdkInstallState());
+  handle(IPC.androidEmulatorSetSdkPath, async (_event, arg) => ensureAndroidEmulator().setSdkPath(arg));
+  handle(IPC.androidEmulatorGetMachinePreferences, async () => ensureAndroidEmulator().getMachinePreferences({}));
+  handle(IPC.androidEmulatorSetMachinePreferences, async (_event, arg) => ensureAndroidEmulator().setMachinePreferences(arg ?? {}));
 
-  ipcMain.handle(IPC.appControlGetStatus, async (event, arg) => {
+  handle(IPC.appControlGetStatus, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlGetStatus, { windowMs: 10_000, max: 80 });
     const status = await ensureAppControl().getStatus(parseAppControlLaneOnlyArgs(arg, IPC.appControlGetStatus));
     // A pane shows its own lane's session only; it never gets another lane's
@@ -10860,67 +10809,67 @@ export function registerIpc({
     return { ...status, sessions: status.activeSession ? [status.activeSession] : [] };
   });
 
-  ipcMain.handle(IPC.appControlLaunch, async (event, arg) => {
+  handle(IPC.appControlLaunch, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlLaunch, { windowMs: 60_000, max: 10 });
     return ensureAppControl().launch(parseAppControlLaunchArgs(arg, IPC.appControlLaunch));
   });
 
-  ipcMain.handle(IPC.appControlLaunchInTerminal, async (event, arg) => {
+  handle(IPC.appControlLaunchInTerminal, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlLaunchInTerminal, { windowMs: 60_000, max: 10 });
     return ensureAppControl().launchInTerminal(parseAppControlLaunchArgs(arg, IPC.appControlLaunchInTerminal));
   });
 
-  ipcMain.handle(IPC.appControlConnect, async (event, arg) => {
+  handle(IPC.appControlConnect, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlConnect, { windowMs: 60_000, max: 20 });
     return ensureAppControl().connect(parseAppControlConnectArgs(arg, IPC.appControlConnect));
   });
 
-  ipcMain.handle(IPC.appControlStop, async (event, arg) => {
+  handle(IPC.appControlStop, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlStop, { windowMs: 10_000, max: 20 });
     return ensureAppControl().stop(parseAppControlStopArgs(arg, IPC.appControlStop));
   });
 
-  ipcMain.handle(IPC.appControlFocusWindow, async (event, arg) => {
+  handle(IPC.appControlFocusWindow, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlFocusWindow, { windowMs: 10_000, max: 20 });
     return ensureAppControl().focusWindow(parseAppControlLaneOnlyArgs(arg, IPC.appControlFocusWindow));
   });
 
-  ipcMain.handle(IPC.appControlMinimizeWindow, async (event, arg) => {
+  handle(IPC.appControlMinimizeWindow, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlMinimizeWindow, { windowMs: 10_000, max: 20 });
     return ensureAppControl().minimizeWindow(parseAppControlLaneOnlyArgs(arg, IPC.appControlMinimizeWindow));
   });
 
-  ipcMain.handle(IPC.appControlScreenshot, async (event, arg) => {
+  handle(IPC.appControlScreenshot, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlScreenshot, { windowMs: 10_000, max: 30 });
     return ensureAppControl().screenshot(parseAppControlLaneOnlyArgs(arg, IPC.appControlScreenshot));
   });
 
-  ipcMain.handle(IPC.appControlGetSnapshot, async (event, arg) => {
+  handle(IPC.appControlGetSnapshot, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlGetSnapshot, { windowMs: 10_000, max: 30 });
     return ensureAppControl().getSnapshot(parseAppControlSnapshotArgs(arg, IPC.appControlGetSnapshot));
   });
 
-  ipcMain.handle(IPC.appControlInspectPoint, async (event, arg) => {
+  handle(IPC.appControlInspectPoint, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlInspectPoint, { windowMs: 10_000, max: 60 });
     return ensureAppControl().inspectPoint(parseAppControlPointArgs(arg, IPC.appControlInspectPoint));
   });
 
-  ipcMain.handle(IPC.appControlSelectPoint, async (event, arg) => {
+  handle(IPC.appControlSelectPoint, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlSelectPoint, { windowMs: 10_000, max: 40 });
     return ensureAppControl().selectPoint(parseAppControlPointArgs(arg, IPC.appControlSelectPoint));
   });
 
-  ipcMain.handle(IPC.appControlClick, async (event, arg) => {
+  handle(IPC.appControlClick, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlClick, { windowMs: 10_000, max: 30 });
     return ensureAppControl().click(parseAppControlClickArgs(arg, IPC.appControlClick));
   });
 
-  ipcMain.handle(IPC.appControlTypeText, async (event, arg) => {
+  handle(IPC.appControlTypeText, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlTypeText, { windowMs: 10_000, max: 20 });
     return ensureAppControl().typeText(parseAppControlTypeTextArgs(arg, IPC.appControlTypeText));
   });
 
-  ipcMain.handle(IPC.appControlScroll, async (event, arg) => {
+  handle(IPC.appControlScroll, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlScroll, { windowMs: 10_000, max: 600 });
     const record = isRecord(arg) ? arg : {};
     const finiteNumberOr = (key: string, fallback: number | null): number | null => {
@@ -10942,12 +10891,12 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.appControlListTargets, async (event, arg) => {
+  handle(IPC.appControlListTargets, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlListTargets, { windowMs: 10_000, max: 60 });
     return ensureAppControl().listTargets(parseAppControlLaneOnlyArgs(arg, IPC.appControlListTargets));
   });
 
-  ipcMain.handle(IPC.appControlAttachToTarget, async (event, arg) => {
+  handle(IPC.appControlAttachToTarget, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlAttachToTarget, { windowMs: 10_000, max: 30 });
     const rawTargetId = isRecord(arg) ? arg.targetId : null;
     if (typeof rawTargetId !== "string" || rawTargetId.length === 0) {
@@ -10959,7 +10908,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.appControlDispatchKey, async (event, arg) => {
+  handle(IPC.appControlDispatchKey, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlDispatchKey, { windowMs: 10_000, max: 600 });
     const record = isRecord(arg) ? arg : {};
     const stringField = (key: string): string | null => (typeof record[key] === "string" ? record[key] as string : null);
@@ -10986,33 +10935,33 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.appControlStartRecording, async (event, arg) => {
+  handle(IPC.appControlStartRecording, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlStartRecording, { windowMs: 60_000, max: 10 });
     return ensureAppControl().startRecording(parseAppControlRecordStartArgs(arg, IPC.appControlStartRecording));
   });
 
-  ipcMain.handle(IPC.appControlStopRecording, async (event, arg) => {
+  handle(IPC.appControlStopRecording, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlStopRecording, { windowMs: 60_000, max: 10 });
     return ensureAppControl().stopRecording(parseAppControlLaneOnlyArgs(arg, IPC.appControlStopRecording));
   });
 
-  ipcMain.handle(IPC.appControlCaptureProof, async (event, arg) => {
+  handle(IPC.appControlCaptureProof, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlCaptureProof, { windowMs: 60_000, max: 30 });
     return ensureAppControl().captureProof(parseAppControlCaptureProofArgs(arg, IPC.appControlCaptureProof));
   });
 
-  ipcMain.handle(IPC.appControlGetRecordingStatus, async (event, arg) => {
+  handle(IPC.appControlGetRecordingStatus, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlGetRecordingStatus, { windowMs: 10_000, max: 60 });
     return ensureAppControl().getRecordingStatus(parseAppControlLaneOnlyArgs(arg, IPC.appControlGetRecordingStatus));
   });
 
   // A new viewer's first picture: the newest frame, or one fresh capture.
-  ipcMain.handle(IPC.appControlGetLatestFrame, async (event, arg) => {
+  handle(IPC.appControlGetLatestFrame, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlGetLatestFrame, { windowMs: 10_000, max: 60 });
     return ensureAppControl().getLatestFrame(parseAppControlLaneOnlyArgs(arg, IPC.appControlGetLatestFrame));
   });
 
-  ipcMain.handle(IPC.builtInBrowserGetStatus, async (event, arg) => {
+  handle(IPC.builtInBrowserGetStatus, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetStatus, { windowMs: 10_000, max: 120 });
     return ensureBuiltInBrowser().getStatus(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserGetStatus), win);
   });
@@ -11025,12 +10974,12 @@ export function registerIpc({
   // subscribes the asking window to the pushed `agent-presence` event — one
   // `once("closed")` listener, no service constructed — so a window that only
   // ever seeds is not left holding that first seed forever.
-  ipcMain.handle(IPC.builtInBrowserGetAgentPresence, async (event) => {
+  handle(IPC.builtInBrowserGetAgentPresence, async (event) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetAgentPresence, { windowMs: 10_000, max: 120 });
     return ensureBuiltInBrowser().getAgentPresence(win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserRequestOriginAccess, async (event, arg) => {
+  handle(IPC.builtInBrowserRequestOriginAccess, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserRequestOriginAccess, { windowMs: 10_000, max: 10 });
     return ensureBuiltInBrowser().requestOriginAccess(
       parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserRequestOriginAccess),
@@ -11038,17 +10987,17 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.builtInBrowserGetProfileDiagnostics, async (event) => {
+  handle(IPC.builtInBrowserGetProfileDiagnostics, async (event) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetProfileDiagnostics, { windowMs: 10_000, max: 20 });
     return ensureBuiltInBrowser().getProfileDiagnostics();
   });
 
-  ipcMain.handle(IPC.builtInBrowserListPermissions, async (event) => {
+  handle(IPC.builtInBrowserListPermissions, async (event) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserListPermissions, { windowMs: 10_000, max: 20 });
     return ensureBuiltInBrowser().listPermissions();
   });
 
-  ipcMain.handle(IPC.builtInBrowserClearPermissions, async (event, arg) => {
+  handle(IPC.builtInBrowserClearPermissions, async (event, arg) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserClearPermissions, { windowMs: 10_000, max: 10 });
     return ensureBuiltInBrowser().clearPermissions(
       parseBuiltInBrowserClearPermissionsArgs(arg, IPC.builtInBrowserClearPermissions),
@@ -11057,7 +11006,7 @@ export function registerIpc({
 
   // Local HTTPS certificate trust. Trusted-renderer only, and never on the
   // desktop bridge: only the person at this desktop can approve a certificate.
-  ipcMain.handle(IPC.builtInBrowserTrustCertificate, async (event, arg) => {
+  handle(IPC.builtInBrowserTrustCertificate, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserTrustCertificate, { windowMs: 10_000, max: 10 });
     const tabId = isRecord(arg) && typeof arg.tabId === "string" ? arg.tabId.trim() : "";
     const fingerprint = isRecord(arg) && typeof arg.fingerprint === "string" ? arg.fingerprint.trim() : "";
@@ -11072,12 +11021,12 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.builtInBrowserListTrustedCertificates, async (event) => {
+  handle(IPC.builtInBrowserListTrustedCertificates, async (event) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserListTrustedCertificates, { windowMs: 10_000, max: 30 });
     return ensureBuiltInBrowser().listTrustedCertificates();
   });
 
-  ipcMain.handle(IPC.builtInBrowserRevokeTrustedCertificates, async (event, arg) => {
+  handle(IPC.builtInBrowserRevokeTrustedCertificates, async (event, arg) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserRevokeTrustedCertificates, { windowMs: 10_000, max: 20 });
     const id = isRecord(arg) && typeof arg.id === "string" && arg.id.trim() ? arg.id.trim() : null;
     return ensureBuiltInBrowser().revokeTrustedCertificates({ id });
@@ -11085,12 +11034,12 @@ export function registerIpc({
 
   // "Agents can use the ADE browser". Trusted-renderer only, and never on the
   // desktop bridge: an agent must not be able to answer its own prompt.
-  ipcMain.handle(IPC.builtInBrowserAgentAccessGet, async (event) => {
+  handle(IPC.builtInBrowserAgentAccessGet, async (event) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessGet, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().getAgentAccess();
   });
 
-  ipcMain.handle(IPC.builtInBrowserAgentAccessSetEnabled, async (event, arg) => {
+  handle(IPC.builtInBrowserAgentAccessSetEnabled, async (event, arg) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessSetEnabled, { windowMs: 10_000, max: 20 });
     const enabled = isRecord(arg) ? arg.enabled : arg;
     if (typeof enabled !== "boolean") {
@@ -11099,17 +11048,17 @@ export function registerIpc({
     return ensureBuiltInBrowser().setAgentAccessEnabled(enabled);
   });
 
-  ipcMain.handle(IPC.builtInBrowserSettingsGet, async (event) => {
+  handle(IPC.builtInBrowserSettingsGet, async (event) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserSettingsGet, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().getBrowserSettings();
   });
 
-  ipcMain.handle(IPC.builtInBrowserSettingsSet, async (event, arg) => {
+  handle(IPC.builtInBrowserSettingsSet, async (event, arg) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserSettingsSet, { windowMs: 10_000, max: 20 });
     return ensureBuiltInBrowser().updateBrowserSettings(parseBuiltInBrowserSettingsPatch(arg));
   });
 
-  ipcMain.handle(IPC.builtInBrowserAgentAccessSetMode, async (event, arg) => {
+  handle(IPC.builtInBrowserAgentAccessSetMode, async (event, arg) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessSetMode, { windowMs: 10_000, max: 20 });
     const mode = isRecord(arg) ? arg.mode : arg;
     if (mode !== "all" && mode !== "lanes" && mode !== "chats") {
@@ -11118,7 +11067,7 @@ export function registerIpc({
     return ensureBuiltInBrowser().setAgentAccessMode(mode);
   });
 
-  ipcMain.handle(IPC.builtInBrowserAgentAccessAnswer, async (event, arg) => {
+  handle(IPC.builtInBrowserAgentAccessAnswer, async (event, arg) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessAnswer, { windowMs: 10_000, max: 30 });
     const promptId = isRecord(arg) && typeof arg.promptId === "string" ? arg.promptId.trim() : "";
     const answer = isRecord(arg) ? arg.answer : null;
@@ -11128,7 +11077,7 @@ export function registerIpc({
     return ensureBuiltInBrowser().answerAgentAccessPrompt(promptId, answer);
   });
 
-  ipcMain.handle(IPC.builtInBrowserAgentAccessRevoke, async (event, arg) => {
+  handle(IPC.builtInBrowserAgentAccessRevoke, async (event, arg) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessRevoke, { windowMs: 10_000, max: 30 });
     const kind = isRecord(arg) ? arg.kind : null;
     const text = (value: unknown): string | null =>
@@ -11170,24 +11119,24 @@ export function registerIpc({
     return sourceId.trim();
   };
 
-  ipcMain.handle(IPC.builtInBrowserLoginImportCapabilities, async (event) => {
+  handle(IPC.builtInBrowserLoginImportCapabilities, async (event) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginImportCapabilities, { windowMs: 10_000, max: 20 });
     return ensureBrowserLoginImport().capabilities();
   });
 
-  ipcMain.handle(IPC.builtInBrowserLoginImportListSources, async (event) => {
+  handle(IPC.builtInBrowserLoginImportListSources, async (event) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginImportListSources, { windowMs: 10_000, max: 20 });
     return ensureBrowserLoginImport().listSources();
   });
 
-  ipcMain.handle(IPC.builtInBrowserLoginImportListDomains, async (event, arg) => {
+  handle(IPC.builtInBrowserLoginImportListDomains, async (event, arg) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginImportListDomains, { windowMs: 60_000, max: 20 });
     return ensureBrowserLoginImport().listDomains({
       sourceId: parseLoginImportSourceId(arg, IPC.builtInBrowserLoginImportListDomains),
     });
   });
 
-  ipcMain.handle(IPC.builtInBrowserLoginImportImport, async (event, arg) => {
+  handle(IPC.builtInBrowserLoginImportImport, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserLoginImportImport, { windowMs: 60_000, max: 10 });
     const channel = IPC.builtInBrowserLoginImportImport;
     const record = builtInBrowserRecord(arg, channel, true);
@@ -11220,72 +11169,72 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.builtInBrowserShowPanel, async (event, arg) => {
+  handle(IPC.builtInBrowserShowPanel, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserShowPanel, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().showPanel(parseBuiltInBrowserOpenPanelArgs(arg, IPC.builtInBrowserShowPanel), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserSetBounds, async (event, arg) => {
+  handle(IPC.builtInBrowserSetBounds, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetBounds, { windowMs: 10_000, max: 900 });
     return ensureBuiltInBrowser().setBounds(parseBuiltInBrowserBoundsArgs(arg, IPC.builtInBrowserSetBounds), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserNavigate, async (event, arg) => {
+  handle(IPC.builtInBrowserNavigate, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserNavigate, { windowMs: 60_000, max: 40 });
     return ensureBuiltInBrowser().navigate(parseBuiltInBrowserNavigateArgs(arg, IPC.builtInBrowserNavigate), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserCreateTab, async (event, arg) => {
+  handle(IPC.builtInBrowserCreateTab, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserCreateTab, { windowMs: 60_000, max: 40 });
     return ensureBuiltInBrowser().createTab(parseBuiltInBrowserCreateTabArgs(arg, IPC.builtInBrowserCreateTab), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserSwitchTab, async (event, arg) => {
+  handle(IPC.builtInBrowserSwitchTab, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSwitchTab, { windowMs: 10_000, max: 120 });
     return ensureBuiltInBrowser().switchTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserSwitchTab), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserHandTabToChat, async (event, arg) => {
+  handle(IPC.builtInBrowserHandTabToChat, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserHandTabToChat, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().handTabToChat(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserHandTabToChat), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserCloseTab, async (event, arg) => {
+  handle(IPC.builtInBrowserCloseTab, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserCloseTab, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().closeTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserCloseTab), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserReload, async (event, arg) => {
+  handle(IPC.builtInBrowserReload, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserReload, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().reload(parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserReload), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserGoBack, async (event, arg) => {
+  handle(IPC.builtInBrowserGoBack, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGoBack, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().goBack(parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserGoBack), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserGoForward, async (event, arg) => {
+  handle(IPC.builtInBrowserGoForward, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGoForward, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().goForward(parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserGoForward), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserStop, async (event, arg) => {
+  handle(IPC.builtInBrowserStop, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStop, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().stop(parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserStop), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserStartInspect, async (event, arg) => {
+  handle(IPC.builtInBrowserStartInspect, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStartInspect, { windowMs: 10_000, max: 40 });
     return ensureBuiltInBrowser().startInspect(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserStartInspect), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserStopInspect, async (event, arg) => {
+  handle(IPC.builtInBrowserStopInspect, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopInspect, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().stopInspect(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserStopInspect), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserCaptureScreenshot, async (event, arg) => {
+  handle(IPC.builtInBrowserCaptureScreenshot, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserCaptureScreenshot, { windowMs: 10_000, max: 30 });
     // A renderer that polls the pane races tab closure by construction, so an
     // empty pane answers with a typed result rather than throwing an IPC error
@@ -11315,22 +11264,22 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.builtInBrowserSelectPoint, async (event, arg) => {
+  handle(IPC.builtInBrowserSelectPoint, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSelectPoint, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().selectPoint(parseBuiltInBrowserSelectPointArgs(arg, IPC.builtInBrowserSelectPoint), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserSelectCurrent, async (event, arg) => {
+  handle(IPC.builtInBrowserSelectCurrent, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSelectCurrent, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().selectCurrent(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserSelectCurrent), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserClearSelection, async (event, arg) => {
+  handle(IPC.builtInBrowserClearSelection, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserClearSelection, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().clearSelection(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserClearSelection), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserEndHandoff, async (event, arg) => {
+  handle(IPC.builtInBrowserEndHandoff, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserEndHandoff, { windowMs: 10_000, max: 30 });
     const record = isRecord(arg) ? arg : {};
     return ensureBuiltInBrowser().endHandoff(
@@ -11344,7 +11293,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.builtInBrowserSetEmulation, async (event, arg) => {
+  handle(IPC.builtInBrowserSetEmulation, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetEmulation, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().setEmulation(
       parseBuiltInBrowserSetEmulationArgs(arg, IPC.builtInBrowserSetEmulation),
@@ -11352,19 +11301,19 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.builtInBrowserSetZoom, async (event, arg) => {
+  handle(IPC.builtInBrowserSetZoom, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetZoom, { windowMs: 10_000, max: 200 });
     return ensureBuiltInBrowser().setZoom(parseBuiltInBrowserSetZoomArgs(arg, IPC.builtInBrowserSetZoom), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserFocusHost, async (event) => {
+  handle(IPC.builtInBrowserFocusHost, async (event) => {
     // Rate limit sized for the chord that drives it: a human pressing ⌘F, not
     // a loop. Nothing here reads the payload, so there is nothing to parse.
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserFocusHost, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().focusHost(win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserClaimRemoteRequest, async (event, arg) => {
+  handle(IPC.builtInBrowserClaimRemoteRequest, async (event, arg) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserClaimRemoteRequest, { windowMs: 10_000, max: 120 });
     const record = isRecord(arg) ? arg : {};
     const requestId = typeof record.requestId === "string" ? record.requestId : "";
@@ -11374,7 +11323,7 @@ export function registerIpc({
   // A browser command from an agent on another machine whose user sits at
   // this desktop. The renderer received it and set which project's tabs it
   // means; the browser itself is here.
-  ipcMain.handle(IPC.builtInBrowserRunRemoteAgentCall, async (event, arg) => {
+  handle(IPC.builtInBrowserRunRemoteAgentCall, async (event, arg) => {
     guardBuiltInBrowserIpc(event, IPC.builtInBrowserRunRemoteAgentCall, { windowMs: 10_000, max: 400 });
     const record = isRecord(arg) ? arg : {};
     return runRemoteAgentBrowserCall({
@@ -11384,12 +11333,12 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.builtInBrowserFindInPage, async (event, arg) => {
+  handle(IPC.builtInBrowserFindInPage, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserFindInPage, { windowMs: 10_000, max: 200 });
     return ensureBuiltInBrowser().findInPage(parseBuiltInBrowserFindInPageArgs(arg, IPC.builtInBrowserFindInPage), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserStopFindInPage, async (event, arg) => {
+  handle(IPC.builtInBrowserStopFindInPage, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopFindInPage, { windowMs: 10_000, max: 200 });
     const input = parseBuiltInBrowserStopFindInPageArgs(arg, IPC.builtInBrowserStopFindInPage);
     // Same shape as `captureScreenshot` above, for the same reason: the find
@@ -11414,12 +11363,12 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.builtInBrowserSetDevTools, async (event, arg) => {
+  handle(IPC.builtInBrowserSetDevTools, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetDevTools, { windowMs: 10_000, max: 40 });
     return ensureBuiltInBrowser().setDevTools(parseBuiltInBrowserSetDevToolsArgs(arg, IPC.builtInBrowserSetDevTools), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserSetNetworkLogging, async (event, arg) => {
+  handle(IPC.builtInBrowserSetNetworkLogging, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserSetNetworkLogging, { windowMs: 10_000, max: 40 });
     return ensureBuiltInBrowser().setNetworkLogging(
       parseBuiltInBrowserSetNetworkLoggingArgs(arg, IPC.builtInBrowserSetNetworkLogging),
@@ -11427,7 +11376,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.builtInBrowserGetNetworkLog, async (event, arg) => {
+  handle(IPC.builtInBrowserGetNetworkLog, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserGetNetworkLog, { windowMs: 10_000, max: 120 });
     return ensureBuiltInBrowser().getNetworkLog(
       parseBuiltInBrowserNetworkLogArgs(arg, IPC.builtInBrowserGetNetworkLog),
@@ -11435,12 +11384,12 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.builtInBrowserExportHar, async (event, arg) => {
+  handle(IPC.builtInBrowserExportHar, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserExportHar, { windowMs: 60_000, max: 20 });
     return ensureBuiltInBrowser().exportHar(parseBuiltInBrowserExportHarArgs(arg, IPC.builtInBrowserExportHar), win);
   });
 
-  ipcMain.handle(IPC.builtInBrowserStartRecording, async (event, arg) => {
+  handle(IPC.builtInBrowserStartRecording, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStartRecording, { windowMs: 60_000, max: 20 });
     return ensureBuiltInBrowser().startRecording(
       parseBuiltInBrowserStartRecordingArgs(arg, IPC.builtInBrowserStartRecording),
@@ -11448,7 +11397,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.builtInBrowserStopRecording, async (event, arg) => {
+  handle(IPC.builtInBrowserStopRecording, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopRecording, { windowMs: 60_000, max: 20 });
     return ensureBuiltInBrowser().stopRecording(
       parseBuiltInBrowserStopRecordingArgs(arg, IPC.builtInBrowserStopRecording),
@@ -11459,7 +11408,7 @@ export function registerIpc({
   // Preview streams are refcounted in the service, so the rate limit only has
   // to stop a wedged renderer from thrashing subscribe/unsubscribe — a card
   // subscribes once per mount, not per frame.
-  ipcMain.handle(IPC.builtInBrowserStartPreviewStream, async (event, arg) => {
+  handle(IPC.builtInBrowserStartPreviewStream, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStartPreviewStream, { windowMs: 60_000, max: 120 });
     return ensureBuiltInBrowser().startPreviewStream(
       parseBuiltInBrowserStartPreviewStreamArgs(arg, IPC.builtInBrowserStartPreviewStream),
@@ -11471,7 +11420,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.builtInBrowserStopPreviewStream, async (event, arg) => {
+  handle(IPC.builtInBrowserStopPreviewStream, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopPreviewStream, { windowMs: 60_000, max: 120 });
     return ensureBuiltInBrowser().stopPreviewStream(
       parseBuiltInBrowserStopPreviewStreamArgs(arg, IPC.builtInBrowserStopPreviewStream),
@@ -11493,11 +11442,11 @@ export function registerIpc({
     return service;
   };
 
-  ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {
+  handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {
     return await requirePtyService().create(arg);
   });
 
-  ipcMain.handle(IPC.ptyResumeSession, async (_event, arg: PtyResumeSessionArgs): Promise<PtyResumeSessionResult> => {
+  handle(IPC.ptyResumeSession, async (_event, arg: PtyResumeSessionArgs): Promise<PtyResumeSessionResult> => {
     const ctx = getCtx();
     const result = await requirePtyService().resumeSession(arg);
     if (result.resumed) {
@@ -11513,7 +11462,7 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.ptySendToSession, async (_event, arg: PtySendToSessionArgs): Promise<PtySendToSessionResult> => {
+  handle(IPC.ptySendToSession, async (_event, arg: PtySendToSessionArgs): Promise<PtySendToSessionResult> => {
     const ctx = getCtx();
     const result = await requirePtyService().sendToSession(arg);
     if (result.resumed) {
@@ -11529,49 +11478,49 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.ptyWrite, async (_event, arg: { ptyId: string; data: string }): Promise<void> => {
+  handle(IPC.ptyWrite, async (_event, arg: { ptyId: string; data: string }): Promise<void> => {
     requirePtyService().write(arg);
   });
 
-  ipcMain.handle(IPC.ptyResize, async (_event, arg: { ptyId: string; cols: number; rows: number }): Promise<void> => {
+  handle(IPC.ptyResize, async (_event, arg: { ptyId: string; cols: number; rows: number }): Promise<void> => {
     requirePtyService().resize(arg);
   });
 
-  ipcMain.handle(IPC.ptyDispose, async (_event, arg: { ptyId: string; sessionId?: string }): Promise<PtyDisposeResult> => {
+  handle(IPC.ptyDispose, async (_event, arg: { ptyId: string; sessionId?: string }): Promise<PtyDisposeResult> => {
     return requirePtyService().dispose(arg);
   });
 
-  ipcMain.handle(IPC.ptyShellSettingsGet, async () => requirePtyService().getShellSettings());
+  handle(IPC.ptyShellSettingsGet, async () => requirePtyService().getShellSettings());
 
-  ipcMain.handle(IPC.ptySetDefaultShell, async (_event, arg: { shellId?: unknown }) =>
+  handle(IPC.ptySetDefaultShell, async (_event, arg: { shellId?: unknown }) =>
     requirePtyService().setDefaultShell(arg ?? {}),
   );
 
-  ipcMain.handle(IPC.terminalList, async (_event, arg) =>
+  handle(IPC.terminalList, async (_event, arg) =>
     requirePtyService().listTerminals(parseTerminalListArgs(arg)),
   );
 
-  ipcMain.handle(IPC.terminalRead, async (_event, arg) =>
+  handle(IPC.terminalRead, async (_event, arg) =>
     requirePtyService().readTerminal(parseTerminalReadArgs(arg)),
   );
 
-  ipcMain.handle(IPC.terminalPreview, async (_event, arg) =>
+  handle(IPC.terminalPreview, async (_event, arg) =>
     requirePtyService().previewTerminal(parseTerminalPreviewArgs(arg)),
   );
 
-  ipcMain.handle(IPC.terminalWrite, async (_event, arg) =>
+  handle(IPC.terminalWrite, async (_event, arg) =>
     await requirePtyService().writeTerminal(parseTerminalWriteArgs(arg)),
   );
 
-  ipcMain.handle(IPC.terminalSignal, async (_event, arg) =>
+  handle(IPC.terminalSignal, async (_event, arg) =>
     requirePtyService().signalTerminal(parseTerminalSignalArgs(arg)),
   );
 
-  ipcMain.handle(IPC.terminalActiveForChat, async (_event, arg) =>
+  handle(IPC.terminalActiveForChat, async (_event, arg) =>
     requirePtyService().activeForChat(parseTerminalActiveForChatArgs(arg)),
   );
 
-  ipcMain.handle(IPC.terminalReattachChatCli, async (_event, arg) =>
+  handle(IPC.terminalReattachChatCli, async (_event, arg) =>
     await requirePtyService().reattachChatCli(parseTerminalReattachArgs(arg)),
   );
 
@@ -11582,13 +11531,13 @@ export function registerIpc({
     if (!service) throw new Error("Terminal watches are not available in this window.");
     return service;
   };
-  ipcMain.handle(IPC.terminalWatch, async (_event, arg) =>
+  handle(IPC.terminalWatch, async (_event, arg) =>
     await requireTerminalWatchService().watch(readTerminalWatchArgs(arg)),
   );
-  ipcMain.handle(IPC.terminalUnwatch, async (_event, arg) =>
+  handle(IPC.terminalUnwatch, async (_event, arg) =>
     requireTerminalWatchService().unwatch(readTerminalUnwatchArgs(arg)),
   );
-  ipcMain.handle(IPC.terminalListWatches, async (_event, arg) =>
+  handle(IPC.terminalListWatches, async (_event, arg) =>
     getCtx().terminalWatchService?.listWatches(readTerminalListWatchesArgs(arg)) ?? [],
   );
 
@@ -11628,21 +11577,21 @@ export function registerIpc({
     return ctx;
   };
 
-  ipcMain.handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {
+  handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {
     const ctx = ensureDiffContext();
     return await withIpcTiming(ctx, "diff.getChanges", async () => await ctx.diffService.getChanges(arg.laneId), {
       laneId: arg.laneId,
     });
   });
 
-  ipcMain.handle(IPC.diffGetBranchChanges, async (_event, arg: GetDiffChangesArgs) => {
+  handle(IPC.diffGetBranchChanges, async (_event, arg: GetDiffChangesArgs) => {
     const ctx = ensureDiffContext();
     return await withIpcTiming(ctx, "diff.getBranchChanges", async () => await ctx.diffService.getBranchChanges(arg.laneId), {
       laneId: arg.laneId,
     });
   });
 
-  ipcMain.handle(IPC.diffGetFile, async (_event, arg: GetFileDiffArgs) => {
+  handle(IPC.diffGetFile, async (_event, arg: GetFileDiffArgs) => {
     const ctx = ensureDiffContext();
     return await withIpcTiming(
       ctx,
@@ -11662,7 +11611,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.diffGetFilePatch, async (_event, arg: GetFilePatchArgs) => {
+  handle(IPC.diffGetFilePatch, async (_event, arg: GetFilePatchArgs) => {
     const ctx = ensureDiffContext();
     return await withIpcTiming(
       ctx,
@@ -11682,17 +11631,17 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.filesWriteTextAtomic, async (_event, arg: WriteTextAtomicArgs): Promise<void> => {
+  handle(IPC.filesWriteTextAtomic, async (_event, arg: WriteTextAtomicArgs): Promise<void> => {
     const ctx = ensureFileContext();
     ctx.fileService.writeTextAtomic({ laneId: arg.laneId, relPath: arg.path, text: arg.text });
   });
 
-  ipcMain.handle(IPC.filesListWorkspaces, async (_event, arg: FilesListWorkspacesArgs = {}): Promise<FilesWorkspace[]> => {
+  handle(IPC.filesListWorkspaces, async (_event, arg: FilesListWorkspacesArgs = {}): Promise<FilesWorkspace[]> => {
     const ctx = ensureFileContext();
     return ctx.fileService.listWorkspaces(arg);
   });
 
-  ipcMain.handle(IPC.filesListTree, async (_event, arg: FilesListTreeArgs): Promise<FileTreeNode[]> => {
+  handle(IPC.filesListTree, async (_event, arg: FilesListTreeArgs): Promise<FileTreeNode[]> => {
     const ctx = ensureFileContext();
     return await withIpcTiming(
       ctx,
@@ -11706,7 +11655,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.filesListTreeChildren, async (_event, arg: FilesListTreeChildrenArgs): Promise<FilesListTreeChildrenResult> => {
+  handle(IPC.filesListTreeChildren, async (_event, arg: FilesListTreeChildrenArgs): Promise<FilesListTreeChildrenResult> => {
     const ctx = ensureFileContext();
     return await withIpcTiming(
       ctx,
@@ -11720,7 +11669,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.filesRefreshGitDecorations, async (_event, arg: FilesRefreshGitDecorationsArgs): Promise<FilesGitStatusEvent> => {
+  handle(IPC.filesRefreshGitDecorations, async (_event, arg: FilesRefreshGitDecorationsArgs): Promise<FilesGitStatusEvent> => {
     const ctx = ensureFileContext();
     return await withIpcTiming(
       ctx,
@@ -11733,8 +11682,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.filesOpenExternalPath, async (event, arg: FilesOpenExternalPathArgs): Promise<FilesOpenExternalPathResult> => {
-    assertTrustedFilesSender(event, "files.openExternalPath");
+  handle(IPC.filesOpenExternalPath, async (event, arg: FilesOpenExternalPathArgs): Promise<FilesOpenExternalPathResult> => {
     const ctx = ensureFileContext();
     return await withIpcTiming(
       ctx,
@@ -11746,7 +11694,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.filesReadFile, async (_event, arg: FilesReadFileArgs): Promise<FileContent> => {
+  handle(IPC.filesReadFile, async (_event, arg: FilesReadFileArgs): Promise<FileContent> => {
     const ctx = ensureFileContext();
     return await withIpcTiming(
       ctx,
@@ -11759,7 +11707,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.filesReadFileRange, async (_event, arg: FilesReadFileRangeArgs): Promise<FilesReadFileRangeResult> => {
+  handle(IPC.filesReadFileRange, async (_event, arg: FilesReadFileRangeArgs): Promise<FilesReadFileRangeResult> => {
     const ctx = ensureFileContext();
     return await withIpcTiming(
       ctx,
@@ -11773,7 +11721,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.filesGitBlame, async (_event, arg: FilesGitBlameArgs): Promise<FilesGitBlameResult> => {
+  handle(IPC.filesGitBlame, async (_event, arg: FilesGitBlameArgs): Promise<FilesGitBlameResult> => {
     const ctx = ensureFileContext();
     return await withIpcTiming(
       ctx,
@@ -11786,32 +11734,32 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.filesWriteText, async (_event, arg: FilesWriteTextArgs): Promise<void> => {
+  handle(IPC.filesWriteText, async (_event, arg: FilesWriteTextArgs): Promise<void> => {
     const ctx = ensureFileContext();
     ctx.fileService.writeWorkspaceText(arg);
   });
 
-  ipcMain.handle(IPC.filesCreateFile, async (_event, arg: FilesCreateFileArgs): Promise<void> => {
+  handle(IPC.filesCreateFile, async (_event, arg: FilesCreateFileArgs): Promise<void> => {
     const ctx = ensureFileContext();
     ctx.fileService.createFile(arg);
   });
 
-  ipcMain.handle(IPC.filesCreateDirectory, async (_event, arg: FilesCreateDirectoryArgs): Promise<void> => {
+  handle(IPC.filesCreateDirectory, async (_event, arg: FilesCreateDirectoryArgs): Promise<void> => {
     const ctx = ensureFileContext();
     ctx.fileService.createDirectory(arg);
   });
 
-  ipcMain.handle(IPC.filesRename, async (_event, arg: FilesRenameArgs): Promise<void> => {
+  handle(IPC.filesRename, async (_event, arg: FilesRenameArgs): Promise<void> => {
     const ctx = ensureFileContext();
     ctx.fileService.rename(arg);
   });
 
-  ipcMain.handle(IPC.filesDelete, async (_event, arg: FilesDeleteArgs): Promise<void> => {
+  handle(IPC.filesDelete, async (_event, arg: FilesDeleteArgs): Promise<void> => {
     const ctx = ensureFileContext();
     await ctx.fileService.deletePath(arg);
   });
 
-  ipcMain.handle(IPC.filesWatchChanges, async (event, arg: FilesWatchArgs): Promise<void> => {
+  handle(IPC.filesWatchChanges, async (event, arg: FilesWatchArgs): Promise<void> => {
     const ctx = ensureFileContext();
     const senderId = event.sender.id;
     if (!watcherCleanupBoundSenders.has(senderId)) {
@@ -11834,72 +11782,72 @@ export function registerIpc({
     }, senderId);
   });
 
-  ipcMain.handle(IPC.filesStopWatching, async (event, arg: FilesWatchArgs): Promise<void> => {
+  handle(IPC.filesStopWatching, async (event, arg: FilesWatchArgs): Promise<void> => {
     const ctx = ensureFileContext();
     ctx.fileService.stopWatching(arg, event.sender.id);
   });
 
-  ipcMain.handle(IPC.filesQuickOpen, async (_event, arg: FilesQuickOpenArgs): Promise<FilesQuickOpenItem[]> => {
+  handle(IPC.filesQuickOpen, async (_event, arg: FilesQuickOpenArgs): Promise<FilesQuickOpenItem[]> => {
     const ctx = ensureFileContext();
     return await ctx.fileService.quickOpen(arg);
   });
 
-  ipcMain.handle(IPC.filesSearchText, async (_event, arg: FilesSearchTextArgs): Promise<FilesSearchTextMatch[]> => {
+  handle(IPC.filesSearchText, async (_event, arg: FilesSearchTextArgs): Promise<FilesSearchTextMatch[]> => {
     const ctx = ensureFileContext();
     return await ctx.fileService.searchText(arg);
   });
 
-  ipcMain.handle(IPC.gitStageFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
+  handle(IPC.gitStageFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.stageFile(arg);
   });
 
-  ipcMain.handle(IPC.gitStageAll, async (_event, arg: GitBatchFileActionArgs): Promise<GitActionResult> => {
+  handle(IPC.gitStageAll, async (_event, arg: GitBatchFileActionArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.stageAll(arg);
   });
 
-  ipcMain.handle(IPC.gitUnstageFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
+  handle(IPC.gitUnstageFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.unstageFile(arg);
   });
 
-  ipcMain.handle(IPC.gitUnstageAll, async (_event, arg: GitBatchFileActionArgs): Promise<GitActionResult> => {
+  handle(IPC.gitUnstageAll, async (_event, arg: GitBatchFileActionArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.unstageAll(arg);
   });
 
-  ipcMain.handle(IPC.gitDiscardFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
+  handle(IPC.gitDiscardFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.discardFile(arg);
   });
 
-  ipcMain.handle(IPC.gitRestoreStagedFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
+  handle(IPC.gitRestoreStagedFile, async (_event, arg: GitFileActionArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.restoreStagedFile(arg);
   });
 
-  ipcMain.handle(IPC.gitCommit, async (_event, arg: GitCommitArgs): Promise<GitActionResult> => {
+  handle(IPC.gitCommit, async (_event, arg: GitCommitArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.commit(arg);
   });
 
-  ipcMain.handle(IPC.gitListRecentCommits, async (_event, arg: GitListRecentCommitsArgs): Promise<GitCommitSummary[]> => {
+  handle(IPC.gitListRecentCommits, async (_event, arg: GitListRecentCommitsArgs): Promise<GitCommitSummary[]> => {
     const ctx = ensureGitContext();
     return ctx.gitService.listRecentCommits(arg);
   });
 
-  ipcMain.handle(IPC.gitListCommitFiles, async (_event, arg: GitListCommitFilesArgs): Promise<string[]> => {
+  handle(IPC.gitListCommitFiles, async (_event, arg: GitListCommitFilesArgs): Promise<string[]> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.listCommitFiles(arg);
   });
 
-  ipcMain.handle(IPC.gitGetCommitMessage, async (_event, arg: GitGetCommitMessageArgs): Promise<string> => {
+  handle(IPC.gitGetCommitMessage, async (_event, arg: GitGetCommitMessageArgs): Promise<string> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.getCommitMessage(arg);
   });
 
-  ipcMain.handle(
+  handle(
     IPC.gitGetCommit,
     async (_event, arg: { laneId: string; commitSha: string }): Promise<GitCommitSummary | null> => {
       const ctx = getCtx();
@@ -11908,7 +11856,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.gitIsCommitInLaneHistory,
     async (_event, arg: { laneId: string; commitSha: string }): Promise<boolean> => {
       const ctx = getCtx();
@@ -11917,87 +11865,87 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.gitRevertCommit, async (_event, arg: GitRevertArgs): Promise<GitActionResult> => {
+  handle(IPC.gitRevertCommit, async (_event, arg: GitRevertArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.revertCommit(arg);
   });
 
-  ipcMain.handle(IPC.gitCherryPickCommit, async (_event, arg: GitCherryPickArgs): Promise<GitActionResult> => {
+  handle(IPC.gitCherryPickCommit, async (_event, arg: GitCherryPickArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.cherryPickCommit(arg);
   });
 
-  ipcMain.handle(IPC.gitCreateTag, async (_event, arg: GitCreateTagArgs): Promise<GitActionResult> => {
+  handle(IPC.gitCreateTag, async (_event, arg: GitCreateTagArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.createTag(arg);
   });
 
-  ipcMain.handle(IPC.gitResetToCommit, async (_event, arg: GitResetCommitArgs): Promise<GitActionResult> => {
+  handle(IPC.gitResetToCommit, async (_event, arg: GitResetCommitArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.resetToCommit(arg);
   });
 
-  ipcMain.handle(IPC.gitStashPush, async (_event, arg: GitStashPushArgs): Promise<GitActionResult> => {
+  handle(IPC.gitStashPush, async (_event, arg: GitStashPushArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.stashPush(arg);
   });
 
-  ipcMain.handle(IPC.gitStashList, async (_event, arg: { laneId: string }): Promise<GitStashSummary[]> => {
+  handle(IPC.gitStashList, async (_event, arg: { laneId: string }): Promise<GitStashSummary[]> => {
     const ctx = ensureGitContext();
     return ctx.gitService.listStashes(arg);
   });
 
-  ipcMain.handle(IPC.gitStashApply, async (_event, arg: GitStashRefArgs): Promise<GitActionResult> => {
+  handle(IPC.gitStashApply, async (_event, arg: GitStashRefArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.stashApply(arg);
   });
 
-  ipcMain.handle(IPC.gitStashPop, async (_event, arg: GitStashRefArgs): Promise<GitActionResult> => {
+  handle(IPC.gitStashPop, async (_event, arg: GitStashRefArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.stashPop(arg);
   });
 
-  ipcMain.handle(IPC.gitStashDrop, async (_event, arg: GitStashRefArgs): Promise<GitActionResult> => {
+  handle(IPC.gitStashDrop, async (_event, arg: GitStashRefArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.stashDrop(arg);
   });
 
-  ipcMain.handle(IPC.gitStashClear, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+  handle(IPC.gitStashClear, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.stashClear(arg);
   });
 
-  ipcMain.handle(IPC.gitFetch, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+  handle(IPC.gitFetch, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.fetch(arg);
   });
 
-  ipcMain.handle(IPC.gitPull, async (_event, arg: GitPullArgs): Promise<GitActionResult> => {
+  handle(IPC.gitPull, async (_event, arg: GitPullArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.pull(arg);
   });
 
-  ipcMain.handle(IPC.gitUndoLastHeadChange, async (_event, arg: GitHeadChangeActionArgs): Promise<GitActionResult> => {
+  handle(IPC.gitUndoLastHeadChange, async (_event, arg: GitHeadChangeActionArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.undoLastHeadChange(arg);
   });
 
-  ipcMain.handle(IPC.gitRedoLastHeadChange, async (_event, arg: GitHeadChangeActionArgs): Promise<GitActionResult> => {
+  handle(IPC.gitRedoLastHeadChange, async (_event, arg: GitHeadChangeActionArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.redoLastHeadChange(arg);
   });
 
-  ipcMain.handle(IPC.gitGetSyncStatus, async (_event, arg: { laneId: string }): Promise<GitUpstreamSyncStatus> => {
+  handle(IPC.gitGetSyncStatus, async (_event, arg: { laneId: string }): Promise<GitUpstreamSyncStatus> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.getSyncStatus(arg);
   });
 
-  ipcMain.handle(IPC.gitGetSyncStatuses, async (_event, arg: GitSyncStatusesArgs): Promise<GitSyncStatuses> => {
+  handle(IPC.gitGetSyncStatuses, async (_event, arg: GitSyncStatusesArgs): Promise<GitSyncStatuses> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.getSyncStatuses(arg);
   });
 
-  ipcMain.handle(IPC.gitGetOriginRemote, async (_event, arg: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
+  handle(IPC.gitGetOriginRemote, async (_event, arg: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
     const ctx = ensureGitLaneContext();
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
     const fallback = { remoteUrl: null, branch: null } as const;
@@ -12017,7 +11965,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.gitGetOpenPrForBranch, async (_event, arg: { laneId: string; branch?: string }): Promise<{ prUrl: string | null; prNumber: number | null; title: string | null; headRefName: string | null }> => {
+  handle(IPC.gitGetOpenPrForBranch, async (_event, arg: { laneId: string; branch?: string }): Promise<{ prUrl: string | null; prNumber: number | null; title: string | null; headRefName: string | null }> => {
     const ctx = ensureGitLaneContext();
     const fallback = { prUrl: null, prNumber: null, title: null, headRefName: null } as const;
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
@@ -12039,12 +11987,12 @@ export function registerIpc({
     return await lookupOpenPrForBranch({ worktreePath, branch });
   });
 
-  ipcMain.handle(IPC.gitSync, async (_event, arg: GitSyncArgs): Promise<GitActionResult> => {
+  handle(IPC.gitSync, async (_event, arg: GitSyncArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return ctx.gitService.sync(arg);
   });
 
-  ipcMain.handle(IPC.gitPush, async (_event, arg: GitPushArgs): Promise<GitActionResult> => {
+  handle(IPC.gitPush, async (_event, arg: GitPushArgs): Promise<GitActionResult> => {
     const ctx = ensureGitLaneContext();
     const result = await ctx.gitService.push(arg);
     const lane = await ctx.laneService
@@ -12059,94 +12007,94 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.gitGetConflictState, async (_event, arg: { laneId: string }): Promise<GitConflictState> => {
+  handle(IPC.gitGetConflictState, async (_event, arg: { laneId: string }): Promise<GitConflictState> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.getConflictState({ laneId: arg?.laneId ?? "" });
   });
 
-  ipcMain.handle(IPC.gitRebaseContinue, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+  handle(IPC.gitRebaseContinue, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.rebaseContinue({ laneId: arg?.laneId ?? "" });
   });
 
-  ipcMain.handle(IPC.gitRebaseAbort, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+  handle(IPC.gitRebaseAbort, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.rebaseAbort({ laneId: arg?.laneId ?? "" });
   });
 
-  ipcMain.handle(IPC.gitMergeContinue, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+  handle(IPC.gitMergeContinue, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.mergeContinue({ laneId: arg?.laneId ?? "" });
   });
 
-  ipcMain.handle(IPC.gitMergeAbort, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+  handle(IPC.gitMergeAbort, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.mergeAbort({ laneId: arg?.laneId ?? "" });
   });
 
-  ipcMain.handle(IPC.gitMergeBaseIn, async (_event, arg: GitMergeBaseInArgs): Promise<GitMergeBaseInResult> => {
+  handle(IPC.gitMergeBaseIn, async (_event, arg: GitMergeBaseInArgs): Promise<GitMergeBaseInResult> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.mergeBaseIn({ laneId: arg?.laneId ?? "" });
   });
 
-  ipcMain.handle(IPC.gitListBranches, async (_event, arg: GitListBranchesArgs): Promise<GitBranchSummary[]> => {
+  handle(IPC.gitListBranches, async (_event, arg: GitListBranchesArgs): Promise<GitBranchSummary[]> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.listBranches(arg);
   });
 
-  ipcMain.handle(IPC.gitGetUserIdentity, async (_event, arg: GitGetUserIdentityArgs): Promise<GitUserIdentity> => {
+  handle(IPC.gitGetUserIdentity, async (_event, arg: GitGetUserIdentityArgs): Promise<GitUserIdentity> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.getUserIdentity(arg);
   });
 
-  ipcMain.handle(IPC.gitCheckoutBranch, async (_event, arg: GitCheckoutBranchArgs): Promise<GitActionResult> => {
+  handle(IPC.gitCheckoutBranch, async (_event, arg: GitCheckoutBranchArgs): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.checkoutBranch(arg);
   });
 
-  ipcMain.handle(IPC.conflictsGetLaneStatus, async (_event, arg: GetLaneConflictStatusArgs): Promise<ConflictStatus> => {
+  handle(IPC.conflictsGetLaneStatus, async (_event, arg: GetLaneConflictStatusArgs): Promise<ConflictStatus> => {
     const ctx = ensureConflictContext();
     return await ctx.conflictService.getLaneStatus(arg);
   });
 
-  ipcMain.handle(IPC.conflictsListOverlaps, async (_event, arg: ListOverlapsArgs): Promise<ConflictOverlap[]> => {
+  handle(IPC.conflictsListOverlaps, async (_event, arg: ListOverlapsArgs): Promise<ConflictOverlap[]> => {
     const ctx = ensureConflictContext();
     return await ctx.conflictService.listOverlaps(arg);
   });
 
-  ipcMain.handle(IPC.conflictsGetRiskMatrix, async (): Promise<RiskMatrixEntry[]> => {
+  handle(IPC.conflictsGetRiskMatrix, async (): Promise<RiskMatrixEntry[]> => {
     const ctx = ensureConflictContext();
     return await ctx.conflictService.getRiskMatrix();
   });
 
-  ipcMain.handle(IPC.conflictsRunPrediction, async (_event, arg: RunConflictPredictionArgs = {}): Promise<BatchAssessmentResult> => {
+  handle(IPC.conflictsRunPrediction, async (_event, arg: RunConflictPredictionArgs = {}): Promise<BatchAssessmentResult> => {
     const ctx = ensureConflictContext();
     return await ctx.conflictService.runPrediction(arg);
   });
 
-  ipcMain.handle(IPC.conflictsListProposals, async (_event, arg: { laneId: string }): Promise<ConflictProposal[]> => {
+  handle(IPC.conflictsListProposals, async (_event, arg: { laneId: string }): Promise<ConflictProposal[]> => {
     const ctx = ensureConflictContext();
     return await ctx.conflictService.listProposals(arg);
   });
 
-  ipcMain.handle(IPC.conflictsPrepareProposal, async (_event, arg: PrepareConflictProposalArgs): Promise<ConflictProposalPreview> => {
+  handle(IPC.conflictsPrepareProposal, async (_event, arg: PrepareConflictProposalArgs): Promise<ConflictProposalPreview> => {
     const ctx = ensureConflictContext();
     return await ctx.conflictService.prepareProposal(arg);
   });
 
-  ipcMain.handle(IPC.conflictsRequestProposal, async (_event, arg: RequestConflictProposalArgs): Promise<ConflictProposal> => {
+  handle(IPC.conflictsRequestProposal, async (_event, arg: RequestConflictProposalArgs): Promise<ConflictProposal> => {
     const ctx = ensureConflictContext();
     return await ctx.conflictService.requestProposal(arg);
   });
 
-  ipcMain.handle(IPC.conflictsApplyProposal, async (_event, arg: ApplyConflictProposalArgs): Promise<ConflictProposal> => {
+  handle(IPC.conflictsApplyProposal, async (_event, arg: ApplyConflictProposalArgs): Promise<ConflictProposal> => {
     const ctx = ensureConflictJobContext();
     const updated = await ctx.conflictService.applyProposal(arg);
     ctx.jobEngine.runConflictPredictionNow({ laneId: arg.laneId });
     return updated;
   });
 
-  ipcMain.handle(IPC.conflictsUndoProposal, async (_event, arg: UndoConflictProposalArgs): Promise<ConflictProposal> => {
+  handle(IPC.conflictsUndoProposal, async (_event, arg: UndoConflictProposalArgs): Promise<ConflictProposal> => {
     const ctx = ensureConflictJobContext();
     const updated = await ctx.conflictService.undoProposal(arg);
     ctx.jobEngine.runConflictPredictionNow({ laneId: arg.laneId });
@@ -12164,7 +12112,7 @@ export function registerIpc({
     }
   };
 
-  ipcMain.handle(IPC.githubGetStatus, async (_event, arg?: { forceRefresh?: boolean }): Promise<GitHubStatus> => {
+  handle(IPC.githubGetStatus, async (_event, arg?: { forceRefresh?: boolean }): Promise<GitHubStatus> => {
     const ctx = getCtx();
     return await ctx.githubService.getStatus({ forceRefresh: Boolean(arg?.forceRefresh) });
   });
@@ -12172,12 +12120,12 @@ export function registerIpc({
   // Answers for this window's project context, which can be another project
   // than the renderer's while the window switches. The answer names its
   // project (`projectRoot`) so the renderer can drop a mismatch.
-  ipcMain.handle(IPC.githubGetRemoteStatus, async (): Promise<GitHubRemoteStatus> => {
+  handle(IPC.githubGetRemoteStatus, async (): Promise<GitHubRemoteStatus> => {
     const ctx = getCtx();
     return await ctx.githubService.getRemoteStatus();
   });
 
-  ipcMain.handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubSetTokenResult> => {
+  handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubSetTokenResult> => {
     const ctx = getCtx();
     ctx.githubService.setToken(arg.token);
     const status = await ctx.githubService.getStatus();
@@ -12187,7 +12135,7 @@ export function registerIpc({
     return verifiedStatus;
   });
 
-  ipcMain.handle(IPC.githubClearToken, async (): Promise<GitHubStatus> => {
+  handle(IPC.githubClearToken, async (): Promise<GitHubStatus> => {
     const ctx = getCtx();
     ctx.githubService.clearToken();
     const status = await ctx.githubService.getStatus();
@@ -12195,17 +12143,17 @@ export function registerIpc({
     return status;
   });
 
-  ipcMain.handle(IPC.githubGetAppUserAuthStatus, async (): Promise<GitHubAppUserAuthStatus> => {
+  handle(IPC.githubGetAppUserAuthStatus, async (): Promise<GitHubAppUserAuthStatus> => {
     const ctx = getCtx();
     return ctx.githubService.getAppUserAuthStatus();
   });
 
-  ipcMain.handle(IPC.githubStartAppUserDeviceAuth, async (): Promise<GitHubAppDeviceAuthStartResult> => {
+  handle(IPC.githubStartAppUserDeviceAuth, async (): Promise<GitHubAppDeviceAuthStartResult> => {
     const ctx = getCtx();
     return await ctx.githubService.startAppUserDeviceAuth();
   });
 
-  ipcMain.handle(
+  handle(
     IPC.githubPollAppUserDeviceAuth,
     async (_event, arg: { sessionId?: string }): Promise<GitHubAppDeviceAuthPollResult> => {
       const ctx = getCtx();
@@ -12222,19 +12170,19 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.githubClearAppUserAuth, async (): Promise<GitHubAppUserAuthStatus> => {
+  handle(IPC.githubClearAppUserAuth, async (): Promise<GitHubAppUserAuthStatus> => {
     const ctx = getCtx();
     return ctx.githubService.clearAppUserAuth();
   });
 
   // Zero-network read, so pollers can consult the reserve on a timer.
-  ipcMain.handle(IPC.githubGetRequestBudget, async (): Promise<GitHubRequestBudget> => {
+  handle(IPC.githubGetRequestBudget, async (): Promise<GitHubRequestBudget> => {
     const ctx = getCtx();
     return await ctx.githubService.getRequestBudget();
   });
 
   // Feeds the "Star ADE on GitHub" pill; answers `unknown` rather than throwing.
-  ipcMain.handle(IPC.githubIsRepoStarred, async (): Promise<GitHubRepoStarState> => {
+  handle(IPC.githubIsRepoStarred, async (): Promise<GitHubRepoStarState> => {
     const ctx = getCtx();
     return await ctx.githubService.isRepoStarred();
   });
@@ -12253,24 +12201,24 @@ export function registerIpc({
     return detected;
   };
 
-  ipcMain.handle(IPC.githubListRepoLabels, async (_event, arg: { owner?: string; name?: string }) => {
+  handle(IPC.githubListRepoLabels, async (_event, arg: { owner?: string; name?: string }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.listRepoLabels(owner, name);
   });
 
-  ipcMain.handle(IPC.githubGetAppInstallationStatus, async (_event, arg: { owner?: string; name?: string } = {}) => {
+  handle(IPC.githubGetAppInstallationStatus, async (_event, arg: { owner?: string; name?: string } = {}) => {
     const ctx = getCtx();
     return await ctx.githubService.getAppInstallationStatus(arg);
   });
 
-  ipcMain.handle(IPC.githubListRepoAutolinks, async (_event, arg: { owner?: string; name?: string }): Promise<GitHubAutolink[]> => {
+  handle(IPC.githubListRepoAutolinks, async (_event, arg: { owner?: string; name?: string }): Promise<GitHubAutolink[]> => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.listRepoAutolinks(owner, name);
   });
 
-  ipcMain.handle(
+  handle(
     IPC.githubCreateRepoAutolink,
     async (_event, arg: {
       owner?: string;
@@ -12295,13 +12243,13 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.githubListRepoCollaborators, async (_event, arg: { owner?: string; name?: string }) => {
+  handle(IPC.githubListRepoCollaborators, async (_event, arg: { owner?: string; name?: string }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.listRepoCollaborators(owner, name);
   });
 
-  ipcMain.handle(IPC.githubListRepoIssues, async (_event, arg: { owner?: string; name?: string; state?: "open" | "closed" | "all"; since?: string }) => {
+  handle(IPC.githubListRepoIssues, async (_event, arg: { owner?: string; name?: string; state?: "open" | "closed" | "all"; since?: string }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.listRepoIssues(owner, name, {
@@ -12310,74 +12258,74 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.githubGetIssue, async (_event, arg: { owner?: string; name?: string; number: number }) => {
+  handle(IPC.githubGetIssue, async (_event, arg: { owner?: string; name?: string; number: number }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.getIssue(owner, name, arg.number);
   });
 
-  ipcMain.handle(IPC.githubGetRepoIssueSummary, async (_event, arg: { owner?: string; name?: string }) => {
+  handle(IPC.githubGetRepoIssueSummary, async (_event, arg: { owner?: string; name?: string }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.getRepoIssueSummary(owner, name);
   });
 
-  ipcMain.handle(IPC.githubListRepoIssueList, async (_event, arg: { owner?: string; name?: string; state?: "open" | "closed" | "all" }) => {
+  handle(IPC.githubListRepoIssueList, async (_event, arg: { owner?: string; name?: string; state?: "open" | "closed" | "all" }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.listRepoIssueList(owner, name, parseGitHubIssueListState(arg?.state));
   });
 
-  ipcMain.handle(IPC.githubCreateIssue, async (_event, arg: { owner?: string; name?: string; input: unknown }) => {
+  handle(IPC.githubCreateIssue, async (_event, arg: { owner?: string; name?: string; input: unknown }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.createIssue(owner, name, parseGitHubIssueCreateInput(arg?.input));
   });
 
-  ipcMain.handle(IPC.githubListIssueTemplates, async (_event, arg: { owner?: string; name?: string }) => {
+  handle(IPC.githubListIssueTemplates, async (_event, arg: { owner?: string; name?: string }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.listIssueTemplates(owner, name);
   });
 
-  ipcMain.handle(IPC.githubListIssueTypes, async (_event, arg: { owner?: string; name?: string }) => {
+  handle(IPC.githubListIssueTypes, async (_event, arg: { owner?: string; name?: string }) => {
     const ctx = getCtx();
     const { owner } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.listIssueTypes(owner);
   });
 
-  ipcMain.handle(IPC.githubGetIssueWriteAccess, async (_event, arg: { owner?: string; name?: string; force?: boolean }) => {
+  handle(IPC.githubGetIssueWriteAccess, async (_event, arg: { owner?: string; name?: string; force?: boolean }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.getIssueWriteAccess(owner, name, { force: arg?.force === true });
   });
 
-  ipcMain.handle(IPC.githubUpdateIssue, async (_event, arg: { owner?: string; name?: string; number: number; patch: unknown }) => {
+  handle(IPC.githubUpdateIssue, async (_event, arg: { owner?: string; name?: string; number: number; patch: unknown }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.updateIssue(owner, name, arg.number, parseGitHubIssueUpdate(arg?.patch));
   });
 
-  ipcMain.handle(IPC.githubCommentOnIssue, async (_event, arg: { owner?: string; name?: string; number: number; body: string }) => {
+  handle(IPC.githubCommentOnIssue, async (_event, arg: { owner?: string; name?: string; number: number; body: string }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     if (typeof arg?.body !== "string" || !arg.body.trim()) throw new Error("A comment needs some text.");
     return await ctx.githubService.commentOnIssue(owner, name, arg.number, arg.body);
   });
 
-  ipcMain.handle(IPC.githubListRepoMilestones, async (_event, arg: { owner?: string; name?: string }) => {
+  handle(IPC.githubListRepoMilestones, async (_event, arg: { owner?: string; name?: string }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.listRepoMilestones(owner, name);
   });
 
-  ipcMain.handle(IPC.githubListIssueComments, async (_event, arg: { owner?: string; name?: string; number: number }) => {
+  handle(IPC.githubListIssueComments, async (_event, arg: { owner?: string; name?: string; number: number }) => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.listIssueComments(owner, name, arg.number);
   });
 
-  ipcMain.handle(
+  handle(
     IPC.githubListMyRepos,
     async (_event, arg: ListMyGitHubReposInput = {}): Promise<ListMyGitHubReposResult> => {
       const search = typeof arg?.search === "string" ? arg.search.trim() : undefined;
@@ -12392,7 +12340,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
 	    IPC.githubPublishCurrentProject,
 	    async (_event, arg: PublishProjectInput): Promise<PublishProjectResult> => {
 	      const owner = typeof arg?.owner === "string" ? arg.owner.trim() : undefined;
@@ -12633,7 +12581,7 @@ export function registerIpc({
     },
   });
 
-  ipcMain.handle(
+  handle(
     IPC.accountSettingsList,
     async (
       _event,
@@ -12642,7 +12590,7 @@ export function registerIpc({
       await accountSettingsSyncService.list(args?.scope ?? null),
   );
 
-  ipcMain.handle(
+  handle(
     IPC.accountSettingsGet,
     async (
       _event,
@@ -12651,7 +12599,7 @@ export function registerIpc({
       await accountSettingsSyncService.get(args.scope, args.key),
   );
 
-  ipcMain.handle(
+  handle(
     IPC.accountSettingsSet,
     async (
       _event,
@@ -12674,7 +12622,7 @@ export function registerIpc({
 
   // Deletes a key on every machine of the account (a tombstone the store
   // keeps), so a reader sees it as never set.
-  ipcMain.handle(
+  handle(
     IPC.accountSettingsRemove,
     async (
       _event,
@@ -12683,7 +12631,7 @@ export function registerIpc({
       await accountSettingsSyncService.remove(args.scope, args.key, { expectedAccountUserId: args.expectedAccountUserId }),
   );
 
-  ipcMain.handle(
+  handle(
     IPC.accountSettingsSync,
     async (): Promise<AccountSettingsResult<null>> => await accountSettingsSyncService.sync(),
   );
@@ -12700,7 +12648,7 @@ export function registerIpc({
   // The account's provider sign-ins with no project bound: this computer's
   // brain, through its machine route (`providerLogins.call`). The writes there
   // are refused to anything but this desktop (user-only).
-  ipcMain.handle(IPC.providerLoginsCall, async (_event, arg: unknown): Promise<unknown> => {
+  handle(IPC.providerLoginsCall, async (_event, arg: unknown): Promise<unknown> => {
     const request = arg && typeof arg === "object" ? arg as { action?: unknown; args?: unknown } : {};
     const action = typeof request.action === "string" ? request.action : "";
     if (!isProviderLoginAction(action)) {
@@ -12847,37 +12795,37 @@ export function registerIpc({
     stopMcpRenewal();
     mcpRegistryService.dispose();
   });
-  ipcMain.handle(
+  handle(
     IPC.mcpRegistryContext,
     (_event, args?: { projectRoot?: string | null }): McpRegistryContext =>
       mcpRegistryService.context(args?.projectRoot ?? null),
   );
-  ipcMain.handle(
+  handle(
     IPC.mcpRegistryCheck,
     async (_event, args?: { servers?: unknown }): Promise<McpRegistryResult<McpRegistryCheck>> =>
       await mcpRegistryService.check(args?.servers),
   );
-  ipcMain.handle(
+  handle(
     IPC.mcpRegistrySetSecret,
     async (_event, args: McpRegistrySecretRef & { value: string }): Promise<McpRegistryResult<null>> =>
       await mcpRegistryService.setSecret(args, args?.value),
   );
-  ipcMain.handle(
+  handle(
     IPC.mcpRegistryRemoveSecret,
     async (_event, args: McpRegistrySecretRef): Promise<McpRegistryResult<null>> =>
       await mcpRegistryService.removeSecret(args),
   );
-  ipcMain.handle(
+  handle(
     IPC.mcpRegistryPruneSecrets,
     async (_event, args: { server: string; keep?: McpRegistryServer | null }): Promise<McpRegistryResult<null>> =>
       await mcpRegistryService.pruneSecrets(String(args?.server ?? ""), args?.keep ?? null),
   );
-  ipcMain.handle(
+  handle(
     IPC.mcpRegistryScan,
     (_event, args?: { projectRoot?: string | null }): McpRegistryScan =>
       mcpRegistryService.scan(args?.projectRoot ?? null),
   );
-  ipcMain.handle(
+  handle(
     IPC.mcpRegistryImport,
     async (_event, args: { name: string; projectRoot?: string | null }): Promise<McpRegistryImportResult> =>
       await mcpRegistryService.importServer(String(args?.name ?? ""), args?.projectRoot ?? null),
@@ -12885,7 +12833,7 @@ export function registerIpc({
   // The sign-in opens a browser and listens for its redirect on this
   // computer, so it is never routed to a remote machine. The token lands in
   // the account vault, which every computer of the account reads.
-  ipcMain.handle(
+  handle(
     IPC.mcpRegistrySignIn,
     async (_event, args: { server?: McpRegistryServer }): Promise<McpRegistrySignInResult> => {
       const result = await mcpRegistryService.signIn(args?.server);
@@ -12897,11 +12845,11 @@ export function registerIpc({
       return result;
     },
   );
-  ipcMain.handle(
+  handle(
     IPC.mcpRegistryCancelSignIn,
     (_event, args: { server?: string }): boolean => mcpRegistryService.cancelSignIn(String(args?.server ?? "")),
   );
-  ipcMain.handle(
+  handle(
     IPC.mcpRegistrySignOut,
     async (_event, args: { server?: string }): Promise<McpRegistryResult<null>> =>
       await mcpRegistryService.signOut(String(args?.server ?? "")),
@@ -12927,7 +12875,7 @@ export function registerIpc({
   // The signed-in account's own profile picture as a data URL, so the Account
   // banner can read its colours: the image hosts don't send CORS headers.
   // Only that one URL, https only, an image, at most 2 MB.
-  ipcMain.handle(IPC.accountGetAvatarDataUrl, async (): Promise<string | null> => {
+  handle(IPC.accountGetAvatarDataUrl, async (): Promise<string | null> => {
     const imageUrl = accountBridge.status().imageUrl?.trim();
     if (!imageUrl || !/^https:\/\//i.test(imageUrl)) return null;
     try {
@@ -12958,14 +12906,14 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.accountStatus, async (): Promise<AdeAccountStatus> => {
+  handle(IPC.accountStatus, async (): Promise<AdeAccountStatus> => {
     const status = accountBridge.status();
     if (status.signedIn) productAnalyticsService?.identifyAccount(status.userId);
     accountMigrationStartRetry.tryStart(status.signedIn);
     return status;
   });
 
-  ipcMain.handle(
+  handle(
     IPC.accountGetLocalMachineIdentity,
     async (): Promise<AdeAccountLocalMachineIdentity> => {
       return runtimeBridge.getLocalMachineIdentity();
@@ -12984,7 +12932,7 @@ export function registerIpc({
     }),
   });
 
-  ipcMain.handle(IPC.accountStartLogin, async (): Promise<AdeAccountLoginStart> => {
+  handle(IPC.accountStartLogin, async (): Promise<AdeAccountLoginStart> => {
     try {
       const started = await accountBridge.startLogin();
       accountSignInAnalytics.started("browser", started.sessionId);
@@ -12995,7 +12943,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(
+  handle(
     IPC.accountPollLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountLoginPoll> => {
       const result = await accountBridge.pollLogin(arg?.sessionId ?? "");
@@ -13009,7 +12957,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.accountCancelLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountStatus> => {
       accountBridge.cancelLogin(arg?.sessionId ?? "");
@@ -13022,7 +12970,7 @@ export function registerIpc({
   // separate from the loopback flow above rather than replacing it: normal
   // sign-in has no directory-observability requirement and should not grow a
   // code-entry step to serve the removed-machine recovery path.
-  ipcMain.handle(
+  handle(
     IPC.accountStartDeviceLogin,
     async (): Promise<AdeAccountDeviceLoginStart> => {
       try {
@@ -13036,7 +12984,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.accountPollDeviceLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountDeviceLoginPoll> => {
       const result = await accountBridge.pollDeviceLogin(arg?.sessionId ?? "");
@@ -13050,7 +12998,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.accountCancelDeviceLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountStatus> => {
       await accountBridge.cancelDeviceLogin(arg?.sessionId ?? "");
@@ -13059,14 +13007,14 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.accountSignOut, async (): Promise<AdeAccountStatus> => {
+  handle(IPC.accountSignOut, async (): Promise<AdeAccountStatus> => {
     const status = accountBridge.signOut();
     productAnalyticsService?.resetAccountIdentity();
     cloudAccountChanged();
     return status;
   });
 
-  ipcMain.handle(IPC.accountListMachines, async (): Promise<AdeAccountMachinesResult> => {
+  handle(IPC.accountListMachines, async (): Promise<AdeAccountMachinesResult> => {
     return accountBridge.listMachines();
   });
 
@@ -13075,27 +13023,27 @@ export function registerIpc({
   // machine pin: the shared lane's machine is reached only by the renderer's
   // guest connection, with the one-use ticket `connect` answers. The ticket
   // is returned to the renderer and never logged or stored.
-  ipcMain.handle(IPC.laneShareGuestListReceived, async () => accountBridge.laneShareGuest().listReceived());
-  ipcMain.handle(IPC.laneShareGuestOpen, async (_event, arg: { grantId?: unknown }) =>
+  handle(IPC.laneShareGuestListReceived, async () => accountBridge.laneShareGuest().listReceived());
+  handle(IPC.laneShareGuestOpen, async (_event, arg: { grantId?: unknown }) =>
     accountBridge.laneShareGuest().open({ grantId: String(arg?.grantId ?? "") }));
-  ipcMain.handle(IPC.laneShareGuestAccept, async (_event, arg: { grantId?: unknown }) =>
+  handle(IPC.laneShareGuestAccept, async (_event, arg: { grantId?: unknown }) =>
     accountBridge.laneShareGuest().accept({ grantId: String(arg?.grantId ?? "") }));
-  ipcMain.handle(IPC.laneShareGuestLeave, async (_event, arg: { grantId?: unknown }) =>
+  handle(IPC.laneShareGuestLeave, async (_event, arg: { grantId?: unknown }) =>
     accountBridge.laneShareGuest().leave({ grantId: String(arg?.grantId ?? "") }));
-  ipcMain.handle(IPC.laneShareGuestConnect, async (_event, arg: { grantId?: unknown; dpopThumbprint?: unknown }) =>
+  handle(IPC.laneShareGuestConnect, async (_event, arg: { grantId?: unknown; dpopThumbprint?: unknown }) =>
     accountBridge.laneShareGuest().connect({
       grantId: String(arg?.grantId ?? ""),
       dpopThumbprint: String(arg?.dpopThumbprint ?? ""),
     }));
 
-  ipcMain.handle(
+  handle(
     IPC.accountGetMachineInventory,
     async (_event, arg: { machineKey?: string }): Promise<MachineInventoryDetail> => {
       return await accountMachineInventoryFetcher(arg?.machineKey ?? "");
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.accountGetConnectionRoutes,
     async (_event, arg: { machineKey?: string | null; refresh?: boolean }): Promise<MachineConnectionRoutes> => {
       return await accountConnectionRoutes.getRoutes({
@@ -13105,7 +13053,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.accountSetRelayEnabled,
     async (_event, arg: { machineKey?: string | null; enabled?: unknown }): Promise<MachineConnectionRoutes> => {
       if (typeof arg?.enabled !== "boolean") throw new Error("Choose on or off for ADE Relay.");
@@ -13122,7 +13070,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.accountRenameMachine,
     async (
       _event,
@@ -13135,14 +13083,14 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.accountPairMachine,
     async (_event, arg: { machineKey?: string }): Promise<AdeAccountMachinePairResult> => {
       return await accountBridge.pairMachine(arg?.machineKey ?? "");
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.accountRemoveMachine,
     async (
       _event,
@@ -13157,7 +13105,7 @@ export function registerIpc({
   // replacement process reads an already-converged store. A restart alone —
   // which is all this surface used to do — could not fix any credential-store
   // condition, which is the only condition that surface appears for.
-  ipcMain.handle(
+  handle(
     IPC.accountRepairSession,
     async (): Promise<AdeAccountSessionRepairResult> => {
       // Same product fact as the restart-only handler above, so it keeps the
@@ -13204,9 +13152,9 @@ export function registerIpc({
   // Takes no arguments on purpose: it always targets THIS machine, and a
   // machineKey parameter would invite a caller to "repair" a machine it does
   // not own — the brain could not honour that anyway.
-  ipcMain.handle(IPC.accountStartSyncHost, async () => accountBridge.startSyncHost());
+  handle(IPC.accountStartSyncHost, async () => accountBridge.startSyncHost());
 
-  ipcMain.handle(
+  handle(
     IPC.accountRepairMachinePairing,
     async (): Promise<AdeAccountMachinePairingRepairResult> => {
       // One coarse fact per "Reconnect this computer" click, captured here
@@ -13248,26 +13196,26 @@ export function registerIpc({
     return ctx;
   };
 
-  ipcMain.handle(IPC.prsCreateFromLane, async (_event, arg: CreatePrFromLaneArgs): Promise<PrSummary> => {
+  handle(IPC.prsCreateFromLane, async (_event, arg: CreatePrFromLaneArgs): Promise<PrSummary> => {
     const ctx = ensurePrMutationContext();
     const result = await ctx.prService.createFromLane(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
-  ipcMain.handle(IPC.prsLinkToLane, async (_event, arg: LinkPrToLaneArgs): Promise<PrSummary> => {
+  handle(IPC.prsLinkToLane, async (_event, arg: LinkPrToLaneArgs): Promise<PrSummary> => {
     const ctx = ensurePrMutationContext();
     const result = await ctx.prService.linkToLane(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
-  ipcMain.handle(IPC.prsPreflightCreateLaneFromPrBranch, async (_event, arg: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchPreflightResult> => {
+  handle(IPC.prsPreflightCreateLaneFromPrBranch, async (_event, arg: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchPreflightResult> => {
     const ctx = ensurePrMutationContext();
     return await ctx.prService.preflightCreateLaneFromPrBranch(arg);
   });
 
-  ipcMain.handle(IPC.prsCreateLaneFromPrBranch, async (_event, arg: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchResult> => {
+  handle(IPC.prsCreateLaneFromPrBranch, async (_event, arg: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchResult> => {
     const ctx = ensurePrMutationContext();
     const result = await ctx.prService.createLaneFromPrBranch(arg);
     ctx.prPollingService.poke();
@@ -13293,40 +13241,40 @@ export function registerIpc({
     return ctx;
   };
 
-  ipcMain.handle(IPC.prsGetForLane, async (_event, arg: { laneId: string }): Promise<PrSummary | null> => {
+  handle(IPC.prsGetForLane, async (_event, arg: { laneId: string }): Promise<PrSummary | null> => {
     const ctx = ensurePrPolling();
     if (!ctx) return null;
     return ctx.prService.getForLane(arg.laneId);
   });
 
-  ipcMain.handle(IPC.prsSyncLanePr, async (_event, arg: { laneId: string }): Promise<PrSummary | null> => {
+  handle(IPC.prsSyncLanePr, async (_event, arg: { laneId: string }): Promise<PrSummary | null> => {
     const ctx = ensurePrPolling();
     if (!ctx) return null;
     return await ctx.prService.syncLanePr(arg.laneId);
   });
 
-  ipcMain.handle(IPC.prsReconcileNow, async (): Promise<void> => {
+  handle(IPC.prsReconcileNow, async (): Promise<void> => {
     const ctx = ensurePrPolling();
     if (!ctx) return;
     await ctx.prService.reconcileOnFocus({ force: true });
   });
 
-  ipcMain.handle(IPC.prsListAll, async (): Promise<PrSummary[]> => {
+  handle(IPC.prsListAll, async (): Promise<PrSummary[]> => {
     const ctx = ensurePrReadContext();
     return ctx.prService.listAll();
   });
 
-  ipcMain.handle(IPC.prsListOpenForRepo, async (): Promise<BranchPullRequest[]> => {
+  handle(IPC.prsListOpenForRepo, async (): Promise<BranchPullRequest[]> => {
     const ctx = ensurePrReadContext();
     return await ctx.prService.listOpenPullRequests();
   });
 
-  ipcMain.handle(IPC.prsRefresh, async (_event, arg: { prId?: string; prIds?: string[] } = {}): Promise<PrSummary[]> => {
+  handle(IPC.prsRefresh, async (_event, arg: { prId?: string; prIds?: string[] } = {}): Promise<PrSummary[]> => {
     const ctx = ensurePrReadContext();
     return await ctx.prService.refresh(arg);
   });
 
-  ipcMain.handle(IPC.prsGetStatus, async (_event, arg: { prId: string }): Promise<PrStatus | null> => {
+  handle(IPC.prsGetStatus, async (_event, arg: { prId: string }): Promise<PrStatus | null> => {
     const ctx = ensurePrReadContext();
     try {
       return await ctx.prService.getStatus(arg.prId);
@@ -13337,7 +13285,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.prsGetChecks, async (_event, arg: { prId: string }): Promise<PrCheck[]> => {
+  handle(IPC.prsGetChecks, async (_event, arg: { prId: string }): Promise<PrCheck[]> => {
     const ctx = ensurePrReadContext();
     try {
       return await ctx.prService.getChecks(arg.prId);
@@ -13347,7 +13295,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.prsGetComments, async (_event, arg: { prId: string }): Promise<PrComment[]> => {
+  handle(IPC.prsGetComments, async (_event, arg: { prId: string }): Promise<PrComment[]> => {
     const ctx = ensurePrReadContext();
     try {
       return await ctx.prService.getComments(arg.prId);
@@ -13357,7 +13305,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.prsGetReviews, async (_event, arg: { prId: string }): Promise<PrReview[]> => {
+  handle(IPC.prsGetReviews, async (_event, arg: { prId: string }): Promise<PrReview[]> => {
     const ctx = ensurePrReadContext();
     try {
       return await ctx.prService.getReviews(arg.prId);
@@ -13367,7 +13315,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.prsGetReviewThreads, async (_event, arg: { prId: string }): Promise<PrReviewThread[]> => {
+  handle(IPC.prsGetReviewThreads, async (_event, arg: { prId: string }): Promise<PrReviewThread[]> => {
     const ctx = ensurePrReadContext();
     try {
       return await ctx.prService.getReviewThreads(arg.prId);
@@ -13377,57 +13325,57 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.prsUpdateDescription, async (_event, arg: UpdatePrDescriptionArgs): Promise<void> => {
+  handle(IPC.prsUpdateDescription, async (_event, arg: UpdatePrDescriptionArgs): Promise<void> => {
     const ctx = ensurePrMutationContext();
     await ctx.prService.updateDescription(arg);
     ctx.prPollingService.poke();
   });
 
-  ipcMain.handle(IPC.prsDelete, async (_event, arg: DeletePrArgs): Promise<DeletePrResult> => {
+  handle(IPC.prsDelete, async (_event, arg: DeletePrArgs): Promise<DeletePrResult> => {
     const ctx = ensurePrMutationContext();
     const result = await ctx.prService.delete(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
-  ipcMain.handle(IPC.prsLand, async (_event, arg: LandPrArgs): Promise<LandResult> => {
+  handle(IPC.prsLand, async (_event, arg: LandPrArgs): Promise<LandResult> => {
     const ctx = ensurePrMutationContext();
     const result = await ctx.prService.land(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
-  ipcMain.handle(IPC.prsUpdateBranch, async (_event, arg: UpdateBranchArgs): Promise<UpdateBranchResult> => {
+  handle(IPC.prsUpdateBranch, async (_event, arg: UpdateBranchArgs): Promise<UpdateBranchResult> => {
     const ctx = ensurePrMutationContext();
     const result = await ctx.prService.updateBranch(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
-  ipcMain.handle(IPC.prsRetargetBase, async (_event, arg: { prId: string; baseBranch: string }): Promise<void> => {
+  handle(IPC.prsRetargetBase, async (_event, arg: { prId: string; baseBranch: string }): Promise<void> => {
     const ctx = ensurePrMutationContext();
     await ctx.prService.retargetBase(arg.prId, arg.baseBranch);
     ctx.prPollingService.poke();
   });
 
-  ipcMain.handle(IPC.prsOpenInGitHub, async (_event, arg: { prId: string }): Promise<void> => {
+  handle(IPC.prsOpenInGitHub, async (_event, arg: { prId: string }): Promise<void> => {
     const ctx = ensurePrReadContext();
     return await ctx.prService.openInGitHub(arg.prId);
   });
 
-  ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg: { prId: string }) => {
+  handle(IPC.prsGetConflictAnalysis, async (_event, arg: { prId: string }) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getConflictAnalysis(arg.prId);
   });
 
-  ipcMain.handle(IPC.prsListWithConflicts, async (_event, arg?: { includeConflictAnalysis?: boolean }) => {
+  handle(IPC.prsListWithConflicts, async (_event, arg?: { includeConflictAnalysis?: boolean }) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.listWithConflicts({
       includeConflictAnalysis: arg?.includeConflictAnalysis === true,
     });
   });
 
-  ipcMain.handle(IPC.prsListSnapshots, async (_event, arg?: { prId?: string; prIds?: unknown }) => {
+  handle(IPC.prsListSnapshots, async (_event, arg?: { prId?: string; prIds?: unknown }) => {
     const ctx = ensurePrReadContext();
     const prIds = Array.isArray(arg?.prIds)
       ? arg.prIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
@@ -13438,7 +13386,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean; includeExternalClosed?: boolean; historyPageLimit?: number; automaticRefresh?: boolean }): Promise<GitHubPrSnapshot> => {
+  handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean; includeExternalClosed?: boolean; historyPageLimit?: number; automaticRefresh?: boolean }): Promise<GitHubPrSnapshot> => {
     const ctx = ensurePrReadContext();
     return await ctx.prService.getGithubSnapshot({
       force: arg?.force === true,
@@ -13448,24 +13396,24 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.prsListGitHubStacks, async (_event, arg: ListGitHubPrStacksArgs = {}): Promise<GitHubPrStack[]> =>
+  handle(IPC.prsListGitHubStacks, async (_event, arg: ListGitHubPrStacksArgs = {}): Promise<GitHubPrStack[]> =>
     await ensurePrReadContext().prService.listGithubStacks(arg));
 
-  ipcMain.handle(IPC.prsSyncGitHubStacks, async (_event, arg: ListGitHubPrStacksArgs = {}): Promise<GitHubPrStack[]> => {
+  handle(IPC.prsSyncGitHubStacks, async (_event, arg: ListGitHubPrStacksArgs = {}): Promise<GitHubPrStack[]> => {
     const ctx = ensurePrMutationContext();
     const result = await ctx.prService.syncGithubStacks(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
-  ipcMain.handle(IPC.prsCreateGitHubStack, async (_event, arg: CreateGitHubPrStackArgs): Promise<GitHubPrStack> => {
+  handle(IPC.prsCreateGitHubStack, async (_event, arg: CreateGitHubPrStackArgs): Promise<GitHubPrStack> => {
     const ctx = ensurePrMutationContext();
     const result = await ctx.prService.createGithubStack(arg);
     ctx.prPollingService.poke();
     return result;
   });
 
-  ipcMain.handle(
+  handle(
     IPC.prsAddGitHubStackPullRequests,
     async (_event, arg: AddGitHubPrStackPullRequestsArgs): Promise<GitHubPrStack> => {
       const ctx = ensurePrMutationContext();
@@ -13475,7 +13423,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.prsUnstackGitHubStack,
     async (_event, arg: UnstackGitHubPrStackArgs): Promise<GitHubPrStack | null> => {
       const ctx = ensurePrMutationContext();
@@ -13485,7 +13433,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.prsLinkChatSession,
     async (_event, raw: unknown): Promise<{ ok: boolean }> => {
       const ctx = ensurePrMutationContext();
@@ -13500,7 +13448,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.prsUnlinkChatSession,
     async (_event, raw: unknown): Promise<{ ok: boolean }> => {
       const ctx = ensurePrMutationContext();
@@ -13515,7 +13463,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.prsLinkChatStack,
     async (_event, raw: unknown): Promise<{ ok: boolean; linked: number }> => {
       const ctx = ensurePrMutationContext();
@@ -13535,13 +13483,13 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.prsListChatSessionsForPr,
     async (_event, raw: unknown): Promise<PrChatSessionLink[]> =>
       ensurePrReadContext().prService.listChatSessionsForPr({ prId: requirePrChatLinkString(raw, "prId") }),
   );
 
-  ipcMain.handle(
+  handle(
     IPC.prsSetChatWatch,
     async (_event, raw: unknown): Promise<PrChatWatchSummary | null> => {
       return ensurePrMutationContext().prService.setChatWatch({
@@ -13552,7 +13500,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.prsGetChatWatches,
     async (_event, raw: unknown): Promise<PrChatWatchSummary[]> =>
       ensurePrReadContext().prService.getChatWatches({
@@ -13561,7 +13509,7 @@ export function registerIpc({
       }),
   );
 
-  ipcMain.handle(
+  handle(
     IPC.prsResolveMedia,
     async (_event, raw: unknown): Promise<ResolvePrMediaResult> => {
       const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
@@ -13573,7 +13521,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.prsGetStackLinkOffer,
     async (_event, raw: unknown): Promise<StackLinkOffer | null> =>
       ensurePrReadContext().prService.getStackLinkOffer({
@@ -13582,59 +13530,59 @@ export function registerIpc({
       }),
   );
 
-  ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => {
+  handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getPrHealth(arg.prId);
   });
 
-  ipcMain.handle(IPC.prsGetDetail, (_e, args: { prId: string }) => {
+  handle(IPC.prsGetDetail, (_e, args: { prId: string }) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getDetail(args.prId);
   });
-  ipcMain.handle(IPC.prsGetDetailBundle, (_e, args: { prId: string }): Promise<PrDetailBundle> => {
+  handle(IPC.prsGetDetailBundle, (_e, args: { prId: string }): Promise<PrDetailBundle> => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getDetailBundle(args.prId);
   });
-  ipcMain.handle(IPC.prsGetFiles, (_e, args: { prId: string }) => {
+  handle(IPC.prsGetFiles, (_e, args: { prId: string }) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getFiles(args.prId);
   });
-  ipcMain.handle(IPC.prsGetCommits, (_e, args: { prId: string }): Promise<PrCommit[]> | PrCommit[] => {
+  handle(IPC.prsGetCommits, (_e, args: { prId: string }): Promise<PrCommit[]> | PrCommit[] => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getCommits(args.prId);
   });
-  ipcMain.handle(IPC.prsGetActionRuns, (_e, args: { prId: string }) => {
+  handle(IPC.prsGetActionRuns, (_e, args: { prId: string }) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getActionRuns(args.prId);
   });
-  ipcMain.handle(IPC.prsGetActivity, (_e, args: { prId: string }) => {
+  handle(IPC.prsGetActivity, (_e, args: { prId: string }) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getActivity(args.prId);
   });
-  ipcMain.handle(IPC.prsGetWorkflowGraph, (_e, args: GetPrWorkflowGraphArgs) => {
+  handle(IPC.prsGetWorkflowGraph, (_e, args: GetPrWorkflowGraphArgs) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getWorkflowGraph(args);
   });
-  ipcMain.handle(IPC.prsGetCheckLog, (_e, args: GetPrCheckLogArgs) => {
+  handle(IPC.prsGetCheckLog, (_e, args: GetPrCheckLogArgs) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getCheckLog(args);
   });
-  ipcMain.handle(IPC.prsGetDetailByGithub, (_e, coords: PrGithubCoords) => {
+  handle(IPC.prsGetDetailByGithub, (_e, coords: PrGithubCoords) => {
     return ensurePrReadContext().prService.getDetailByGithub(coords);
   });
-  ipcMain.handle(IPC.prsGetFilesByGithub, (_e, coords: PrGithubCoords) => {
+  handle(IPC.prsGetFilesByGithub, (_e, coords: PrGithubCoords) => {
     return ensurePrReadContext().prService.getFilesByGithub(coords);
   });
-  ipcMain.handle(IPC.prsGetCommitsByGithub, (_e, coords: PrGithubCoords): Promise<PrCommit[]> | PrCommit[] => {
+  handle(IPC.prsGetCommitsByGithub, (_e, coords: PrGithubCoords): Promise<PrCommit[]> | PrCommit[] => {
     return ensurePrReadContext().prService.getCommitsByGithub(coords);
   });
-  ipcMain.handle(IPC.prsGetActionRunsByGithub, (_e, coords: PrGithubCoords) => {
+  handle(IPC.prsGetActionRunsByGithub, (_e, coords: PrGithubCoords) => {
     return ensurePrReadContext().prService.getActionRunsByGithub(coords);
   });
-  ipcMain.handle(IPC.prsGetActivityByGithub, (_e, coords: PrGithubCoords) => {
+  handle(IPC.prsGetActivityByGithub, (_e, coords: PrGithubCoords) => {
     return ensurePrReadContext().prService.getActivityByGithub(coords);
   });
-  ipcMain.handle(IPC.prsGetStatusByGithub, async (_e, coords: PrGithubCoords): Promise<PrStatus | null> => {
+  handle(IPC.prsGetStatusByGithub, async (_e, coords: PrGithubCoords): Promise<PrStatus | null> => {
     try {
       return await ensurePrReadContext().prService.getStatusByGithub(coords);
     } catch (err) {
@@ -13642,7 +13590,7 @@ export function registerIpc({
       throw err;
     }
   });
-  ipcMain.handle(IPC.prsGetChecksByGithub, async (_e, coords: PrGithubCoords): Promise<PrCheck[]> => {
+  handle(IPC.prsGetChecksByGithub, async (_e, coords: PrGithubCoords): Promise<PrCheck[]> => {
     try {
       return await ensurePrReadContext().prService.getChecksByGithub(coords);
     } catch (err) {
@@ -13650,7 +13598,7 @@ export function registerIpc({
       throw err;
     }
   });
-  ipcMain.handle(IPC.prsGetReviewsByGithub, async (_e, coords: PrGithubCoords): Promise<PrReview[]> => {
+  handle(IPC.prsGetReviewsByGithub, async (_e, coords: PrGithubCoords): Promise<PrReview[]> => {
     try {
       return await ensurePrReadContext().prService.getReviewsByGithub(coords);
     } catch (err) {
@@ -13658,7 +13606,7 @@ export function registerIpc({
       throw err;
     }
   });
-  ipcMain.handle(IPC.prsGetCommentsByGithub, async (_e, coords: PrGithubCoords): Promise<PrComment[]> => {
+  handle(IPC.prsGetCommentsByGithub, async (_e, coords: PrGithubCoords): Promise<PrComment[]> => {
     try {
       return await ensurePrReadContext().prService.getCommentsByGithub(coords);
     } catch (err) {
@@ -13666,7 +13614,7 @@ export function registerIpc({
       throw err;
     }
   });
-  ipcMain.handle(IPC.prsGetReviewThreadsByGithub, async (_e, coords: PrGithubCoords): Promise<PrReviewThread[]> => {
+  handle(IPC.prsGetReviewThreadsByGithub, async (_e, coords: PrGithubCoords): Promise<PrReviewThread[]> => {
     try {
       return await ensurePrReadContext().prService.getReviewThreadsByGithub(coords);
     } catch (err) {
@@ -13674,43 +13622,43 @@ export function registerIpc({
       throw err;
     }
   });
-  ipcMain.handle(IPC.prsAddComment, (_e, args) => ensurePrReadContext().prService.addComment(args));
-  ipcMain.handle(IPC.prsUpdateComment, (_e, args) => ensurePrReadContext().prService.updateComment(args));
-  ipcMain.handle(IPC.prsReplyToReviewThread, (_e, args: ReplyToPrReviewThreadArgs) => ensurePrReadContext().prService.replyToReviewThread(args));
-  ipcMain.handle(IPC.prsResolveReviewThread, (_e, args: ResolvePrReviewThreadArgs) => ensurePrReadContext().prService.resolveReviewThread(args));
-  ipcMain.handle(IPC.prsUpdateTitle, (_e, args) => ensurePrReadContext().prService.updateTitle(args));
-  ipcMain.handle(IPC.prsSearchMentionables, (_e, args) => ensurePrReadContext().prService.searchMentionables(args));
-  ipcMain.handle(IPC.prsGetRepoReferences, (_e, args) => ensurePrReadContext().prService.getRepoReferences(args));
-  ipcMain.handle(IPC.prsUpdateBody, (_e, args) => ensurePrReadContext().prService.updateBody(args));
-  ipcMain.handle(IPC.prsSetLabels, (_e, args) => ensurePrReadContext().prService.setLabels(args));
-  ipcMain.handle(IPC.prsSetAssignees, (_e, args) => ensurePrReadContext().prService.setAssignees(args));
-  ipcMain.handle(IPC.prsListGitHubFilterOptions, (_e, args) => ensurePrReadContext().prService.listGithubFilterOptions(args));
-  ipcMain.handle(IPC.prsSearchGitHubPrs, (_e, args) => ensurePrReadContext().prService.searchGithubPrs(args));
-  ipcMain.handle(IPC.prsRequestReviewers, (_e, args) => ensurePrReadContext().prService.requestReviewers(args));
-  ipcMain.handle(IPC.prsSubmitReview, (_e, args) => ensurePrReadContext().prService.submitReview(args));
-  ipcMain.handle(IPC.prsClose, (_e, args) => ensurePrReadContext().prService.closePr(args));
-  ipcMain.handle(IPC.prsReopen, (_e, args) => ensurePrReadContext().prService.reopenPr(args));
-  ipcMain.handle(IPC.prsSetDraft, (_e, args) => ensurePrReadContext().prService.setDraft(args));
-  ipcMain.handle(IPC.prsSetAutoMerge, (_e, args) => ensurePrReadContext().prService.setAutoMerge(args));
-  ipcMain.handle(IPC.prsRerunChecks, (_e, args) => ensurePrReadContext().prService.rerunChecks(args));
+  handle(IPC.prsAddComment, (_e, args) => ensurePrReadContext().prService.addComment(args));
+  handle(IPC.prsUpdateComment, (_e, args) => ensurePrReadContext().prService.updateComment(args));
+  handle(IPC.prsReplyToReviewThread, (_e, args: ReplyToPrReviewThreadArgs) => ensurePrReadContext().prService.replyToReviewThread(args));
+  handle(IPC.prsResolveReviewThread, (_e, args: ResolvePrReviewThreadArgs) => ensurePrReadContext().prService.resolveReviewThread(args));
+  handle(IPC.prsUpdateTitle, (_e, args) => ensurePrReadContext().prService.updateTitle(args));
+  handle(IPC.prsSearchMentionables, (_e, args) => ensurePrReadContext().prService.searchMentionables(args));
+  handle(IPC.prsGetRepoReferences, (_e, args) => ensurePrReadContext().prService.getRepoReferences(args));
+  handle(IPC.prsUpdateBody, (_e, args) => ensurePrReadContext().prService.updateBody(args));
+  handle(IPC.prsSetLabels, (_e, args) => ensurePrReadContext().prService.setLabels(args));
+  handle(IPC.prsSetAssignees, (_e, args) => ensurePrReadContext().prService.setAssignees(args));
+  handle(IPC.prsListGitHubFilterOptions, (_e, args) => ensurePrReadContext().prService.listGithubFilterOptions(args));
+  handle(IPC.prsSearchGitHubPrs, (_e, args) => ensurePrReadContext().prService.searchGithubPrs(args));
+  handle(IPC.prsRequestReviewers, (_e, args) => ensurePrReadContext().prService.requestReviewers(args));
+  handle(IPC.prsSubmitReview, (_e, args) => ensurePrReadContext().prService.submitReview(args));
+  handle(IPC.prsClose, (_e, args) => ensurePrReadContext().prService.closePr(args));
+  handle(IPC.prsReopen, (_e, args) => ensurePrReadContext().prService.reopenPr(args));
+  handle(IPC.prsSetDraft, (_e, args) => ensurePrReadContext().prService.setDraft(args));
+  handle(IPC.prsSetAutoMerge, (_e, args) => ensurePrReadContext().prService.setAutoMerge(args));
+  handle(IPC.prsRerunChecks, (_e, args) => ensurePrReadContext().prService.rerunChecks(args));
 
   // PRs Tab redesign (Timeline + Rails)
-  ipcMain.handle(IPC.prsGetDeployments, (_e, args: { prId: string }) => {
+  handle(IPC.prsGetDeployments, (_e, args: { prId: string }) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getDeployments(args.prId);
   });
-  ipcMain.handle(IPC.prsPostReviewComment, (_e, args: PostPrReviewCommentArgs) => ensurePrReadContext().prService.postReviewComment(args));
-  ipcMain.handle(
+  handle(IPC.prsPostReviewComment, (_e, args: PostPrReviewCommentArgs) => ensurePrReadContext().prService.postReviewComment(args));
+  handle(
     IPC.prsSetReviewThreadResolved,
     (_e, args: SetPrReviewThreadResolvedArgs) => ensurePrReadContext().prService.setReviewThreadResolved(args),
   );
-  ipcMain.handle(IPC.prsReactToComment, (_e, args: ReactToPrCommentArgs) => ensurePrReadContext().prService.reactToComment(args));
-  ipcMain.handle(IPC.prsCleanupBranch, (_e, args: CleanupPrBranchArgs): Promise<CleanupPrBranchResult> =>
+  handle(IPC.prsReactToComment, (_e, args: ReactToPrCommentArgs) => ensurePrReadContext().prService.reactToComment(args));
+  handle(IPC.prsCleanupBranch, (_e, args: CleanupPrBranchArgs): Promise<CleanupPrBranchResult> =>
     ensurePrReadContext().prService.cleanupBranch(args));
 
-  ipcMain.handle(IPC.rebaseScanNeeds, async () => ensureConflictContext().conflictService.scanRebaseNeeds());
+  handle(IPC.rebaseScanNeeds, async () => ensureConflictContext().conflictService.scanRebaseNeeds());
 
-  ipcMain.handle(IPC.rebaseGetNeed, async (_event, arg) => ensureConflictContext().conflictService.getRebaseNeed(arg.laneId));
+  handle(IPC.rebaseGetNeed, async (_event, arg) => ensureConflictContext().conflictService.getRebaseNeed(arg.laneId));
 
   const ensureOperationContext = (): AppContextWith<"operationService"> => {
     const ctx = getCtx();
@@ -13718,7 +13666,7 @@ export function registerIpc({
     return ctx;
   };
 
-  ipcMain.handle(IPC.historyListOperations, async (_event, arg: ListOperationsArgs = {}): Promise<OperationRecord[]> => {
+  handle(IPC.historyListOperations, async (_event, arg: ListOperationsArgs = {}): Promise<OperationRecord[]> => {
     const ctx = ensureOperationContext();
     return ctx.operationService.list(arg);
   });
@@ -13731,7 +13679,7 @@ export function registerIpc({
     } | null;
   };
 
-  ipcMain.handle(IPC.historyExportOperations, async (event, arg: HistoryExportIpcArgs): Promise<ExportHistoryResult> => {
+  handle(IPC.historyExportOperations, async (event, arg: HistoryExportIpcArgs): Promise<ExportHistoryResult> => {
     const ctx = ensureOperationContext();
     const format: "csv" | "json" = arg?.format === "csv" ? "csv" : "json";
     const laneId = typeof arg?.laneId === "string" && arg.laneId.trim().length > 0 ? arg.laneId.trim() : undefined;
@@ -13807,49 +13755,49 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.testsListSuites, async (): Promise<TestSuiteDefinition[]> => {
+  handle(IPC.testsListSuites, async (): Promise<TestSuiteDefinition[]> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["testService"] as const);
     return ctx.testService.listSuites();
   });
 
-  ipcMain.handle(IPC.testsRun, async (_event, arg: RunTestSuiteArgs): Promise<TestRunSummary> => {
+  handle(IPC.testsRun, async (_event, arg: RunTestSuiteArgs): Promise<TestRunSummary> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["testService"] as const);
     return ctx.testService.run(arg);
   });
 
-  ipcMain.handle(IPC.testsStop, async (_event, arg: StopTestRunArgs): Promise<void> => {
+  handle(IPC.testsStop, async (_event, arg: StopTestRunArgs): Promise<void> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["testService"] as const);
     ctx.testService.stop(arg);
   });
 
-  ipcMain.handle(IPC.testsListRuns, async (_event, arg: ListTestRunsArgs = {}): Promise<TestRunSummary[]> => {
+  handle(IPC.testsListRuns, async (_event, arg: ListTestRunsArgs = {}): Promise<TestRunSummary[]> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["testService"] as const);
     return ctx.testService.listRuns(arg);
   });
 
-  ipcMain.handle(IPC.testsGetLogTail, async (_event, arg: GetTestLogTailArgs): Promise<string> => {
+  handle(IPC.testsGetLogTail, async (_event, arg: GetTestLogTailArgs): Promise<string> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["testService"] as const);
     return ctx.testService.getLogTail(arg);
   });
 
-  ipcMain.handle(IPC.projectConfigGet, async (): Promise<ProjectConfigSnapshot> => {
+  handle(IPC.projectConfigGet, async (): Promise<ProjectConfigSnapshot> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectConfigService"] as const);
     return ctx.projectConfigService.get();
   });
 
-  ipcMain.handle(IPC.projectConfigValidate, async (_event, arg: { candidate: ProjectConfigCandidate }): Promise<ProjectConfigValidationResult> => {
+  handle(IPC.projectConfigValidate, async (_event, arg: { candidate: ProjectConfigCandidate }): Promise<ProjectConfigValidationResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectConfigService"] as const);
     return ctx.projectConfigService.validate(arg.candidate);
   });
 
-  ipcMain.handle(IPC.projectConfigSave, async (_event, arg: { candidate: ProjectConfigCandidate }): Promise<ProjectConfigSnapshot> => {
+  handle(IPC.projectConfigSave, async (_event, arg: { candidate: ProjectConfigCandidate }): Promise<ProjectConfigSnapshot> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectConfigService"] as const);
     const next = ctx.projectConfigService.save(arg.candidate);
@@ -13861,7 +13809,7 @@ export function registerIpc({
     return next;
   });
 
-  ipcMain.handle(IPC.projectConfigDiffAgainstDisk, async (): Promise<ProjectConfigDiff> => {
+  handle(IPC.projectConfigDiffAgainstDisk, async (): Promise<ProjectConfigDiff> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectConfigService"] as const);
     return ctx.projectConfigService.diffAgainstDisk();
@@ -13869,7 +13817,7 @@ export function registerIpc({
 
   // ── CTO state IPC ─────────────────────────────────────────────────
 
-  ipcMain.handle(IPC.ctoGetState, async (_event, arg: CtoGetStateArgs = {}): Promise<CtoSnapshot> => {
+  handle(IPC.ctoGetState, async (_event, arg: CtoGetStateArgs = {}): Promise<CtoSnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoStateService) {
       throw new Error("CTO state service is not available.");
@@ -13884,14 +13832,14 @@ export function registerIpc({
    * which would materialize a primary lane and a chat session as a side effect
    * of rendering a badge.
    */
-  ipcMain.handle(IPC.ctoGetAttention, async (): Promise<CtoAttentionState> => {
+  handle(IPC.ctoGetAttention, async (): Promise<CtoAttentionState> => {
     const service = getCtx().agentChatService;
     return service
       ? await service.getCtoAttention()
       : { status: "unknown", awaitingInput: false, since: null };
   });
 
-  ipcMain.handle(IPC.ctoEnsureSession, async (_event, arg: CtoEnsureSessionArgs = {}): Promise<AgentChatSession> => {
+  handle(IPC.ctoEnsureSession, async (_event, arg: CtoEnsureSessionArgs = {}): Promise<AgentChatSession> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["agentChatService"] as const);
     const laneId = await resolvePrimaryLaneIdOnly(ctx);
@@ -13907,7 +13855,7 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.ctoGetThreadHealth, async (): Promise<CtoThreadHealth> => {
+  handle(IPC.ctoGetThreadHealth, async (): Promise<CtoThreadHealth> => {
     const ctx = getCtx();
     const service = ctx.agentChatService;
     return service
@@ -13922,7 +13870,7 @@ export function registerIpc({
         };
   });
 
-  ipcMain.handle(IPC.ctoStartFreshSession, async (): Promise<CtoStartFreshSessionResult> => {
+  handle(IPC.ctoStartFreshSession, async (): Promise<CtoStartFreshSessionResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["agentChatService"] as const);
     const laneId = await resolvePrimaryLaneIdOnly(ctx);
@@ -13937,7 +13885,7 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.ctoListSessionLogs, async (_event, arg: CtoListSessionLogsArgs = {}): Promise<CtoSessionLogEntry[]> => {
+  handle(IPC.ctoListSessionLogs, async (_event, arg: CtoListSessionLogsArgs = {}): Promise<CtoSessionLogEntry[]> => {
     const ctx = getCtx();
     if (!ctx.ctoStateService) {
       throw new Error("CTO state service is not available.");
@@ -13945,7 +13893,7 @@ export function registerIpc({
     return ctx.ctoStateService.getSessionLogs(arg.limit ?? 40);
   });
 
-  ipcMain.handle(IPC.ctoUpdateIdentity, async (_event, arg: CtoUpdateIdentityArgs): Promise<CtoSnapshot> => {
+  handle(IPC.ctoUpdateIdentity, async (_event, arg: CtoUpdateIdentityArgs): Promise<CtoSnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.updateIdentity(arg.patch ?? {});
@@ -13953,13 +13901,13 @@ export function registerIpc({
 
   // -- Smart memory --
 
-  ipcMain.handle(IPC.ctoGetMemory, async (_event, _arg: CtoGetMemoryArgs = {}): Promise<CtoMemorySnapshot> => {
+  handle(IPC.ctoGetMemory, async (_event, _arg: CtoGetMemoryArgs = {}): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
     return ctx.ctoMemoryService.getSnapshot();
   });
 
-  ipcMain.handle(IPC.ctoUpdateMemory, async (_event, arg: CtoUpdateMemoryArgs): Promise<CtoMemorySnapshot> => {
+  handle(IPC.ctoUpdateMemory, async (_event, arg: CtoUpdateMemoryArgs): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
     // Only an explicit string may rewrite MEMORY.md — a missing field must not
@@ -13971,7 +13919,7 @@ export function registerIpc({
     return ctx.ctoMemoryService.getSnapshot();
   });
 
-  ipcMain.handle(IPC.ctoSearchMemory, async (_event, arg: CtoSearchMemoryArgs): Promise<CtoSearchMemoryResult> => {
+  handle(IPC.ctoSearchMemory, async (_event, arg: CtoSearchMemoryArgs): Promise<CtoSearchMemoryResult> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
     const query = arg?.query ?? "";
@@ -13981,13 +13929,13 @@ export function registerIpc({
 
   // -- Linear connection & credentials --
 
-  ipcMain.handle(IPC.ctoGetLinearConnectionStatus, async (): Promise<LinearConnectionStatus> => {
+  handle(IPC.ctoGetLinearConnectionStatus, async (): Promise<LinearConnectionStatus> => {
     const ctx = getCtx();
     const tokenStored = Boolean(ctx.linearCredentialService?.getStatus().tokenStored);
     return buildLinearConnectionStatus(ctx, tokenStored);
   });
 
-  ipcMain.handle(IPC.ctoSetLinearToken, async (_event, arg: CtoSetLinearTokenArgs): Promise<LinearConnectionStatus> => {
+  handle(IPC.ctoSetLinearToken, async (_event, arg: CtoSetLinearTokenArgs): Promise<LinearConnectionStatus> => {
     const ctx = getCtx();
     if (!ctx.linearCredentialService) throw new Error("Linear credential service is not available.");
     ctx.linearCredentialService.setToken(arg.token);
@@ -13995,7 +13943,7 @@ export function registerIpc({
     return buildLinearConnectionStatus(ctx, tokenStored);
   });
 
-  ipcMain.handle(IPC.ctoClearLinearToken, async (): Promise<LinearConnectionStatus> => {
+  handle(IPC.ctoClearLinearToken, async (): Promise<LinearConnectionStatus> => {
     const ctx = getCtx();
     if (!ctx.linearCredentialService) throw new Error("Linear credential service is not available.");
     ctx.linearCredentialService.clearToken();
@@ -14012,7 +13960,7 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.ctoSetLinearOAuthClient, async (_event, arg: CtoSetLinearOAuthClientArgs): Promise<LinearConnectionStatus> => {
+  handle(IPC.ctoSetLinearOAuthClient, async (_event, arg: CtoSetLinearOAuthClientArgs): Promise<LinearConnectionStatus> => {
     const ctx = getCtx();
     if (!ctx.linearCredentialService) throw new Error("Linear credential service is not available.");
     ctx.linearCredentialService.setOAuthClientCredentials({
@@ -14023,7 +13971,7 @@ export function registerIpc({
     return buildLinearConnectionStatus(ctx, tokenStored);
   });
 
-  ipcMain.handle(IPC.ctoClearLinearOAuthClient, async (): Promise<LinearConnectionStatus> => {
+  handle(IPC.ctoClearLinearOAuthClient, async (): Promise<LinearConnectionStatus> => {
     const ctx = getCtx();
     if (!ctx.linearCredentialService) throw new Error("Linear credential service is not available.");
     ctx.linearCredentialService.clearOAuthClientCredentials();
@@ -14031,7 +13979,7 @@ export function registerIpc({
     return buildLinearConnectionStatus(ctx, tokenStored);
   });
 
-  ipcMain.handle(IPC.ctoStartLinearOAuth, (): Promise<CtoStartLinearOAuthResult> => {
+  handle(IPC.ctoStartLinearOAuth, (): Promise<CtoStartLinearOAuthResult> => {
     const ctx = getCtx();
     const queueEpoch = enterLinearOAuthQueueContext(ctx.adeDir);
     if (
@@ -14050,7 +13998,7 @@ export function registerIpc({
     return trackedStart;
   });
 
-  ipcMain.handle(
+  handle(
     IPC.ctoGetLinearOAuthSession,
     async (_event, arg: CtoGetLinearOAuthSessionArgs): Promise<CtoGetLinearOAuthSessionResult> => {
       const ctx = getCtx();
@@ -14068,25 +14016,25 @@ export function registerIpc({
 
   // -- W-UX: Onboarding & Identity --
 
-  ipcMain.handle(IPC.ctoGetOnboardingState, async () => {
+  handle(IPC.ctoGetOnboardingState, async () => {
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.getOnboardingState();
   });
 
-  ipcMain.handle(IPC.ctoCompleteOnboardingStep, async (_event, arg: { stepId: string }) => {
+  handle(IPC.ctoCompleteOnboardingStep, async (_event, arg: { stepId: string }) => {
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.completeOnboardingStep(arg.stepId);
   });
 
-  ipcMain.handle(IPC.ctoPreviewSystemPrompt, async (_event, arg: { identityOverride?: Record<string, unknown> } = {}) => {
+  handle(IPC.ctoPreviewSystemPrompt, async (_event, arg: { identityOverride?: Record<string, unknown> } = {}) => {
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.previewSystemPrompt(arg.identityOverride as never);
   });
 
-  ipcMain.handle(IPC.ctoGetLinearProjects, async () => {
+  handle(IPC.ctoGetLinearProjects, async () => {
     const ctx = getCtx();
     if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
     try {
@@ -14097,7 +14045,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.ctoGetLinearQuickView, async (): Promise<CtoLinearQuickView> => {
+  handle(IPC.ctoGetLinearQuickView, async (): Promise<CtoLinearQuickView> => {
     const ctx = getCtx();
     const tokenStored = Boolean(ctx.linearCredentialService?.getStatus().tokenStored);
     const connection = await buildLinearConnectionStatus(ctx, tokenStored);
@@ -14120,7 +14068,7 @@ export function registerIpc({
     return ctx.linearIssueTracker.getQuickView(connection);
   });
 
-  ipcMain.handle(IPC.ctoGetLinearIssuePickerData, async (): Promise<CtoGetLinearIssuePickerDataResult> => {
+  handle(IPC.ctoGetLinearIssuePickerData, async (): Promise<CtoGetLinearIssuePickerDataResult> => {
     const ctx = getCtx();
     // When Linear is not configured, return an empty payload so the renderer
     // can render a graceful empty state instead of having to handle a thrown
@@ -14131,7 +14079,7 @@ export function registerIpc({
     return await ctx.linearIssueTracker.getIssuePickerData();
   });
 
-  ipcMain.handle(
+  handle(
     IPC.ctoSearchLinearIssues,
     async (_event, arg: CtoSearchLinearIssuesArgs = {}): Promise<CtoSearchLinearIssuesResult> => {
       const ctx = getCtx();
@@ -14142,7 +14090,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(
+  handle(
     IPC.ctoGetLinearIssueComments,
     async (_event, arg: { issueId: string }): Promise<CtoLinearIssueComment[]> => {
       if (typeof arg?.issueId !== "string" || !arg.issueId.trim()) return [];
@@ -14152,7 +14100,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(
+  handle(
     IPC.ctoCreateLinearIssue,
     async (_event, arg: LinearIssueCreateInput): Promise<NormalizedLinearIssue> => {
       const ctx = getCtx();
@@ -14161,7 +14109,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(
+  handle(
     IPC.ctoGetLinearIssueCreateOptions,
     async (_event, arg: { teamKey: string }): Promise<LinearIssueCreateOptions> => {
       const ctx = getCtx();
@@ -14170,7 +14118,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(
+  handle(
     IPC.ctoListLinearProjectMilestones,
     async (_event, arg: { projectId: string }): Promise<LinearProjectMilestone[]> => {
       const ctx = getCtx();
@@ -14179,7 +14127,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(
+  handle(
     IPC.ctoUploadLinearFile,
     async (_event, arg: { filename: string; contentType: string; dataBase64: string }): Promise<LinearUploadResult> => {
       const ctx = getCtx();
@@ -14193,7 +14141,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(
+  handle(
     IPC.ctoCreateLinearIssueComment,
     async (_event, arg: CtoCreateLinearIssueCommentArgs): Promise<{ commentId: string }> => {
       if (typeof arg?.issueId !== "string" || !arg.issueId.trim()) throw new Error("A comment needs an issue.");
@@ -14204,7 +14152,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(
+  handle(
     IPC.ctoGetLinearIssue,
     async (_event, arg: CtoGetLinearIssueArgs): Promise<NormalizedLinearIssue | null> => {
       if (typeof arg?.issueId !== "string" || !arg.issueId.trim()) return null;
@@ -14214,7 +14162,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(
+  handle(
     IPC.ctoUpdateLinearIssue,
     async (_event, arg: CtoUpdateLinearIssueArgs): Promise<NormalizedLinearIssue | null> => {
       if (typeof arg?.issueId !== "string" || !arg.issueId.trim()) {
@@ -14227,7 +14175,7 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(
+  handle(
     IPC.ctoCountLinearIssues,
     async (_event, arg: CtoCountLinearIssuesArgs): Promise<CtoCountLinearIssuesResult> => {
       const ctx = getCtx();
@@ -14236,13 +14184,13 @@ export function registerIpc({
     }
   );
 
-  ipcMain.handle(IPC.ctoGetLinearCustomViews, async (): Promise<CtoLinearCustomView[]> => {
+  handle(IPC.ctoGetLinearCustomViews, async (): Promise<CtoLinearCustomView[]> => {
     const ctx = getCtx();
     if (!ctx.linearIssueTracker) return [];
     return ctx.linearIssueTracker.listCustomViews();
   });
 
-  ipcMain.handle(IPC.ctoRunProjectScan, async (): Promise<CtoRunProjectScanResult> => {
+  handle(IPC.ctoRunProjectScan, async (): Promise<CtoRunProjectScanResult> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["onboardingService"] as const);
     const detection = await ctx.onboardingService.detectDefaults().catch(() => null);
@@ -14252,7 +14200,7 @@ export function registerIpc({
   // ADE MCP on This computer: always this machine's own brain, never
   // the project tab's bound runtime (which may be another machine). A pinned
   // machine goes straight from the preload to its runtime action instead.
-  ipcMain.handle(IPC.remoteMcpCall, async (_event, action: unknown, args: unknown): Promise<unknown> => {
+  handle(IPC.remoteMcpCall, async (_event, action: unknown, args: unknown): Promise<unknown> => {
     if (!isRemoteMcpAction(action)) throw new Error("Unknown ADE MCP action.");
     const call = getCtx().remoteMcpAction;
     if (!call) throw new Error("ADE MCP isn't available until this computer's ADE brain is running.");
@@ -14260,7 +14208,7 @@ export function registerIpc({
     return await call(action, actionArgs);
   });
 
-  ipcMain.handle(IPC.keepAwakeGet, async (): Promise<KeepAwakeSnapshot> => {
+  handle(IPC.keepAwakeGet, async (): Promise<KeepAwakeSnapshot> => {
     const ctx = getCtx();
     const action = ctx.keepAwakeAction;
     if (!action) throw new Error("Keep-awake settings aren't available until this machine's brain is running.");
@@ -14273,7 +14221,7 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(
+  handle(
     IPC.keepAwakeSetLevel,
     async (_event, level: unknown): Promise<KeepAwakeSnapshot> => {
       const ctx = getCtx();
@@ -14289,7 +14237,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.keepAwakeFixSystemSleep, async (): Promise<KeepAwakeFixResult> => {
+  handle(IPC.keepAwakeFixSystemSleep, async (): Promise<KeepAwakeFixResult> => {
     const ctx = getCtx();
     const service = ctx.keepAwakeService;
     if (process.platform === "darwin" && service) return await service.fixSystemSleep();
@@ -14304,18 +14252,18 @@ export function registerIpc({
     throw new Error("ADE can't change this right now.");
   });
 
-  ipcMain.handle(IPC.keepAwakeMigrateLegacy, async (): Promise<boolean> => {
+  handle(IPC.keepAwakeMigrateLegacy, async (): Promise<boolean> => {
     return await getCtx().keepAwakeMigrateLegacy?.() ?? false;
   });
 
-  ipcMain.handle(IPC.keepAwakeApplyLidClosed, async (_event, disabled: unknown) => {
+  handle(IPC.keepAwakeApplyLidClosed, async (_event, disabled: unknown) => {
     if (typeof disabled !== "boolean") throw new Error("Choose whether lid-closed mode should be on or off.");
     const service = getCtx().keepAwakeService;
     if (!service) throw new Error("Lid-closed mode is only available on this Mac.");
     return await service.applyLidClosed(disabled);
   });
 
-  ipcMain.handle(IPC.updateCheckForUpdates, async () => {
+  handle(IPC.updateCheckForUpdates, async () => {
     // Settings and the update-error dialog's Check again. Settles once the
     // check (and any download it started) is over, so the caller can show the
     // outcome; it never rejects. `userInitiated` lets a check that hits a
@@ -14332,12 +14280,12 @@ export function registerIpc({
     return track;
   };
 
-  ipcMain.handle(IPC.updateCheckTrackSwitch, async (_event, target: unknown): Promise<TrackSwitchCheckResult> => {
+  handle(IPC.updateCheckTrackSwitch, async (_event, target: unknown): Promise<TrackSwitchCheckResult> => {
     const track = requireUpdateTrack(target);
     return await checkTrackSwitch({ target: track, runningVersion: app.getVersion(), logger: getCtx().logger });
   });
 
-  ipcMain.handle(IPC.updateSwitchTrack, async (_event, target: unknown): Promise<UpdateTrackSwitchResult> => {
+  handle(IPC.updateSwitchTrack, async (_event, target: unknown): Promise<UpdateTrackSwitchResult> => {
     const track = requireUpdateTrack(target);
     const service = getCtx().autoUpdateService;
     if (!service) return { ok: false, target: track, reason: "This build of ADE can't change its update track." };
@@ -14348,16 +14296,16 @@ export function registerIpc({
     return service.startTrackSwitch(track);
   });
 
-  ipcMain.handle(IPC.updateGetState, () => {
+  handle(IPC.updateGetState, () => {
     return getCtx().autoUpdateService?.getSnapshot() ?? createEmptyAutoUpdateSnapshot();
   });
 
-  ipcMain.handle(IPC.updateGetPreferences, (): AutoUpdatePreferences => {
+  handle(IPC.updateGetPreferences, (): AutoUpdatePreferences => {
     return getCtx().autoUpdateService?.getPreferences()
       ?? { ...DEFAULT_AUTO_UPDATE_PREFERENCES };
   });
 
-  ipcMain.handle(
+  handle(
     IPC.updateSetPreferences,
     (_event, preferences: unknown): AutoUpdatePreferences => {
       return getCtx().autoUpdateService?.setPreferences(preferences)
@@ -14365,7 +14313,7 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.updateGetInstallImpact, async (): Promise<UpdateInstallImpact> => {
+  handle(IPC.updateGetInstallImpact, async (): Promise<UpdateInstallImpact> => {
     const provider = getCtx().updateInstallImpactProvider;
     if (!provider) return { ...UNKNOWN_UPDATE_IMPACT, connectedPhones: [] };
     try {
@@ -14376,22 +14324,22 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(
+  handle(
     IPC.updateQuitAndInstall,
     (_event, args?: { resumeChats?: boolean }) => {
       return getCtx().autoUpdateService?.quitAndInstall(args?.resumeChats === true) ?? false;
     },
   );
 
-  ipcMain.handle(IPC.updateCancelAutoApply, () => {
+  handle(IPC.updateCancelAutoApply, () => {
     return getCtx().autoUpdateService?.cancelAutoApply() ?? false;
   });
 
-  ipcMain.handle(IPC.updateDismissInstalledNotice, () => {
+  handle(IPC.updateDismissInstalledNotice, () => {
     getCtx().autoUpdateService?.dismissInstalledNotice();
   });
 
-  ipcMain.handle(IPC.updateRelaunchApp, async (): Promise<boolean> => {
+  handle(IPC.updateRelaunchApp, async (): Promise<boolean> => {
     return (await getCtx().autoUpdateService?.requestRelaunch()) ?? false;
   });
 

@@ -99,7 +99,15 @@ export function createMcpAppStore(args: {
       })
       .filter((entry): entry is { filePath: string; mtimeMs: number } => entry !== null)
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
-    for (const stale of records.slice(MCP_APP_LIMITS.maxAppsPerChat)) fs.rmSync(stale.filePath, { force: true });
+    for (const stale of records.slice(MCP_APP_LIMITS.maxAppsPerChat)) {
+      try {
+        fs.rmSync(stale.filePath, { force: true });
+      } catch (error) {
+        // Keep pruning the rest, but report so a persistent failure (a locked
+        // file) that defeats the cap stays visible.
+        report("agent_chat.mcp_app_store_prune_failed", error, { sessionId, file: stale.filePath });
+      }
+    }
     const named = new Set<string>();
     for (const kept of records.slice(0, MCP_APP_LIMITS.maxAppsPerChat)) {
       try {
@@ -110,7 +118,13 @@ export function createMcpAppStore(args: {
       }
     }
     for (const name of names) {
-      if (name.startsWith("doc-") && name.endsWith(".html") && !named.has(name)) fs.rmSync(path.join(dir, name), { force: true });
+      if (name.startsWith("doc-") && name.endsWith(".html") && !named.has(name)) {
+        try {
+          fs.rmSync(path.join(dir, name), { force: true });
+        } catch (error) {
+          report("agent_chat.mcp_app_store_prune_failed", error, { sessionId, file: path.join(dir, name) });
+        }
+      }
     }
   };
 
