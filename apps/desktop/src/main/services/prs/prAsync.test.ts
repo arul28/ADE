@@ -621,6 +621,19 @@ describe("prPollingService", () => {
     summary = { ...summary, reviewStatus: "requested" as const }; // a new request announces
     await poll();
     expect(reviewAnnouncements()).toBe(2);
+
+    // A push does not re-request review: the same request on a new head is not news.
+    summary = { ...summary, headSha: "sha-b" };
+    await poll();
+    expect(reviewAnnouncements()).toBe(2);
+
+    // An approval that arrives with a new commit still ends the round, so the
+    // next request announces even though the head just moved.
+    summary = { ...summary, reviewStatus: "approved" as const };
+    await poll();
+    summary = { ...summary, reviewStatus: "requested" as const };
+    await poll();
+    expect(reviewAnnouncements()).toBe(3);
   });
 
   it("emits changes_requested notification with generic messaging", async () => {
