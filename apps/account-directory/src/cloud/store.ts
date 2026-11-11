@@ -350,7 +350,8 @@ export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: 
   const statements = settleStatements(env, computer, now, statusGuard(computer));
   computer.awake_since = null;
   computer.deleted_at = now;
-  statements.push(env.DB.prepare("update cloud_computers set deleted_at = ?, awake_since = null, status = 'deleted', status_changed_at = ? where instance_id = ?")
+  // The disk breakdown and the lane's work (branch names, pull request state) go with the computer.
+  statements.push(env.DB.prepare("update cloud_computers set deleted_at = ?, awake_since = null, status = 'deleted', status_changed_at = ?, disk_usage_json = null, lane_work_json = null where instance_id = ?")
     .bind(now, now, computer.instance_id));
   return statements;
 }
