@@ -1,7 +1,7 @@
 import { runGit } from "../git/git";
 import { canonicalGitOriginUrl } from "../github/githubSshAlias";
 import type { Logger } from "../logging/logger";
-import { readGitOriginUrl } from "./recentProjectSummary";
+import { readGitOriginUrlWithoutGit } from "./recentProjectSummary";
 
 /**
  * Which repository a project is, for code in this app's main process.
@@ -44,9 +44,14 @@ function cleanOrigin(value: string | null | undefined): string | null {
   return trimmed ? canonicalGitOriginUrl(trimmed) : null;
 }
 
-/** This computer's copy: the config file first (no process), then git. */
+/**
+ * This computer's copy: the config file when it alone settles the value (no
+ * process), else git. An `[include]` or per-worktree config can override the
+ * origin of the main file, so only git answers then: a wrong origin would
+ * clone another repository.
+ */
 export async function readLocalProjectOrigin(rootPath: string, logger?: Pick<Logger, "warn">): Promise<string | null> {
-  const fromFile = readGitOriginUrl(rootPath);
+  const fromFile = cleanOrigin(readGitOriginUrlWithoutGit(rootPath));
   if (fromFile) return fromFile;
   try {
     const result = await runGit(["config", "--get", "remote.origin.url"], { cwd: rootPath, timeoutMs: GIT_CONFIG_TIMEOUT_MS });

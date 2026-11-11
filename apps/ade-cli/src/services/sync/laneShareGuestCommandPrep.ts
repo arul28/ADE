@@ -146,9 +146,9 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
     sessionId: string | null,
     itemId: string | null,
     role: LaneShareGuestRole,
-  ): { kind: string | null } | { refusal: LaneShareGuestRefusal } {
+  ): { kind: string | null; optionValues: Set<string> } | { refusal: LaneShareGuestRefusal } {
     const chat = deps.chat();
-    let match: { kind?: unknown; providerMetadata?: unknown } | undefined;
+    let match: { kind?: unknown; providerMetadata?: unknown; questions?: unknown } | undefined;
     try {
       const pending = chat && sessionId ? chat.listPendingInputs({ sessionId }).requests : [];
       match = itemId ? pending.find((request) => request.itemId === itemId || request.requestId === itemId) : undefined;
@@ -170,10 +170,19 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
     if (!laneShareInputKindRight(role.rights, kind)) {
       return { refusal: { code: "lane_share_right_missing", message: "Your access to this shared lane does not include this decision." } };
     }
-    return { kind };
+    // The options the card offers, trimmed and in lower case: a guest's
+    // answer saves a choice only by picking one of these.
+    const optionValues = new Set<string>();
+    for (const question of Array.isArray(match.questions) ? match.questions : []) {
+      const options = question && typeof question === "object" ? (question as { options?: unknown }).options : null;
+      for (const option of Array.isArray(options) ? options : []) {
+        const value = option && typeof option === "object" ? (option as { value?: unknown }).value : null;
+        if (typeof value === "string") optionValues.add(value.trim().toLowerCase());
+      }
+    }
+    return { kind, optionValues };
   }
 
-  /** Every free text in a guest's answer to a card: the typed reply and each answer value. */
   /** Every picked option of an answer, trimmed and in lower case. */
   function laneShareAnswerOptionValues(answerArgs: Record<string, unknown>): string[] {
     const answers = answerArgs.answers;
@@ -187,6 +196,7 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
     return values;
   }
 
+  /** Every free text in a guest's answer to a card: the typed reply and each answer value. */
   function laneShareAnswerTexts(answerArgs: Record<string, unknown>): string[] {
     const texts: string[] = [];
     if (typeof answerArgs.responseText === "string") texts.push(answerArgs.responseText);
@@ -413,13 +423,9 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
         // The choice is saved by the decision or by a picked option (Claude's
         // and Pi's "Allow for Session", Copilot's session approval, the
         // "always" answers). The chat service reads both trimmed, so this does too.
+        const ownerOnlySave = { ok: false as const, refusal: { code: "lane_share_owner_only", message: "Only the owner can allow this for the whole session." } };
         const decision = typeof gateArgs.decision === "string" ? gateArgs.decision.trim().toLowerCase() : "";
-        const savesChoice = decision === "accept_for_session"
-          || decision === "acceptforsession"
-          || laneShareAnswerOptionValues(gateArgs).some((value) => LANE_SHARE_SESSION_WIDE_OPTION_VALUES.has(value));
-        if (savesChoice) {
-          return { ok: false, refusal: { code: "lane_share_owner_only", message: "Only the owner can allow this for the whole session." } };
-        }
+        if (decision === "accept_for_session" || decision === "acceptforsession") return ownerOnlySave;
         // An answer can reach the agent as a message (a question answered by
         // sending): it stays a plain prompt.
         for (const text of laneShareAnswerTexts(gateArgs)) {
@@ -428,6 +434,11 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
         }
         const card = laneShareGuestCard(sessionId ?? null, toOptionalString(gateArgs.itemId) ?? null, role);
         if ("refusal" in card) return { ok: false, refusal: card.refusal };
+        // A picked option saves the choice only when the card offers it as an
+        // option: a typed "Always" in a question is a plain answer.
+        if (laneShareAnswerOptionValues(gateArgs).some((value) =>
+          LANE_SHARE_SESSION_WIDE_OPTION_VALUES.has(value) && card.optionValues.has(value)
+        )) return ownerOnlySave;
         // An approved plan returns the chat to its mode before the plan: that
         // mode must be one the owner allowed.
         if (card.kind === "plan_approval" && action !== "chat.dismissPendingInput" && gateArgs.decision !== "decline" && gateArgs.decision !== "cancel") {

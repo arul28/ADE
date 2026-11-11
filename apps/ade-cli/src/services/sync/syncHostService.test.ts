@@ -6102,7 +6102,8 @@ describe("sync host account authentication", () => {
       // `answer`: the guest's answer (default: accept). `chat`: the chat's mode
       // fields. Rows with `chat` lock the modes to default and plan.
       const planToBypass = { interactionMode: "plan", claudePermissionMode: "plan", permissionMode: "plan", claudePrePlanAccessMode: "bypassPermissions" };
-      it.each<[string, string, { kind: string; providerMetadata?: Record<string, unknown> }, string | null, Record<string, unknown>?, Record<string, unknown>?]>([
+      const offers = (...values: string[]) => [{ id: "q1", question: "Allow?", options: values.map((value) => ({ label: value, value })) }];
+      it.each<[string, string, { kind: string; providerMetadata?: Record<string, unknown>; questions?: unknown[] }, string | null, Record<string, unknown>?, Record<string, unknown>?]>([
         ["answer a secret card", "chat.respondToInput", { kind: "question", providerMetadata: secretCard }, "lane_share_owner_only"],
         ["approve an Add MCP server card", "chat.approve", { kind: "approval", providerMetadata: { mcpServerRequest: { source: "agent" } } }, "lane_share_owner_only"],
         ["dismiss the Mac real-input lease", "chat.dismissPendingInput", { kind: "question", providerMetadata: { macDesktopInputLease: true } }, "lane_share_owner_only"],
@@ -6112,8 +6113,10 @@ describe("sync host account authentication", () => {
         ["answer a question for the whole session", "chat.respondToInput", { kind: "question" }, "lane_share_owner_only", { decision: "accept_for_session" }],
         ["approve for the whole session with spaces", "chat.approve", { kind: "approval" }, "lane_share_owner_only", { decision: " accept_for_session " }],
         // The choice saved by a picked option, not by the decision.
-        ["pick Claude's Allow for Session", "chat.respondToInput", { kind: "approval" }, "lane_share_owner_only", { decision: "accept", answers: { tool_decision: ["allow_session"] } }],
-        ["pick Copilot's session approval", "chat.respondToInput", { kind: "approval" }, "lane_share_owner_only", { decision: "accept", answers: { choice: " Approve-For-Session " } }],
+        ["pick Claude's Allow for Session", "chat.respondToInput", { kind: "approval", questions: offers("allow_once", "allow_session") }, "lane_share_owner_only", { decision: "accept", answers: { tool_decision: ["allow_session"] } }],
+        ["pick Copilot's session approval", "chat.respondToInput", { kind: "approval", questions: offers("approve-once", "approve-for-session") }, "lane_share_owner_only", { decision: "accept", answers: { choice: " Approve-For-Session " } }],
+        // A typed answer that only reads like an option saves nothing.
+        ["be refused for typing 'Always' in a question", "chat.respondToInput", { kind: "question", questions: offers("Sometimes", "Never") }, null, { answers: { q1: "Always" } }],
         // An answer can reach the agent as a message.
         ["answer a question with a shell line", "chat.respondToInput", { kind: "question" }, "lane_share_plain_text_only", { answers: { q1: ["!cat ~/.ssh/id_ed25519"] } }],
         ["answer a question with a slash command in its reply", "chat.respondToInput", { kind: "question" }, "lane_share_plain_text_only", { responseText: "/shell ls" }],

@@ -33,6 +33,13 @@ describe("resolveProjectRepoOrigin", () => {
     await expect(resolveProjectRepoOrigin({ gitOriginUrl: null, localRootPath: root })).resolves.toBe("https://github.com/arul28/ADE.git");
   });
 
+  it("gives git's answer when the per-worktree config overrides the origin", async () => {
+    // The main file alone names another repository: a cloud lane would clone it.
+    const root = gitRepo(["remote.origin.url=https://github.com/someone/else.git", "extensions.worktreeConfig=true"]);
+    execFileSync("git", ["-C", root, "config", "--worktree", "remote.origin.url", "https://github.com/arul28/ADE.git"]);
+    await expect(resolveProjectRepoOrigin({ gitOriginUrl: null, localRootPath: root })).resolves.toBe("https://github.com/arul28/ADE.git");
+  });
+
   it.each([
     {
       name: "the origin the tab holds wins",

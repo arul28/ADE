@@ -1323,7 +1323,9 @@ function AppNavigationBridge() {
       repoOwner: envelope.repoOwner,
       repoName: envelope.repoName,
     }).catch(() => null);
-    if (match?.rootPath && match.rootPath !== projectRootRef.current) {
+    // The active project is another repository (checked above), so a copy on
+    // another machine is always a switch, even at the same path string.
+    if (match?.rootPath && (match.remote || match.rootPath !== projectRootRef.current)) {
       setInboundTarget({ kind: "switch-project", entity, project: match, original });
       return true;
     }
