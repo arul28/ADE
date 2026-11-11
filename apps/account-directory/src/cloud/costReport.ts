@@ -290,10 +290,10 @@ export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOv
   for (const row of overDiskRows.results ?? []) {
     const planId = planIdOf(row);
     if (planId !== "free" && row.extra_disk_state !== "on" && row.disk_gb > CLOUD_PLANS[planId].diskGb) {
-      alarms.push(`Account ${row.user_id} holds ${row.disk_gb} GB on the ${planId} plan, over its ${CLOUD_PLANS[planId].diskGb} GB, with extra disk off. A move left its old computer; nothing bills the difference.`);
+      alarms.push(`Account ${row.user_id} holds ${row.disk_gb} GB on the ${planId} plan, over its ${CLOUD_PLANS[planId].diskGb} GB, with extra disk off: a downgrade (freed by the plan cleanup after its grace days) or a move that left its old computer. Nothing bills the difference.`);
     }
     if (!freePlanOverDisk(row, row.disk_gb)) continue;
-    alarms.push(`Account ${row.user_id} is on the free plan with ${row.disk_gb} GB of disk, over the free ${CLOUD_PLANS.free.diskGb} GB. Its computers stay stopped until it deletes some or buys a plan; unused ones are deleted after 30 days.`);
+    alarms.push(`Account ${row.user_id} is on the free plan with ${row.disk_gb} GB of disk, over the free ${CLOUD_PLANS.free.diskGb} GB. Its computers stay stopped until it deletes some or buys a plan; the plan cleanup pushes and frees the oldest after its grace days.`);
   }
   if (owner.limitUsd == null) logCloud("cloud.owner_limit_unset", { costMtdMicros: owner.costMtdMicros });
   logCloud("cloud.daily_cost_report", { day, accounts: rows.length, dayCostMicros: dayCost, dayIncomeMicros: dayIncome, alarms: alarms.length });

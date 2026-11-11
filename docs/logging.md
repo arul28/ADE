@@ -1822,10 +1822,10 @@ case the in-process latch cannot see, an app or brain restarting inside the
 refusal. Both events reuse the existing `ade_feature_used` 140-per-day /
 30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
 
-Making a cloud box with **New ADE Cloud machine** records `feature:
-"connections"`, `action: "cloud_machine_create"` once per finished create,
-in the desktop IPC handler that runs it (`registerCloudIpc.ts`, where the
-outcome is known): `completed` (the box joined the account), `partial` (signed
+Making a cloud box for the CLI or an agent (`ade cloud create`, over the
+desktop bridge) records `feature: "connections"`, `action:
+"cloud_machine_create"` once per finished create, in the desktop handler that
+runs it (`registerCloudIpc.ts`, where the outcome is known): `completed` (the box joined the account), `partial` (signed
 in, still starting), `cancelled`, or `failed`. The product question is whether
 installations make ADE Cloud machines from ADE at all and how often a create
 fails. No box id, name, size, price, or error travels; those stay in
@@ -1859,19 +1859,21 @@ whether people buy from ADE and use extra hours. No amount, plan id or Stripe
 identifier travels. A six-hour key per outcome bounds it to 16 accepted events
 per installation per UTC day, inside the existing `ade_feature_used` ceilings.
 
-Ready machines record `feature: "connections"`, `action: "cloud_ready"`.
-The desktop records `enabled` and `disabled` when a project is turned on or
-off on the ADE Cloud page, `completed` or `failed` when a prepare ends (a
-cancel is neither), and `ready_picker` when the new-chat picker claims one;
-the brain records `ready_cli` when `ade chat create --machine cloud:ready`
-or an agent claims one (`cloud.claim_ready`). The product question is
-whether people keep machines ready, how often preparing one fails, and where
-the chats that take one start. No project, repository, machine, size, setup
-command or error travels; the setup's output stays out of the local log too
-(`cloud.ready_prepare_failed` carries its exit code only). A six-hour key
-per outcome bounds it to 24 accepted events per installation per UTC day,
-inside the existing `ade_feature_used` ceilings. The keeper's pool reads are
-not analytics.
+ADE Cloud lanes record `feature: "connections"` with one coarse outcome
+(`cloudLaneLaunchAnalytics.ts`). `cloud_lane_launch`: how a new lane on its
+own computer ends, `completed`, `failed` or `cancelled`, counted once per end
+when the launch host (the desktop's `registerCloudLaneLaunchIpc.ts`, surface
+`desktop`, or the brain's `cloudLaneLaunchBrainHost.ts`, surface `api`) saw it
+move there; a Retry that fixes a failure counts the failure, then the
+completion. `cloud_lane_freed`: Keep the lane and free its computer from the
+desktop, `completed` or `failed`. `cloud_clear_caches`: the computer's own
+brain clears its caches, `completed`, `failed`, or `denied` (an agent's ask
+declined or unanswered). `cloud_default_size`: the person picked another size
+for new lanes, `size_small` to `size_xlarge` (a value another computer synced
+is not counted again). No lane, project, computer, branch, prompt, size of a
+computer or error travels. Each is a person's decision or a launch that makes
+a computer, so the existing `ade_feature_used` ceilings bound them; there is
+no dedupe key.
 
 Sign-ins for cloud machines record `feature: "connections"`, `action:
 "cloud_sign_in"` in the brain, when a sign-in is saved

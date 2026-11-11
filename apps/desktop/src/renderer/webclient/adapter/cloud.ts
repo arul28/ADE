@@ -18,7 +18,7 @@ import type { AdapterInfra } from "./types";
  *
  * What only the desktop app can do stays out, so each caller's own guard
  * hides it: the life of a lane's computer (`laneLife`, `onLaneJob`), sign-ins,
- * ready machines, plans and billing pages. Making a computer and the machine
+ * plans and billing pages. Making a computer and the machine
  * actions that delete or resize refuse with a plain sentence.
  */
 
@@ -112,9 +112,6 @@ export function createWebCloudNamespace(infra: Pick<AdapterInfra, "client" | "co
     },
     getAgentLimits: async () => await commands.call<CloudAgentLimits | null>("cloud.read", { action: "limits" }, { fallback: null, retainLastRead: false }),
     setAgentLimits: async (limits) => await commands.call<CloudAgentLimits | null>("cloud.write", { action: "set_limits", args: limits }, { idempotent: false }),
-    createMachine: async () => {
-      throw new Error(DESKTOP_ONLY);
-    },
     onCreateProgress: () => () => undefined,
     cancelCreate: async () => ({ cancelled: false }),
   };

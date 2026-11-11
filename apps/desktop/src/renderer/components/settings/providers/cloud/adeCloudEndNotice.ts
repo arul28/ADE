@@ -1,14 +1,52 @@
 /**
- * The words of the end warning (design §4.5) for the one Claude pass that
- * desktop main names in `cloudAccess.read().passEnd`. Pure: no reads, no React.
+ * The words of the end warning (design §4.5) for the one sign-in that desktop
+ * main names in `cloudAccess.read().passEnd`: a Claude pass, or a key whose
+ * provider gave its end date. Pure: no reads, no React.
  */
 import type { CloudPassEnd } from "../../../../../shared/cloudSignIns";
+import { providerGroupLabel, type ProviderGroupKey } from "../../../../../shared/modelCatalog";
 import { endsInDaysText, shortDate } from "./adeCloudTime";
 
-export type AdeCloudEndNoticeWords = { title: string; detail: string };
+export type AdeCloudEndNoticeWords = { title: string; detail: string; action: string };
+
+/** The provider's name for a key's notice. */
+export function adeCloudEndProviderName(end: CloudPassEnd): string {
+  return end.provider ? providerGroupLabel(end.provider as ProviderGroupKey) ?? end.provider : "the provider";
+}
+
+/** The others that are due: passes and keys alike, so "sign-ins". */
+function moreText(end: CloudPassEnd): string {
+  if (end.more === 0) return "";
+  return end.more === 1 ? " 1 more sign-in needs a renew too." : ` ${end.more} more sign-ins need a renew too.`;
+}
+
+function keyWords(end: CloudPassEnd, now: number): AdeCloudEndNoticeWords {
+  const name = adeCloudEndProviderName(end);
+  const whose = end.email ? ` (${end.email})` : "";
+  const more = moreText(end);
+  // The key came from the provider's own sign-in: a new sign-in makes a new key.
+  const where = end.madeOnLabel ? ` on ${end.madeOnLabel}` : "";
+  const fix = `Sign in to ${name} again${where}, or add a new key, so cloud chats keep working.`;
+  if (end.state === "ended") {
+    return {
+      title: `Your ${name} key for ADE Cloud${whose} has ended`,
+      detail: `${name} set it to end on ${shortDate(end.expiresAt, now)}. ${fix}${more}`,
+      action: "Replace",
+    };
+  }
+  const days = Math.max(0, end.endsInDays);
+  return {
+    title: days === 0
+      ? `Your ${name} key for ADE Cloud${whose} ends today`
+      : `Your ${name} key for ADE Cloud${whose} ends in ${endsInDaysText(days)}`,
+    detail: `${name} set this end date. ${fix}${more}`,
+    action: "Replace",
+  };
+}
 
 export function adeCloudEndNoticeWords(end: CloudPassEnd, now: number): AdeCloudEndNoticeWords {
-  const more = end.more === 0 ? "" : end.more === 1 ? " 1 more pass needs a renew too." : ` ${end.more} more passes need a renew too.`;
+  if (end.kind === "key") return keyWords(end, now);
+  const more = moreText(end);
   const whose = end.email ? ` (${end.email})` : "";
   switch (end.state) {
     case "ended":
@@ -17,11 +55,13 @@ export function adeCloudEndNoticeWords(end: CloudPassEnd, now: number): AdeCloud
         detail: (end.endedAt != null
           ? `It ended on ${shortDate(end.endedAt, now)}. Renew it so cloud chats work again.`
           : "Renew it so cloud chats work again.") + more,
+        action: "Renew",
       };
     case "estimate_passed":
       return {
         title: `Your Claude pass for ADE Cloud${whose} may have ended`,
         detail: `Its expected end date has passed. Renew it to be sure cloud chats keep working.${more}`,
+        action: "Renew",
       };
     default: {
       const days = Math.max(0, end.endsInDays);
@@ -30,6 +70,7 @@ export function adeCloudEndNoticeWords(end: CloudPassEnd, now: number): AdeCloud
           ? `Your Claude pass for ADE Cloud${whose} ends today`
           : `Your Claude pass for ADE Cloud${whose} ends in ${endsInDaysText(days)}`,
         detail: `Renew it so cloud chats keep working.${more}`,
+        action: "Renew",
       };
     }
   }

@@ -2406,15 +2406,6 @@ describe("product analytics producers", () => {
         amount: "$5",
       })).toEqual({ feature: "connections", action: "cloud_plan", outcome });
     }
-    for (const outcome of ["enabled", "disabled", "completed", "failed", "ready_picker", "ready_cli"]) {
-      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
-        feature: "connections",
-        action: "cloud_ready",
-        outcome,
-        repository: "github.com/acme/app",
-        setup: "npm ci",
-      })).toEqual({ feature: "connections", action: "cloud_ready", outcome });
-    }
     for (const { id } of CLOUD_SIGN_INS) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "connections",

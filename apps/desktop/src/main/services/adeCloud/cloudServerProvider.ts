@@ -9,7 +9,16 @@
  */
 
 import type { CloudAccountState } from "../../../shared/adeCloud";
-import { CLOUD_PATHS, type CloudCheckoutResult, type CloudLaneWithoutComputer } from "../../../../../account-directory/src/cloud/contract";
+import {
+  CLOUD_COMPUTER_HEADER,
+  CLOUD_COMPUTER_PLATFORM_HEADER,
+  CLOUD_PATHS,
+  type CloudCheckoutResult,
+  type CloudInviteRedeemResult,
+  type CloudLaneWithoutComputer,
+  type CloudPlanCleanup,
+  type CloudReferralSummary,
+} from "../../../../../account-directory/src/cloud/contract";
 import {
   CLOUD_ACCESS_REFUSED,
   CloudProviderError,
@@ -45,6 +54,12 @@ export type CloudServerProviderDeps = {
   deviceName?: () => string | null;
   /** The update track of the app that makes a computer (`stable` or `beta`), sent with each create. */
   updateChannel?: () => CloudUpdateChannel | null;
+  /**
+   * This computer's id for the free plan (one per physical computer), sent
+   * with every call as `x-ade-computer`; `unreadable` when the OS has none.
+   * Left out on an ADE Cloud computer, which never claims a free plan.
+   */
+  computer?: () => Promise<{ id: string; platform: NodeJS.Platform } | null>;
   fetch?: FetchLike;
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
 };
@@ -104,6 +119,8 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     if (!base) throw new CloudProviderError("ADE's account service isn't set up on this computer.", "network", 0);
     const token = await deps.accessToken();
     if (!token) throw new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401);
+    // Cached after the first read: one OS probe per process.
+    const computer = await deps.computer?.().catch(() => null) ?? null;
     const controller = new AbortController();
     const timedOut = () => init.signal?.aborted
       ? new CloudProviderError("Cancelled.", "cancelled", 0)
@@ -124,6 +141,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
           headers: {
             accept: "application/json",
             authorization: `Bearer ${token}`,
+            ...(computer ? { [CLOUD_COMPUTER_HEADER]: computer.id, [CLOUD_COMPUTER_PLATFORM_HEADER]: computer.platform } : {}),
             ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
           },
           ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
@@ -324,7 +342,11 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async billingCheckout(plan): Promise<CloudCheckoutResult> {
       const body = record(await request("POST", "/cloud/billing/checkout", { body: { plan: plan ?? "plus" } }));
-      if (body?.url === null && (body.change === "now" || body.change === "next_period")) return { url: null, change: body.change };
+      if (body?.url === null && (body.change === "now" || body.change === "next_period")) {
+        // A downgrade over the cheaper plan's limits: what they will free, for the warning.
+        const cleanup = record(body.cleanup);
+        return { url: null, change: body.change, ...(cleanup && typeof cleanup.sentence === "string" ? { cleanup: cleanup as unknown as CloudPlanCleanup } : {}) };
+      }
       if (typeof body?.url !== "string" || !body.url) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
       return { url: body.url };
     },
@@ -341,6 +363,18 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async setExtraDisk(choice): Promise<CloudAccountState> {
       return await request("POST", "/cloud/billing/extra-disk", { body: choice }) as CloudAccountState;
+    },
+
+    async readReferral(): Promise<CloudReferralSummary> {
+      const body = record(await request("GET", CLOUD_PATHS.referrals));
+      if (typeof body?.code !== "string" || typeof body.link !== "string") throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+      return body as unknown as CloudReferralSummary;
+    },
+
+    async redeemInvite(code: string): Promise<CloudInviteRedeemResult> {
+      const body = record(await request("POST", CLOUD_PATHS.referralsRedeem, { body: { code } }));
+      if (body?.result !== "accepted" || !record(body.referral)) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+      return body as unknown as CloudInviteRedeemResult;
     },
 
     async listSavedChats(args): Promise<CloudSavedChatList> {

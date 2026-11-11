@@ -8,6 +8,7 @@ import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
 import { sendToAllWindows } from "./broadcast";
 import { createCloudLaneLife, type CloudLaneLife } from "./cloudLaneLife";
+import { captureCloudLaneAnalytics } from "./cloudLaneLaunchAnalytics";
 import type { CloudCopyDeps } from "./cloudMachineCopy";
 import type { createCloudMachines } from "./cloudMachines";
 import type { CloudProvider } from "./cloudProvider";
@@ -33,6 +34,8 @@ export function registerCloudLaneLifeIpc(args: {
   /** This app's saved target for a machine already paired, or null. */
   targetIdForMachine: (machineKey: string) => string | null;
   remote: RuntimeBridgeRegistration["remoteForMain"];
+  /** One coarse outcome per freed lane (cloudLaneLaunchAnalytics.ts). */
+  analytics?: Parameters<typeof captureCloudLaneAnalytics>[0];
   logger: Logger;
 }): CloudLaneLife {
   const { logger, remote } = args;
@@ -64,8 +67,14 @@ export function registerCloudLaneLifeIpc(args: {
         return await life.workState({ instanceId: textArg(callArgs, "instanceId") });
       case "deleteLane":
         return await life.deleteLane({ instanceId: textArg(callArgs, "instanceId"), skipCheck: callArgs.skipCheck === true });
-      case "freeLane":
-        return await life.freeLane({ instanceId: textArg(callArgs, "instanceId") });
+      case "freeLane": {
+        const freed = await life.freeLane({ instanceId: textArg(callArgs, "instanceId") }).catch((error: unknown) => {
+          captureCloudLaneAnalytics(args.analytics, "desktop", "cloud_lane_freed", "failed");
+          throw error;
+        });
+        captureCloudLaneAnalytics(args.analytics, "desktop", "cloud_lane_freed", freed.ok ? "completed" : "failed");
+        return freed;
+      }
       case "lanesWithoutComputer":
         return await life.lanesWithoutComputer();
       case "forgetLaneWithoutComputer":

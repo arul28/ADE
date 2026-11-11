@@ -11,13 +11,14 @@ import type {
   ChatLaunchQueueMessageArgs,
 } from "../../../shared/types";
 import type { RuntimeBridgeRegistration } from "../ipc/runtimeBridge";
-import { readGitOriginUrlWithoutGit } from "../projects/recentProjectSummary";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
 import { sendToAllWindows } from "./broadcast";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { createCloudLaneLaunchService, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
+import { createCloudLaneLaunchOriginReader } from "./cloudLaneLaunchOrigin";
+import { cloudLaneLaunchOutcomes } from "./cloudLaneLaunchAnalytics";
 
 /** The launch id of an id-based call, or null when the args carry none. */
 function launchIdOf(args: unknown): string | null {
@@ -36,6 +37,8 @@ export function registerCloudLaneLaunchIpc(args: {
   forgetMachineConnections: (machine: { machineKey: string | null; instanceId: string }) => void;
   pairMachine: (machineKey: string) => Promise<{ targetId: string }>;
   remote: RuntimeBridgeRegistration["remoteForMain"];
+  /** How each launch ends, one coarse outcome (cloudLaneLaunchAnalytics.ts). */
+  analytics?: Parameters<typeof cloudLaneLaunchOutcomes>[0];
   logger: Logger;
 }): CloudLaneLaunchService {
   const { remote, logger } = args;
@@ -43,10 +46,14 @@ export function registerCloudLaneLaunchIpc(args: {
   // The launch kinds each connect's brain advertised, so the hand-off reads
   // what its own connect just saw instead of connecting again.
   const brainLaunchKinds = new Map<string, string[]>();
+  const countOutcome = cloudLaneLaunchOutcomes(args.analytics, "desktop");
   const service = createCloudLaneLaunchService({
     recordsDir: path.join(app.getPath("userData"), "cloud-lane-launches"),
     logger,
-    emit: (event: ChatLaunchEvent) => sendToAllWindows(IPC.cloudLaneLaunchEvent, event),
+    emit: (event: ChatLaunchEvent) => {
+      sendToAllWindows(IPC.cloudLaneLaunchEvent, event);
+      countOutcome(event);
+    },
     creator,
     removeAccountMachine: args.removeAccountMachine,
     forgetMachineConnections: args.forgetMachineConnections,
@@ -74,25 +81,25 @@ export function registerCloudLaneLaunchIpc(args: {
     ),
   });
 
+  // One origin read for `start` and `list` (see `cloudLaneLaunchOrigin.ts`).
+  const readOrigin = createCloudLaneLaunchOriginReader({ listProjects: (targetId) => remote.projects(targetId), logger });
+
   ipcMain.handle(IPC.cloudLaneLaunchCall, async (event, raw: unknown): Promise<CloudLaneLaunchCallResult> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneLaunchCall)) {
       throw new Error("ADE can't do that from here.");
     }
     const request = (isRecord(raw) ? raw : {}) as Partial<CloudLaneLaunchCallRequest>;
-    const source = isRecord(request.source) ? request.source : null;
-    const localRootPath = typeof source?.localRootPath === "string" ? source.localRootPath.trim() : "";
-    const originUrl = (typeof source?.gitOriginUrl === "string" && source.gitOriginUrl.trim())
-      // Read from the checkout's git config, without starting git.
-      || (localRootPath ? readGitOriginUrlWithoutGit(localRootPath) ?? null : null);
     switch (request.method) {
-      case "start":
+      case "start": {
+        const originUrl = await readOrigin(request);
         return {
           owned: true,
           result: await service.start({ args: request.args as ChatLaunchArgs, originUrl }),
           projectIdentity: normalizeGitRemoteIdentity(originUrl),
         };
+      }
       case "list": {
-        const projectIdentity = normalizeGitRemoteIdentity(originUrl);
+        const projectIdentity = normalizeGitRemoteIdentity(await readOrigin(request));
         // No project, or one with no origin: it has no cloud launches.
         return { owned: true, result: projectIdentity ? service.list({ originUrl: projectIdentity }) : [], projectIdentity };
       }

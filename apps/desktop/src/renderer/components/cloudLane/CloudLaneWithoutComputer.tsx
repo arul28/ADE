@@ -30,9 +30,11 @@ import "./cloudLane.css";
 function cloudLaneWithoutComputerSentence(lane: CloudLaneWithoutComputer): string {
   const since = Number.isFinite(lane.since) ? new Date(lane.since).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : null;
   const when = since ? ` on ${since}` : "";
-  return lane.reason === "freed"
-    ? `${lane.laneName} has no computer now. You freed it${when} to save space; its work is on GitHub.`
-    : `${lane.laneName} has no computer now. ADE Cloud removed it${when} after 30 days without use. Work you pushed to GitHub is safe, and a new computer starts from the branch on GitHub.`;
+  if (lane.reason === "freed") return `${lane.laneName} has no computer now. You freed it${when} to save space; its work is on GitHub.`;
+  if (lane.reason === "plan_limit") {
+    return `${lane.laneName} has no computer now. ADE Cloud removed it${when} to fit your plan, after pushing its work to GitHub. A new computer starts from the branch on GitHub.`;
+  }
+  return `${lane.laneName} has no computer now. ADE Cloud removed it${when} after 30 days without use. Work you pushed to GitHub is safe, and a new computer starts from the branch on GitHub.`;
 }
 
 /** The size the old computer had, as a tier of today's catalog; the saved default when none matches. */

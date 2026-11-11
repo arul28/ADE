@@ -112,13 +112,10 @@ export function createCloudLaneComputerStages(
     signal: AbortSignal,
   ): Promise<CloudInstance> => {
     const launchId = record.snapshot.launchId;
-    const signInEnv = await (async () => (await deps.creator.machineEnv?.()) ?? {})().catch((error: unknown) => {
-      // Only the error's name: its message could quote a vault value.
-      logger.warn("cloud_lane_launch.machine_env_read_failed", { launchId, error: error instanceof Error ? error.name : typeof error });
-      return {} as Record<string, string>;
-    });
+    // No sign-in value in the env (the Worker and the host would see it): the
+    // computer's brain takes them from the account vault (cloudMachineCreator.ts).
     const minAdeVersion = cloudMinAdeVersion(deps.creator.minAdeVersion?.() ?? null);
-    const env = { ...signInEnv, ...(minAdeVersion ? { ADE_MIN_VERSION: minAdeVersion } : {}) };
+    const env: Record<string, string> = minAdeVersion ? { ADE_MIN_VERSION: minAdeVersion } : {};
     assertActive(record, signal);
     const input = {
       name: record.computerName,

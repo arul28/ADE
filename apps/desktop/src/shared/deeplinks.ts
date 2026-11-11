@@ -13,6 +13,7 @@
 //   ade://linear-issue/<ADE-123>[?branch=<branch>]
 //   ade://settings/<entry-id>[?machine=<machine-id>]
 //   ade://open/<place>
+//   ade://invite/<CODE>
 //
 //   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue|settings>&...
 //   (param names: lane→id; session→id[+lane,event,offset]; file→path[+line,lane];
@@ -40,6 +41,7 @@
 
 import { isUuid } from "./uuid";
 import type { AppNavigationTarget } from "./types/core";
+import { cloudInviteLink, parseCloudInviteCode } from "../../../account-directory/src/cloud/contract";
 
 export const ADE_DEEPLINK_SCHEME = "ade";
 export const ADE_DEEPLINK_HTTPS_HOST = "ade-app.dev";
@@ -196,9 +198,23 @@ export type DeeplinkOpenPlaceTarget = {
   place: string;
 };
 
+/**
+ * An ADE Cloud invite (`ade://invite/<CODE>`), opened by the website's invite
+ * page: Settings › Account with the code filled in its box. Its https form is
+ * the invite page itself (`https://ade-app.dev/invite/<CODE>`).
+ */
+export type DeeplinkInviteTarget = {
+  kind: "invite";
+  code: string;
+};
+
+/** Where an invite opens: the Account card, which holds the code box. */
+export const INVITE_SETTINGS_ENTRY_ID = "account.profile";
+
 export type DeeplinkTarget =
   | DeeplinkSettingsTarget
   | DeeplinkOpenPlaceTarget
+  | DeeplinkInviteTarget
   | DeeplinkLaneTarget
   | DeeplinkSessionTarget
   | DeeplinkFileTarget
@@ -402,6 +418,8 @@ export type BuildOptions = {
 export function buildDeeplink(target: DeeplinkTarget, options: BuildOptions = {}): string {
   // `open` has no https form: it must never run from outside a chat.
   if (target.kind === "open") return buildAdeUrl(target);
+  // An invite's https form is the website's invite page.
+  if (target.kind === "invite") return (options.form ?? "https") === "ade" ? buildAdeUrl(target) : cloudInviteLink(target.code);
   return (options.form ?? "https") === "ade" ? buildAdeUrl(target) : buildHttpsUrl(target);
 }
 
@@ -488,10 +506,12 @@ function buildAdeUrl(target: DeeplinkTarget): string {
     }
     case "open":
       return `${ADE_DEEPLINK_SCHEME}://open/${encodeURIComponent(target.place)}`;
+    case "invite":
+      return `${ADE_DEEPLINK_SCHEME}://invite/${encodeURIComponent(target.code)}`;
   }
 }
 
-function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget>): string {
+function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget | DeeplinkInviteTarget>): string {
   const params = new URLSearchParams();
   switch (target.kind) {
     case "lane":
@@ -684,6 +704,12 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
       return { ok: false, error: { kind: "malformed", reason: "expected settings/<id>" }, rawUrl };
     }
     return buildSettingsTarget(safeDecode(pathSegments[0]), url.searchParams, rawUrl);
+  }
+
+  if (host === "invite") {
+    const code = pathSegments.length === 1 ? parseCloudInviteCode(safeDecode(pathSegments[0])) : null;
+    if (!code) return { ok: false, error: { kind: "malformed", reason: "invalid invite code" }, rawUrl };
+    return { ok: true, target: { kind: "invite", code }, rawUrl };
   }
 
   if (host === "open") {
@@ -972,6 +998,8 @@ export function describeTarget(target: DeeplinkTarget): string {
       return "ADE setting";
     case "open":
       return `ADE ${target.place}`;
+    case "invite":
+      return "ADE Cloud invite";
   }
 }
 
@@ -1048,5 +1076,7 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
       return { kind: "settings", entryId: target.entryId, machineId: target.machineId ?? null };
     case "open":
       return { kind: "open-place", place: target.place };
+    case "invite":
+      return { kind: "settings", entryId: INVITE_SETTINGS_ENTRY_ID, inviteCode: target.code };
   }
 }

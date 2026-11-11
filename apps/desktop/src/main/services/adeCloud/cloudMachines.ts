@@ -31,13 +31,14 @@ import {
   type CloudMachineActionResult,
   type CloudMachinesResult,
   type CloudResources,
+  type CloudInviteRedeemResult,
+  type CloudReferralSummary,
 } from "../../../shared/adeCloud";
-import { CLOUD_READY_METADATA, readCloudReadyMachineState } from "../../../shared/cloudReady";
 import { cloudMachineLaneFactsOf, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider, type CloudInstance } from "./cloudProvider";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
 import { cloudSleepPolicyOf } from "./cloudSleep";
-import { wakeThroughTransition } from "./cloudReadyClaim";
+import { wakeThroughTransition } from "./cloudInstanceOps";
 import { getErrorMessage } from "../shared/utils";
 import { withDeadline } from "../shared/withTimeout";
 
@@ -97,7 +98,6 @@ function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudLa
     failure: instance.status === "failed" ? instance.statusReason?.message ?? null : null,
     machineKey: instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null,
     createdAtMs: instance.created != null ? instance.created * 1000 : null,
-    ready: readyOf(instance),
     sleep: cloudSleepPolicyOf(instance),
     diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], catalog, instance.metadata[CLOUD_DISK_FULL_REASON_METADATA]),
     update: updateOf(instance),
@@ -120,17 +120,6 @@ function updateOf(instance: CloudInstance): CloudMachineUpdate | null {
     state: instance.updateState === "updating" || instance.updateState === "failed" ? instance.updateState : "auto",
     error: instance.updateState === "failed" ? instance.updateError ?? null : null,
     updatedAtMs: instance.updatedAt ?? null,
-  };
-}
-
-/** A project's ready machine (see cloudReadyMachines.ts), or null for any other box. */
-function readyOf(instance: CloudInstance): CloudMachine["ready"] {
-  const state = readCloudReadyMachineState(instance.metadata[CLOUD_READY_METADATA.state]);
-  const project = instance.metadata[CLOUD_READY_METADATA.project];
-  if (!state || !project) return null;
-  return {
-    projectName: instance.metadata[CLOUD_READY_METADATA.projectName] || project,
-    state,
   };
 }
 
@@ -590,6 +579,17 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
     account: async (): Promise<CloudAccountState | null> => {
       const client = await deps.client();
       return client ? await client.getAccount() : null;
+    },
+    /** The account's invite link and what it earned; null without ADE Cloud here. */
+    referral: async (): Promise<CloudReferralSummary | null> => {
+      const client = await deps.client();
+      return client ? await client.readReferral() : null;
+    },
+    /** Enters someone's invite (a link or a code); throws the server's sentence when refused. */
+    redeemInvite: async (code: string): Promise<CloudInviteRedeemResult> => {
+      const client = await deps.client();
+      if (!client) throw new Error((await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet.");
+      return await client.redeemInvite(code);
     },
   };
 }

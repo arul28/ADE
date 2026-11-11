@@ -10,13 +10,11 @@ import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { CLOUD_SIGN_INS } from "../../../shared/cloudSignIns";
 import { cloudSignInVaultKey } from "./cloudSignInStore";
 import { CLOUD_VAULT_KIND } from "./cloudAccess";
-import { CLOUD_READY_VAULT_KEY } from "./cloudReadySettings";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY } from "./cloudSleep";
 
-/** What desktop main writes itself: agent limits and ready machines. */
+/** What desktop main writes itself: agent limits. */
 const DESKTOP_ITEMS: ReadonlySet<string> = new Set([
   CLOUD_AGENT_LIMITS_VAULT_KEY,
-  CLOUD_READY_VAULT_KEY,
 ]);
 
 /** The sign-ins a new machine starts with: desktop main only reads them; the brain saves them. */

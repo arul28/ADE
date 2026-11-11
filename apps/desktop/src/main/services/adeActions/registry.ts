@@ -311,11 +311,10 @@ import { buildIntegrationConnectAdapters } from "../integrations/integrationConn
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
 import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
-import { cloudMachineEnv, type CloudSignInVaults } from "../adeCloud/cloudSignInStore";
+import type { CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
 import { claudePassVaultFromStore } from "../adeCloud/claudePassStore";
 import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
-import { buildCloudReadyActions } from "../adeCloud/cloudReadyActions";
 import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
 import { createCloudBrainMaker, type CloudBrainMaker, type CloudBrainMakerBase } from "../adeCloud/cloudBrainMaker";
 import {
@@ -330,7 +329,6 @@ import { createCloudMachines } from "../adeCloud/cloudMachines";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
 import { getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
-import { CLOUD_READY_VAULT_KEY, createCloudReadySettingsStore } from "../adeCloud/cloudReadySettings";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
@@ -4153,6 +4151,7 @@ function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnT
     logger: runtime.logger,
     // A lane's computer is made here, not by the maker: the sign-in renewal learns of it the same way.
     onComputerCreated: noteCloudComputerMade,
+    analytics: runtime.productAnalyticsService ?? null,
   });
   return cloudLaneLaunchHost;
 }
@@ -4194,8 +4193,6 @@ function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType
     directoryBaseUrl,
     listAccountMachines: () => directory().listMachines(),
     renameMachine: (machineKey, name) => directory().renameMachine(machineKey, name),
-    // The person's provider sign-ins, so they are signed in on the new machine (cloudSignInStore.ts).
-    machineEnv: () => cloudMachineEnv(cloudSignInVaults(runtime), runtime.logger),
     // This brain's release: a machine made from an older template installs it on boot.
     // Only a released build: a development build's version may not be published.
     minAdeVersion: () => stampedAdeVersion(),
@@ -4210,20 +4207,13 @@ function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType
 }
 
 /**
- * The `cloud` domain for the CLI and agents: ready machines (read through
- * the same store the desktop writes) and the machine verbs. The key, the cap
- * and the choice are the account's, so every brain answers the same; making a
- * machine goes to the desktop attached to this brain.
+ * The `cloud` domain for the CLI and agents: the machine verbs, lane
+ * launches and sign-ins. The key and the cap are the account's, so every
+ * brain answers the same; making a machine goes to the desktop attached to
+ * this brain.
  */
 function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   const signedIn = () => runtime.accountAuthService?.getStatus().signedIn === true;
-  const settings = createCloudReadySettingsStore({
-    vault: () => (signedIn() && runtime.accountVaultStore
-      ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_READY_VAULT_KEY)
-      : null),
-    machineStore: () => cloudMachineStore(),
-    logger: runtime.logger,
-  });
   const credentials = cloudAccessDeps(runtime);
   const agentLimits = createCloudAgentLimitsStore({
     vault: () => (signedIn() && runtime.accountVaultStore ? cloudVaultFromStore(runtime.accountVaultStore, CLOUD_AGENT_LIMITS_VAULT_KEY) : null),
@@ -4246,24 +4236,9 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   }));
   const agentChatService = runtime.agentChatService ?? null;
   const maker = observeCloudComputerMakes(cloudBrainMakerFor(runtime, machines));
-  const ready = buildCloudReadyActions({
-    credentials,
-    readSettings: async () => (await settings.read()).projects,
-    // A six-hour dedupe, as on the desktop: claims are frequent in a benchmark loop.
-    onClaimed: () => runtime.productAnalyticsService?.capture({
-      event: "ade_feature_used",
-      surface: "api",
-      properties: { feature: "connections", action: "cloud_ready", outcome: "ready_cli" },
-      projectId: null,
-      dedupeKey: "cloud_ready:ready_cli",
-      minimumIntervalMs: 6 * 60 * 60 * 1_000,
-    }),
-    logger: runtime.logger,
-  });
   const verbs = buildCloudAgentActions({
     machines,
     limits: agentLimits,
-    readySettings: settings,
     desktop: () => runtime.getCloudDesktop?.() ?? null,
     maker,
     laneLaunch: () => cloudLaneLaunchHostFor(runtime, machines),
@@ -4293,6 +4268,7 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
           },
         }
       : null,
+    analytics: runtime.productAnalyticsService ?? null,
     logger: runtime.logger,
   });
   const cloudSignIns = buildCloudSignInActions({
@@ -4312,7 +4288,6 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
     logger: runtime.logger,
   });
   return {
-    ...ready,
     ...verbs,
     ...cloudSignIns,
     /** Whether ADE Cloud exists for this account; the only `cloud` action served when it doesn't. */

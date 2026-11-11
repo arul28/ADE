@@ -310,6 +310,8 @@ export function chipFromDeeplinkTarget(url: string, target: DeeplinkTarget): Chi
       if (!place) return { kind: "ade_link", token: url, label: `ADE · open/${target.place}`, source };
       return { kind: "place", token: url, label: place.label, source };
     }
+    case "invite":
+      return { kind: "ade_link", token: url, label: "ADE Cloud invite", source };
   }
 }
 

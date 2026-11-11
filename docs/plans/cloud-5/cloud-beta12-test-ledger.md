@@ -72,3 +72,18 @@ Each entry: area, what was done, what was seen, expected, ids (launch / instance
 - At the Providers test: check that the Mac Studio has the Cursor and Devin sign-ins (Settings > Providers, viewing the Mac Studio). Owner asked to be reminded (item 13).
 - Nothing about sign-ins on a cloud computer has been tested yet: launch 2a06da66 stopped before the computer was made.
 - PR #2165 (multi-machine project lifecycle, open) uses directory migrations 0020-0022 (lane shares), and main already has Cloud 3's 0020-0022 (`cloud_auto_update`, `cloud_lanes_without_computer`, `cloud_disk_usage`). It must renumber to 0023+ before merge. Its Part A (one project per repo across machines, "Copies") is the owner's "open a project, not a folder" idea; it does not fix item 14.
+
+## Cloud 5 status (lane ade/cloud-5-dashboard-and-fixes)
+
+- 1 (own tab): BUILT. Settings sidebar "ADE Cloud" (`ade-cloud` tab, after Integrations), shown only with access (every entry on it is an ADE Cloud entry). The `integrations.ade-cloud*` ids keep working; `?integration=cloud` redirects to the tab. Integrations no longer lists ADE Cloud.
+- 3 (Lanes counts computers): BUILT. The hero says "Computers N of M"; the table lists every computer the account pays for, a computer with no lane included ("No lane").
+- 4 (link to the page you're on): GONE with the new page.
+- 5 (two reset dates): BUILT. Every date on the page is read in UTC (`formatShortDate` -> `formatCloudDate`): "resets Dec 1" everywhere.
+- 6 (sizes): BUILT. Size cards: CPU, memory, disk limit, what it runs, full computer tag, rate, how long your hours last there, cents per hour past the plan (`shared/cloudTiers.ts` `cloudTierFacts`).
+- 7 (real dashboard): BUILT, iterating. Night-sky hero (plan, hours with earned/extra/forecast, disk, computers, the city), lanes and computers table with inline actions, plan comparison with one action per plan plus extra hours/disk, sizes, sign-ins per provider in plain words, what agents may do alone. No fold-out rows.
+- 9 (Run on menu): BUILT in the picker. One row style (14 px icon box, name, second line on every row; a disabled row says why), no skyline, ADE Cloud line "Small · 43.8 h left at this size" (`useAdeCloudDraft` `runOnLine`; the AgentChatPane row wiring waits for the launch-fixes helper).
+- 11 (ADE Cloud chip): BUILT. No boxed brand style on the Run on trigger or the composer machine chip.
+- 12 (size menu): BUILT. Size name on the button; per size specs, what it runs, rate, hours left there; "Start every new lane on X".
+- 17 (computer that no longer exists): NOT REPRODUCED. The app keeps no cache of the computer list (renderer reads the server on open, focus and change; main has no cache), so the likely story is that 7z5o5rwcau was deleted between the two reads. Who deleted it is not known yet.
+- 18 (disk wording): FIXED. The plan's disk is one total shared by all computers; `ade cloud status` now says "12 GB disk shared by all computers" (cliCloudStatus.ts; brain's `diskShared` is always true).
+- Header meter: BUILT. ADE Cloud ring first in the usage control, popover panel first (hours, reset, disk, computers, earned, extra, Open ADE Cloud, Invite friends). Its own read: every 5 minutes and on change, never on focus.

@@ -45,7 +45,6 @@ describe("ADE Cloud agent actions: approvals", () => {
           return next;
         },
       },
-      readySettings: { read: async () => ({ projects: [], authoritative: true }), write: async () => undefined },
       desktop: () => ({
         create: async () => {
           ran.push("create");

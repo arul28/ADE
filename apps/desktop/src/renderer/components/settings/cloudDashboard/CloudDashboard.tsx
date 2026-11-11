@@ -1,32 +1,35 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowLeft, Broom, CaretRight, CreditCard, Desktop, Gauge, MagnifyingGlass, Trash, UserCircle, Warning } from "@phosphor-icons/react";
-import { cloudCatalogOf, formatCloudHours, type CloudAccountState } from "../../../../shared/adeCloud";
+import { ArrowLeft, Broom, Desktop, MagnifyingGlass, Trash, Warning } from "@phosphor-icons/react";
+import { cloudAccountBanner, formatCloudDate, formatCloudHours, planCleanupDoneSentence, timedWakesCancelledSentence, type CloudAccountState } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../../shared/cloudLaneLaunch";
-import { cloudTierRateLabel, cloudTiers, type CloudTierId } from "../../../../shared/cloudTiers";
 import { resolveSettingsHash } from "../../../../shared/settingsManifest";
 import { useLocation } from "react-router-dom";
 import { formatAgo, ipcErrorMessage } from "../../../lib/format";
-import { useRootAppStore } from "../../../state/appStore";
 import { showToast } from "../../app/toast/toastStore";
 import { ADE_CLOUD_NAME, CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import type { CloudMachinesState } from "../../remoteTargets/useCloudMachines";
 import { confirmDialog } from "../../ui/dialog";
+import { Banner } from "../../ui/notice";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { CloudAgentLimitsCard } from "../CloudAgentLimitsCard";
-import { CloudPlanCard } from "../CloudPlanCard";
 import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, decodeSettingsHash } from "../settingsHash";
 import { CloudCity, type CityItem } from "./CloudCity";
 import { CloudFreeUpSpace } from "./CloudFreeUpSpace";
+import { CloudPlans } from "./CloudPlans";
+import { CloudSizes } from "./CloudSizes";
+import { CloudSignIns } from "./CloudSignIns";
 import {
   CLOUD_DISK_WARN_SHARE,
   STATE_LABEL,
   dashLanes,
+  earnedHoursLeftMilli,
   formatGb,
   formatShortDate,
   hoursForecast,
   lastRunText,
   percentOf,
   planName,
+  prefersReducedMotion,
   type DashLane,
 } from "./cloudDashboardModel";
 import { clearCloudLaneCaches, cloudLaneLifeAvailable, freeCloudLane } from "../../cloudLane/cloudLaneActions";
@@ -37,93 +40,56 @@ import { CloudLaneWithoutComputerNotice } from "../../cloudLane/CloudLaneWithout
 import { CloudTierChangeDialog } from "../../cloudLane/CloudTierChangeDialog";
 import "./cloudDashboard.css";
 
-type View = "city" | "list";
-
-/** The dashboard's element id: the integration header links to it. */
+/** The dashboard's element id. */
 export const CLOUD_DASHBOARD_ID = "ade-cloud-dashboard";
 
 const NO_MACHINES: CloudLaneMachine[] = [];
 
-/** The Sign-ins row's value: how many sign-ins ADE Cloud uses (the count `AdeCloudSignInsRow` reports; null before its read). */
-export function cloudSignInsValue(count: number | null): string {
-  if (count == null) return "";
-  return count ? `${count} in use` : "None in use";
-}
+/** The settings anchors on this page: a deep link to one scrolls to its card. */
+const CARD_ANCHORS = new Set([ADE_CLOUD_PLAN_ANCHOR, "cloud-plan", "cloud-sign-ins", "cloud-agent-limits", "cloud-sizes", "cloud-lanes", "cloud-machines", "cloud-ready", "cloud-connection"]);
 
-/** Computers that hold no one lane: the "Other computers" row lists them in their older cards. */
-export function cloudOtherComputersCount(machines: CloudMachinesState): number {
-  const list = machines.result?.state === "ok" ? machines.result.machines as CloudLaneMachine[] : [];
-  return list.filter((machine) => !machine.lane).length;
-}
-type RowId = "plan" | "signins" | "limits" | "size" | "other";
-
-/** The settings anchors inside the rows: a deep link to one opens its row, so the page can scroll to it. */
-const ROW_FOR_ANCHOR: Record<string, RowId> = {
-  [ADE_CLOUD_PLAN_ANCHOR]: "plan",
-  "cloud-sign-ins": "signins",
-  "cloud-agent-limits": "limits",
-  "cloud-ready": "other",
-  "cloud-machines": "other",
-};
-
-/** The card anchor a hash names: its own text first (the plan card has no settings entry), then a settings entry's. */
+/** The card anchor a hash names: its own text first, then a settings entry's. */
 function anchorOfHash(hash: string): string | null {
   if (!hash) return null;
   const raw = decodeSettingsHash(hash).trim().toLowerCase();
-  return raw in ROW_FOR_ANCHOR || raw === ADE_CLOUD_FREE_SPACE_ANCHOR ? raw : resolveSettingsHash(raw)?.anchor ?? null;
+  if (CARD_ANCHORS.has(raw) || raw === ADE_CLOUD_FREE_SPACE_ANCHOR) return raw;
+  return resolveSettingsHash(raw)?.anchor ?? null;
 }
 
-function rowForHash(hash: string): RowId | null {
-  const anchor = anchorOfHash(hash);
-  return anchor ? ROW_FOR_ANCHOR[anchor] ?? null : null;
-}
+/** Old anchors that now live inside another card. */
+const ANCHOR_CARD: Record<string, string> = {
+  [ADE_CLOUD_PLAN_ANCHOR]: "cloud-plan",
+  "cloud-machines": "cloud-lanes",
+  "cloud-ready": "cloud-lanes",
+  "cloud-connection": CLOUD_DASHBOARD_ID,
+};
 
 const errorText = (error: unknown) => ipcErrorMessage(error) || `${ADE_CLOUD_NAME} couldn't do that. Try again in a moment.`;
 
 /**
- * Settings › ADE Cloud, the dashboard (one tab in place of the column of
- * cards): hours, disk and lanes against the plan, every cloud lane as a city
- * or a list, a look inside a lane's disk, "Free up space" at 80% of the
- * plan's disk, and the account's rows that open.
+ * Settings › ADE Cloud: the one-stop page for the account's cloud. Everything
+ * shows at once, nothing folds away: the hours, disk and computers against the
+ * plan with the city of lanes, every computer the account pays for, the plans
+ * side by side, the sizes, the sign-ins cloud computers use, and what agents
+ * may do alone.
  *
- * Account level: everything here goes through this app's main process by
- * ADE Cloud id, with no pin, except Clear caches, which runs on the lane's
- * own computer through its binding (`cloudLaneActions.ts`). It reads only
- * what the computer list already holds; nothing wakes a computer to look.
+ * Account level: everything goes through this app's main process with no pin,
+ * except Clear caches, which runs on the lane's own computer through its
+ * binding (`cloudLaneActions.ts`). It reads only what the computer list
+ * already holds; nothing wakes a computer to look.
  */
-export function CloudDashboard({
-  account,
-  machines,
-  signIns,
-  signInsValue,
-  otherComputers,
-  otherComputersCount,
-}: {
-  account: CloudAccountState;
-  /** The account's computers, from the section's one shared read. */
-  machines: CloudMachinesState;
-  /** The Sign-ins row's panel (see the mount point in `CloudSection`). */
-  signIns: ReactNode;
-  signInsValue: string;
-  /** The computers that hold no one lane (and ready machines), in their older cards. */
-  otherComputers: ReactNode;
-  otherComputersCount: number;
-}) {
-  const [view, setView] = useState<View>("city");
+export function CloudDashboard({ account, machines }: { account: CloudAccountState; machines: CloudMachinesState }) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [insideKey, setInsideKey] = useState<string | null>(null);
   const { hash } = useLocation();
-  // Open on the first render when a deep link names a row's card: the settings page scrolls to it once it is there.
-  const [openRow, setOpenRow] = useState<RowId | null>(() => rowForHash(hash));
-  // A later deep link (search, a link from elsewhere) opens its row before the page looks for the card.
-  useLayoutEffect(() => {
-    const linked = rowForHash(hash);
-    if (linked) setOpenRow(linked);
-  }, [hash]);
-  // A link to Free up space (the label above the prompt box) opens its flow.
   const [freeing, setFreeing] = useState(() => anchorOfHash(hash) === ADE_CLOUD_FREE_SPACE_ANCHOR);
   useLayoutEffect(() => {
-    if (anchorOfHash(hash) === ADE_CLOUD_FREE_SPACE_ANCHOR) setFreeing(true);
+    const anchor = anchorOfHash(hash);
+    if (anchor === ADE_CLOUD_FREE_SPACE_ANCHOR) setFreeing(true);
+    const card = anchor ? ANCHOR_CARD[anchor] ?? anchor : null;
+    if (!card) return;
+    const element = document.getElementById(card);
+    element?.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
   }, [hash]);
   const [sizing, setSizing] = useState<DashLane | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -136,7 +102,6 @@ export function CloudDashboard({
   useEffect(() => {
     setNow(Date.now());
   }, [machines.result]);
-  // The lanes kept without a computer: the shared read (on open, focus and a change of the computers).
   const without = useCloudLanesWithoutComputer(cloudLaneLifeAvailable()).lanes;
   const listKey = list.map((machine) => machine.instanceId).join(",");
   useEffect(() => {
@@ -145,9 +110,8 @@ export function CloudDashboard({
   const jobs = useCloudLaneJobs(cloudLaneLifeAvailable());
 
   const lanes = useMemo(() => dashLanes({ machines: list, account, without, now }), [list, account, without, now]);
-  const selected = lanes.find((lane) => lane.key === selectedKey) ?? lanes[0] ?? null;
+  const selected = lanes.find((lane) => lane.key === selectedKey) ?? null;
   const selectedJob = selected?.instanceId ? cloudLaneJobFor(jobs, { instanceId: selected.instanceId, laneId: selected.machine?.lane?.laneId ?? null }) : null;
-  // Changes on lanes that aren't selected still show their steps (and Retry) here.
   const otherJobs = useMemo(() => [...jobs.values()].filter((job) => cloudLaneJobVisible(job) && job.phase !== "online"
     && job.jobId !== selectedJob?.jobId), [jobs, selectedJob?.jobId]);
   const inside = insideKey ? lanes.find((lane) => lane.key === insideKey) ?? null : null;
@@ -155,16 +119,10 @@ export function CloudDashboard({
     if (insideKey && !inside) setInsideKey(null);
   }, [insideKey, inside]);
 
-  const diskUsed = account.disk.usedGb;
-  const diskLimit = account.disk.limitGb ?? 0;
-  const diskShare = diskLimit > 0 ? diskUsed / diskLimit : 0;
-  const hoursLeftPct = account.hours.includedMilli > 0 ? (account.hours.leftMilli / account.hours.includedMilli) * 100 : 0;
-  const forecast = hoursForecast(account, now);
-
   const cityItems = useMemo<CityItem[]>(() => lanes.map((lane) => ({
     key: lane.key,
     name: lane.name,
-    sub: lane.state === "none" ? "no computer now" : `${formatGb(lane.diskGb)}${lane.old && lane.lastActiveAt ? `, ${formatAgo(lane.lastActiveAt, now)}` : ""}`,
+    sub: lane.state === "none" ? "no computer now" : lane.noLane ? `${formatGb(lane.diskGb)}, no lane` : formatGb(lane.diskGb),
     aria: laneAria(lane, now),
     detail: laneDetail(lane, now),
     size: lane.diskGb,
@@ -174,33 +132,17 @@ export function CloudDashboard({
     empty: lane.state === "none",
   })), [lanes, now]);
 
-  // Look inside moves focus into the inside view; Back returns it to what opened it
-  // (the city or list, on the same lane, or the Look inside button).
-  const sectionRef = useRef<HTMLElement | null>(null);
-  const lookInsideButtonRef = useRef<HTMLButtonElement | null>(null);
-  const returnFocusRef = useRef<"view" | "button" | null>(null);
-  const openInside = useCallback((key: string, from: "view" | "button" = "view") => {
+  const tableRef = useRef<HTMLDivElement | null>(null);
+  const selectFromCity = useCallback((key: string) => {
+    setSelectedKey(key);
+    tableRef.current?.querySelector<HTMLElement>(`[data-key="${cssId(key)}"]`)?.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  }, []);
+  const openInside = useCallback((key: string) => {
     const lane = lanes.find((entry) => entry.key === key);
     if (!lane?.instanceId) return;
-    returnFocusRef.current = from;
     setSelectedKey(key);
     setInsideKey(key);
   }, [lanes]);
-  const closeInside = useCallback(() => setInsideKey(null), []);
-  const insideOpen = inside != null;
-  useLayoutEffect(() => {
-    if (insideOpen) return;
-    const from = returnFocusRef.current;
-    returnFocusRef.current = null;
-    if (from === "button") lookInsideButtonRef.current?.focus();
-    else if (from === "view") sectionRef.current?.querySelector<HTMLElement>(".adecd-city, .adecd-list")?.focus();
-  }, [insideOpen]);
-  const showView = (next: View) => {
-    // The toggle closes the inside view; focus stays on the toggle.
-    returnFocusRef.current = null;
-    setInsideKey(null);
-    setView(next);
-  };
 
   const clearCaches = async (lane: DashLane) => {
     const asleep = lane.state !== "awake";
@@ -222,7 +164,6 @@ export function CloudDashboard({
     }
   };
 
-  // Warns only when work isn't on GitHub; a clean lane gets one plain question here (no other confirm).
   const deleteLane = async (lane: DashLane) => {
     if (!lane.instanceId) return;
     setBusyKey(lane.key);
@@ -255,53 +196,29 @@ export function CloudDashboard({
     }
   };
 
-  const upgrade = () => {
-    void window.ade.cloud?.openCheckout?.().catch((error: unknown) => showToast({ tone: "error", title: "Couldn't open checkout", message: errorText(error) }));
-  };
+  const banner = cloudAccountBanner(account);
+  const diskLimit = account.disk.limitGb ?? 0;
+  const diskShare = diskLimit > 0 ? account.disk.usedGb / diskLimit : 0;
 
   return (
-    <section ref={sectionRef} id={CLOUD_DASHBOARD_ID} tabIndex={-1} className="adecd" aria-label={`${ADE_CLOUD_NAME} dashboard`}>
-      <header className="adecd-head">
-        <CloudMark size={20} brand bold />
-        <h3>{ADE_CLOUD_NAME}</h3>
-        <span className="adecd-plan">{planName(account)}</span>
-        {account.plan === "free" && window.ade.cloud?.openCheckout ? (
-          <button type="button" className="kit-btn adecd-upgrade" data-size="xs" onClick={upgrade}>Upgrade</button>
-        ) : null}
-        <span className="adecd-grow" />
-        <span className="kit-seg" data-case="sentence" role="group" aria-label="View">
-          <button type="button" aria-pressed={!insideOpen && view === "city"} onClick={() => showView("city")}>City</button>
-          <button type="button" aria-pressed={!insideOpen && view === "list"} onClick={() => showView("list")}>List</button>
-        </span>
-      </header>
+    <div id={CLOUD_DASHBOARD_ID} className="adecd" aria-label={`${ADE_CLOUD_NAME} dashboard`}>
+      <CloudHero
+        account={account}
+        lanes={lanes}
+        cityItems={cityItems}
+        selectedKey={selectedKey}
+        onSelect={selectFromCity}
+        onOpen={openInside}
+        now={now}
+      />
 
-      <div className="adecd-stats">
-        <div className="adecd-stat">
-          <span className="kit-eyebrow">Hours left</span>
-          <div className="adecd-stat-val">
-            <b className="kit-num">{formatCloudHours(account.hours.leftMilli)} h</b>
-            <span>of {formatCloudHours(account.hours.includedMilli)} h, resets {formatShortDate(account.billing.periodEnd)}</span>
-          </div>
-          <div className="kit-meter" data-level={usageLeftLevel(hoursLeftPct)}><span style={{ width: `${Math.max(0, Math.min(100, hoursLeftPct))}%` }} /></div>
-          {forecast ? <span className="adecd-fore">{forecast} <em>(estimate)</em></span> : null}
-        </div>
-        <div className="adecd-stat">
-          <span className="kit-eyebrow">Disk</span>
-          <div className="adecd-stat-val"><b className="kit-num">{formatGb(diskUsed)}</b>{diskLimit > 0 ? <span>of {formatGb(diskLimit)}</span> : null}</div>
-          <div className="kit-meter" data-level={usageLeftLevel(100 - percentOf(diskUsed, diskLimit))}><span style={{ width: `${percentOf(diskUsed, diskLimit)}%` }} /></div>
-        </div>
-        <div className="adecd-stat">
-          <span className="kit-eyebrow">Lanes</span>
-          <div className="adecd-stat-val"><b className="kit-num">{account.computers.total} of {account.computers.limit}</b><span>{account.computers.awake} awake</span></div>
-          <div className="kit-meter" data-level={usageLeftLevel(100 - percentOf(account.computers.total, account.computers.limit))}><span style={{ width: `${percentOf(account.computers.total, account.computers.limit)}%` }} /></div>
-        </div>
-      </div>
-
+      {banner ? <Banner layout="inline" model={{ ...banner, report: false }} /> : null}
+      <PlanNotices account={account} />
       {diskShare >= CLOUD_DISK_WARN_SHARE ? (
         <div className="adecd-warn" role="status">
           <Warning size={14} weight="fill" />
-          <span>Your disk is {Math.round(diskShare * 100)}% full.</span>
-          <button type="button" className="kit-btn" data-size="xs" onClick={() => setFreeing(true)}>Free up space</button>
+          <span>Your disk is {Math.round(diskShare * 100)}% full. Free some space before your lanes need more.</span>
+          <button type="button" className="kit-btn" data-size="sm" onClick={() => setFreeing(true)}>Free up space</button>
         </div>
       ) : null}
 
@@ -311,94 +228,187 @@ export function CloudDashboard({
         </div>
       ) : null}
 
-      {inside ? (
-        <LookInside lane={inside} now={now} busy={busyKey === inside.key} onBack={closeInside} onClear={() => void clearCaches(inside)} />
-      ) : view === "city" ? (
-        <div className="adecd-citycard">
-          <div className="adecd-citytop">
-            <b>Your cloud lanes</b>
-            <span className="adecd-grow" />
-            {lanes.length ? <span className="adecd-hint">Double-click a building to look inside</span> : null}
-          </div>
-          {lanes.length ? (
-            <CloudCity
-              items={cityItems}
-              selectedKey={selected?.key ?? null}
-              onSelect={setSelectedKey}
-              onOpen={openInside}
-              label="Cloud lanes as a city. Arrow keys move, Enter looks inside."
-            />
+      <section id="cloud-lanes" className="kit-card adecd-card" aria-label="Lanes and computers">
+        <header className="kit-card-head">
+          <Desktop size={14} />
+          Lanes and computers
+          <span className="kit-card-head-count">{lanes.length}</span>
+          <span className="adecd-head-note">{account.computers.total} of {account.computers.limit} computers · {account.computers.awake} awake</span>
+        </header>
+        <div className="kit-card-body" data-flush="true" ref={tableRef}>
+          {inside ? (
+            <LookInside lane={inside} now={now} busy={busyKey === inside.key} onBack={() => setInsideKey(null)} onClear={() => void clearCaches(inside)} />
           ) : (
-            <p className="adecd-empty">No cloud lanes yet. Pick {ADE_CLOUD_NAME} under Run on when you start a chat.</p>
+            <LaneTable
+              lanes={lanes}
+              now={now}
+              selectedKey={selected?.key ?? null}
+              onSelect={(key) => setSelectedKey((current) => (current === key ? null : key))}
+              onOpen={openInside}
+              renderActions={(lane) => (
+                <LaneActions
+                  lane={lane}
+                  account={account}
+                  job={lane.key === selected?.key ? selectedJob : null}
+                  busy={busyKey === lane.key}
+                  onLookInside={() => openInside(lane.key)}
+                  onSize={() => setSizing(lane)}
+                  onFree={() => void freeLane(lane)}
+                  onDelete={() => void deleteLane(lane)}
+                />
+              )}
+            />
           )}
-          <div className="adecd-cap"><span>Height is disk. Lit windows mean awake.</span></div>
         </div>
-      ) : (
-        <LaneList lanes={lanes} now={now} selectedKey={selected?.key ?? null} onSelect={setSelectedKey} onOpen={openInside} />
-      )}
+      </section>
 
-      {selected && !inside ? (
-        <div className="kit-panel adecd-lanesel">
-          <div className="adecd-lanesel-text">
-            {selected.tier ? <CloudSizeIcon tier={selected.tier.id} size={16} /> : <CloudMark size={16} brand />}
-            <b>{selected.name}</b>
-            <span>{[selected.tier?.label, selected.rateLabel, selected.state === "none" ? null : formatGb(selected.diskGb)].filter(Boolean).join(", ")}</span>
-            <span className="adecd-state" data-state={selected.state}><i />{STATE_LABEL[selected.state]}</span>
-            <span>{lastRunText(selected, now)}</span>
-            {selected.old ? <span className="adecd-old">Not used for a long time</span> : null}
-            {selected.safe ? <span className="kit-tag" data-tone="ok">Safe to delete</span> : null}
-          </div>
-          {selectedJob ? <CloudLaneJobCard job={selectedJob} account={account} variant="panel" /> : null}
-          {selected.without ? <CloudLaneWithoutComputerNotice lane={selected.without} account={account} variant="row" /> : null}
-          {selected.instanceId ? (
-            <div className="adecd-lanesel-actions">
-              <button ref={lookInsideButtonRef} type="button" className="kit-btn" data-size="sm" onClick={() => openInside(selected.key, "button")}><MagnifyingGlass size={12} />Look inside</button>
-              {cloudLaneLifeAvailable() ? (
-                <>
-                  <button type="button" className="kit-btn" data-size="sm" disabled={busyKey === selected.key || (selectedJob != null && (selectedJob.phase === "waiting" || selectedJob.phase === "running"))} onClick={() => setSizing(selected)}>Change size</button>
-                  <button type="button" className="kit-btn" data-size="sm" disabled={busyKey === selected.key} onClick={() => void freeLane(selected)}>Keep lane, free its computer</button>
-                  <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" data-tone="crit" disabled={busyKey === selected.key} onClick={() => void deleteLane(selected)}><Trash size={12} />Delete lane</button>
-                </>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+      <CloudPlans account={account} onChanged={refresh} />
+      <CloudSizes account={account} />
 
-      <div className="adecd-rows">
-        <Row id="plan" open={openRow} onToggle={setOpenRow} icon={<CreditCard size={15} />} title="Plan and billing" value={planName(account)}>
-          <CloudPlanCard account={account} onChanged={refresh} />
-        </Row>
-        {/* Kept mounted while closed: the panel reads the count the row shows. */}
-        <Row id="signins" open={openRow} onToggle={setOpenRow} icon={<UserCircle size={15} />} title="Sign-ins" value={signInsValue} keepMounted>
-          {signIns}
-        </Row>
-        <Row id="limits" open={openRow} onToggle={setOpenRow} icon={<Gauge size={15} />} title="Agent limits" value="What agents may start">
-          <CloudAgentLimitsCard />
-        </Row>
-        <DefaultSizeRow account={account} open={openRow} onToggle={setOpenRow} />
-        <Row id="other" open={openRow} onToggle={setOpenRow} icon={<Desktop size={15} />} title="Other computers and ready machines" value={otherComputersCount ? `${otherComputersCount}` : "None"}>
-          {otherComputers}
-        </Row>
+      <div className="adecd-pair">
+        <CloudSignIns />
+        <CloudAgentLimitsCard />
       </div>
 
       {freeing ? (
-        <CloudFreeUpSpace
-          account={account}
-          lanes={lanes}
-          now={now}
-          onClose={() => setFreeing(false)}
-          onDone={refresh}
-        />
+        <CloudFreeUpSpace account={account} lanes={lanes} now={now} onClose={() => setFreeing(false)} onDone={refresh} />
       ) : null}
       {sizing?.instanceId ? <CloudTierChangeDialog instanceId={sizing.instanceId} laneName={sizing.name} onClose={() => { setSizing(null); refresh(); }} /> : null}
+    </div>
+  );
+}
+
+/**
+ * The night sky at the top: the plan, the three numbers that matter (hours,
+ * disk, computers) and the city of the account's lanes. The numbers are said
+ * once on the page; nothing below repeats them.
+ */
+function CloudHero({
+  account,
+  lanes,
+  cityItems,
+  selectedKey,
+  onSelect,
+  onOpen,
+  now,
+}: {
+  account: CloudAccountState;
+  lanes: readonly DashLane[];
+  cityItems: CityItem[];
+  selectedKey: string | null;
+  onSelect: (key: string) => void;
+  onOpen: (key: string) => void;
+  now: number;
+}) {
+  const hours = account.hours;
+  const earned = earnedHoursLeftMilli(account);
+  const hoursPct = hours.includedMilli > 0 ? (hours.leftMilli / hours.includedMilli) * 100 : 0;
+  const forecast = hoursForecast(account, now);
+  const diskUsed = account.disk.usedGb;
+  const diskLimit = account.disk.limitGb ?? 0;
+  const freeBlocked = (account as { freePlan?: { state?: string; message?: string } }).freePlan;
+  const blockedSentence = freeBlocked?.state && freeBlocked.state !== "eligible" && freeBlocked.state !== "claimed"
+    ? freeBlocked.message ?? "This computer already used another account's free hours. Plus gives you 500 hours a month."
+    : null;
+  const resets = account.billing.cancelAtPeriodEnd
+    ? `plan ends ${formatShortDate(account.billing.periodEnd)}`
+    : `resets ${formatShortDate(account.billing.periodEnd)}`;
+  const toPlans = () => document.getElementById("cloud-plan")?.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  return (
+    <section className="adecd-citycard adecd-hero" aria-label={`${ADE_CLOUD_NAME}, ${planName(account)}`}>
+      <div className="adecd-hero-stars" aria-hidden="true" />
+      <header className="adecd-hero-head">
+        <CloudMark size={20} brand bold />
+        <h2>{planName(account)}</h2>
+        <span className="adecd-grow" />
+        <button type="button" className="adecd-hero-btn" onClick={toPlans}>
+          {account.plan === "free" ? "Compare plans" : "Plan and billing"}
+        </button>
+      </header>
+      <div className="adecd-hero-body">
+        <div className="adecd-hero-stats">
+          <div className="adecd-hours">
+            <span className="adecd-label">Hours left this month</span>
+            <div className="adecd-hours-num">
+              <b className="kit-num">{formatCloudHours(hours.leftMilli)}</b>
+              <span>of {formatCloudHours(hours.includedMilli)} h, {resets}</span>
+            </div>
+            <div className="kit-meter adecd-meter" data-level={usageLeftLevel(hoursPct)}>
+              <span style={{ width: `${Math.max(0, Math.min(100, hoursPct))}%` }} />
+            </div>
+            <ul className="adecd-hours-notes">
+              {blockedSentence ? <li data-tone="warn">{blockedSentence}</li> : null}
+              {earned != null && earned > 0 ? <li><b>+{formatCloudHours(earned)} hours</b> earned from invites. They never expire.</li> : null}
+              {account.extraHours.available ? (
+                <li>{account.extraHours.enabled
+                  ? `Extra hours are on${account.extraHours.usedMilli > 0 ? `: ${formatCloudHours(account.extraHours.usedMilli)} h used this month` : ""}.`
+                  : "Extra hours are off. Work stops when your hours run out."}</li>
+              ) : null}
+              {forecast ? <li>{forecast} <em>(estimate)</em></li> : null}
+            </ul>
+          </div>
+          <div className="adecd-minis">
+            <MiniMeter label="Disk" value={formatGb(diskUsed)} of={diskLimit > 0 ? `of ${formatGb(diskLimit)}` : null} pct={percentOf(diskUsed, diskLimit)} note="All your computers together" />
+            <MiniMeter
+              label="Computers"
+              value={String(account.computers.total)}
+              of={`of ${account.computers.limit}`}
+              pct={percentOf(account.computers.total, account.computers.limit)}
+              note={`${account.computers.awake} awake now`}
+            />
+          </div>
+        </div>
+        <div className="adecd-hero-city">
+          {lanes.length ? (
+            <>
+              <CloudCity
+                items={cityItems}
+                selectedKey={selectedKey}
+                onSelect={onSelect}
+                onOpen={onOpen}
+                label="Your cloud lanes as a city. Arrow keys move, Enter looks inside."
+                compact
+                maxLabels={3}
+              />
+              <span className="adecd-city-cap">Height is disk. Lit windows are awake.</span>
+            </>
+          ) : (
+            <div className="adecd-city-empty">
+              <EmptyPlot />
+              <b>No cloud lanes yet</b>
+              <span>Pick {ADE_CLOUD_NAME} under Run on when you send a message. ADE makes a computer for the lane, and it shows here.</span>
+            </div>
+          )}
+        </div>
+      </div>
     </section>
+  );
+}
+
+function MiniMeter({ label, value, of, pct, note }: { label: string; value: string; of: string | null; pct: number; note: string }) {
+  return (
+    <div className="adecd-mini">
+      <span className="adecd-label">{label}</span>
+      <div className="adecd-mini-num"><b className="kit-num">{value}</b>{of ? <span>{of}</span> : null}</div>
+      <div className="kit-meter adecd-meter" data-level={usageLeftLevel(100 - pct)}><span style={{ width: `${pct}%` }} /></div>
+      <span className="adecd-mini-note">{note}</span>
+    </div>
+  );
+}
+
+/** An empty plot on the ground, for a sky with no lanes yet. */
+function EmptyPlot() {
+  return (
+    <svg className="adecd-plot" viewBox="0 0 160 70" aria-hidden="true">
+      <polygon points="80,8 150,38 80,68 10,38" className="adecd-plot-ground" />
+      <polygon points="80,22 118,38 80,54 42,38" className="adecd-plot-lot" />
+    </svg>
   );
 }
 
 function laneAria(lane: DashLane, now: number): string {
   if (lane.state === "none") return `${lane.name}, no computer now`;
-  return [lane.name, lane.tier?.label, formatGb(lane.diskGb), STATE_LABEL[lane.state], lastRunText(lane, now), lane.old ? "not used for a long time" : null, lane.safe ? "safe to delete" : null]
+  return [lane.name, lane.noLane ? "no lane" : null, lane.tier?.label, formatGb(lane.diskGb), STATE_LABEL[lane.state], lastRunText(lane, now), lane.old ? "not used for a long time" : null, lane.safe ? "safe to delete" : null]
     .filter(Boolean)
     .join(", ");
 }
@@ -408,96 +418,32 @@ function laneDetail(lane: DashLane, now: number): string[] {
   return [
     [lane.tier?.label, lane.rateLabel, formatGb(lane.diskGb)].filter(Boolean).join(", "),
     `${STATE_LABEL[lane.state]}, ${lastRunText(lane, now).toLowerCase()}`,
+    ...(lane.noLane ? ["No lane on this computer"] : []),
     ...(lane.old ? ["Not used for a long time"] : []),
   ];
 }
 
-function Row({
-  id,
-  open,
-  onToggle,
-  icon,
-  title,
-  value,
-  keepMounted = false,
-  children,
-}: {
-  id: RowId;
-  open: RowId | null;
-  onToggle: (id: RowId | null) => void;
-  icon: ReactNode;
-  title: string;
-  value: ReactNode;
-  /** Render the panel while closed (hidden), for a panel whose own read feeds the row. */
-  keepMounted?: boolean;
-  children: ReactNode;
-}) {
-  const expanded = open === id;
-  return (
-    <div className="adecd-row">
-      <button type="button" className="adecd-row-btn" aria-expanded={expanded} onClick={() => onToggle(expanded ? null : id)}>
-        <span className="adecd-row-ic">{icon}</span>
-        <b>{title}</b>
-        <span className="adecd-row-val">{value}<CaretRight size={12} /></span>
-      </button>
-      {expanded || keepMounted ? <div className="adecd-row-body" hidden={!expanded}>{children}</div> : null}
-    </div>
-  );
-}
-
-function DefaultSizeRow({ account, open, onToggle }: { account: CloudAccountState; open: RowId | null; onToggle: (id: RowId | null) => void }) {
-  const tiers = useMemo(() => cloudTiers(cloudCatalogOf(account)), [account]);
-  const defaultTier = useRootAppStore((state) => state.cloudDefaultTier);
-  const setDefaultTier = useRootAppStore((state) => state.setCloudDefaultTier);
-  const current = tiers.find((tier) => tier.id === defaultTier) ?? tiers[0] ?? null;
-  return (
-    <Row
-      id="size"
-      open={open}
-      onToggle={onToggle}
-      icon={current ? <CloudSizeIcon tier={current.id} size={15} /> : <CloudMark size={15} />}
-      title="Size for new cloud lanes"
-      value={current?.label ?? "Small"}
-    >
-      <div className="adecd-sizes" role="radiogroup" aria-label="Size for new cloud lanes">
-        {tiers.map((tier) => (
-          <button
-            key={tier.id}
-            type="button"
-            role="radio"
-            aria-checked={tier.id === current?.id}
-            className="adecd-size"
-            onClick={() => setDefaultTier(tier.id as CloudTierId)}
-          >
-            <CloudSizeIcon tier={tier.id} size={22} />
-            <b>{tier.label}</b>
-            <span>{tier.cpu} CPU, {tier.memoryGb} GB memory</span>
-            <span className="kit-num">{cloudTierRateLabel(tier)}</span>
-          </button>
-        ))}
-      </div>
-    </Row>
-  );
-}
-
-function LaneList({
+/** Every lane and every computer the account pays for, one row each; the selected row opens its actions under it. */
+function LaneTable({
   lanes,
   now,
   selectedKey,
   onSelect,
   onOpen,
+  renderActions,
 }: {
   lanes: readonly DashLane[];
   now: number;
   selectedKey: string | null;
   onSelect: (key: string) => void;
   onOpen: (key: string) => void;
+  renderActions: (lane: DashLane) => ReactNode;
 }) {
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!lanes.length) return;
     const at = Math.max(0, lanes.findIndex((lane) => lane.key === selectedKey));
     let next = at;
-    if (event.key === "ArrowDown") next = Math.min(lanes.length - 1, at + 1);
+    if (event.key === "ArrowDown") next = selectedKey ? Math.min(lanes.length - 1, at + 1) : 0;
     else if (event.key === "ArrowUp") next = Math.max(0, at - 1);
     else if (event.key === "Home") next = 0;
     else if (event.key === "End") next = lanes.length - 1;
@@ -507,45 +453,100 @@ function LaneList({
       return;
     } else return;
     event.preventDefault();
-    onSelect(lanes[next]!.key);
+    if (lanes[next]!.key !== selectedKey) onSelect(lanes[next]!.key);
   };
-  if (!lanes.length) return <p className="kit-panel adecd-empty">No cloud lanes yet. Pick {ADE_CLOUD_NAME} under Run on when you start a chat.</p>;
+  if (!lanes.length) {
+    return <p className="adecd-empty">Nothing here yet. Each cloud lane gets its own computer, and every computer you pay for is listed here.</p>;
+  }
   return (
     <div
-      className="kit-panel adecd-list"
+      className="adecd-table"
       role="listbox"
       tabIndex={0}
-      aria-label="Cloud lanes. Arrow keys move, Enter looks inside."
+      aria-label="Lanes and computers. Arrow keys move, Enter looks inside."
       aria-activedescendant={selectedKey ? `adecd-row-${cssId(selectedKey)}` : undefined}
       onKeyDown={onKeyDown}
     >
-      <div className="adecd-list-head" aria-hidden="true">
-        <span>Lane</span><span>Size</span><span>Rate</span><span>Disk</span><span>State</span><span>Last run</span>
+      <div className="adecd-tr adecd-th" aria-hidden="true">
+        <span>Lane</span><span>Size</span><span>Disk</span><span>State</span><span>Last run</span>
       </div>
-      {lanes.map((lane) => (
-        <div
-          key={lane.key}
-          id={`adecd-row-${cssId(lane.key)}`}
-          role="option"
-          aria-selected={lane.key === selectedKey}
-          className="adecd-list-row"
-          onClick={() => onSelect(lane.key)}
-          onDoubleClick={() => onOpen(lane.key)}
-        >
-          <span className="adecd-list-name">
-            {lane.tier ? <CloudSizeIcon tier={lane.tier.id} size={16} /> : <CloudMark size={16} brand />}
-            {lane.name}
-            {lane.old ? <span className="adecd-old">old</span> : null}
-            {lane.safe ? <span className="kit-tag" data-tone="ok">Safe to delete</span> : null}
-          </span>
-          <span>{lane.tier?.label ?? "—"}</span>
-          <span className="kit-num">{lane.rateLabel ?? "—"}</span>
-          <span className="kit-num">{lane.state === "none" ? "—" : formatGb(lane.diskGb)}</span>
-          <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
-          <span>{lastRunText(lane, now)}</span>
-        </div>
-      ))}
+      {lanes.map((lane) => {
+        const open = lane.key === selectedKey;
+        return (
+          <div key={lane.key} className="adecd-row-wrap" data-open={open || undefined} data-key={cssId(lane.key)}>
+            <div
+              id={`adecd-row-${cssId(lane.key)}`}
+              role="option"
+              aria-selected={open}
+              className="adecd-tr"
+              onClick={() => onSelect(lane.key)}
+              onDoubleClick={() => onOpen(lane.key)}
+            >
+              <span className="adecd-name">
+                {lane.tier ? <CloudSizeIcon tier={lane.tier.id} size={16} /> : <CloudMark size={16} brand />}
+                <span className="adecd-name-text">{lane.name}</span>
+                {/* One mark at most, so the name keeps its room: no lane, then unused, then safe to delete. */}
+                {lane.noLane ? <span className="kit-tag">No lane</span>
+                  : lane.old ? <span className="kit-tag" data-tone="warn" title={lane.safe ? "Not used for a long time. Its pull request is merged and nothing is unpushed." : "Not used for a long time"}>Unused</span>
+                  : lane.safe ? <span className="kit-tag" data-tone="ok" title="Its pull request is merged and nothing is unpushed">Safe to delete</span>
+                  : null}
+              </span>
+              <span className="adecd-tsize">{lane.tier ? <>{lane.tier.label}<em className="kit-num">{lane.rateLabel}</em></> : "—"}</span>
+              <span className="kit-num">{lane.state === "none" ? "—" : formatGb(lane.diskGb)}</span>
+              <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
+              <span className="adecd-when">{lastRunText(lane, now)}</span>
+            </div>
+            {open ? <div className="adecd-row-actions">{renderActions(lane)}</div> : null}
+          </div>
+        );
+      })}
     </div>
+  );
+}
+
+function LaneActions({
+  lane,
+  account,
+  job,
+  busy,
+  onLookInside,
+  onSize,
+  onFree,
+  onDelete,
+}: {
+  lane: DashLane;
+  account: CloudAccountState;
+  job: ReturnType<typeof cloudLaneJobFor>;
+  busy: boolean;
+  onLookInside: () => void;
+  onSize: () => void;
+  onFree: () => void;
+  onDelete: () => void;
+}) {
+  const life = cloudLaneLifeAvailable();
+  const jobRunning = job != null && (job.phase === "waiting" || job.phase === "running");
+  return (
+    <>
+      {job ? <CloudLaneJobCard job={job} account={account} variant="panel" /> : null}
+      {lane.without ? <CloudLaneWithoutComputerNotice lane={lane.without} account={account} variant="row" /> : null}
+      {lane.instanceId ? (
+        <div className="adecd-actions">
+          <button type="button" className="kit-btn" data-size="sm" onClick={onLookInside}><MagnifyingGlass size={12} />What uses the disk</button>
+          {life && !lane.noLane ? (
+            <>
+              <button type="button" className="kit-btn" data-size="sm" disabled={busy || jobRunning} onClick={onSize}>Change size</button>
+              <button type="button" className="kit-btn" data-size="sm" disabled={busy} onClick={onFree}>Keep lane, free its computer</button>
+            </>
+          ) : null}
+          {life ? (
+            <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" data-tone="crit" disabled={busy} onClick={onDelete}>
+              <Trash size={12} />{lane.noLane ? "Delete computer" : "Delete lane"}
+            </button>
+          ) : null}
+          {lane.noLane ? <span className="adecd-actions-note">Made before each lane had its own computer. It still counts toward your computers and disk.</span> : null}
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -569,25 +570,26 @@ function LookInside({ lane, now, busy, onBack, onClear }: { lane: DashLane; now:
   const clearableGb = (usage?.items ?? []).filter((part) => part.clearable).reduce((total, part) => total + part.gb, 0);
   const total = usage?.totalGb ?? 0;
   const canClear = clearableGb > 0 && Boolean(window.ade.cloud?.clearCaches) && lane.state !== "failed";
-  // Focus moves into the inside view when it opens, onto its way back.
   const backRef = useRef<HTMLButtonElement | null>(null);
   useLayoutEffect(() => {
     backRef.current?.focus();
   }, []);
   return (
-    <div className="adecd-citycard" data-inside="true" role="region" aria-label={`Inside ${lane.name}`}>
-      <div className="adecd-citytop">
-        <button ref={backRef} type="button" className="kit-btn kit-btn-ghost" data-size="xs" onClick={onBack}><ArrowLeft size={11} />Your cloud lanes</button>
+    <div className="adecd-inside" role="region" aria-label={`Inside ${lane.name}`}>
+      <div className="adecd-inside-top">
+        <button ref={backRef} type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={onBack}><ArrowLeft size={12} />All lanes</button>
         <b>{lane.name}</b>
         <span className="adecd-grow" />
         <span className="adecd-hint">{usage ? `Measured ${formatAgo(usage.measuredAt, now)}` : "Not measured yet"}</span>
         {canClear ? (
-          <button type="button" className="kit-btn" data-size="xs" disabled={busy} onClick={onClear}><Broom size={11} />{busy ? "Clearing…" : "Clear caches"}</button>
+          <button type="button" className="kit-btn" data-size="sm" disabled={busy} onClick={onClear}><Broom size={12} />{busy ? "Clearing…" : `Clear ${formatGb(clearableGb)} of caches`}</button>
         ) : null}
       </div>
       {usage && items.length ? (
-        <>
-          <CloudCity items={items} selectedKey={selectedPart} onSelect={setSelectedPart} label={`What uses the disk of ${lane.name}`} compact stars={false} />
+        <div className="adecd-inside-body">
+          <div className="adecd-citycard adecd-inside-city">
+            <CloudCity items={items} selectedKey={selectedPart} onSelect={setSelectedPart} label={`What uses the disk of ${lane.name}`} compact stars={false} />
+          </div>
           <ul className="adecd-parts">
             {usage.items.map((part, index) => (
               <li key={`${part.kind}:${index}`}>
@@ -597,16 +599,55 @@ function LookInside({ lane, now, busy, onBack, onClear }: { lane: DashLane; now:
                 {part.clearable ? <span className="kit-tag" data-tone="ok">Safe to clear</span> : <span />}
               </li>
             ))}
+            <li className="adecd-parts-total">
+              <span>{formatGb(total)} used of {formatGb(lane.diskGb)}</span>
+              <span />
+              <span />
+              <span>{lane.state === "awake" ? "" : "Asleep: its last measure"}</span>
+            </li>
           </ul>
-          <div className="adecd-cap">
-            <span>{formatGb(total)} used of {formatGb(lane.diskGb)}. {lane.state === "awake" ? "" : "The computer sleeps; this is its last measure."}</span>
-          </div>
-        </>
+        </div>
       ) : (
         <p className="adecd-empty">
           {lane.name}&apos;s computer measures its disk while it is awake and idle, at most every few hours. Its first measure shows here then. ADE doesn&apos;t wake it to look.
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * What a cheaper plan's limits will remove (and when), what the last cleanup
+ * removed, and timed wakes that were cancelled: each one sentence from the
+ * server's shared wording, so the app and the emails say the same thing.
+ */
+function PlanNotices({ account }: { account: CloudAccountState }) {
+  const cleanup = account.planCleanup ?? null;
+  const done = account.planCleanupDone ?? null;
+  const wakes = account.timedWakesCancelled ?? null;
+  if (!cleanup && !done && !wakes) return null;
+  return (
+    <>
+      {cleanup ? (
+        <div className="adecd-warn adecd-cleanup" role="status">
+          <Warning size={14} weight="fill" />
+          <div>
+            <span>{cleanup.sentence}{cleanup.dueAt ? ` This happens on ${formatCloudDate(cleanup.dueAt)}. To choose which go, delete computers yourself before then.` : ""}</span>
+            {cleanup.computers.length ? (
+              <ul>
+                {cleanup.computers.map((computer) => (
+                  <li key={computer.instanceId}>
+                    <b>{computer.laneName ?? computer.name ?? computer.instanceId}</b>
+                    <span>{computer.branch ? `work goes to ${computer.branch}` : "no lane"}, {formatGb(computer.diskGb)}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      {done ? <Banner layout="inline" model={{ id: `cloud-cleanup-done-${done.at}`, tone: "info", title: "ADE freed computers for your plan", detail: planCleanupDoneSentence(done), report: false }} /> : null}
+      {wakes ? <Banner layout="inline" model={{ id: `cloud-wakes-${wakes.at}`, tone: "warning", title: "Timed wake-ups were cancelled", detail: timedWakesCancelledSentence(wakes), report: false }} /> : null}
+    </>
   );
 }

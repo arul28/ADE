@@ -388,3 +388,29 @@ export function readAccountHardwareId(
   const rawUuid = readUuid();
   return rawUuid ? hardwareAnchorId(account, rawUuid, adeHomePath) : null;
 }
+
+/**
+ * ADE Cloud's free plan is given once per physical computer
+ * (`apps/account-directory/src/cloud/freePlan.ts`). The computer's id for it is
+ * SHA-256 of a fixed, ADE-wide salt and the raw OS identifier: the same for
+ * every account and every ADE home on the computer (unlike the anchor above,
+ * which is per account and per install), so two accounts on one computer send
+ * one value. The raw identifier still never leaves the process, and the
+ * server keys this once more before keeping it. Keep the salt in step with
+ * `CLOUD_COMPUTER_ID_DOMAIN` in the account directory's contract.
+ */
+export const CLOUD_COMPUTER_ID_DOMAIN = "ade-cloud-free-plan-computer-v1";
+
+export function cloudComputerIdFor(rawUuid: string): string {
+  return createHash("sha256").update(`${CLOUD_COMPUTER_ID_DOMAIN}:${rawUuid}`).digest("hex");
+}
+
+/**
+ * This computer's id for ADE Cloud's free plan, or `unreadable` when the OS
+ * gives no identifier (some VMs and containers). Off the event loop, and the
+ * same process cache as every other read of the identifier.
+ */
+export async function readCloudComputerIdAsync(): Promise<string | "unreadable"> {
+  const rawUuid = await readHardwareAnchorUuidAsync();
+  return rawUuid ? cloudComputerIdFor(rawUuid) : "unreadable";
+}

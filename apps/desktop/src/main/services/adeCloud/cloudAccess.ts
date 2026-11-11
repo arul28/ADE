@@ -10,6 +10,8 @@ import { setAdeCloudSkillVisible, setAgentSkillAccessRefresh } from "../../../sh
 import type { AccountVaultResult } from "../../../shared/types/accountVault";
 import { getSignedInAccountAccessToken, type AccountAuthService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { resolveSelectedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
+import { readCloudComputerIdAsync } from "../../../../../ade-cli/src/services/account/hardwareAnchor";
+import { isAdeCloudComputer } from "./cloudComputerRules";
 import { getErrorMessage } from "../shared/utils";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider } from "./cloudProvider";
 import { createCloudServerProvider } from "./cloudServerProvider";
@@ -36,6 +38,8 @@ export type CloudAccessDeps = {
   deviceName?: () => string | null;
   /** This machine's update track: a computer it makes follows the same channel. */
   updateChannel?: () => "stable" | "beta" | null;
+  /** This computer's id for the free plan (`cloudFreePlanComputer`); left out on an ADE Cloud computer. */
+  computer?: () => Promise<{ id: string; platform: NodeJS.Platform } | null>;
   fetch?: FetchLike;
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
 };
@@ -72,8 +76,24 @@ export function cloudAccessDepsFor(args: {
       const version = args.runningVersion?.() ?? process.env.ADE_CLI_VERSION?.trim() ?? null;
       return /-alpha\b/i.test(version ?? "") ? "beta" : resolveSelectedUpdateTrack(version);
     },
+    computer: cloudFreePlanComputer,
     logger: args.logger,
   };
+}
+
+/**
+ * The id ADE Cloud's free plan is given once for (one per physical computer,
+ * `freePlan.ts` on the server), read once per process off the event loop. An
+ * ADE Cloud computer sends none: it never claims a free plan.
+ */
+let freePlanComputer: Promise<{ id: string; platform: NodeJS.Platform } | null> | null = null;
+export function cloudFreePlanComputer(): Promise<{ id: string; platform: NodeJS.Platform } | null> {
+  if (isAdeCloudComputer()) return Promise.resolve(null);
+  freePlanComputer ??= readCloudComputerIdAsync().then(
+    (id) => ({ id, platform: process.platform }),
+    () => ({ id: "unreadable", platform: process.platform }),
+  );
+  return freePlanComputer;
 }
 
 type CloudVaultBridge = {
@@ -251,6 +271,7 @@ function serverProviderFor(deps: CloudAccessDeps): CloudProvider {
     baseUrl: deps.directoryBaseUrl,
     deviceName: deps.deviceName,
     updateChannel: deps.updateChannel,
+    computer: deps.computer,
     fetch: deps.fetch,
     logger: deps.logger,
   });

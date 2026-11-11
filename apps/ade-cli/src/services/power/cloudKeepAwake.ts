@@ -502,7 +502,10 @@ export function cloudBusyHolds(adeHome: string, now: number = Date.now()): strin
   return reasons;
 }
 
-/** The ready machine's setup job is running (cloudReadyMachines.ts writes it, the entrypoint runs it). */
+/**
+ * The template's setup job is running (`$ADE_HOME/ready/job.sh`, which the entrypoint runs). Only an older
+ * ADE's ready machines wrote one; ADE no longer does, so on a new computer this is false.
+ */
 export function cloudReadySetupRunning(adeHome: string): boolean {
   const dir = path.join(adeHome, "ready");
   return fs.existsSync(path.join(dir, "job.started")) && !fs.existsSync(path.join(dir, "job.exit"));

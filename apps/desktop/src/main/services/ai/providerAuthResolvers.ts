@@ -153,8 +153,8 @@ export const DEFAULT_AUTH: Record<ShippedProvider, ProviderAuthResolver> = {
       return { authenticated: true, authMethod: "api-key" };
     }
     // A long-lived subscription token (`claude setup-token`) in the
-    // environment, the way a cloud machine signs Claude in: ADE gives every
-    // new cloud machine the person's token as instance env.
+    // environment: a person's own setup, or a cloud machine an older ADE made
+    // with the token as instance env (new machines get passes from the vault).
     if (envKeyPresent(context.env, "CLAUDE_CODE_OAUTH_TOKEN")) {
       return { authenticated: true, authMethod: "subscription" };
     }

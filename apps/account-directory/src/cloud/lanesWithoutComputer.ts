@@ -6,8 +6,9 @@
  * (`chats.ts`), filed under the old computer's machine key.
  *
  * A row comes to exist when a person frees the computer ("Keep the lane on a
- * fresh computer": the desktop pushed the work first) or the 30-day rule
- * removes it. A new computer made for the same lane id ends it; so does the
+ * fresh computer": the desktop pushed the work first), the 30-day rule
+ * removes it, or a cheaper plan's limits free it (`planCleanup.ts`: the
+ * computer pushed the work first). A new computer made for the same lane id ends it; so does the
  * person deleting the lane.
  */
 
@@ -152,7 +153,7 @@ export function keepLaneStatement(env: CloudDb, instanceId: string, now: number)
     select c.user_id, c.lane_id, c.lane_name, c.lane_project_origin, c.lane_branch, c.lane_keep_reason,
       case when c.type = 'vm' then 'vm' else 'default' end, c.cpu, c.memory_gb, c.instance_id, c.machine_key, ?
     from cloud_computers c
-    where c.instance_id = ? and c.deleted_at is null and c.lane_keep_reason in ('freed', 'inactive')
+    where c.instance_id = ? and c.deleted_at is null and c.lane_keep_reason in ('freed', 'inactive', 'plan_limit')
       and c.lane_id is not null and c.lane_name is not null
       and not exists (
         select 1 from cloud_computers o
@@ -179,7 +180,7 @@ function toLane(row: LaneRow): CloudLaneWithoutComputer {
     laneName: row.lane_name,
     projectOrigin: row.project_origin,
     branchRef: row.branch_ref,
-    reason: row.reason === "inactive" ? "inactive" : "freed",
+    reason: row.reason === "inactive" || row.reason === "plan_limit" ? row.reason : "freed",
     type: row.type === "vm" ? "vm" : "default",
     cpu: row.cpu,
     memoryGb: row.memory_gb,

@@ -77,9 +77,9 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   // Connected or not, and as whom; never a credential.
   ["integrations", new Set(["status"])],
   ["integration", new Set(["status"])],
-  // cloud machines and the ready pool: names, states, prices, never the key.
+  // cloud machines: names, states, prices, never the key.
   // Nothing that spends money or deletes is reachable from here.
-  ["cloud", new Set(["ready", "status", "list", "ls", "machines", "hours", "limits"])],
+  ["cloud", new Set(["status", "list", "ls", "machines", "hours", "limits"])],
   ["machines", new Set(["list", "show"])],
   ["projects", new Set(["list"])],
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.
@@ -193,8 +193,9 @@ export function checkRemoteAdeCommand(
   }
   // Another computer is reached through the tools' own `machine` input, which
   // goes through that computer's token check and policy, never through the
-  // CLI's agent bridge.
-  if (args.some((word) => MACHINE_TARGET_FLAG.test(word))) {
+  // CLI's agent bridge. The one exception is a new ADE Cloud lane
+  // (`--machine cloud`), which reaches no existing computer.
+  if (args.some((word) => MACHINE_TARGET_FLAG.test(word)) && !isCloudLaneMachineUse(command, args)) {
     return {
       ok: false,
       reason: "Use the tool's `machine` input to run on another computer (machines_list names them), not --machine.",
@@ -255,6 +256,48 @@ const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "action
 /** `ade machines` subcommands that only read the roster. */
 const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
+/**
+ * The reviewed exception to "no --machine": `--machine cloud` (with `--size`)
+ * on exactly these subcommands. It asks this computer's own brain to make a
+ * new ADE Cloud computer for a new lane (`cloud.lane_launch`) or to read that
+ * launch (`cloud.lane_launch_status`); it never reaches a computer that
+ * exists. The brain answers an ADE MCP app as an unattended agent: within the
+ * agent limits and the account's hours, never as the person
+ * (cloudAgentActions.ts). Cancelling a launch stays with the person.
+ */
+const CLOUD_LANE_SUBCOMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["chat", new Set(["create", "launch-status"])],
+  ["chats", new Set(["create", "launch-status"])],
+  ["lanes", new Set(["create"])],
+  ["lane", new Set(["create"])],
+]);
+const CLOUD_LANE_MACHINE = "cloud";
+
+/**
+ * True when every machine flag in `args` is exactly `--machine cloud` (or
+ * `--machine=cloud`) and the subcommand, right after the command word, is one
+ * of `CLOUD_LANE_SUBCOMMANDS`. Any other machine value, a list, a second
+ * machine, `--all-machines` or `--machine-project` is not this.
+ */
+function isCloudLaneMachineUse(command: string, args: readonly string[]): boolean {
+  if (!CLOUD_LANE_SUBCOMMANDS.get(command)?.has(args[1] ?? "")) return false;
+  let named = false;
+  for (let index = 2; index < args.length; index += 1) {
+    const word = args[index]!;
+    if (!MACHINE_TARGET_FLAG.test(word)) continue;
+    if (word === `--machine=${CLOUD_LANE_MACHINE}`) {
+      named = true;
+      continue;
+    }
+    if (word === "--machine" && args[index + 1] === CLOUD_LANE_MACHINE) {
+      named = true;
+      index += 1;
+      continue;
+    }
+    return false;
+  }
+  return named;
+}
 const SERVICE_SIGN_IN_REASON =
   "Signing this computer in or out of a service (GitHub, Linear, Jira, an AI provider) outlives ADE MCP, so it is done on the computer itself.";
 /** `ade github` groups that manage the machine's GitHub App authorization. */
@@ -494,12 +537,6 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   // `lanes defaults set` changes the project's new-lane defaults. Look past
   // the global flags (`--json`, `--pretty`) the CLI strips before it parses.
   if ((command === "lanes" || command === "lane") && sub === "defaults" && args.slice(2).includes("set")) return refuse();
-  // `cloud ready` alone, `status` or `list` reads the pool; `on`, `off` and
-  // `retry` make or delete a billed machine.
-  if (command === "cloud" && sub === "ready") {
-    const verb = args.slice(2).find((word) => !word.startsWith("-"));
-    if (verb && verb !== "status" && verb !== "list") return refuse();
-  }
   // `actions run` passed checkActionsCommand's read-only test before getting here.
   if (command === "actions" && sub === "run" && words[0] === "run") return { ok: true, args };
   if (sub && allowed.has(sub)) return { ok: true, args };

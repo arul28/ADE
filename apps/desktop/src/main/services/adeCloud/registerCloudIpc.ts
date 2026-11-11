@@ -1,18 +1,14 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import { hostname } from "node:os";
 import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
 import {
   cloudKindLabel,
-  cloudStillStartingMessage,
   cloudMadeByMetadata,
   type CloudAccountState,
   type CloudAgentLimits,
   type CloudShapeId,
   isCloudInstanceId,
   cloudMachineState,
-  type CloudCreateMachineArgs,
   type CloudCreateProgress,
   type CloudMachineActionArgs,
   type CloudMachineActionKind,
@@ -20,16 +16,14 @@ import {
   type CloudMachinesResult,
   type CloudOpenCheckoutResult,
   type CloudStatus,
+  readCloudReferralSummary,
+  type CloudInviteRedeemOutcome,
+  type CloudInviteRefusalReason,
+  type CloudReferralSummary,
 } from "../../../shared/adeCloud";
-import {
-  type CloudReadyClaim,
-  type CloudReadyProjectSettings,
-  type CloudReadyStatus,
-} from "../../../shared/cloudReady";
 import { type CloudSignInStatus } from "../../../shared/cloudSignIns";
 import { IPC } from "../../../shared/ipc";
-import { cloudMachineEnv, type CloudSignInVaults } from "./cloudSignInStore";
-import { readClaudePassEnd, type ClaudePassEndList } from "./claudePassEndWarning";
+import { readClaudePassEnd, type ClaudePassEndList, type CloudSignInSettingRead } from "./claudePassEndWarning";
 import type { CloudPassEnd } from "../../../shared/cloudSignIns";
 import type { AdeAccountMachinesResult } from "../../../shared/types/account";
 import { getSignedInAccountAccessToken } from "../../../../../ade-cli/src/services/account/accountAuthService";
@@ -55,9 +49,7 @@ import {
 import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { openCloudApprovalWindow } from "./cloudApprovalWindow";
 import { createCloudMachines } from "./cloudMachines";
-import type { CloudProvider } from "./cloudProvider";
-import { claimCloudReadyMachine, releaseCloudReadyMachine } from "./cloudReadyClaim";
-import { createCloudReadyKeeper } from "./cloudReadyMachines";
+import { CloudProviderError, type CloudProvider } from "./cloudProvider";
 import { setCloudAsleepCheck, setCloudRestChanged, setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
 import { startCloudSleepWatch } from "./cloudSleepWatch";
 import { setCloudDesktopActions } from "./cloudDesktopActions";
@@ -70,11 +62,9 @@ import {
   cloudInstanceForMachine,
   wakeCloudMachineForUse,
 } from "./cloudSleep";
-import { CLOUD_READY_VAULT_KEY, createCloudReadySettingsStore } from "./cloudReadySettings";
 import { openExternalUrl } from "../shared/externalLinks";
 import { getErrorMessage } from "../shared/utils";
 import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
-import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { createCloudPendingCreateStore, sweepCloudPendingCreates } from "./cloudPendingCreates";
 
 type Logger = {
@@ -102,14 +92,14 @@ export function cloudAccountChanged(): void {
 export function registerCloudIpc(args: {
   /** `list` reads the account's pass store for the end warning (`claudePassEnd.ts`). */
   vaultBridge: Parameters<typeof cloudVaultFromBridge>[0] & { list?: ClaudePassEndList };
+  /** The account setting `providerLogins.cloud`, for the end warning's keys (only keys on for ADE Cloud). */
+  readCloudSignInSetting?: CloudSignInSettingRead;
   listAccountMachines: () => Promise<AdeAccountMachinesResult>;
   renameMachine: (machineKey: string, name: string) => Promise<unknown>;
   /** Takes a machine off the ADE account (what Delete box does once the box is gone). */
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
   /** Forgets this desktop's saved connections to a machine a move deleted (the remote connection service). */
   forgetMachineConnections?: (machine: { machineKey: string | null; instanceId: string }) => void;
-  /** Ready machines: the per-project switch, each prepare's outcome, picker claims (analytics; coarse outcome only). */
-  recordReady?: (outcome: "enabled" | "disabled" | "completed" | "failed" | "ready_picker") => void;
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
   /** One coarse product fact per box action that worked (analytics; never the box). */
@@ -181,10 +171,8 @@ export function registerCloudIpc(args: {
   startupTimer.unref?.();
 
   // Sign-ins for cloud machines (cloudSignInActions.ts): kept in the
-  // account, given to every new machine, and run on this computer's brain.
-  // Account-wide, so no pin: the brain here is the one with this browser.
-  const cloudSignInVaults: CloudSignInVaults = (vaultKey) =>
-    (credentials.signedIn() ? cloudVaultFromBridge(args.vaultBridge, vaultKey) : null);
+  // account vault, which each cloud computer's brain reads, and run on this
+  // computer's brain. Account-wide, so no pin: the brain here is the one with this browser.
   const cloudSignIn = async (action: string, actionArgs?: Record<string, unknown>): Promise<CloudSignInStatus> => {
     const status = await args.brainAction(action, actionArgs) as CloudSignInStatus;
     // Every window shows the card; the one that acted already has the answer.
@@ -225,7 +213,6 @@ export function registerCloudIpc(args: {
     listAccountMachines: args.listAccountMachines,
     renameMachine: args.renameMachine,
     approveInWindow: (window) => openCloudApprovalWindow(window, logger),
-    machineEnv: () => cloudMachineEnv(cloudSignInVaults, logger),
     minAdeVersion: releasedAdeVersion,
     pendingCreates,
     logger,
@@ -239,32 +226,6 @@ export function registerCloudIpc(args: {
 
   const savedClient = () => getCloudProvider(credentials);
 
-  // Ready machines: prepared here (the sign-in needs this app's window),
-  // claimed here or by any brain. The choice is the account's.
-  const readyKeeper = createCloudReadyKeeper({
-    client: savedClient,
-    settings: createCloudReadySettingsStore({
-      vault: () => (credentials.signedIn() ? cloudVaultFromBridge(args.vaultBridge, CLOUD_READY_VAULT_KEY) : null),
-      machineStore: getMachineStore,
-      logger,
-    }),
-    createMachine: (requestId, machine, onProgress, options) =>
-      createCloudMachine(machineCreatorDeps, requestId, machine, onProgress, options),
-    removeAccountMachine: args.removeAccountMachine,
-    // This computer and this app's data folder: a development copy beside the installed one is another preparer.
-    preparerId: readyPreparerId(logger),
-    currentAdeVersion: releasedAdeVersion,
-    // Declared below; first called after the startup delay.
-    account: () => machines.account(),
-    onStatus: (status) => sendToAllWindows(IPC.cloudReadyStatusChanged, status),
-    onPrepared: (outcome) => args.recordReady?.(outcome),
-    logger,
-  });
-  // After the template check, off the boot path; it reads every couple of minutes only while a project is on.
-  readyKeeper.start(STARTUP_CHECK_DELAY_MS + 10_000);
-  // A prepare cut short by a quit deletes its machine on the way out (best
-  // effort); what a quit still leaves, this copy deletes at its next start.
-  app.once("will-quit", () => readyKeeper.stop());
 
   const machines = createCloudMachines({
     whyNoClient: () => cloudNoProviderSentence(credentials),
@@ -357,7 +318,7 @@ export function registerCloudIpc(args: {
     if (!list || !credentials.signedIn()) return null;
     const now = Date.now();
     if (passEndMemo && now - passEndMemo.at < PASS_END_FRESH_MS) return passEndMemo.value;
-    const value = await readClaudePassEnd(list, now).catch((error: unknown) => {
+    const value = await readClaudePassEnd(list, now, args.readCloudSignInSetting).catch((error: unknown) => {
       logger.warn("cloud.pass_end_read_failed", { error: getErrorMessage(error) });
       return null;
     });
@@ -428,6 +389,34 @@ export function registerCloudIpc(args: {
     return account;
   });
 
+  // Account-level, so no pin: an account has one invite link and one referrer, whichever computer asks.
+  ipcMain.handle(IPC.cloudGetReferral, async (event): Promise<CloudReferralSummary | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetReferral)) return null;
+    try {
+      const provider = await getCloudProvider(credentials);
+      return provider ? readCloudReferralSummary(await provider.readReferral()) : null;
+    } catch (error) {
+      logger.warn("cloud.referral_read_failed", { error: getErrorMessage(error) });
+      return null;
+    }
+  });
+
+  ipcMain.handle(IPC.cloudRedeemInvite, async (event, arg: { code?: unknown }): Promise<CloudInviteRedeemOutcome> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudRedeemInvite)) return { ok: false, reason: "unavailable", message: "ADE can't do that from here." };
+    const code = typeof arg?.code === "string" ? arg.code : "";
+    try {
+      const result = await (await requireCloudProvider(credentials)).redeemInvite(code);
+      // Never the code: only that it was taken, and whether it paid at once.
+      logger.info("cloud.invite_redeemed", { rewarded: result.rewarded });
+      sendToAllWindows(IPC.cloudStatusChanged);
+      return { ok: true, rewarded: result.rewarded, referral: readCloudReferralSummary(result.referral) };
+    } catch (error) {
+      const reason = error instanceof CloudProviderError && error.code === "invite_refused" ? error.detail.reason as CloudInviteRefusalReason | null : null;
+      logger.info("cloud.invite_refused", { reason: reason ?? "unavailable" });
+      return { ok: false, reason: reason ?? "unavailable", message: getErrorMessage(error) };
+    }
+  });
+
   // Account-level: extra disk is the account's, shared by all its computers, so no pin.
   ipcMain.handle(IPC.cloudSetExtraDisk, async (event, arg: { enabled?: unknown; monthlyLimitUsd?: unknown }): Promise<CloudAccountState | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetExtraDisk)) return null;
@@ -453,7 +442,7 @@ export function registerCloudIpc(args: {
     if (result.url == null) {
       logger.info("cloud.plan_changed", { change: result.change });
       sendToAllWindows(IPC.cloudStatusChanged);
-      return { opened: false, change: result.change };
+      return { opened: false, change: result.change, ...(result.cleanup ? { cleanup: result.cleanup } : {}) };
     }
     await openExternalUrl(result.url);
     args.recordPlan?.("plan_checkout");
@@ -487,59 +476,6 @@ export function registerCloudIpc(args: {
     return { opened: true };
   });
 
-  /** A project's identity from the renderer, normalized like every stored one. */
-  const requireReadyIdentity = (value: unknown): string => {
-    const identity = normalizeGitRemoteIdentity(typeof value === "string" ? value : null);
-    if (!identity) throw new Error("Which project?");
-    return identity;
-  };
-
-  ipcMain.handle(IPC.cloudReadyStatus, async (event): Promise<CloudReadyStatus | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudReadyStatus)) return null;
-    return await readyKeeper.refresh();
-  });
-
-  ipcMain.handle(IPC.cloudReadySetProject, async (event, arg: { settings?: Partial<CloudReadyProjectSettings> }): Promise<CloudReadyStatus | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudReadySetProject)) return null;
-    const wasOn = readyKeeper.status().projects.some((project) => project.settings.identity === normalizeGitRemoteIdentity(arg?.settings?.identity));
-    const status = await readyKeeper.setProject(arg?.settings ?? {});
-    if (!wasOn) args.recordReady?.("enabled");
-    return status;
-  });
-
-  ipcMain.handle(IPC.cloudReadyRemoveProject, async (event, arg: { identity?: unknown }): Promise<CloudReadyStatus | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudReadyRemoveProject)) return null;
-    const status = await readyKeeper.removeProject(requireReadyIdentity(arg?.identity));
-    args.recordReady?.("disabled");
-    return status;
-  });
-
-  ipcMain.handle(IPC.cloudReadyRetry, async (event, arg: { identity?: unknown }): Promise<CloudReadyStatus | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudReadyRetry)) return null;
-    return await readyKeeper.retry(requireReadyIdentity(arg?.identity));
-  });
-
-  ipcMain.handle(IPC.cloudReadyClaim, async (event, arg: { originUrl?: unknown }): Promise<CloudReadyClaim | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudReadyClaim)) return null;
-    const identity = normalizeGitRemoteIdentity(typeof arg?.originUrl === "string" ? arg.originUrl : null);
-    if (!identity) throw new Error("This project has no git origin, so it has no ready machine.");
-    const claim = await claimCloudReadyMachine(await requireCloudProvider(credentials), identity, { logger });
-    args.recordReady?.("ready_picker");
-    // The pool is one short: make the next one.
-    void readyKeeper.refresh();
-    sendToAllWindows(IPC.cloudStatusChanged);
-    return claim;
-  });
-
-  ipcMain.handle(IPC.cloudReadyRelease, async (event, arg: { instanceId?: unknown; claimToken?: unknown }): Promise<{ released: boolean } | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudReadyRelease)) return null;
-    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
-    const claimToken = typeof arg?.claimToken === "string" ? arg.claimToken : "";
-    if (!isCloudInstanceId(instanceId) || !claimToken) return { released: false };
-    const released = await releaseCloudReadyMachine(await requireCloudProvider(credentials), instanceId, claimToken, { logger });
-    if (released) void readyKeeper.refresh();
-    return { released };
-  });
 
   const creates = new Map<string, AbortController>();
 
@@ -573,7 +509,6 @@ export function registerCloudIpc(args: {
       sendToAllWindows(IPC.cloudStatusChanged);
       return result;
     },
-    readyRefresh: () => readyKeeper.refresh(),
   });
 
   /**
@@ -680,66 +615,6 @@ export function registerCloudIpc(args: {
     return { cancelled: true };
   });
 
-  ipcMain.handle(
-    IPC.cloudCreateMachine,
-    async (event, arg: { requestId?: unknown; machine?: CloudCreateMachineArgs }): Promise<{ started: boolean }> => {
-      if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudCreateMachine)) return { started: false };
-      const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
-      if (creates.has(requestId)) return { started: true };
-      const sender = event.sender;
-      const controller = new AbortController();
-      creates.set(requestId, controller);
-      // The window that asked went away (closed, reloaded): nobody is waiting
-      // for this box, so stop and delete it rather than leave it using hours.
-      const onSenderGone = () => controller.abort();
-      sender.once("destroyed", onSenderGone);
-      const send = (progress: CloudCreateProgress) => {
-        if (sender.isDestroyed()) return;
-        try {
-          sender.send(IPC.cloudCreateProgress, progress);
-        } catch {
-          // The window closed mid-create; the abort above cleans up.
-        }
-      };
-      void createCloudMachine(
-        machineCreatorDeps,
-        requestId,
-        arg?.machine as CloudCreateMachineArgs,
-        send,
-        { signal: controller.signal },
-      ).then(
-        (result) => {
-          args.recordMachineCreate?.(result.joined ? "completed" : "partial");
-          send({
-          requestId,
-          stage: "done",
-          message: result.joined
-            ? result.renamed
-              ? `${result.name} is ready.`
-              : `Your new machine is ready. ADE couldn't name it "${result.name}"; rename it from its row under Your computers.`
-            : result.machineKey
-              ? cloudStillStartingMessage(result.name)
-              : `${result.name} is signed in but still starting. It will appear under Your computers; connect it from there when it's ready.`,
-          instanceId: result.instanceId,
-          result,
-          });
-        },
-        (error: unknown) => {
-          const message = getErrorMessage(error);
-          args.recordMachineCreate?.(controller.signal.aborted ? "cancelled" : "failed");
-          logger.warn("cloud.create_machine_failed", { error: message });
-          send({ requestId, stage: "failed", message, error: message });
-        },
-      ).finally(() => {
-        creates.delete(requestId);
-        if (!sender.isDestroyed()) sender.removeListener("destroyed", onSenderGone);
-        // A box was made (or made and deleted): the machine list reads again.
-        sendToAllWindows(IPC.cloudStatusChanged);
-      });
-      return { started: true };
-    },
-  );
-
   // The ADE Cloud lane launch makes its computer with these same pieces.
   return { machineCreatorDeps, machines, copyDeps, client: () => requireCloudProvider(credentials) };
 }
@@ -752,29 +627,6 @@ function releasedAdeVersion(): string | null {
   return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) ? version : null;
 }
 
-/**
- * This copy of ADE as a preparer of ready machines: a random id kept in its
- * own data folder, so it survives restarts and a hostname change, and a
- * development copy beside the installed one (another data folder) is another
- * preparer. Unreadable or unwritable, it is a fresh id for this run: then a
- * leftover is cleaned up as stale instead of at once.
- */
-function readyPreparerId(logger: Logger): string {
-  const file = path.join(app.getPath("userData"), "cloud-ready-preparer-id");
-  try {
-    const saved = fs.readFileSync(file, "utf8").trim();
-    if (/^[a-z0-9-]{8,64}$/.test(saved)) return saved;
-  } catch {
-    // None yet.
-  }
-  const id = randomUUID();
-  try {
-    fs.writeFileSync(file, id, { mode: 0o600 });
-  } catch (error) {
-    logger.warn("cloud.ready_preparer_id_not_saved", { error: getErrorMessage(error) });
-  }
-  return id;
-}
 
 /** Long enough that the boot path, the brain and the vault are settled first. */
 /** Moved or typed within this long counts as here, for "still watching". */

@@ -12,6 +12,7 @@
  *  - a cloud computer's page: "In use here" for the one it applied, and "Use
  *    on ADE Cloud" on the others (the choice is account-wide).
  */
+import { useAdeCloudEnabled } from "../../../../state/cloudAccess";
 import { COLORS, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
 import { NoticeBadge } from "../../../ui/notice/NoticeParts";
 import { SettingsToggle } from "../../primitives";
@@ -42,6 +43,9 @@ export function SignInAccountCard({
   where?: SignInCardPlace;
 }) {
   const onComputer = where.kind !== "ade-cloud";
+  // An own computer's page shows the account's shared sign-ins to everyone;
+  // only an account with ADE Cloud hears which one ADE Cloud uses.
+  const cloudOn = useAdeCloudEnabled();
   const inUseHere = onComputer && where.inUseHere;
   // The accent marks the sign-in the place in front of the person uses.
   const marked = onComputer ? inUseHere : card.inUse;
@@ -85,7 +89,7 @@ export function SignInAccountCard({
         {where.kind === "own-computer" && !inUseHere ? (
           <span style={{ ...line, color: COLORS.textSecondary }}>To use it here, sign in on {where.machineWords}.</span>
         ) : null}
-        {onComputer && card.inUse ? <span style={line}>In use on ADE Cloud</span> : null}
+        {onComputer && card.inUse && cloudOn ? <span style={line}>In use on ADE Cloud</span> : null}
       </div>
 
       {onSwitch ? (

@@ -28,7 +28,7 @@ import { getErrorMessage } from "../shared/utils";
 import { CloudProviderError, type CloudProvider, type CloudInstance, type CloudLogger } from "./cloudProvider";
 import type { CloudVault } from "./cloudAccess";
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
-import { wakeThroughTransition } from "./cloudReadyClaim";
+import { wakeThroughTransition } from "./cloudInstanceOps";
 
 /** How a box sleeps, read from the provider (the setting lives there, so every computer agrees). */
 export function cloudSleepPolicyOf(instance: Pick<CloudInstance, "autoSleep">): CloudSleepPolicy {

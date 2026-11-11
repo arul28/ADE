@@ -1,7 +1,7 @@
 /**
  * The `cloud` action domain's machine verbs, behind `ade cloud …`: status
  * (the whole account in one read), list, create, sleep, wake, resize, update,
- * copy, move, delete, hours, and "keep a cloud machine ready" on, off or retry.
+ * copy, move, delete, hours, a lane on its own computer, and clearing caches.
  * `list`, `hours` and `limits` are narrow views of the reads `status` makes.
  *
  * What adds a computer (a new lane, a make, a copy) refuses before any card
@@ -60,12 +60,14 @@ import {
   type CloudMachineKind,
   type CloudMachinesResult,
   type CloudShapeId,
+  readCloudReferralSummary,
+  type CloudInviteRedeemOutcome,
+  type CloudInviteRefusalReason,
+  type CloudReferralSummary,
 } from "../../../shared/adeCloud";
-import { type CloudReadyProjectSettings } from "../../../shared/cloudReady";
-import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { PermissionLevel } from "../../../shared/permissionLadder";
 import { getErrorMessage } from "../shared/utils";
-import type { CloudLogger } from "./cloudProvider";
+import { CloudProviderError, type CloudLogger } from "./cloudProvider";
 import type { CloudMoveResult } from "./cloudMachineCopy";
 import type { CloudBrainMaker, CloudMakeInput } from "./cloudBrainMaker";
 import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
@@ -75,8 +77,8 @@ import type { ChatLaunchArgs } from "../../../shared/types";
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import { buildCloudTierRequestCard } from "../../../shared/cloudLaneLife";
 import { buildCloudAccountStatus, CLOUD_DAILY_LIMIT_SETTING, type CloudAccountStatus } from "./cloudAccountStatus";
+import { captureCloudLaneAnalytics } from "./cloudLaneLaunchAnalytics";
 import { countAgentMadeToday, type createCloudMachines } from "./cloudMachines";
-import { normalizeCloudReadySettings, type CloudReadySettingsStore } from "./cloudReadySettings";
 import type { CloudAgentLimitsStore } from "./cloudSleep";
 
 /**
@@ -105,7 +107,6 @@ export type CloudDesktopBridge = {
   create(args: CloudCreateMachineArgs & CloudMadeBy): Promise<CloudCreateMachineResult>;
   copy(args: { instanceId: string; name?: string | null; shape?: CloudShapeId | null } & CloudMadeBy): Promise<CloudCreateMachineResult & { copiedFrom: string; forkMs: number }>;
   move(args: { instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null } & CloudMadeBy): Promise<CloudMoveResult>;
-  readyRefresh(): Promise<unknown>;
 };
 
 export type CloudChatApprovals = {
@@ -134,7 +135,6 @@ export type CloudChatApprovals = {
 export type CloudAgentActionDeps = {
   machines: ReturnType<typeof createCloudMachines>;
   limits: CloudAgentLimitsStore;
-  readySettings: CloudReadySettingsStore;
   /** The desktop attached to this brain, or null. */
   desktop: () => CloudDesktopBridge | null;
   /** Makes machines here when no desktop is attached; the person approves from a link. */
@@ -150,6 +150,8 @@ export type CloudAgentActionDeps = {
    */
   savedDefaultTier?: (() => unknown) | null;
   approvals: CloudChatApprovals | null;
+  /** One coarse outcome per cache clear (cloudLaneLaunchAnalytics.ts); never the computer. */
+  analytics?: Parameters<typeof captureCloudLaneAnalytics>[0];
   logger?: CloudLogger;
 };
 
@@ -499,7 +501,6 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     shape: box.shapeId,
     hoursRate: box.hoursRate,
     sleep: box.sleep,
-    ready: box.ready,
     pastDue: box.pastDue,
   });
 
@@ -789,18 +790,37 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     },
 
     /**
-     * The person clears a lane computer's caches from the dashboard. It runs
-     * on that computer's own brain (the caller pins the lane's machine), so a
-     * call that reached any other machine is refused, never run here.
+     * Clears a lane computer's caches. It runs on that computer's own brain
+     * (the dashboard pins the lane's machine), so a call that names any other
+     * machine is refused, never run here. The person's dashboard confirms
+     * first; an agent in a chat asks the person with a card; nobody watching
+     * (a full-auto chat, an automation, an ADE MCP app) means no.
      */
     async clear_caches(rawArgs?: unknown): Promise<{ freedGb: number }> {
       const args = record(rawArgs);
       const self = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
-      const machine = text(args, "machine");
+      // An agent on the computer may leave it out: this is the only computer it can mean.
+      const machine = text(args, "machine") ?? self;
       if (!self) throw new Error("Clear caches runs only on an ADE Cloud computer. Open it from the lane's row in Settings › ADE Cloud.");
       if (machine !== self) throw new Error("That request reached another computer. Nothing was cleared.");
+      try {
+        await approve(readApproval(args), {
+          action: "person_only",
+          title: "Clear caches on this computer",
+          body: "ADE deletes package and build caches here and measures the disk again. Repositories, dependencies, images and emulators stay. Builds may be slower until the caches fill again.",
+          confirm: "Clear caches",
+          personPlace: "Clear them from the lane's row in Settings › ADE Cloud.",
+        });
+      } catch (error) {
+        captureCloudLaneAnalytics(deps.analytics, "api", "cloud_clear_caches", "denied");
+        throw error;
+      }
       const { clearCloudDiskCaches, cloudDiskReporter } = await import("./cloudDiskUsage");
-      const result = await clearCloudDiskCaches();
+      const result = await clearCloudDiskCaches().catch((error: unknown) => {
+        captureCloudLaneAnalytics(deps.analytics, "api", "cloud_clear_caches", "failed");
+        throw error;
+      });
+      captureCloudLaneAnalytics(deps.analytics, "api", "cloud_clear_caches", "completed");
       logger.info?.("cloud.caches_cleared", { instanceId: self, freedGb: result.freedGb });
       // The dashboard shows the new numbers at once: measure and send now.
       await cloudDiskReporter()?.reportNow().catch((error: unknown) => {
@@ -903,6 +923,38 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       return account;
     },
 
+    /**
+     * The account's invite link and what it earned (`ade cloud invite`):
+     * friends joined, rewards paid and left, hours earned, whether a code can
+     * still be entered. No code or link is ever logged.
+     */
+    async referral(): Promise<CloudReferralSummary> {
+      const summary = await deps.machines.referral();
+      if (!summary) throw new Error("ADE Cloud isn't available on this account yet.");
+      return summary;
+    },
+
+    /**
+     * Enters someone's invite for this account (a pasted link or the bare
+     * code). Once, ever: an account's referrer never changes. The person's
+     * call only (`USER_SETTING_WRITES`); an agent is refused before this runs.
+     * Answers the outcome; a refusal is `{ ok: false, reason, message }`, not a throw.
+     */
+    async invite_redeem(rawArgs?: unknown): Promise<CloudInviteRedeemOutcome> {
+      const code = text(record(rawArgs), "code");
+      if (!code) throw new Error("Pass the invite link or its code: ade cloud invite redeem <link-or-code>.");
+      try {
+        const result = await deps.machines.redeemInvite(code);
+        logger.info?.("cloud.invite_redeemed", { rewarded: result.rewarded });
+        return { ok: true, rewarded: result.rewarded, referral: readCloudReferralSummary(result.referral) };
+      } catch (error) {
+        const reason = error instanceof CloudProviderError && error.code === "invite_refused" ? error.detail.reason : null;
+        logger.info?.("cloud.invite_refused", { reason: reason ?? "unavailable" });
+        if (!reason) throw error;
+        return { ok: false, reason: reason as CloudInviteRefusalReason, message: getErrorMessage(error) };
+      }
+    },
+
     /** What agents may do alone: a preset (ask, balanced, hands_off) or single limits. Loosening asks the person. */
     async limits() {
       const current = await deps.limits.read();
@@ -938,67 +990,6 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         });
       }
       return await deps.limits.write(next);
-    },
-
-    async ready_set(rawArgs?: unknown) {
-      const args = record(rawArgs);
-      const identity = normalizeGitRemoteIdentity(text(args, "originUrl") ?? text(args, "identity"));
-      if (!identity) throw new Error("Run it in a project with a git origin, or pass --origin <url>.");
-      const { projects } = await deps.readySettings.read();
-      const existing = projects.find((entry) => entry.identity === identity) ?? null;
-      const kind = text(args, "kind") as CloudMachineKind | null;
-      const shape = shapeArg(args);
-      const next = normalizeCloudReadySettings({
-        ...(existing ?? {}),
-        identity,
-        projectName: text(args, "projectName") ?? existing?.projectName ?? undefined,
-        ...(kind ? { kind } : {}),
-        ...(shape ? { shape } : {}),
-        ...(typeof args.setup === "string" ? { setup: args.setup } : {}),
-        failure: null,
-      } as Partial<CloudReadyProjectSettings>);
-      if (!next) throw new Error("That isn't a project ADE can keep a machine ready for.");
-      // Turning it on, or a bigger or other kind of machine, asks (and is held to the agent limits).
-      if (!existing || existing.shape !== next.shape || existing.kind !== next.kind) {
-        const account = await hoursCheck();
-        const shape = cloudShapeById(next.shape);
-        // The keeper makes the machine later; this only asks, so it holds no slot.
-        (await approve(readApproval(args), {
-          action: "spend",
-          newMachine: true,
-          shape: next.shape,
-          title: `Keep a cloud machine ready for ${next.projectName}`,
-          body: `ADE prepares a ${shape.label}${next.kind === "vm" ? " full computer" : " computer"} with the repository cloned and setup run, then keeps it asleep. A chat on it uses ${describeCloudHoursUse(next.kind, shape.id, cloudCatalogOf(account))}.`,
-          confirm: "Keep one ready",
-        })).release();
-      }
-      await deps.readySettings.write([...projects.filter((entry) => entry.identity !== identity), next]);
-      await deps.desktop()?.readyRefresh().catch((error: unknown) => logger.warn?.("cloud.ready_refresh_failed", { error: getErrorMessage(error) }));
-      return { identity, settings: next, preparedBy: deps.desktop() ? "this computer" : "the next ADE desktop that opens" };
-    },
-
-    async ready_off(rawArgs?: unknown) {
-      const args = record(rawArgs);
-      const identity = normalizeGitRemoteIdentity(text(args, "originUrl") ?? text(args, "identity"));
-      if (!identity) throw new Error("Run it in a project with a git origin, or pass --origin <url>.");
-      const { projects } = await deps.readySettings.read();
-      if (!projects.some((entry) => entry.identity === identity)) return { identity, wasOn: false };
-      await deps.readySettings.write(projects.filter((entry) => entry.identity !== identity));
-      await deps.desktop()?.readyRefresh().catch(() => null);
-      return { identity, wasOn: true };
-    },
-
-    async ready_retry(rawArgs?: unknown) {
-      const args = record(rawArgs);
-      const identity = normalizeGitRemoteIdentity(text(args, "originUrl") ?? text(args, "identity"));
-      if (!identity) throw new Error("Run it in a project with a git origin, or pass --origin <url>.");
-      const { projects } = await deps.readySettings.read();
-      const entry = projects.find((candidate) => candidate.identity === identity);
-      if (!entry) throw new Error("This project doesn't keep a machine ready. ade cloud ready on turns it on.");
-      await hoursCheck();
-      await deps.readySettings.write(projects.map((candidate) => (candidate.identity === identity ? { ...candidate, failure: null } : candidate)));
-      await deps.desktop()?.readyRefresh().catch(() => null);
-      return { identity, retrying: true };
     },
   };
 }

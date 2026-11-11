@@ -1,6 +1,7 @@
 import {
   CLOUD_PLAN_LABELS,
   cloudCatalogOf,
+  formatCloudDate,
   formatCloudHoursRate,
   type CloudAccountState,
   type CloudDiskUsage,
@@ -44,6 +45,8 @@ export type DashLane = {
   safe: boolean | null;
   machine: CloudLaneMachine | null;
   without: CloudLaneWithoutComputer | null;
+  /** A computer the account pays for that holds no lane (made before lanes had their own computer). */
+  noLane: boolean;
 };
 
 function stateOf(machine: CloudMachine): DashLaneState {
@@ -77,15 +80,15 @@ export function dashLanes(input: {
   now: number;
 }): DashLane[] {
   const tiers = cloudTiers(cloudCatalogOf(input.account));
+  // Every computer the account pays for: a lane's own, and one that holds no lane.
   const withComputer = input.machines
-    .filter((machine) => machine.lane)
     .map((machine): DashLane => {
       const tier = cloudTierOfMachine(machine, tiers);
       const lastActiveAt = machine.lastActiveAtMs ?? null;
       return {
         key: machine.instanceId,
         instanceId: machine.instanceId,
-        name: machine.lane?.laneName ?? machine.name ?? machine.instanceId,
+        name: machine.lane?.laneName ?? noLaneName(machine),
         tier,
         tierRank: tier ? cloudTierRank(tier.id) : 1,
         rateLabel: tier ? cloudTierRateLabel(tier) : machine.hoursRate != null ? formatCloudHoursRate(machine.hoursRate) : null,
@@ -98,6 +101,7 @@ export function dashLanes(input: {
         safe: laneSafety(machine.laneWork),
         machine,
         without: null,
+        noLane: !machine.lane,
       };
     });
   const known = new Set(withComputer.map((lane) => lane.machine?.lane?.laneId));
@@ -121,9 +125,21 @@ export function dashLanes(input: {
         safe: null,
         machine: null,
         without: lane,
+        noLane: false,
       };
     });
-  return [...withComputer, ...withoutComputer];
+  // Lanes first (awake, then the most recent), then lanes without a computer, then computers with no lane.
+  const order = (lane: DashLane) => (lane.noLane ? 2 : 0);
+  const sorted = withComputer.slice().sort((left, right) => order(left) - order(right)
+    || Number(right.state === "awake") - Number(left.state === "awake")
+    || (right.lastActiveAt ?? 0) - (left.lastActiveAt ?? 0));
+  return [...sorted.filter((lane) => !lane.noLane), ...withoutComputer, ...sorted.filter((lane) => lane.noLane)];
+}
+
+/** A computer with no lane: its own name when ADE gave it one, else its short id. */
+function noLaneName(machine: CloudMachine): string {
+  const name = machine.name?.trim();
+  return name && name !== "ADE Cloud computer" ? name : `Computer ${machine.instanceId.slice(0, 6)}`;
 }
 
 /** The plan's name, for the header tag. */
@@ -138,10 +154,13 @@ export function percentOf(used: number, limit: number): number {
   return Math.max(0, Math.min(100, (used / limit) * 100));
 }
 
-const shortDate = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
-
+/**
+ * One date format for the whole page: the plan's period ends at midnight UTC,
+ * so every date here is read in UTC ("resets Dec 1" everywhere, never "Nov 30"
+ * in one place and "Dec 1" in another).
+ */
 export function formatShortDate(ms: number): string {
-  return shortDate.format(new Date(ms));
+  return formatCloudDate(ms);
 }
 
 /**
@@ -168,7 +187,12 @@ export function formatGb(gb: number): string {
 
 /** The last-run phrase a lane row shows. */
 export function lastRunText(lane: DashLane, now: number): string {
-  if (lane.state === "none") return lane.without?.reason === "inactive" ? "Computer removed after 30 days" : "No computer now";
+  if (lane.state === "none") {
+    const reason = lane.without?.reason as string | undefined;
+    if (reason === "inactive") return "Computer removed after 30 days";
+    if (reason === "plan_limit") return "Computer removed to fit your plan";
+    return "No computer now";
+  }
   if (lane.state === "awake") return "Running now";
   if (lane.lastActiveAt == null) return "Not used yet";
   return `Ran ${formatAgo(lane.lastActiveAt, now)}`;
@@ -195,4 +219,13 @@ export function cleanupOrder(lanes: readonly DashLane[]): DashLane[] {
 export function prefersReducedMotion(): boolean {
   if (typeof window === "undefined") return true;
   return document.documentElement.dataset.motion === "reduced" || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
+/**
+ * Hours earned through invites, which never expire and are used after the
+ * plan's hours. Null from a server that doesn't send them.
+ */
+export function earnedHoursLeftMilli(account: CloudAccountState): number | null {
+  const earned = (account as { earnedHours?: { leftMilli?: unknown } | null }).earnedHours;
+  return typeof earned?.leftMilli === "number" ? earned.leftMilli : null;
 }

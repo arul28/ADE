@@ -32,6 +32,7 @@ import {
 import { useUsageSnapshot } from "./useUsageSnapshot";
 import { useUsageHeaderPreferences } from "./usageHeaderPreferences";
 import { humanizeProvider } from "./usageProviderNames";
+import { HeaderCloudPanel, HeaderCloudRing, headerCloudTitle, useHeaderCloudAccount } from "./HeaderCloudMeter";
 
 
 function ProviderLogo({ provider, size = 14 }: { provider: UsageProvider; size?: number }) {
@@ -336,9 +337,14 @@ export function HeaderUsageControl({
   const hasErrors = warning.warn;
   const updatedAgo = formatUpdatedAgo(snapshot, nowMs);
 
-  const titleParts = providersWithUsage.map(
-    ({ provider, usage }) => `${humanizeProvider(provider)} ${formatUsageTitle(provider, usage)}`,
-  );
+  // ADE Cloud's hours come first, for an account ADE Cloud lets in.
+  const cloudAccount = useHeaderCloudAccount();
+  const titleParts = [
+    ...(cloudAccount ? [headerCloudTitle(cloudAccount)] : []),
+    ...providersWithUsage.map(
+      ({ provider, usage }) => `${humanizeProvider(provider)} ${formatUsageTitle(provider, usage)}`,
+    ),
+  ];
   let buttonTitle: string;
   if (titleParts.length > 0) {
     buttonTitle = `Usage · ${titleParts.join(" · ")}${hasErrors ? " · warnings" : ""}`;
@@ -397,8 +403,9 @@ export function HeaderUsageControl({
       aria-expanded={open}
       style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
     >
-      {providersWithUsage.length > 0 ? (
+      {providersWithUsage.length > 0 || cloudAccount ? (
         <div className="flex flex-nowrap items-center justify-end gap-0.5">
+          {cloudAccount ? <HeaderCloudRing state={cloudAccount} /> : null}
           {providersWithUsage.map(({ provider, usage }) => (
             <HeaderProviderUsageRing key={provider} provider={provider} usage={usage} />
           ))}
@@ -474,6 +481,7 @@ export function HeaderUsageControl({
         onClose={() => setOpen(false)}
       >
         <div className="flex flex-col gap-3 px-3 pb-3 pt-2">
+          {cloudAccount ? <HeaderCloudPanel state={cloudAccount} onNavigate={() => setOpen(false)} /> : null}
           <UsageLimitsBand nowMs={nowMs} usage={usage} />
           <button
             type="button"

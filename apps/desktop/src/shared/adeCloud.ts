@@ -10,11 +10,34 @@ import type {
   CloudHoursState,
   CloudPaidPlanId,
   CloudPlanChangeTiming,
+  CloudPlanCleanup,
+  CloudPlanCleanupDone,
   CloudPlanFacts,
   CloudPlanId,
+  CloudTimedWakesCancelled,
 } from "../../../account-directory/src/cloud/contract";
 import { formatCloudCents, overPlanDiskSentence } from "../../../account-directory/src/cloud/contract";
-import type { CloudReadyMachineState } from "./cloudReady";
+import type {
+  CloudEarnedHours,
+  CloudFreePlan,
+  CloudFreePlanState,
+  CloudInviteRedeemResult,
+  CloudInviteRefusalReason,
+  CloudReferralSummary,
+} from "../../../account-directory/src/cloud/contract";
+export {
+  CLOUD_FREE_PLAN_REFUSED_SENTENCE,
+  CLOUD_INVITE_DEEPLINK_BASE,
+  CLOUD_INVITE_URL_BASE,
+  CLOUD_REFERRAL_ENTER_DAYS,
+  CLOUD_REFERRAL_REWARD_LIMIT,
+  CLOUD_REFERRAL_REWARD_MILLI,
+  cloudInviteLink,
+  parseCloudInviteCode,
+} from "../../../account-directory/src/cloud/contract";
+export type { CloudEarnedHours, CloudFreePlan, CloudFreePlanState, CloudInviteRedeemResult, CloudInviteRefusalReason, CloudReferralSummary };
+/** The shared sentences for a cheaper plan's limits and cancelled timed wakes (the server's emails say the same). */
+export { planCleanupDoneSentence, planCleanupSentence, timedWakesCancelledSentence, CLOUD_PLAN_CLEANUP_GRACE_DAYS } from "../../../account-directory/src/cloud/contract";
 
 export { formatCloudCents };
 
@@ -26,8 +49,7 @@ export { formatCloudCents };
  * Everything here is account-level: it acts on the account's cloud machines,
  * not on any lane, chat or machine.
  *
- * Ready machines live in cloudReady.ts and the sign-ins new machines start
- * with in cloudSignIns.ts.
+ * The sign-ins for cloud machines live in cloudSignIns.ts.
  */
 
 /** The own-provider card in Settings: layout only until a provider is wired to it. */
@@ -276,6 +298,13 @@ export type CloudCreateMachineResult = {
 /** How long the picker keeps watching for a box that signed in but wasn't ready to connect yet. */
 export const CLOUD_JOIN_WATCH_MS = 5 * 60_000;
 
+/**
+ * How long a start waits for a woken cloud computer's ADE to come online and
+ * take work. the provider answers a wake in about a second; ADE's own
+ * reconnect after a long sleep takes longer.
+ */
+export const CLOUD_WAKE_WAIT_MS = 120_000;
+
 /** The line for a box that signed in but whose row wasn't ready to connect yet. */
 export function cloudStillStartingMessage(name: string): string {
   return `${name} is still starting. It will appear under Your computers; ADE will connect when it's ready.`;
@@ -385,11 +414,6 @@ export type CloudMachine = {
    * these, and any other box only when an account row matches it.
    */
   createdAtMs: number | null;
-  /**
-   * Set when this is a project's ready machine (prepared and kept asleep for
-   * the next chat): the project it is for, and where it is in that life.
-   */
-  ready: { projectName: string; state: CloudReadyMachineState } | null;
   /** How the box sleeps when nothing runs on it (see `CloudSleepPolicy`). */
   sleep: CloudSleepPolicy;
   /** A plain sentence when its disk is full and can't grow, or null. */
@@ -693,10 +717,15 @@ export function cloudShapeWithin(shape: CloudShapeId, max: CloudShapeId): boolea
 }
 
 export type { CloudAccountState, CloudCatalog, CloudHoursState, CloudPaidPlanId, CloudPlanChangeTiming };
+export type { CloudPlanCleanup, CloudPlanCleanupDone, CloudTimedWakesCancelled };
 export type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageKind, CloudDiskUsageReport, CloudLaneWork };
 
-/** What opening checkout did: a browser page opened, or the plan changed without one. */
-export type CloudOpenCheckoutResult = { opened: boolean; change?: CloudPlanChangeTiming };
+/**
+ * What opening checkout did: a browser page opened, or the plan changed
+ * without one. A downgrade over the cheaper plan's limits carries `cleanup`,
+ * what those limits will free (show its `sentence`).
+ */
+export type CloudOpenCheckoutResult = { opened: boolean; change?: CloudPlanChangeTiming; cleanup?: CloudPlanCleanup };
 
 /** The server's sentence for what needs hours at 0. The server enforces it; these two only stop a request that can't work. */
 export const CLOUD_OUT_OF_HOURS_MESSAGE = "You're out of ADE Cloud hours for this period.";
@@ -707,6 +736,59 @@ export const CLOUD_HOURS_UNKNOWN_MESSAGE =
 export function cloudOutOfHours(account: Pick<CloudAccountState, "hours"> | null | undefined): boolean {
   return account?.hours.state === "zero";
 }
+
+/*
+ * Referrals, earned hours and the free plan per computer. A server from
+ * before them leaves these out; each reader answers what that server meant.
+ */
+
+const finite = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+
+/** Earned hours (used after the plan's hours, before extra hours; they never expire). Zeros from an older server. */
+export function cloudEarnedHoursOf(account: Pick<CloudAccountState, "earnedHours"> | null | undefined): CloudEarnedHours {
+  const earned = account?.earnedHours;
+  return { leftMilli: finite(earned?.leftMilli), usedThisPeriodMilli: finite(earned?.usedThisPeriodMilli), grantedMilli: finite(earned?.grantedMilli) };
+}
+
+/** Whether the account gets the free plan's hours. An older server gives every account the free plan: `unclaimed`. */
+export function cloudFreePlanOf(account: Pick<CloudAccountState, "freePlan"> | null | undefined): CloudFreePlan {
+  const state = account?.freePlan?.state;
+  if (state !== "claimed" && state !== "refused" && state !== "unclaimed") return { state: "unclaimed", sentence: null };
+  const sentence = account?.freePlan?.sentence;
+  return { state, sentence: typeof sentence === "string" && sentence ? sentence : null };
+}
+
+/** The account's referral summary, or null when the server sent none (an older server, or it couldn't build one). */
+export function cloudReferralOf(account: Pick<CloudAccountState, "referral"> | null | undefined): CloudReferralSummary | null {
+  return readCloudReferralSummary(account?.referral);
+}
+
+/** A referral summary from any answer (`/cloud/referrals`, the account, a redeem), or null when it isn't one. */
+export function readCloudReferralSummary(value: unknown): CloudReferralSummary | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.code !== "string" || !raw.code || typeof raw.link !== "string") return null;
+  const referredState = raw.referredState === "pending" || raw.referredState === "rewarded" || raw.referredState === "refused" ? raw.referredState : null;
+  return {
+    code: raw.code,
+    link: raw.link,
+    friendsJoined: finite(raw.friendsJoined),
+    rewardsPaid: finite(raw.rewardsPaid),
+    rewardsLeft: finite(raw.rewardsLeft),
+    rewardLimit: finite(raw.rewardLimit),
+    rewardMilli: finite(raw.rewardMilli),
+    hoursEarnedMilli: finite(raw.hoursEarnedMilli),
+    canEnterCode: raw.canEnterCode === true,
+    enterCodeUntil: typeof raw.enterCodeUntil === "number" ? raw.enterCodeUntil : null,
+    hasReferrer: raw.hasReferrer === true,
+    referredState,
+  };
+}
+
+/** What entering an invite code did: taken (and whether it paid at once), or the server's one sentence and reason. */
+export type CloudInviteRedeemOutcome =
+  | { ok: true; rewarded: boolean; referral: CloudReferralSummary | null }
+  | { ok: false; reason: CloudInviteRefusalReason | "unavailable"; message: string };
 
 /**
  * Why no computer can wake on an account on the free plan (a cancelled plan

@@ -89,8 +89,6 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
     "integrations.ade-cloud-sign-ins",
   ],
   money: [
-    // Keeps a billing cloud machine prepared for a project.
-    "integrations.ade-cloud-ready",
     // What cloud machines spent, what unattended agents may spend, the optional cap.
     "integrations.ade-cloud-spending",
     "integrations.ade-cloud-agent-limits",

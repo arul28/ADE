@@ -44,6 +44,13 @@ export async function deleteCloudAccount(
   // Lane names, repository origins and branches of lanes whose computer is gone.
   await env.DB.prepare("delete from cloud_lanes_without_computer where user_id = ?").bind(userId).run();
   await deleteAllAccountChats(env, userId);
+  // The invite link stops working and the computers it was seen on go. The free-plan
+  // claim stays (re-making the account must not give the computer's free hours again),
+  // and so do referral rows and earned-hour grants, which hold no personal data.
+  await env.DB.batch([
+    env.DB.prepare("delete from cloud_invite_codes where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_account_computers where user_id = ?").bind(userId),
+  ]);
 
   // Last, after the computers: a cloud computer still running holds the
   // account's session and could write its sign-ins back into the vault.

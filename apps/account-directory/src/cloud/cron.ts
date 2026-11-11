@@ -1,4 +1,5 @@
 import { captureCloudAction, captureCloudDay, type CloudWaitUntil } from "./analytics";
+import { cancelTimedWakes, type WakeBlock } from "./accountNotices";
 import { checkExtraDiskLimits, reportExtraDiskDays, type ExtraDiskOverLimit } from "./billing";
 import { sendCloudEmail } from "./email";
 import { laneFactsOf, laneFactsOfRow, laneFactsStatement, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
@@ -6,6 +7,7 @@ import type { CloudHoursState, CloudInstance } from "./contract";
 import { refreshCostEstimate, runDailyCostReport } from "./costReport";
 import { cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
+import { runPlanCleanups } from "./planCleanup";
 import { runCloudAutoUpdates } from "./updates";
 import {
   DELETION_WARNING_LATE_MS,
@@ -24,7 +26,7 @@ import {
   MOVE_GRACE_MS,
   liveUsedMilli,
   logCloud,
-  percentUsed,
+  allowancePercentUsed,
   planIdOf,
   reportCloudFailure,
   readSetting,
@@ -232,6 +234,7 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
   let rolls = 0;
   /** Accounts whose computers may not wake now (0 hours, or the free plan above its disk). */
   const blockedUsers: string[] = [];
+  const blockedWhy = new Map<string, WakeBlock>();
   await Promise.all(accounts.map(async (row) => {
     // Most accounts roll at once on the 1st: a tick does its share and leaves the rest due.
     if (row.deleted_at == null && row.period_end <= now && ++rolls > PERIOD_ROLLS_PER_TICK) return;
@@ -258,6 +261,7 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
         : null;
       if (blocked) {
         blockedUsers.push(account.user_id);
+        blockedWhy.set(account.user_id, blocked);
         await stopAll(env, provider, owned, now, blocked);
       }
     } catch (error) {
@@ -267,9 +271,8 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
   }));
   // One query however many accounts are blocked. Scheduled work is refused while wakes are: a timed
   // wake reaches only a sleeping computer, and these are stopped.
-  if (blockedUsers.length) {
-    await env.DB.prepare("delete from cloud_wakes where user_id in (select value from json_each(?))").bind(JSON.stringify(blockedUsers)).run();
-  }
+  // The person hears once a period that their timed wake-ups were cancelled (`accountNotices.ts`).
+  await cancelTimedWakes(env, blockedWhy, now);
   return new Set(blockedUsers);
 }
 
@@ -288,7 +291,8 @@ async function warnHours(env: CloudEnv, account: AccountRow, state: CloudHoursSt
   const warning = HOURS_WARNINGS[state];
   if (account[warning.column] != null) return;
   await env.DB.prepare(`update cloud_accounts set ${warning.column} = ?, updated_at = ? where user_id = ?`).bind(now, now, account.user_id).run();
-  const percent = state === "zero" ? 100 : percentUsed(account, used);
+  // Of everything the period may use (plan and earned hours), as the warning itself counts.
+  const percent = state === "zero" ? 100 : allowancePercentUsed(account, used);
   await sendCloudEmail(env, { userId: account.user_id, subject: warning.subject, text: warning.text, percentUsed: percent });
 }
 
@@ -380,6 +384,12 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
     await reportExtraDiskDays(env, now);
   } catch (error) {
     reportCloudFailure("cloud.disk_report_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
+  // Last of the account jobs, since a push can take minutes. A cheaper plan's limits: warn, then push and free the oldest computers past them.
+  try {
+    await runPlanCleanups(env, provider, computers, now);
+  } catch (error) {
+    reportCloudFailure("cloud.plan_cleanup_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
   let billing;
   try {

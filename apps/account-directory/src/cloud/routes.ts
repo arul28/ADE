@@ -3,6 +3,8 @@ import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
 import { CloudBillingError, createCheckoutUrl, createPortalUrl, setExtraDisk, setExtraHours } from "./billing";
 import { routeSavedChats } from "./chats";
+import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
+import { routeReferrals } from "./referrals";
 import {
   endLaneStatement,
   laneFactsOf,
@@ -1043,6 +1045,19 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
   }
 }
 
+/**
+ * When a request settles the free plan for its computer: `use` for what
+ * spends hours (a create or move, a copy, a wake), `read` for the account and
+ * referral reads, null for the rest (they need no answer about it).
+ */
+function freePlanMomentOf(method: string, path: string): "read" | "use" | null {
+  if (method === "GET" && (path === CLOUD_PATHS.account || path === CLOUD_PATHS.referrals)) return "read";
+  if (method !== "POST") return null;
+  if (path === CLOUD_PATHS.instances) return "use";
+  const action = path.startsWith(`${CLOUD_PATHS.instances}/`) ? path.slice(CLOUD_PATHS.instances.length + 1).split("/")[1] : undefined;
+  return action === "start" || action === "fork" ? "use" : null;
+}
+
 export async function handleCloudRequest(request: Request, env: CloudEnv, waitUntil?: CloudWaitUntil): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -1072,9 +1087,16 @@ export async function handleCloudRequest(request: Request, env: CloudEnv, waitUn
   const provider = providerFor(env);
   const now = Date.now();
   const ctx: CloudRequestContext = { now, waitUntil };
+  // One free plan per computer (`freePlan.ts`): settled before the request's own hours check.
+  const freePlanMoment = freePlanMomentOf(request.method, path);
+  if (freePlanMoment) {
+    await settleFreePlanComputer(env, await loadAccount(env, caller.userId, now), readComputerSignal(request), freePlanMoment, ctx);
+  }
   if (path === CLOUD_PATHS.account) {
     return request.method === "GET" ? json(await buildAccountState(env, caller.userId, now)) : notFound();
   }
+  const referrals = await routeReferrals(request, path, env, caller.userId, ctx);
+  if (referrals) return referrals;
   const billing = await routeBilling(request, url, path, env, caller.userId, ctx);
   if (billing) return billing;
   // Saved chats need no provider: they stay readable when the computer can't be.

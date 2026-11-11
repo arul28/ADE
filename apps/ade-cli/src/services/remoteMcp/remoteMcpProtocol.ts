@@ -11,6 +11,7 @@ import type {
 } from "../../../../desktop/src/shared/types/remoteMcp";
 import { readProjectFolderStates, type ProjectFolderState } from "../projects/projectFolderPresence";
 import { listAgentSkills, readAgentSkill } from "../skills/agentSkillCatalogService";
+import { adeWithheldAgentSkills } from "../../../../desktop/src/shared/agentSkillRoots";
 import { remoteMcpAdeVersion } from "./remoteMcpAccount";
 import { checkRemoteAdeCommand, redactedCommandForLog, splitCommandLine } from "./remoteMcpCommandPolicy";
 import {
@@ -316,7 +317,8 @@ export function createRemoteMcpProtocol(deps: {
     "Use the typed tools; `ade` runs anything else.",
     "`project` defaults to the last opened, `machine` (a machines_list key) to this computer; each result names both. A chat id finds its own.",
     "The `ade-mcp-client` prompt explains the workflow.",
-    "Before an ADE Cloud lane, run `cloud status` and follow the `ade-cloud` prompt.",
+    // Only for an account with ADE Cloud: the same answer that lists the `ade-cloud` prompt.
+    ...(adeWithheldAgentSkills().includes("ade-cloud") ? [] : ["Before an ADE Cloud lane, run `cloud status` and follow the `ade-cloud` prompt."]),
     ...(scope === "read" ? ["This connection is read-only."] : []),
   ].join(" ");
 

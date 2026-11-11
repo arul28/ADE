@@ -1,7 +1,7 @@
 /**
  * What ADE Cloud needs from whoever runs the computers.
  *
- * Everything above this interface (machines, sleep, ready machines, hours,
+ * Everything above this interface (machines, sleep, lanes, hours,
  * sign-ins) is ADE's and knows nothing about who runs the computers. The one
  * implementation talks to ADE's server (`cloudServerProvider.ts`), which holds
  * the provider's key; a lint rule keeps it from being imported anywhere but
@@ -20,8 +20,10 @@ import type {
   CloudCheckoutResult,
   CloudExecResult,
   CloudInstance,
+  CloudInviteRedeemResult,
   CloudLaneWithoutComputer,
   CloudPaidPlanId,
+  CloudReferralSummary,
   CloudUpdateChannel,
   CloudUpdateCheck,
 } from "../../../../../account-directory/src/cloud/contract";
@@ -137,6 +139,14 @@ export type CloudProvider = {
   setExtraHours(enabled: boolean): Promise<CloudAccountState>;
   /** Paid accounts only: extra disk on with a monthly limit in whole dollars, or off. */
   setExtraDisk(choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }): Promise<CloudAccountState>;
+  /** The account's invite link and what it earned (`/cloud/referrals`). Account-level. */
+  readReferral(): Promise<CloudReferralSummary>;
+  /**
+   * Enters someone's invite: a pasted link or a bare code. A refusal throws a
+   * `CloudProviderError` whose message is the sentence to show and whose
+   * `detail.reason` is the `CloudInviteRefusalReason`.
+   */
+  redeemInvite(code: string): Promise<CloudInviteRedeemResult>;
   /** The account's saved chats. An account off the access list has none. */
   listSavedChats(args: CloudSavedChatsListArgs): Promise<CloudSavedChatList>;
   /** One page of a saved chat, or null when it can't be read. */

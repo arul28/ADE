@@ -262,6 +262,17 @@ export type WorkGridSet = {
   layoutId: string;
   sessionIds: string[];
 };
+/**
+ * The Work draft's Run on pick when it is a cloud, not a computer: ADE Cloud
+ * (with its lane, null for a new one, and the size picked for this draft, null
+ * for the saved default), Cursor Cloud or Devin Cloud.
+ */
+export type WorkDraftCloudTarget = {
+  provider: "ade" | "cursor" | "devin";
+  laneId: string | null;
+  sizeId: string | null;
+};
+
 export type WorkProjectViewState = {
   openItemIds: string[];
   activeItemId: string | null;
@@ -274,6 +285,8 @@ export type WorkProjectViewState = {
   draftLaneId: string | null;
   /** Machine that owns `draftLaneId`; null means the project tab's bound machine. */
   draftMachineId: string | null;
+  /** A cloud picked in the draft's Run on menu, kept like `draftMachineId`; null for a computer. */
+  draftCloudTarget: WorkDraftCloudTarget | null;
   laneFilter: string;
   search: string;
   /** Session list grouping mode. */
@@ -423,6 +436,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     draftKind: "chat",
     draftLaneId: null,
     draftMachineId: null,
+    draftCloudTarget: null,
     laneFilter: "all",
     search: "",
     sessionListOrganization: "by-lane",
@@ -525,6 +539,18 @@ function normalizeWorkSidebarWidthPct(value: unknown): number {
   return Math.max(26, Math.min(55, n));
 }
 
+function normalizeWorkDraftCloudTarget(value: unknown): WorkDraftCloudTarget | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<WorkDraftCloudTarget>;
+  const provider = candidate.provider;
+  if (provider !== "ade" && provider !== "cursor" && provider !== "devin") return null;
+  return {
+    provider,
+    laneId: normalizeOptionalString(candidate.laneId),
+    sizeId: normalizeOptionalString(candidate.sizeId),
+  };
+}
+
 function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
   const candidate = value && typeof value === "object"
     ? value as Partial<WorkProjectViewState>
@@ -541,6 +567,8 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     draftKind: candidate.draftKind === "cli" ? "cli" : "chat",
     draftLaneId: normalizeOptionalString(candidate.draftLaneId),
     draftMachineId: normalizeOptionalString(candidate.draftMachineId),
+    // Additive like `workViewMode`: an older blob has none and reads as a computer.
+    draftCloudTarget: normalizeWorkDraftCloudTarget(candidate.draftCloudTarget),
     laneFilter: normalizeOptionalString(candidate.laneFilter) ?? "all",
     search: typeof candidate.search === "string" ? candidate.search : "",
     sessionListOrganization:
@@ -1851,7 +1879,8 @@ export type AppState = {
   setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
   setCtoAttention: (snapshot: CtoAttentionState) => void;
   setSmartTooltipsEnabled: (enabled: boolean) => void;
-  setCloudDefaultTier: (tier: CloudTierId) => void;
+  /** `synced`: the account settings sync brought it from another computer (not the person's pick here). */
+  setCloudDefaultTier: (tier: CloudTierId, options?: { synced?: boolean }) => void;
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   setDraftsButtonEnabled: (enabled: boolean) => void;
@@ -3000,13 +3029,22 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, draftsButtonEnabled: enabled });
       return { draftsButtonEnabled: enabled };
     }),
-  setCloudDefaultTier: (tier) =>
+  setCloudDefaultTier: (tier, options) => {
+    const next = normalizeCloudDefaultTier(tier);
+    if (get().cloudDefaultTier === next) return;
     set((prev) => {
-      const next = normalizeCloudDefaultTier(tier);
-      if (prev.cloudDefaultTier === next) return {};
       persistUserPreferencesFrom({ ...prev, cloudDefaultTier: next });
       return { cloudDefaultTier: next };
-    }),
+    });
+    // The person's pick here, once: a synced value was counted where it was picked.
+    if (!options?.synced) {
+      void window.ade?.analytics?.capture({
+        event: "ade_feature_used",
+        properties: { feature: "connections", action: "cloud_default_size", outcome: `size_${next}` },
+        projectId: null,
+      }).catch(() => undefined);
+    }
+  },
   setVoiceInputEnabled: (enabled) =>
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, voiceInputEnabled: enabled });

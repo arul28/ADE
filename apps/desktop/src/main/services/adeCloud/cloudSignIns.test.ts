@@ -3,16 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentCliLoginPty } from "../ai/agentCliLoginRunner";
-import type { CloudVault } from "./cloudAccess";
 import { applyCloudSignIns } from "./cloudSignInBoot";
 import { createCloudClaudeSignIn } from "./cloudClaudeSignIn";
-import { cloudSignInVaultKey, cloudMachineEnv, type CloudSignInVaults } from "./cloudSignInStore";
 
 /**
- * Sign-ins for cloud machines: the env a new machine is made with, the Codex
- * file a box writes from it at boot, and Claude's token read from Claude
- * Code's output. Only the account vault, the file system and the PTY are
- * stand-ins.
+ * Sign-ins for cloud machines: the Codex file an older box writes from its
+ * instance env at boot, and Claude's token read from Claude Code's output.
+ * Only the file system and the PTY are stand-ins.
  */
 
 const tempDirs: string[] = [];
@@ -20,39 +17,7 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function vaultsWith(items: Record<string, string | Error>): CloudSignInVaults {
-  return (vaultKey) => {
-    const vault: CloudVault = {
-      get: async () => {
-        const item = items[vaultKey];
-        if (item instanceof Error) throw item;
-        return { ok: true, value: item ?? null };
-      },
-      set: async () => true,
-      remove: async () => true,
-    };
-    return vault;
-  };
-}
-
-const stored = (token: string) => JSON.stringify({ v: 1, token, savedAt: 1 });
 const CLAUDE_TOKEN = `sk-ant-oat01-${"A".repeat(40)}`;
-
-describe("cloudMachineEnv", () => {
-  it("gives a new machine each kept sign-in in its provider's variable, and leaves out what it can't read", async () => {
-    const env = await cloudMachineEnv(vaultsWith({
-      [cloudSignInVaultKey("claude")]: stored(CLAUDE_TOKEN),
-      [cloudSignInVaultKey("codex")]: stored("openai-test-value"),
-      [cloudSignInVaultKey("cursor")]: new Error("vault unreadable"),
-      // Not Claude Code's token shape: never handed to a machine as one.
-      [cloudSignInVaultKey("droid")]: "not json",
-    }));
-    expect(env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN, OPENAI_API_KEY: "openai-test-value" });
-    // Signed out of ADE: no account, so a machine starts with nothing.
-    expect(await cloudMachineEnv(null)).toEqual({});
-    expect(await cloudMachineEnv(() => null)).toEqual({});
-  });
-});
 
 describe("applyCloudSignIns", () => {
   function home(): string {

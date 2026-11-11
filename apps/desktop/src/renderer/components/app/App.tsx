@@ -1466,6 +1466,9 @@ function AppNavigationBridge() {
       if (tab) params.set("tab", tab);
       const machineId = target.machineId?.trim();
       if (tab && machineId && machineId !== THIS_MACHINE_ID && isMachineSelectableSettingsTab(tab)) params.set("machine", machineId);
+      // `ade://invite/<CODE>`: Settings › Account reads `invite` and fills its code box.
+      const inviteCode = target.inviteCode?.trim();
+      if (inviteCode) params.set("invite", inviteCode);
       const search = params.toString();
       navigate({
         pathname: "/settings",

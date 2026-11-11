@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The phone's ADE Cloud page (Work ⋯ menu): the plan's hours left, the account's
-/// machines with every action the desktop card has, ready machines, a new
-/// machine (approved here as it joins), and what agents may spend alone.
+/// machines with every action the desktop card has, a new machine (approved
+/// here as it joins), and what agents may spend alone.
 ///
 /// Layouts: on a phone and the Duo's outer display, a list that pushes a
 /// machine. On the inner display held as a book, the list on the left page and
@@ -123,7 +123,6 @@ final class CloudPaneStore: ObservableObject {
   @Published private(set) var machines: [CloudPhoneMachine] = []
   @Published private(set) var account: CloudPhoneAccount?
   @Published private(set) var limits: CloudPhoneLimits?
-  @Published private(set) var readyProjects: [CloudPhoneReadyPool.Entry] = []
   /// The machine a two-pane layout shows; the first one until the person picks.
   @Published var selectedId: String?
   /// An action running on a machine, by instance id (its buttons wait).
@@ -146,13 +145,12 @@ final class CloudPaneStore: ObservableObject {
   }
 
   #if DEBUG
-  init(syncService: SyncService, fixtureList: CloudPhoneList, limits: CloudPhoneLimits, ready: [CloudPhoneReadyPool.Entry], makeJob: CloudPhoneMakeJob? = nil) {
+  init(syncService: SyncService, fixtureList: CloudPhoneList, limits: CloudPhoneLimits, makeJob: CloudPhoneMakeJob? = nil) {
     self.syncService = syncService
     isFixture = true
     machines = fixtureList.machines
     account = fixtureList.account
     self.limits = limits
-    readyProjects = ready
     self.makeJob = makeJob
     selectedId = fixtureList.machines.first?.instanceId
     phase = .loaded
@@ -181,7 +179,6 @@ final class CloudPaneStore: ObservableObject {
       if selectedId == nil || machine(selectedId!) == nil { selectedId = machines.first?.instanceId }
       phase = .loaded
       limits = try? await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
-      readyProjects = (try? await syncService.cloudRead("ready_status", as: CloudPhoneReadyPool.self))?.projects ?? []
     } catch {
       let message = error.localizedDescription
       if machines.isEmpty { phase = .failed(message) }
@@ -315,11 +312,6 @@ struct CloudListScreen: View {
             }
           }
         } header: { CloudSectionLabel("Machines") }
-        if !store.readyProjects.isEmpty {
-          Section {
-            ForEach(store.readyProjects) { entry in CloudReadyRow(store: store, entry: entry) }
-          } header: { CloudSectionLabel("Ready machines") }
-        }
         Section {
           NavigationLink { CloudLimitsScreen(store: store) } label: {
             Label {
@@ -430,28 +422,6 @@ struct CloudStateDot: View {
   }
 }
 
-struct CloudReadyRow: View {
-  @ObservedObject var store: CloudPaneStore
-  let entry: CloudPhoneReadyPool.Entry
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack {
-        Text(entry.projectName).font(.subheadline.weight(.semibold))
-        Spacer()
-        Text(entry.keptReady ? "On" : "Off").font(.caption).foregroundStyle(ADEColor.textSecondary)
-      }
-      Text([entry.ready > 0 ? "\(entry.ready) ready" : nil, entry.preparing > 0 ? "\(entry.preparing) preparing" : nil,
-            entry.inUse > 0 ? "\(entry.inUse) in use" : nil].compactMap { $0 }.joined(separator: " · ").ifEmpty("Nothing ready yet"))
-        .font(.caption).foregroundStyle(ADEColor.textSecondary)
-      if let failure = entry.failure {
-        Text(failure).font(.caption).foregroundStyle(ADEColor.danger).lineLimit(3)
-      }
-    }
-    .frame(minHeight: 44)
-  }
-}
-
 struct CloudMakeJobRow: View {
   @ObservedObject var store: CloudPaneStore
   let job: CloudPhoneMakeJob
@@ -527,10 +497,6 @@ struct CloudMachineFacts: View {
       HStack(spacing: 8) {
         CloudStateDot(machine: machine)
         Text(machine.stateLabel).font(.headline)
-        if machine.ready != nil {
-          Text("Ready machine").font(.caption2.weight(.semibold)).padding(.horizontal, 7).padding(.vertical, 2)
-            .background(Capsule().fill(ADEColor.accent.opacity(0.16))).foregroundStyle(ADEColor.accent)
-        }
       }
       Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
         fact("Size", machine.size ?? (machine.isVM ? "Full computer" : "Computer"))
@@ -951,6 +917,3 @@ func cloudLimitsSummary(_ limits: CloudPhoneLimits) -> String {
   return "\(name) · \(limits.machinesPerDay) a day · up to \(cloudShapeLabel(limits.maxShape))"
 }
 
-private extension String {
-  func ifEmpty(_ fallback: String) -> String { isEmpty ? fallback : self }
-}

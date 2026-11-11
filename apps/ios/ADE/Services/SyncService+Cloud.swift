@@ -19,11 +19,6 @@ struct CloudPhoneSleep: Decodable, Equatable {
   }
 }
 
-struct CloudPhoneReadyTag: Decodable, Equatable {
-  let projectName: String
-  let state: String
-}
-
 struct CloudPhoneAccess: Decodable {
   let enabled: Bool
 }
@@ -39,7 +34,6 @@ struct CloudPhoneMachine: Decodable, Identifiable, Equatable, Hashable {
   /// How fast this size uses hours, compared with a Small computer.
   let hoursRate: Double?
   let sleep: CloudPhoneSleep?
-  let ready: CloudPhoneReadyTag?
   let pastDue: Bool?
 
   var id: String { instanceId }
@@ -95,21 +89,6 @@ struct CloudPhoneLimits: Decodable, Equatable {
   let machinesPerDay: Int
   let maxShape: String
   let preset: String
-}
-
-struct CloudPhoneReadyPool: Decodable {
-  struct Entry: Decodable, Identifiable, Equatable {
-    let identity: String
-    let projectName: String
-    let keptReady: Bool
-    let ready: Int
-    let preparing: Int
-    let inUse: Int
-    let failed: Int
-    let failure: String?
-    var id: String { identity }
-  }
-  let projects: [Entry]
 }
 
 /// A make, copy or move the phone started in the background (`make_status`).

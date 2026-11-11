@@ -597,8 +597,6 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
           return await actions.copy(input as Parameters<typeof actions.copy>[0]);
         case "move":
           return await actions.move(input as Parameters<typeof actions.move>[0]);
-        case "ready_refresh":
-          return await actions.readyRefresh();
       }
     } catch (error) {
       throw new JsonRpcError(JsonRpcErrorCode.internalError, error instanceof Error ? error.message : String(error));

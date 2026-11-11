@@ -15,7 +15,7 @@ import {
 } from "../../../../desktop/src/shared/adeCloud";
 import type { CloudProvider } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { CloudProviderError } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
-import { patchCloudMetadata } from "../../../../desktop/src/main/services/adeCloud/cloudReadyClaim";
+import { patchCloudMetadata } from "../../../../desktop/src/main/services/adeCloud/cloudInstanceOps";
 
 /** Near full: at this much used, try to grow. */
 const NEAR_FULL = 0.85;

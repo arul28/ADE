@@ -9,6 +9,7 @@ import {
   type CloudChatTranscriptPage,
 } from "./contract";
 import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
+import { rewardAfterCloudChat } from "./referrals";
 import { logCloud, ownedComputer, type CloudEnv } from "./store";
 
 /**
@@ -376,6 +377,9 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     userId, machineKey, chatId, instanceId, row.projectKey, row.laneId, summary, prefix, lastActivityMs, row.lastSeq, sealed.byteLength, now,
     delta,
   ).run();
+  // A chat's first saved part is the server's proof a chat ran on an ADE Cloud computer:
+  // an invited friend's first one pays the referral (`referrals.ts`). Never fails the save.
+  if (!existing) await rewardAfterCloudChat(env, userId, now);
   return json({ ok: true, lastSeq: row.lastSeq } satisfies CloudChatPartResponse);
 }
 

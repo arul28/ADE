@@ -1,6 +1,5 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
-import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
-import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudReferralSummary, CloudStatus } from "../shared/adeCloud";
 import type { CloudPassEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
@@ -1855,7 +1854,7 @@ declare global {
         cursorAuthCancel: (pin?: OpenProjectBinding | null) => Promise<void>;
         onCursorAuthStatus: (cb: (event: CursorSdkAuthEvent) => void, pin?: OpenProjectBinding | null) => () => void;
         /** `refresh` skips the host's few-minute cache (Retry). */
-        cursorCloudListRepositories: (args?: { refresh?: boolean }) => Promise<CursorCloudRepository[]>;
+        cursorCloudListRepositories: (args?: { refresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<CursorCloudRepository[]>;
         cursorCloudListAgents: (args?: {
           includeArchived?: boolean;
           limit?: number;
@@ -1868,8 +1867,9 @@ declare global {
         }) => Promise<CursorCloudListRunsResult>;
         cursorCloudCreateRun: (
           args: CursorCloudCreateRunRequest,
+          pin?: OpenProjectBinding | null,
         ) => Promise<CursorCloudCreateRunResult>;
-        cursorCloudGetLaneSecretNames: (laneId: string) => Promise<string[]>;
+        cursorCloudGetLaneSecretNames: (laneId: string, pin?: OpenProjectBinding | null) => Promise<string[]>;
         cursorCloudArchiveAgent: (agentId: string) => Promise<void>;
         cursorCloudUnarchiveAgent: (agentId: string) => Promise<void>;
         cursorCloudDeleteAgent: (agentId: string) => Promise<void>;
@@ -1898,6 +1898,7 @@ declare global {
         }) => Promise<CursorCloudArtifactDownload>;
         cursorCloudOpenChat: (
           args: CursorCloudOpenChatRequest,
+          pin?: OpenProjectBinding | null,
         ) => Promise<CursorCloudOpenChatResult>;
         cursorCloudWatchMirror: (
           args: CursorCloudWatchMirrorRequest,
@@ -2000,7 +2001,7 @@ declare global {
         open: (args: CloudAgentRef) => Promise<CloudAgentOpenResult>;
         stop: (args: CloudAgentRef) => Promise<{ stopped: true }>;
         archive: (args: CloudAgentArchiveArgs) => Promise<{ archived: boolean }>;
-        launch: (args: CloudAgentLaunchArgs) => Promise<CloudAgentOpenResult>;
+        launch: (args: CloudAgentLaunchArgs, pin?: OpenProjectBinding | null) => Promise<CloudAgentOpenResult>;
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;
@@ -4768,8 +4769,7 @@ declare global {
           delete: (args: CloudSavedChatDeleteArgs) => Promise<void>;
         };
         getStatus: () => Promise<CloudStatus | null>;
-        /** Returns at once; the create reports through `onCreateProgress`, ending in `done` or `failed`. */
-        createMachine: (requestId: string, machine: CloudCreateMachineArgs) => Promise<{ started: boolean }>;
+        /** A copy or move reports through `onCreateProgress`, ending in `done` or `failed`. */
         onCreateProgress: (cb: (progress: CloudCreateProgress) => void) => () => void;
         /** Stops a create and deletes the box it made, unless it already signed in. */
         cancelCreate: (requestId: string) => Promise<{ cancelled: boolean }>;
@@ -4795,20 +4795,6 @@ declare global {
         cloudSignInSaveKey?: (id: CloudSignInId, key: string) => Promise<CloudSignInStatus | null>;
         cloudSignInRemove?: (id: CloudSignInId) => Promise<CloudSignInStatus | null>;
         onCloudSignInChanged?: (cb: () => void) => () => void;
-        /**
-         * Ready machines: per project, one machine prepared and kept asleep
-         * for the next chat. The choice is in the account vault and the pool
-         * on the provider, so no pin: every computer answers the same.
-         */
-        readyStatus?: () => Promise<CloudReadyStatus | null>;
-        readySetProject?: (settings: Partial<CloudReadyProjectSettings>) => Promise<CloudReadyStatus | null>;
-        readyRemoveProject?: (identity: string) => Promise<CloudReadyStatus | null>;
-        readyRetry?: (identity: string) => Promise<CloudReadyStatus | null>;
-        /** Takes the project's ready machine and wakes it; the chat then goes to `machineKey` like any machine. */
-        readyClaim?: (originUrl: string) => Promise<CloudReadyClaim | null>;
-        /** Gives back a claim no chat used yet: ready again, and asleep. */
-        readyRelease?: (instanceId: string, claimToken: string) => Promise<{ released: boolean } | null>;
-        onReadyStatus?: (cb: (status: CloudReadyStatus) => void) => () => void;
         /** What unattended agents may do on ADE Cloud (account vault; no pin). */
         getAgentLimits?: () => Promise<CloudAgentLimits | null>;
         setAgentLimits?: (limits: Partial<CloudAgentLimits>) => Promise<CloudAgentLimits | null>;
@@ -4816,6 +4802,19 @@ declare global {
         setExtraHours?: (enabled: boolean) => Promise<CloudAccountState | null>;
         /** Extra disk on with a monthly limit in whole dollars (1 to 1,000), or off. */
         setExtraDisk?: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }) => Promise<CloudAccountState | null>;
+        /**
+         * The account's invite link and what it earned (no pin: account level).
+         * Null without ADE Cloud, or when the server couldn't be read. The account
+         * read (`CloudAccountState.referral`) carries the same summary.
+         */
+        getReferral?: () => Promise<CloudReferralSummary | null>;
+        /**
+         * Enters a friend's invite: the pasted link (https or ade://) or the bare
+         * code. Once per account, never changed, within 30 days of making it.
+         * A refusal is `{ ok: false, reason, message }` (show `message`); after a
+         * success ADE Cloud's status changes, so the account reads again.
+         */
+        redeemInvite?: (code: string) => Promise<CloudInviteRedeemOutcome>;
         /**
          * Checkout for Plus (the default) or Pro. A paid account asking for its
          * other plan changes it in place: nothing opens and `change` says when

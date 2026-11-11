@@ -2213,7 +2213,8 @@ struct WorkHeaderOverflowMenu: View {
     }
     .animation(.snappy(duration: 0.2), value: unread > 0)
     .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
-    .accessibilityHint("Activity, Linear, GitHub Issues, Cursor Cloud, ADE Cloud and Settings")
+    // Only the entries this menu shows: ADE Cloud is named only for an account that has it.
+    .accessibilityHint(showsCloud ? "Activity, Linear, GitHub Issues, Cursor Cloud, ADE Cloud and Settings" : "Activity, Linear, GitHub Issues, Cursor Cloud and Settings")
   }
 
   private var phoneLabel: some View {

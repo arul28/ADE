@@ -171,6 +171,8 @@ export type CloudLaneLaunchCallRequest = {
     gitOriginUrl: string | null;
     /** A project on this computer whose binding has no origin yet: main reads it from the checkout. */
     localRootPath?: string | null;
+    /** A project on another computer whose binding has no origin yet: main asks that computer. */
+    remoteProject?: { targetId: string; projectId: string } | null;
   } | null;
 };
 

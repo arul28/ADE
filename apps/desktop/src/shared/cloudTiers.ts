@@ -123,3 +123,54 @@ export function cloudTierRateLabel(tier: Pick<CloudTier, "multiplierMilli">): st
 export function cloudTierShapeLabel(tier: Pick<CloudTier, "cpu" | "memoryGb">): string {
   return `${tier.cpu} CPU · ${tier.memoryGb} GB`;
 }
+
+/**
+ * What a size is for, in plain words: what it can run, and what one hour of
+ * work there costs. One source for the dashboard's size cards, the size menu
+ * by the prompt box and the iPhone (which mirrors the words).
+ *
+ * A standard computer (Small, Medium) runs agents, builds and tests; a full
+ * computer (Large, X-Large) adds Docker and the Android emulator.
+ */
+export type CloudTierFacts = {
+  /** "2 CPU", "4 GB memory", "Up to 12 GB disk" (the disk only when the server says). */
+  specs: string[];
+  /** One plain line on what it runs. */
+  runs: string;
+  /** True for a full computer: Docker and the Android emulator. */
+  full: boolean;
+  /** "1 hour of work uses 1 hour", "… uses 5 hours". */
+  rateLine: string;
+  /** Hours of a Small computer per hour awake. */
+  rate: number;
+};
+
+const TIER_RUNS: Record<CloudTierId, string> = {
+  small: "Agents, builds and tests",
+  medium: "Bigger builds and test suites",
+  large: "Docker and the Android emulator",
+  xlarge: "Docker, Android and heavy builds",
+};
+
+export function cloudTierFacts(tier: CloudTier): CloudTierFacts {
+  const rate = tier.multiplierMilli / 1000;
+  const hours = (value: number) => `${value} hour${value === 1 ? "" : "s"}`;
+  return {
+    specs: [
+      `${tier.cpu} CPU`,
+      `${tier.memoryGb} GB memory`,
+      ...(tier.diskMaxGb != null ? [`Up to ${tier.diskMaxGb} GB disk`] : []),
+    ],
+    runs: TIER_RUNS[tier.id],
+    full: tier.type === "vm",
+    rateLine: `1 hour of work uses ${hours(rate)}`,
+    rate,
+  };
+}
+
+/** How long `leftMilli` hours last at this size, rounded down to a tenth: "57.4 h". */
+export function cloudTierHoursLeftLabel(tier: Pick<CloudTier, "multiplierMilli">, leftMilli: number): string {
+  const hours = Math.max(0, leftMilli) / tier.multiplierMilli;
+  const shown = hours >= 100 ? Math.floor(hours) : Math.floor(hours * 10) / 10;
+  return `${shown} h`;
+}

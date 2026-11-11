@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import {
   cloudCatalogOf,
+  cloudOutOfHours,
   type CloudAccountState,
   type CloudMachine,
 } from "../../../shared/adeCloud";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
 import type { AgentChatFileRef, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
-import { cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudTierHoursLeftLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { earnedHoursLeftMilli } from "../settings/cloudDashboard/cloudDashboardModel";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -122,6 +124,15 @@ export function useAdeCloudDraft({
     ?? defaultTier;
   const chooseTier = useCallback((next: CloudTierId) => setPickedTier(next), []);
   const resetTier = useCallback(() => setPickedTier(null), []);
+  // Hours left now (the plan's and earned ones), and the Run on row's line: the
+  // size a new lane gets and how long those hours last at it.
+  const hoursLeftMilli = account ? account.hours.leftMilli + Math.max(0, earnedHoursLeftMilli(account) ?? 0) : null;
+  const runOnLine = useMemo(() => {
+    const tier = tiers.find((entry) => entry.id === tierId) ?? null;
+    if (!account || !tier) return null;
+    if (cloudOutOfHours(account) && hoursLeftMilli === 0) return `${tier.label} · no hours left`;
+    return `${tier.label} · ${cloudTierHoursLeftLabel(tier, hoursLeftMilli ?? 0)} left at this size`;
+  }, [account, hoursLeftMilli, tierId, tiers]);
 
   return {
     /**
@@ -140,10 +151,14 @@ export function useAdeCloudDraft({
     computers,
     tiers,
     tierId,
+    /** The size picked for this draft, or null while it follows the default (what a saved pick keeps). */
+    pickedTier,
     defaultTier,
     chooseTier,
     resetTier,
     setDefaultTier,
+    hoursLeftMilli,
+    runOnLine,
     refresh: machines.refresh,
   };
 }

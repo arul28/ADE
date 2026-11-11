@@ -66,8 +66,8 @@ function logEmail(event: string, meta: Record<string, unknown>): void {
   console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-account-directory", kind: event, ...meta }));
 }
 
-/** The account's primary address from Clerk's Backend API, or null. */
-async function accountEmail(env: CloudEmailEnv, userId: string): Promise<string | null> {
+/** The account's primary address from Clerk's Backend API, or null. Never logged. */
+export async function accountEmail(env: CloudEmailEnv, userId: string): Promise<string | null> {
   const secretKey = env.CLERK_SECRET_KEY?.trim();
   if (!secretKey) return null;
   const response = await fetch(`${CLERK_USERS_URL}/${encodeURIComponent(userId)}`, {

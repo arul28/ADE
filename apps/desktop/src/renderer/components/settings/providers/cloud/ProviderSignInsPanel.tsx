@@ -34,6 +34,7 @@ import { usePinnedProviderLoginStatus } from "./usePinnedProviderLoginStatus";
 import { GitHubCliLoginRow } from "./GitHubCliLoginRow";
 import { useHeldWrites } from "./useHeldWrites";
 import { useThisComputerPin } from "./useAdeCloudSignIns";
+import { useAdeCloudEnabled } from "../../../../state/cloudAccess";
 
 const noteStyle: React.CSSProperties = { fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.45 };
 
@@ -42,6 +43,7 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
   const pageKey = pin?.key ?? null;
   const { accountPin, keychainIsThisMac } = useThisComputerPin();
   const { held, hold } = useHeldWrites();
+  const cloudOn = useAdeCloudEnabled();
 
   // ── The page machine's read ──
   const { status, apply: applyPageStatus, refresh } = usePinnedProviderLoginStatus({
@@ -82,7 +84,8 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
   const cloudComputer = status.thisComputer.cloudComputer;
   const keychain = provider === "antigravity" ? row.keychain ?? null : null;
   // Copilot's GitHub CLI login: on an own computer its row, on a cloud computer where to turn it on.
-  const ghCli = provider === "copilot" ? row.ghCli ?? null : null;
+  // Only Copilot on ADE Cloud uses the copy, so without ADE Cloud there is no row.
+  const ghCli = provider === "copilot" && cloudOn ? row.ghCli ?? null : null;
   const ghCliCloudLine = provider === "copilot" && !ghCli && cloudComputer;
   // This computer's copy in the account can't be read here (another key wrote it, or a newer ADE):
   // capture keeps it, so the person removes it, and this computer saves its own sign-in again.

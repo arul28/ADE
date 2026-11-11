@@ -83,7 +83,7 @@ export function startChatLaunch(
       options.onUnsupported();
       return "unsupported";
     }
-    markChatLaunchStartFailed(launchId, extractError(error));
+    markChatLaunchStartFailed(launchId, error);
     return "failed";
   };
   if (!api) return Promise.resolve(fail(new Error("New-lane launches are not available in this window.")));

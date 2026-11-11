@@ -3918,8 +3918,10 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
  * unless a person's own client is asking.
  */
 const CLOUD_APPROVED_ACTIONS = new Set([
-  "create", "resize", "update", "copy", "move", "delete", "ready_set", "ready_retry", "set_limits",
+  "create", "resize", "update", "copy", "move", "delete", "set_limits",
   "lane_launch", "lane_launch_cancel",
+  // Clears a computer's caches: the person's dashboard, or an agent that asks with a card.
+  "clear_caches",
   // The card goes to the stamped chat, never one the caller names.
   "tier_request",
   // A launch's approval link and starting chat go only to who started it.

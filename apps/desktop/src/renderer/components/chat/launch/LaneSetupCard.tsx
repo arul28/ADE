@@ -37,13 +37,16 @@ import type {
   LaneEnvInitStep,
 } from "../../../../shared/types";
 import {
+  CHAT_LAUNCH_REFUSED_TITLE,
   CHAT_LAUNCH_STAGE_ORDER,
   LANE_SETUP_CARD_TEMPLATE_METRIC,
+  chatLaunchErrorMessage,
   chatLaunchHasWarnings,
   chatLaunchStageDurationMs,
   chatLaunchStageLabel,
   formatChatLaunchDuration,
   isChatLaunchPending,
+  isChatLaunchRefused,
   isChatLaunchTerminal,
   laneSetupLaunchIdFromCardId,
 } from "../../../../shared/chatLaunch";
@@ -55,8 +58,6 @@ import { LaneNamingLabel } from "../../terminals/LaneNamingLabel";
 import { STANDARD_EASE } from "../../../lib/motion";
 import { CHAT_LAUNCH_HYDRATE_RETRY_MS, getChatLaunchEntry, hydrateChatLaunchFromHost, refreshChatLaunch, useChatLaunchHostReady, useChatLaunchSnapshot } from "../../../state/chatLaunchStore";
 import { useChatRuntimeScope } from "../ChatRuntimeScope";
-import { extractError } from "../../../lib/format";
-import { stripElectronErrorWrapper } from "../../../../shared/codedError";
 import { showToast } from "../../app/toast/toastStore";
 import { CHAT_CARD_WIDTH_CLASS } from "../chatCardPrimitives";
 import {
@@ -176,7 +177,7 @@ function launchDurationMs(snapshot: ChatLaunchSnapshot, nowMs: number): number |
 function laneSetupTitle(snapshot: ChatLaunchSnapshot, nowMs = Date.now()): string {
   switch (snapshot.phase) {
     case "failed":
-      return "Lane setup failed";
+      return isChatLaunchRefused(snapshot) ? CHAT_LAUNCH_REFUSED_TITLE : "Lane setup failed";
     case "cancelled":
       return "Lane setup cancelled";
     case "completed": {
@@ -308,7 +309,7 @@ const StageRow = React.memo(function StageRow({
       />
       {(stage.status === "failed" || stage.status === "warning") && stage.error ? (
         <StageErrorCallout
-          error={stage.error}
+          error={chatLaunchErrorMessage(stage.error, stage.error)}
           className={compact ? "text-[10.5px]" : "text-[length:calc(var(--chat-font-size)*11/14)]"}
         />
       ) : null}
@@ -325,7 +326,7 @@ function DetailsList({ snapshot, compact }: { snapshot: ChatLaunchSnapshot; comp
   if (snapshot.baseRef) rows.push(["Base", snapshot.baseRef, true]);
   if (snapshot.worktreePath) rows.push(["Worktree", snapshot.worktreePath, true]);
   if (snapshot.templateName) rows.push([LANE_SETUP_CARD_TEMPLATE_METRIC, snapshot.templateName]);
-  if (snapshot.error) rows.push(["Error", snapshot.error]);
+  if (snapshot.error) rows.push(["Error", chatLaunchErrorMessage(snapshot.error, snapshot.error)]);
   if (rows.length === 0) return null;
   return (
     <dl
@@ -365,7 +366,8 @@ function CardHeader({ snapshot, metaSize }: { snapshot: ChatLaunchSnapshot; meta
       title={laneSetupTitle(snapshot)}
       titleTestId="lane-setup-title"
       failed={failed}
-      trailing={<LaunchElapsed snapshot={snapshot} className={cn("ml-auto text-fg/38", metaSize)} />}
+      // A refused launch made nothing, so it has no time to show.
+      trailing={isChatLaunchRefused(snapshot) ? null : <LaunchElapsed snapshot={snapshot} className={cn("ml-auto text-fg/38", metaSize)} />}
       metaSize={metaSize}
       chips={(
         <>
@@ -413,6 +415,8 @@ export function LaneSetupCard({
   const confirmAbortRef = useRef<AbortController | null>(null);
   const actions = laneSetupActions(snapshot);
   const failed = snapshot.phase === "failed";
+  // Refused before anything was made: the sentence, not a failed step.
+  const refused = isChatLaunchRefused(snapshot);
   const cloudLaunch = snapshot.cloud != null;
   /**
    * What "Copy details" puts on the clipboard for a failed launch: the launch
@@ -424,12 +428,12 @@ export function LaneSetupCard({
     copyStepCardDetails([
       `Launch: ${snapshot.launchId}`,
       failedStage ? `Step: ${chatLaunchStageLabel(failedStage.id, { kind: snapshot.kind, templateName: snapshot.templateName })} (${failedStage.id})` : null,
-      `What happened: ${failedStage?.error?.trim() || snapshot.error?.trim() || "Setup stopped."}`,
+      `What happened: ${chatLaunchErrorMessage(failedStage?.error?.trim() || snapshot.error?.trim() || "", "Setup stopped.")}`,
     ], "launch details");
   };
   const envStage = snapshot.stages.find((stage) => stage.id === "environment");
   const showEnvSteps = Boolean(detailsOpen || envStage?.status === "running" || envStage?.status === "failed");
-  const hasDetails = Boolean(snapshot.branchRef || snapshot.baseRef || snapshot.worktreePath || snapshot.templateName || snapshot.error);
+  const hasDetails = Boolean(snapshot.branchRef || snapshot.baseRef || snapshot.worktreePath || snapshot.templateName || (snapshot.error && !refused));
 
   const run = (name: string, action: () => Promise<void>) => {
     if (busy) return;
@@ -438,7 +442,7 @@ export function LaneSetupCard({
     setNotice(null);
     void action()
       // The host's own words (e.g. "This chat already started. …"), minus the IPC wrapper.
-      .catch((error: unknown) => setActionError(stripElectronErrorWrapper(extractError(error))))
+      .catch((error: unknown) => setActionError(chatLaunchErrorMessage(error, "That didn't work. Try again.")))
       .finally(() => setBusy(null));
   };
 
@@ -521,23 +525,29 @@ export function LaneSetupCard({
       {showTitle ? (
         <>
           <CardHeader snapshot={snapshot} metaSize={metaSize} />
-          <LaunchProgressRail stages={snapshot.stages} cloud={cloudLaunch} className="mb-1 mt-3" />
+          {refused ? null : <LaunchProgressRail stages={snapshot.stages} cloud={cloudLaunch} className="mb-1 mt-3" />}
         </>
       ) : null}
 
-      <ul className="divide-y divide-fg/[0.045]" aria-label="Lane setup stages">
-        {snapshot.stages.map((stage) => (
-          <StageRow
-            key={stage.id}
-            stage={stage}
-            kind={snapshot.kind}
-            templateName={snapshot.templateName}
-            compact={compact}
-            showSteps={showEnvSteps}
-            cloud={cloudLaunch}
-          />
-        ))}
-      </ul>
+      {refused ? (
+        <div data-testid="lane-setup-refusal" className="mt-2">
+          <StageErrorCallout error={snapshot.error?.trim() || "ADE couldn't start this launch."} className={metaSize} />
+        </div>
+      ) : (
+        <ul className="divide-y divide-fg/[0.045]" aria-label="Lane setup stages">
+          {snapshot.stages.map((stage) => (
+            <StageRow
+              key={stage.id}
+              stage={stage}
+              kind={snapshot.kind}
+              templateName={snapshot.templateName}
+              compact={compact}
+              showSteps={showEnvSteps}
+              cloud={cloudLaunch}
+            />
+          ))}
+        </ul>
+      )}
 
       <AnimatePresence initial={false}>
         {detailsOpen ? (
@@ -804,7 +814,8 @@ function LaneSetupCardFromPayload({
         // The host folds a stage's error into the row detail. Show it in full
         // under the row, the way the live card does, instead of truncating the
         // only explanation to one line.
-        const error = status === "failed" || status === "warning" ? row.detail?.trim() || null : null;
+        const rawError = status === "failed" || status === "warning" ? row.detail?.trim() || null : null;
+        const error = rawError ? chatLaunchErrorMessage(rawError, rawError) : null;
         return (
           <li key={row.key || `${row.text}:${index}`} data-testid="lane-setup-stage" data-stage-id={id ?? undefined} data-stage-status={status}>
             <StageLine icon={icon} status={status} label={row.text} detail={error ? null : row.detail ?? null} compact />

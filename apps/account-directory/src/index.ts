@@ -1,5 +1,6 @@
 import { runCloudWakes } from "./cloudWake";
 import { handleCloudRequest, isCloudRequest } from "./cloud/routes";
+import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
 import { handleCloudBillingPublicRequest, isCloudBillingPublicRequest, reportExtraHours } from "./cloud/billing";
 import type { CloudEnv } from "./cloud/store";
@@ -85,6 +86,9 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // Clerk's sign-up webhook: Svix-signed, POST only, no CORS (Clerk is the
   // only caller). It records one `ade_signed_up` per account.
   if (isSignupAnalyticsRequest(url)) return handleSignupAnalyticsRequest(request, env);
+  // The website's invite page: public and rate-limited, it answers only the
+  // inviter's first name, and only for an inviter with ADE Cloud access.
+  if (isInviteLookupRequest(url)) return handleInviteLookup(request, env);
   return handleRequest(request, env);
 }
 

@@ -141,7 +141,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   pty: { only: [...USER_SETTING_WRITES.pty.actions] },
   // A provider sign-in kept for new cloud machines is the person's; agents
   // read which are kept (never a value) and change none.
-  cloud: { only: [...USER_SETTING_WRITES.cloud.actions] },
+  // Entering an invite code is once per account, forever: the person's clients
+  // (desktop, phone, their own terminal) enter it, never an agent.
+  cloud: { only: [...USER_SETTING_WRITES.cloud.actions, "invite_redeem"] },
   // ADE MCP grants an outside app this machine. Every action is also user-only
   // (below), so only the desktop reaches it through the action bus.
   remote_mcp: { allExcept: [] },
@@ -390,9 +392,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   archive: ["delete"],
   // Dropping a deleted lane's saved work means it can no longer be restored.
   lane: ["removeDeletedLane"],
-  // Only the person's desktop saves a key or runs Claude's sign-in for new machines,
-  // and only the person clears a computer's caches (it deletes files there).
-  cloud: [...CLOUD_SIGN_IN_WRITES, "clear_caches"],
+  // Only the person's desktop saves a key or runs Claude's sign-in for new machines.
+  // (`clear_caches` is not here: an agent may ask, and the action asks the person with a card.)
+  cloud: [...CLOUD_SIGN_IN_WRITES],
   // An agent asking to move a chat or batch must not approve its own request.
   // Only a person's client hosts an MCP App, so only it may pass an app's call on.
   chat: [
@@ -426,13 +428,13 @@ export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): bo
  * `cloud.call` and `accountVault.call` (multiProjectRpcServer). Every rule
  * above still applies to them.
  *
- * The other `cloud` actions stay with a project: a ready machine is a
+ * The other `cloud` actions stay with a project: a lane launch is a
  * project's, and what spends money or deletes asks in the caller's own chat.
  * The vault actions are for this computer's desktop and reach only the provider's
  * items (cloudVaultItems.ts).
  */
 export const ADE_ACTION_MACHINE_SCOPED = {
-  cloud: ["access", "status", "list", "hours", "limits", "sleep", "wake", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
+  cloud: ["access", "status", "list", "hours", "limits", "sleep", "wake", "referral", "invite_redeem", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
   account_vault: ["get", "set", "remove"],
   // The account's sign-ins, from a window with no project here (`providerLogins.call`).
   provider_logins: PROVIDER_LOGIN_ACTIONS,
@@ -1149,23 +1151,24 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // types the key, and the host saves it. `status` reports connected or not,
   // never a credential. Neither is secret-bearing.
   integration_connect: ["request", "status"],
-  // the provider: ready machines (read the pool, take a project's ready machine,
-  // give an unused claim back) and the machine verbs. What spends money or
-  // deletes asks the person first (the RPC server stamps who asks). Never the key.
+  // the provider: the machine verbs. What spends money or deletes asks the
+  // person first (the RPC server stamps who asks). Never the key.
   cloud: [
     // `status` is the whole account in one read (plan, hours, disk, lanes,
     // sizes, agent limits, canStartLane); no key, no wake, no spend.
-    "access", "status", "ready_status", "claim_ready", "release_ready", "list", "hours", "create", "sleep", "wake", "resize", "update",
-    "copy", "move", "delete", "ready_set", "ready_off", "ready_retry", "make_status", "limits", "set_limits",
+    "access", "status", "list", "hours", "create", "sleep", "wake", "resize", "update",
+    "copy", "move", "delete", "make_status", "limits", "set_limits",
     // A new lane on its own new computer (`ade chat create --machine cloud`).
     "lane_launch", "lane_launch_status", "lane_launch_cancel",
     // An agent asks the person for a tier change: a card in its chat; it changes nothing.
     "tier_request",
-    // The person clears a cloud computer's caches from the dashboard (user-only, below).
+    // Clear a cloud computer's caches: the person from the dashboard; an agent asks the person with a card.
     "clear_caches",
     // Sign-ins for new machines: which are kept (never a value), and the
     // person's own saves and Claude sign-in (user-only, below).
     "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES,
+    // The invite link and what it earned; entering a friend's code (CTO-only above: a person's client).
+    "referral", "invite_redeem",
   ],
   // `list` reads the MCP setup (names and set/not-set, never a value).
   // `request` raises the MCP server card in the caller's own chat; the person

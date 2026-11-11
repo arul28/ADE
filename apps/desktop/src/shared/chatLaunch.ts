@@ -1,4 +1,5 @@
 import type { AdeCardIcon, AdeCardPayload, AdeCardRow } from "./adeCard";
+import { stripElectronErrorWrapper } from "./codedError";
 import type { LaneStart } from "./laneStart";
 import type {
   ChatLaunchArgs,
@@ -292,6 +293,21 @@ export function isChatLaunchPending(launch: Pick<ChatLaunchSnapshot, "phase" | "
   return !launch.agentStarted && (launch.phase === "running" || launch.phase === "failed" || launch.phase === "awaiting-client");
 }
 
+/**
+ * The launch was refused before anything was made (its `start` was turned
+ * down: a start refusal, an unreachable machine): failed, with no step ever
+ * started. The card shows the sentence, not a failed step.
+ */
+export function isChatLaunchRefused(launch: Pick<ChatLaunchSnapshot, "phase" | "stages" | "laneCreated">): boolean {
+  return launch.phase === "failed" && !launch.laneCreated && launch.stages.every((stage) => stage.status === "pending");
+}
+
+/** The plain sentence of a launch error, without Electron's IPC wrapper or an error class name. */
+export function chatLaunchErrorMessage(error: unknown, fallback = "ADE couldn't start this launch."): string {
+  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return stripElectronErrorWrapper(raw) || fallback;
+}
+
 /** The agent (or CLI session) is up: completed, or started early and not since failed or cancelled. */
 export function isChatLaunchSucceeded(launch: Pick<ChatLaunchSnapshot, "phase" | "agentStarted">): boolean {
   return launch.phase === "completed" || (launch.agentStarted && launch.phase !== "failed" && launch.phase !== "cancelled");
@@ -322,6 +338,7 @@ export function chatLaunchStatusLine(launch: ChatLaunchSnapshot): string {
   const context = { kind: launch.kind, templateName: launch.templateName };
   if (launch.phase === "cancelled") return "Cancelled";
   if (launch.phase === "failed") {
+    if (isChatLaunchRefused(launch)) return "Couldn't start";
     const failed = launch.stages.find((stage) => stage.status === "failed");
     const label = failed ? chatLaunchStageLabel(failed.id, context) : "Setup";
     return `${label} failed`;
@@ -404,6 +421,9 @@ function laneSetupRowIcon(status: ChatLaunchStageStatus): AdeCardIcon {
  * have to match on the English label; the template name (if any) rides in the
  * `Template` metric.
  */
+/** The setup card's title for a launch refused before anything was made. */
+export const CHAT_LAUNCH_REFUSED_TITLE = "Couldn't start this lane";
+
 export function buildLaneSetupCard(snapshot: ChatLaunchSnapshot, nowMs: number): AdeCardPayload {
   const context = { kind: snapshot.kind, templateName: snapshot.templateName };
   const rows: AdeCardRow[] = snapshot.stages.map((stage) => {
@@ -434,14 +454,19 @@ export function buildLaneSetupCard(snapshot: ChatLaunchSnapshot, nowMs: number):
     : null;
   const durationText = formatChatLaunchDuration(durationMs);
   const base = snapshot.baseRef ? ` from ${snapshot.baseRef}` : "";
-  const title = failed
+  const refused = isChatLaunchRefused(snapshot);
+  const title = refused
+    ? CHAT_LAUNCH_REFUSED_TITLE
+    : failed
     ? "Lane setup failed"
     : allSettled
       ? warned
         ? durationText ? `Lane set up with warnings in ${durationText}` : "Lane set up with warnings"
         : durationText ? `Lane set up in ${durationText}` : "Lane set up"
       : "Setting up lane";
-  const fallbackText = failed
+  const fallbackText = refused
+    ? `${CHAT_LAUNCH_REFUSED_TITLE}: ${snapshot.error ?? "unknown error"}`
+    : failed
     ? `Lane ${snapshot.laneName} setup failed: ${snapshot.error ?? "unknown error"}`
     : allSettled
       ? `Lane ${snapshot.laneName} set up${base}${durationText ? ` in ${durationText}` : ""}.`
@@ -453,7 +478,8 @@ export function buildLaneSetupCard(snapshot: ChatLaunchSnapshot, nowMs: number):
     title,
     subtitle: `${snapshot.laneName}${base}${snapshot.templateName ? ` · ${snapshot.templateName}` : ""}`,
     ...(snapshot.templateName ? { metrics: [{ label: LANE_SETUP_CARD_TEMPLATE_METRIC, value: snapshot.templateName }] } : {}),
-    rows,
+    // A refused launch made nothing: no step rows, the sentence says why.
+    rows: refused ? [] : rows,
     fallbackText,
     durationMs,
   };

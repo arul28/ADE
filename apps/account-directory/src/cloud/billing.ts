@@ -1,7 +1,8 @@
 import { captureCloudAction, type CloudWaitUntil } from "./analytics";
 import { formatCloudCents, type CloudCheckoutResult } from "./contract";
-import { sendCloudEmail } from "./email";
+import { accountEmail, sendCloudEmail } from "./email";
 import { json } from "./http";
+import { PLAN_CLEANUP_GRACE_MS, planCleanupFor, waitingPlanOf, warnPlanCleanupAhead } from "./planCleanup";
 import { CENT_MICROS, EXTRA_DISK_MONTH_DAYS, extraDiskGbDaysIn, extraDiskMonthFits, extraDiskMonthMicros, utcDay, type CloudPaidPlanId } from "./plans";
 import {
   accountDiskGb,
@@ -9,12 +10,12 @@ import {
   accountRules,
   applyCloudPlanChange,
   boughtPlanIdOf,
-  cloudOffers,
   countedPlanDiskGb,
   groupByUser,
   paidPlanOf,
   extraActive,
   extraOwedMilli,
+  extraUsedMilli,
   listComputers,
   liveUsedMilli,
   loadAccount,
@@ -122,7 +123,8 @@ function paidPlanOfPrice(env: CloudEnv, priceId: string | null): CloudPaidPlanId
 
 function billingConfig(env: CloudEnv, plan: CloudPaidPlanId): { planPrice: string; extraPrice: string; diskPrice: string | null } {
   const planPrice = planPriceIds(env)[plan];
-  const extraPrice = env.STRIPE_EXTRA_PRICE_ID?.trim();
+  // The var first: the older name is a Worker secret in production, so a new price ships with the config.
+  const extraPrice = env.STRIPE_EXTRA_HOURS_PRICE_ID?.trim() || env.STRIPE_EXTRA_PRICE_ID?.trim();
   if (!planPrice || !extraPrice || !env.STRIPE_SECRET_KEY?.trim()) {
     reportCloudFailure("cloud.billing_not_configured", { plan });
     throw unavailable();
@@ -130,14 +132,38 @@ function billingConfig(env: CloudEnv, plan: CloudPaidPlanId): { planPrice: strin
   return { planPrice, extraPrice, diskPrice: env.STRIPE_DISK_PRICE_ID?.trim() || null };
 }
 
-/** One Stripe customer per account, even when two checkouts start at once. */
+/**
+ * One Stripe customer per account, even when two checkouts start at once,
+ * with the account's email so Checkout shows it filled in. A customer made
+ * before that (metadata only) gets the email the first time it has none. The
+ * address comes from Clerk, never from the client, and is never logged; when
+ * it can't be read, Checkout just asks for it.
+ */
 async function ensureCustomer(env: CloudEnv, account: AccountRow, now: number): Promise<string> {
-  if (account.stripe_customer_id) return account.stripe_customer_id;
-  const customer = await stripeRequest(env, "POST", "/customers", { "metadata[ade_user_id]": account.user_id }, `ade-cloud-customer-${account.user_id}`);
+  const email = await accountEmail(env, account.user_id).catch(() => null);
+  if (account.stripe_customer_id) {
+    if (email) await fillCustomerEmail(env, account.stripe_customer_id, email);
+    return account.stripe_customer_id;
+  }
+  const customer = await stripeRequest(env, "POST", "/customers", {
+    "metadata[ade_user_id]": account.user_id,
+    ...(email ? { email } : {}),
+  }, `ade-cloud-customer-${account.user_id}`);
   const id = textOf(customer.id);
   if (!id) throw unavailable();
   await applyCloudPlanChange(env, account.user_id, { stripeCustomerId: id }, now);
   return id;
+}
+
+/** Sets the customer's email when it has none; one the person changed in Stripe stays. A failure only leaves the field empty. */
+async function fillCustomerEmail(env: CloudEnv, customerId: string, email: string): Promise<void> {
+  try {
+    const customer = await stripeRequest(env, "GET", `/customers/${encodeURIComponent(customerId)}`);
+    if (textOf(customer.email)) return;
+    await stripeRequest(env, "POST", `/customers/${encodeURIComponent(customerId)}`, { email });
+  } catch (error) {
+    reportCloudFailure("cloud.customer_email_fill_failed", { status: error instanceof StripeRequestError ? error.status : 0 });
+  }
 }
 
 /** A person with two open Checkout tabs must not be able to buy twice. */
@@ -206,14 +232,33 @@ const portalConfigParams = (env: CloudEnv): Record<string, string> => {
   return id ? { configuration: id } : {};
 };
 
-/** The subscription's items: which one is the plan, and the price of each. */
-async function subscriptionItems(env: CloudEnv, subscriptionId: string): Promise<Array<{ id: string; price: string | null }>> {
+type SubscriptionItem = { id: string; price: string | null; meter: string | null };
+
+/** The meter a price bills from, or null for a licensed price. */
+const meterOfPrice = (price: unknown): string | null => idOf(objectOf(objectOf(price)?.recurring)?.meter);
+
+/** The subscription's items: which one is the plan, and the price (and meter) of each. */
+async function subscriptionItems(env: CloudEnv, subscriptionId: string): Promise<SubscriptionItem[]> {
   const subscription = await stripeRequest(env, "GET", `/subscriptions/${encodeURIComponent(subscriptionId)}`);
   const items = (objectOf(subscription.items)?.data as StripeObject[] | undefined) ?? [];
   return items.flatMap((item) => {
     const id = textOf(item.id);
-    return id ? [{ id, price: idOf(item.price) }] : [];
+    return id ? [{ id, price: idOf(item.price), meter: meterOfPrice(item.price) }] : [];
   });
+}
+
+/**
+ * Whether the subscription already bills extra disk: the configured price, or
+ * an older extra-disk price on the same meter (a price that moved to its own
+ * product keeps billing the subscriptions that hold it). A second item on the
+ * same meter would bill each GB-day twice.
+ */
+async function hasDiskItem(env: CloudEnv, items: SubscriptionItem[], diskPrice: string): Promise<boolean> {
+  if (items.some((item) => item.price === diskPrice)) return true;
+  const metered = items.filter((item) => item.meter != null);
+  if (metered.length === 0) return false;
+  const diskMeter = meterOfPrice(await stripeRequest(env, "GET", `/prices/${encodeURIComponent(diskPrice)}`));
+  return diskMeter != null && metered.some((item) => item.meter === diskMeter);
 }
 
 /**
@@ -234,7 +279,6 @@ async function changePaidPlan(env: CloudEnv, account: AccountRow, to: CloudPaidP
   }
   const undoDowngrade = to === "pro" && account.paid_plan === "pro" && account.paid_plan_next === "plus";
   const charged = to === "pro" && !undoDowngrade;
-  if (to === "plus") await refuseDowngradeOverDisk(env, account);
   const subscriptionId = account.stripe_subscription_id;
   const planItemOf = async () => (await subscriptionItems(env, subscriptionId)).find((item) => paidPlanOfPrice(env, item.price) != null) ?? null;
   let planItem: { id: string; price: string | null } | null;
@@ -294,29 +338,10 @@ async function changePaidPlan(env: CloudEnv, account: AccountRow, to: CloudPaidP
     // Stripe switched; the webhook that follows saves the same change.
     reportCloudFailure("cloud.plan_change_unsaved", { userId: account.user_id, to, message: error instanceof Error ? error.message : "unknown" });
   }
-  return { url: null, change: to === "pro" ? "now" : "next_period" };
-}
-
-/**
- * Pro to Plus while the computers hold more than Plus's disk would leave
- * disk nobody pays for, so it waits until they don't, or until extra disk is
- * on and a full month of the difference fits its limit.
- */
-async function refuseDowngradeOverDisk(env: CloudEnv, account: AccountRow): Promise<void> {
-  const plusGb = countedPlanDiskGb(account, paidPlanOf(account), "plus");
-  const extraGb = await accountDiskGb(env, account.user_id) - plusGb;
-  if (extraGb <= 0) return;
-  const offered = cloudOffers(env).extraDisk;
-  const limitCents = account.extra_disk_limit_cents;
-  const fits = offered && account.extra_disk_state === "on" && limitCents != null && extraDiskMonthFits(extraGb, limitCents);
-  if (fits) return;
-  throw new CloudBillingError(
-    "disk_over_plan",
-    offered
-      ? `Delete computers until you use ${plusGb} GB or less at one time, or turn on extra disk.`
-      : `Delete computers until you use ${plusGb} GB or less at one time.`,
-    409,
-  );
+  if (to === "pro") return { url: null, change: "now" };
+  // Never refused for being over Plus: the answer says what Plus's limits will free, for ADE's warning.
+  const cleanup = planCleanupFor(env, account, await listComputers(env, account.user_id), "plus");
+  return { url: null, change: "next_period", ...(cleanup ? { cleanup: { ...cleanup, dueAt: account.period_end + PLAN_CLEANUP_GRACE_MS } } : {}) };
 }
 
 export async function createPortalUrl(env: CloudEnv, userId: string, origin: string, now: number): Promise<{ url: string }> {
@@ -376,7 +401,7 @@ export async function setExtraDisk(
     }
     try {
       const items = await subscriptionItems(env, account.stripe_subscription_id);
-      if (!items.some((item) => item.price === diskPrice)) {
+      if (!await hasDiskItem(env, items, diskPrice)) {
         await stripeRequest(env, "POST", "/subscription_items", {
           subscription: account.stripe_subscription_id,
           price: diskPrice,
@@ -504,8 +529,18 @@ async function userForSubscription(env: CloudEnv, subscription: SubscriptionFact
   return row?.user_id ?? null;
 }
 
-/** Banner and email, once, when a payment fails or a paid invoice brings the plan back. */
+/**
+ * Banner and email, once, when a payment fails or a paid invoice brings the
+ * plan back; and when a downgrade or a cancel is made over the cheaper plan's
+ * limits, the email naming what those limits will free (a cancel from the
+ * billing portal is never seen in ADE first).
+ */
 async function announceChange(env: CloudEnv, before: AccountRow, after: AccountRow): Promise<void> {
+  const waitingBefore = waitingPlanOf(before);
+  const waitingAfter = waitingPlanOf(after);
+  if (waitingAfter && waitingAfter !== waitingBefore) {
+    await warnPlanCleanupAhead(env, after, await listComputers(env, after.user_id), waitingAfter);
+  }
   const wasPastDue = before.stripe_status === "past_due";
   const isPastDue = after.stripe_status === "past_due";
   if (!wasPastDue && isPastDue && after.plan === "paid") {
@@ -752,7 +787,8 @@ export async function reportExtraHours(env: CloudEnv, now = Date.now()): Promise
   for (const account of accounts) {
     const live = liveUsedMilli(account, awakeByUser.get(account.user_id) ?? [], now);
     // With the switch off, only what was used before it went off is billed.
-    const billable = account.extra_enabled === 1 ? live - account.included_milli : account.extra_owed_milli;
+    // Earned hours come before extra hours: only what they don't cover is billed.
+    const billable = account.extra_enabled === 1 ? extraUsedMilli(account, live) : account.extra_owed_milli;
     const owedHours = Math.floor((billable - account.extra_reported_milli) / MILLI_PER_HOUR);
     let reported = account.extra_reported_milli;
     for (let sent = 0; sent < Math.min(owedHours, MAX_REPORTS_PER_ACCOUNT_TICK); sent += 1) {

@@ -19,7 +19,7 @@ renderer (window.ade.cloud)   CLI (ade cloud)   phone (cloud.read/write)
               \                     |                  /
        registerCloudIpc      `cloud` action domain (adeActions/registry.ts)
                        \            |
-        machines, sleep, create, copy, move, ready machines, hours, sign-ins
+        machines, sleep, create, copy, move, lanes, hours, sign-ins
                                     |            (apps/desktop/src/main/services/adeCloud/)
                        CloudProvider (cloudProvider.ts)
                                     |
@@ -67,9 +67,11 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Copy and move | `cloudMachineCopy.ts` |
 | Reconnect a machine removed from ADE | `cloudReconnect.ts` |
 | Sleep, wake for use, agent limits | `cloudSleep.ts`, `cloudSleepWatch.ts`, `cloudBrainAccess.ts` |
-| Ready machines | `cloudReadyMachines.ts`, `cloudReadyClaim.ts`, `cloudReadySettings.ts`, `cloudReadyActions.ts` |
-| Sign-ins new machines start with | `cloudSignInStore.ts`, `cloudSignInActions.ts`, `cloudSignInBoot.ts`, `cloudClaudeSignIn.ts` |
-| Claude passes (one per Claude account, cloud only) | `claudePassStore.ts`, `claudePassVerify.ts`, `claudePassEndWarning.ts`; on a machine `services/claudePass/` |
+| Saved ADE Cloud keys and Claude's sign-in (kept in the account vault) | `cloudSignInStore.ts`, `cloudSignInActions.ts`, `cloudClaudeSignIn.ts`; `cloudSignInBoot.ts` only for computers an older ADE made |
+| Claude passes (one per Claude account, cloud only) | `claudePassStore.ts`, `claudePassVerify.ts`; on a machine `services/claudePass/` |
+| The sign-in end warning (Claude passes, and keys with an end date from their provider) | `claudePassEndWarning.ts`; the banner `renderer/components/settings/providers/cloud/CloudSignInEndNotice.tsx` |
+| Shared machine operations (metadata patch, wake through a transition) | `cloudInstanceOps.ts` |
+| Product analytics for cloud lanes (launch result, freed lane, Clear caches, default size) | `cloudLaneLaunchAnalytics.ts` |
 | Account sign-ins on every computer (capture, apply, renewal) | `services/providerLogins/` (entry `providerLoginSync.ts`, one file per job) |
 | CLI and agent verbs, approvals | `cloudAgentActions.ts`, `cloudBrainMaker.ts`, `cloudDesktopActions.ts` |
 | A new lane on its own new computer (before the hand-off to its brain) | `cloudLaneLaunchService.ts`, `cloudLaneLaunchRecords.ts`, `registerCloudLaneLaunchIpc.ts` |
@@ -87,7 +89,7 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | The dashboard in Settings › ADE Cloud, and the lane pieces (cities, job card, tier change, lanes without a computer) | `apps/desktop/src/renderer/components/settings/cloudDashboard/*`, `apps/desktop/src/renderer/components/cloudLane/*` |
 | Server: automatic updates, lanes without a computer, the disk usage report (migrations `0020`, `0021`, `0022` in `apps/account-directory/migrations/`) | `apps/account-directory/src/cloud/updates.ts`, `lanesWithoutComputer.ts`, `diskUsage.ts` |
 
-Shared contracts are in `apps/desktop/src/shared/adeCloud.ts`, `cloudReady.ts`,
+Shared contracts are in `apps/desktop/src/shared/adeCloud.ts`,
 `cloudSignIns.ts`, `cloudTiers.ts` (the four lane sizes, read from the catalog)
 and `cloudLaneLaunch.ts`. On a machine, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`
 keeps it awake while it works and asks the server to sleep it 3 minutes after
@@ -101,9 +103,9 @@ that stops (see Sleep and busy rules).
   Pro, move between them, and manage, which opens Stripe's portal), the
   80% / 95% / out-of-hours banners, and computers due for deletion, ending in
   "Powered by Agent 37". Settings entries are `integrations.ade-cloud*`.
-- **Add a computer:** New ADE Cloud computer (a size and a "Full computer
-  (Android, Docker)" switch) in Settings and Your computers. The composer no
-  longer offers it.
+- **Add a computer:** a new lane on ADE Cloud makes its own computer. The old
+  "New ADE Cloud computer" form and the ready machines are gone (Cloud 5);
+  `ade cloud create` and the phone still make a bare computer.
 - **New lane on ADE Cloud:** a chat launch with a `cloud` target makes one
   computer for one lane, then hands the launch to that computer's brain. See
   [ADE Cloud lanes](../chat/README.md#ade-cloud-lanes).
@@ -122,12 +124,15 @@ that stops (see Sleep and busy rules).
   (`cloudDiskUsage.ts`): its repository, dependencies, Docker, Android and
   caches, measured at its idle step at most every 6 hours and sent with its
   last work. The dashboard reads it with the computer list, so it wakes nothing.
-  Clear caches runs on that lane's own computer, through its brain.
+  Clear caches runs on that lane's own computer, through its brain
+  (`cloud.clear_caches`). The dashboard confirms first; an agent's call asks
+  the person with a card in its chat, and with nobody watching (full-auto, an
+  automation, ADE MCP) the answer is no.
 - **Look:** the Night sky tokens, the cloud mark, the size icon and the skyline
   live in `remoteTargets/cloudBrand.tsx` and `cloudBrand.css`. A light theme
   changes the tokens there once.
-- **CLI:** `ade cloud` (`ade help cloud`), `ade chat create --machine cloud:ready`,
-  and `ade chat create --machine cloud [--size <size>]` (a new lane on its own
+- **CLI:** `ade cloud` (`ade help cloud`) and
+  `ade chat create --machine cloud [--size <size>]` (a new lane on its own
   computer; see [From the CLI and agents](#from-the-cli-and-agents)).
 - **Agents:** the `ade-cloud` skill (see [Guidance for agents](#guidance-for-agents)).
 - **Phone:** the cloud page, over the `cloud.read` and `cloud.write` sync commands.
@@ -158,9 +163,9 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
   provider's own disk limit (`catalog.sizes[].tier`, `label`, `diskMaxGb`).
 - **Changing plans:** Plus to Pro applies now, charges the difference for the
   rest of the period, and keeps the hours used. Pro to Plus applies at the
-  period end (`billing.nextPlanId`); it is refused while the computers hold
-  more than Plus's disk, unless extra disk is on and a month of it fits the
-  limit. Both go through `POST /cloud/billing/checkout {plan}` on the
+  period end (`billing.nextPlanId`). A downgrade is never refused: over
+  Plus's computers or disk, the answer carries `cleanup`, what Plus's limits
+  will free (see **A cheaper plan's limits**). Both go through `POST /cloud/billing/checkout {plan}` on the
   subscription itself: Stripe's portal can't switch a subscription with more
   than one item.
 - **Not set up yet:** Pro and extra disk are offered only once their Stripe
@@ -187,7 +192,32 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
   "Push all work to GitHub" wake, which does not restart the 30-day delete
   clock. Timed wakes already set are deleted, as at 0 hours. Deleting a computer always works,
   and the 30-day delete of unused computers still runs. The owner report
-  lists these accounts.
+  lists these accounts. A cheaper plan's limits then free the oldest
+  computers (below).
+- **A cheaper plan's limits** (`planCleanup.ts`, migration 0027; "never stop
+  a person from paying less; warn them"): Pro to Plus, a cancel, or a plan
+  that ends after failed payments is never refused. Once the cheaper plan is
+  on and the account holds more computers or disk than it allows (disk that
+  extra disk covers counts as fitting; `past_due` is never cleaned), the
+  ten-minute owner check sets `plan_cleanup_due_at` 3 days out and emails the
+  list; at that time it frees the OLDEST computers past the limits, at most 4
+  a run. Each computer's own ADE interrupts its agents, saves its chats and
+  pushes every lane's work (`ade cloud prepare-stop`, `push-work`, run over
+  exec in a free 15-minute wake), a `work-state` read must find nothing left,
+  then the computer is deleted and its lane kept as a lane without a computer
+  (reason `plan_limit`); the next message to the lane makes a new computer.
+  A computer whose work can't all be pushed stays, the person is told, and it
+  is tried again a day later; nothing else goes in its place. The person sees
+  it before (the sentence `planCleanupSentence` at the change in ADE,
+  `downgradePreviews` and `planCleanup` on the account, an email when the
+  downgrade or cancel is made and another when the cheaper plan starts) and
+  after (an email naming each computer and the branch its work went to,
+  `planCleanupDone` for 14 days).
+- **Timed wake-ups cancelled:** when a blocked account's timed wakes are
+  deleted (0 hours, or the free plan over its disk), the person gets one
+  email a period, and the account carries `timedWakesCancelled` while that
+  period runs. Each computer sets its next timed wake again the next time it
+  runs.
 - **Refusals:** a create, copy, move or grow past a limit answers code
   `disk_limit` (or `needs_paid_plan` on Free) with `reason`
   (`CloudDiskRefusalReason`) and a plain `message`. A client that doesn't
@@ -238,8 +268,15 @@ not a day later.
 ## Stored data
 
 Account vault items, scope `all`, kind `integration`: `cloud-budget` (agent
-limits only; the name is historical), `cloud-ready` (which projects keep a machine ready),
-`cloud-claude-token` and `cloud-key-<provider>` (sign-ins for new machines).
+limits only; the name is historical), `cloud-claude-token` (the single Claude
+item of older versions, adopted as `claude-pass/legacy`) and `cloud-key-<provider>`
+(the saved ADE Cloud keys). A new cloud computer is made with no sign-in in its
+env (only `ADE_MIN_VERSION`), so no sign-in value passes ADE's server or the
+host in plain text: its brain signs in to the account and takes every sign-in
+from the vault (`providerLoginApplyPass.ts` for the saved keys and carried
+logins, `claudePassSync.ts` for the passes). A computer an older ADE made keeps
+its env until it is deleted; its brain takes the variables out at the first
+apply. The old `cloud-ready` item is no longer read.
 Kind `provider_login` holds the account's provider sign-ins: `<provider>/<origin>.<slot>`
 (the origin is 12 hex of the computer's machine key) and the Claude passes,
 `claude-pass/<12 hex>` (`claude-pass/legacy` for the item older versions saved).
@@ -249,7 +286,7 @@ are off, and the Claude smart balance switch. Each computer keeps marks only,
 never a token, in `<ADE home>/provider-logins/state.json` and `applied.json`,
 and the use of each pass in `claude-pass-use.json`.
 Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
-`ade_made_by_chat`, `ade_disk_full` and `ade_disk_full_reason`, the ready-machine keys in `cloudReady.ts`,
+`ade_made_by_chat`, `ade_disk_full` and `ade_disk_full_reason`; a copy drops the old ready-machine keys `ade_ready*`,
 and the lane keys `ade_lane_id`, `ade_lane_name`, `ade_project_origin` in
 `cloudLaneLaunch.ts`), plus `created_by: ade`.
 

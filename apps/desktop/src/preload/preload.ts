@@ -84,8 +84,7 @@ import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
 import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMethod, CloudLaneLifeResults } from "../shared/cloudLaneLife";
-import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
-import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudReferralSummary, CloudStatus } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudPassEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import {
@@ -2581,7 +2580,11 @@ function cloudLaneLaunchSource(pin: OpenProjectBinding | null | undefined): Clou
   if (!binding) return null;
   return {
     gitOriginUrl: binding.gitOriginUrl ?? null,
-    ...(binding.kind === "local" ? { localRootPath: binding.rootPath } : {}),
+    // With no stamped origin, main reads it from the checkout here, or asks
+    // the project's own machine for a project that lives on another one.
+    ...(binding.kind === "local"
+      ? { localRootPath: binding.rootPath }
+      : { remoteProject: { targetId: binding.targetId, projectId: binding.projectId } }),
   };
 }
 
@@ -6232,8 +6235,11 @@ const adeBridge = {
         removeLocal();
       };
     },
-    cursorCloudListRepositories: async (args?: { refresh?: boolean }): Promise<CursorCloudRepository[]> =>
-      callProjectRuntimeActionOr("ai", "listCursorCloudRepositories", { args: args ?? {} }, () =>
+    cursorCloudListRepositories: async (
+      args?: { refresh?: boolean },
+      pin?: OpenProjectBinding | null,
+    ): Promise<CursorCloudRepository[]> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "listCursorCloudRepositories", { args: args ?? {} }, () =>
         ipcRenderer.invoke(IPC.aiCursorCloudListRepositories, args ?? {}),
       ),
     cursorCloudListAgents: async (args?: {
@@ -6257,12 +6263,14 @@ const adeBridge = {
       ),
     cursorCloudCreateRun: async (
       args: CursorCloudCreateRunRequest,
+      pin?: OpenProjectBinding | null,
     ): Promise<CursorCloudCreateRunResult> =>
-      callProjectRuntimeActionOr("ai", "createCursorCloudRun", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "createCursorCloudRun", { args }, () =>
         ipcRenderer.invoke(IPC.aiCursorCloudCreateRun, args),
       ),
-    cursorCloudGetLaneSecretNames: async (laneId: string): Promise<string[]> =>
-      callProjectRuntimeActionOr(
+    cursorCloudGetLaneSecretNames: async (laneId: string, pin?: OpenProjectBinding | null): Promise<string[]> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
         "ai",
         "getCursorCloudLaneSecretNames",
         { args: { laneId } },
@@ -6347,8 +6355,9 @@ const adeBridge = {
       ),
     cursorCloudOpenChat: async (
       args: CursorCloudOpenChatRequest,
+      pin?: OpenProjectBinding | null,
     ): Promise<CursorCloudOpenChatResult> =>
-      callProjectRuntimeActionOr("ai", "openCursorCloudChat", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "openCursorCloudChat", { args }, () =>
         ipcRenderer.invoke(IPC.aiCursorCloudOpenChat, args),
       ),
     cursorCloudWatchMirror: async (
@@ -6591,8 +6600,9 @@ const adeBridge = {
       callProjectRuntimeActionOr("ai", "stopCloudAgent", { args }, () =>
         ipcRenderer.invoke(IPC.cloudAgentsStop, args),
       ),
-    launch: async (args: CloudAgentLaunchArgs): Promise<CloudAgentOpenResult> =>
-      callProjectRuntimeActionOr("ai", "launchCloudAgent", { args }, () =>
+    /** `pin`: the machine the lane lives on (the chat's machine); its own sign-in launches. */
+    launch: async (args: CloudAgentLaunchArgs, pin?: OpenProjectBinding | null): Promise<CloudAgentOpenResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "launchCloudAgent", { args }, () =>
         ipcRenderer.invoke(IPC.cloudAgentsLaunch, args),
       ),
     archive: async (args: CloudAgentArchiveArgs): Promise<{ archived: boolean }> =>
@@ -13341,8 +13351,6 @@ const adeBridge = {
   },
   cloud: {
     getStatus: (): Promise<CloudStatus | null> => ipcRenderer.invoke(IPC.cloudGetStatus),
-    createMachine: (requestId: string, machine: CloudCreateMachineArgs): Promise<{ started: boolean }> =>
-      ipcRenderer.invoke(IPC.cloudCreateMachine, { requestId, machine }),
     onCreateProgress: (cb: (progress: CloudCreateProgress) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, progress: CloudCreateProgress) => cb(progress);
       ipcRenderer.on(IPC.cloudCreateProgress, listener);
@@ -13375,6 +13383,8 @@ const adeBridge = {
     setExtraHours: (enabled: boolean): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraHours, { enabled }),
     openCheckout: (plan?: CloudPaidPlanId): Promise<CloudOpenCheckoutResult> => ipcRenderer.invoke(IPC.cloudOpenCheckout, plan ? { plan } : undefined),
     setExtraDisk: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraDisk, choice),
+    getReferral: (): Promise<CloudReferralSummary | null> => ipcRenderer.invoke(IPC.cloudGetReferral),
+    redeemInvite: (code: string): Promise<CloudInviteRedeemOutcome> => ipcRenderer.invoke(IPC.cloudRedeemInvite, { code }),
     openBillingPortal: (): Promise<{ opened: boolean }> => ipcRenderer.invoke(IPC.cloudOpenBillingPortal),
     copyMachine: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }): Promise<{ started: boolean }> =>
       ipcRenderer.invoke(IPC.cloudCopyMachine, args),
@@ -13413,20 +13423,6 @@ const adeBridge = {
       const listener = () => cb();
       ipcRenderer.on(IPC.cloudSignInChanged, listener);
       return () => ipcRenderer.removeListener(IPC.cloudSignInChanged, listener);
-    },
-    readyStatus: (): Promise<CloudReadyStatus | null> => ipcRenderer.invoke(IPC.cloudReadyStatus),
-    readySetProject: (settings: Partial<CloudReadyProjectSettings>): Promise<CloudReadyStatus | null> =>
-      ipcRenderer.invoke(IPC.cloudReadySetProject, { settings }),
-    readyRemoveProject: (identity: string): Promise<CloudReadyStatus | null> =>
-      ipcRenderer.invoke(IPC.cloudReadyRemoveProject, { identity }),
-    readyRetry: (identity: string): Promise<CloudReadyStatus | null> => ipcRenderer.invoke(IPC.cloudReadyRetry, { identity }),
-    readyClaim: (originUrl: string): Promise<CloudReadyClaim | null> => ipcRenderer.invoke(IPC.cloudReadyClaim, { originUrl }),
-    readyRelease: (instanceId: string, claimToken: string): Promise<{ released: boolean } | null> =>
-      ipcRenderer.invoke(IPC.cloudReadyRelease, { instanceId, claimToken }),
-    onReadyStatus: (cb: (status: CloudReadyStatus) => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, status: CloudReadyStatus) => cb(status);
-      ipcRenderer.on(IPC.cloudReadyStatusChanged, listener);
-      return () => ipcRenderer.removeListener(IPC.cloudReadyStatusChanged, listener);
     },
   },
   /**

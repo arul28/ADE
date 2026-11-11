@@ -35,6 +35,10 @@ export const SETTINGS_TAB_IDS = [
   // GitHub, Linear, Jira and the MCP servers, on one page. It took in the
   // MCP servers tab; that id aliases here.
   "integrations",
+  // ADE Cloud: the account's plan, hours, disk, cloud lanes and the sign-ins
+  // they use. Its entries keep their `integrations.ade-cloud*` ids, so every
+  // link made while it was an Integrations page still lands.
+  "ade-cloud",
   "ade-mcp",
   "notifications",
   "appearance",
@@ -157,7 +161,7 @@ export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
  * You pages that follow no machine at all: the account's own data, read
  * through this desktop's brain. They show no "settings for <remote>" banner.
  */
-export const ACCOUNT_ONLY_TAB_IDS: readonly SettingsTabId[] = ["ade-mcp"];
+export const ACCOUNT_ONLY_TAB_IDS: readonly SettingsTabId[] = ["ade-mcp", "ade-cloud"];
 
 export function isAccountOnlyTab(tab: SettingsTabId): boolean {
   return ACCOUNT_ONLY_TAB_IDS.includes(tab);
@@ -187,6 +191,9 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // MCP servers (your account), as one grid of what ADE connects to. A tile
   // opens its own page.
   { id: "integrations", label: "Integrations", description: "GitHub, Linear, Jira and MCP servers: the services ADE and your agents use.", group: "app" },
+  // Shown only to an account ADE Cloud lets in: every entry on it is an ADE
+  // Cloud entry, and those exist only with access (`isSettingAvailable`).
+  { id: "ade-cloud", label: "ADE Cloud", description: "Your plan, hours, disk and cloud lanes, the sizes, and the sign-ins your cloud computers use.", group: "app" },
   // One MCP server for the account: one URL reaches every computer you
   // include. The id stays `ade-mcp`, so links from when it was a Computer page
   // still land here.
@@ -1582,7 +1589,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
       // The machines themselves live in Your computers; the page header opens it.
       "sleep", "wake", "resize", "back up", "backup", "delete box", "hours", "plan", "extra hours", "billing", "suspended",
     ],
-    tab: "integrations",
+    tab: "ade-cloud",
     anchor: "cloud-connection",
     // The account's cloud machines.
     scope: "account",
@@ -1593,7 +1600,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.ade-cloud-sign-ins",
     label: "Sign-ins on ADE Cloud",
     keywords: ["sign in", "sign-in", "login", "api key", "token", "claude", "codex", "cursor", "droid", "grok", "copilot", "devin", "muse", "openrouter", "new machine", "cloud machine"],
-    tab: "integrations",
+    tab: "ade-cloud",
     anchor: "cloud-sign-ins",
     // The provider sign-ins ADE Cloud uses: one line and one off switch (Settings › Providers › ADE Cloud has the rest).
     scope: "account",
@@ -1601,23 +1608,34 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "ADE Cloud",
   },
   {
-    id: "integrations.ade-cloud-ready",
-    label: "ADE Cloud ready machine",
-    keywords: ["ready machine", "keep a machine ready", "warm", "prepared", "seed", "setup", "docker", "fast start", "cloud chat"],
-    tab: "integrations",
-    anchor: "cloud-ready",
-    // Which projects keep a machine ready, in the account vault.
+    id: "integrations.ade-cloud-spending",
+    label: "ADE Cloud lanes and computers",
+    keywords: ["machines", "computers", "cloud lanes", "disk", "free up space", "clear caches", "delete lane", "change size", "sleep", "awake", "idle"],
+    tab: "ade-cloud",
+    anchor: "cloud-lanes",
+    // Every lane and every computer the account pays for, read from the server.
     scope: "account",
     web: "hidden",
     group: "ADE Cloud",
   },
   {
-    id: "integrations.ade-cloud-spending",
-    label: "ADE Cloud computers and hours",
-    keywords: ["machines", "new machine", "hours", "plan", "extra hours", "saved", "sleep", "auto-sleep", "idle", "cost"],
-    tab: "integrations",
-    anchor: "cloud-machines",
-    // Every machine with this month's spend and what sleeping saved; read from the provider.
+    id: "ade-cloud.plans",
+    label: "ADE Cloud plans and billing",
+    keywords: ["plan", "plans", "upgrade", "plus", "pro", "free", "price", "billing", "extra hours", "extra disk", "manage billing", "subscription", "invoice", "cancel"],
+    tab: "ade-cloud",
+    anchor: "cloud-plan",
+    // The plans side by side, extra hours and extra disk; the account's Stripe subscription.
+    scope: "account",
+    web: "hidden",
+    group: "ADE Cloud",
+  },
+  {
+    id: "ade-cloud.sizes",
+    label: "ADE Cloud sizes",
+    keywords: ["size", "sizes", "small", "medium", "large", "x-large", "cpu", "memory", "ram", "disk", "docker", "android", "default size", "tier"],
+    tab: "ade-cloud",
+    anchor: "cloud-sizes",
+    // The size new cloud lanes start on: an account setting.
     scope: "account",
     web: "hidden",
     group: "ADE Cloud",
@@ -1626,7 +1644,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.ade-cloud-agent-limits",
     label: "What agents may spend on ADE Cloud",
     keywords: ["agent limits", "unattended", "full-auto", "automation", "machines a day", "largest size", "budget", "ask me", "balanced", "hands-off"],
-    tab: "integrations",
+    tab: "ade-cloud",
     anchor: "cloud-agent-limits",
     // What unattended agents may spend alone, and the optional cap, in the account vault.
     scope: "account",
@@ -1977,6 +1995,8 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   // Moved out of Notifications when Activity got its own tab.
   "attention-sounds": "activity.sounds",
   "hide-previews": "activity.hide-details",
+  // Ready machines were removed (Cloud 5): a new lane gets its own computer. Their old link opens the lanes and computers.
+  "cloud-ready": "integrations.ade-cloud-spending",
 };
 
 /** ADE Cloud's settings: they do not exist for an account not on its access list. */
@@ -2171,11 +2191,15 @@ const FIND_SYNONYMS: Record<string, string> = {
   publish: "transcript",
   share: "transcript",
   sharing: "transcript",
+  // "ADE Cloud" is a product, not the stop word "ade" plus "cloud": alone,
+  // "cloud" is a fragment of Cloudflare and Cloudinary and finds them first.
+  "ade-cloud": "ade cloud",
 };
 
 function findWords(query: string): string[] {
   return query
     .toLowerCase()
+    .replace(/\bade[\s-]+cloud\b/g, "ade-cloud")
     .split(/[^a-z0-9.+-]+/)
     .map((word) => word.replace(/^[.+-]+|[.+-]+$/g, ""))
     .filter((word) => word.length > 1 && !FIND_STOP_WORDS.has(word))
@@ -2185,9 +2209,13 @@ function findWords(query: string): string[] {
 /** `providers` finds `provider`, `notifications` finds `notification`. */
 function wordHits(haystack: string, word: string): boolean {
   // "pr" and "ui" are words, not fragments: inside "provider" they mean nothing.
-  if (word.length <= 3) return ` ${haystack.replace(/[^a-z0-9]+/g, " ")} `.includes(` ${word} `);
+  if (word.length <= 3) return wholeWordHits(haystack, word);
   if (haystack.includes(word)) return true;
   return word.length > 3 && word.endsWith("s") && haystack.includes(word.slice(0, -1));
+}
+
+function wholeWordHits(haystack: string, word: string): boolean {
+  return ` ${haystack.replace(/[^a-z0-9]+/g, " ")} `.includes(` ${word.replace(/[^a-z0-9]+/g, " ")} `);
 }
 
 type FindRow = { entry: SettingEntry; label: string; tab: string; group: string; keywords: string };
@@ -2234,11 +2262,14 @@ export function findSettingsEntries(
       // A word that IS the page's name ("providers") names the page; then a
       // word in the card's own title, its page, its section, its search terms.
       const hit = row.tab === word || row.tab === `${word}s` ? 10
-        : wordHits(row.label, word) ? 8
-          : wordHits(row.tab, word) ? 5
-            : wordHits(row.group, word) ? 3
-              : wordHits(row.keywords, word) ? 2
-                : 0;
+        // The whole word in the title beats it inside another word: "cloud"
+        // is ADE Cloud's before it is Cloudflare's.
+        : wholeWordHits(row.label, word) ? 9
+          : wordHits(row.label, word) ? 8
+            : wordHits(row.tab, word) ? 5
+              : wordHits(row.group, word) ? 3
+                : wordHits(row.keywords, word) ? 2
+                  : 0;
       if (hit > 0) matched += 1;
       score += hit * (rarity.get(word) ?? 0);
     }

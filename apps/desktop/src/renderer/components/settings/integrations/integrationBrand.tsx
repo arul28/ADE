@@ -17,7 +17,11 @@ import { CloudMark, ADE_CLOUD_NAME } from "../../remoteTargets/cloudBrand";
 /** The integrations an agent can ask to connect, and ADE Cloud. */
 export type IntegrationId = ConnectProviderId | "cloud";
 
-export const INTEGRATION_IDS: readonly IntegrationId[] = [...CONNECT_PROVIDER_IDS, "cloud"];
+/**
+ * The Integrations grid. ADE Cloud is not on it: it has its own Settings tab
+ * (`ade-cloud`); its brand entry stays for the tab's links.
+ */
+export const INTEGRATION_IDS: readonly IntegrationId[] = [...CONNECT_PROVIDER_IDS];
 
 export function isIntegrationId(value: string | null | undefined): value is IntegrationId {
   return (INTEGRATION_IDS as readonly unknown[]).includes(value);

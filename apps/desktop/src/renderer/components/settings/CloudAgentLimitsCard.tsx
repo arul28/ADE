@@ -7,12 +7,12 @@ import {
   cloudLimitsPresetOf,
   type CloudAgentLimits,
 } from "../../../shared/adeCloud";
-import { IntegrationCard, IntegrationChoice } from "./integrations/IntegrationChrome";
+import { IntegrationChoice } from "./integrations/IntegrationChrome";
 import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
 
 /**
- * Settings › Integrations › ADE Cloud › What agents may do: what an agent may
+ * Settings › ADE Cloud › What agents may do alone: what an agent may
  * do when nobody is watching (a full-auto chat, an automation), as one yes/no
  * with its limits under Yes (the preset is derived). Account-wide (the account
  * vault), so it asks this desktop's main process with no pin.
@@ -68,16 +68,16 @@ export function CloudAgentLimitsCard() {
   };
 
   return (
-    <IntegrationCard
-      anchor="cloud-agent-limits"
-      span="full"
-      icon={<Robot size={15} weight="fill" />}
-      title="What agents may do"
-      hint="A watched agent always asks in its chat with an Allow / Don't allow card."
-    >
+    <section id="cloud-agent-limits" data-settings-anchor="cloud-agent-limits" className="kit-card adecd-card" aria-label="What agents may do">
+      <header className="kit-card-head">
+        <Robot size={14} />
+        What agents may do alone
+      </header>
+      <div className="kit-card-body adecd-limits">
+      <p className="adecd-signins-lead">An agent you're watching always asks in its chat first. These rules are for a full-auto chat or an automation, when nobody is watching.</p>
       <div className="ade-ig-limit-rows">
         <div className="ade-ig-limit-row">
-          <div><b>When nobody is watching, may agents make or change computers?</b><small>Nobody is watching a full-auto chat or an automation run.</small></div>
+          <div><b>May they make or change computers?</b></div>
           <IntegrationChoice
             label="When nobody is watching, may agents make or change computers?"
             value={unattended == null ? null : unattended ? "yes" : "no"}
@@ -117,10 +117,11 @@ export function CloudAgentLimitsCard() {
         ) : null}
       </div>
 
-      <p className="ade-ig-note"><Lock size={13} weight="fill" /> Always yours to decide: changing a computer's size, keeping a computer awake for good, raising these limits, and deleting a computer an agent didn't make.</p>
+      <p className="adecd-limits-note"><Lock size={12} weight="fill" /> Always yours to decide: changing a computer's size, keeping one awake for good, raising these limits, and deleting a computer an agent didn't make.</p>
       {error ? (
         <Banner layout="inline" model={{ id: "cloud-limits-error", tone: "error", title: "What agents may do", detail: error, actions: [{ label: "Dismiss", onClick: () => setError(null) }] }} />
       ) : null}
-    </IntegrationCard>
+      </div>
+    </section>
   );
 }

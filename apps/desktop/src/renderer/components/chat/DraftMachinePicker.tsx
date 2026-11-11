@@ -3,7 +3,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { DevinLogo } from "../shared/ProviderLogos";
-import { CloudMark, CloudSkyline, type CloudSkylineLane } from "../remoteTargets/cloudBrand";
+import { CloudMark, type CloudSkylineLane } from "../remoteTargets/cloudBrand";
 import { cn } from "../ui/cn";
 import { MENU_ITEM_CLASS, MENU_SCROLL_CLASS, POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { usePortalContainer } from "../ui/portalContainer";
@@ -25,10 +25,7 @@ export type DraftMachineOption = {
   unavailableReason?: string | null;
   /** A second line under the name: what picking it does first ("Clone the project here"). */
   detail?: string | null;
-  /**
-   * ADE Cloud's entry: a tiny skyline of the person's cloud lanes (awake ones
-   * lit) at the row's end. The row has one fixed size, lanes or none.
-   */
+  /** Kept for callers; the menu no longer draws a skyline (an empty one read as a broken image). */
   skyline?: readonly CloudSkylineLane[] | null;
   /**
    * The row's facts are not known yet (ADE Cloud before the first account
@@ -42,18 +39,25 @@ export type DraftMachineOption = {
 
 const CLOUD_VIOLET = "#A78BFA";
 
+/** Every row's icon sits in the same 14px box, so names line up whatever the icon. */
 function machineIcon(option: DraftMachineOption) {
+  let icon;
   if (option.kind === "cloud" && option.cloudProvider === "devin") {
-    return <DevinLogo size={12} className="shrink-0 rounded-[2px]" />;
+    icon = <DevinLogo size={12} className="shrink-0 rounded-[2px]" />;
+  } else if (option.kind === "cloud" && option.cloudProvider === "cloud") {
+    icon = <CloudMark size={13} brand bold />;
+  } else if (option.kind === "cloud") {
+    icon = <CloudArrowUp size={12} weight="fill" className="shrink-0" style={{ color: CLOUD_VIOLET }} aria-hidden />;
+  } else {
+    icon = <DesktopTower size={12} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />;
   }
-  if (option.kind === "cloud" && option.cloudProvider === "cloud") {
-    return <CloudMark size={13} brand />;
-  }
-  return option.kind === "cloud" ? (
-    <CloudArrowUp size={12} weight="fill" className="shrink-0" style={{ color: CLOUD_VIOLET }} aria-hidden />
-  ) : (
-    <DesktopTower size={12} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
-  );
+  return <span className="inline-flex h-[14px] w-[14px] shrink-0 items-center justify-center" aria-hidden>{icon}</span>;
+}
+
+/** The line under a row's name when its caller gave none, so every row has the same two lines. */
+function fallbackLine(option: DraftMachineOption): string {
+  if (option.kind === "cloud") return option.cloudProvider === "cloud" ? "A computer for each lane" : "Runs in the cloud";
+  return "Connected";
 }
 
 /**
@@ -198,9 +202,6 @@ export function DraftMachinePicker({
     triggerAriaLabel = `${triggerLabel}, current machine unavailable; fallback ${displayed.name}`;
   }
   const hasCloudOption = machines.some((machine) => machine.kind === "cloud");
-  // The width depends on whether a skyline row exists, never on its data, so
-  // the menu keeps one width while the lane list updates.
-  const hasSkylineRow = machines.some((machine) => machine.skyline != null);
   const adeCloudSelected = selected?.kind === "cloud" && selected.cloudProvider === "cloud";
   const cloudNames = [
     ...(machines.some((machine) => machine.kind === "cloud" && machine.cloudProvider === "cloud") ? ["ADE Cloud"] : []),
@@ -265,7 +266,6 @@ export function DraftMachinePicker({
               open
                 ? "border-fg/[0.12] bg-fg/[0.06] text-fg/85"
                 : "border-fg/[0.07] bg-fg/[0.03] text-muted-fg/75 hover:bg-fg/[0.06] hover:text-fg/85",
-              adeCloudSelected && "adec-pill",
               disabled && "cursor-not-allowed opacity-45",
             )}
           >
@@ -319,7 +319,7 @@ export function DraftMachinePicker({
             // the next real focus still shows the tooltip.
             queueMicrotask(() => { returningFocusRef.current = false; });
           }}
-          className={cn(POPOVER_SURFACE_CLASS, MENU_SCROLL_CLASS, hasSkylineRow ? "w-[264px]" : "w-[220px]", "p-1 font-sans text-[11px] text-fg/82")}
+          className={cn(POPOVER_SURFACE_CLASS, MENU_SCROLL_CLASS, "w-[272px] p-1 font-sans text-[11px] text-fg/82")}
           style={{ zIndex: portalContainer ? Z_LAYERS.dialogPopover : Z_LAYERS.popover }}
           side={side}
           align="start"
@@ -342,10 +342,12 @@ export function DraftMachinePicker({
                   }}
                   onKeyDown={moveAmongRows}
                 >
-                  <Scales size={12} weight="duotone" className="mt-[1px] shrink-0 text-muted-fg/80" aria-hidden />
+                  <span className="mt-[1px] inline-flex h-[14px] w-[14px] shrink-0 items-center justify-center" aria-hidden>
+                    <Scales size={12} weight="duotone" className="text-muted-fg/80" />
+                  </span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate">Least loaded</span>
-                    <span className="block truncate text-[10px] tabular-nums text-muted-fg/60">{autoPick.summary}</span>
+                    <span className="block truncate text-[10px] tabular-nums text-muted-fg/60" title={autoPick.summary}>{autoPick.summary}</span>
                   </span>
                 </DropdownMenu.Item>
               </SmartTooltip>
@@ -361,7 +363,8 @@ export function DraftMachinePicker({
             {machines.map((machine) => {
               const active = machine.id === selectedMachineId;
               const reason = machine.unavailableReason?.trim() || null;
-              const secondLine = machine.detail?.trim() || null;
+              // A row that can't be picked says why on its second line, not only on hover.
+              const secondLine = reason ?? (machine.detail?.trim() || null);
               const row = (
                 <DropdownMenu.RadioItem
                   asChild
@@ -369,12 +372,9 @@ export function DraftMachinePicker({
                   disabled={Boolean(reason)}
                   className={cn(
                     MENU_ITEM_CLASS,
-                    // Full width, text at the start: the skyline and the check
-                    // sit at the row's end whatever the text says, and the
-                    // highlight covers the whole row.
-                    "w-full text-left text-[11px]",
-                    machine.skyline != null && "min-h-[38px]",
-                    active ? "text-fg/90" : "text-fg/65",
+                    // Full width, text at the start, one height for every row.
+                    "min-h-[36px] w-full items-start text-left text-[11px]",
+                    active ? "text-fg/90" : "text-fg/70",
                   )}
                 >
                   <button
@@ -382,24 +382,20 @@ export function DraftMachinePicker({
                     disabled={Boolean(reason)}
                     onKeyDown={moveAmongRows}
                   >
-                    {machineIcon(machine)}
-                    {secondLine || machine.detailPending ? (
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate">{machine.name}</span>
-                        <span className="block truncate text-[10px] tabular-nums text-muted-fg/60" aria-hidden={secondLine ? undefined : true}>
-                          {secondLine ?? "\u00a0"}
-                        </span>
+                    <span className="mt-[1px] flex shrink-0">{machineIcon(machine)}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium">{machine.name}</span>
+                      <span
+                        className={cn("block truncate text-[10px] tabular-nums", reason ? "text-amber-300/70" : "text-muted-fg/60")}
+                        title={secondLine ?? undefined}
+                      >
+                        {machine.detailPending && !secondLine ? "\u00a0" : secondLine ?? fallbackLine(machine)}
                       </span>
-                    ) : (
-                      <span className="min-w-0 flex-1 truncate">{machine.name}</span>
-                    )}
-                    {machine.skyline != null ? (
-                      <CloudSkyline lanes={machine.detailPending ? [] : machine.skyline} className={machine.detailPending ? "invisible" : undefined} />
-                    ) : null}
+                    </span>
                     {/* The check keeps its place when not shown, so names never shift. */}
-                    <span className="flex w-[11px] shrink-0 justify-end">
+                    <span className="mt-[2px] flex w-[11px] shrink-0 justify-end">
                       <DropdownMenu.ItemIndicator>
-                        <Check size={11} weight="bold" className={cn("shrink-0", machine.skyline != null && "adec-check")} aria-hidden />
+                        <Check size={11} weight="bold" className="shrink-0" aria-hidden />
                       </DropdownMenu.ItemIndicator>
                     </span>
                   </button>
