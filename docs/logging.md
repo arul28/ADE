@@ -727,7 +727,9 @@ Server log lines (Worker logs only, `logCloud`) for plans and cost:
 `cloud.plan_changed` (from, to),
 `cloud.daily_cost_report` (totals only), `cloud.owner_alert` (an alarm),
 `cloud.owner_limit_unset` (once a day while no limit is set),
-`cloud.owner_limit_reached`, `cloud.extra_disk_capped` (a day of extra disk
+`cloud.owner_limit_reached`, `cloud.owner_cost_step` (the month's estimate
+passed another $50 below the limit: step, estimate, limit; one owner email),
+`cloud.extra_disk_capped` (a day of extra disk
 billed only up to the person's monthly limit), and
 `cloud.analytics_capture_failed`.
 

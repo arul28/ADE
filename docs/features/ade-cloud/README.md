@@ -223,6 +223,16 @@ daily run also writes `cloud_account_days` (cost and income per account),
 raises alarms (a paid account that costs more than it pays, a free one past
 $3 a month, a day at twice the week's mean) and emails the owner the report.
 
+Below the limit, the owner check also emails the owner once each time this
+calendar month's estimate passes another $50 (`OWNER_COST_STEP_USD`): the step,
+the estimate, the limit and how far away it is, and the three accounts that
+cost the most this month. A jump over several steps sends one email, for the
+highest. The step at or above the limit is left to the limit's own email.
+`cloud_settings.owner_cost_step_alert` keeps the month and the last step
+(`2026-11:150`); a new month starts again at $50. The check claims the step
+with a conditional write before it sends, so two checks at once send one
+email, and a send that fails gives the step back for the next check.
+
 ## Stored data
 
 Account vault items, scope `all`, kind `integration`: `cloud-budget` (agent
