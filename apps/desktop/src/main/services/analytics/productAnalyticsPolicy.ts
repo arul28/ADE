@@ -164,6 +164,7 @@ const STRING_PROPERTIES = new Set([
   "tool_error_kind", "crash_reason", "count_bucket",
   "action_domain", "error_code", "refusal_code", "brain_action", "expected_kind", "cause",
   "kind", "severity", "emulator_count", "top_table", "ram_gb_bucket",
+  "heap_mb_bucket", "heap_pct_bucket", "transcript_bucket",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
@@ -178,7 +179,7 @@ const NUMBER_PROPERTIES = new Set([
 ]);
 const BOOLEAN_PROPERTIES = new Set([
   "recoverable", "recovered", "paired", "cached_data", "is_packaged", "native_staging_completed",
-  "dev_brain_running",
+  "dev_brain_running", "replay_active",
 ]);
 
 // Actions emitted only by daemon services (not user-mutation ledger rows) that
@@ -508,7 +509,14 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   // `reason` is Electron's own closed enum (crashed/oom/killed/launch-failed/…);
   // `recovered` says whether the retry budget still allowed a reload. No URL, no
   // window title, no exit detail.
-  ade_renderer_recovered: new Set(["crash_reason", "recovered"]),
+  // What the window held at its last memory snapshot, as closed buckets: the
+  // heap, its share of the limit, how long the window was open
+  // (`duration_bucket`), open chat panes, the largest loaded transcript, and
+  // whether session replay was recording. Exact numbers go to Sentry only.
+  ade_renderer_recovered: new Set([
+    "crash_reason", "recovered", "heap_mb_bucket", "heap_pct_bucket", "duration_bucket",
+    "chat_session_count", "transcript_bucket", "replay_active",
+  ]),
   ade_publish_failing: new Set(["failing_minutes", "leg", "code", "cause"]),
   ade_relay_suppressed: new Set(["attempt", "code"]),
   ade_account_session_unreadable: new Set(["code"]),
@@ -757,6 +765,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   // Bucketed, never a raw count: a fleet that fails to stop must not become a
   // high-cardinality dimension.
   count_bucket: new Set(["1", "2_5", "6_plus"]),
+  heap_mb_bucket: new Set(["under_512", "512_1024", "1024_2048", "2048_3072", "3072_plus", "unknown"]),
+  heap_pct_bucket: new Set(["under_50", "50_75", "75_90", "90_plus", "unknown"]),
+  transcript_bucket: new Set(["none", "under_1k", "1k_5k", "5k_20k", "20k_plus", "unknown"]),
   route_kind: new Set(["desktop", "web"]),
   connection_state: new Set(["connected", "disconnected", "pairing", "direct", "relay", "error"]),
   drop_reason: new Set([

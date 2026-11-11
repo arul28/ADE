@@ -686,4 +686,126 @@ describe("ade rpc --stdio daemon bridge", () => {
       if (!realDaemon.killed) realDaemon.kill();
     }
   }, DAEMON_TEST_TIMEOUT_MS);
+
+  /**
+   * A remote desktop reaches a machine's brain only through this proxy
+   * (`ade --socket … rpc --stdio` over SSH). The brain's typed answers must
+   * cross it whole, and a brain that drops the socket under pending calls must
+   * read as a lost connection. Before, the proxy flattened the first into a
+   * bare message and filed the second, for every pending call at once, as
+   * "Internal error (ref …)" whose cause only reached the proxy's own stderr.
+   */
+  it.skipIf(process.platform === "win32")("passes the brain's typed errors through, and names a dropped brain socket", async () => {
+    const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const cliPath = path.join(packageRoot, "src", "cli.ts");
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-errors-"));
+    // TCP, so the brain can reset the connection the way a crashed process's
+    // socket does; the proxy treats both transports the same.
+    const port = await getFreeTcpPort();
+    const socketPath = `tcp://127.0.0.1:${port}`;
+    const brainSockets = new Set<net.Socket>();
+    const heldIds: unknown[] = [];
+    // The brain the relay talks to "dies": its pid is one that has exited, and
+    // its log's last lines say why (with a path that must not cross).
+    const exited = spawn(process.execPath, ["-e", ""]);
+    await new Promise((resolve) => exited.once("exit", resolve));
+    const deadBrainPid = exited.pid!;
+    const runtimeDir = resolveMachineAdeLayout({ ...process.env, ADE_HOME: adeHome }).runtimeDir;
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    fs.writeFileSync(path.join(runtimeDir, "brain.jsonl"), [
+      JSON.stringify({ ts: "2026-11-11T10:00:00.000Z", level: "info", event: "brain.started" }),
+      JSON.stringify({ ts: "2026-11-11T10:09:59.000Z", level: "error", event: "process.uncaught_exception", err: { message: "ENOSPC: no space left on device, write '/home/tiger/.ade/ade.db-wal'" } }),
+      "",
+    ].join("\n"));
+    const brain = net.createServer((socket) => {
+      brainSockets.add(socket);
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        for (let newline = buffer.indexOf("\n"); newline >= 0; newline = buffer.indexOf("\n")) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          const request = JSON.parse(line) as { id?: unknown; method?: string };
+          if (request.id === undefined) continue;
+          const reply = (body: Record<string, unknown>) =>
+            socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...body })}\n`);
+          if (request.method === "ade/initialize") {
+            reply({ result: { runtimeInfo: { version: "2.0.0", multiProject: true, pid: deadBrainPid, defaultRole: "cto" } } });
+          } else if (request.method === "typed") {
+            reply({ error: { code: -32010, message: "Not allowed here.", data: { code: "policy" }, expected: "user" } });
+          } else {
+            heldIds.push(request.id);
+            if (heldIds.length === 3) socket.resetAndDestroy();
+          }
+        }
+      });
+      socket.on("error", () => {});
+    });
+    await new Promise<void>((resolve) => brain.listen(port, "127.0.0.1", resolve));
+    const child = spawn(process.execPath, [cliPath, "--socket", socketPath, "rpc", "--stdio"], {
+      cwd: packageRoot,
+      env: { ...process.env, ADE_HOME: adeHome, ADE_RUNTIME_SOCKET_PATH: socketPath, ADE_CLI_VERSION: "2.0.0", ADE_DEFAULT_ROLE: "cto", NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS) },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const replies = new Map<number, { result?: unknown; error?: { code?: number; message?: string; data?: unknown; expected?: unknown } }>();
+    let stdout = "";
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    const replied = (id: number) => new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`No reply to ${id}. stderr=${stderr}`)), REQUEST_TIMEOUT_MS);
+      const check = () => {
+        if (!replies.has(id)) return;
+        clearTimeout(timer);
+        child.stdout.off("data", check);
+        resolve();
+      };
+      child.stdout.on("data", check);
+      check();
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+      for (let newline = stdout.indexOf("\n"); newline >= 0; newline = stdout.indexOf("\n")) {
+        const line = stdout.slice(0, newline).trim();
+        stdout = stdout.slice(newline + 1);
+        if (!line) continue;
+        const parsed = JSON.parse(line) as { id?: number };
+        if (typeof parsed.id === "number") replies.set(parsed.id, parsed as never);
+      }
+    });
+    const send = (id: number, method: string) =>
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params: {} })}\n`);
+    try {
+      send(1, "ade/initialize");
+      await replied(1);
+      send(2, "typed");
+      await replied(2);
+      expect(replies.get(2)?.error).toEqual({
+        code: -32010,
+        message: "Not allowed here.",
+        data: { code: "policy" },
+        expected: "user",
+      });
+
+      for (const id of [3, 4, 5]) send(id, "ade/actions/call");
+      await Promise.all([replied(3), replied(4), replied(5)]);
+      for (const id of [3, 4, 5]) {
+        const error = replies.get(id)?.error;
+        expect(error?.message).toMatch(/^brain_connection_lost: ADE brain connection lost: the brain on this machine closed its socket \(ECONNRESET\) before it answered\.$/);
+        expect(error?.data).toMatchObject({
+          code: "brain_connection_lost",
+          socketError: "ECONNRESET",
+          brainState: "exited",
+          brainLogTail: [
+            "2026-11-11T10:00:00.000Z info brain.started",
+            expect.stringMatching(/^2026-11-11T10:09:59\.000Z error process\.uncaught_exception ENOSPC: no space left on device, write '\[path\]'$/),
+          ],
+        });
+      }
+    } finally {
+      child.kill();
+      for (const socket of brainSockets) socket.destroy();
+      brain.close();
+    }
+  }, DAEMON_TEST_TIMEOUT_MS);
 });

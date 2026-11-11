@@ -83,6 +83,26 @@ describe("readChatEventsAfterSequence", () => {
     const exact = await readChatEventsAfterSequence({ transcriptPath: file, sessionId: SESSION, sinceSequence: 4 });
     expect(exact.status === "ok" && exact.events.map((event) => event.sequence)).toEqual([5, 6]);
   });
+
+  // A row too large to page reaches the reader as a display-only stand-in
+  // with no sequence. A client that lacks the row must get a gap (so it takes
+  // a snapshot), never an "ok" with a silent hole; a client past it resumes.
+  it.each([
+    { name: "client before the big row", rows: [1, 2, "big3", 4], since: 2, expected: "gap" },
+    { name: "fresh client", rows: ["big1", 2], since: 0, expected: "gap" },
+    { name: "client already past the big row", rows: [1, "big2", 3, 4], since: 3, expected: [4] },
+    { name: "client current with a big newest row", rows: [1, "big2"], since: 2, expected: [] },
+  ])("resumes across a row too large to page: $name", async ({ rows, since, expected }) => {
+    fs.writeFileSync(file, rows.map((entry) => typeof entry === "number"
+      ? text(entry)
+      : text(Number(entry.slice(3)), 3_000_000)).join(""));
+    const read = await readChatEventsAfterSequence({ transcriptPath: file, sessionId: SESSION, sinceSequence: since });
+    if (expected === "gap") {
+      expect(read).toEqual({ status: "gap", reason: "row_too_large" });
+    } else {
+      expect(read.status === "ok" && read.events.map((event) => event.sequence)).toEqual(expected);
+    }
+  });
 });
 
 describe("readTurnAlignedTranscriptTail", () => {

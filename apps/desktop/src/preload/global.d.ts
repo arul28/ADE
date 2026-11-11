@@ -1393,6 +1393,8 @@ declare global {
           event: string,
           payload?: Record<string, unknown>,
         ) => void;
+        /** This window's memory snapshot (`renderer/lib/rendererMemorySnapshot.ts`). */
+        reportRendererMemory?: (snapshot: Record<string, unknown>) => void;
       };
       storage: {
         getPressure: () => Promise<DiskPressureSnapshot>;

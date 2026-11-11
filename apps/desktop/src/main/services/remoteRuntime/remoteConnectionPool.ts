@@ -84,6 +84,7 @@ import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import { runtimeActionReplyError } from "../../../shared/runtimeActionReplyError";
 import { compareUpdateVersions } from "../../../shared/updateVersions";
 import { isPeerVersionGapMessage } from "../../../shared/sentry/expectedFailure";
+import type { RemoteEventSetupPhase } from "./remoteEventSetup";
 
 type PoolEntryBase = {
   client: RuntimeRpcClient;
@@ -211,6 +212,13 @@ const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
  * notice a peer that disappeared during sleep, while still allowing a cold
  * remote runtime a reasonable response window. */
 export const REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS = 30_000;
+/**
+ * A project list read on a live connection. It is a registry read on the other
+ * machine, as cheap as an event read, so it gets the same window. On the RPC
+ * client's 10 minute default, an event poll that first had to learn the
+ * machine's projects waited ten minutes on a host that never answered.
+ */
+const REMOTE_RUNTIME_PROJECT_LIST_TIMEOUT_MS = REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS;
 const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["file.deletePath", FILE_DELETE_TIMEOUT_MS],
   // A forced refresh waits on the other machine's ACP auth probes; see
@@ -820,14 +828,17 @@ export class RemoteConnectionPool {
 
   async projects(targetId: string): Promise<unknown> {
     const entry = await this.requireEntry(targetId);
-    return await entry.client.call("projects.list", {});
+    return await entry.client.call("projects.list", {}, { timeoutMs: REMOTE_RUNTIME_PROJECT_LIST_TIMEOUT_MS });
   }
 
-  async projectsForTarget(target: RemoteRuntimeTarget): Promise<unknown> {
+  async projectsForTarget(
+    target: RemoteRuntimeTarget,
+    options: { onPhase?: (phase: RemoteEventSetupPhase) => void } = {},
+  ): Promise<unknown> {
     return await this.withEntryForTarget(
       target,
-      (entry) => entry.client.call("projects.list", {}),
-      { retryOnConnectionError: true },
+      (entry) => entry.client.call("projects.list", {}, { timeoutMs: REMOTE_RUNTIME_PROJECT_LIST_TIMEOUT_MS }),
+      { retryOnConnectionError: true, onPhase: options.onPhase, operationPhase: "list_projects" },
     );
   }
 
@@ -1350,6 +1361,7 @@ export class RemoteConnectionPool {
     target: RemoteRuntimeTarget,
     projectId: string,
     request: RemoteRuntimeStreamEventsRequest = {},
+    options: { onPhase?: (phase: RemoteEventSetupPhase) => void } = {},
   ): Promise<RemoteRuntimeStreamEventsResult> {
     return await this.withEntryForTarget(
       target,
@@ -1357,6 +1369,8 @@ export class RemoteConnectionPool {
       {
         retryOnConnectionError: true,
         isRetryableError: isRemoteRuntimeStreamFailure,
+        onPhase: options.onPhase,
+        operationPhase: "read",
       },
     );
   }
@@ -1387,6 +1401,7 @@ export class RemoteConnectionPool {
     onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
     onEnded?: () => void,
     onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
+    options: { onPhase?: (phase: RemoteEventSetupPhase) => void } = {},
   ): Promise<() => void> {
     return await this.withEntryForTarget(
       target,
@@ -1402,6 +1417,8 @@ export class RemoteConnectionPool {
       {
         retryOnConnectionError: true,
         isRetryableError: isRemoteRuntimeStreamFailure,
+        onPhase: options.onPhase,
+        operationPhase: "subscribe",
       },
     );
   }
@@ -1530,9 +1547,16 @@ export class RemoteConnectionPool {
     options: {
       retryOnConnectionError: boolean;
       isRetryableError?: (error: unknown) => boolean;
+      /** Told which step the call is waiting on, so a caller's own deadline can name it. */
+      onPhase?: (phase: RemoteEventSetupPhase) => void;
+      /** The step `operation` is, for `onPhase`. */
+      operationPhase?: RemoteEventSetupPhase;
     },
   ): Promise<T> {
+    const notePhase = (phase: RemoteEventSetupPhase) => options.onPhase?.(phase);
+    notePhase("connect");
     const entry = await this.connectEntry(target);
+    notePhase(options.operationPhase ?? "read");
     const disconnectGeneration =
       this.disconnectGenerationByTargetId.get(target.id) ?? 0;
     const droppedElsewhere = () =>
@@ -1545,12 +1569,9 @@ export class RemoteConnectionPool {
       // just be busy (a large folder being removed held a Windows brain's
       // file I/O for 30 s), and dropping the connection would fail every
       // other call on it, including actions that then finished there.
-      if (
-        !droppedElsewhere()
-        && isRuntimeTransportTimeoutError(error)
-        && await this.connectionStillAnswers(entry)
-      ) {
-        throw error;
+      if (!droppedElsewhere() && isRuntimeTransportTimeoutError(error)) {
+        notePhase("liveness_probe");
+        if (await this.connectionStillAnswers(entry)) throw error;
       }
       if (droppedElsewhere()) {
         // Another call dropped this connection, or the person disconnected.
@@ -1563,6 +1584,7 @@ export class RemoteConnectionPool {
       this.disconnect(target.id);
       const reconnectTarget = this.registry.get(target.id) ?? target;
       let nextEntry: PoolEntry;
+      notePhase("reconnect");
       try {
         nextEntry = await this.connectEntry(reconnectTarget);
       } catch (reconnectError) {
@@ -1570,6 +1592,7 @@ export class RemoteConnectionPool {
         throw new RemoteActionOutcomeUnknownError(false);
       }
       if (options.retryOnConnectionError) {
+        notePhase(options.operationPhase ?? "read");
         return await operation(nextEntry);
       }
       throw new RemoteActionOutcomeUnknownError(true);

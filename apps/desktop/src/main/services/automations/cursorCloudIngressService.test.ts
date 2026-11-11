@@ -8,6 +8,7 @@ import {
 } from "./cursorCloudIngressService";
 import {
   CURSOR_CLOUD_RELAY_CONFIGURED_REF,
+  CURSOR_CLOUD_RELAY_LAST_ERROR_REF,
   CURSOR_CLOUD_RELAY_SECRET_REF,
   CURSOR_CLOUD_WEBHOOK_SECRET_CREDENTIAL_KEY,
   CURSOR_CLOUD_WEBHOOK_SECRET_ID_CREDENTIAL_KEY,
@@ -205,6 +206,25 @@ describe("cursorCloudIngressService", () => {
       deliveryId: "delivery-1",
     }));
     expect(harness.cursorBySource.get("cursor-relay")).toBe("seq:1");
+  });
+
+  it("settles a failed poll when the project database cannot record the error", async () => {
+    // start() and its timer call `void pollNow()`: a rejection here is unhandled.
+    const harness = createHarness({
+      fetchImpl: vi.fn(async () => { throw new Error("relay down"); }) as unknown as typeof fetch,
+    });
+    configureReady(harness);
+    const setJson = harness.db.setJson.bind(harness.db);
+    harness.db.setJson = (key, value) => {
+      if (key === CURSOR_CLOUD_RELAY_LAST_ERROR_REF) throw new Error("project folder is not answering");
+      setJson(key, value);
+    };
+
+    await expect(harness.service.pollNow()).resolves.toBeUndefined();
+    expect(harness.deps.logger.warn).toHaveBeenCalledWith(
+      "automations.cursor_cloud_relay_poll_failed",
+      { error: "relay down" },
+    );
   });
 
   it.each([

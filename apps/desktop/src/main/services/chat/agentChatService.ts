@@ -16749,25 +16749,15 @@ export function createAgentChatService(args: {
     const maxRetainedFailureEvents = 2_000;
     const maxRetainedChars = 4_000_000;
     for (let pageCount = 0; cursor > 0 && pageCount < 8; pageCount += 1) {
-      let page: TranscriptHistoryPageRead;
-      try {
-        page = await readTranscriptHistoryPage({
-          transcriptPath,
-          sessionId,
-          beforeOffset: cursor,
-          maxBytes: CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
-          signal,
-        });
-      } catch (error) {
-        if (
-          error instanceof Error
-          && error.message === "chat_history_row_too_large"
-          && newestFirst.length > 0
-        ) {
-          break;
-        }
-        throw error;
-      }
+      // A row too large to page comes back as a `system_notice` stand-in
+      // (not conversational, so it folds into the status stand-in below).
+      const page = await readTranscriptHistoryPage({
+        transcriptPath,
+        sessionId,
+        beforeOffset: cursor,
+        maxBytes: CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
+        signal,
+      });
       cursor = page.startOffset;
       for (let index = page.envelopes.length - 1; index >= 0; index -= 1) {
         const envelope = page.envelopes[index]!;

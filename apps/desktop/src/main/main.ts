@@ -472,6 +472,7 @@ import {
   createRendererCrashRecoveryBudget,
   isRecoverableRenderProcessGone,
 } from "./rendererCrashRecovery";
+import { forgetRendererMemory, rendererMemoryAnalytics, takeRendererMemory } from "./rendererMemoryLedger";
 import { isWindowLoadTargetGone } from "./windowLoadTarget";
 import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
@@ -1028,7 +1029,7 @@ async function createWindow(args: {
    * Reports a lost renderer as a product fact. Optional so window creation
    * stays usable before the analytics service exists.
    */
-  onRendererRecovery?: (outcome: { crash_reason: string; recovered: boolean }) => void;
+  onRendererRecovery?: (outcome: { crash_reason: string; recovered: boolean } & ReturnType<typeof rendererMemoryAnalytics>) => void;
   /**
    * The renderer is gone for good: it kept crashing until the recovery budget
    * ran out, or it never loaded. The "ADE could not start" window takes over.
@@ -1232,17 +1233,35 @@ async function createWindow(args: {
 
   const rendererRecoveryBudget = createRendererCrashRecoveryBudget();
 
+  const webContentsId = win.webContents.id;
+  win.once("closed", () => forgetRendererMemory(webContentsId));
   win.webContents.on("render-process-gone", (_event, details) => {
     // `killed` is the renderer ended from outside (SIGTERM on macOS, Windows
     // ending it at sign-out or shutdown, 0xC000013A): logged, recovered, not
     // an issue. A crash, an OOM or a failed launch stays one.
     const level = details.reason === "killed" ? "warn" : "error";
+    // What the renderer last said it held (every 30 s while visible). The
+    // line goes to Sentry with these numbers; analytics gets only buckets.
+    const memory = takeRendererMemory(webContentsId);
     args.logger?.[level]("window.render_process_gone", {
       windowId: win.id,
       reason: details.reason,
       exitCode: details.exitCode,
       url: win.webContents.getURL(),
+      ...(memory
+        ? {
+            lastHeapUsedMb: memory.heapUsedMb,
+            peakHeapUsedMb: memory.peakHeapUsedMb,
+            heapLimitMb: memory.heapLimitMb,
+            openForSec: memory.openForSec,
+            openChatPanes: memory.openChatPanes,
+            largestTranscriptEvents: memory.largestTranscriptEvents,
+            replayActive: memory.replayActive,
+            snapshotAgeSec: Math.round((Date.now() - memory.reportedAtMs) / 1000),
+          }
+        : { memorySnapshot: "none" }),
     });
+    const memoryBuckets = rendererMemoryAnalytics(memory);
 
     // Monotonic on purpose: the budget is a rolling time window, and a wall-clock
     // correction mid-crash-storm would either free the budget early or freeze it.
@@ -1256,7 +1275,7 @@ async function createWindow(args: {
     const crashReason = coarseRenderProcessGoneReason(details.reason);
     const reportRecovery = (recovered: boolean): void => {
       if (!isRecoverableRenderProcessGone(details.reason)) return;
-      args.onRendererRecovery?.({ crash_reason: crashReason, recovered });
+      args.onRendererRecovery?.({ crash_reason: crashReason, recovered, ...memoryBuckets });
     };
     if (!decision.recover) {
       if (decision.cause === "budget-exhausted") {
@@ -2502,7 +2521,9 @@ app.whenReady().then(async () => {
    * One reporter for every window: a third `createWindow` site that forgets to
    * wire this would silently stop reporting lost renderers.
    */
-  const reportRendererRecovery = (outcome: { crash_reason: string; recovered: boolean }): void => {
+  const reportRendererRecovery = (
+    outcome: { crash_reason: string; recovered: boolean } & ReturnType<typeof rendererMemoryAnalytics>,
+  ): void => {
     productAnalyticsService.captureInternal({
       event: "ade_renderer_recovered",
       surface: "desktop",

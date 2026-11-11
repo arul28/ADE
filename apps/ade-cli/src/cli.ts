@@ -404,6 +404,7 @@ import type {
   ProjectBrowseInput,
 } from "../../desktop/src/shared/types/core";
 import {
+  brainLogPath,
   findListeningWindowsPipe,
   isChannelRuntimePipeName,
   isMachineEndpointName,
@@ -451,6 +452,8 @@ import {
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
 } from "./jsonrpc";
+import { markExpectedFromWire } from "../../desktop/src/shared/expectedError";
+import { scrubFreeTextThenCut } from "../../desktop/src/shared/sentry/scrub";
 import {
   ADE_RPC_AUTH_PARAM,
   generateRpcAuthToken,
@@ -24853,6 +24856,121 @@ function connectSocket(
   });
 }
 
+/**
+ * The brain's own error reply, kept whole: code, message, data and its
+ * expected mark. Flattened to a bare `Error(message)`, every relay of it (the
+ * `ade rpc --stdio` proxy a remote desktop talks through) lost the brain's
+ * code, and the relay's dispatcher could only re-file it under its own codes.
+ */
+function jsonRpcErrorFromReply(error: Record<string, unknown>): JsonRpcError {
+  const code = typeof error.code === "number" && Number.isInteger(error.code)
+    ? error.code
+    : JsonRpcErrorCode.internalError;
+  return markExpectedFromWire(
+    new JsonRpcError(code, asString(error.message) ?? "ADE JSON-RPC request failed.", error.data),
+    error.expected,
+  );
+}
+
+/**
+ * The socket to the brain failed or closed under a request (the brain exited
+ * or reset the connection). A Node socket error carries `errno` and
+ * `syscall`, which a relaying dispatcher must redact, so every pending call
+ * reached the remote desktop as the same "Internal error (ref …)" at the same
+ * instant, with the cause only in the relay's stderr. This is the same failure
+ * as a typed, path-free answer: `brain_connection_lost`, whose text the
+ * desktop already reads as a lost connection. `data` carries what the relay
+ * could see about why (`describeLoss`), because the machine the brain ran on
+ * may have no route to Sentry and the desktop's report is the only one.
+ */
+function brainConnectionLostError(
+  error: Error | null,
+  describeLoss: (() => Record<string, unknown> | null) | null,
+): JsonRpcError {
+  const errno = error ? (error as NodeJS.ErrnoException).code : undefined;
+  const socketError = typeof errno === "string" && /^E[A-Z0-9]+$/.test(errno) ? errno : null;
+  let loss: Record<string, unknown> | null = null;
+  try {
+    loss = describeLoss?.() ?? null;
+  } catch {
+    loss = null;
+  }
+  const message = socketError
+    ? `brain_connection_lost: ADE brain connection lost: the brain on this machine closed its socket (${socketError}) before it answered.`
+    : "brain_connection_lost: ADE brain connection lost: the ADE runtime endpoint closed before it answered.";
+  return new JsonRpcError(JsonRpcErrorCode.internalError, message, {
+    code: "brain_connection_lost",
+    socketError,
+    ...(loss ?? {}),
+  });
+}
+
+/** How many of the brain log's last lines a lost connection carries back. */
+const BRAIN_LOSS_LOG_LINES = 6;
+
+/**
+ * The brain log's last lines, reduced to level, event and a scrubbed error
+ * sentence: no paths, emails or secrets (`scrubFreeTextThenCut`), at most 200
+ * characters each. Reads only the file's last 16 KB, and only after the
+ * connection was already lost.
+ */
+function readRedactedBrainLogTail(logPath: string): string[] {
+  let text = "";
+  try {
+    const fd = fs.openSync(logPath, "r");
+    try {
+      const size = fs.fstatSync(fd).size;
+      const length = Math.min(size, 16 * 1024);
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, size - length);
+      text = buffer.toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return [];
+  }
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean).slice(-BRAIN_LOSS_LOG_LINES);
+  return lines.map((line) => {
+    try {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      const at = typeof record.ts === "string" ? record.ts : typeof record.time === "string" ? record.time : "";
+      const level = typeof record.level === "string" ? record.level : "";
+      const event = typeof record.event === "string" ? record.event : typeof record.msg === "string" ? record.msg : "";
+      const errorValue = record.err ?? record.error ?? record.reason;
+      const errorText = typeof errorValue === "string"
+        ? errorValue
+        : isRecord(errorValue) && typeof errorValue.message === "string" ? errorValue.message : "";
+      return scrubFreeTextThenCut([at, level, event, errorText].filter(Boolean).join(" "), 200);
+    } catch {
+      return scrubFreeTextThenCut(line, 200);
+    }
+  });
+}
+
+/**
+ * What the relay can say about a brain it lost: whether the process it was
+ * talking to is still alive, whether another brain has since taken the
+ * machine's heartbeat (a service manager or watchdog restart), and the brain
+ * log's last lines. The exit code is not knowable here (the brain is not this
+ * process's child); the log's last lines usually say why it stopped.
+ */
+function describeBrainConnectionLoss(brainPid: number | null): Record<string, unknown> {
+  const layout = resolveMachineAdeLayout();
+  const beat = readBrainHeartbeat(layout.runtimeDir);
+  const brainAlive = brainPid != null ? isPidAlive(brainPid) : null;
+  const replaced = beat != null && beat.pid !== brainPid && isPidAlive(beat.pid);
+  return {
+    brainState: brainAlive === true
+      ? "alive"
+      : replaced
+        ? "exited_and_replaced"
+        : brainAlive === false ? "exited" : "unknown",
+    heartbeatAgeSec: beat ? Math.max(0, Math.round((Date.now() - beat.ts) / 1000)) : null,
+    brainLogTail: readRedactedBrainLogTail(brainLogPath(layout)),
+  };
+}
+
 class SocketJsonRpcClient {
   private buffer: Buffer = Buffer.alloc(0);
   private nextId = 1;
@@ -24873,6 +24991,8 @@ class SocketJsonRpcClient {
     (method: string, params: unknown) => void
   >();
   private closeHandlers = new Set<(error: Error) => void>();
+  /** Set by a relay that wants a lost connection explained (`describeBrainConnectionLoss`). */
+  describeLoss: (() => Record<string, unknown> | null) | null = null;
 
   private constructor(
     private readonly socket: net.Socket,
@@ -24881,10 +25001,12 @@ class SocketJsonRpcClient {
   ) {
     socket.on("data", (chunk) => this.onData(Buffer.from(chunk)));
     socket.on("error", (error) =>
-      this.rejectAll(error instanceof Error ? error : new Error(String(error))),
+      this.rejectAll(brainConnectionLostError(error instanceof Error ? error : new Error(String(error)), this.describeLoss)),
     );
     socket.on("close", () =>
-      this.failConnection(new Error("ADE runtime endpoint closed.")),
+      this.failConnection(this.pending.size > 0 || this.describeLoss
+        ? brainConnectionLostError(null, this.describeLoss)
+        : new Error("ADE runtime endpoint closed.")),
     );
   }
 
@@ -24925,7 +25047,7 @@ class SocketJsonRpcClient {
         if (!error) return;
         clearTimeout(timer);
         this.pending.delete(pendingKey);
-        reject(error);
+        reject(brainConnectionLostError(error, this.describeLoss));
       });
     });
   }
@@ -25030,11 +25152,7 @@ class SocketJsonRpcClient {
     this.pending.delete(pendingKey);
     clearTimeout(pending.timer);
     if (isRecord(parsed.error)) {
-      pending.reject(
-        new Error(
-          asString(parsed.error.message) ?? "ADE JSON-RPC request failed.",
-        ),
-      );
+      pending.reject(jsonRpcErrorFromReply(parsed.error));
       return;
     }
     pending.resolve(parsed.result);
@@ -28524,6 +28642,10 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
   let unsubscribeNotifications: (() => void) | null = null;
   try {
     client = await connectMachineRuntimeDaemon(options);
+    // The brain pid the desktop's own `ade/initialize` reports, so a lost
+    // connection can say whether that process is still alive.
+    let brainPid: number | null = null;
+    client.describeLoss = () => describeBrainConnectionLoss(brainPid);
     const handler: JsonRpcHandler = async (request) => {
       const method = typeof request.method === "string" ? request.method : "";
       if (!method) return null;
@@ -28535,7 +28657,12 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
         throw new Error("ADE runtime is not connected.");
       }
       try {
-        return await client.request(method, request.params);
+        const result = await client.request(method, request.params);
+        if (method === "ade/initialize" && isRecord(result) && isRecord(result.runtimeInfo)) {
+          const pid = result.runtimeInfo.pid;
+          if (typeof pid === "number" && Number.isInteger(pid) && pid > 0) brainPid = pid;
+        }
+        return result;
       } catch (error) {
         if (
           (method === "shutdown" || method === "exit") &&

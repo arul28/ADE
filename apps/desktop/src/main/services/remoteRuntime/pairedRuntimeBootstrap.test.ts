@@ -581,4 +581,72 @@ describe("bootstrapPairedRuntime", () => {
       "ws://studio.local:8787/",
     ]);
   });
+
+  it("gives up on a host that opens the socket and says hello but never answers the handshake, and closes it", async () => {
+    // The real client, over a transport whose peer reads every request and
+    // answers none: the shape of a host whose brain is wedged behind a
+    // working sync socket. It used to wait on the client's 10 minute default,
+    // which is the IPC deadline too, so the poll that dialed failed after
+    // 600000ms naming no step.
+    const { RuntimeRpcClient: RealRuntimeRpcClient } = await vi.importActual<typeof import("./runtimeRpcClient")>("./runtimeRpcClient");
+    const { RuntimeRpcClient: MockedRuntimeRpcClient } = await import("./runtimeRpcClient");
+    vi.mocked(MockedRuntimeRpcClient).mockImplementationOnce(
+      ((peer: SyncRuntimeTransport) => new RealRuntimeRpcClient(peer)) as any,
+    );
+    const silent = transport();
+    const closeListeners: Array<() => void> = [];
+    vi.mocked(silent.onClose!).mockImplementation((listener) => {
+      closeListeners.push(listener as () => void);
+    });
+    vi.mocked(silent.close).mockImplementation(() => {
+      for (const listener of closeListeners.splice(0)) listener();
+    });
+    const markEndpointFailed = vi.fn();
+    vi.useFakeTimers();
+    try {
+      let settled = null as { error?: unknown; value?: unknown } | null;
+      void bootstrapPairedRuntime({
+        target,
+        registry: { update: vi.fn(() => target) } as any,
+        pairedStore: {
+          getForReference: vi.fn(() => credentials),
+          get: vi.fn(() => credentials),
+          save: vi.fn(),
+          markEndpointFailed,
+          forgetEndpoint: vi.fn(),
+          markEndpointSucceeded: vi.fn(),
+        } as any,
+        appVersion: "1.0.0",
+        options: { openTransport: vi.fn(async () => silent) },
+      }).then(
+        (value) => { settled = { value }; },
+        (error: unknown) => { settled = { error }; },
+      );
+
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(settled).toBeNull();
+      // The requests did go out; nothing came back.
+      expect(vi.mocked(silent.write).mock.calls.map(([line]) => JSON.parse(String(line)).method)).toEqual([
+        "ade/initialize",
+        "projects.list",
+      ]);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(settled).not.toBeNull();
+      const error = settled!.error;
+      expect(error).toBeInstanceOf(PairedRuntimeTransportUnavailableError);
+      expect((error as Error).message).toBe(
+        "Could not reach Studio: it did not answer the connection handshake. ADE there may be busy or stuck — try again, or restart ADE on that computer.",
+      );
+      expect((error as PairedRuntimeTransportUnavailableError).diagnostic?.attempts).toMatchObject([
+        { kind: "lan", outcome: "failed", failure: "timeout", errorCode: "handshake_timeout" },
+      ]);
+      // The socket is closed and no timer is left behind.
+      expect(silent.close).toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(markEndpointFailed).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

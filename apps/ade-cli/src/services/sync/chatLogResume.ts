@@ -1,5 +1,8 @@
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types";
-import { readTranscriptHistoryPage } from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
+import {
+  isOmittedHistoryRowNotice,
+  readTranscriptHistoryPage,
+} from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
 import { readHistoryFileSize } from "../../../../desktop/src/main/services/storage/historyCompression";
 import { turnAlignedSnapshotStart } from "../../../../desktop/src/shared/chatSnapshotBoundary";
 import { unresolvedApprovalRequestEnvelopes } from "../../../../desktop/src/shared/chatPendingInputRetention";
@@ -21,7 +24,13 @@ export type ChatSequenceResumeGapReason =
   | "unknown_sequence"
   | "ahead_of_log"
   | "resume_too_large"
-  | "non_monotonic";
+  | "non_monotonic"
+  /**
+   * A row after the client's sequence is too large to page. Its stand-in has
+   * no sequence (it is display-only), so a resume would leave a silent hole
+   * in the client's log; the client takes a snapshot instead.
+   */
+  | "row_too_large";
 
 export type ChatSequenceResumeRead =
   | {
@@ -88,6 +97,8 @@ export async function readChatEventsAfterSequence(args: {
   let beforeOffset = size;
   let bytesScanned = 0;
   let anchored = false;
+  /** An omitted-row stand-in was read and no older sequenced row yet. */
+  let omittedRowAbove = false;
 
   while (!anchored) {
     args.signal?.throwIfAborted();
@@ -100,11 +111,26 @@ export async function readChatEventsAfterSequence(args: {
       maxBytes: Math.min(RESUME_PAGE_BYTES, remaining),
       ...(args.signal ? { signal: args.signal } : {}),
     });
-    bytesScanned += beforeOffset - page.startOffset;
+    // An omitted-row page is exactly that one row, and none of its bytes are
+    // delivered, so it does not use up the resume budget.
+    if (!page.envelopes.some(isOmittedHistoryRowNotice)) bytesScanned += beforeOffset - page.startOffset;
     for (let index = page.envelopes.length - 1; index >= 0; index -= 1) {
       const envelope = page.envelopes[index]!;
+      if (isOmittedHistoryRowNotice(envelope)) {
+        // Its stand-in carries no sequence; the next older row decides.
+        omittedRowAbove = true;
+        continue;
+      }
       const sequence = envelopeSequence(envelope);
       if (sequence == null) continue;
+      if (omittedRowAbove) {
+        // Sequences are dense, so the omitted row is `sequence + 1`: the client
+        // lacks it exactly when this row is not older than the client's last.
+        if (sequence >= sinceSequence) return { status: "gap", reason: "row_too_large" };
+        // The omitted row is the newest persisted one.
+        if (maxSequence === 0) maxSequence = sequence + 1;
+        omittedRowAbove = false;
+      }
       if (sequence >= olderSequence) return { status: "gap", reason: "non_monotonic" };
       olderSequence = sequence;
       if (maxSequence === 0) maxSequence = sequence;
@@ -118,6 +144,8 @@ export async function readChatEventsAfterSequence(args: {
     if (page.startOffset <= 0 || !page.hasMore) {
       // Head of the log. A fresh client (0) takes everything; otherwise the log
       // must continue exactly where the client's stopped.
+      // An omitted first row is one a fresh client cannot get.
+      if (omittedRowAbove && sinceSequence === 0) return { status: "gap", reason: "row_too_large" };
       const earliest = Number.isFinite(olderSequence) ? olderSequence : null;
       if (sinceSequence === 0 || earliest === sinceSequence + 1) {
         anchored = true;

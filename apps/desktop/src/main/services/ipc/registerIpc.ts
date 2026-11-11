@@ -197,6 +197,7 @@ import { createAccountSignInAnalytics } from "../analytics/accountSignInAnalytic
 import { sendSentryUserFeedback } from "../../sentry/userFeedback";
 import { IpcHandlerTimeoutError } from "../../sentry/ipcHandlerTimeout";
 import { armDeadline } from "../../../shared/deadlineTimer";
+import { noteRendererMemory } from "../../rendererMemoryLedger";
 import {
   brainActionErrorCode,
   createMachineRegisterRefusalObserver,
@@ -3561,6 +3562,10 @@ export function registerIpc({
       });
     },
   );
+
+  ipcMain.on(IPC.appReportRendererMemory, (event, snapshot: unknown) => {
+    noteRendererMemory(event.sender.id, snapshot);
+  });
 
   ipcMain.handle(IPC.appGetProject, async () => {
     const ctx = getCtx();

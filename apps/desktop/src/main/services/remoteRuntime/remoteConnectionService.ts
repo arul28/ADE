@@ -1,7 +1,7 @@
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { syncDeviceTelemetryRef } from "../analytics/machineTelemetryId";
 import fs from "node:fs";
-import { captureError } from "../../../shared/sentry/capture";
+import { addSentryBreadcrumb, captureError } from "../../../shared/sentry/capture";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import type {
   AdeActionRegistryEntry,
@@ -66,6 +66,12 @@ import {
 } from "./remoteConnectionPool";
 import type { Logger } from "../logging/logger";
 import { RemoteDialTelemetry, type RemoteDialOutcome } from "./remoteDialTelemetry";
+import {
+  REMOTE_RUNTIME_EVENT_SETUP_SLOW_MS,
+  runWithEventSetupDeadline,
+  summarizeEventSetupPhases,
+  type RemoteEventSetupPhase,
+} from "./remoteEventSetup";
 import { HostReturnWatches } from "./remoteHostReturnWatch";
 import { CloudAsleepChecks } from "./remoteCloudAsleepChecks";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
@@ -1554,11 +1560,12 @@ export class RemoteConnectionService {
     projectId: string,
     projectRootPath: string | null | undefined,
     known: readonly RemoteRuntimeProjectRecord[] | null = null,
+    onPhase?: (phase: RemoteEventSetupPhase) => void,
   ): Promise<string> {
     if (!projectRootPath) return projectId;
     let projects = known;
     if (!projects && !this.statusById.get(target.id)?.projects?.length) {
-      projects = coerceProjects(await this.pool.projectsForTarget(target));
+      projects = coerceProjects(await this.pool.projectsForTarget(target, { onPhase }));
       this.mergeStatus(target.id, { projects: [...projects] });
     }
     return this.projectIdOnMachine(target.id, projectId, projectRootPath, projects);
@@ -1670,24 +1677,71 @@ export class RemoteConnectionService {
     request: RemoteRuntimeStreamEventsRequest,
     options?: { projectRootPath?: string | null },
   ): Promise<RemoteRuntimeStreamEventsResult> {
-    const target = await this.requireTargetForImplicitUse(targetId);
-    try {
-      const result = await this.pool.streamEventsForTarget(
-        target,
-        await this.routedProjectId(target, projectId, options?.projectRootPath),
-        request,
-      );
-      this.mergeStatus(targetId, {
-        state: "connected",
-        lastError: null,
-        lastAttemptedAt: Date.now(),
-      });
-      this.clearAutomaticReconnectState(targetId);
-      return result;
-    } catch (error) {
-      this.markCallFailure(targetId, error);
-      throw error;
-    }
+    return await this.withEventSetupDeadline(targetId, "read", async (notePhase) => {
+      const target = await this.requireTargetForImplicitUse(targetId);
+      try {
+        const result = await this.pool.streamEventsForTarget(
+          target,
+          await this.routedProjectId(target, projectId, options?.projectRootPath, null, notePhase),
+          request,
+          { onPhase: notePhase },
+        );
+        this.mergeStatus(targetId, {
+          state: "connected",
+          lastError: null,
+          lastAttemptedAt: Date.now(),
+        });
+        this.clearAutomaticReconnectState(targetId);
+        return result;
+      } catch (error) {
+        this.markCallFailure(targetId, error);
+        throw error;
+      }
+    });
+  }
+
+  /**
+   * An event read or subscription, bounded as a whole. Every step under it
+   * has its own bound, but a dial can try several routes or join a long SSH
+   * install, and a renderer poll must not sit on that: past
+   * REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS it fails naming the step it was on,
+   * and the pump polls again (joining the dial, which keeps going). Before
+   * this, a hung step held the poll until the IPC deadline, ten minutes, whose
+   * error named no step.
+   */
+  private withEventSetupDeadline<T>(
+    targetId: string,
+    kind: "read" | "subscribe",
+    run: (notePhase: (phase: RemoteEventSetupPhase) => void) => Promise<T>,
+    onLateResult?: (value: T) => void,
+    onTimedOut?: () => void,
+  ): Promise<T> {
+    const known = this.registry.get(targetId);
+    const machineName = known?.name?.trim() || known?.hostname?.trim() || "that computer";
+    return runWithEventSetupDeadline({
+      machineName,
+      run,
+      onLateResult,
+      onSettled: ({ timedOut, totalMs, phases, error }) => {
+        if (timedOut) onTimedOut?.();
+        if (!timedOut && totalMs < REMOTE_RUNTIME_EVENT_SETUP_SLOW_MS) return;
+        const meta = {
+          kind,
+          transport: known?.transport ?? "ssh",
+          phase: error?.phase ?? phases[phases.length - 1]?.phase ?? null,
+          totalMs,
+          phases: summarizeEventSetupPhases(phases),
+        };
+        if (timedOut) {
+          // Breadcrumb plus a budgeted Sentry Log, keyed by the step, so the
+          // next report says which step hung instead of a bare IPC timeout.
+          forwardSignalToSentry("remote.event_setup_timed_out", meta, `remote.event_setup_timed_out:${meta.phase}`);
+          this.options.logger?.info("remote.event_setup_timed_out", { targetId, ...meta });
+        } else {
+          addSentryBreadcrumb("remote", "remote.event_setup_slow", meta);
+        }
+      },
+    });
   }
 
   async subscribeEvents(
@@ -1699,27 +1753,48 @@ export class RemoteConnectionService {
     onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
     options?: { projectRootPath?: string | null },
   ): Promise<() => void> {
-    const target = await this.requireTargetForImplicitUse(targetId);
-    try {
-      const cleanup = await this.pool.subscribeEventsForTarget(
-        target,
-        await this.routedProjectId(target, projectId, options?.projectRootPath),
-        request,
-        onEvent,
-        onEnded,
-        onSubscribed,
-      );
-      this.mergeStatus(targetId, {
-        state: "connected",
-        lastError: null,
-        lastAttemptedAt: Date.now(),
-      });
-      this.clearAutomaticReconnectState(targetId);
-      return cleanup;
-    } catch (error) {
-      this.markCallFailure(targetId, error);
-      throw error;
-    }
+    // A subscription acknowledged after the deadline is closed again: the
+    // caller already gave up on it and holds no handle to it.
+    let gaveUp = false;
+    return await this.withEventSetupDeadline(
+      targetId,
+      "subscribe",
+      async (notePhase) => {
+        const target = await this.requireTargetForImplicitUse(targetId);
+        try {
+          const cleanup = await this.pool.subscribeEventsForTarget(
+            target,
+            await this.routedProjectId(target, projectId, options?.projectRootPath, null, notePhase),
+            request,
+            (event, eventEpoch) => {
+              if (!gaveUp) onEvent(event, eventEpoch);
+            },
+            () => {
+              if (!gaveUp) onEnded?.();
+            },
+            (result) => {
+              if (!gaveUp) onSubscribed?.(result);
+            },
+            { onPhase: notePhase },
+          );
+          if (gaveUp) return cleanup;
+          this.mergeStatus(targetId, {
+            state: "connected",
+            lastError: null,
+            lastAttemptedAt: Date.now(),
+          });
+          this.clearAutomaticReconnectState(targetId);
+          return cleanup;
+        } catch (error) {
+          if (!gaveUp) this.markCallFailure(targetId, error);
+          throw error;
+        }
+      },
+      (lateCleanup) => lateCleanup(),
+      () => {
+        gaveUp = true;
+      },
+    );
   }
 
   async listActionRegistry(

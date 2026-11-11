@@ -32,6 +32,7 @@ import { rootAppStoreApi, workViewStoreForProject, type AppState } from "../stat
 import { captureError } from "../../shared/sentry/capture";
 import { subscribeAccountStatus } from "./account";
 import { isWebClientMode } from "./webClientMode";
+import { noteSessionReplayActive } from "./rendererMemorySnapshot";
 
 /**
  * Subtrees rrweb does not record (a grey box of the same size in the replay).
@@ -316,6 +317,7 @@ function stopRecording(): void {
   // Close the gate first so a buffer the recorder flushes while stopping is
   // dropped instead of sent.
   client.allowed.value = false;
+  noteSessionReplayActive(false);
   try {
     client.instance.stopSessionRecording();
   } catch {
@@ -334,6 +336,7 @@ function resumeRecording(current: ReplayClient, distinctId: string): void {
   }
   if (!current.allowed.value) {
     current.allowed.value = true;
+    noteSessionReplayActive(true);
     current.instance.startSessionRecording();
   }
   setRechecking(true);
@@ -442,6 +445,7 @@ async function createClient(config: ProductAnalyticsReplayConfig, endpointKey: s
   );
   if (!instance) return;
   client = { endpointKey, instance, allowed, distinctId: config.distinctId };
+  noteSessionReplayActive(true);
   setRechecking(true);
 }
 

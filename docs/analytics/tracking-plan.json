@@ -352,10 +352,16 @@
       ],
       "owner": "apps/desktop/src/main/main.ts",
       "source": "desktop_policy",
-      "purpose": "A window's renderer process was lost and whether it was reloaded.",
+      "purpose": "A window's renderer process was lost and whether it was reloaded, with what it held at its last memory snapshot (heap, share of the limit, how long it was open, open chat panes, largest transcript, session replay on).",
       "properties": [
         "crash_reason",
-        "recovered"
+        "recovered",
+        "heap_mb_bucket",
+        "heap_pct_bucket",
+        "duration_bucket",
+        "chat_session_count",
+        "transcript_bucket",
+        "replay_active"
       ]
     },
     {

@@ -35,6 +35,7 @@ import {
   pairedRuntimeFailureCode,
   pairedRuntimeFailureMessage,
   pairedRouteConnectTimeoutMs,
+  PAIRED_RUNTIME_HANDSHAKE_TIMEOUT_MS,
   pairedRuntimeRouteHost,
   recordPairedRouteFailure,
   type PairedRuntimeAccountHelloCode,
@@ -132,6 +133,9 @@ export async function bootstrapPairedRuntime(args: {
   let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
   let accountHelloCode: PairedRuntimeAccountHelloCode | null = null;
   let relayRetried = false;
+  // A route whose socket and hello went through but whose runtime never
+  // answered `ade/initialize`: the final message names that step.
+  let handshakeTimedOut = false;
   // Keep the phases explicit even if a future candidate-builder change
   // accidentally reorders endpoints.
   const orderedCandidates = orderPairedCandidates(candidates);
@@ -266,8 +270,9 @@ export async function bootstrapPairedRuntime(args: {
     const initializing = client.initialize(
       DESKTOP_CLIENT_NAMES.remote,
       args.appVersion,
+      { timeoutMs: PAIRED_RUNTIME_HANDSHAKE_TIMEOUT_MS },
     );
-    const pipelinedProjects = client.call("projects.list", {});
+    const pipelinedProjects = client.call("projects.list", {}, { timeoutMs: PAIRED_RUNTIME_HANDSHAKE_TIMEOUT_MS });
     pipelinedProjects.catch(() => {});
     try {
       initializeResult = await initializing;
@@ -275,6 +280,7 @@ export async function bootstrapPairedRuntime(args: {
       client.close();
       if (isPairedTransportFailure(error)) {
         const failure = classifyPairedRuntimeFailure(error);
+        if (failure === "timeout") handshakeTimedOut = true;
         failEndpoint(candidate, candidateIndex, error, failure);
         recordAttempt({
           kind: candidate.kind,
@@ -283,7 +289,7 @@ export async function bootstrapPairedRuntime(args: {
           durationMs: Math.max(0, Date.now() - attemptStartedAt),
           outcome: "failed",
           failure,
-          errorCode: pairedRuntimeFailureCode(error),
+          errorCode: failure === "timeout" ? "handshake_timeout" : pairedRuntimeFailureCode(error),
         });
         continue;
       }
@@ -306,7 +312,7 @@ export async function bootstrapPairedRuntime(args: {
     try {
       projects = coerceProjects(await pipelinedProjects.catch(async (error) => {
         if (isPairedTransportFailure(error)) throw error;
-        return await client.call("projects.list", {});
+        return await client.call("projects.list", {}, { timeoutMs: PAIRED_RUNTIME_HANDSHAKE_TIMEOUT_MS });
       }));
     } catch (error) {
       client.close();
@@ -425,7 +431,7 @@ export async function bootstrapPairedRuntime(args: {
     );
   }
   throw new PairedRuntimeTransportUnavailableError(
-    pairedRuntimeFailureMessage(failure, credentials.hostIdentity.name, accountHelloCode),
+    pairedRuntimeFailureMessage(failure, credentials.hostIdentity.name, accountHelloCode, { handshakeTimedOut }),
     undefined,
     diagnostic,
   );

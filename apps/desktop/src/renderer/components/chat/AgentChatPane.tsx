@@ -594,6 +594,7 @@ import {
 } from "../../lib/visualContextFormatting";
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
+import { registerTranscriptGauge } from "../../lib/rendererMemorySnapshot";
 
 /**
  * The pin a draft's new-lane defaults are read with: the machine the draft
@@ -5379,6 +5380,13 @@ export function AgentChatPane({
    */
   const composerDriftLaneIdRef = useRef<string | null | undefined>(null);
   const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
+  // The largest transcript this pane holds, read by the renderer's memory
+  // snapshot (`lib/rendererMemorySnapshot.ts`) twice a minute.
+  useEffect(() => registerTranscriptGauge(() => {
+    let largest = 0;
+    for (const events of Object.values(eventsBySessionRef.current)) largest = Math.max(largest, events.length);
+    return largest;
+  }), []);
   /** Live transcripts for the list, ahead of `eventsBySession` while a reply streams. */
   const liveEventsStore = useMemo(
     () => createChatLiveEventsStore((sessionId) => eventsBySessionRef.current[sessionId]),

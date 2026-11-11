@@ -2215,6 +2215,89 @@ describe("RemoteConnectionService", () => {
     expect(service.snapshot().connections[0]?.state).toBe("connected");
     expect(service.snapshot().connections[0]?.lastError).toBeNull();
   });
+
+  /**
+   * An event subscription whose dial hangs (a host that took the socket and
+   * never answered the handshake) used to hold the renderer's poll until the
+   * 10 minute IPC deadline, whose error named no step. It now fails at its own
+   * ceiling naming the step, and a subscription acknowledged after that is
+   * closed again instead of streaming into a caller that gave up on it.
+   */
+  it("fails a hung event subscription at its ceiling naming the step, and closes one acknowledged late", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    let finishDial = null as (() => void) | null;
+    let lateEvent = null as ((event: any) => void) | null;
+    const lateCleanup = vi.fn();
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) => connectResult(target)),
+      disconnect: vi.fn(),
+      subscribeEventsForTarget: vi.fn(async (
+        _target: RemoteRuntimeTarget,
+        _projectId: string,
+        _request: unknown,
+        onEvent: (event: any) => void,
+        _onEnded: () => void,
+        _onSubscribed: unknown,
+        options: { onPhase?: (phase: string) => void },
+      ) => {
+        options.onPhase?.("connect");
+        await new Promise<void>((resolve) => { finishDial = resolve; });
+        options.onPhase?.("subscribe");
+        lateEvent = onEvent;
+        return lateCleanup;
+      }),
+      onHostStorageWait: vi.fn(() => () => {}),
+      onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
+      onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool);
+    await service.connect(previouslyConnected.id, { explicit: true });
+
+    vi.useFakeTimers();
+    try {
+      const timersBefore = vi.getTimerCount();
+      const onEvent = vi.fn();
+      const onEnded = vi.fn();
+      let failure: unknown = null;
+      void service.subscribeEvents(previouslyConnected.id, "project-1", { replay: false }, onEvent, onEnded)
+        .catch((error: unknown) => { failure = error; });
+
+      await vi.advanceTimersByTimeAsync(119_000);
+      expect(failure).toBeNull();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(failure).toMatchObject({
+        name: "RemoteEventSetupTimeoutError",
+        code: "REMOTE_EVENT_SETUP_TIMEOUT",
+        phase: "connect",
+        message: "Could not reach previously-connected: it did not answer the connection handshake within 120s. ADE will try again.",
+      });
+      expect(forwardSignalToSentryMock).toHaveBeenCalledWith(
+        "remote.event_setup_timed_out",
+        expect.objectContaining({ phase: "connect", kind: "subscribe" }),
+        "remote.event_setup_timed_out:connect",
+      );
+      expect(vi.getTimerCount()).toBe(timersBefore);
+
+      // The dial finishes after the caller gave up: its subscription is closed
+      // and what it delivers goes nowhere.
+      finishDial!();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lateCleanup).toHaveBeenCalledTimes(1);
+      lateEvent!({ id: 1 });
+      expect(onEvent).not.toHaveBeenCalled();
+      expect(onEnded).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("uploadChatAttachment", () => {

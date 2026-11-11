@@ -5133,6 +5133,9 @@ const adeBridge = {
       event: string,
       payload: Record<string, unknown> = {},
     ): void => ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),
+    // This window's own memory, for a crash report; no pin (it is about this window).
+    reportRendererMemory: (snapshot: Record<string, unknown>): void =>
+      ipcRenderer.send(IPC.appReportRendererMemory, snapshot),
   },
   storage: {
     getPressure: async (): Promise<DiskPressureSnapshot> =>

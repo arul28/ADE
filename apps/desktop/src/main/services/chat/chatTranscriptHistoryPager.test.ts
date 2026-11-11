@@ -252,20 +252,93 @@ describe("readTranscriptHistoryPage", () => {
     ).toBeLessThan(seenTexts.findIndex((text) => text.startsWith("after-giant")));
   });
 
-  it("fails explicitly instead of advancing past a row above the hard page ceiling", async () => {
-    const giant = envelopeLine({
-      text: "too-large",
-      sequence: 1,
-      exactLineBytes: CHAT_EVENT_HISTORY_PAGE_MAX_BYTES + 1_000,
+  // A row above the page ceiling is never loaded, but never skipped silently
+  // either: its page is exactly that row, it stands in as a marked notice
+  // without a sequence, and paging continues from the row's start.
+  it.each([
+    {
+      name: "just over the ceiling, between normal rows",
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: CHAT_EVENT_HISTORY_PAGE_MAX_BYTES + 1_000 },
+        { text: "tail", sequence: 3 },
+      ],
+      expected: ["head", "omitted", "tail"],
+    },
+    {
+      name: "at the head of the file, with no newline before it",
+      rows: [{ text: "giant", sequence: 1, bytes: 3_000_000 }, { text: "tail", sequence: 2 }],
+      expected: ["omitted", "tail"],
+    },
+    {
+      name: "with CRLF line endings",
+      crlf: true,
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: 3_000_000 },
+        { text: "tail", sequence: 3 },
+      ],
+      expected: ["head", "omitted", "tail"],
+    },
+    {
+      name: "of another chat, which the normal parse drops too",
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: 3_000_000, sessionId: "someone-else" },
+        { text: "tail", sequence: 3 },
+      ],
+      expected: ["head", "tail"],
+    },
+    {
+      name: "past the 8 MB field scan",
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: 9 * 1024 * 1024 },
+      ],
+      expected: ["head", "omitted"],
+    },
+  ])("pages past a row above the page ceiling: $name", async ({ rows, crlf, expected }) => {
+    const lines = rows.map((row) => {
+      const line = envelopeLine({
+        text: row.text,
+        sequence: row.sequence,
+        ...("sessionId" in row && row.sessionId ? { sessionId: row.sessionId } : {}),
+        ...("bytes" in row && row.bytes ? { exactLineBytes: row.bytes } : {}),
+      });
+      return crlf ? line.replace(/\n$/, "\r\n") : line;
     });
-    const { size } = writeTranscript([envelopeLine({ text: "head" }), giant]);
+    const { size, lineOffsets } = writeTranscript(lines);
 
-    await expect(readTranscriptHistoryPage({
-      transcriptPath,
-      sessionId: SESSION_ID,
-      beforeOffset: size,
-      maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
-    })).rejects.toThrow("chat_history_row_too_large");
+    const seen: string[] = [];
+    const cursors: number[] = [];
+    let beforeOffset = size;
+    for (let guard = 0; guard < 20 && beforeOffset > 0; guard += 1) {
+      const page = await readTranscriptHistoryPage({
+        transcriptPath,
+        sessionId: SESSION_ID,
+        beforeOffset,
+        maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
+      });
+      expect(page.startOffset).toBeLessThan(beforeOffset);
+      expect(lineOffsets).toContain(page.startOffset);
+      expect(page.envelopeStartOffsets).toHaveLength(page.envelopes.length);
+      expect(page.hasMore).toBe(page.startOffset > 0);
+      cursors.push(page.startOffset);
+      seen.unshift(...page.envelopes.map((envelope) => {
+        if (envelope.event.type !== "system_notice") return eventText(envelope).replace(/x+$/, "");
+        expect(envelope.event.status).toBe("history_row_omitted");
+        expect(envelope.timestamp).toBe("2026-06-10T10:00:00.000Z");
+        // Display-only: never the real row's sequence.
+        expect(envelope.sequence).toBeUndefined();
+        return "omitted";
+      }));
+      beforeOffset = page.startOffset;
+    }
+
+    expect(beforeOffset).toBe(0);
+    expect(seen).toEqual(expected);
+    // The cursor stopped on every row start, the oversized one included.
+    expect([...cursors].reverse()).toEqual(lineOffsets);
   });
 
   it("keeps byte cursors on line boundaries when lines contain multi-byte UTF-8", async () => {
@@ -402,6 +475,21 @@ describe("readTranscriptHistoryPageBeforeSequence", () => {
     expect(await findTranscriptOffsetForSequence({ transcriptPath, sessionId: SESSION_ID, sequence: 99 })).toBe(size);
     const page = await readTranscriptHistoryPageBeforeSequence({ transcriptPath, sessionId: SESSION_ID, beforeSequence: 99 });
     expect(page.envelopes.map(sequenceOf)).toEqual([2, 4, 6, 8]);
+  });
+
+  it("moves a sequence cursor past a row too large to page", async () => {
+    writeTranscript([
+      envelopeLine({ text: "r1", sequence: 1 }),
+      envelopeLine({ text: "r2", sequence: 2 }),
+      envelopeLine({ text: "big", sequence: 3, exactLineBytes: 3_000_000 }),
+      envelopeLine({ text: "r4", sequence: 4 }),
+    ]);
+    // The stand-in has no sequence, so the page also carries the rows older
+    // than it: the client's next cursor is then 1, not 4 again.
+    const page = await readTranscriptHistoryPageBeforeSequence({ transcriptPath, sessionId: SESSION_ID, beforeSequence: 4 });
+    expect(page.envelopes.map((envelope) => envelope.sequence ?? envelope.event.type)).toEqual([1, 2, "system_notice"]);
+    expect(page.envelopeStartOffsets).toHaveLength(3);
+    expect(page.hasMore).toBe(false);
   });
 
   it("never returns a row at or above the cursor from a file whose numbering restarted", async () => {

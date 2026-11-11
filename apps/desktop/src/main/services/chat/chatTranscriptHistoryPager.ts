@@ -61,8 +61,11 @@ const EMPTY_PAGE: TranscriptHistoryPageRead = {
  *   line is dropped and `startOffset` points at the byte right AFTER its
  *   terminating newline, so pages never overlap or skip lines.
  * - If the boundary lands inside one oversized row, the read expands up to
- *   the service's 2 MB page ceiling. Rows beyond that fail explicitly instead
- *   of silently advancing the cursor past content the client never received.
+ *   the service's 2 MB page ceiling. A row larger than that is never loaded:
+ *   the page is that one row, `startOffset` is the row's own start, and in
+ *   its place the page carries a `system_notice` with status
+ *   `HISTORY_ROW_OMITTED_NOTICE_STATUS` (see `readOmittedRowPage`). The
+ *   cursor still never moves past a row without telling the client.
  *
  * Throws on filesystem errors (missing file, etc.) — callers decide how to
  * surface that.
@@ -108,7 +111,13 @@ export async function readTranscriptHistoryPage(args: {
       break;
     }
     if (readBytes >= CHAT_EVENT_HISTORY_PAGE_MAX_BYTES) {
-      throw new Error("chat_history_row_too_large");
+      return await readOmittedRowPage({
+        transcriptPath,
+        sessionId,
+        searchBefore: readStart,
+        end,
+        ...(args.signal ? { signal: args.signal } : {}),
+      });
     }
     readBytes = Math.min(CHAT_EVENT_HISTORY_PAGE_MAX_BYTES, readBytes * 2);
   }
@@ -152,6 +161,286 @@ export async function readTranscriptHistoryPage(args: {
     startOffset,
     hasMore: startOffset > 0,
   };
+}
+
+/**
+ * `system_notice.status` of the stand-in for a row too large to page. Every
+ * client already draws a `system_notice` (a quiet info line), so an older
+ * desktop, the web client or the phone shows it without knowing this status.
+ */
+const HISTORY_ROW_OMITTED_NOTICE_STATUS = "history_row_omitted";
+
+/** True for the display-only stand-in a page carries for a row too large to page. */
+export function isOmittedHistoryRowNotice(envelope: AgentChatEventEnvelope): boolean {
+  return envelope.event.type === "system_notice"
+    && envelope.event.status === HISTORY_ROW_OMITTED_NOTICE_STATUS
+    && envelope.sequence === undefined;
+}
+
+/** Chunk size of the bounded scans over one oversized row. */
+const OMITTED_ROW_SCAN_CHUNK_BYTES = 1024 * 1024;
+/**
+ * The forward read for the omitted row's own fields stops here: the largest
+ * row the rest of the chat service accepts. A row past it still gets its
+ * stand-in, from the fields read so far (`provenance`, written after the
+ * event, may be missed).
+ */
+const OMITTED_ROW_FIELD_SCAN_MAX_BYTES = 8 * 1024 * 1024;
+
+type OmittedRowFields = {
+  sessionId?: string;
+  timestamp?: string;
+  eventType?: string;
+  eventIsObject?: boolean;
+  targetKind?: string;
+};
+
+/**
+ * Reads the few envelope fields a stand-in needs from a JSONL row fed in
+ * chunks, without materializing the row: `sessionId` and `timestamp` at the
+ * top level, `event.type` and `provenance.targetKind` one
+ * level down. Tracks only string/escape state and nesting depth; long
+ * strings are skipped with `indexOf`, so a multi-megabyte tool result costs a
+ * few native scans, not a byte loop.
+ */
+function createOmittedRowFieldScanner() {
+  const fields: OmittedRowFields = {};
+  const maxCaptureBytes = 1024;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let stringIsKey = false;
+  let expectKey = false;
+  let pendingKey: string | null = null;
+  /** Key of the depth-2 object being read ("event" / "provenance"), else null. */
+  let container: string | null = null;
+  let capture: number[] | null = null;
+  let captureKey: string | null = null;
+  let captureOverflow = false;
+  let finished = false;
+
+  const tracked = () => depth === 1 || (depth === 2 && container !== null);
+  const wantsValue = (key: string): boolean => {
+    if (depth === 1) return key === "sessionId" || key === "timestamp";
+    if (container === "event") return key === "type";
+    if (container === "provenance") return key === "targetKind";
+    return false;
+  };
+  const assign = (key: string, value: string) => {
+    if (depth === 1) {
+      if (key === "sessionId") fields.sessionId ??= value;
+      else if (key === "timestamp") fields.timestamp ??= value;
+    } else if (container === "event" && key === "type") {
+      fields.eventType ??= value;
+    } else if (container === "provenance" && key === "targetKind") {
+      fields.targetKind ??= value;
+    }
+  };
+  const decodeString = (bytes: number[]): string | null => {
+    try {
+      const decoded: unknown = JSON.parse(`"${Buffer.from(bytes).toString("utf8")}"`);
+      return typeof decoded === "string" ? decoded : null;
+    } catch {
+      return null;
+    }
+  };
+
+  return {
+    fields,
+    get finished() {
+      return finished;
+    },
+    feed(chunk: Buffer): void {
+      let index = 0;
+      // Next quote / backslash at or after `index` in this chunk (-1: none),
+      // cached so text dense with escapes does not rescan for a far quote.
+      let nextQuote = -2;
+      let nextBackslash = -2;
+      while (index < chunk.length && !finished) {
+        if (inString) {
+          if (!escape && !stringIsKey && capture === null) {
+            // Skip to the next quote or backslash with native scans.
+            if (nextQuote !== -1 && nextQuote < index) nextQuote = chunk.indexOf(0x22, index);
+            if (nextBackslash !== -1 && nextBackslash < index) nextBackslash = chunk.indexOf(0x5c, index);
+            const next = nextQuote < 0
+              ? nextBackslash
+              : nextBackslash < 0 ? nextQuote : Math.min(nextQuote, nextBackslash);
+            if (next < 0) return;
+            index = next;
+          }
+          const byte = chunk[index]!;
+          index += 1;
+          if (escape) {
+            escape = false;
+          } else if (byte === 0x5c) {
+            escape = true;
+          } else if (byte === 0x22) {
+            inString = false;
+            if (stringIsKey) {
+              pendingKey = capture && !captureOverflow ? decodeString(capture) : null;
+              expectKey = false;
+            } else if (capture && captureKey && !captureOverflow) {
+              const value = decodeString(capture);
+              if (value !== null) assign(captureKey, value);
+            }
+            capture = null;
+            captureKey = null;
+            captureOverflow = false;
+            continue;
+          }
+          if (capture) {
+            if (capture.length < maxCaptureBytes) capture.push(byte);
+            else captureOverflow = true;
+          }
+          continue;
+        }
+        const byte = chunk[index]!;
+        index += 1;
+        if (byte === 0x20 || byte === 0x09 || byte === 0x0a || byte === 0x0d || byte === 0x3a) continue;
+        if (byte === 0x22) {
+          inString = true;
+          stringIsKey = tracked() && expectKey;
+          if (stringIsKey) {
+            capture = [];
+          } else if (tracked() && pendingKey !== null && wantsValue(pendingKey)) {
+            capture = [];
+            captureKey = pendingKey;
+          }
+          if (!stringIsKey) pendingKey = null;
+          continue;
+        }
+        if (byte === 0x7b || byte === 0x5b) {
+          const openingKey = depth === 1 ? pendingKey : null;
+          depth += 1;
+          if (depth === 2) {
+            container = byte === 0x7b && (openingKey === "event" || openingKey === "provenance") ? openingKey : null;
+            if (container === "event") fields.eventIsObject = true;
+          }
+          pendingKey = null;
+          expectKey = byte === 0x7b;
+          continue;
+        }
+        if (byte === 0x7d || byte === 0x5d) {
+          depth -= 1;
+          if (depth <= 1) container = null;
+          pendingKey = null;
+          expectKey = false;
+          if (depth <= 0) finished = true;
+          continue;
+        }
+        if (byte === 0x2c) {
+          pendingKey = null;
+          expectKey = tracked();
+          continue;
+        }
+        // Numbers and true / false / null literals.
+        pendingKey = null;
+      }
+    },
+  };
+}
+
+function formatOmittedRowSize(bytes: number): string {
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
+}
+
+/** Plain words for the kinds of row that grow this large. */
+const OMITTED_ROW_KIND_LABELS: Readonly<Record<string, string>> = {
+  tool_result: "a tool result",
+  tool_call: "a tool call",
+  user_message: "a message",
+  text: "a reply",
+};
+
+/**
+ * The page for a row too large to page (`readTranscriptHistoryPage` found no
+ * line start in its largest window). Nothing older than the row is skipped:
+ * the page is exactly the row, `[rowStart, end)`, and the next page continues
+ * from `rowStart`.
+ *
+ * 1. Scan backward from `searchBefore` in bounded chunks for the newline that
+ *    ends the previous row; none before offset 0 means the row starts at 0.
+ * 2. Read the row forward in bounded chunks, at most
+ *    `OMITTED_ROW_FIELD_SCAN_MAX_BYTES`, for its session, timestamp, event
+ *    type and provenance target.
+ * 3. A row of this chat becomes one `system_notice` stand-in with the row's
+ *    timestamp and NO `sequence`. The stand-in is display-only: a durable log
+ *    keyed on sequence (the phone's chat log, sync resume, delivery keys)
+ *    never stores it as row N, so it can never take the real row's place,
+ *    and a later full copy of row N is never deduped against it. A row of another
+ *    chat, or one whose fields cannot be read (a torn or malformed row), would
+ *    have been dropped by the normal parse too, and is dropped here.
+ *
+ * Cost: the row's bytes minus the window already read, backward, plus up to
+ * 8 MB forward, all in 1 MB reads. Terminates for any input: both scans move
+ * monotonically and stop at offset 0 / `end`.
+ */
+async function readOmittedRowPage(args: {
+  transcriptPath: string;
+  sessionId: string;
+  /** No newline lies in `[searchBefore, end - 1)`. */
+  searchBefore: number;
+  end: number;
+  signal?: AbortSignal;
+}): Promise<TranscriptHistoryPageRead> {
+  const { transcriptPath, sessionId, end, signal } = args;
+  let rowStart = 0;
+  let scan = args.searchBefore;
+  while (scan > 0) {
+    signal?.throwIfAborted();
+    const chunkStart = Math.max(0, scan - OMITTED_ROW_SCAN_CHUNK_BYTES);
+    const chunk = await readHistoryFileRange(transcriptPath, chunkStart, scan - chunkStart, signal);
+    if (chunk.length === 0) break;
+    const newline = chunk.lastIndexOf(0x0a);
+    if (newline >= 0) {
+      rowStart = chunkStart + newline + 1;
+      break;
+    }
+    scan = chunkStart;
+  }
+
+  const scanner = createOmittedRowFieldScanner();
+  const fieldScanEnd = Math.min(end, rowStart + OMITTED_ROW_FIELD_SCAN_MAX_BYTES);
+  for (let offset = rowStart; offset < fieldScanEnd && !scanner.finished;) {
+    signal?.throwIfAborted();
+    const chunk = await readHistoryFileRange(
+      transcriptPath,
+      offset,
+      Math.min(OMITTED_ROW_SCAN_CHUNK_BYTES, fieldScanEnd - offset),
+      signal,
+    );
+    if (chunk.length === 0) break;
+    scanner.feed(chunk);
+    offset += chunk.length;
+  }
+
+  const { fields } = scanner;
+  const page: TranscriptHistoryPageRead = {
+    envelopes: [],
+    envelopeStartOffsets: [],
+    startOffset: rowStart,
+    hasMore: rowStart > 0,
+  };
+  if (fields.sessionId?.trim() !== sessionId || !fields.eventIsObject) return page;
+
+  const rowBytes = end - rowStart;
+  const kindLabel = fields.eventType ? OMITTED_ROW_KIND_LABELS[fields.eventType] : undefined;
+  const stoodInFor = kindLabel ? ` (${kindLabel})` : "";
+  page.envelopes.push({
+    sessionId,
+    timestamp: fields.timestamp ?? new Date(0).toISOString(),
+    event: {
+      type: "system_notice",
+      noticeKind: "info",
+      severity: "info",
+      status: HISTORY_ROW_OMITTED_NOTICE_STATUS,
+      message: "One very large entry was left out of this chat's history.",
+      detail: `The entry${stoodInFor} is ${formatOmittedRowSize(rowBytes)}, more than chat history loads at once (${formatOmittedRowSize(CHAT_EVENT_HISTORY_PAGE_MAX_BYTES)}). It is still saved in the chat's transcript file.`,
+    },
+    ...(fields.targetKind ? { provenance: { targetKind: fields.targetKind } } : {}),
+  });
+  page.envelopeStartOffsets.push(rowStart);
+  return page;
 }
 
 const SEQUENCE_PROBE_CHUNK_BYTES = 64 * 1024;
@@ -317,13 +606,31 @@ export async function readTranscriptHistoryPageBeforeSequence(args: {
     sequence: beforeSequence,
     ...(args.signal ? { signal: args.signal } : {}),
   });
-  const page = await readTranscriptHistoryPage({
+  const readBefore = (offset: number) => readTranscriptHistoryPage({
     transcriptPath: args.transcriptPath,
     sessionId: args.sessionId,
-    beforeOffset,
+    beforeOffset: offset,
     maxBytes: args.maxBytes,
     ...(args.signal ? { signal: args.signal } : {}),
   });
+  let page = await readBefore(beforeOffset);
+  // The client's next cursor is the oldest sequence on this page, and an
+  // omitted-row stand-in carries none. A page that is only stand-ins (or only
+  // unsequenced rows) takes the older pages too, up to a bound, so the cursor
+  // moves past the oversized row instead of asking for it again.
+  for (
+    let extra = 0;
+    extra < 8 && page.hasMore && !page.envelopes.some((envelope) => typeof envelope.sequence === "number");
+    extra += 1
+  ) {
+    const older = await readBefore(page.startOffset);
+    page = {
+      envelopes: [...older.envelopes, ...page.envelopes],
+      envelopeStartOffsets: [...older.envelopeStartOffsets, ...page.envelopeStartOffsets],
+      startOffset: older.startOffset,
+      hasMore: older.hasMore,
+    };
+  }
   // Defensive: a legacy file whose numbering restarted can put a newer
   // sequence below the cut. Never hand those back as "older".
   const keep = page.envelopes.map((envelope) =>
