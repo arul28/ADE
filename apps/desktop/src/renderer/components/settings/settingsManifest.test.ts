@@ -102,6 +102,11 @@ describe("settings manifest", () => {
     "storage.diagnostics": "advanced",
     "archive.items": "storage",
     "lanes-git.pr-chat-transcripts": "project-agents",
+    // ADE Cloud left Integrations for its own tab; the ids stay so old links land.
+    "integrations.ade-cloud": "ade-cloud",
+    "integrations.ade-cloud-sign-ins": "ade-cloud",
+    "integrations.ade-cloud-spending": "ade-cloud",
+    "integrations.ade-cloud-agent-limits": "ade-cloud",
   };
 
   it("namespaces every entry id under its tab, except the rows that deliberately moved", () => {
