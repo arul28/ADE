@@ -113,6 +113,19 @@ function fakeNetwork() {
       const subscription = subscriptions.get(id);
       return subscription ? reply({ id, ...subscription }) : reply({ error: { message: "no such subscription" } }, 404);
     }
+    // A plan switch moves the item's price, as Stripe does, and answers with the item.
+    const item = method === "POST" ? url.match(/\/subscription_items\/([^/?]+)$/) : null;
+    if (item) {
+      const id = decodeURIComponent(item[1]!);
+      for (const subscription of subscriptions.values()) {
+        const found = ((subscription.items as { data?: Row[] } | undefined)?.data ?? []).find((entry) => entry.id === id);
+        if (found) {
+          found.price = { id: body?.price };
+          return reply({ id, price: { id: body?.price } });
+        }
+      }
+      return reply({ error: { message: "no such item" } }, 404);
+    }
     if (url.startsWith(STRIPE)) return reply({});
     const rest = url.replace(PROVIDER, "").replace(SANDBOX, "");
     if (method === "GET" && rest === "/instances") return reply({ data: [...instances.values()].map(instanceJson) });
@@ -152,7 +165,10 @@ function fakeNetwork() {
     const url = String(input instanceof Request ? input.url : input);
     if (!url.startsWith(PROVIDER) && !url.startsWith(SANDBOX) && !url.startsWith(STRIPE)) return realFetch(input as RequestInfo, init);
     const method = init?.method ?? "GET";
-    const body = typeof init?.body === "string" && init.body.startsWith("{") ? JSON.parse(init.body) as Row : null;
+    // JSON to the provider, a form to Stripe.
+    const body = typeof init?.body !== "string" ? null
+      : init.body.startsWith("{") ? JSON.parse(init.body) as Row
+      : Object.fromEntries(new URLSearchParams(init.body)) as Row;
     calls.push({ method, url, body });
     const planned = once.findIndex((entry) => entry.match.test(`${method} ${url}`));
     if (planned !== -1) {
@@ -505,6 +521,9 @@ describe("ADE Cloud account", () => {
       expect(moved.status).toBe(201);
       expect(providerCalls(harness, /POST .*\/instances$/)[0]?.body?.resources).toEqual({ cpu: 2, memory: 4, disk: 12 });
 
+      // That move failed (its new computer is gone); another computer holds 4 GB.
+      harness.exec("update cloud_computers set deleted_at = ? where instance_id = 'madenew12345'", NOW);
+      seedComputer(harness, { instance_id: SECOND, disk_gb: 4 });
       harness.exec("update cloud_accounts set plan = 'free' where user_id = ?", OWNER);
       const refused = await harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, moveFromInstanceId: INSTANCE });
       expect(refused.status).toBe(403);
@@ -638,6 +657,239 @@ describe("ADE Cloud account", () => {
     seedAccount(harness, OWNER);
     harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
     await run();
+  });
+
+  // Money: extra disk, plan changes and the owner's limit (docs/plans/ade-cloud-plans-and-disk.md).
+  const MONEY_ENV = { STRIPE_PRO_PRICE_ID: "price_pro", STRIPE_DISK_PRICE_ID: "price_disk", STRIPE_DISK_METER_EVENT: "ade_cloud_extra_disk_gb_days" };
+  const plusAccount = { plan: "paid", paid_plan: "plus", included_milli: 500_000, stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1", stripe_status: "active" };
+  const proAccount = { ...plusAccount, paid_plan: "pro", included_milli: 1_500_000 };
+  const DAY_ONE = "2026-11-09";
+  const meterCalls = () => providerCalls(harness, /POST .*\/billing\/meter_events$/)
+    .filter((call) => call.body?.identifier === `ade-disk:sub_1:${DAY_ONE}`);
+  const diskDay = () => harness.row(
+    "select billed_gb, reported_at is not null as reported, unconfirmed_at is not null as unconfirmed from cloud_disk_days where user_id = ? and day = ?",
+    OWNER, DAY_ONE,
+  );
+  const errorOf = async (response: Response) => ((await response.json()) as { error?: { code?: string; reason?: string } }).error ?? null;
+  const accountRow = () => harness.row("select plan, paid_plan, paid_plan_next, included_milli from cloud_accounts where user_id = ?", OWNER);
+
+  /** Stopped computers holding `disks` GB, each the same size at the provider. */
+  function seedStopped(disks: number[], size: { type: string; cpu: number; memory: number } = { type: "default", cpu: 2, memory: 4 }): void {
+    disks.forEach((disk, index) => {
+      const id = [INSTANCE, SECOND][index]!;
+      seedComputer(harness, { instance_id: id, type: size.type, cpu: size.cpu, memory_gb: size.memory, disk_gb: disk, status: "stopped", awake_since: null, last_awake_at: NOW - 2 * DAY });
+      const instance = provide(harness, id, "stopped");
+      instance.type = size.type;
+      instance.resources = { cpu: size.cpu, memory: size.memory, disk };
+    });
+  }
+
+  it.each<[string, Row, number | null]>([
+    ["a paid plan with extra disk on pays the GB past the plan", { extra_disk_state: "on", extra_disk_limit_cents: 1000 }, 10],
+    ["extra disk turned down pays nothing", { extra_disk_state: "asked", extra_disk_limit_cents: 1000 }, null],
+    ["the free plan pays nothing", { plan: "free", stripe_status: null, extra_disk_state: "on", extra_disk_limit_cents: 1000 }, null],
+    ["a failed payment pays nothing", { stripe_status: "past_due", extra_disk_state: "on", extra_disk_limit_cents: 1000 }, null],
+  ])("extra disk: a finished day is billed once, from that day's row: %s", async (_label, overrides, billedGb) => {
+    Object.assign(harness.env, MONEY_ENV);
+    seedAccount(harness, OWNER, { ...plusAccount, ...overrides });
+    seedStopped([28, 22]);
+    // Day one writes its row; the next day's owner check bills it; a later check finds nothing left.
+    await harness.tick();
+    clock += DAY;
+    await harness.tick();
+    const sentByReport = meterCalls().length;
+    clock += 11 * 60_000;
+    await harness.tick();
+
+    expect(meterCalls().map((call) => [call.body?.["payload[value]"], call.body?.["payload[stripe_customer_id]"]]))
+      .toEqual(billedGb == null ? [] : [[String(billedGb), "cus_1"]]);
+    expect(meterCalls()).toHaveLength(sentByReport);
+    expect(diskDay()).toEqual({ billed_gb: billedGb ?? 0, reported: 1, unconfirmed: 0 });
+  });
+
+  it.each<[string, number, boolean]>([
+    ["is sent again, with the same value, inside Stripe's one-day window", 11 * 60_000, true],
+    ["is never sent again after the window, and waits for the owner", 21 * HOUR, false],
+  ])("extra disk: a meter send that timed out %s", async (_label, wait, resent) => {
+    Object.assign(harness.env, MONEY_ENV);
+    seedAccount(harness, OWNER, { ...plusAccount, extra_disk_state: "on", extra_disk_limit_cents: 1000 });
+    seedStopped([28, 22]);
+    await harness.tick();
+    clock += DAY;
+    harness.net.once.push({ match: /POST .*\/billing\/meter_events$/, reply: new Error("timed out") });
+    await harness.tick();
+    expect(diskDay()).toEqual({ billed_gb: 10, reported: 0, unconfirmed: 0 });
+
+    clock += wait;
+    await harness.tick();
+    clock += 11 * 60_000;
+    await harness.tick();
+
+    expect(meterCalls().map((call) => call.body?.["payload[value]"])).toEqual(resent ? ["10", "10"] : ["10"]);
+    expect(diskDay()).toEqual(resent ? { billed_gb: 10, reported: 1, unconfirmed: 0 } : { billed_gb: 10, reported: 0, unconfirmed: 1 });
+  });
+
+  const XLARGE = { type: "vm", cpu: 4, memory: 16 };
+  it.each<[string, Row, number, number, number, string | null]>([
+    // Plus has 40 GB; a full month of 10 GB extra is $1.
+    ["a grow that fits the last day's share but not a full month", { extra_disk_state: "on", extra_disk_limit_cents: 100, period_end: NOW + 12 * HOUR }, 40, 52, 403, "monthly_limit"],
+    ["a full month just inside the limit, on a period's first day", { extra_disk_state: "on", extra_disk_limit_cents: 400, period_start: NOW, period_end: NOW + 30 * DAY }, 40, 80, 200, null],
+    ["one step past a full month at the limit", { extra_disk_state: "on", extra_disk_limit_cents: 400 }, 40, 84, 403, "monthly_limit"],
+    ["extra disk on with no limit asks first", { extra_disk_state: "on", extra_disk_limit_cents: null }, 40, 44, 403, "needs_approval"],
+    ["extra disk never decided asks first", { extra_disk_state: "off" }, 40, 44, 403, "needs_approval"],
+    ["extra disk turned down", { extra_disk_state: "asked", extra_disk_limit_cents: 400 }, 40, 44, 403, "extra_off"],
+    ["a grow inside the plan's disk needs no extra disk", { extra_disk_state: "off" }, 20, 36, 200, null],
+  ])("extra disk limit: %s", async (_label, overrides, fromGb, toGb, status, reason) => {
+    Object.assign(harness.env, MONEY_ENV);
+    seedAccount(harness, OWNER, { ...plusAccount, ...overrides });
+    seedStopped([fromGb], XLARGE);
+
+    const response = await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 4, memory: 16, disk: toGb });
+
+    expect(response.status).toBe(status);
+    expect((await errorOf(response))?.reason ?? null).toBe(reason);
+    expect(computer(harness).disk_gb).toBe(reason ? fromGb : toGb);
+    expect(providerCalls(harness, /POST .*\/resize$/)).toHaveLength(reason ? 0 : 1);
+  });
+
+  it.each<[string, Row, Row, number, string | null, boolean]>([
+    ["the free plan above its disk can't wake", { plan: "free" }, {}, 402, "over_plan_disk", false],
+    ["the free plan above its disk still gets the push-work wake, which isn't use", { plan: "free" }, { reason: "push_work" }, 200, null, false],
+    ["a failed payment with the same disk still wakes", { ...plusAccount, stripe_status: "past_due" }, {}, 200, null, true],
+  ])("free shared disk: %s", async (_label, overrides, body, status, code, lastAwakeMoves) => {
+    seedAccount(harness, OWNER, overrides);
+    seedStopped([8, 8]);
+
+    const response = await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/start`, body);
+
+    expect(response.status).toBe(status);
+    expect(status === 200 ? null : (await errorOf(response))?.code).toBe(code);
+    expect(providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/start$`))).toHaveLength(code ? 0 : 1);
+    // The 30-day delete clock moves only for real use.
+    expect(computer(harness).last_awake_at).toBe(lastAwakeMoves ? NOW : NOW - 2 * DAY);
+  });
+
+  const planItem = () => ((harness.net.subscriptions.get("sub_1")?.items as { data: Row[] }).data[0]!.price as Row).id;
+  const itemCalls = () => providerCalls(harness, /POST .*\/subscription_items\/si_plan$/);
+  function seedSubscribed(account: Row, price: string, disks: number[]): void {
+    seedAccount(harness, OWNER, account);
+    harness.net.subscriptions.set("sub_1", { status: "active", customer: "cus_1", items: { data: [{ id: "si_plan", price: { id: price } }, { id: "si_extra", price: { id: "price_extra" } }] } });
+    seedStopped(disks);
+  }
+  const checkout = (plan: string) => harness.send(OWNER, "POST", "/cloud/billing/checkout", { plan });
+
+  it.each<[string, () => Promise<void>]>([
+    ["Pro to Plus above Plus's disk with extra disk off is refused, and nothing moves", async () => {
+      seedSubscribed({ ...proAccount, extra_disk_state: "off" }, "price_pro", [28, 22]);
+      const response = await checkout("plus");
+      expect(response.status).toBe(409);
+      expect((await errorOf(response))?.code).toBe("disk_over_plan");
+      expect(itemCalls()).toEqual([]);
+      expect(accountRow()).toEqual(expect.objectContaining({ paid_plan: "pro", paid_plan_next: null }));
+    }],
+    ["Pro to Plus that fits waits for the period end, and Stay on Pro undoes it uncharged", async () => {
+      seedSubscribed(proAccount, "price_pro", [12, 8]);
+      expect(await (await checkout("plus")).json()).toEqual({ url: null, change: "next_period" });
+      expect(accountRow()).toEqual(expect.objectContaining({ paid_plan: "pro", paid_plan_next: "plus", included_milli: 1_500_000 }));
+      expect(planItem()).toBe("price_plan");
+
+      expect((await checkout("pro")).status).toBe(200);
+      expect(accountRow()).toEqual(expect.objectContaining({ paid_plan: "pro", paid_plan_next: null, included_milli: 1_500_000 }));
+      expect(planItem()).toBe("price_pro");
+      expect(itemCalls().map((call) => [call.body?.price, call.body?.proration_behavior, call.body?.payment_behavior ?? null]))
+        .toEqual([["price_plan", "none", null], ["price_pro", "none", null]]);
+    }],
+    ["Plus to Pro with a declined card leaves the plan, the hours and the item as they were", async () => {
+      seedSubscribed(plusAccount, "price_plan", [4]);
+      harness.net.once.push({ match: /POST .*\/subscription_items\/si_plan$/, reply: harness.net.reply({ error: { message: "Your card was declined." } }, 402) });
+      const response = await checkout("pro");
+      expect(response.status).toBe(402);
+      expect((await errorOf(response))?.code).toBe("payment_failed");
+      expect(accountRow()).toEqual(expect.objectContaining({ paid_plan: "plus", paid_plan_next: null, included_milli: 500_000 }));
+      expect(planItem()).toBe("price_plan");
+    }],
+    ["a Stripe answer whose item isn't on the new price writes nothing", async () => {
+      seedSubscribed(plusAccount, "price_plan", [4]);
+      harness.net.once.push({ match: /POST .*\/subscription_items\/si_plan$/, reply: harness.net.reply({ id: "si_plan", price: { id: "price_plan" } }) });
+      const response = await checkout("pro");
+      expect(response.status).toBe(409);
+      expect((await errorOf(response))?.code).toBe("plan_change_refused");
+      expect(accountRow()).toEqual(expect.objectContaining({ paid_plan: "plus", included_milli: 500_000 }));
+      expect(planItem()).toBe("price_plan");
+    }],
+    ["a grow is billed only once the provider made it: refused never, a lost answer from the old size until the tick sees it", async () => {
+      seedAccount(harness, OWNER, { ...plusAccount, extra_disk_state: "on", extra_disk_limit_cents: 1000 });
+      seedStopped([40], XLARGE);
+      const grow = () => harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 4, memory: 16, disk: 52 });
+      const peak = () => harness.row("select peak_gb from cloud_disk_days where user_id = ? and day = ?", OWNER, DAY_ONE).peak_gb;
+      harness.net.once.push({ match: /POST .*\/resize$/, reply: harness.net.reply({ error: { code: "invalid_request" } }, 400) });
+      expect((await grow()).ok).toBe(false);
+      harness.net.once.push({ match: /POST .*\/resize$/, reply: harness.net.reply({ error: { code: "upstream_timeout" } }, 504) });
+      expect((await grow()).ok).toBe(false);
+      await harness.tick();
+      expect(peak()).toBe(40);
+
+      // The grow landed and the computer woke: the tick settles it without waiting for it to rest.
+      Object.assign(harness.net.instances.get(INSTANCE)!, { status: "running", resources: { cpu: 4, memory: 16, disk: 52 } });
+      clock += 60_000;
+      await harness.tick();
+      expect(computer(harness).disk_reserved_at).toBeNull();
+      clock += DAY;
+      await harness.tick();
+      expect(meterCalls().map((call) => call.body?.["payload[value]"])).toEqual(["12"]);
+    }],
+    ["a move's old computer counts once while the move runs, and again if it outlives the move", async () => {
+      seedAccount(harness, OWNER);
+      harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+      seedStopped([8]);
+      const wakeOld = () => harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/start`, {});
+      const moveFrom = (id: string) => harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, moveFromInstanceId: id });
+      const usedGb = async () => ((await (await harness.send(OWNER, "GET", "/cloud/account")).json()) as { disk: { usedGb: number } }).disk.usedGb;
+      expect((await moveFrom(INSTANCE)).status).toBe(201);
+      expect(await usedGb()).toBe(8);
+      expect((await wakeOld()).status).toBe(200);
+      // One move at a time: neither the new computer nor the old one starts another while it runs.
+      for (const id of ["madenew12345", INSTANCE]) expect((await errorOf(await moveFrom(id)))?.code).toBe("computer_busy");
+
+      clock += 3 * HOUR;
+      await harness.tick();
+      expect((await errorOf(await wakeOld()))?.code).toBe("over_plan_disk");
+      expect(await usedGb()).toBe(16);
+    }],
+    ["the owner's limit reached last month lets a new computer in once the month turns, with no computer left", async () => {
+      seedAccount(harness, OWNER, plusAccount);
+      harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+      harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "10", updated_at: NOW });
+      harness.insert("cloud_settings", { key: "cost_mtd_micros", value: "10000000", updated_at: NOW });
+      clock = Date.UTC(2026, 11, 1, 3);
+      await harness.tick();
+      expect((await harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 } })).status).toBe(201);
+    }],
+  ])("plans and billing: %s", async (_label, run) => {
+    Object.assign(harness.env, MONEY_ENV);
+    await run();
+  });
+
+  it.each<[string, string, string, Row, number, string | null, RegExp]>([
+    ["a new computer", "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 } }, 503, "unavailable", /POST .*\/instances$/],
+    ["a copy", "POST", `/cloud/instances/${INSTANCE}/fork`, {}, 503, "unavailable", /POST .*\/fork$/],
+    ["a move", "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, moveFromInstanceId: INSTANCE }, 503, "unavailable", /POST .*\/instances$/],
+    ["a disk grow", "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 2, memory: 4, disk: 8 }, 403, "disk_limit", /POST .*\/resize$/],
+    ["a wake still works", "POST", `/cloud/instances/${INSTANCE}/start`, {}, 200, null, /POST .*\/start$/],
+  ])("owner's cost limit reached: %s", async (_label, method, url, body, status, code, providerCall) => {
+    seedAccount(harness, OWNER, plusAccount);
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "10", updated_at: NOW });
+    harness.insert("cloud_settings", { key: "cost_mtd_micros", value: "10000000", updated_at: NOW });
+    seedStopped([4]);
+
+    const response = await harness.send(OWNER, method, url, body);
+
+    expect(response.status).toBe(status);
+    expect(status === 200 ? null : (await errorOf(response))?.code).toBe(code);
+    expect(providerCalls(harness, providerCall)).toHaveLength(code ? 0 : 1);
+    expect(harness.rows("select instance_id from cloud_computers where deleted_at is null order by instance_id")).toEqual([{ instance_id: INSTANCE }]);
+    expect(computer(harness).disk_gb).toBe(4);
   });
 
   function deleteAccountOverClerk(): Promise<Response> {

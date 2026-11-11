@@ -76,6 +76,7 @@ import {
 import { chatLaunchBindingKey, noteChatLaunchSourceRead } from "./chatLaunchStore";
 import { isAdeAvailable } from "../lib/adeAvailability";
 import { subscribeAdeCloudAccess } from "./cloudAccess";
+import { claimSessionsLiveFirst, machineIsCloudResting, rowShowsConnected } from "./cloudRestingRows";
 import { isSavedChatsMachineId } from "./cloudSavedChats";
 import { scheduleCloudSavedChatsRefresh, type SavedChatsContext } from "./cloudSavedChatsSync";
 
@@ -209,6 +210,13 @@ export type CrossMachineLaneRow = {
   /** Absolute machine name; safe to show verbatim. */
   machineName: string;
   online: boolean;
+  /**
+   * The machine is an ADE Cloud computer that is asleep (or stopped) and still
+   * exists: not connected, but its chats are saved copies a send wakes it for.
+   * It looks like a connected machine (`rowShowsConnected`); `online` stays
+   * false for the guards. A deleted computer's saved chats never set it.
+   */
+  cloudResting?: boolean;
   isThisMachine: boolean;
   /** True for the tab-bound machine whose lanes already render in the primary list. */
   isActiveBinding: boolean;
@@ -803,37 +811,45 @@ export function buildCrossMachineLaneRows(input: {
   // list, the headerless/shape rules, and the quiet-expansion check. A lane
   // left with no sessions is dropped downstream by the rule that already drops
   // a filtered-out one.
-  const claimed = new Set(input.localSessionIds ?? []);
-  for (const entry of Object.values(input.machines)) {
-    // The active binding is already represented by `localLanes`. The sync
-    // cache may also contain that remote machine, so drop its stale/duplicate
-    // slice instead of rendering the same lane twice.
-    if (entry.machineId === activeMachineId) continue;
-    // Only lanes this machine actually reports become rows below, so a session
-    // naming a lane it does not have renders nothing here. Claiming it anyway
-    // would block the machine that DOES have that lane from rendering it, and
-    // the session would vanish from the sidebar entirely — worse than the
-    // duplicate this dedupe exists to remove.
-    const entryLaneIds = new Set(entry.lanes.map((lane) => lane.id));
-    const sessionsByLaneId = new Map<string, TerminalSessionSummary[]>();
-    for (const session of entry.sessions) {
-      const laneId = session.laneId;
-      if (!laneId || !entryLaneIds.has(laneId)) continue;
-      if (claimed.has(session.id)) continue;
-      claimed.add(session.id);
-      const list = sessionsByLaneId.get(laneId);
-      if (list) list.push(session);
-      else sessionsByLaneId.set(laneId, [session]);
+  // The active binding is already represented by `localLanes`. The sync
+  // cache may also contain that remote machine, so drop its stale/duplicate
+  // slice instead of rendering the same lane twice.
+  const entries = Object.values(input.machines).filter((entry) => entry.machineId !== activeMachineId);
+  // Only lanes this machine actually reports become rows below, so a session
+  // naming a lane it does not have renders nothing here. Claiming it anyway
+  // would block the machine that DOES have that lane from rendering it, and
+  // the session would vanish from the sidebar entirely — worse than the
+  // duplicate this dedupe exists to remove. A machine that reports the chat
+  // itself owns it over a saved copy (`claimSessionsLiveFirst`).
+  const laneIdsByMachineId = new Map(entries.map((entry) => [entry.machineId, new Set(entry.lanes.map((lane) => lane.id))]));
+  const sessionsByMachineId = new Map<string, Map<string, TerminalSessionSummary[]>>();
+  for (const { entry, session } of claimSessionsLiveFirst(entries, {
+    claimed: input.localSessionIds ?? [],
+    laneFilter: (owner, laneId) => laneIdsByMachineId.get(owner.machineId)?.has(laneId) === true,
+  })) {
+    const laneId = session.laneId!;
+    let sessionsByLaneId = sessionsByMachineId.get(entry.machineId);
+    if (!sessionsByLaneId) {
+      sessionsByLaneId = new Map();
+      sessionsByMachineId.set(entry.machineId, sessionsByLaneId);
     }
+    const list = sessionsByLaneId.get(laneId);
+    if (list) list.push(session);
+    else sessionsByLaneId.set(laneId, [session]);
+  }
+  for (const entry of entries) {
+    const cloudResting = machineIsCloudResting(entry);
+    const sessionsByLaneId = sessionsByMachineId.get(entry.machineId);
     for (const lane of entry.lanes) {
       rows.push({
         lane,
         machineId: entry.machineId,
         machineName: entry.machineName,
         online: entry.online,
+        ...(cloudResting ? { cloudResting: true } : {}),
         isThisMachine: entry.machineId === THIS_MACHINE_ID,
         isActiveBinding: false,
-        sessions: sessionsByLaneId.get(lane.id) ?? [],
+        sessions: sessionsByLaneId?.get(lane.id) ?? [],
         targetId: entry.targetId,
         projectId: entry.projectId,
         binding: entry.binding ?? null,
@@ -865,7 +881,8 @@ export function orderCrossMachineRows(
   return rows
     .map((row) => ({ row, input: crossMachineLaneOrderInput(row) }))
     .sort((left, right) => {
-      if (left.row.online !== right.row.online) return left.row.online ? -1 : 1;
+      const leftShown = rowShowsConnected(left.row);
+      if (leftShown !== rowShowsConnected(right.row)) return leftShown ? -1 : 1;
       const modeDelta = compareWorkLanes(left.input, right.input, mode, manualIndex);
       if (modeDelta !== 0) return modeDelta;
       return crossMachineLaneId(left.row).localeCompare(crossMachineLaneId(right.row));
@@ -921,7 +938,8 @@ export function resolveCrossMachineLaneMarkers(
     markers.set(markerKey, {
       machineId: row.machineId,
       machineName: row.machineName,
-      online: row.online,
+      // A sleeping cloud computer is not marked offline: a send wakes it.
+      online: rowShowsConnected(row),
       // Always the resting form. Offline is expressed by `online: false`, which
       // dims the glyph and the whole row — a shape change on top of that would
       // be a second signal for one fact.

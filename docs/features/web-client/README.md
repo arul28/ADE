@@ -127,7 +127,10 @@ Browser sync client:
   attribution, with one correlation id spanning directory lookup and route
   attempts. DPoP/token preparation begins in parallel with the socket dial;
   transport open and authenticated hello have separate 8-second and 12-second
-  deadlines. Relay authorization is renewed in place ahead of expiry even
+  deadlines. A direct route that comes before the last good route in the dial
+  order gets 3 seconds to open (ADE Relay always gets the full 8), and a
+  project switch dials the route that was live first
+  (`AdeSyncClient.connect`'s `firstEndpoint`). Relay authorization is renewed in place ahead of expiry even
   while the tab is hidden, so background timer throttling does not turn a
   healthy socket into a reconnect loop. Relay sockets negotiate ready-v2
   first: no ADE hello is sent
@@ -404,7 +407,12 @@ Browser `window.ade` adapter:
   (`prs.getMobileSnapshot`, falling back to `prs.list`) and emits `prs-updated`
   only when the host actually returned a snapshot. `listAll`, `getForLane`, and
   the non-conflict `listWithConflicts` are all derived from that one batched
-  snapshot instead of separate per-call round-trips.
+  snapshot instead of separate per-call round-trips. The PR writing helpers
+  call the machine too: `updateDescription` (`prs.updateDescription`, or
+  `prs.updateBody` on a machine without it), `searchMentionables` and
+  `getRepoReferences` behind the reviewer picker and the @ / # menus. A machine
+  without the two reads says "Update ADE on that computer…" rather than
+  answering an empty list.
 - `apps/desktop/src/renderer/webclient/adapter/sessionsPty.ts` - terminal and
   PTY APIs over `work.*`, `terminal_*`, and `terminal_history`. Live subscribe
   requests up to the same 2 MB used by `TerminalView` hydration. Recovery
@@ -1465,6 +1473,9 @@ URL contract.
   connect it ("Connecting to <machine>…"), match the project (catalog id, then
   a legacy `projectRoot`, then the envelope repo when unambiguous), open it
   unless already open, confirm the chat or lane exists there, then navigate.
+  The loading screen is titled "Opening your link" and lists each step, ticked
+  when it ends, so a slow step is plain to see. The existence check waits 6 s
+  (`OWNED_LINK_CHECK_MS`); with no answer the link opens anyway.
   Failures show one app banner (`WebOwnedLinkBanner.tsx`) with Try again and,
   where it helps, Your computers: computer not in this account, computers list
   unavailable, computer offline, could not connect, project not on that

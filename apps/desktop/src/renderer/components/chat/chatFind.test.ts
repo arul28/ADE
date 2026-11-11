@@ -166,7 +166,7 @@ describe("chat find searches the rows the transcript draws", () => {
 });
 
 describe("ChatFindIndex", () => {
-  it("folds rows in slices, reports only real changes, and keeps excluded rows out of the search", () => {
+  it("folds rows in slices, reports only real changes, keeps excluded rows out, and keeps a changed row searchable", () => {
     const events: TranscriptEvent[] = [
       { type: "user_message", text: "first zebra" },
       { type: "text", text: "second zebra reply", messageId: "reply-2", turnId: "turn-2" },
@@ -187,17 +187,33 @@ describe("ChatFindIndex", () => {
     expect(index.update(rows, new Set([rows[1]!.key]))).toBe(true);
     expect(index.docs().map((doc) => doc.key)).toEqual([rows[0]!.key, rows[2]!.key]);
 
-    // A streamed reply changes its text: until it is folded again it is left out.
+    // A streamed reply changes its text: it stays searchable by its last fold
+    // until it is folded again, so its matches do not drop out between folds.
     const streamed = transcriptRows([
       events[0]!,
       events[1]!,
       { type: "text", text: "third reply, still streaming", messageId: "reply-3", turnId: "turn-3" },
     ]);
+    const searchable = (query: string) => computeChatFindMatches(index.docs(), query).entries.map((entry) => entry.key);
     expect(index.update(streamed, new Set([streamed[1]!.key]))).toBe(true);
     expect(index.hasPending()).toBe(true);
-    expect(index.docs().map((doc) => doc.key)).toEqual([rows[0]!.key]);
+    expect(index.onlyRefoldsPending()).toBe(true);
+    expect(searchable("third reply")).toEqual([streamed[2]!.key]);
+    expect(searchable("streaming")).toEqual([]);
     expect(index.indexSome(Number.POSITIVE_INFINITY)).toBe(true);
-    expect(index.docs().map((doc) => doc.key)).toEqual([rows[0]!.key, streamed[2]!.key]);
+    expect(index.onlyRefoldsPending()).toBe(false);
+    expect(searchable("streaming")).toEqual([streamed[2]!.key]);
+
+    // A row never folded (history paging in, a new message) is not such a wait.
+    const longer = transcriptRows([
+      ...events.slice(0, 2),
+      { type: "text", text: "third reply, still streaming, more", messageId: "reply-3", turnId: "turn-3" },
+      { type: "user_message", text: "a new message" },
+    ]);
+    expect(index.update(longer, new Set([longer[1]!.key]))).toBe(true);
+    expect(index.onlyRefoldsPending()).toBe(false);
+    expect(searchable("streaming")).toEqual([longer[2]!.key]);
+    expect(searchable("new message")).toEqual([]);
   });
 });
 

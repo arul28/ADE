@@ -158,6 +158,12 @@ export type ModelPickerContentProps = {
   models: readonly ModelDescriptor[];
   isAvailable: (modelId: string) => boolean;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
+  /**
+   * Families whose runtime is not installed, from the same status as
+   * `providerAuthStatus` (`familiesWithoutRuntime`). Their rows stay dimmed;
+   * without it, a family that is not ready reads as a missing sign-in.
+   */
+  providerRuntimeMissing?: Partial<Record<ProviderFamily, true>>;
   onSelect: (modelId: string, options?: ModelPickerSelection) => void;
   onRequestClose: () => void;
   /** Opens Settings › Providers › Custom from the Custom empty state. */
@@ -246,6 +252,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   models,
   isAvailable,
   providerAuthStatus,
+  providerRuntimeMissing,
   onSelect,
   onRequestClose,
   onOpenHarnessSettings,
@@ -325,6 +332,21 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       return status === "ok" || status === "limited";
     },
     [effectiveAuth],
+  );
+
+  // The family's runtime is not installed on the picker's machine, so a
+  // sign-in alone cannot make it usable: its rows stay dimmed, as before.
+  // A host that passes its own `providerAuthStatus` passes this from the same
+  // status, or nothing: then its families read as a missing sign-in.
+  const runtimeMissing = hasExternalAuthStatus ? providerRuntimeMissing : internalAuth.runtimeMissing;
+  const familyRuntimeMissing = useCallback(
+    (family: ProviderFamily): boolean => runtimeMissing?.[family] === true,
+    [runtimeMissing],
+  );
+  // Ready, or only its sign-in is missing: a click selects the model.
+  const familySelectable = useCallback(
+    (family: ProviderFamily): boolean => familyIsReady(family) || !familyRuntimeMissing(family),
+    [familyIsReady, familyRuntimeMissing],
   );
 
   const matchesCursorAvailabilityMode = useCallback(
@@ -645,18 +667,23 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     focusRowOnNextRenderRef.current = false;
   }, [focusedIndex, renderedVirtualRows, visibleModels]);
 
-  // The provider family is signed out on this picker's machine. Only this
-  // reason leaves a model selectable: the row says "Not signed in" and a run
-  // with it fails with the usual sign-in message until the person signs in.
+  // The provider family is signed out on this picker's machine, and its
+  // runtime is there. Only this reason leaves a model selectable: the row says
+  // "Not signed in" and a run with it fails with the usual sign-in message
+  // until the person signs in.
   const modelNeedsSignIn = useCallback(
-    (m: ModelDescriptor): boolean =>
-      Object.keys(effectiveAuth).length > 0 && !familyIsReady(pickerFamilyForModel(m)),
-    [effectiveAuth, familyIsReady],
+    (m: ModelDescriptor): boolean => {
+      if (Object.keys(effectiveAuth).length === 0) return false;
+      const family = pickerFamilyForModel(m);
+      return !familyIsReady(family) && !familyRuntimeMissing(family);
+    },
+    [effectiveAuth, familyIsReady, familyRuntimeMissing],
   );
 
   // Selectable. False only for reasons other than a missing sign-in: the model
-  // needs configuration, the Cursor mode excludes it, or the caller's own list
-  // does not offer it on a signed-in provider. Those rows stay dimmed.
+  // needs configuration, the Cursor mode excludes it, its runtime is not
+  // installed, or the caller's own list does not offer it on a signed-in
+  // provider. Those rows stay dimmed.
   const isAvailableForUse = useCallback(
     (m: ModelDescriptor): boolean => {
       if (!matchesCursorAvailabilityMode(m)) return false;
@@ -667,18 +694,19 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       // family is authed.
       if (modelRequiresConfiguration(m)) return false;
       if (cursorAvailabilityMode === "cli" && pickerFamilyForModel(m) === "cursor" && m.cursorAvailability?.cli === true) {
-        return true;
+        return Object.keys(effectiveAuth).length > 0 ? familySelectable("cursor") : true;
       }
       if (Object.keys(effectiveAuth).length > 0) {
-        if (providerAuthEstablishesModelAvailability(m)) return true;
+        const family = pickerFamilyForModel(m);
+        if (providerAuthEstablishesModelAvailability(m)) return familySelectable(family);
         // A signed-out family lists none of its models, so the caller's list
         // saying no is the sign-in, not another reason.
-        if (!familyIsReady(pickerFamilyForModel(m))) return true;
+        if (!familyIsReady(family)) return familySelectable(family);
         return isAvailable(m.id);
       }
       return isAvailable(m.id);
     },
-    [cursorAvailabilityMode, effectiveAuth, familyIsReady, isAvailable, matchesCursorAvailabilityMode],
+    [cursorAvailabilityMode, effectiveAuth, familyIsReady, familySelectable, isAvailable, matchesCursorAvailabilityMode],
   );
 
   // One row with a Sign in button makes every row keep its column, so the

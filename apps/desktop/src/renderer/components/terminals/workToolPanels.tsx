@@ -863,6 +863,7 @@ function WorkMacDesktopTool({
         laneName={activeLane?.name ?? null}
         sessionId={panelSessionId}
         runtimePin={runtimePin}
+        hostPlatform={toolContext.hostPlatform ?? null}
       />
     </NativePanelFrame>
   );
@@ -894,6 +895,7 @@ function WorkWindowsDesktopTool(props: WorkToolPanelProps) {
         laneName={activeLane?.name ?? null}
         sessionId={panelSessionId}
         runtimePin={runtimePin}
+        hostPlatform={toolContext.hostPlatform ?? null}
       />
     </NativePanelFrame>
   );

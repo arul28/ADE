@@ -3,6 +3,7 @@ import { StringDecoder } from "node:string_decoder";
 import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
 import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
+import { adeHostWithheldAgentSkills } from "../../../shared/agentSkillRoots";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
 import { probeClaudeKeychainLogin } from "../ai/providerCredentialSources";
@@ -9766,6 +9767,11 @@ export function buildComputerUseDirective(
     windowsDesktopAvailable?: boolean;
     /** This host can give the lane a Linux screen (Linux Desktop). */
     linuxDesktopAvailable?: boolean;
+    /**
+     * This host can run `ade apple` (a Mac). Off on Windows and Linux, where
+     * the ade-apple skill is withheld too (`adeHostWithheldAgentSkills`).
+     */
+    appleAvailable?: boolean;
   } = {},
 ): string | null {
   const hasExternalBackends = backendStatus
@@ -9779,6 +9785,7 @@ export function buildComputerUseDirective(
   const hasLocalFallback = backendStatus?.localFallback.available ?? false;
 
   const ownScreen = Boolean(options.macDesktopAvailable || options.windowsDesktopAvailable || options.linuxDesktopAvailable);
+  const apple = options.appleAvailable !== false;
   // No backends, no local fallback and no lane screen → skip the directive
   // entirely. A headless Linux brain has neither of the first two, and its
   // lane screen is the only screen an agent there can use.
@@ -9796,7 +9803,9 @@ export function buildComputerUseDirective(
   sections.push(
     [
       "## Computer Use",
-      "Read the **ade-computer-use** skill before your first screen action; it picks the surface: an iOS app → `ade apple`, a dev Electron app's DOM → `ade app-control`, a web page or localhost → `ade browser` (shares the user's sign-ins; `--profile <name>` for another account; attach to the user's own browser only when they ask).",
+      "Read the **ade-computer-use** skill before your first screen action; it picks the surface: "
+        + (apple ? "an iOS app → `ade apple`, " : "")
+        + "a dev Electron app's DOM → `ade app-control`, a web page or localhost → `ade browser` (shares the user's sign-ins; `--profile <name>` for another account; attach to the user's own browser only when they ask).",
       "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task; act on the user's real screen only when the user explicitly asks.",
       ownScreen
         ? "`mcp__computer_use`, `osascript`, `cliclick`, `screencapture` and any other tool outside `ade` that clicks, types or captures drive the user's real screen: use them only when the user asks you to operate their screen, and do not bootstrap `@oai/sky` through `node_repl` as a substitute."
@@ -9842,7 +9851,8 @@ export function buildComputerUseDirective(
   sections.push(
     [
       "### Proof Capture",
-      "When the user asks for proof, capture visual proof first; logs are supporting diagnostics only. ADE does not passively ingest computer-use output: file each capture with the tool that shows the work (`ade browser proof`, `ade app-control proof`, `ade apple proof`"
+      "When the user asks for proof, capture visual proof first; logs are supporting diagnostics only. ADE does not passively ingest computer-use output: file each capture with the tool that shows the work (`ade browser proof`, `ade app-control proof`"
+        + (apple ? ", `ade apple proof`" : "")
         + (options.windowsDesktopAvailable || options.linuxDesktopAvailable || options.macDesktopAvailable ? ", `ade screen proof`" : "")
         + "), or `ade proof attach` / `ingest_computer_use_artifacts` for an existing file. "
         + (ownScreen
@@ -56258,6 +56268,9 @@ export function createAgentChatService(args: {
       macDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "darwin",
       windowsDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "win32",
       linuxDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "linux",
+      // The chat runs in this brain, on the lane's machine, so the skill rule
+      // for this host also decides whether `ade apple` can run.
+      appleAvailable: !adeHostWithheldAgentSkills().includes("ade-apple"),
     });
   };
 

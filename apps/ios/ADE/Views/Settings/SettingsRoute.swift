@@ -2,11 +2,14 @@ import SwiftUI
 
 /// Settings' pages, in the desktop sidebar's order and under its group names
 /// (`SETTINGS_TABS` in `apps/desktop/src/shared/settingsManifest.ts`), so a
-/// person who learns one finds the other in the same place. A desktop page the
+/// person who learns one finds the other in the same place. One exception:
+/// Machines comes first, above General, because on the phone the machines it
+/// works on matter most. A desktop page the
 /// phone cannot reach (Keyboard, the desktop's own Appearance, ADE MCP,
 /// Secrets, Location, Storage) is left out rather than shown empty: the
 /// machine has no command a phone may call for it.
 enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
+  case machines
   case general
   case account
   case usage
@@ -16,7 +19,6 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
   case notifications
   case appearance
   case lanes
-  case machines
   case advanced
 
   var id: String { rawValue }
@@ -87,17 +89,17 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
 
   var group: SettingsRouteGroup {
     switch self {
-    case .general: return .overview
+    case .machines, .general: return .overview
     case .account, .usage: return .you
     case .chat, .providers, .integrations, .notifications, .appearance: return .app
     case .lanes: return .project
-    case .machines, .advanced: return .system
+    case .advanced: return .system
     }
   }
 }
 
-/// The desktop sidebar's groups (`SETTINGS_GROUPS`). General is one row above
-/// them with no heading of its own.
+/// The desktop sidebar's groups (`SETTINGS_GROUPS`). Machines and General are
+/// rows above them with no heading of their own.
 enum SettingsRouteGroup: CaseIterable {
   case overview, you, app, project, system
 

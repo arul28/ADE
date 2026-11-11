@@ -61,6 +61,12 @@ Plain `adb shell …` reads (`dumpsys`, `getprop`, `pm list`) are fine, with
   boot can take a minute). `ANDROID_LOW_MEMORY` means the machine is short
   of memory: stop an emulator you no longer need (`android stop`), or tell
   the user. Ask the user before `android start --force`.
+  `ANDROID_LOW_DISK` means the disk has too little free space for a new
+  device's first start (its data partition takes about 7 GB free); the
+  sentence gives both numbers. On an ADE Cloud computer the user grows the
+  disk from the Android pane (**Grow the disk**; the computer restarts).
+  Elsewhere, tell the user to free space. Never delete project files, build
+  output or caches to make room, and `--force` does not help.
 - `state: booted`: drive it.
 
 ADE stops an emulator it started that nobody has used for 20 minutes

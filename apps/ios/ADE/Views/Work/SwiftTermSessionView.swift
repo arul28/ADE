@@ -123,7 +123,9 @@ final class TerminalSessionController: NSObject, ObservableObject {
   private static let maxQueuedEvents = 256
 
   private(set) var sessionId = ""
-  private weak var syncService: SyncService?
+  /// The connection of the session's own machine: `SyncService` for the
+  /// focused machine, or that machine's light link.
+  private weak var transport: TerminalStreamTransport?
   private var terminalView: ADESwiftTermView?
 
   // Loaded transcript window as raw bytes plus its host byte offsets. The
@@ -160,6 +162,12 @@ final class TerminalSessionController: NSObject, ObservableObject {
   private var lastLayoutSize: CGSize = .zero
   private var pinchBaseFontSize: CGFloat = TerminalSessionController.defaultFontSize
   private var ctrlResetObserver: NSObjectProtocol?
+  /// The owner token from the last attach. Only this token detaches the handler.
+  private var streamToken: UUID?
+  /// False while the connection no longer serves the session's machine (the
+  /// focus moved, or the light link is down). Then the screen sends no
+  /// resize, poll, resume or resubscribe.
+  private var connectionServesSession = true
 
   // Hosts that stamp transcript offsets push live terminal_data; legacy hosts
   // (pre-offset brains) never push terminal output at all, so the screen
@@ -178,14 +186,19 @@ final class TerminalSessionController: NSObject, ObservableObject {
 
   // MARK: - Lifecycle
 
-  func activate(syncService: SyncService, sessionId: String, sessionStatus: String) {
-    self.syncService = syncService
+  func activate(transport: TerminalStreamTransport, sessionId: String, sessionStatus: String) {
+    // A second activate replaces this controller's own handler. It does not
+    // stack a second entry that no deactivate removes.
+    if let previousToken = streamToken, let previousTransport = self.transport {
+      previousTransport.detachTerminalStream(sessionId: self.sessionId, token: previousToken)
+    }
+    self.transport = transport
     self.sessionId = sessionId
     let status = sessionStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     if status == "ended" || status == "exited" || status == "stopped" {
       hasExited = true
     }
-    syncService.attachTerminalStream(sessionId: sessionId) { [weak self] event in
+    streamToken = transport.attachTerminalStream(sessionId: sessionId) { [weak self] event in
       self?.handleStreamEvent(event)
     }
     let resumeOffset = transcriptEndOffset
@@ -196,6 +209,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
   }
 
   func retrySubscribe() {
+    guard connectionServesSession else { return }
     subscribeError = nil
     Task { @MainActor [weak self] in
       guard let self else { return }
@@ -204,9 +218,9 @@ final class TerminalSessionController: NSObject, ObservableObject {
   }
 
   private func subscribeStream(sinceOffset: Int?) async {
-    guard let syncService, !sessionId.isEmpty else { return }
+    guard let transport, !sessionId.isEmpty else { return }
     do {
-      try await syncService.subscribeTerminalStream(sessionId: sessionId, sinceOffset: sinceOffset)
+      try await transport.subscribeTerminalStream(sessionId: sessionId, sinceOffset: sinceOffset)
       isSubscribed = true
       subscribeError = nil
       startLegacyPollingIfNeeded()
@@ -222,23 +236,28 @@ final class TerminalSessionController: NSObject, ObservableObject {
     pendingInput = ""
     legacyPollTask?.cancel()
     legacyPollTask = nil
-    guard let syncService, !sessionId.isEmpty else { return }
-    syncService.detachTerminalStream(sessionId: sessionId)
+    guard let transport, !sessionId.isEmpty else { return }
+    transport.detachTerminalStream(sessionId: sessionId, token: streamToken)
+    streamToken = nil
     isSubscribed = false
     let id = sessionId
     Task { @MainActor in
       // Pop-then-repush of the same session can order the old screen's
       // disappear after the new screen's subscribe; unsubscribing then would
       // sever the new screen's live stream (and trigger the host's
-      // desktop-size restore). Skip when another screen has re-attached.
-      guard !syncService.hasTerminalStream(sessionId: id) else { return }
-      try? await syncService.unsubscribeTerminal(sessionId: id)
+      // desktop-size restore). Skip when another screen owns the handler.
+      guard !transport.hasTerminalStream(sessionId: id) else { return }
+      try? await transport.unsubscribeTerminal(sessionId: id)
     }
   }
 
   /// Relaunch an ended/orphaned session's runtime and re-attach the stream.
   func resume() {
-    guard !isResuming, let syncService, !sessionId.isEmpty else { return }
+    guard !isResuming, let transport, !sessionId.isEmpty else { return }
+    guard connectionServesSession else {
+      resumeError = "Not connected to this session's computer."
+      return
+    }
     isResuming = true
     resumeError = nil
     ADEHaptics.medium()
@@ -250,12 +269,12 @@ final class TerminalSessionController: NSObject, ObservableObject {
       defer { self?.isResuming = false }
       guard let self else { return }
       do {
-        _ = try await syncService.resumeCliSession(sessionId: id, cols: cols, rows: rows)
-        guard self.sessionId == id, syncService.hasTerminalStream(sessionId: id) else { return }
+        _ = try await transport.resumeCliSession(sessionId: id, cols: cols, rows: rows)
+        guard self.sessionId == id, transport.hasTerminalStream(sessionId: id) else { return }
         self.hasExited = false
         // The relaunched PTY appends to the same transcript; resume the
         // stream exactly after what's already rendered.
-        try? await syncService.subscribeTerminalStream(sessionId: id, sinceOffset: self.transcriptEndOffset)
+        try? await transport.subscribeTerminalStream(sessionId: id, sinceOffset: self.transcriptEndOffset)
         self.isSubscribed = true
         self.startLegacyPollingIfNeeded()
       } catch {
@@ -276,26 +295,30 @@ final class TerminalSessionController: NSObject, ObservableObject {
         try? await Task.sleep(nanoseconds: Self.legacyPollIntervalNs)
         if Task.isCancelled { return }
         if self.hostSupportsOffsets == true || self.hasExited { return }
-        guard let syncService = self.syncService, self.isSubscribed, self.readyToFeed else { continue }
+        guard let transport = self.transport, self.isSubscribed, self.readyToFeed,
+              self.connectionServesSession else { continue }
         // Don't yank the viewport out from under a reader: replace-hydrates
         // re-pin to the bottom.
         guard self.isPinnedToBottom else { continue }
-        try? await syncService.refreshTerminalSnapshot(
+        try? await transport.refreshTerminalSnapshot(
           sessionId: self.sessionId,
-          maxBytes: Self.legacyPollBudgetBytes
+          maxBytes: Self.legacyPollBudgetBytes,
+          sinceOffset: nil
         )
       }
     }
   }
 
   func handleConnectionChange(isConnected: Bool) {
-    if isConnected, let syncService,
-       syncService.hasTerminalStream(sessionId: sessionId) {
+    connectionServesSession = isConnected
+    if isConnected, let transport,
+       transport.hasTerminalStream(sessionId: sessionId) {
       // The sync layer re-subscribes with sinceOffset on reconnect; we only
       // need to re-assert the phone's PTY size. The attached stream handler
       // persists across transport teardown, unlike the confirmed-subscription
-      // set, and uniquely represents this active full-screen terminal.
-      isSubscribed = true
+      // set, and uniquely represents this active full-screen terminal. A
+      // failed resubscribe keeps its error until a snapshot or Retry.
+      isSubscribed = subscribeError == nil
       lastSentSize = nil
       if let terminal = terminalView?.getTerminal() {
         sendResizeIfNeeded(cols: terminal.cols, rows: terminal.rows)
@@ -452,6 +475,12 @@ final class TerminalSessionController: NSObject, ObservableObject {
     case .inputFailure(let message):
       inputStatusMessage = message
       blockedInputPulse += 1
+    case .subscribeFailure(let message):
+      isSubscribed = false
+      subscribeError = message
+    case .resumed:
+      isSubscribed = true
+      subscribeError = nil
     }
   }
 
@@ -512,7 +541,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
 
   func loadOlderHistoryIfNeeded() {
     guard !isLoadingHistory, !historyAtStart else { return }
-    guard let syncService else { return }
+    guard let transport else { return }
     guard let startOffset = transcriptStartOffset, startOffset > 0 else { return }
     guard transcript.count < Self.transcriptByteCap else { return }
     isLoadingHistory = true
@@ -521,7 +550,11 @@ final class TerminalSessionController: NSObject, ObservableObject {
       defer { self?.isLoadingHistory = false }
       guard let self else { return }
       do {
-        let slice = try await syncService.fetchTerminalHistory(sessionId: id, beforeOffset: startOffset)
+        let slice = try await transport.fetchTerminalHistory(
+          sessionId: id,
+          beforeOffset: startOffset,
+          maxBytes: syncTerminalHistoryMaxBytes
+        )
         // A replace-hydration may have landed while the fetch was in flight;
         // prepending stale bytes would corrupt the window.
         guard self.transcriptStartOffset == startOffset, slice.endOffset == startOffset else { return }
@@ -564,8 +597,8 @@ final class TerminalSessionController: NSObject, ObservableObject {
   // MARK: - Input
 
   var canSendInput: Bool {
-    guard let syncService else { return false }
-    return syncService.canAcceptTerminalInput(sessionId: sessionId) && !hasExited
+    guard let transport else { return false }
+    return transport.canAcceptTerminalInput(sessionId: sessionId) && !hasExited
   }
 
   func enqueueInput(_ text: String) {
@@ -636,7 +669,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
     let buffered = pendingInput
     pendingInput = ""
     guard !buffered.isEmpty else { return }
-    guard let submission = syncService?.sendTerminalInput(
+    guard let submission = transport?.sendTerminalInput(
       sessionId: sessionId,
       data: buffered
     ) else { return }
@@ -667,12 +700,12 @@ final class TerminalSessionController: NSObject, ObservableObject {
   #endif
 
   private func sendResizeIfNeeded(cols: Int, rows: Int) {
-    guard cols > 1, rows > 1 else { return }
+    guard cols > 1, rows > 1, connectionServesSession else { return }
     if let lastSentSize, lastSentSize.cols == cols, lastSentSize.rows == rows {
       return
     }
     lastSentSize = (cols, rows)
-    syncService?.sendTerminalResize(sessionId: sessionId, cols: cols, rows: rows)
+    transport?.sendTerminalResize(sessionId: sessionId, cols: cols, rows: rows)
   }
 
   // MARK: - Scroll pinning

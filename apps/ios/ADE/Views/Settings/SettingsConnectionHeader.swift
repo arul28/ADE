@@ -300,7 +300,7 @@ struct SettingsConnectionHeader: View {
   }
 
   /// Without a card of its own: the caller frames it, alone or inside
-  /// General's "This machine".
+  /// General's "Primary machine".
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .center, spacing: 12) {
@@ -417,16 +417,19 @@ struct SettingsConnectionHeader: View {
       return nil
     }
     let missingCount = snapshot.hostCompatibilityMissingActions.count
+    // The machine by name: "this machine" on the phone reads as the phone.
+    let machine = syncTrimmedMachineName(snapshot.attachedMachineName ?? snapshot.hostDisplayName)
     if snapshot.hostCompatibilityMissingActions.contains("commandRouting") {
-      return "This machine is running an older ADE brain. Update ADE on the machine to enable mobile actions."
+      return "\(machine ?? "Your primary machine") runs an older ADE brain. Update ADE there to enable mobile actions."
     }
+    let onMachine = machine.map { "on \($0)" } ?? "on your primary machine"
     if missingCount > 0 {
       if missingCount == 1 {
-        return "1 mobile action needs a newer ADE brain on this machine."
+        return "1 mobile action needs a newer ADE brain \(onMachine)."
       }
-      return "\(missingCount) mobile actions need a newer ADE brain on this machine."
+      return "\(missingCount) mobile actions need a newer ADE brain \(onMachine)."
     }
-    return "Update ADE on this machine for full mobile support."
+    return "Update ADE \(onMachine) for full mobile support."
   }
 
   /// Shown only once the wake has settled. During the attempt the trailing

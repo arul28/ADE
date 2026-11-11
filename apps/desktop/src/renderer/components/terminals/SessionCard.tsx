@@ -120,6 +120,9 @@ import {
   SESSION_TONE_TEXT_CLASS,
   formatFutureDuration,
   sessionElapsedAnchor,
+  WAKING_STATUS_PRESENTATION,
+  sessionTurnLive,
+  wakingSessionView,
 } from "../../../shared/sessionStatusPresentation";
 import { LaneNamingLabel, NamingPendingLabel } from "./LaneNamingLabel";
 import {
@@ -484,6 +487,7 @@ const SUBAGENT_MARK_STATUS_GLYPH: Record<NestedSubagentStatus, React.ReactNode> 
   running: <CircleNotch size={8} weight="bold" aria-hidden />,
 };
 
+
 /** The launch's moving status line, isolated so progress ticks re-render only this text. */
 function ChatLaunchStatusText({ launchId }: { launchId: string }) {
   const text = useChatLaunchStatusLine(launchId);
@@ -493,7 +497,7 @@ function ChatLaunchStatusText({ launchId }: { launchId: string }) {
 // The list rebuilds each card's handlers on every render (session updates,
 // timers); with them proxied a card re-renders only when what it shows changes.
 export const SessionCard = memoWithLatestHandlers(function SessionCard({
-  session,
+  session: sessionProp,
   lane,
   isSelected,
   isMultiSelected,
@@ -651,6 +655,15 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   /** A nested subagent still keeps this chat busy, so a finished row reads Waiting. */
   subagentBusy?: boolean;
 }) {
+  // Set while a send wakes this chat's sleeping cloud computer: when the wake
+  // started (ISO). A string per card, so a mark on another row re-renders nothing here.
+  const markedWakingSince = useRootAppStore((state) => state.cloudWakingSinceBySessionId[sessionProp.id] ?? null);
+  // The live turn wins: the mark can outlast the turn's start by one store update.
+  const wakingSince = markedWakingSince && !sessionTurnLive(sessionProp) ? markedWakingSince : null;
+  const session = React.useMemo(
+    () => (wakingSince ? wakingSessionView(sessionProp, wakingSince) : sessionProp),
+    [sessionProp, wakingSince],
+  );
   const navigate = useNavigate();
   // Hover INTENT, not hover: a one-second rest on the row, cancelled by any
   // pointer-leave or scroll. See `SessionHoverCard` for why this is not a
@@ -731,7 +744,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   // stall bar or its wake turns overdue.
   const statusClockSessions = React.useMemo(() => [session], [session]);
   const statusClockMs = useTurnStallClock(statusClockSessions);
-  const presentation = sessionStatusDisplay(sessionAttentionInput, {
+  const presentation = wakingSince ? WAKING_STATUS_PRESENTATION : sessionStatusDisplay(sessionAttentionInput, {
     snoozed,
     woke: !snoozed && Boolean(wokeMarker),
     snoozeWakeLabel: snoozed ? snoozeWakeLabel(session.snoozedUntil) : null,

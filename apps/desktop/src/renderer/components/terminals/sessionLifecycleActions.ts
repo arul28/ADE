@@ -19,6 +19,7 @@ import {
   type SnoozeDurationKey,
 } from "../../lib/sessionSnooze";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { sendWithCloudWakeMark } from "../../state/cloudSavedChatsSync";
 
 /**
  * One place for every write the Work tab's menus make against a session: the
@@ -507,7 +508,7 @@ export async function setChatGoal(
         : window.ade.agentChat.codex.setGoal({ sessionId: session.id, objective }));
     } else {
       const args = { sessionId: session.id, text: `/goal ${objective}` };
-      await (pin ? window.ade.agentChat.send(args, pin) : window.ade.agentChat.send(args));
+      await sendWithCloudWakeMark(session.id, pin, () => (pin ? window.ade.agentChat.send(args, pin) : window.ade.agentChat.send(args)));
     }
     showToast({ id: `chat-goal:${session.id}`, title: "Goal set", message: objective });
   } catch (error) {

@@ -1,5 +1,7 @@
 /** Shared formatting utilities for the renderer. */
 
+import { stripElectronErrorWrapper } from "../../shared/codedError";
+
 // Lives in shared so main-process and renderer text can use the same sizes.
 export { formatBytes } from "../../shared/formatting";
 
@@ -204,13 +206,12 @@ export function extractError(err: unknown): string {
 
 /**
  * The message an IPC call failed with, without Electron's
- * "Error invoking remote method '<channel>': Error: " wrapper. Empty when the
- * thrown value carries no message, so the caller can show its own fallback.
+ * "Error invoking remote method '<channel>': <Class>Error: " wrapper. Empty
+ * when the thrown value carries no message, so the caller can show its own
+ * fallback.
  */
 export function ipcErrorMessage(err: unknown): string {
-  return err instanceof Error
-    ? err.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "").trim()
-    : "";
+  return err instanceof Error ? stripElectronErrorWrapper(err.message) : "";
 }
 
 /** Shorten a SHA-like hash to the first 8 characters. */

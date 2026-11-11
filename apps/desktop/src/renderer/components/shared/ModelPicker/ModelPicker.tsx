@@ -83,6 +83,12 @@ export type ModelPickerProps = {
   filter?: (model: ModelDescriptor) => boolean;
   models?: readonly ModelDescriptor[];
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
+  /**
+   * Families whose runtime is not installed, from the same status as
+   * `providerAuthStatus` (`familiesWithoutRuntime`). Their rows stay dimmed;
+   * without it, a family that is not ready reads as a missing sign-in.
+   */
+  providerRuntimeMissing?: Partial<Record<ProviderFamily, true>>;
   onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
   hideSignInFamilies?: readonly ProviderFamily[];
   onRuntimeCatalogRefreshed?: (
@@ -203,6 +209,7 @@ export const ModelPicker = memo(function ModelPicker({
   filter,
   models,
   providerAuthStatus,
+  providerRuntimeMissing,
   onOpenSignIn,
   hideSignInFamilies,
   onRuntimeCatalogRefreshed,
@@ -577,7 +584,11 @@ export const ModelPicker = memo(function ModelPicker({
             className="outline-none"
             style={{ zIndex: Z_LAYERS.popover }}
             onCloseAutoFocus={(event) => {
-              event.preventDefault();
+              // Keep focus that went somewhere else (the host's prompt box, an
+              // outside click). Focus that fell to the page after a keyboard
+              // pick or Escape goes back to the trigger (Radix's default).
+              const active = document.activeElement;
+              if (active && active !== document.body) event.preventDefault();
             }}
           >
             {open ? (
@@ -587,6 +598,7 @@ export const ModelPicker = memo(function ModelPicker({
                 models={modelList}
                 isAvailable={isAvailable}
                 {...(providerAuthStatus ? { providerAuthStatus } : {})}
+                {...(providerRuntimeMissing ? { providerRuntimeMissing } : {})}
                 onSelect={handleSelect}
                 onRequestClose={handleRequestClose}
                 {...(onOpenHarnessSettings ? { onOpenHarnessSettings: handleOpenHarnessSettings } : {})}

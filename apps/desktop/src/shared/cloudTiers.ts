@@ -1,17 +1,18 @@
-import type { CloudCatalog } from "../../../account-directory/src/cloud/contract";
+import type { CloudCatalog, CloudTierId as CatalogTierId } from "../../../account-directory/src/cloud/contract";
 
 /**
  * The four sizes a person picks for an ADE Cloud lane: Small, Medium, Large
  * and X-Large. Each is one size from the server's catalog (`GET
  * /cloud/account`), so its hours rate is the catalog's, never a number here.
  *
- * A catalog size may name its tier itself (`tier`). Until the server sends
- * that, a tier is found by its shape: Small is a standard 2 CPU / 4 GB,
- * Medium a standard 4 / 8, Large a full computer 4 / 8, X-Large a full
- * computer 4 / 16.
+ * The server names each tier's size (`tier`), with its `label` and
+ * `diskMaxGb`. An older server sends none of these: then a tier is found by
+ * its shape (Small is a standard 2 CPU / 4 GB, Medium a standard 4 / 8,
+ * Large a full computer 4 / 8, X-Large a full computer 4 / 16), with the
+ * labels here and no disk limit.
  */
 
-export type CloudTierId = "small" | "medium" | "large" | "xlarge";
+export type CloudTierId = CatalogTierId;
 
 export const CLOUD_TIER_IDS: readonly CloudTierId[] = ["small", "medium", "large", "xlarge"];
 
@@ -31,10 +32,11 @@ export type CloudTier = {
   memoryGb: number;
   /** Hours of a Small computer this size uses per hour awake, in thousandths (the catalog's). */
   multiplierMilli: number;
+  /** How far the disk may grow at this size, or null from an older server that does not say. */
+  diskMaxGb: number | null;
 };
 
-/** A catalog size, with the optional tier name a newer server adds. */
-type CatalogSize = CloudCatalog["sizes"][number] & { tier?: CloudTierId | null };
+type CatalogSize = CloudCatalog["sizes"][number];
 
 const TIER_LABELS: Record<CloudTierId, string> = {
   small: "Small",
@@ -43,7 +45,7 @@ const TIER_LABELS: Record<CloudTierId, string> = {
   xlarge: "X-Large",
 };
 
-/** The shape each tier has when the catalog does not name tiers. */
+/** The labels and shapes each tier has when the catalog does not name tiers. */
 const TIER_SHAPES: Record<CloudTierId, Pick<CloudTier, "type" | "cpu" | "memoryGb">> = {
   small: { type: "default", cpu: 2, memoryGb: 4 },
   medium: { type: "default", cpu: 4, memoryGb: 8 },
@@ -68,7 +70,15 @@ export function cloudTiers(catalog: Pick<CloudCatalog, "sizes">): CloudTier[] {
       ? sizes.find((entry) => entry.tier === id)
       : sizes.find((entry) => entry.type === shape.type && entry.cpu === shape.cpu && entry.memoryGb === shape.memoryGb);
     if (!size) return [];
-    return [{ id, label: TIER_LABELS[id], type: size.type, cpu: size.cpu, memoryGb: size.memoryGb, multiplierMilli: size.multiplierMilli }];
+    return [{
+      id,
+      label: size.label?.trim() || TIER_LABELS[id],
+      type: size.type,
+      cpu: size.cpu,
+      memoryGb: size.memoryGb,
+      multiplierMilli: size.multiplierMilli,
+      diskMaxGb: typeof size.diskMaxGb === "number" ? size.diskMaxGb : null,
+    }];
   });
 }
 

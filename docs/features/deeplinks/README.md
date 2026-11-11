@@ -88,7 +88,9 @@ into a machine transition. Two rules govern what goes in `projectId`:
 dropped rather than failing the whole link, since no link minted today carries it.
 
 The HTTPS form lives on `apps/web` (Vercel). Its `/open` page
-(`apps/web/src/app/pages/OpenPage.tsx`) forwards everything the link carries
+(`apps/web/src/app/pages/OpenPage.tsx`) is a hand-off screen in the style of
+the ADE start screens, without the site header and footer (`SiteLayout.tsx`).
+It forwards everything the link carries
 (ownership included) and offers **Open in the ADE app** (the `ade://` form) or
 **Open in your browser** (the web client at `https://app.ade-app.dev/open` with
 the same query: the web client must keep its own origin, which holds its

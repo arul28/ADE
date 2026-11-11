@@ -32,6 +32,8 @@ import {
   CLOUD_OUT_OF_HOURS_MESSAGE,
   CLOUD_SHAPES,
   cloudCatalogOf,
+  cloudPlanFactsOf,
+  cloudPlanLabelOf,
   cloudMachineKindOf,
   cloudShapeFor,
   cloudKindLabel,
@@ -283,11 +285,6 @@ const CLOUD_ACCOUNT_UNKNOWN_MESSAGE =
 /** Where a person starts a lane on ADE Cloud when the caller has no chat to ask in. */
 const CLOUD_LANE_PERSON_PLACE =
   "Start it in the ADE app (pick ADE Cloud under Run on in a new chat), or ask for it in an ADE chat, where ADE can ask you.";
-
-/** The plan's name, as Settings shows it. */
-function cloudPlanLabel(plan: CloudAccountState["plan"]): string {
-  return plan === "paid" ? "Paid" : "Free";
-}
 
 /** The lane size a computer runs at, from its kind and shape, or null when no lane size matches. */
 function cloudTierOfMachine(box: CloudMachine, tiers: readonly CloudTier[]): CloudTier | null {
@@ -634,7 +631,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
           readyFor: box.ready?.projectName ?? null,
         };
       }).sort((left, right) => Number(right.lane != null) - Number(left.lane != null));
-      const plan = account ? catalog.plans[account.rules] ?? null : null;
+      // A paid plan with a failed payment follows the free plan's rules until paid.
+      const plan = account ? (account.rules === "free" ? catalog.plans.free : cloudPlanFactsOf(account, catalog)) : null;
       // A partial answer (an older server) leaves that part null, never a throw.
       const part = (account ?? {}) as Partial<CloudAccountState>;
       return {
@@ -642,7 +640,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         plan: account && plan
           ? {
               id: account.plan,
-              label: cloudPlanLabel(account.plan),
+              label: cloudPlanLabelOf(account, catalog),
               rulesId: account.rules,
               pastDue: part.billing?.notice === "past_due",
               includes: { hours: milliToHours(plan.includedMilli), computers: plan.computerLimit, diskGb: plan.diskGb, diskShared: account.rules === "paid" },

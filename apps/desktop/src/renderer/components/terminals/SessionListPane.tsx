@@ -22,6 +22,7 @@ import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { foreignLaneKey, machineBlockedReason } from "../../state/laneMachineRouting";
 import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
+import { machineShowsConnected, rowShowsConnected } from "../../state/cloudRestingRows";
 import {
   MACHINE_READ_FAILURE_NOTICE_THRESHOLD,
   requestCrossMachineLanesForMachine,
@@ -1346,7 +1347,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   const machineFilterOptions = useMemo<WorkFilterMachineOption[]>(() => {
     const others = Object.values(crossMachineEntries)
       .filter((entry) => entry.machineId !== activeMachineId)
-      .map((entry) => ({ id: entry.machineId, name: entry.machineName, online: entry.online }))
+      // A sleeping cloud computer is not listed as offline: a send wakes it.
+      .map((entry) => ({ id: entry.machineId, name: entry.machineName, online: machineShowsConnected(entry) }))
       .sort((a, b) => a.name.localeCompare(b.name));
     return [
       {
@@ -2254,7 +2256,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       // no toggle and is always open — and "that machine is gone" is precisely
       // when its work should stop occupying a prime row. Same shape of exemption
       // as a pinned lane: an explicit reason to keep the header wins.
-      if (!row.online) continue;
+      if (!rowShowsConnected(row)) continue;
       // Both pin keys, for the same reason `foreignLaneShelving` checks both:
       // this pane addresses a foreign lane by its composite id while the pin
       // store only ever writes bare lane ids.
@@ -3510,7 +3512,8 @@ export const SessionListPane = React.memo(function SessionListPane({
               settled: quietTop.settled.length,
             }
           : null}
-        dimmed={!row.online}
+        // A sleeping cloud computer's lane looks like any other: a send wakes it.
+        dimmed={!rowShowsConnected(row)}
         onToggleCollapsed={() => {
           if (laneQuiet) toggleWorkSectionCollapsed(laneOpenMarker);
           else toggleWorkLaneCollapsed(compositeLaneId);

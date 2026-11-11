@@ -16,7 +16,7 @@ import type {
   CloudSavedChatReadArgs,
   CloudSavedChatsListArgs,
 } from "../../../shared/cloudSavedChats";
-import type { CloudExecResult, CloudInstance } from "../../../../../account-directory/src/cloud/contract";
+import type { CloudCheckoutResult, CloudExecResult, CloudInstance, CloudPaidPlanId } from "../../../../../account-directory/src/cloud/contract";
 
 export type { CloudExecResult, CloudInstance };
 
@@ -47,6 +47,8 @@ export class CloudProviderError extends Error {
     message: string,
     readonly code: string,
     readonly status: number,
+    /** A disk refusal's `error.reason` (`CloudDiskRefusalReason`). */
+    readonly detail: { reason: string | null } = { reason: null },
   ) {
     super(message);
     this.name = "CloudProviderError";
@@ -75,7 +77,8 @@ export type CloudProvider = {
   /** Moves the machine to the current ADE image: it restarts, and only its home folder and caches outlive the system layer. */
   updateInstance(id: string): Promise<string>;
   /** Changes the size in place: the machine restarts, files stay, the disk only grows. */
-  resizeInstance(id: string, resources: { cpu: number; memory: number; disk?: number }, options?: { computerIdle?: boolean }): Promise<string>;
+  /** `origin: "auto"` marks the computer's own disk grower, for the server's analytics. */
+  resizeInstance(id: string, resources: { cpu: number; memory: number; disk?: number }, options?: { computerIdle?: boolean; origin?: "auto" }): Promise<string>;
   createBackup(id: string): Promise<{ id: string | null; created: number | null; sizeBytes: number | null }>;
   setAutoSleep(id: string, policy: { autoSleep: boolean; idleTimeoutSeconds?: number }): Promise<void>;
   addPublicPort(id: string, input: { port: number; label: string }): Promise<{ port: number; url: string }>;
@@ -94,12 +97,18 @@ export type CloudProvider = {
   hasTemplate(): Promise<boolean>;
   /** Runs `sh -c command` on the machine. A non-zero exit is a result, not an error. Wakes a sleeping machine. */
   exec(id: string, command: string, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<CloudExecResult>;
-  /** A Stripe checkout page for the paid plan. */
-  billingCheckout(): Promise<{ url: string }>;
+  /**
+   * A Stripe checkout page for a plan (Plus when left out). On a paid account
+   * asking for its other plan the server changes the plan itself and answers
+   * `{ url: null, change }`.
+   */
+  billingCheckout(plan?: CloudPaidPlanId): Promise<CloudCheckoutResult>;
   /** Stripe's billing portal for changing the card or cancelling. */
   billingPortal(): Promise<{ url: string }>;
   /** Paid accounts only; extra hours are off by default. */
   setExtraHours(enabled: boolean): Promise<CloudAccountState>;
+  /** Paid accounts only: extra disk on with a monthly limit in whole dollars, or off. */
+  setExtraDisk(choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }): Promise<CloudAccountState>;
   /** The account's saved chats. An account off the access list has none. */
   listSavedChats(args: CloudSavedChatsListArgs): Promise<CloudSavedChatList>;
   /** One page of a saved chat, or null when it can't be read. */

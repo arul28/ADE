@@ -1173,6 +1173,8 @@ function ComposerIdleSendButton({
   onSend,
   onSendInBackground,
   onSchedule,
+  scheduleEnabled = sendEnabled,
+  launchBlockedReason = null,
 }: {
   label: string;
   description: string;
@@ -1190,6 +1192,10 @@ function ComposerIdleSendButton({
   onSendInBackground: () => void;
   /** Absent hides the Scheduled send row entirely. */
   onSchedule?: (() => void) | undefined;
+  /** Defaults to `sendEnabled`. */
+  scheduleEnabled?: boolean;
+  /** Why the background and scheduled rows are off; shown as their detail. */
+  launchBlockedReason?: string | null;
 }) {
   const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-idle-send-menu]");
   useEffect(() => {
@@ -1212,7 +1218,7 @@ function ComposerIdleSendButton({
     {
       id: "background",
       label: backgroundBusy ? "Launching…" : backgroundLabel,
-      detail: "Start this chat without leaving the new chat pane.",
+      detail: launchBlockedReason ?? "Start this chat without leaving the new chat pane.",
       icon: <RocketLaunch size={13} weight="fill" />,
       enabled: backgroundEnabled,
       onSelect: onSendInBackground,
@@ -1221,9 +1227,9 @@ function ComposerIdleSendButton({
       ? [{
         id: "schedule",
         label: "Scheduled send…",
-        detail: "Send this prompt later, with the settings it has now.",
+        detail: launchBlockedReason ?? "Send this prompt later, with the settings it has now.",
         icon: <Clock size={13} weight="bold" />,
-        enabled: sendEnabled,
+        enabled: scheduleEnabled,
         onSelect: onSchedule,
       }]
       : []),
@@ -2336,6 +2342,7 @@ function AgentChatComposerImpl({
   constrainModelSelection = false,
   modelUnavailableMessage,
   providerAuthStatus,
+  providerRuntimeMissing,
   onRuntimeCatalogRefreshed,
   allowCliOnlyModels = false,
   listsHarnessPresets = true,
@@ -2459,10 +2466,10 @@ function AgentChatComposerImpl({
   onSendSteerNow,
   onSendSteerInterrupt,
   onOpenAiSettings,
-  replacementCard,
   aboveComposerSlot,
   sendBlockedReason = null,
   onSendBlocked,
+  sendBlockExempt,
   onOpenLinearSettings,
   launchPromptClipboardEnabled = false,
   launchPromptClipboardNoticeEnabled = true,
@@ -2554,6 +2561,8 @@ function AgentChatComposerImpl({
   constrainModelSelection?: boolean;
   modelUnavailableMessage?: string;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
+  /** Passed to the model pickers with `providerAuthStatus` (see ModelPicker). */
+  providerRuntimeMissing?: Partial<Record<ProviderFamily, true>>;
   onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
   allowCliOnlyModels?: boolean;
   /** False on a tracked-CLI launch, where a preset would be dropped anyway. */
@@ -2796,21 +2805,16 @@ function AgentChatComposerImpl({
   onSendSteerInterrupt?: () => void;
   onOpenAiSettings?: (family?: ProviderFamily) => void;
   /**
-   * A card that takes the composer's place while it is up: the sign-in card
-   * for a provider that is signed out on the composer's machine. An agent's
-   * own question still comes first.
-   */
-  replacementCard?: React.ReactNode;
-  /**
    * Shown above the prompt box while the box stays mounted and usable: the
    * sign-in strip or card for a provider signed out on the composer's machine.
-   * Unlike `replacementCard`, it never hides what the person typed.
+   * It never hides what the person typed.
    */
   aboveComposerSlot?: React.ReactNode;
   /**
    * Send is off for this reason (the target can't take the message now, e.g.
-   * ADE Cloud out of hours). The typed text stays; Enter does nothing and the
-   * Send button's tooltip says why. The reason itself shows above the box.
+   * its provider is not signed in). The typed text stays; Enter does nothing
+   * and the Send button's tooltip says why. The reason itself shows above the
+   * box.
    */
   sendBlockedReason?: string | null;
   /**
@@ -2819,6 +2823,11 @@ function AgentChatComposerImpl({
    * off), so the press can bring back what explains the reason.
    */
   onSendBlocked?: () => void;
+  /**
+   * A draft this returns true for still sends while `sendBlockedReason` is
+   * set: a local command that needs no provider (`/usage`, `/context`).
+   */
+  sendBlockExempt?: (text: string) => boolean;
   onOpenLinearSettings?: () => void;
   launchPromptClipboardEnabled?: boolean;
   launchPromptClipboardNoticeEnabled?: boolean;
@@ -7468,12 +7477,17 @@ function AgentChatComposerImpl({
   const recordModelHintSendRef = useRef(modelHint.recordSend);
   recordModelHintSendRef.current = modelHint.recordSend;
 
+  // Held off for the pane's reason. A launch elsewhere (background, scheduled)
+  // always is; Send and Enter are not for a draft the pane runs without it
+  // (`sendBlockExempt`), so the button looks as Enter acts.
+  const launchBlocked = Boolean(sendBlockedReason) && !turnActive;
+  const sendBlocked = launchBlocked && !sendBlockExempt?.(draft.trim());
   const submitComposerDraft = useCallback(() => {
     if (pendingInput?.blocking && !pendingRedirectActive) {
       return;
     }
     // The reason already shows above the box; a blocked send says nothing more.
-    if (sendBlockedReason && !turnActive) {
+    if (sendBlocked) {
       onSendBlocked?.();
       return;
     }
@@ -7536,7 +7550,7 @@ function AgentChatComposerImpl({
     // empty composer (Send clicked with the menu open, `/usage`, `/context`).
     closeCommandMenu();
     onSubmit();
-  }, [sendBlockedReason, onSendBlocked, turnActive, activeTurnHasContent, closeCommandMenu, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [sendBlocked, onSendBlocked, activeTurnHasContent, closeCommandMenu, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -7627,7 +7641,6 @@ function AgentChatComposerImpl({
     })
     : null;
   const hasPendingImageAttachments = pendingImageAttachments.length > 0;
-  const sendBlocked = Boolean(sendBlockedReason) && !turnActive;
   // Off for a reason the pane can explain: the button takes the press anyway.
   const sendPressableWhileBlocked = sendBlocked && Boolean(onSendBlocked);
   const sendEnabled = !busy
@@ -7644,7 +7657,7 @@ function AgentChatComposerImpl({
     && (cloudModeActiveForSend ? cloudSendBlock === null : activeTurnHasContent);
   const backgroundSendEnabled = Boolean(onSubmitInBackground)
     && !busy
-    && !sendBlocked
+    && !launchBlocked
     && !backgroundLaunchBusy
     && !parallelLaunchBusy
     && !composerInputLocked
@@ -8059,6 +8072,7 @@ function AgentChatComposerImpl({
             {...(availableModelIds ? { availableModelIds } : {})}
             constrainToAvailableModelIds={constrainModelSelection}
             {...(providerAuthStatus ? { providerAuthStatus } : {})}
+            {...(providerRuntimeMissing ? { providerRuntimeMissing } : {})}
             {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
             {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
             runtimePin={modelRuntimePin}
@@ -8121,6 +8135,7 @@ function AgentChatComposerImpl({
             {...(availableModelIds ? { availableModelIds } : {})}
             constrainToAvailableModelIds={constrainModelSelection}
             {...(providerAuthStatus ? { providerAuthStatus } : {})}
+            {...(providerRuntimeMissing ? { providerRuntimeMissing } : {})}
             {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
             {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
             runtimePin={modelRuntimePin}
@@ -8183,7 +8198,7 @@ function AgentChatComposerImpl({
         />
       ) : null}
     </div>
-  ), [activeHarnessPreset, activeHarnessPresetId, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, reasoningEffort, runtimeCatalogTick, turnActive, ultrathinkControl]);
+  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, runtimeCatalogTick, turnActive, ultrathinkControl]);
   const contextUsageDial = useMemo(() => (!parallelChatMode && usageViewModel ? (
 
       <ContextUsageDial
@@ -8481,11 +8496,13 @@ function AgentChatComposerImpl({
               onSend={submitComposerDraftLatest}
               onSendInBackground={onSubmitInBackground!}
               onSchedule={scheduledSendContext ? openComposerSchedule : undefined}
+              scheduleEnabled={sendEnabled && !launchBlocked}
+              launchBlockedReason={launchBlocked ? sendBlockedReason : null}
             />,
           );
         })()
 
-  )), [sendBlocked, sendBlockedReason, sendPressableWhileBlocked, activeSteerEnabled, activeTurnSendCapability, activeTurnSendMenuEnabled, backgroundJobCount, backgroundLaunchActionLabel, backgroundLaunchBusy, backgroundSendEnabled, childChatCount, cloudModeActiveForSend, cloudTargetLabel, composerInputLocked, draftHasText, draftInlineBlockedReason, draftInlineSteerHandler, effectiveActiveTurnSendMode, effectiveStopMode, onClearDraft, onInterrupt, onSendSteerInterrupt, onSendSteerNow, onSubmitInBackground, openComposerSchedule, parallelChatMode, scheduledSendContext, sendButtonTitleText, sendEnabled, sessionProvider, submitActiveTurnDraftLatest, submitComposerDraftLatest, turnActive, updateActiveTurnStopMode, withThreadComments]);
+  )), [sendBlocked, launchBlocked, sendBlockedReason, sendPressableWhileBlocked, activeSteerEnabled, activeTurnSendCapability, activeTurnSendMenuEnabled, backgroundJobCount, backgroundLaunchActionLabel, backgroundLaunchBusy, backgroundSendEnabled, childChatCount, cloudModeActiveForSend, cloudTargetLabel, composerInputLocked, draftHasText, draftInlineBlockedReason, draftInlineSteerHandler, effectiveActiveTurnSendMode, effectiveStopMode, onClearDraft, onInterrupt, onSendSteerInterrupt, onSendSteerNow, onSubmitInBackground, openComposerSchedule, parallelChatMode, scheduledSendContext, sendButtonTitleText, sendEnabled, sessionProvider, submitActiveTurnDraftLatest, submitComposerDraftLatest, turnActive, updateActiveTurnStopMode, withThreadComments]);
   const commandMenu = useMemo(() => (
     <ChatCommandMenu
       ref={commandMenuRef}
@@ -8541,6 +8558,13 @@ function AgentChatComposerImpl({
           </button>
         </div>
       ) : null}
+      {/* Always mounted, so a screen reader hears Send turn off for a
+          sign-in even when the status lands after the box. It says what the
+          Send button does: a command that runs anyway (`sendBlockExempt`)
+          clears it. */}
+      <div role="status" className="sr-only">
+        {sendBlocked && sendBlockedReason ? `Send is off. ${sendBlockedReason}` : null}
+      </div>
       {aboveComposerSlot ? (
         <div
           data-composer-above-slot="true"
@@ -9579,8 +9603,6 @@ function AgentChatComposerImpl({
             />
           );
         }
-
-        if (replacementCard) return replacementCard;
 
         // The one thing the tags cannot say, kept visible because tooltips
         // never show on a touch pointer: why a message has to wait.

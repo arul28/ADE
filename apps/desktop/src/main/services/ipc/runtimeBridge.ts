@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
-import { cloudAsleepForUse, cloudUpdateBlocker, cloudWakeForUse } from "../adeCloud/cloudWakeHook";
+import { cloudAsleepForUse, cloudRestChanged, cloudUpdateBlocker, cloudWakeForUse } from "../adeCloud/cloudWakeHook";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import { localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
@@ -519,6 +519,12 @@ export type RuntimeBridgeRegistration = {
   isTargetConnected(targetId: string): boolean;
   /** Display name for the paired machine, for user-facing failure copy. */
   resolveTargetNameForMachineKey(machineKey: string): string | null;
+  /**
+   * Removes the saved targets of one machine that no longer exists: by its
+   * account machine key, or by its hostname (a cloud computer's instance id).
+   * Returns the removed target ids.
+   */
+  removeTargetsForMachine(machine: { machineKey: string | null; hostname: string | null }): string[];
   /** One chunk of a proof file on a paired computer, for the media server. */
   readRemoteArtifactRange: RemoteArtifactRangeReader;
   /**
@@ -647,6 +653,8 @@ export function registerRuntimeBridge({
       wakeForUse: cloudWakeForUse,
       // A sleeping one is shown as not connected, not as a failed connection.
       asleepForUse: cloudAsleepForUse,
+      // A rest that starts or ends tells the windows (registerCloudIpc).
+      onCloudRestChanged: cloudRestChanged,
     },
     pairedMachineStore,
   );
@@ -780,6 +788,16 @@ export function registerRuntimeBridge({
     resolveTargetNameForMachineKey: (machineKey) => {
       const target = targetForMachineKey(machineKey);
       return target?.name?.trim() || target?.hostname?.trim() || null;
+    },
+    removeTargetsForMachine: ({ machineKey, hostname }) => {
+      const key = machineKey?.trim() || null;
+      const host = hostname?.trim().toLowerCase() || null;
+      const ids = remoteConnectionService.listTargets()
+        .filter((target) => (key && target.pairedMachine?.machineKey?.trim() === key)
+          || (host && target.hostname?.trim().toLowerCase() === host))
+        .map((target) => target.id);
+      for (const id of ids) remoteConnectionService.removeTarget(id);
+      return ids;
     },
     readRemoteArtifactRange,
     callMachineMethod: <T,>(

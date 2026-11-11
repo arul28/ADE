@@ -6,12 +6,22 @@ FROM node:24-bookworm-slim
 # git/gawk for ADE itself; tini as PID 1; the Linux Desktop lane screen needs
 # xvfb, openbox, dbus, at-spi2-core, ffmpeg and a browser.
 #
+# The lane screen's "Browser", "Terminal" and "Files" buttons need one app of
+# each kind: chromium, xterm (2.7 MB installed) and thunar (14.7 MB: GTK 3,
+# which chromium already brings, so the accessibility tree reads it; pcmanfm
+# is GTK 2 here and adds 32 MB). Fonts: fontconfig already brings DejaVu
+# (sans, serif, mono); fonts-liberation (2.0 MB) gives pages Arial/Times/
+# Courier metrics, fonts-noto-color-emoji (10.5 MB) draws emoji instead of
+# boxes, and librsvg2-common (0.1 MB) lets GTK draw its SVG icons. About
+# 30 MB in all (Debian 12 package sizes, --no-install-recommends).
+#
 # /etc/machine-id stays absent: ADE's hardware anchor hashes it, and one value
 # baked into the image would be shared by every box made from it, which makes
 # the account directory merge different boxes into one row.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git gawk tini python3 unzip procps \
       xvfb openbox dbus at-spi2-core ffmpeg chromium \
+      xterm thunar fonts-liberation fonts-noto-color-emoji librsvg2-common \
  && rm -rf /var/lib/apt/lists/* \
  && rm -f /etc/machine-id /var/lib/dbus/machine-id
 

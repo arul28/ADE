@@ -13,6 +13,7 @@ import type { CrossMachineHandoffTransport } from "../../desktop/src/main/servic
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
 import type { CloudReadyPool } from "../../desktop/src/shared/cloudReady";
+import { cloudCatalogOf, cloudPlanLabelOf, formatCloudHours, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
   setSharedAccountLiveQuotaFetcher,
@@ -3925,6 +3926,8 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                      in a terminal on that machine); never restart adb yourself
     ANDROID_NOT_RUNNING              ade android start first
     ANDROID_LOW_MEMORY               free memory, or ask the user, then start --force
+    ANDROID_LOW_DISK                 the disk can't hold a new device's data; tell the user
+                                     (on ADE Cloud the Android pane offers Grow the disk)
     ANDROID_ELEMENT_NOT_FOUND        ade android snapshot, then aim again
     ANDROID_BUILD_FAILED             read the Gradle output, fix the build
     ANDROID_SYSTEM_IMAGE_IN_USE      an AVD uses that image; stop its emulator first
@@ -4761,6 +4764,12 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
   them), sleep and wake are the account's and work from any folder; the rest
   run in this folder's project. A new lane, create and copy are refused at
   once when status says no new lane can start, with the same sentence.
+
+  Plans: \`ade cloud hours\` shows yours, with its hours, disk and computers.
+  Change it in Settings › ADE Cloud › Plan and hours.
+  Disk and computers are what you have at one time, not a monthly amount.
+  On a paid plan, extra disk past the plan's is counted by the day, inside a
+  monthly limit you set. A grow past it is refused with a sentence that says why.
 
   Asks first: create, resize, update, copy, move, delete,
   raising the limits, ready on, a new lane (--machine cloud). The card shows in your chat and gives up
@@ -20908,7 +20917,7 @@ function formatCloudList(value: unknown): string {
     lines.push(`${String(box.name ?? box.instanceId)}  ${String(box.state)}  ${String(box.size ?? "")}  ${rate}  ${sleep}  (${String(box.instanceId)})`);
   }
   const account = isRecord(raw) && isRecord(raw.account) ? raw.account : null;
-  if (account) lines.push(formatCloudHours(account));
+  if (account) lines.push(formatCloudAccount(account));
   return lines.join("\n");
 }
 
@@ -20992,16 +21001,25 @@ function formatCloudStatus(value: unknown): string {
   return lines.join("\n");
 }
 
-function formatCloudHours(value: unknown): string {
+function formatCloudAccount(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const account = isRecord(raw) ? raw : {};
   const hours = isRecord(account.hours) ? account.hours : {};
-  const hoursOf = (milli: unknown) => (typeof milli === "number" ? `${(milli / 1000).toFixed(1).replace(/\.0$/, "")}` : "—");
+  const hoursOf = (milli: unknown) => (typeof milli === "number" ? formatCloudHours(milli) : "—");
   const billing = isRecord(account.billing) ? account.billing : {};
   const resets = typeof billing.periodEnd === "number" ? new Date(billing.periodEnd).toISOString().slice(0, 10) : "—";
-  const plan = account.plan === "paid" ? "Paid plan" : "Free plan";
+  const catalog = isRecord(account.catalog) && isRecord(account.catalog.plans) ? cloudCatalogOf({ catalog: account.catalog as CloudCatalog }) : cloudCatalogOf(null);
+  const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" ? account.planId : undefined;
+  const plan = `${cloudPlanLabelOf({ plan: account.plan === "paid" ? "paid" : "free", planId }, catalog)} plan`;
   const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left, resets ${resets}`;
-  return hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`;
+  const disk = isRecord(account.disk) && typeof account.disk.usedGb === "number"
+    ? typeof account.disk.limitGb === "number" ? `${account.disk.usedGb} of ${account.disk.limitGb} GB disk` : `${account.disk.usedGb} GB disk`
+    : null;
+  const computers = isRecord(account.computers) && typeof account.computers.total === "number" && typeof account.computers.limit === "number"
+    ? `${account.computers.total} of ${account.computers.limit} computers`
+    : null;
+  const atOneTime = disk || computers ? `\n${[disk, computers].filter(Boolean).join(", ")} at one time.` : "";
+  return (hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`) + atOneTime;
 }
 
 function formatCloudResult(value: unknown): string {
@@ -29043,6 +29061,13 @@ async function runServe(
       overrides,
     );
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
+  // One phone input ledger for the brain's own ingress and every project
+  // sync host: a resent input id is a duplicate on either one. It holds the
+  // receipts of all of them, so it gets a larger bound than one host's.
+  const syncHostModule = await import("./services/sync/syncHostService");
+  const brainTerminalInputDedupeLedger = syncHostModule.createTerminalInputDedupeLedger({
+    maxEntries: syncHostModule.TERMINAL_INPUT_DEDUPE_MAX_ENTRIES * 4,
+  });
   const keepAwakeServiceModule = !embedded && servesMachineEndpoint
     ? await import("./services/power/brainKeepAwakeService")
     : null;
@@ -29794,6 +29819,16 @@ async function runServe(
         buildSnapshot: () => activityRosterProvider.buildSnapshot(),
       },
       foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
+      // Terminals of open projects only: a terminal never boots a project.
+      terminalProjects: async ({ projectId, projectRootPath }) => {
+        const resolvedId = projectRegistry.get(projectId)?.projectId
+          ?? projectRegistry.resolveMovedProjectId(projectId)
+          ?? (projectRootPath ? projectRegistry.findAtRootPath(projectRootPath)?.projectId ?? null : null);
+        if (!resolvedId) return null;
+        const { resolveBootedTerminalProject } = await import("./services/sync/syncTerminalTargets");
+        return await resolveBootedTerminalProject(scopeRegistry, resolvedId, headlessProjectLogger);
+      },
       // A project socket served here moves to the project host once one attaches.
       projectHostAttached: () => sharedSyncListener?.hasConnectionHandler() ?? false,
       onProjectHostAttached: (listener) => sharedSyncListener?.onConnectionHandlerAttached(listener) ?? (() => {}),
@@ -29856,6 +29891,7 @@ async function runServe(
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
+    terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),
     // A project removed during a repair's teardown: that teardown already
     // handed its emulators off, and nothing will re-adopt them.
@@ -37896,7 +37932,7 @@ function formatTextOutput(
     case "cloud-list":
       return formatCloudList(value);
     case "cloud-hours":
-      return formatCloudHours(value);
+      return formatCloudAccount(value);
     case "cloud-result":
       return formatCloudResult(value);
     case "mcp-servers":

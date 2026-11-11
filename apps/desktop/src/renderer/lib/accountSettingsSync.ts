@@ -46,7 +46,7 @@ import type {
   AccountSettingsWriteOptions,
 } from "../../shared/types/accountSettings";
 import { HARNESS_PRESETS_SETTING_KEY } from "../../shared/harnessPresets";
-import { isCloudTierId } from "../../shared/cloudTiers";
+import { CLOUD_DEFAULT_TIER_SETTING_KEY, isCloudTierId } from "../../shared/cloudTiers";
 import type { SettingScope } from "../components/settings/settingsManifest";
 import { applyAccountHarnessPresets, type AppState } from "../state/appStore";
 import { withUnreadableHarnessPresets } from "./harnessPresetCarry";
@@ -151,7 +151,7 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   pref("chatShellGeometry", (state) => state.chatShellGeometry, (state, value) => state.setChatShellGeometry(value)),
   // The size a new ADE Cloud lane starts with. A tier name this build cannot
   // read (a newer ADE's) keeps the local choice.
-  pref("cloudDefaultTier", (state) => state.cloudDefaultTier, (state, value: unknown) => {
+  pref(CLOUD_DEFAULT_TIER_SETTING_KEY, (state) => state.cloudDefaultTier, (state, value: unknown) => {
     if (isCloudTierId(value)) state.setCloudDefaultTier(value);
   }),
   // Harness presets are a list rather than a scalar, which the registry handles

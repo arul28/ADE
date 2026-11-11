@@ -1,11 +1,10 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
-  CLOUD_OUT_OF_HOURS_MESSAGE,
   cloudCatalogOf,
-  cloudOutOfHours,
   type CloudAccountState,
   type CloudMachine,
 } from "../../../shared/adeCloud";
+import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
 import { cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
@@ -44,28 +43,25 @@ export function adeCloudAccountBlock(
   account: CloudAccountState | null,
   options: { newLane: boolean },
 ): AdeCloudTrayNotice | null {
-  if (!account) return null;
+  // One wording with `cloud.status` and the launch's early refusal.
+  const block = cloudLaneStartBlock(account, options);
+  if (!account || !block) return null;
   const upgrade: AdeCloudTrayAction[] = account.rules === "free" ? ["upgrade"] : [];
-  // A sleeping lane wakes on hours too, so this blocks every send.
-  if (cloudOutOfHours(account) && !account.extraHours.enabled) {
-    return { tone: "blocked", message: CLOUD_OUT_OF_HOURS_MESSAGE, short: "Out of ADE Cloud hours.", actions: upgrade.length ? upgrade : ["settings"] };
+  switch (block.code) {
+    case "out_of_hours":
+      return { tone: "blocked", message: block.message, short: "Out of ADE Cloud hours.", actions: upgrade.length ? upgrade : ["settings"] };
+    case "computers_full": {
+      const count = account.computers.limit;
+      return {
+        tone: "blocked",
+        message: block.message,
+        short: count === 1 ? "Your ADE Cloud computer is in use." : `All ${count} computers in use.`,
+        actions: [...upgrade, "free-space"],
+      };
+    }
+    case "disk_full":
+      return { tone: "blocked", message: block.message, short: "ADE Cloud disk full.", actions: [...upgrade, "free-space"] };
   }
-  if (!options.newLane) return null;
-  if (account.computers.limit > 0 && account.computers.total >= account.computers.limit) {
-    const count = account.computers.limit;
-    return {
-      tone: "blocked",
-      message: count === 1
-        ? "You're using your one ADE Cloud computer."
-        : `You're using all ${count} ADE Cloud computers.`,
-      short: count === 1 ? "Your ADE Cloud computer is in use." : `All ${count} computers in use.`,
-      actions: [...upgrade, "free-space"],
-    };
-  }
-  if (account.disk.limitGb != null && account.disk.usedGb >= account.disk.limitGb) {
-    return { tone: "blocked", message: "Your ADE Cloud disk space is full.", short: "ADE Cloud disk full.", actions: [...upgrade, "free-space"] };
-  }
-  return null;
 }
 
 /** Keeps one array identity while its signature does not change, so memos downstream hold. */

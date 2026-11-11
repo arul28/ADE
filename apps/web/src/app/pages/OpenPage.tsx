@@ -1,10 +1,24 @@
-import { useEffect, useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
-import { ArrowUpRight, Download, GitBranch, Globe } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Link, useLocation } from "react-router-dom";
+import {
+  AppWindow,
+  ChevronRight,
+  CircleDot,
+  Download,
+  FileText,
+  GitBranch,
+  GitCommitHorizontal,
+  GitPullRequest,
+  Globe,
+  Image as ImageIcon,
+  Link2Off,
+  MessageSquare,
+  Settings,
+  type LucideIcon,
+} from "lucide-react";
 
-import { LinkButton } from "../../components/LinkButton";
 import { Page } from "../../components/Page";
-import { Section } from "../../components/Section";
+import { cn } from "../../lib/cn";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 
@@ -282,7 +296,7 @@ function describeTarget(target: OpenTarget): { title: string; summary: string; v
     case "session":
       return {
         title: "Open chat in ADE",
-        summary: target.laneId ? `Chat ${target.sessionId} · lane ${target.laneId.slice(0, 8)}…` : `Chat ${target.sessionId}`,
+        summary: `Chat ${target.sessionId.slice(0, 8)}…`,
       };
     case "file":
       return {
@@ -329,8 +343,8 @@ function describeTarget(target: OpenTarget): { title: string; summary: string; v
       };
     case "unknown":
       return {
-        title: "Open in ADE",
-        summary: "Missing or invalid link parameters.",
+        title: "This ADE link is broken",
+        summary: "It is missing what it should open.",
       };
   }
 }
@@ -372,7 +386,7 @@ function statusLine(redirectingToWeb: boolean, attempt: AppAttempt): string {
     case "trying":
       return "Opening the ADE app…";
     case "idle":
-      return "Where do you want to open it?";
+      return "Open it in";
   }
 }
 
@@ -513,98 +527,184 @@ export function OpenPage() {
   }, [attemptCount]);
   const appFailed = appAttempt === "noResponse";
 
-  const primaryButton =
-    "inline-flex items-center justify-center rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-zinc-950 transition hover:bg-emerald-400";
-  const secondaryButton =
-    "inline-flex items-center justify-center rounded-md border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 transition hover:bg-zinc-800";
+  // Once the app did not answer, the browser is the way on, so it leads.
+  const browserLeads = appFailed || !adeUrl;
+  const KindIcon = KIND_ICONS[target.kind];
 
   return (
-    <Page>
-      <Section className="pt-24">
-        <div className="mx-auto max-w-xl text-center space-y-6">
-          <div className="inline-flex items-center justify-center rounded-full bg-emerald-500/10 px-4 py-1 text-emerald-300">
-            <GitBranch className="mr-2 h-4 w-4" /> ADE link
+    <Page className="relative grid min-h-screen place-items-center overflow-hidden px-5 py-24 sm:px-6">
+      <Link to="/" className="focus-ring absolute left-6 top-6 rounded-md sm:left-7" aria-label="ADE home">
+        <img src="/logo.png" alt="ADE" className="h-9 w-auto" draggable={false} />
+      </Link>
+      {/* The same soft accent glow the ADE app puts behind its start screens. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute left-1/2 top-[42%] h-[60vw] max-h-[720px] w-[60vw] max-w-[720px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent opacity-[0.12] blur-[140px]"
+      />
+
+      <div className="relative grid w-full max-w-[520px] gap-6">
+        <div className="flex items-start gap-4">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-border/80 bg-card/70 text-fg">
+            <KindIcon className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <h1 className="text-balance text-[28px] font-bold leading-tight tracking-[-0.02em] text-fg">{title}</h1>
+            <p className="mt-1 text-[15px] leading-relaxed text-muted-fg">{summary}</p>
+            {value ? (
+              <p className="mt-1 break-all font-mono text-[13px] text-fg/80">
+                {valueLabel ? <span className="font-sans text-muted-fg">{valueLabel}: </span> : null}
+                {value}
+              </p>
+            ) : null}
           </div>
-          <h1 className="text-3xl font-semibold tracking-tight">{title}</h1>
-          <p className="text-zinc-400">{summary}</p>
-          {value ? (
-            <div className="text-sm text-zinc-500">
-              {valueLabel ? <span>{valueLabel}: </span> : null}
-              <span className="font-mono text-zinc-300">{value}</span>
+        </div>
+
+        {target.kind === "unknown" ? (
+          <div className="rounded-2xl border border-border/80 bg-card/60 p-5 text-sm leading-relaxed text-fg backdrop-blur-xl">
+            Ask for a fresh link, or{" "}
+            <a
+              className="focus-ring rounded-sm font-medium underline underline-offset-4"
+              href={WEB_CLIENT_OPEN_URL.replace(/\/open$/, "/")}
+            >
+              open the ADE web app
+            </a>
+            .
+          </div>
+        ) : null}
+
+        {adeUrl || webUrl ? (
+          <div className="overflow-hidden rounded-2xl border border-border/80 bg-card/60 shadow-glass-md backdrop-blur-xl">
+            <p className="px-5 pb-1 pt-4 text-[13px] text-muted-fg" aria-live="polite">
+              {statusLine(autoOpen === "web", appAttempt)}
+            </p>
+            <div className="grid gap-1 p-2">
+              {adeUrl ? (
+                <OpenChoice
+                  icon={<AppWindow className={CHOICE_ICON} />}
+                  title="The ADE app"
+                  hint="On this device. Fastest when ADE is installed."
+                  lead={!browserLeads}
+                  analyticsFeature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
+                  onClick={() => openInApp("app")}
+                />
+              ) : null}
+              {betaUrl && offerBeta ? (
+                <OpenChoice
+                  icon={<AppWindow className={CHOICE_ICON} />}
+                  title="ADE Beta"
+                  hint="The TestFlight app on this iPhone or iPad."
+                  lead={false}
+                  analyticsFeature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
+                  onClick={() => openInApp("app-beta")}
+                />
+              ) : null}
+              {webUrl ? (
+                <OpenChoice
+                  icon={<Globe className={CHOICE_ICON} />}
+                  title="Your browser"
+                  hint="Nothing to install. Sign in with your ADE account."
+                  lead={browserLeads}
+                  analyticsFeature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
+                  onClick={openInBrowser}
+                />
+              ) : null}
             </div>
-          ) : null}
-          {target.kind === "unknown" ? (
-            <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-6 text-left text-sm text-zinc-300">
-              This ADE link is broken: it is missing what it should open. Ask for a fresh link, or{" "}
-              <a className="text-emerald-300 underline" href={WEB_CLIENT_OPEN_URL.replace(/\/open$/, "/")}>
-                open the ADE web app
-              </a>
-              .
-            </div>
-          ) : null}
-          {adeUrl || webUrl ? (
-            <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-6 text-left text-sm">
-              <div className="text-zinc-400">{statusLine(autoOpen === "web", appAttempt)}</div>
-              <div className="mt-4 flex flex-wrap gap-3">
-                {adeUrl ? (
-                  <button
-                    type="button"
-                    onClick={() => openInApp("app")}
-                    data-ade-analytics-feature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
-                    className={appFailed ? secondaryButton : primaryButton}
-                  >
-                    <ArrowUpRight className="mr-1 h-4 w-4" /> Open in the ADE app
-                  </button>
-                ) : null}
-                {betaUrl && offerBeta ? (
-                  <button
-                    type="button"
-                    onClick={() => openInApp("app-beta")}
-                    data-ade-analytics-feature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
-                    className={secondaryButton}
-                  >
-                    <ArrowUpRight className="mr-1 h-4 w-4" /> Open in ADE Beta
-                  </button>
-                ) : null}
-                {webUrl ? (
-                  <button
-                    type="button"
-                    onClick={openInBrowser}
-                    data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
-                    className={appFailed || !adeUrl ? primaryButton : secondaryButton}
-                  >
-                    <Globe className="mr-1 h-4 w-4" /> Open in your browser
-                  </button>
-                ) : null}
-                {appFailed || !preference ? (
-                  <LinkButton to="/" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="secondary">
-                    <Download className="mr-1 h-4 w-4" /> Install ADE
-                  </LinkButton>
-                ) : null}
-              </div>
+            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-t border-border/70 px-5 py-3 text-xs text-muted-fg">
               {preference ? (
                 <button
                   type="button"
                   onClick={forgetChoice}
-                  className="mt-4 text-xs text-zinc-500 underline hover:text-zinc-300"
+                  className="focus-ring rounded-sm text-left transition-colors hover:text-fg"
                 >
                   {preference === "web"
                     ? "Links open in your browser."
                     : preference === "app-beta"
                       ? "Links open in ADE Beta."
                       : "Links open in the ADE app."}{" "}
-                  Change
+                  <span className="underline underline-offset-4">Change</span>
                 </button>
               ) : (
-                <label className="mt-4 flex items-center gap-2 text-xs text-zinc-500">
-                  <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} />
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    className="accent-[var(--color-accent)]"
+                    checked={remember}
+                    onChange={(event) => setRemember(event.target.checked)}
+                  />
                   Remember my choice on this browser
                 </label>
               )}
+              {appFailed || !preference ? (
+                <Link
+                  to="/"
+                  data-ade-analytics-feature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE}
+                  className="focus-ring inline-flex items-center gap-1 rounded-sm font-medium underline-offset-4 transition-colors hover:text-fg hover:underline"
+                >
+                  <Download className="h-3.5 w-3.5" /> Get the ADE app
+                </Link>
+              ) : null}
             </div>
-          ) : null}
-        </div>
-      </Section>
+          </div>
+        ) : null}
+      </div>
     </Page>
+  );
+}
+
+const KIND_ICONS: Record<OpenTarget["kind"], LucideIcon> = {
+  lane: GitBranch,
+  session: MessageSquare,
+  file: FileText,
+  commit: GitCommitHorizontal,
+  artifact: ImageIcon,
+  branch: GitBranch,
+  pr: GitPullRequest,
+  "linear-issue": CircleDot,
+  settings: Settings,
+  unknown: Link2Off,
+};
+
+const CHOICE_ICON = "h-[18px] w-[18px]";
+
+/** One place a link can open: a full-width row, the suggested one tinted. */
+function OpenChoice({
+  icon,
+  title,
+  hint,
+  lead,
+  analyticsFeature,
+  onClick,
+}: {
+  icon: ReactNode;
+  title: string;
+  hint: string;
+  lead: boolean;
+  analyticsFeature: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-ade-analytics-feature={analyticsFeature}
+      className={cn(
+        "focus-ring group flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors",
+        lead ? "bg-accent/15 hover:bg-accent/25" : "hover:bg-fg/[0.06]",
+      )}
+    >
+      <span
+        className={cn(
+          "grid h-9 w-9 shrink-0 place-items-center rounded-lg",
+          lead ? "bg-accent text-accent-fg" : "bg-fg/[0.07] text-fg",
+        )}
+      >
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-semibold text-fg">{title}</span>
+        <span className="block text-[13px] leading-snug text-muted-fg">{hint}</span>
+      </span>
+      <ChevronRight className="h-4 w-4 shrink-0 text-muted-fg transition-transform group-hover:translate-x-0.5 group-hover:text-fg" />
+    </button>
   );
 }

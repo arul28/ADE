@@ -60,6 +60,9 @@ final class MachineConnection {
   private(set) var supportsChatHistoryPageBySequence = false
   /// The host answers `project_set_icon_request`.
   private(set) var supportsProjectIcon = false
+  /// The host streams terminals of any open project to this socket
+  /// (`rosterTerminal`), so a terminal opens here without a focus switch.
+  private(set) var supportsRosterTerminal = false
   private(set) var commandDescriptors: [SyncRemoteCommandDescriptor] = []
   /// Host display name from the last hello.
   private(set) var hostName: String?
@@ -73,7 +76,7 @@ final class MachineConnection {
   private weak var syncService: SyncService?
   private let registry: ChatThreadRegistry
   private var runTask: Task<Void, Never>?
-  private var socket: URLSessionWebSocketTask?
+  private(set) var socket: URLSessionWebSocketTask?
   /// Bumped on every start/stop and every new socket; stale work compares it.
   private var generation: UInt64 = 0
   private var pending: [String: PendingRequest] = [:]
@@ -109,10 +112,28 @@ final class MachineConnection {
   /// report. Kept across sockets so a report can see reconnects.
   private var chatStreamTraces: [String: ChatStreamTrace] = [:]
   private var socketCloseCount = 0
+  /// Terminals opened on this machine. Kept across sockets, like `chatScopes`.
+  var terminalScopes: [String: MachineTerminalScope] = [:]
+  /// The shared terminal stream state: handlers, offsets and queued input.
+  /// It outlives a socket, like `terminalScopes`.
+  private(set) lazy var terminalStream = TerminalStreamClient(hooks: TerminalStreamClientHooks(
+    isLive: { [weak self] in self?.isLive ?? false },
+    generation: { [weak self] in UInt64(self?.socketCloseCount ?? 0) },
+    sendEnvelope: { [weak self] type, sessionId, payload in
+      _ = self?.sendTerminalEnvelope(type: type, sessionId: sessionId, fields: payload)
+    },
+    resubscribe: { [weak self] sessionId, sinceOffset in
+      guard let self else { return }
+      try await self.subscribeTerminalStream(sessionId: sessionId, sinceOffset: sinceOffset)
+    }
+  ), resendsSizeOnSubscribe: true)
 
   private struct PendingRequest {
     let continuation: CheckedContinuation<Any, Error>
     let timeoutTask: Task<Void, Never>
+    /// Runs when the answer arrives, before the next frame is read, so frames
+    /// that follow the answer see its effect.
+    let accept: ((Any) throws -> Void)?
   }
 
   /// App Group key of this machine's offline roster (shared with the focused
@@ -292,6 +313,11 @@ final class MachineConnection {
     supportsChatLogV2 = featureEnabled("chatLogV2", "chat_log_v2")
     supportsChatHistoryPageBySequence = featureEnabled("chatHistoryPageBySequence", "chat_history_page_by_sequence")
     supportsProjectIcon = featureEnabled("projectIcon", "project_icon")
+    supportsRosterTerminal = featureEnabled("rosterTerminal", "roster_terminal")
+    applyTerminalInputAckFeature(
+      enabled: featureEnabled("terminalInputAck", "terminal_input_ack"),
+      config: features?["terminalInputAck"] as? [String: Any]
+    )
     chunkedEnvelopes = negotiation.chunkedMaxFrameBytes != nil
     maxFrameBytes = negotiation.chunkedMaxFrameBytes ?? syncDefaultMaxFrameBytes
     compressionCodec = negotiation.deflateThresholdBytes != nil ? .deflate : nil
@@ -324,6 +350,7 @@ final class MachineConnection {
     )
     subscribeRoster()
     restoreChatSubscriptions()
+    restoreTerminalSubscriptions()
     // Over the relay the host closes this socket when the account proof in
     // the hello expires (about a minute). Renew it like the focused
     // connection does, or every relay-connected machine drops and redials
@@ -357,6 +384,7 @@ final class MachineConnection {
     for (_, task) in snapshotWatchdogs { task.cancel() }
     snapshotWatchdogs.removeAll()
     pendingSnapshotSessionIds.removeAll()
+    resetTerminalTransportState()
     if let socket {
       socket.cancel(with: .goingAway, reason: reason.data(using: .utf8))
     }
@@ -367,7 +395,7 @@ final class MachineConnection {
     // offline view and the seq for the next socket's `sinceSeq`. A brain that
     // still holds that roster state answers with a delta, any other brain
     // with a full snapshot.
-    let error = NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
+    let error = NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: machineConnectionUnreachableMessage])
     let requests = pending
     pending.removeAll()
     for (_, request) in requests {
@@ -486,8 +514,14 @@ final class MachineConnection {
         resolve(requestId: pre.requestId, result: .failure(NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: message])))
       }
     case "command_result", "chat_history", "chat_tool_result", "file_response", "relay_reauthorize_result",
-         "project_set_icon_result", "roster_chats":
+         "project_set_icon_result", "roster_chats", "terminal_snapshot", "terminal_history":
       resolve(requestId: pre.requestId, result: .success(payload))
+    case "terminal_data":
+      handleTerminalData(payload)
+    case "terminal_exit":
+      handleTerminalExit(payload)
+    case "terminal_input_ack":
+      if let dict = payload as? [String: Any] { terminalStream.handleAcknowledgement(dict) }
     case "roster_snapshot":
       // Decoded off the main actor: a full roster is large enough to hang the
       // app. The receive loop awaits each frame, so ordering holds.
@@ -509,8 +543,8 @@ final class MachineConnection {
     case "macDesktop.streamEnded":
       syncService?.receiveRemoteMacDesktopEnded(payload, machineKey: machineKey)
     default:
-      // Changesets, catalogs, terminals and anything else are not for a
-      // roster peer. Hosts that know `syncRole: "roster"` never send them.
+      // Changesets, catalogs and anything else are not for a roster peer.
+      // Hosts that know `syncRole: "roster"` never send them.
       break
     }
     lastUpdateAt = Date()
@@ -519,7 +553,7 @@ final class MachineConnection {
   // MARK: - Requests
 
   @discardableResult
-  private func send(type: String, requestId: String?, payload: Any, projectId: String? = nil) -> Bool {
+  func send(type: String, requestId: String?, payload: Any, projectId: String? = nil) -> Bool {
     guard let socket else { return false }
     guard let frames = try? syncEncodeEnvelopeFrames(
       type: type,
@@ -545,16 +579,17 @@ final class MachineConnection {
     return true
   }
 
-  private func request(
+  func request(
     type: String,
     payload: [String: Any],
     requestId: String = UUID().uuidString,
     projectId: String? = nil,
     timeoutNanoseconds: UInt64,
-    timeoutMessage: String
+    timeoutMessage: String,
+    accept: ((Any) throws -> Void)? = nil
   ) async throws -> Any {
     guard socket != nil, phase == .live else {
-      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: machineConnectionUnreachableMessage])
     }
     return try await withCheckedThrowingContinuation { continuation in
       let timeoutTask = Task { @MainActor [weak self] in
@@ -562,12 +597,12 @@ final class MachineConnection {
         guard !Task.isCancelled else { return }
         self?.resolve(requestId: requestId, result: .failure(SyncRequestTimeout.error(message: timeoutMessage)))
       }
-      pending[requestId] = PendingRequest(continuation: continuation, timeoutTask: timeoutTask)
+      pending[requestId] = PendingRequest(continuation: continuation, timeoutTask: timeoutTask, accept: accept)
       if !send(type: type, requestId: requestId, payload: payload, projectId: projectId) {
         resolve(requestId: requestId, result: .failure(NSError(
           domain: "ADE",
           code: 14,
-          userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."]
+          userInfo: [NSLocalizedDescriptionKey: machineConnectionUnreachableMessage]
         )))
       }
     }
@@ -576,6 +611,14 @@ final class MachineConnection {
   private func resolve(requestId: String?, result: Result<Any, Error>) {
     guard let requestId, let request = pending.removeValue(forKey: requestId) else { return }
     request.timeoutTask.cancel()
+    if case .success(let value) = result, let accept = request.accept {
+      do {
+        try accept(value)
+      } catch {
+        request.continuation.resume(throwing: error)
+        return
+      }
+    }
     request.continuation.resume(with: result)
   }
 
@@ -1233,6 +1276,9 @@ func machineConnectionBackoffNanoseconds(failures: Int, jitter: Double = Double.
   guard index < machineConnectionRetryDelaysSeconds.count else { return nil }
   return UInt64(machineConnectionRetryDelaysSeconds[index] * jitter * 1_000_000_000)
 }
+
+/// The error text when a computer cannot take a request right now.
+let machineConnectionUnreachableMessage = "Can’t reach this computer right now."
 
 func machineConnectionDecode<T: Decodable>(_ payload: Any, as type: T.Type) -> T? {
   guard JSONSerialization.isValidJSONObject(payload),

@@ -95,10 +95,12 @@ export function ProofProvenanceLines({ artifact, warningClassName }: {
   );
 }
 
-export function ProofPreviewFailureNotice({ failureText, onRetry }: {
+export function ProofPreviewFailureNotice({ failureText, onRetry, retryLabel = "Retry" }: {
   failureText: string;
   /** Offered when another try can work (a machine that was slow or away). */
   onRetry?: (() => void) | null;
+  /** "Wake" when the try wakes a sleeping cloud computer first. */
+  retryLabel?: "Retry" | "Wake";
 }) {
   return (
     <Banner
@@ -106,7 +108,7 @@ export function ProofPreviewFailureNotice({ failureText, onRetry }: {
         id: "proof-preview-failed",
         tone: "warning",
         title: failureText,
-        ...(onRetry ? { actions: [{ label: "Retry", onClick: onRetry }] } : {}),
+        ...(onRetry ? { actions: [{ label: retryLabel, onClick: onRetry }] } : {}),
       }}
       layout="inline"
     />
@@ -191,6 +193,7 @@ export function ChatProofArtifactCard({
     explanation,
     onMediaError,
     retry,
+    retryLabel,
   } = useArtifactPreview(artifact, allowLocalArtifactProtocol);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const externalUrl = externalArtifactUrl(artifact.uri);
@@ -251,7 +254,7 @@ export function ChatProofArtifactCard({
         ) : failed ? (
           // Broken proof shrinks. A full-height empty box wastes the most
           // valuable space in a 322px rail to say nothing.
-          <ProofPreviewFailureNotice failureText={failureText} onRetry={retry} />
+          <ProofPreviewFailureNotice failureText={failureText} onRetry={retry} retryLabel={retryLabel} />
         ) : preview && image ? (
           <button
             type="button"

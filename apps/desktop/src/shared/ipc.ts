@@ -1166,6 +1166,7 @@ export const IPC = {
   cloudSetAgentLimits: "ade.cloud.setAgentLimits",
   cloudSetExtraHours: "ade.cloud.setExtraHours",
   cloudOpenCheckout: "ade.cloud.openCheckout",
+  cloudSetExtraDisk: "ade.cloud.setExtraDisk",
   cloudOpenBillingPortal: "ade.cloud.openBillingPortal",
   cloudPersonIsHere: "ade.cloud.personIsHere",
   cloudPushAllWork: "ade.cloud.pushAllWork",
