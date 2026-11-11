@@ -78,7 +78,7 @@ export function createWrites(s: SyncShared) {
     const parsedKey = parseProviderLoginKey(key);
     if (!machine || !parsedKey || parsedKey.origin12 !== originId(machine.machineKey)) return false;
     const row = vault.list(ACCOUNT_SCOPE_ALL).find((entry) => entry.kind === PROVIDER_LOGIN_VAULT_KIND && entry.key === key);
-    return Boolean(row) && (!row!.readable || isNewerProviderLoginPayload(vault.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, key)));
+    return row !== undefined && (!row.readable || isNewerProviderLoginPayload(vault.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, key)));
   }
 
   /**

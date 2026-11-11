@@ -331,6 +331,8 @@ export function createTakeover(s: SyncShared) {
   /** Claims this computer made (a takeover, or a claim back), by key: no renewal until the 30 s settle passes. */
   const claimedAt = new Map<string, number>();
   const claimBacks = new Set<string>();
+  /** The last failure code of each key's claim-back: a repeat of the same cause logs at info. */
+  const claimBackFailures = new Map<string, string>();
 
   /**
    * The sign-ins this computer renews ahead, and only when all hold: capture
@@ -434,11 +436,15 @@ export function createTakeover(s: SyncShared) {
       .then((verdict) => {
         const claimed = !verdict.renew && verdict.reason === "claimed";
         if (claimed) claimedAt.set(key, now());
+        claimBackFailures.delete(key);
         deps.logger.info("provider_login.claim_back", { provider, result: verdict.renew ? "owner" : verdict.reason });
       })
       .catch((error: unknown) => {
-        // The next pass tries the claim-back again.
-        deps.logger.warn("provider_login.claim_back_failed", { provider, code: (error as NodeJS.ErrnoException)?.code ?? null });
+        // The next pass tries the claim-back again; the same cause warns once.
+        const code = (error as NodeJS.ErrnoException)?.code ?? "unknown";
+        const repeat = claimBackFailures.get(key) === code;
+        claimBackFailures.set(key, code);
+        deps.logger[repeat ? "info" : "warn"]("provider_login.claim_back_failed", { provider, code });
       })
       .finally(() => claimBacks.delete(key));
   }
