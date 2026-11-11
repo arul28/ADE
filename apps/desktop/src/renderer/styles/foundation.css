@@ -10,6 +10,12 @@
   filter: invert(1);
 }
 
+/* The Codex avatar is a pale lilac mark on a white disc, which vanishes on a
+   light page. On a light theme its disc is dark (CodexAvatarMark). */
+[data-theme="light"] {
+  --ade-codex-avatar-bg: #1b1830;
+}
+
 /* Kimi's colour mark draws its "K" in white, which vanishes on a light page. */
 [data-theme="light"] .ade-mark-kimi path[fill="#fff"] {
   fill: var(--color-fg);

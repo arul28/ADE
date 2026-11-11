@@ -1236,7 +1236,7 @@ describe("ModelPicker", () => {
     expect(trigger.textContent).toMatch(/Select model/i);
   });
 
-  it("shows the correct tooltip on the authOnly toggle and calls toggle on click", async () => {
+  it("shows the only-usable switch as on while authOnly is on and turns it off on click", async () => {
     const user = userEvent.setup();
     authOnlyState = true;
     renderPicker();
@@ -1245,8 +1245,8 @@ describe("ModelPicker", () => {
       '[data-model-picker-auth-toggle="true"]',
     ) as HTMLButtonElement;
     expect(toggle).toBeTruthy();
-    expect(toggle.getAttribute("aria-checked")).toBe("false");
-    expect(toggle.getAttribute("title")).toMatch(/include unauthenticated providers/i);
+    expect(toggle.getAttribute("role")).toBe("switch");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
     await user.click(toggle);
     expect(authOnlyState).toBe(false);
   });
@@ -1893,7 +1893,7 @@ describe("ModelPicker", () => {
     expect(onOpenSignIn).toHaveBeenCalledWith("pi");
   });
 
-  it("routes keyboard sign-in for an unavailable Pi row through the Pi harness", async () => {
+  it("routes keyboard sign-in for a signed-out Pi row through the Pi harness", async () => {
     providerAuthStatusInternal = { pi: "unauthed" };
     const onOpenSignIn = vi.fn();
     renderPicker({
@@ -1904,8 +1904,9 @@ describe("ModelPicker", () => {
     });
 
     await userEvent.setup().click(screen.getByRole("button", { name: /Select model/i }));
-    const content = document.querySelector('[data-model-picker-content="true"]')!;
-    fireEvent.keyDown(content, { key: "Enter" });
+    // A signed-out row stays selectable; its own Sign in button signs in.
+    const signIn = within(await findModelRow(PI_MODEL.id)).getByRole("button", { name: "Sign in" });
+    fireEvent.keyDown(signIn, { key: "Enter" });
     expect(onOpenSignIn).toHaveBeenCalledWith("pi", ["oauth", "api-key"]);
   });
 
