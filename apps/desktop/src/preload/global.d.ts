@@ -4840,7 +4840,9 @@ declare global {
          * (`shared/cloudLaneLife.ts` has each method's args and answer).
          * Account level: it names a computer of the account, so no pin.
          */
-        laneLife?: (request: import("../shared/cloudLaneLife").CloudLaneLifeCallRequest) => Promise<unknown>;
+        laneLife?: <M extends import("../shared/cloudLaneLife").CloudLaneLifeMethod>(
+          request: import("../shared/cloudLaneLife").CloudLaneLifeCallRequest<M>,
+        ) => Promise<import("../shared/cloudLaneLife").CloudLaneLifeResults[M]>;
         /** A tier change's steps as they move. */
         onLaneJob?: (cb: (job: import("../shared/cloudLaneLife").CloudLaneJobSnapshot) => void) => () => void;
         /**

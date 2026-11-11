@@ -605,6 +605,7 @@ const RUNTIME_METHODS = new Set([
   "keepAwake.call",
   "cloud.prepareStop",
   "cloud.pushWork",
+  "cloud.workState",
   "cloud.call",
   "accountVault.call",
   "attention.call",
@@ -3011,7 +3012,7 @@ export function createMultiProjectRpcRequestHandler(
 
     // The server runs this over exec before stopping a computer at 0 hours. Not
     // a `cloud.call`: this machine may not have the account access `cloud` needs.
-    if (method === "cloud.prepareStop" || method === "cloud.pushWork") {
+    if (method === "cloud.prepareStop" || method === "cloud.pushWork" || method === "cloud.workState") {
       if (callerIdentityIsAgent(callerIdentity())) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "An agent can't run this on the computer.");
       }
@@ -3026,6 +3027,12 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "cloud.pushWork") {
       if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't push this computer's work.");
       return await options.pushCloudWork({ check: params.check === true });
+    }
+    // Only reads. A method of its own: a brain that predates it refuses it
+    // instead of reading the check as a push.
+    if (method === "cloud.workState") {
+      if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't read this computer's work.");
+      return await options.pushCloudWork({ check: true });
     }
 
     if (method === "keepAwake.call") {

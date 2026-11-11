@@ -10,8 +10,9 @@
 
 import { randomUUID } from "node:crypto";
 import {
-  CLOUD_MADE_BY_CHAT_METADATA,
+  cloudMadeByMetadata,
   cloudUnattendedHoursBlock,
+  type CloudAgentMaker,
   type CloudAccountState,
   type CloudCreateMachineArgs,
   type CloudCreateProgress,
@@ -40,10 +41,14 @@ export type CloudMakeJob = {
 };
 
 export type CloudMakeInput = (
-  | { kind: "create"; machine: CloudCreateMachineArgs; madeByChat?: string | null }
-  | { kind: "copy"; instanceId: string; name?: string | null; shape?: CloudShapeId | null; madeByChat?: string | null }
-  | { kind: "move"; instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null; madeByChat?: string | null }
+  | { kind: "create"; machine: CloudCreateMachineArgs }
+  | { kind: "copy"; instanceId: string; name?: string | null; shape?: CloudShapeId | null }
+  | { kind: "move"; instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null }
 ) & {
+  /** The agent's chat that asked, if any. */
+  madeByChat?: string | null;
+  /** The kind of agent that asked (a chat, an automation, ADE MCP); null for a person. */
+  madeByAgent?: CloudAgentMaker | null;
   /**
    * The yes came from what the person lets unattended agents do (a full-auto
    * chat or an automation, within the agent limits): this brain
@@ -153,13 +158,13 @@ export function createCloudBrainMaker(deps: {
       handOffApproval: ({ url, name }) => onApproval?.(url, name),
       selfApproval: (args) => allowSelfApproval(args, { selfApprove: input.selfApprove === true, startedAt }),
     };
-    const madeBy = input.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: input.madeByChat } : null;
+    const madeBy = cloudMadeByMetadata(input);
     const work = (async (): Promise<unknown> => {
       if (input.kind === "create") {
-        return await createCloudMachine(creatorDeps as CloudMachineCreatorDeps, requestId, input.machine, onProgress, madeBy ? { metadata: madeBy } : {});
+        return await createCloudMachine(creatorDeps as CloudMachineCreatorDeps, requestId, input.machine, onProgress, Object.keys(madeBy).length ? { metadata: madeBy } : {});
       }
       if (input.kind === "copy") {
-        return await copyCloudMachine(creatorDeps, { instanceId: input.instanceId, requestId, name: input.name ?? null, shape: input.shape ?? null, madeByChat: input.madeByChat ?? null }, onProgress);
+        return await copyCloudMachine(creatorDeps, { instanceId: input.instanceId, requestId, name: input.name ?? null, shape: input.shape ?? null, madeByChat: input.madeByChat ?? null, madeByAgent: input.madeByAgent ?? null }, onProgress);
       }
       return await moveCloudMachine(creatorDeps, {
         instanceId: input.instanceId,
@@ -168,6 +173,7 @@ export function createCloudBrainMaker(deps: {
         machineKey: input.machineKey ?? null,
         shape: input.shape ?? null,
         madeByChat: input.madeByChat ?? null,
+        madeByAgent: input.madeByAgent ?? null,
       }, onProgress);
     })();
     const done = work.then(

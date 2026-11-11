@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type CloudMachine } from "../../../shared/adeCloud";
 import { CLOUD_READY_WAKE_WAIT_MS } from "../../../shared/cloudReady";
-import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import { githubRepoOf } from "../../../shared/cloudLaneLaunch";
 import { ipcErrorMessage } from "../../lib/format";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { connectWithRetry } from "./connectWithRetry";
-import type { LaneMachineOption } from "../lanes/laneMachines";
+import { withoutAdeCloudLaneComputers, type LaneMachineOption } from "../lanes/laneMachines";
+import type { AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import type { DraftMachineOption } from "./DraftMachinePicker";
 
 const CLONE_ROW_PREFIX = "__ade_clone__:";
@@ -25,10 +26,8 @@ type Busy = { targetId: string; name: string; phase: "waking" | "cloning" | "sel
 
 /** `https://github.com/owner/repo.git` for a GitHub origin, else null: only GitHub repositories are set up on another machine. */
 function githubCloneUrl(originUrl: string | null): { url: string; repo: string } | null {
-  const identity = normalizeGitRemoteIdentity(originUrl);
-  const match = identity ? /^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/i.exec(identity) : null;
-  if (!match) return null;
-  return { url: `https://github.com/${match[1]}/${match[2]}.git`, repo: match[2]! };
+  const repo = githubRepoOf(originUrl);
+  return repo ? { url: `https://github.com/${repo.owner}/${repo.repo}.git`, repo: repo.repo } : null;
 }
 
 /**
@@ -49,7 +48,7 @@ export function useDraftMachineSetup({
   enabled,
   originUrl,
   cloudMachines,
-  hiddenMachineKeys,
+  laneComputers,
   cloneCandidates,
   offlineMachines,
   selectableMachineIds,
@@ -64,8 +63,8 @@ export function useDraftMachineSetup({
    * the menu when it opens instead of arriving after.
    */
   cloudMachines: readonly CloudMachine[];
-  /** Account machine keys the picker lists elsewhere (ADE Cloud lane computers): no row of their own here. */
-  hiddenMachineKeys?: ReadonlySet<string>;
+  /** ADE Cloud lane computers: the picker lists them under ADE Cloud, so no row of their own here. */
+  laneComputers: readonly AdeCloudLaneComputer[];
   /** Connected machines without this repository. */
   cloneCandidates: readonly LaneMachineOption[];
   /** Saved paired machines that are not connected now. */
@@ -86,13 +85,12 @@ export function useDraftMachineSetup({
   const cloudOffline = useMemo(() => {
     if (!enabled || !cloudEnabled) return [];
     const byKey = new Map(cloudMachines.filter((machine) => machine.machineKey).map((machine) => [machine.machineKey!, machine]));
-    return offlineMachines.flatMap((machine) => {
-      if (machine.machineKey && hiddenMachineKeys?.has(machine.machineKey)) return [];
+    return withoutAdeCloudLaneComputers(offlineMachines, laneComputers).flatMap((machine) => {
       const cloud = machine.machineKey ? byKey.get(machine.machineKey) : null;
       if (!cloud || cloud.state === "deleting" || cloud.state === "error") return [];
       return [{ ...machine, asleep: cloud.state === "asleep" || cloud.state === "stopped" }];
     });
-  }, [cloudEnabled, cloudMachines, enabled, hiddenMachineKeys, offlineMachines]);
+  }, [cloudEnabled, cloudMachines, enabled, laneComputers, offlineMachines]);
 
   const cloneRepository = useCallback(async (targetId: string, name: string, stillWanted: () => boolean) => {
     if (!clone) throw new Error(`${name} doesn't have this repository, and ADE sets up GitHub repositories only. Clone it there by hand.`);

@@ -29,6 +29,7 @@ import type {
 import type { LaneJiraIssue } from "../../../shared/types/jira";
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import {
+  chatLaunchAlreadyStartedMessage,
   chatLaunchLaneStart,
   createChatLaunchSnapshot,
   isChatLaunchTerminal,
@@ -203,11 +204,8 @@ const DEFAULT_FINISHED_RETENTION_MS = 10 * 60_000;
 
 const requireLaunchId = (value: unknown): string => requireNormalizedUuid(value, "launchId must be a UUID.");
 
-/** Cancel is for setup only; once the agent runs, the lane is the user's to delete. */
-export const CHAT_LAUNCH_ALREADY_STARTED_ERROR = "This chat already started — delete its lane from the lane menu instead.";
-export const CHAT_LAUNCH_LANE_READY_ERROR = "This lane is already set up — delete it from the lane menu instead.";
 /** A lane launch starts no chat, so there is nothing to send a message to. */
-export const CHAT_LAUNCH_NO_CHAT_ERROR = "This lane starts no chat, so it can't take messages.";
+const CHAT_LAUNCH_NO_CHAT_ERROR = "This lane starts no chat, so it can't take messages.";
 
 function autoLaneGenericSuffix(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -1097,7 +1095,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     if (!record) return null;
     if (record.snapshot.phase === "cancelled") return cloneSnapshot(record.snapshot);
     if (record.snapshot.agentStarted || record.snapshot.phase === "completed") {
-      throw new Error(record.snapshot.kind === "lane" ? CHAT_LAUNCH_LANE_READY_ERROR : CHAT_LAUNCH_ALREADY_STARTED_ERROR);
+      // Cancel is for setup only; once the agent runs, the lane is the user's to delete.
+      throw new Error(chatLaunchAlreadyStartedMessage(record.snapshot.kind));
     }
     const runtime = runtimeFor(launchId);
     const pipeline = runtime.pipeline;

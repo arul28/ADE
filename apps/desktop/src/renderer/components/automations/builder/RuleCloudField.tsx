@@ -1,5 +1,5 @@
 import type { AutomationCloudTarget } from "../../../../shared/types";
-import { formatCloudHoursRate } from "../../../../shared/adeCloud";
+import { cloudTierRateLabel } from "../../../../shared/cloudTiers";
 import { cn } from "../../ui/cn";
 import { SettingsToggle } from "../../settings/settingsSectionUi";
 import { CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
@@ -78,7 +78,7 @@ export function RuleCloudField({
                 <option value="">Your default{defaultTier ? ` (${defaultTier.label})` : ""}</option>
                 {cloud.tiers.map((tier) => (
                   <option key={tier.id} value={tier.id}>
-                    {tier.label}: {tier.cpu} CPU, {tier.memoryGb} GB, {formatCloudHoursRate(tier.multiplierMilli / 1000)}
+                    {tier.label}: {tier.cpu} CPU, {tier.memoryGb} GB, {cloudTierRateLabel(tier)}
                   </option>
                 ))}
               </select>

@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
+import React, { useEffect, useId, useState, useSyncExternalStore } from "react";
 import {
   ArrowClockwise,
   ArrowsOutSimple,
@@ -19,17 +19,24 @@ import {
   type CloudLaneJobStage,
   type CloudLaneJobStageId,
 } from "../../../shared/cloudLaneLife";
-import type { ChatLaunchStage } from "../../../shared/types";
 import { cloudCatalogOf, type CloudAccountState } from "../../../shared/adeCloud";
 import { cloudTier } from "../../../shared/cloudTiers";
 import { ipcErrorMessage } from "../../lib/format";
-import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
-import { CHAT_CARD_WIDTH_CLASS } from "../chat/chatCardPrimitives";
-import { Chip, StageErrorCallout, StageLine, TextAction, TILE_TONE } from "../chat/launch/LaneSetupCard";
+import {
+  Chip,
+  StageErrorCallout,
+  StageLine,
+  StepCardHeader,
+  TILE_TONE,
+  TextAction,
+  copyStepCardDetails,
+  stepCardFrameClass,
+} from "../chat/launch/stepCardParts";
 import { LaunchProgressRail } from "../chat/launch/LaunchProgressRail";
 import { useLaunchDurationText } from "../chat/launch/launchClock";
 import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import { LaneIcon } from "../ui/vcsIcons";
+import { Banner } from "../ui/notice";
 import { cn } from "../ui/cn";
 import { cancelCloudLaneJob, retryCloudLaneJob } from "./cloudLaneActions";
 import "./cloudLane.css";
@@ -55,17 +62,12 @@ const STAGE_ICON: Record<CloudLaneJobStageId, Icon> = {
   remove: Trash,
 };
 
-function railStage(stage: CloudLaneJobStage): ChatLaunchStage {
-  // The rail reads only the status, so the job's step id stands in for a launch's.
-  return { id: stage.id as unknown as ChatLaunchStage["id"], status: stage.status, startedAt: stage.startedAt, endedAt: stage.endedAt, percent: null, detail: stage.detail, error: stage.error };
-}
-
 function sizeLabel(account: CloudAccountState | null, id: string | null): string | null {
   if (!id) return null;
   return cloudTier(cloudCatalogOf(account), id)?.label ?? id;
 }
 
-export function cloudLaneJobTitle(job: CloudLaneJobSnapshot, account: CloudAccountState | null): string {
+function cloudLaneJobTitle(job: CloudLaneJobSnapshot, account: CloudAccountState | null): string {
   const to = sizeLabel(account, job.toSizeId) ?? "the new size";
   switch (job.phase) {
     case "waiting":
@@ -162,10 +164,10 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
   // The job's own error shows once: under its failed step when that step carries it, else below the steps.
   const stageErrors = new Set(job.stages.filter((stage) => (stage.status === "failed" || stage.status === "warning") && stage.error).map((stage) => stage.error!.trim()));
   const jobErrorLine = failed && job.error && !stageErrors.has(job.error.trim()) ? job.error : null;
-  const rail = useMemo(() => job.stages.map(railStage), [job.stages]);
   const textSize = compact ? "text-[11.5px]" : "text-[length:calc(var(--chat-font-size)*12/14)]";
   const metaSize = compact ? "text-[10.5px]" : "text-[length:calc(var(--chat-font-size)*11/14)]";
-  const tileTone = live ? "adec-tile" : failed ? "border-red-400/30 bg-red-500/[0.10] text-red-300" : job.phase === "online" ? TILE_TONE.done : TILE_TONE.skipped;
+  // Running wears the ADE Cloud blue; a failed step card stays amber, as the launch card does.
+  const tileTone = live ? "adec-tile" : failed ? TILE_TONE.failed : job.phase === "online" ? TILE_TONE.done : TILE_TONE.skipped;
   const fromLabel = sizeLabel(account, job.fromSizeId);
   const toLabel = sizeLabel(account, job.toSizeId);
 
@@ -184,7 +186,7 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
 
   const copyDetails = () => {
     const failedStage = job.stages.find((stage) => stage.status === "failed");
-    void copyTextToClipboard([
+    copyStepCardDetails([
       cloudLaneJobTitle(job, account),
       `Lane: ${job.laneName}`,
       `Computer: ${job.instanceId}${job.fromInstanceId !== job.instanceId ? ` (from ${job.fromInstanceId})` : ""}`,
@@ -192,7 +194,7 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
       failedStage ? `Step: ${CLOUD_LANE_JOB_STAGE_LABELS[failedStage.id]}` : null,
       job.error ?? failedStage?.error ?? null,
       `Job: ${job.jobId}`,
-    ].filter(Boolean).join("\n"));
+    ]);
   };
 
   const notice = job.phase === "waiting"
@@ -212,23 +214,19 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
         textSize,
         compact
           ? "adecl-jobpanel"
-          : cn(
-            CHAT_CARD_WIDTH_CLASS,
-            "ade-launch-card-enter rounded-[calc(var(--chat-radius-card,16px)-6px)] border bg-fg/[0.022] px-3.5 pb-2 pt-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]",
-            failed ? "border-red-400/25" : "border-fg/[0.07]",
-          ),
+          : stepCardFrameClass(failed),
         className,
       )}
     >
-      <div className="relative flex min-w-0 items-start gap-2.5">
-        <span className={cn("relative mt-px grid h-6 w-6 shrink-0 place-items-center rounded-[7px] border transition-colors duration-300", tileTone)} aria-hidden>
-          {failed ? <Warning size={13} weight="bold" /> : <CloudMark size={13} bold />}
-        </span>
-        <div className="relative min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className={cn("min-w-0 truncate font-medium", failed ? "text-red-200/90" : "text-fg/82")} role={announces ? "status" : undefined}>
-              {cloudLaneJobTitle(job, account)}
-            </span>
+      <StepCardHeader
+        tileTone={tileTone}
+        tileIcon={failed ? <Warning size={13} weight="bold" /> : <CloudMark size={13} bold />}
+        title={cloudLaneJobTitle(job, account)}
+        titleRole={announces ? "status" : undefined}
+        failed={failed}
+        metaSize={metaSize}
+        trailing={(
+          <>
             <JobElapsed job={job} className={cn("ml-auto text-fg/38", metaSize)} />
             {foldable ? (
               <button
@@ -242,9 +240,10 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
                 <CaretDown size={11} weight="bold" aria-hidden data-open={open ? "1" : "0"} />
               </button>
             ) : null}
-          </div>
-          {open ? (
-          <div className={cn("mt-1 flex min-w-0 flex-wrap items-center gap-1.5", metaSize)}>
+          </>
+        )}
+        chips={open ? (
+          <>
             <Chip title={job.laneName}>
               <LaneIcon size={10} className="adecl-lane-ic" />
               <span className="min-w-0 truncate">{job.laneName}</span>
@@ -257,13 +256,12 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
               <span>{toLabel}</span>
             </Chip>
             {job.kind === "move" ? <Chip title="A new computer gets the lane's files, then the old one goes">New computer</Chip> : null}
-          </div>
-          ) : null}
-        </div>
-      </div>
+          </>
+        ) : null}
+      />
       {open ? (
       <div id={bodyId}>
-      <LaunchProgressRail stages={rail} cloud className="mb-1 mt-3" />
+      <LaunchProgressRail stages={job.stages} cloud className="mb-1 mt-3" />
       <ul className="divide-y divide-fg/[0.045]" aria-label="Steps">
         {job.stages.map((stage) => (
           <li key={stage.id} data-stage-id={stage.id} data-stage-status={stage.status}>
@@ -274,17 +272,27 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
               detail={stage.detail?.trim() || null}
               compact={compact}
               cloud
-              danger
               trailing={<StageTime stage={stage} />}
             />
             {(stage.status === "failed" || stage.status === "warning") && stage.error ? (
-              <StageErrorCallout error={stage.error} className={metaSize} danger={stage.status === "failed"} />
+              <StageErrorCallout error={stage.error} className={metaSize} />
             ) : null}
           </li>
         ))}
       </ul>
-      {error ? <p className={cn("adecl-error mt-1.5", metaSize)} role="alert">{error}</p> : null}
-      {!error && jobErrorLine ? <p className={cn("adecl-error mt-1.5", metaSize)}>{jobErrorLine}</p> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          style={{ marginTop: 6 }}
+          model={{
+            id: "cloud-lane-job-action-error",
+            tone: "error",
+            title: error,
+            report: { surface: "cloud_lane_job_action" },
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
+      ) : jobErrorLine ? <StageErrorCallout error={jobErrorLine} className={cn("ml-0 mt-1.5", metaSize)} /> : null}
       {notice ? <p className={cn("mt-1.5 leading-snug text-fg/55", metaSize)}>{notice}</p> : null}
       {failed || canCancel(job) ? (
         <div className={cn("mt-1 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1 border-t border-fg/[0.05] pt-1.5 -mx-1.5", metaSize)}>

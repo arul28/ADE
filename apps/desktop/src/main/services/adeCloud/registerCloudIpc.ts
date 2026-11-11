@@ -6,7 +6,7 @@ import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
 import {
   cloudKindLabel,
   cloudStillStartingMessage,
-  CLOUD_MADE_BY_CHAT_METADATA,
+  cloudMadeByMetadata,
   type CloudAccountState,
   type CloudAgentLimits,
   type CloudShapeId,
@@ -63,6 +63,7 @@ import { startCloudSleepWatch } from "./cloudSleepWatch";
 import { setCloudDesktopActions } from "./cloudDesktopActions";
 import { copyCloudMachine, moveCloudMachine, type CloudCopyDeps } from "./cloudMachineCopy";
 import { reconnectCloudMachine } from "./cloudReconnect";
+import { sendToAllWindows } from "./broadcast";
 import {
   CLOUD_AGENT_LIMITS_VAULT_KEY,
   createCloudAgentLimitsStore,
@@ -89,17 +90,6 @@ type Logger = {
  * ADE account, never on a lane, chat or another machine. The new box's own
  * actions afterwards go through the machine list like any other computer.
  */
-/** Every open window, skipping one that is closing right now (the next send reaches the rest). */
-function sendToAllWindows(channel: string, payload?: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-    try {
-      win.webContents.send(channel, payload);
-    } catch {
-      // Closing mid-send.
-    }
-  }
-}
 
 /** Set while the app is up: re-asks ADE Cloud's access after a sign-in or sign-out. */
 let recheckCloudAccess: (() => void) | null = null;
@@ -564,9 +554,10 @@ export function registerCloudIpc(args: {
   // new machine signs in through its approval window), over the desktop bridge.
   setCloudDesktopActions({
     create: async (machine) => {
-      const { madeByChat, ...shape } = machine;
+      const { madeByChat, madeByAgent, ...shape } = machine;
+      const madeBy = cloudMadeByMetadata({ madeByChat, madeByAgent });
       const result = await createCloudMachine(machineCreatorDeps, randomUUID(), shape, () => undefined, {
-        ...(madeByChat ? { metadata: { [CLOUD_MADE_BY_CHAT_METADATA]: madeByChat } } : {}),
+        ...(Object.keys(madeBy).length ? { metadata: madeBy } : {}),
       });
       args.recordMachineCreate?.(result.joined ? "completed" : "partial");
       sendToAllWindows(IPC.cloudStatusChanged);

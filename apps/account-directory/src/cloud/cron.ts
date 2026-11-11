@@ -1,7 +1,7 @@
 import { captureCloudAction, captureCloudDay, type CloudWaitUntil } from "./analytics";
 import { checkExtraDiskLimits, reportExtraDiskDays, type ExtraDiskOverLimit } from "./billing";
 import { sendCloudEmail } from "./email";
-import { keepLaneStatement } from "./lanesWithoutComputer";
+import { laneFactsOf, laneFactsOfRow, laneFactsStatement, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
 import type { CloudHoursState, CloudInstance } from "./contract";
 import { refreshCostEstimate, runDailyCostReport } from "./costReport";
 import { cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
@@ -135,6 +135,9 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
       computer.machine_key = instance.metadata.ade_machine_key;
       statements.push(env.DB.prepare("update cloud_computers set machine_key = ? where instance_id = ?").bind(computer.machine_key, computer.instance_id));
     }
+    // The lane it holds, kept on its row so the 30-day rule and a freed lane never depend on a live read.
+    const lane = laneFactsStatement(env, computer.instance_id, computer, instance.metadata);
+    if (lane) statements.push(lane);
     // The provider's disk is the truth. A grow whose answer was lost settles from it, running or not: at once when
     // it shows the new size, or after the settle window (then the room goes back); a grow that landed is billed
     // from today's row. With no grow waiting, a row ahead of a resting computer comes back down.
@@ -646,7 +649,14 @@ async function warnDeletion(env: CloudEnv, computer: TickComputer, column: "dele
   });
 }
 
-/** True when the computer was deleted. */
+/**
+ * True when the computer was deleted. A lane's computer goes, its lane stays:
+ * the next send makes a new computer on its branch. The lane's facts come from
+ * the row first and the live metadata second, and the row is marked before the
+ * delete so its close writes the lane's row in the same batch. A read that
+ * fails (not a 404) can't tell whether it holds a lane: it waits for a later
+ * day. A 404 with no lane on the row deletes as before.
+ */
 async function deleteInactive(env: CloudEnv, provider: CloudProvider, computer: TickComputer, now: number): Promise<boolean> {
   // The list and row are from the start of the tick: someone may have opened it since.
   let metadata: Record<string, string> | null = null;
@@ -663,20 +673,17 @@ async function deleteInactive(env: CloudEnv, provider: CloudProvider, computer: 
   const fresh = await env.DB.prepare("select awake_since, last_awake_at, deleted_at from cloud_computers where instance_id = ?")
     .bind(computer.instance_id).first<Pick<ComputerRow, "awake_since" | "last_awake_at" | "deleted_at">>();
   if (!fresh || fresh.deleted_at != null || fresh.awake_since != null || fresh.last_awake_at !== computer.last_awake_at) return false;
+  const lane = mergeLaneFacts(laneFactsOfRow(computer), laneFactsOf(metadata));
+  const keepsLane = namesLane(lane);
+  if (keepsLane) await markKeepLaneStatement(env, computer, lane, "inactive").run();
   try {
     await deleteComputer(env, provider, computer, { who: "system", reason: "inactive_30_days" }, now);
   } catch (error) {
+    if (keepsLane) await unmarkKeepLaneStatement(env, computer.instance_id).run();
     if (!(error instanceof CloudProviderError)) throw error;
     reportCloudFailure("cloud.delete_inactive_failed", { instanceId: computer.instance_id });
     return false;
   }
-  // A lane's computer goes, its lane stays: the next send makes a new computer on its branch.
-  const kept = keepLaneStatement(env, computer, metadata, { reason: "inactive" }, now);
-  if (kept) {
-    await kept.run().catch((error: unknown) => {
-      reportCloudFailure("cloud.lane_without_computer_keep_failed", { instanceId: computer.instance_id, error: error instanceof Error ? error.message : String(error) });
-    });
-  }
-  logCloud("cloud.deleted_inactive", { instanceId: computer.instance_id });
+  logCloud("cloud.deleted_inactive", { instanceId: computer.instance_id, keptLane: keepsLane });
   return true;
 }

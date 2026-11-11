@@ -23,7 +23,7 @@ export function isAdeCloudComputer(env: NodeJS.ProcessEnv = process.env): boolea
 }
 
 /** What a person or an agent reads when a cloud computer refuses a second lane. Stable: the UI and the CLI show it as is. */
-export const CLOUD_COMPUTER_ONE_LANE_MESSAGE =
+const CLOUD_COMPUTER_ONE_LANE_MESSAGE =
   "This ADE Cloud computer already holds a lane, and each cloud computer holds one. Start a new lane on ADE Cloud instead: it gets its own computer.";
 
 /** What a person or an agent reads when two processes make a lane on one cloud computer and the check waited too long. */
@@ -35,7 +35,7 @@ export const CLOUD_COMPUTER_LANE_CHECK_BUSY_MESSAGE =
  * archived. An archived lane keeps its computer (one-click restore), so the
  * computer is still taken.
  */
-export function cloudComputerArchivedLaneMessage(laneName: string): string {
+function cloudComputerArchivedLaneMessage(laneName: string): string {
   const name = laneName.trim() || "that lane";
   return `This ADE Cloud computer belongs to the archived lane "${name}". `
     + "Restore that lane to use this computer again, or start a new lane on ADE Cloud: it gets its own computer.";

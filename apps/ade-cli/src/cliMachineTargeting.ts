@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { chatLaunchStatusLine, isChatLaunchSucceeded } from "../../desktop/src/shared/chatLaunch";
+import { chatLaunchStatusLine } from "../../desktop/src/shared/chatLaunch";
+import { followCloudLaneLaunch } from "../../desktop/src/shared/cloudLaneLaunch";
 import { CLOUD_TIER_IDS, isCloudTierId } from "../../desktop/src/shared/cloudTiers";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
-import type { ChatLaunchSnapshot } from "../../desktop/src/shared/types/chatLaunch";
 import { pullFileFromWorkCopy, pushFileToWorkCopy, withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
 import { CLOUD_READY_WAKE_WAIT_MS, isCloudReadyMachineSelector } from "../../desktop/src/shared/cloudReady";
@@ -1266,7 +1266,7 @@ async function executePlanOnCloudReadyMachine(
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
-   ADE CLOUD LANES — `--machine cloud [--size <size>]`.
+   ADE CLOUD LANES: `--machine cloud [--size <size>]`.
 
    One new ADE Cloud computer for one new lane, the repository there, and the
    chat started there. This machine's brain owns the launch (`cloud.lane_launch`
@@ -1414,42 +1414,38 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
     // Always, --json too (stderr), before anything waits: the id is what follows or resumes this launch.
     process.stderr.write(`ade: starting a lane on ADE Cloud (${sizeId ?? "your default size"}). Launch id ${launchId}.\n`);
     return await withCloudActions(options, roots.projectRoot, async (call) => {
-      let status = await call("lane_launch", { launch, originUrl });
       let lastLine = "";
-      let shownLink: string | null = null;
-      const deadline = Date.now() + CLOUD_LANE_WAIT_MS;
-      for (;;) {
-        if (!isRecord(status) || !isRecord(status.launch)) {
+      const { outcome, status, answer } = await followCloudLaneLaunch({
+        start: () => call("lane_launch", { launch, originUrl }),
+        read: () => call("lane_launch_status", { launchId }),
+        onStatus: ({ launch: snapshot }) => {
+          const line = chatLaunchStatusLine(snapshot);
+          if (line !== lastLine) say(line);
+          lastLine = line;
+        },
+        onApprovalLink: (link) => say(`Approve the new computer joining your ADE account: open ${link} on your phone or in a browser signed in to ADE.`),
+        pollMs: CLOUD_LANE_POLL_MS,
+        waitMs: CLOUD_LANE_WAIT_MS,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      });
+      switch (outcome) {
+        case "missing":
           throw new CliExecutionError("This computer's ADE no longer has the ADE Cloud lane launch.", { launchId });
-        }
-        const snapshot = status.launch as unknown as ChatLaunchSnapshot;
-        const line = chatLaunchStatusLine(snapshot);
-        if (line !== lastLine) say(line);
-        lastLine = line;
-        const link = asString(status.approvalUrl);
-        if (link && link !== shownLink) {
-          say(`Approve the new computer joining your ADE account: open ${link} on your phone or in a browser signed in to ADE.`);
-          shownLink = link;
-        }
-        if (isChatLaunchSucceeded(snapshot)) return cloudLaneResult(status);
-        if (snapshot.phase === "failed" || snapshot.phase === "cancelled") {
-          const sentence = snapshot.phase === "cancelled"
-            ? "The lane launch was cancelled, and its computer deleted."
-            : snapshot.error?.trim() || "The lane didn't start on ADE Cloud.";
-          throw new CliExecutionError(sentence, {
+        case "succeeded":
+          return cloudLaneResult(answer as JsonObject);
+        case "failed":
+          throw new CliExecutionError(status?.launch.error?.trim() || "The lane didn't start on ADE Cloud.", {
             launchId,
-            phase: snapshot.phase,
-            ...(snapshot.phase === "failed" ? { nextAction: `Run the same command with --launch-id ${launchId} to go on from the failed step.` } : {}),
+            phase: "failed",
+            nextAction: `Run the same command with --launch-id ${launchId} to go on from the failed step.`,
           });
-        }
-        if (Date.now() > deadline) {
+        case "cancelled":
+          throw new CliExecutionError("The lane launch was cancelled, and its computer deleted.", { launchId, phase: "cancelled" });
+        case "timeout":
           throw new CliExecutionError(`The lane is still starting on ADE Cloud after ${CLOUD_LANE_WAIT_MS / 60_000} minutes.`, {
             launchId,
             nextAction: `ade chat launch-status ${launchId} --machine cloud`,
           });
-        }
-        await new Promise((resolve) => setTimeout(resolve, CLOUD_LANE_POLL_MS));
-        status = await call("lane_launch_status", { launchId });
       }
     });
   } finally {

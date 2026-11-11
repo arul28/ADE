@@ -46,6 +46,10 @@ const UPDATE_FREE_WINDOW_MS = UPDATE_BOOT_REPORT_MS + 5 * 60_000;
 /** A computer must have slept this long before the cron updates it. */
 const ASLEEP_BEFORE_UPDATE_MS = 10 * 60_000;
 const AUTO_UPDATES_PER_TICK = 3;
+/** Most computers one tick looks at for an automatic update (each may read its account); the rest wait a minute. */
+const AUTO_UPDATE_TRIES_PER_TICK = 10;
+/** Most timed-out updates one tick fails or rolls back (each may call the provider); the rest wait a minute. */
+const UPDATE_TIMEOUTS_PER_TICK = 10;
 /** An automatic update the provider refused is tried again after this long. */
 const AUTO_RETRY_AFTER_MS = 60 * 60_000;
 
@@ -109,14 +113,22 @@ export function automaticUpdatesOn(targets: CloudUpdateTargets, channel: CloudUp
   return marker != null && marker !== "off";
 }
 
-/** Whether the computer should update itself now: behind an allowed image it never failed on. */
+/**
+ * Whether the computer should update itself now: behind an allowed image it
+ * never failed on, with no update or rollback in flight, and not inside the
+ * hour after an automatic try the provider refused (`update_started_at` is
+ * set in all three; a settled update clears it). The idle step and the cron
+ * both ask this, so neither retries a failing update every time it runs.
+ */
 export function isBehindAutomatic(
-  computer: Pick<ComputerRow, "channel" | "template_version" | "update_failed_template" | "update_state">,
+  computer: Pick<ComputerRow, "channel" | "template_version" | "update_failed_template" | "update_state" | "update_started_at">,
   targets: CloudUpdateTargets,
+  now: number,
 ): boolean {
   const target = automaticTemplate(targets, channelOfComputer(computer));
   return target != null
     && computer.update_state !== "updating"
+    && (computer.update_started_at == null || now - computer.update_started_at >= AUTO_RETRY_AFTER_MS)
     && computer.template_version !== target
     && computer.update_failed_template !== target;
 }
@@ -145,10 +157,10 @@ export function withUpdateFacts(
   };
 }
 
-export function updateCheckOf(computer: ComputerRow, targets: CloudUpdateTargets): CloudUpdateCheck {
+export function updateCheckOf(computer: ComputerRow, targets: CloudUpdateTargets, now: number): CloudUpdateCheck {
   const channel = channelOfComputer(computer);
   return {
-    behind: isBehindAutomatic(computer, targets),
+    behind: isBehindAutomatic(computer, targets, now),
     channel,
     templateVersion: computer.template_version,
     targetTemplate: channelTemplate(targets, channel),
@@ -220,19 +232,23 @@ export class CloudUpdateInProgressError extends Error {
  * first, and one update at a time: a second one while this computer waits for
  * its boot report throws `CloudUpdateInProgressError`. A provider failure puts
  * the row back and throws; an automatic one is tried again an hour later.
+ * `expectsReport`: the target is an image a passed check allowed (it sends a
+ * boot report), as the settings read now. Saved on the row, so the rollback
+ * decision can't change with a setting moved during the wait.
  */
 export async function startCloudUpdate(
   env: CloudEnv,
   provider: Pick<CloudProvider, "updateInstance">,
   computer: ComputerRow,
-  args: { reason: Exclude<CloudUpdateReason, "rollback">; target: string; now: number },
+  args: { reason: Exclude<CloudUpdateReason, "rollback">; target: string; expectsReport: boolean; now: number },
 ): Promise<{ status: string; templateVersion: string }> {
   const { reason, target, now } = args;
+  const expects = args.expectsReport ? 1 : 0;
   const claimed = await env.DB.prepare(`
     update cloud_computers set previous_template = template_version, template_version = ?, update_state = 'updating',
-      update_started_at = ?, update_reason = ?, update_error = null
+      update_started_at = ?, update_reason = ?, update_error = null, update_expects_report = ?
     where instance_id = ? and deleted_at is null and (update_state is null or update_state <> 'updating')
-  `).bind(target, now, reason, computer.instance_id).run();
+  `).bind(target, now, reason, expects, computer.instance_id).run();
   if (claimed.meta.changes !== 1) throw new CloudUpdateInProgressError();
   let status: string;
   try {
@@ -244,13 +260,13 @@ export async function startCloudUpdate(
     const automatic = reason !== "manual";
     await env.DB.prepare(`
       update cloud_computers set template_version = ?, previous_template = ?, update_state = ?, update_started_at = ?,
-        update_reason = ?, update_error = ?
+        update_reason = ?, update_error = ?, update_expects_report = ?
       where instance_id = ? and update_state = 'updating' and update_started_at = ?
     `).bind(
       computer.template_version, computer.previous_template, computer.update_state,
       automatic ? now : computer.update_started_at,
       automatic && computer.update_reason === "rollback" ? reason : computer.update_reason,
-      computer.update_error,
+      computer.update_error, computer.update_expects_report ?? null,
       computer.instance_id, now,
     ).run();
     if (automatic) {
@@ -264,6 +280,7 @@ export async function startCloudUpdate(
   computer.update_started_at = now;
   computer.update_reason = reason;
   computer.update_error = null;
+  computer.update_expects_report = expects;
   await env.DB.batch(startedStatements(env, computer, status, reason, now));
   logCloud("cloud.update_started", { instanceId: computer.instance_id, reason, target });
   return { status, templateVersion: target };
@@ -305,14 +322,29 @@ export async function recordBootReport(env: CloudEnv, computer: ComputerRow, ade
 }
 
 /**
+ * Whether the update in flight's image sends a boot report: as saved when it
+ * started. An update started before that was saved falls back to the
+ * channel's allowed image as it reads now (the only thing there was).
+ */
+function expectsBootReport(computer: ComputerRow, targets: CloudUpdateTargets): boolean {
+  const failed = computer.template_version;
+  if (failed == null) return false;
+  if (computer.update_expects_report != null) return computer.update_expects_report === 1;
+  return automaticTemplate(targets, channelOfComputer(computer)) === failed;
+}
+
+/**
  * No boot report: roll back once to the image before. An image no passed
  * check let computers update to (one older than boot reports, while this
  * rolls out) can't report, so its update is only settled, never undone.
+ * Either way the state lets a later image be tried: a settled update leaves
+ * the computer on its image with nothing in flight, and a failed one names its
+ * image in `update_failed_template`, which is never tried again on its own.
  */
 async function failUpdate(env: CloudEnv, provider: Pick<CloudProvider, "updateInstance">, computer: ComputerRow, targets: CloudUpdateTargets, now: number): Promise<void> {
   const failed = computer.template_version;
   const startedAt = computer.update_started_at!;
-  const canReport = failed != null && automaticTemplate(targets, channelOfComputer(computer)) === failed;
+  const canReport = expectsBootReport(computer, targets);
   if (!canReport) {
     await env.DB.prepare("update cloud_computers set update_state = null, update_started_at = null where instance_id = ? and update_state = 'updating' and update_started_at = ?")
       .bind(computer.instance_id, startedAt).run();
@@ -377,9 +409,9 @@ export async function runCloudAutoUpdates(
     && (computer.update_state === "updating" || (computer.update_state === "failed" && computer.update_reason === "rollback")));
   const targets = await readUpdateTargets(env);
 
-  for (const computer of waiting) {
-    // Asleep or stopped: it reports when it next boots.
-    if (!isMeteredStatus(computer.status) || now - reportClockStart(computer) < UPDATE_BOOT_REPORT_MS) continue;
+  // Asleep or stopped: it reports when it next boots.
+  const timedOut = waiting.filter((computer) => isMeteredStatus(computer.status) && now - reportClockStart(computer) >= UPDATE_BOOT_REPORT_MS);
+  for (const computer of timedOut.slice(0, UPDATE_TIMEOUTS_PER_TICK)) {
     try {
       if (computer.update_state === "updating") {
         await failUpdate(env, provider, computer, targets, now);
@@ -403,17 +435,16 @@ export async function runCloudAutoUpdates(
     && !moving.has(computer.instance_id)
     && !blockedUsers.has(computer.user_id)
     && !(computer.free_wake_until != null && computer.free_wake_until > now)
-    && (computer.update_started_at == null || now - computer.update_started_at >= AUTO_RETRY_AFTER_MS)
-    && isBehindAutomatic(computer, targets));
+    && isBehindAutomatic(computer, targets, now));
   let started = 0;
-  for (const computer of due) {
+  for (const computer of due.slice(0, AUTO_UPDATE_TRIES_PER_TICK)) {
     if (started >= AUTO_UPDATES_PER_TICK) break;
     const target = automaticTemplate(targets, channelOfComputer(computer));
     if (!target) continue;
     try {
       if (await updateBlocked(env, computer.user_id, now)) continue;
       started += 1;
-      await startCloudUpdate(env, provider, computer, { reason: "asleep", target, now });
+      await startCloudUpdate(env, provider, computer, { reason: "asleep", target, expectsReport: true, now });
     } catch (error) {
       if (error instanceof CloudUpdateInProgressError) continue;
       // Reported inside, and retried after `AUTO_RETRY_AFTER_MS`.

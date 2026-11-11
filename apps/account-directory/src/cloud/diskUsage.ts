@@ -92,8 +92,11 @@ export async function recordDiskUsage(env: CloudEnv, computer: ComputerRow, repo
     ).bind(json, report.usage.measuredAt, computer.instance_id, report.usage.measuredAt));
   }
   if (report.work) {
-    statements.push(env.DB.prepare("update cloud_computers set lane_work_json = ? where instance_id = ?")
-      .bind(JSON.stringify(report.work), computer.instance_id));
+    // An older read (a report retried late) never replaces a newer one, as with the disk measure.
+    statements.push(env.DB.prepare(`
+      update cloud_computers set lane_work_json = ?
+      where instance_id = ? and (lane_work_json is null or coalesce(json_extract(lane_work_json, '$.checkedAt'), 0) <= ?)
+    `).bind(JSON.stringify(report.work), computer.instance_id, report.work.checkedAt));
   }
   if (statements.length) await env.DB.batch(statements);
 }

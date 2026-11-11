@@ -119,6 +119,17 @@ export function chatLaunchKindUnknownToBrain(kind: ChatLaunchKind, brainKinds: r
   return !brainKinds.includes(kind);
 }
 
+/**
+ * The refusal when a launch is cancelled after its agent started (or, for a
+ * lane launch, after the lane is set up): from then on the lane is the user's
+ * to delete. Shared by the local and ADE Cloud launch hosts.
+ */
+export function chatLaunchAlreadyStartedMessage(kind: ChatLaunchKind): string {
+  if (kind === "lane") return "This lane is already set up. Delete it from the lane menu instead.";
+  if (kind === "cli") return "This CLI session already started. Delete its lane from the lane menu instead.";
+  return "This chat already started. Delete its lane from the lane menu instead.";
+}
+
 /** The `chatLaunchKinds` capability as a brain sent it: the strings only; absent is an empty list. */
 export function readChatLaunchKindsCapability(capabilities: unknown): string[] {
   if (!capabilities || typeof capabilities !== "object") return [];

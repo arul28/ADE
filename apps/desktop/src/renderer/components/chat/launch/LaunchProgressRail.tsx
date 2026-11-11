@@ -1,5 +1,5 @@
 import React from "react";
-import type { ChatLaunchStage } from "../../../../shared/types";
+import type { ChatLaunchStageStatus } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import "../../remoteTargets/cloudBrand.css";
 
@@ -19,7 +19,10 @@ import "../../remoteTargets/cloudBrand.css";
  * draws actually moved.
  */
 
-function fillScale(stage: ChatLaunchStage): number {
+/** What the rail reads of a step: a launch's stage or an ADE Cloud job's step. */
+export type LaunchRailStage = { id: string; status: ChatLaunchStageStatus; percent?: number | null };
+
+function fillScale(stage: LaunchRailStage): number {
   switch (stage.status) {
     case "done":
     case "warning":
@@ -33,7 +36,7 @@ function fillScale(stage: ChatLaunchStage): number {
   }
 }
 
-const FILL_TONE: Record<ChatLaunchStage["status"], string> = {
+const FILL_TONE: Record<ChatLaunchStageStatus, string> = {
   done: "bg-emerald-400/70",
   warning: "bg-amber-300/70",
   failed: "bg-amber-400/80",
@@ -42,7 +45,7 @@ const FILL_TONE: Record<ChatLaunchStage["status"], string> = {
   pending: "bg-transparent",
 };
 
-const TRACK_TONE: Record<ChatLaunchStage["status"], string> = {
+const TRACK_TONE: Record<ChatLaunchStageStatus, string> = {
   done: "bg-emerald-400/20",
   warning: "bg-amber-300/20",
   failed: "bg-amber-400/20",
@@ -56,7 +59,7 @@ export const LaunchProgressRail = React.memo(function LaunchProgressRail({
   className,
   cloud = false,
 }: {
-  stages: readonly ChatLaunchStage[];
+  stages: readonly LaunchRailStage[];
   className?: string;
   /** An ADE Cloud launch: the running step is the Night sky blue (cloudBrand.css). */
   cloud?: boolean;

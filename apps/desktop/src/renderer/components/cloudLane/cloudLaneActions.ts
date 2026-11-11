@@ -2,6 +2,8 @@ import type {
   CloudLaneDeleteResult,
   CloudLaneFreeResult,
   CloudLaneJobSnapshot,
+  CloudLaneLifeMethod,
+  CloudLaneLifeResults,
   CloudLaneTierTiming,
   CloudLaneWithoutComputer,
   CloudLaneWorkState,
@@ -10,7 +12,7 @@ import type { CloudTierId } from "../../../shared/cloudTiers";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { rootAppStoreApi } from "../../state/appStore";
-import { adeCloudLaneComputerForMachine, forgetCloudLaneComputer } from "../../state/adeCloudLaneIndex";
+import { adeCloudLaneComputerForMachine, forgetCloudLaneComputer, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { resolveAdeCloudLaneBinding } from "../chat/adeCloudLaneBinding";
 
 /**
@@ -33,10 +35,10 @@ function laneLife(): NonNullable<NonNullable<typeof window.ade.cloud>["laneLife"
   return (typeof window !== "undefined" ? window.ade?.cloud?.laneLife : null) ?? null;
 }
 
-async function call<T>(method: Parameters<NonNullable<ReturnType<typeof laneLife>>>[0]["method"], args?: unknown): Promise<T> {
+async function call<M extends CloudLaneLifeMethod>(method: M, args?: unknown): Promise<CloudLaneLifeResults[M]> {
   const run = laneLife();
   if (!run) throw new Error(CLOUD_LANE_LIFE_UNAVAILABLE);
-  return await run({ method, args }) as T;
+  return await run({ method, args });
 }
 
 export function cloudLaneLifeAvailable(): boolean {
@@ -45,11 +47,11 @@ export function cloudLaneLifeAvailable(): boolean {
 
 /** Whether the computer holds work that isn't on GitHub (null: the check couldn't run). */
 export async function cloudLaneWorkState(instanceId: string): Promise<CloudLaneWorkState> {
-  return await call<CloudLaneWorkState>("workState", { instanceId });
+  return await call("workState", { instanceId });
 }
 
 export async function deleteCloudLane(instanceId: string, options: { skipCheck: boolean }): Promise<CloudLaneDeleteResult> {
-  const done = await call<CloudLaneDeleteResult>("deleteLane", { instanceId, skipCheck: options.skipCheck });
+  const done = await call("deleteLane", { instanceId, skipCheck: options.skipCheck });
   if (done.ok) forgetCloudLaneComputer(instanceId);
   return done;
 }
@@ -60,7 +62,7 @@ export async function deleteCloudLane(instanceId: string, options: { skipCheck: 
  * with no computer, not the old computer's name.
  */
 export async function freeCloudLane(instanceId: string): Promise<CloudLaneFreeResult> {
-  const done = await call<CloudLaneFreeResult>("freeLane", { instanceId });
+  const done = await call("freeLane", { instanceId });
   if (done.ok) forgetCloudLaneComputer(instanceId);
   return done;
 }
@@ -73,13 +75,13 @@ export async function changeCloudLaneTier(input: {
   requestId?: string | null;
   requestedByChat?: string | null;
 }): Promise<CloudLaneJobSnapshot> {
-  return await call<CloudLaneJobSnapshot>("changeTier", input);
+  return await call("changeTier", input);
 }
 
 export async function listCloudLaneJobs(): Promise<CloudLaneJobSnapshot[]> {
   if (!cloudLaneLifeAvailable()) return [];
-  const jobs = await call<unknown>("listJobs");
-  return Array.isArray(jobs) ? jobs as CloudLaneJobSnapshot[] : [];
+  const jobs = await call("listJobs");
+  return Array.isArray(jobs) ? jobs : [];
 }
 
 export async function retryCloudLaneJob(jobId: string): Promise<void> {
@@ -93,8 +95,8 @@ export async function cancelCloudLaneJob(jobId: string): Promise<void> {
 /** The lanes kept without a computer (a server read, no wake). Empty when this ADE can't ask. */
 export async function listCloudLanesWithoutComputer(): Promise<CloudLaneWithoutComputer[]> {
   if (!cloudLaneLifeAvailable()) return [];
-  const lanes = await call<unknown>("lanesWithoutComputer");
-  return Array.isArray(lanes) ? lanes as CloudLaneWithoutComputer[] : [];
+  const lanes = await call("lanesWithoutComputer");
+  return Array.isArray(lanes) ? lanes : [];
 }
 
 export async function forgetCloudLaneWithoutComputer(laneId: string): Promise<void> {
@@ -145,14 +147,16 @@ export async function clearCloudLaneCaches(input: { instanceId: string | null; m
  * The ADE Cloud computer a lane lives on, when the lane is that computer's
  * own lane: the pin reaches a lane computer (its target carries the
  * computer's id as host name) and the computer's record names this lane.
- * Null for every other lane, which then deletes the usual way.
+ * Null for every other lane, which then deletes the usual way. `computers`
+ * is the lane computer index a component reads (`useAdeCloudLaneComputers`).
  */
 export function cloudLaneComputerOfLane(
   pin: OpenProjectBinding | null | undefined,
   laneId: string,
+  computers: readonly AdeCloudLaneComputer[],
 ): { instanceId: string; laneName: string } | null {
   if (!pin || pin.kind !== "remote") return null;
-  const computer = adeCloudLaneComputerForMachine({ hostname: pin.hostname ?? null });
+  const computer = adeCloudLaneComputerForMachine({ hostname: pin.hostname ?? null }, computers);
   if (!computer || computer.laneId !== laneId) return null;
   return { instanceId: computer.instanceId, laneName: computer.laneName };
 }

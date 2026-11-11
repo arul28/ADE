@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Check, Question, X } from "@phosphor-icons/react";
 import type { CloudAccountState } from "../../../../shared/adeCloud";
 import { ipcErrorMessage } from "../../../lib/format";
-import { showToast } from "../../app/toast/toastStore";
+import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
 import { CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import { Dialog, confirmDialog } from "../../ui/dialog";
 import { cleanupOrder, formatGb, lastRunText, type DashLane } from "./cloudDashboardModel";
@@ -43,7 +43,11 @@ export function CloudFreeUpSpace({
     // Each lane to delete is checked on its computer first: a delete warns only when work isn't on GitHub.
     const deletes = picked.filter((lane) => choices[lane.key] === "delete" && lane.instanceId);
     const checks = await Promise.all(deletes.map(async (lane) => {
-      const state = await cloudLaneWorkState(lane.instanceId!).catch(() => null);
+      // Unknown warns like unpushed: a delete never assumes the work is safe.
+      const state = await cloudLaneWorkState(lane.instanceId!).catch((error: unknown) => {
+        console.warn("[cloud] lane work check failed", error instanceof Error ? error.message : String(error));
+        return null;
+      });
       return { lane, unpushed: state?.unpushed ?? null };
     }));
     const risky = checks.filter((check) => check.unpushed !== false).map((check) => check.lane);
@@ -74,7 +78,7 @@ export function CloudFreeUpSpace({
     onDone();
     refreshCloudLanesWithoutComputer();
     if (failed.length) {
-      showToast({ tone: "error", title: "Some lanes kept their computer", message: failed.join(" ") });
+      showToast({ tone: "error", title: "Some lanes kept their computer", message: failed.join(" "), durationMs: READABLE_TOAST_DURATION_MS });
       return;
     }
     showToast({ tone: "success", title: `Freed ${formatGb(freedGb)}`, message: "The dashboard shows the new disk." });

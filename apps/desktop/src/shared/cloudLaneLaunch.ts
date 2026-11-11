@@ -8,7 +8,8 @@
 
 import { CLOUD_OUT_OF_HOURS_MESSAGE, cloudOutOfHours, type CloudAccountState, type CloudMachine } from "./adeCloud";
 import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
-import type { ChatLaunchArgs } from "./types/chatLaunch";
+import type { ChatLaunchArgs, ChatLaunchSnapshot } from "./types/chatLaunch";
+import { isChatLaunchSucceeded } from "./chatLaunch";
 import { CLOUD_LANE_METADATA } from "../../../account-directory/src/cloud/contract";
 
 export type { CloudLaneWithoutComputer } from "../../../account-directory/src/cloud/contract";
@@ -27,6 +28,8 @@ export type { CloudLaneWithoutComputer } from "../../../account-directory/src/cl
 export type CloudLaneStartBlock = {
   code: "out_of_hours" | "computers_full" | "disk_full";
   message: string;
+  /** One short line for a narrow prompt box, so a label never wraps there. */
+  short: string;
 };
 
 export function cloudLaneStartBlock(
@@ -37,7 +40,7 @@ export function cloudLaneStartBlock(
   // A partial answer (an older server) can lack a part: that check is skipped, never thrown.
   const { extraHours, computers, disk } = account as Partial<CloudAccountState>;
   if (cloudOutOfHours(account) && !extraHours?.enabled) {
-    return { code: "out_of_hours", message: CLOUD_OUT_OF_HOURS_MESSAGE };
+    return { code: "out_of_hours", message: CLOUD_OUT_OF_HOURS_MESSAGE, short: "Out of ADE Cloud hours." };
   }
   if (!options.newLane) return null;
   if (computers && computers.limit > 0 && computers.total >= computers.limit) {
@@ -47,10 +50,11 @@ export function cloudLaneStartBlock(
       message: count === 1
         ? "You're using your one ADE Cloud computer."
         : `You're using all ${count} ADE Cloud computers.`,
+      short: count === 1 ? "Your ADE Cloud computer is in use." : `All ${count} computers in use.`,
     };
   }
   if (disk && disk.limitGb != null && disk.usedGb >= disk.limitGb) {
-    return { code: "disk_full", message: "Your ADE Cloud disk space is full." };
+    return { code: "disk_full", message: "Your ADE Cloud disk space is full.", short: "ADE Cloud disk full." };
   }
   return null;
 }
@@ -72,7 +76,7 @@ export const CLOUD_LANE_BRANCH_METADATA = CLOUD_LANE_METADATA.branch;
 export const CLOUD_LANE_METADATA_KEYS: readonly string[] = Object.values(CLOUD_LANE_METADATA);
 
 /** The lane name for a computer list row, or null for a computer that was not made for one lane. */
-export function cloudLaneNameOf(metadata: Record<string, string> | null | undefined): string | null {
+function cloudLaneNameOf(metadata: Record<string, string> | null | undefined): string | null {
   const name = metadata?.[CLOUD_LANE_NAME_METADATA]?.trim();
   return metadata?.[CLOUD_LANE_ID_METADATA]?.trim() && name ? name : null;
 }
@@ -104,10 +108,16 @@ export function cloudMachineLaneFactsOf(metadata: Record<string, string> | null 
 /** A computer of the account, with its lane facts when it was made for one lane. */
 export type CloudLaneMachine = CloudMachine & { lane?: CloudMachineLaneFacts | null };
 
-/** True for a GitHub origin: ADE Cloud sets up GitHub repositories only. */
-export function isGithubOrigin(originUrl: string | null | undefined): boolean {
+/** A GitHub origin's identity (`github.com/owner/repo`, lowercased), owner and repository, or null for any other origin. */
+export function githubRepoOf(originUrl: string | null | undefined): { identity: string; owner: string; repo: string } | null {
   const identity = normalizeGitRemoteIdentity(originUrl ?? null);
-  return identity != null && /^github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/i.test(identity);
+  const match = identity ? /^github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/i.exec(identity) : null;
+  return identity && match ? { identity, owner: match[1]!, repo: match[2]! } : null;
+}
+
+/** True for a GitHub origin: ADE Cloud sets up GitHub repositories only. */
+function isGithubOrigin(originUrl: string | null | undefined): boolean {
+  return githubRepoOf(originUrl) != null;
 }
 
 /** A start refusal: the sentence, and a short form for a narrow prompt box. */
@@ -137,15 +147,6 @@ export function cloudLaneLaunchStartRefusal(input: { args: ChatLaunchArgs; origi
     };
   }
   return null;
-}
-
-/**
- * Why a new ADE Cloud launch can't start, in the sentence the person reads,
- * or null. Main's `start` refuses with it; the composer shows the same
- * sentence before Send, so the person never meets it as an error after.
- */
-export function cloudLaneLaunchStartProblem(input: { args: ChatLaunchArgs; originUrl: string | null }): string | null {
-  return cloudLaneLaunchStartRefusal(input)?.message ?? null;
 }
 
 /** The `chatLaunch` methods `IPC.cloudLaneLaunchCall` answers. */
@@ -187,3 +188,80 @@ export type CloudLaneLaunchCallResult = {
    */
   projectIdentity?: string | null;
 };
+
+/** What `cloud.lane_launch` and `cloud.lane_launch_status` answer. */
+export type CloudLaneLaunchStatus = {
+  launch: ChatLaunchSnapshot;
+  /** The computer made for the lane, once it exists. */
+  machine: { name: string; instanceId: string | null; machineKey: string | null };
+  /** While the join waits for the person: the sign-in link to open. */
+  approvalUrl: string | null;
+  /** The agent's chat that started it, or null for a person's launch. */
+  madeByChat: string | null;
+};
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * A launch status as an action answered it over the wire, or null when it
+ * carries no launch (the brain no longer has it). Missing fields read as null.
+ */
+export function parseCloudLaneLaunchStatus(value: unknown): CloudLaneLaunchStatus | null {
+  if (!isPlainRecord(value) || !isPlainRecord(value.launch)) return null;
+  const machine = isPlainRecord(value.machine) ? value.machine : {};
+  const text = (field: unknown): string | null => (typeof field === "string" && field.trim() ? field.trim() : null);
+  return {
+    launch: value.launch as unknown as ChatLaunchSnapshot,
+    machine: { name: text(machine.name) ?? "", instanceId: text(machine.instanceId), machineKey: text(machine.machineKey) },
+    approvalUrl: text(value.approvalUrl),
+    madeByChat: text(value.madeByChat),
+  };
+}
+
+export type CloudLaneLaunchFollowOutcome = "succeeded" | "failed" | "cancelled" | "timeout" | "missing";
+
+/**
+ * Follows an ADE Cloud lane launch to its end: starts it, then reads its
+ * status every `pollMs` until it succeeds, fails, is cancelled, or `waitMs`
+ * passes. `onStatus` sees every status; `onApprovalLink` sees the join's
+ * sign-in link only when it changes, while the launch still runs. "missing":
+ * an answer carried no launch. Errors from `start` and `read` reach the caller.
+ * The CLI and an automation run each keep their own words and their own sleep.
+ */
+export async function followCloudLaneLaunch(input: {
+  start: () => Promise<unknown>;
+  read: () => Promise<unknown>;
+  onStatus?: (status: CloudLaneLaunchStatus) => void;
+  onApprovalLink?: (url: string) => void;
+  pollMs: number;
+  waitMs: number;
+  sleep: (ms: number) => Promise<void>;
+  now?: () => number;
+}): Promise<{
+  outcome: CloudLaneLaunchFollowOutcome;
+  status: CloudLaneLaunchStatus | null;
+  /** The last answer as the action sent it (every field, for a caller's own result). */
+  answer: unknown;
+}> {
+  const now = input.now ?? Date.now;
+  let answer = await input.start();
+  const deadline = now() + input.waitMs;
+  let shownLink: string | null = null;
+  for (;;) {
+    const status = parseCloudLaneLaunchStatus(answer);
+    if (!status) return { outcome: "missing", status: null, answer };
+    input.onStatus?.(status);
+    const snapshot = status.launch;
+    if (isChatLaunchSucceeded(snapshot)) return { outcome: "succeeded", status, answer };
+    if (snapshot.phase === "failed" || snapshot.phase === "cancelled") return { outcome: snapshot.phase, status, answer };
+    if (status.approvalUrl && status.approvalUrl !== shownLink) {
+      shownLink = status.approvalUrl;
+      input.onApprovalLink?.(status.approvalUrl);
+    }
+    if (now() > deadline) return { outcome: "timeout", status, answer };
+    await input.sleep(input.pollMs);
+    answer = await input.read();
+  }
+}

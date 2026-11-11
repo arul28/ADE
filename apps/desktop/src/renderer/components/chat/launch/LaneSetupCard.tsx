@@ -5,7 +5,6 @@ import {
   ArrowSquareOut,
   CaretRight,
   Check,
-  Circle,
   Cloud,
   CloudArrowDown,
   Copy,
@@ -14,7 +13,6 @@ import {
   HardDrives,
   Key,
   Lightning,
-  Minus,
   Package,
   Play,
   Scroll,
@@ -69,7 +67,20 @@ import {
 import { LaunchProgressRail } from "./LaunchProgressRail";
 import { useLaunchDurationText } from "./launchClock";
 import { CloudMark } from "../../remoteTargets/cloudBrand";
-import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
+import {
+  Chip,
+  CloudDrift,
+  PHASE_TILE_TONE,
+  StageErrorCallout,
+  StageLine,
+  StatusMark,
+  StepCardHeader,
+  TILE_TONE,
+  TextAction,
+  copyStepCardDetails,
+  normalizeStatus,
+  stepCardFrameClass,
+} from "./stepCardParts";
 
 /**
  * The lane setup card: a header (phase tile, title, lane + base chips, live
@@ -93,33 +104,6 @@ import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
  */
 
 export type LaneSetupCardVariant = "thread" | "compact";
-
-/* ── Status palette ─────────────────────────────────────────────────────── */
-
-type Status = ChatLaunchStageStatus | LaneEnvInitStep["status"];
-
-function normalizeStatus(status: Status): ChatLaunchStageStatus {
-  return status === "completed" ? "done" : status;
-}
-
-/** Tile tones by status; the Launches slide-out indexes the same palette. */
-export const TILE_TONE: Record<ChatLaunchStageStatus, string> = {
-  running: "border-violet-400/25 bg-violet-400/[0.12] text-violet-200",
-  done: "border-emerald-400/15 bg-emerald-400/[0.08] text-emerald-300/85",
-  warning: "border-amber-400/20 bg-amber-400/[0.08] text-amber-300/90",
-  failed: "border-amber-400/25 bg-amber-400/[0.10] text-amber-300",
-  skipped: "border-fg/[0.05] bg-fg/[0.02] text-fg/25",
-  pending: "border-fg/[0.06] bg-fg/[0.025] text-fg/30",
-};
-
-const LABEL_TONE: Record<ChatLaunchStageStatus, string> = {
-  running: "text-fg/90",
-  done: "text-fg/68",
-  warning: "text-amber-100/90",
-  failed: "text-amber-100/90",
-  skipped: "text-fg/35",
-  pending: "text-fg/40",
-};
 
 /* ── Icons ──────────────────────────────────────────────────────────────── */
 
@@ -164,97 +148,6 @@ function launchKindForCardRows(rows: readonly AdeCardRow[]): ChatLaunchKind {
   return agentRow?.text === chatLaunchStageLabel("agent", { kind: "cli" }) ? "cli" : "chat";
 }
 
-/* ── Glyphs ──────────────────────────────────────────────────────────────── */
-
-function SpinnerRing({ size }: { size: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 12 12"
-      className="motion-safe:animate-spin"
-      aria-hidden
-      data-launch-glyph="running"
-    >
-      <circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" strokeOpacity="0.22" strokeWidth="1.4" />
-      <path d="M6 1.4 A4.6 4.6 0 0 1 10.6 6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-/** The small status mark at the end of a row (and the slide-out row's leading mark). */
-export function LaunchStageGlyph({
-  status,
-  size = 12,
-}: {
-  status: Status;
-  size?: number;
-}) {
-  switch (normalizeStatus(status)) {
-    case "done":
-      return (
-        <span className="grid place-items-center text-emerald-300/80" data-launch-glyph="done">
-          <Check size={size - 1} weight="bold" aria-hidden />
-        </span>
-      );
-    case "running":
-      return <span className="grid place-items-center text-violet-300/90"><SpinnerRing size={size} /></span>;
-    case "warning":
-      return (
-        <span className="grid place-items-center text-amber-300/85" data-launch-glyph="warning">
-          <Warning size={size} weight="bold" aria-hidden />
-        </span>
-      );
-    case "failed":
-      return (
-        <span className="grid place-items-center text-amber-300/90" data-launch-glyph="failed">
-          <X size={size - 1} weight="bold" aria-hidden />
-        </span>
-      );
-    case "skipped":
-      return (
-        <span className="grid place-items-center text-fg/25" data-launch-glyph="skipped">
-          <Minus size={size - 1} weight="bold" aria-hidden />
-        </span>
-      );
-    default:
-      return (
-        <span className="grid place-items-center text-fg/20" data-launch-glyph="pending">
-          <Circle size={size - 1} weight="regular" aria-hidden />
-        </span>
-      );
-  }
-}
-
-/** A status mark that fades in when the status changes (CSS, transform/opacity only). */
-/** A failed step in the danger tone (red), for cards whose failure stops the work (an ADE Cloud size change). */
-const DANGER_TILE = "border-red-400/30 bg-red-500/[0.10] text-red-300";
-const DANGER_TEXT = "text-red-200/90";
-
-function StatusMark({ status, size, danger = false }: { status: Status; size: number; danger?: boolean }) {
-  return (
-    <span key={normalizeStatus(status)} className={cn("ade-launch-glyph-in grid h-4 w-4 shrink-0 place-items-center", danger && "[&>span]:text-red-300")}>
-      <LaunchStageGlyph status={status} size={size} />
-    </span>
-  );
-}
-
-function StageTile({ icon: IconComponent, status, compact, cloud = false, danger = false }: { icon: Icon; status: Status; compact: boolean; cloud?: boolean; danger?: boolean }) {
-  const normalized = normalizeStatus(status);
-  return (
-    <span
-      className={cn(
-        "grid shrink-0 place-items-center rounded-[6px] border transition-colors duration-300",
-        compact ? "h-[18px] w-[18px]" : "h-5 w-5",
-        // An ADE Cloud launch runs in the Night sky blue, not the violet.
-        cloud && normalized === "running" ? "adec-tile" : danger && normalized === "failed" ? DANGER_TILE : TILE_TONE[normalized],
-      )}
-      aria-hidden
-    >
-      <IconComponent size={compact ? 10.5 : 11.5} weight={normalizeStatus(status) === "running" ? "bold" : "regular"} />
-    </span>
-  );
-}
 
 /* ── Durations ──────────────────────────────────────────────────────────── */
 
@@ -382,62 +275,6 @@ const EnvironmentSteps = React.memo(function EnvironmentSteps({ steps, compact }
   );
 });
 
-/** One stage line, shared by the live card, the transcript-payload fallback and the ADE Cloud tier-change card. */
-export function StageLine({
-  icon,
-  status,
-  label,
-  detail,
-  percent,
-  trailing,
-  compact,
-  cloud = false,
-  danger = false,
-}: {
-  icon: Icon;
-  status: ChatLaunchStageStatus;
-  label: string;
-  detail: string | null;
-  percent?: number | null;
-  trailing?: React.ReactNode;
-  compact: boolean;
-  /** An ADE Cloud launch: the running tone is the Night sky blue. */
-  cloud?: boolean;
-  /** A failed step reads in the danger tone (red) instead of amber. */
-  danger?: boolean;
-}) {
-  const stackDetail = compact && Boolean(detail);
-  const dangerFailed = danger && status === "failed";
-  return (
-    <div className={cn("flex min-w-0 gap-2.5", stackDetail ? "items-start py-1" : "items-center", compact ? "min-h-[28px]" : "h-[32px]")}>
-      <StageTile icon={icon} status={status} compact={compact} cloud={cloud} danger={danger} />
-      <div className={cn("flex min-w-0 flex-1 gap-2", stackDetail ? "flex-col items-stretch gap-0" : "items-baseline")}>
-        <span className={cn("shrink-0 transition-colors duration-200", dangerFailed ? DANGER_TEXT : LABEL_TONE[status])}>{label}</span>
-        {detail ? <span className="min-w-0 truncate text-fg/35" title={detail}>{detail}</span> : null}
-        {percent != null ? (
-          <span className={cn("shrink-0 tabular-nums", cloud ? "adec-percent" : "text-violet-200/80")}>{`${percent}%`}</span>
-        ) : null}
-      </div>
-      {trailing}
-      <StatusMark status={status} size={compact ? 11 : 12} danger={dangerFailed} />
-    </div>
-  );
-}
-
-/** The full error a failed or warned stage shows under its row (live card and payload fallback). */
-export function StageErrorCallout({ error, className, danger = false }: { error: string; className?: string; danger?: boolean }) {
-  return (
-    <p
-      className={cn(
-        "mb-1.5 ml-[30px] rounded-md border px-2 py-1 leading-snug",
-        danger ? "border-red-400/20 bg-red-500/[0.07] text-red-200/90" : "border-amber-400/15 bg-amber-400/[0.06] text-amber-200/85",
-        className,
-      )}
-    >
-      {error}
-    </p>
-  );
-}
 
 const StageRow = React.memo(function StageRow({
   stage,
@@ -510,97 +347,6 @@ function DetailsList({ snapshot, compact }: { snapshot: ChatLaunchSnapshot; comp
   );
 }
 
-export function TextAction({
-  children,
-  onClick,
-  tone = "default",
-  disabled,
-  testId,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  tone?: "default" | "primary";
-  disabled?: boolean;
-  testId?: string;
-}) {
-  return (
-    <button
-      type="button"
-      data-testid={testId}
-      disabled={disabled}
-      onClick={(event) => {
-        event.stopPropagation();
-        onClick();
-      }}
-      className={cn(
-        "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors disabled:cursor-default disabled:opacity-40",
-        tone === "primary"
-          ? "text-violet-200/90 hover:bg-violet-400/[0.10] hover:text-violet-100"
-          : "text-fg/45 hover:bg-fg/[0.04] hover:text-fg/80",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
-export function Chip({ children, title, mono }: { children: React.ReactNode; title?: string; mono?: boolean }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-fg/[0.06] bg-fg/[0.03] px-1.5 py-px text-fg/55",
-        mono && "font-mono",
-      )}
-      title={title}
-    >
-      {children}
-    </span>
-  );
-}
-
-const PHASE_TILE_TONE: Record<ChatLaunchSnapshot["phase"], string> = {
-  running: TILE_TONE.running,
-  "awaiting-client": TILE_TONE.running,
-  completed: TILE_TONE.done,
-  failed: TILE_TONE.failed,
-  cancelled: TILE_TONE.skipped,
-};
-
-/** Puffs of the drift behind an ADE Cloud card's header: place, size, how far each travels, when it starts. */
-const CLOUD_DRIFT_PUFFS = [
-  { left: -10, top: 8, width: 64, height: 30, dx: 150, delay: 0 },
-  { left: 6, top: 22, width: 50, height: 24, dx: 190, delay: 0.2 },
-  { left: -24, top: 20, width: 78, height: 34, dx: 230, delay: 0.4 },
-  { left: 10, top: 0, width: 44, height: 22, dx: 170, delay: 0.62 },
-  { left: -6, top: 30, width: 56, height: 24, dx: 260, delay: 0.85 },
-] as const;
-
-/**
- * A short drift of cloud behind the header while the computer is made. CSS
- * only: it plays once (about three seconds), ends hidden, and does not play
- * with reduced motion (cloudBrand.css). It mounts with the computer step, so
- * a card opened later, after that step, shows none.
- */
-function CloudDrift() {
-  return (
-    <span className="adec-drift" aria-hidden data-testid="lane-setup-cloud-drift">
-      {CLOUD_DRIFT_PUFFS.map((puff, index) => (
-        <span
-          key={index}
-          className="adec-puff"
-          style={{
-            left: puff.left,
-            top: puff.top,
-            width: puff.width,
-            height: puff.height,
-            animationDelay: `${puff.delay}s`,
-            ["--adec-dx" as string]: `${puff.dx}px`,
-          }}
-        />
-      ))}
-    </span>
-  );
-}
 
 function CardHeader({ snapshot, metaSize }: { snapshot: ChatLaunchSnapshot; metaSize: string }) {
   const failed = snapshot.phase === "failed";
@@ -612,25 +358,17 @@ function CardHeader({ snapshot, metaSize }: { snapshot: ChatLaunchSnapshot; meta
     ? "adec-tile"
     : PHASE_TILE_TONE[snapshot.phase];
   return (
-    <div className="relative flex min-w-0 items-start gap-2.5">
-      {makingComputer ? <CloudDrift /> : null}
-      <span
-        className={cn("relative mt-px grid h-6 w-6 shrink-0 place-items-center rounded-[7px] border transition-colors duration-300", tileTone)}
-        aria-hidden
-      >
-        {failed ? <Warning size={13} weight="bold" /> : cloud ? <CloudMark size={13} bold /> : <LaneIcon size={13} weight="bold" />}
-      </span>
-      <div className="relative min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-2">
-          <span
-            className={cn("min-w-0 truncate font-medium", failed ? "text-amber-200/90" : "text-fg/82")}
-            data-testid="lane-setup-title"
-          >
-            {laneSetupTitle(snapshot)}
-          </span>
-          <LaunchElapsed snapshot={snapshot} className={cn("ml-auto text-fg/38", metaSize)} />
-        </div>
-        <div className={cn("mt-1 flex min-w-0 flex-wrap items-center gap-1.5", metaSize)}>
+    <StepCardHeader
+      backdrop={makingComputer ? <CloudDrift /> : null}
+      tileTone={tileTone}
+      tileIcon={failed ? <Warning size={13} weight="bold" /> : cloud ? <CloudMark size={13} bold /> : <LaneIcon size={13} weight="bold" />}
+      title={laneSetupTitle(snapshot)}
+      titleTestId="lane-setup-title"
+      failed={failed}
+      trailing={<LaunchElapsed snapshot={snapshot} className={cn("ml-auto text-fg/38", metaSize)} />}
+      metaSize={metaSize}
+      chips={(
+        <>
           <Chip title={snapshot.laneName}>
             <LaneIcon size={10} className="text-violet-300/80" />
             <span className="min-w-0 truncate"><LaneNamingLabel laneName={snapshot.laneName} naming={snapshot.laneNaming} /></span>
@@ -641,9 +379,9 @@ function CardHeader({ snapshot, metaSize }: { snapshot: ChatLaunchSnapshot; meta
               <span className="min-w-0 truncate">{base}</span>
             </Chip>
           ) : null}
-        </div>
-      </div>
-    </div>
+        </>
+      )}
+    />
   );
 }
 
@@ -683,16 +421,11 @@ export function LaneSetupCard({
    */
   const copyFailureDetails = () => {
     const failedStage = snapshot.stages.find((stage) => stage.status === "failed") ?? null;
-    const lines = [
+    copyStepCardDetails([
       `Launch: ${snapshot.launchId}`,
       failedStage ? `Step: ${chatLaunchStageLabel(failedStage.id, { kind: snapshot.kind, templateName: snapshot.templateName })} (${failedStage.id})` : null,
       `What happened: ${failedStage?.error?.trim() || snapshot.error?.trim() || "Setup stopped."}`,
-    ].filter((line): line is string => Boolean(line));
-    void copyTextToClipboard(lines.join("\n")).then((copied) => {
-      showToast(copied
-        ? { title: "Copied the launch details", tone: "success" }
-        : { title: "Couldn't copy the launch details", tone: "info" });
-    });
+    ], "launch details");
   };
   const envStage = snapshot.stages.find((stage) => stage.id === "environment");
   const showEnvSteps = Boolean(detailsOpen || envStage?.status === "running" || envStage?.status === "failed");
@@ -704,7 +437,7 @@ export function LaneSetupCard({
     setActionError(null);
     setNotice(null);
     void action()
-      // The host's own words (e.g. "This chat already started — …"), minus the IPC wrapper.
+      // The host's own words (e.g. "This chat already started. …"), minus the IPC wrapper.
       .catch((error: unknown) => setActionError(stripElectronErrorWrapper(extractError(error))))
       .finally(() => setBusy(null));
   };
@@ -781,11 +514,7 @@ export function LaneSetupCard({
         textSize,
         compact
           ? "w-full"
-          : cn(
-            CHAT_CARD_WIDTH_CLASS,
-            "ade-launch-card-enter rounded-[calc(var(--chat-radius-card,16px)-6px)] border bg-fg/[0.022] px-3.5 pb-2 pt-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]",
-            failed ? "border-amber-400/20" : "border-fg/[0.07]",
-          ),
+          : stepCardFrameClass(failed),
         className,
       )}
     >

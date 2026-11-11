@@ -1,10 +1,15 @@
 import { Check, GearSix, Info, Warning } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
-import { formatCloudHoursRate } from "../../../shared/adeCloud";
-import type { CloudTier, CloudTierId } from "../../../shared/cloudTiers";
-import { CloudSizeIcon } from "../remoteTargets/cloudBrand";
+import { cloudTierRateLabel, cloudTierShapeLabel, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
+import type { OpenProjectBinding } from "../../../shared/types/core";
+import { adeCloudLaneLabel, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
+import { CloudTierChangeDialog } from "../cloudLane/CloudTierChangeDialog";
+import { cloudLaneLifeAvailable } from "../cloudLane/cloudLaneActions";
+import { cloudLaneWithoutComputerForBinding, useCloudLanesWithoutComputer } from "../cloudLane/cloudLaneStores";
+import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import { cn } from "../ui/cn";
 import { MENU_ITEM_CLASS, MENU_SCROLL_CLASS, POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { usePortalContainer } from "../ui/portalContainer";
@@ -12,15 +17,6 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { Z_LAYERS } from "../ui/zLayers";
 import type { AdeCloudTrayAction, AdeCloudTrayNotice } from "./useAdeCloudDraft";
 
-/** "2 CPU · 4 GB" for a size row. */
-function tierShape(tier: CloudTier): string {
-  return `${tier.cpu} CPU · ${tier.memoryGb} GB`;
-}
-
-/** The size's hours rate from the catalog: "1× hours". */
-function tierRate(tier: CloudTier): string {
-  return formatCloudHoursRate(tier.multiplierMilli / 1000);
-}
 
 /**
  * The size of a new ADE Cloud computer, on the launch shelf beside the lane
@@ -56,7 +52,7 @@ export function CloudSizeButton({
         content={{
           label: `Computer size: ${label}`,
           description: current
-            ? `${tierShape(current)}. Uses ${tierRate(current)} while awake.`
+            ? `${cloudTierShapeLabel(current)}. Uses ${cloudTierRateLabel(current)} while awake.`
             : "The size of the new ADE Cloud computer.",
         }}
       >
@@ -107,12 +103,12 @@ export function CloudSizeButton({
                 <span className="mt-[1px]"><CloudSizeIcon tier={tier.id} size={15} /></span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[12px] font-medium">{tier.label}</span>
-                  <span className="block truncate text-[10.5px] text-muted-fg/65">{tierShape(tier)}</span>
+                  <span className="block truncate text-[10.5px] text-muted-fg/65">{cloudTierShapeLabel(tier)}</span>
                   {tier.type === "vm" ? (
                     <span className="block truncate text-[10.5px] text-muted-fg/65">Android and Docker</span>
                   ) : null}
                 </span>
-                <span className="mt-[2px] shrink-0 font-mono text-[10.5px] text-muted-fg/70">{tierRate(tier)}</span>
+                <span className="mt-[2px] shrink-0 font-mono text-[10.5px] text-muted-fg/70">{cloudTierRateLabel(tier)}</span>
                 <span className="mt-[2px] flex w-3 shrink-0 justify-end">
                   <DropdownMenu.ItemIndicator>
                     <Check size={11} weight="bold" className="adec-check" aria-hidden />
@@ -251,5 +247,126 @@ export function AdeCloudTray({
         </span>
       ) : null}
     </div>
+  );
+}
+
+/** A chat's ADE Cloud lane for the composer's machine chip. */
+export type ComposerAdeCloudLane = {
+  laneName: string;
+  /** The lane computer's ADE Cloud id, once known: the chip then opens the size change. */
+  instanceId: string | null;
+  /** The lane has no computer now (freed or removed): the next send makes one. */
+  noComputer: boolean;
+};
+
+/**
+ * The ADE Cloud lane a chat's machine binding points at, or null: its lane
+ * computer from the index, else (once freed) the shared list of lanes without
+ * a computer, which the strip above the prompt box reads too.
+ */
+function useChatAdeCloudLane(binding: OpenProjectBinding | null | undefined, enabled: boolean) {
+  const withComputer = useAdeCloudLaneForBinding(enabled ? binding : null);
+  const withoutComputer = useCloudLanesWithoutComputer(
+    enabled && !withComputer && binding?.kind === "remote" && cloudLaneLifeAvailable(),
+  );
+  const without = !withComputer && enabled ? cloudLaneWithoutComputerForBinding(binding, withoutComputer.lanes) : null;
+  return { withComputer, without };
+}
+
+/**
+ * The lane without a computer a chat ran on, or null: a send in that chat
+ * makes the lane a new computer and starts a new chat there (the pane).
+ */
+export function useCloudLaneWithoutComputerForChat(
+  binding: OpenProjectBinding | null | undefined,
+  enabled: boolean,
+): CloudLaneWithoutComputer | null {
+  return useChatAdeCloudLane(binding, enabled).without;
+}
+
+export function useComposerAdeCloudLane(
+  binding: OpenProjectBinding | null | undefined,
+  enabled: boolean,
+): ComposerAdeCloudLane | null {
+  const { withComputer, without } = useChatAdeCloudLane(binding, enabled);
+  const laneName = withComputer?.laneName ?? without?.laneName ?? null;
+  const instanceId = withComputer?.instanceId ?? null;
+  const noComputer = !withComputer && without != null;
+  return useMemo(
+    () => (laneName ? { laneName, instanceId, noComputer } : null),
+    [laneName, instanceId, noComputer],
+  );
+}
+
+/** The composer's machine chip for a chat on an ADE Cloud lane: the cloud mark, and the size change when it has a computer. */
+export function AdeCloudMachineChip({
+  machineName,
+  lane,
+  wrapperClassName,
+}: {
+  machineName: string;
+  lane: ComposerAdeCloudLane;
+  wrapperClassName: string;
+}) {
+  const [sizing, setSizing] = useState(false);
+  // A person changes the lane's size here; the change is account level (no pin), by the computer's id.
+  const canResize = !lane.noComputer && Boolean(lane.instanceId) && cloudLaneLifeAvailable();
+  const chipClass = cn(
+    "adec-pill inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md border px-1.5",
+    "font-sans text-[9px] font-medium",
+    canResize && "cursor-pointer hover:bg-[var(--adec-pill-bg-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--adec-400)]",
+  );
+  const chipBody = (
+    <>
+      <CloudMark size={11} brand />
+      {lane.noComputer ? (
+        <span className="min-w-0 max-w-40 truncate">{adeCloudLaneLabel(lane.laneName)}</span>
+      ) : (
+        <span className="min-w-0 max-w-24 truncate">{machineName}</span>
+      )}
+    </>
+  );
+  return (
+    <>
+      <SmartTooltip
+        forceEnabled
+        wrapperClassName={wrapperClassName}
+        content={{
+          label: adeCloudLaneLabel(lane.laneName),
+          description: lane.noComputer
+            ? "This lane has no computer now. ADE makes a new one when you send."
+            : canResize
+              ? "This chat runs on its lane's own ADE Cloud computer. It wakes when you send. Click to change its size."
+              : "This chat runs on its lane's own ADE Cloud computer. It wakes when you send.",
+        }}
+      >
+        {canResize ? (
+          <button
+            type="button"
+            data-chat-composer-machine-chip="ade-cloud"
+            aria-label={`Running on ${adeCloudLaneLabel(lane.laneName)}. Change its size`}
+            className={chipClass}
+            style={{ whiteSpace: "nowrap" }}
+            onClick={() => setSizing(true)}
+          >
+            {chipBody}
+          </button>
+        ) : (
+          <span
+            data-chat-composer-machine-chip="ade-cloud"
+            aria-label={lane.noComputer
+              ? `${adeCloudLaneLabel(lane.laneName)}. It has no computer now`
+              : `Running on ${adeCloudLaneLabel(lane.laneName)}`}
+            className={chipClass}
+            style={{ whiteSpace: "nowrap" }}
+          >
+            {chipBody}
+          </span>
+        )}
+      </SmartTooltip>
+      {sizing && lane.instanceId ? (
+        <CloudTierChangeDialog instanceId={lane.instanceId} laneName={lane.laneName} onClose={() => setSizing(false)} />
+      ) : null}
+    </>
   );
 }

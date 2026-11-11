@@ -1,5 +1,5 @@
 import path from "node:path";
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, ipcMain } from "electron";
 import type { CloudLaneLaunchCallRequest, CloudLaneLaunchCallResult } from "../../../shared/cloudLaneLaunch";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { IPC } from "../../../shared/ipc";
@@ -14,23 +14,10 @@ import type { RuntimeBridgeRegistration } from "../ipc/runtimeBridge";
 import { readGitOriginUrlWithoutGit } from "../projects/recentProjectSummary";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import type { Logger } from "../logging/logger";
+import { isRecord } from "../shared/utils";
+import { sendToAllWindows } from "./broadcast";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { createCloudLaneLaunchService, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
-
-function sendToAllWindows(channel: string, payload: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-    try {
-      win.webContents.send(channel, payload);
-    } catch {
-      // Closing mid-send; the next event reaches it if it stays.
-    }
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 /** The launch id of an id-based call, or null when the args carry none. */
 function launchIdOf(args: unknown): string | null {

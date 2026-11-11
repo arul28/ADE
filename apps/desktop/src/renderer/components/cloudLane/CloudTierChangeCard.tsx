@@ -2,10 +2,11 @@ import { useMemo, useState } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
 import { cloudCatalogOf, formatCloudHours, type CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneJobSnapshot, CloudLaneTierTiming } from "../../../shared/cloudLaneLife";
-import { cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudTierRateLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { ipcErrorMessage } from "../../lib/format";
 import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, changeCloudLaneTier, cloudLaneLifeAvailable } from "./cloudLaneActions";
 import "./cloudLane.css";
 
@@ -40,7 +41,7 @@ function waitText(move: boolean): string {
 }
 
 function rateText(tier: CloudTier | null): string {
-  return tier ? `${tier.multiplierMilli / 1000}× hours` : "";
+  return tier ? cloudTierRateLabel(tier) : "";
 }
 
 function hoursText(account: CloudAccountState | null, tier: CloudTier | null): string | null {
@@ -158,7 +159,19 @@ export function CloudTierChangeCard({
         </dl>
       ) : null}
 
-      {error ? <p className="adecl-error" role="alert">{error}</p> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          style={{ marginTop: 6 }}
+          model={{
+            id: "cloud-tier-change-error",
+            tone: "error",
+            title: error,
+            report: { surface: "cloud_tier_change" },
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
+      ) : null}
       {!available ? <p className="adecl-muted">{CLOUD_LANE_LIFE_UNAVAILABLE}</p> : null}
 
       <div className="adecl-tier-actions">

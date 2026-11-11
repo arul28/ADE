@@ -27,22 +27,27 @@ import "./cloudLane.css";
  * lane's chats stay readable from the saved copy either way.
  */
 
-export function cloudLaneWithoutComputerSentence(lane: CloudLaneWithoutComputer): string {
+function cloudLaneWithoutComputerSentence(lane: CloudLaneWithoutComputer): string {
   const since = Number.isFinite(lane.since) ? new Date(lane.since).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : null;
   const when = since ? ` on ${since}` : "";
   return lane.reason === "freed"
     ? `${lane.laneName} has no computer now. You freed it${when} to save space; its work is on GitHub.`
-    : `${lane.laneName} has no computer now. ADE Cloud removed it${when} after 30 days unused; its work was pushed to GitHub first.`;
+    : `${lane.laneName} has no computer now. ADE Cloud removed it${when} after 30 days without use. Work you pushed to GitHub is safe, and a new computer starts from the branch on GitHub.`;
 }
 
 /** The size the old computer had, as a tier of today's catalog; the saved default when none matches. */
-function tierFor(lane: CloudLaneWithoutComputer, account: CloudAccountState | null, fallback: CloudTierId): CloudTierId {
+export function cloudLaneRestartTier(lane: CloudLaneWithoutComputer, account: CloudAccountState | null, fallback: CloudTierId): CloudTierId {
   const tiers = cloudTiers(cloudCatalogOf(account));
   return tiers.find((tier) => tier.type === lane.type && tier.cpu === lane.cpu && tier.memoryGb === lane.memoryGb)?.id ?? fallback;
 }
 
-/** Why "New computer on the same branch" can't start from this window, or null. */
-function startProblem(lane: CloudLaneWithoutComputer, binding: OpenProjectBinding | null, originUrl: string | null): string | null {
+/** The lane's branch on GitHub, as a new computer starts from it. */
+export function cloudLaneRestartBranchRef(branchRef: string): string {
+  return `origin/${branchRef.replace(/^origin\//, "")}`;
+}
+
+/** Why a new computer for this lane (its card's button, or a send in its chat) can't start from this window, or null. */
+export function cloudLaneRestartProblem(lane: CloudLaneWithoutComputer, binding: OpenProjectBinding | null, originUrl: string | null): string | null {
   if (!cloudLaneLifeAvailable()) return CLOUD_LANE_LIFE_UNAVAILABLE;
   if (!lane.branchRef) return "ADE never learned this lane's branch. Start a new lane on ADE Cloud instead.";
   if (!binding) return "Open the lane's project in ADE to start it.";
@@ -51,12 +56,12 @@ function startProblem(lane: CloudLaneWithoutComputer, binding: OpenProjectBindin
   return null;
 }
 
-export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer, account: CloudAccountState | null) {
+function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer, account: CloudAccountState | null) {
   const binding = useAppStore((state) => state.projectBinding);
   const defaultTier = useRootAppStore((state) => state.cloudDefaultTier);
   const originUrl = originUrlForBinding(binding);
-  const problem = startProblem(lane, binding, originUrl);
-  const sizeId = useMemo(() => tierFor(lane, account, defaultTier), [account, defaultTier, lane]);
+  const problem = cloudLaneRestartProblem(lane, binding, originUrl);
+  const sizeId = useMemo(() => cloudLaneRestartTier(lane, account, defaultTier), [account, defaultTier, lane]);
   const start = async (): Promise<boolean> => {
     if (problem || !binding || !lane.branchRef) return false;
     const outcome = await startAdeCloudLaunch({
@@ -68,7 +73,7 @@ export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer, accoun
         laneName: lane.laneName,
         title: lane.laneName,
         prompt: "",
-        laneConfig: { mode: "existing", branchRef: `origin/${lane.branchRef.replace(/^origin\//, "")}` },
+        laneConfig: { mode: "existing", branchRef: cloudLaneRestartBranchRef(lane.branchRef) },
       },
       sizeId,
       originUrl,

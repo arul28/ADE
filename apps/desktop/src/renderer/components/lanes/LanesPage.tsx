@@ -89,9 +89,7 @@ import {
 import { useLanesPageMachines } from "./useLanesPageMachines";
 import { laneCompareBase, laneRebaseLine, useLaneRebaseNeeds, type LaneRebaseLine } from "./laneRebaseNeeds";
 import { confirmForeignLaneDeleted, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
-import { cloudLaneComputerOfLane } from "../cloudLane/cloudLaneActions";
-import { deleteCloudLaneWithCheck } from "../cloudLane/deleteCloudLane";
-import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { deleteCloudLaneWithCheck, useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
 import { CloudLanesWithoutComputerList } from "../cloudLane/CloudLaneWithoutComputer";
 import { originUrlForBinding } from "./laneMachines";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
@@ -636,17 +634,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     [managedLaneIds, lanesById],
   );
   // The managed lanes that live on their own ADE Cloud computer: the dialog shows them the cloud delete.
-  const { computers: adeCloudLaneComputers } = useAdeCloudLaneComputers();
+  const cloud = useCloudLaneDelete();
   const managedCloudLaneIds = useMemo(() => {
-    if (!adeCloudLaneComputers.length) return null;
     const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
     const ids = new Set<string>();
     for (const lane of targets) {
       const target = resolveLaneTarget(lane.id);
-      if (target.ok && cloudLaneComputerOfLane(target.pin, target.laneId)) ids.add(lane.id);
+      if (target.ok && cloud.isCloudLane(target.pin, target.laneId)) ids.add(lane.id);
     }
     return ids.size ? ids : null;
-  }, [adeCloudLaneComputers, managedLane, managedLanes, resolveLaneTarget]);
+  }, [cloud, managedLane, managedLanes, resolveLaneTarget]);
   const refreshLanePrTags = useCallback(async (options?: { refreshMapped?: boolean }) => {
     const requestId = ++lanePrTagsRequestRef.current;
     const startedRoot = getActiveProjectRoot();
@@ -1339,7 +1336,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const cloudDeletes = targets.flatMap((lane) => {
       if (lane.laneType === "primary") return [];
       const target = resolveLaneTarget(lane.id);
-      const cloudLane = target.ok ? cloudLaneComputerOfLane(target.pin, target.laneId) : null;
+      const cloudLane = target.ok ? cloud.computerOf(target.pin, target.laneId) : null;
       return cloudLane && target.ok ? [{ lane, cloudLane, machineId: target.machineId }] : [];
     });
     const cloudLaneIds = new Set(cloudDeletes.map((entry) => entry.lane.id));
@@ -2037,20 +2034,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }
     const target = { ...row, pin: row.pin };
     // An ADE Cloud lane goes with its computer: one account-level delete, warned only when work isn't on GitHub.
-    const cloudLane = cloudLaneComputerOfLane(target.pin, target.lane.id);
-    if (cloudLane) {
+    if (cloud.deleteIfCloudLane({
+      pin: target.pin,
+      laneId: target.lane.id,
+      laneName: target.lane.name,
+      machineId: target.machineId,
+      onDeleted: () => clearForeignSelection(target.key),
+    })) {
       setForeignManageKey(null);
       setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
       setLaneActionError(null);
-      void deleteCloudLaneWithCheck({
-        instanceId: cloudLane.instanceId,
-        laneName: target.lane.name,
-        askFirst: false,
-        onDeleted: () => {
-          clearForeignSelection(target.key);
-          requestCrossMachineLanesForMachine(target.machineId);
-        },
-      });
       return;
     }
     const args: DeleteLaneArgs = {
@@ -2104,6 +2097,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       });
   }, [
     clearForeignSelection,
+    cloud,
     deleteForce,
     deleteSelection,
     foreignManageKey,
@@ -2461,7 +2455,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           onAppearanceChanged={() => requestCrossMachineLanesForMachine(foreignManageRow.machineId)}
           initialTab={manageInitialTab}
           runtimePin={foreignManageRow.pin}
-          cloudLaneIds={cloudLaneComputerOfLane(foreignManageRow.pin, foreignManageRow.lane.id) ? new Set([foreignManageRow.lane.id]) : null}
+          cloudLaneIds={cloud.isCloudLane(foreignManageRow.pin, foreignManageRow.lane.id) ? new Set([foreignManageRow.lane.id]) : null}
         />
       ) : null}
 

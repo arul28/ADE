@@ -1,10 +1,14 @@
+import { useMemo } from "react";
 import { CloudArrowUp } from "@phosphor-icons/react";
 import type { CloudLaneWorkLane, CloudLaneWorkState } from "../../../shared/cloudLaneLife";
+import type { OpenProjectBinding } from "../../../shared/types/core";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { ipcErrorMessage } from "../../lib/format";
 import { showToast } from "../app/toast/toastStore";
 import { CloudMark, ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
 import { confirmDialog } from "../ui/dialog";
-import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneLifeAvailable, cloudLaneWorkState, deleteCloudLane, pushCloudLaneWork } from "./cloudLaneActions";
+import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneComputerOfLane, cloudLaneLifeAvailable, cloudLaneWorkState, deleteCloudLane, pushCloudLaneWork } from "./cloudLaneActions";
 import "./cloudLane.css";
 
 /**
@@ -110,6 +114,47 @@ export async function deleteCloudLaneWithCheck(input: {
   } catch (error) {
     return fail(error);
   }
+}
+
+/**
+ * The lane hosts' (Lanes tab, Work and PRs lane menus) view of ADE Cloud lanes:
+ * whether a lane lives on its own ADE Cloud computer, and its delete. It
+ * follows the lane computer index, so a component re-renders as reads arrive.
+ */
+export function useCloudLaneDelete() {
+  const { computers } = useAdeCloudLaneComputers();
+  return useMemo(() => {
+    const computerOf = (pin: OpenProjectBinding | null | undefined, laneId: string) => cloudLaneComputerOfLane(pin, laneId, computers);
+    return {
+      computerOf,
+      isCloudLane: (pin: OpenProjectBinding | null | undefined, laneId: string): boolean => computerOf(pin, laneId) != null,
+      /**
+       * Starts the cloud delete (warned only when work isn't on GitHub) when the
+       * lane is an ADE Cloud lane, then re-reads `machineId`'s lanes. False for
+       * any other lane, which the caller deletes the usual way.
+       */
+      deleteIfCloudLane: (input: {
+        pin: OpenProjectBinding | null | undefined;
+        laneId: string;
+        laneName: string;
+        machineId: string | null;
+        onDeleted?: () => void;
+      }): boolean => {
+        const cloudLane = computerOf(input.pin, input.laneId);
+        if (!cloudLane) return false;
+        void deleteCloudLaneWithCheck({
+          instanceId: cloudLane.instanceId,
+          laneName: input.laneName,
+          askFirst: false,
+          onDeleted: () => {
+            if (input.machineId) requestCrossMachineLanesForMachine(input.machineId);
+            input.onDeleted?.();
+          },
+        });
+        return true;
+      },
+    };
+  }, [computers]);
 }
 
 function UnpushedList({ lanes }: { lanes: readonly CloudLaneWorkLane[] }) {

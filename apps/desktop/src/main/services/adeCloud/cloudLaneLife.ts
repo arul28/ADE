@@ -16,7 +16,7 @@ import {
   type CloudLaneWorkLane,
   type CloudLaneWorkState,
 } from "../../../shared/cloudLaneLife";
-import { cloudTier, cloudTiers, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudTier, cloudTierOfShape, cloudTiers, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { ChatLaunchStageStatus, RemoteRuntimeProjectRecord } from "../../../shared/types";
 import { getErrorMessage } from "../shared/utils";
@@ -32,10 +32,11 @@ import { CloudProviderError, type CloudInstance, type CloudLogger, type CloudPro
  * - Delete lane: the computer goes, and the lane with it (the lane lived on
  *   it). Never refused; the work check before says whether work was only
  *   there, so the person was warned ("Push all work to GitHub").
- * - Keep the lane on a fresh computer: the work is pushed first (a failed
- *   push keeps the computer), then the computer goes and the server keeps the
- *   lane as a lane without a computer. The next send starts a launch with the
- *   same lane id on its branch.
+ * - Keep the lane on a fresh computer: refused while the agent works; the
+ *   work (archived lanes too) is pushed and checked again (anything left keeps
+ *   the computer), then the computer goes and the server keeps the lane as a
+ *   lane without a computer. The next send starts a launch with the same lane
+ *   id on its branch.
  * - A tier change: in place (`resize`) or to the other kind (`move`), with
  *   its own steps; the lane is Online only once ADE on the computer answers.
  *
@@ -86,7 +87,14 @@ const KEEP_AWAKE_STATE_COMMAND = 'cat "$ADE_HOME/cloud/keep-awake.json" 2>/dev/n
 
 class JobStopped extends Error {}
 
-type JobRecord = { v: 1; job: CloudLaneJobSnapshot; shape: CloudShapeId; targetType: "default" | "vm" };
+type JobRecord = {
+  v: 1;
+  job: CloudLaneJobSnapshot;
+  shape: CloudShapeId;
+  targetType: "default" | "vm";
+  /** A move's old computer's account key, kept after `job.machineKey` names the new one. */
+  fromMachineKey?: string | null;
+};
 
 function nowIsoFrom(now: () => number): string {
   return new Date(now()).toISOString();
@@ -94,10 +102,7 @@ function nowIsoFrom(now: () => number): string {
 
 /** The lane size a computer runs at, or null at a size the lane sizes don't cover. */
 function tierOfInstance(instance: CloudInstance, tiers: readonly CloudTier[]): CloudTier | null {
-  const type = instance.type === "vm" ? "vm" : "default";
-  const cpu = instance.resources?.cpu;
-  const memory = instance.resources?.memory;
-  return tiers.find((tier) => tier.type === type && tier.cpu === cpu && tier.memoryGb === memory) ?? null;
+  return cloudTierOfShape({ type: instance.type, cpu: instance.resources?.cpu, memoryGb: instance.resources?.memory }, tiers);
 }
 
 function toWorkLanes(lanes: readonly CloudLaneWorkLane[] | null): CloudLaneWorkLane[] {
@@ -111,6 +116,8 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
   const nowIso = () => nowIsoFrom(now);
   const jobs = new Map<string, JobRecord>();
   const running = new Map<string, AbortController>();
+  /** Computers a tier change is being set up for, before its job exists: a second confirm is refused. */
+  const reserving = new Set<string>();
   let disposed = false;
 
   // ---------------------------------------------------------------------------
@@ -181,7 +188,32 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     // An older computer answers counts without the lane list: it can't say, so the caller warns.
     if (!ran.tally.lanes) return { unpushed: null, unpushedLanes: [], message: "This computer's ADE is too old to say what isn't pushed." };
     const unpushedLanes = toWorkLanes(ran.tally.lanes);
+    // A project it couldn't open listed no lanes: its work is unknown, not saved.
+    if (ran.tally.failed > 0) return { unpushed: null, unpushedLanes, message: "ADE couldn't read every project on this computer." };
     return { unpushed: unpushedLanes.length > 0, unpushedLanes, message: null };
+  };
+
+  /**
+   * Whether the agent's work keeps the computer busy, from its keep-awake
+   * facts: `idle` (asleep counts), `busy`, or `unknown` when they can't be read.
+   */
+  const agentWork = async (instanceId: string): Promise<"idle" | "busy" | "unknown"> => {
+    const client = await deps.client();
+    const instance = await client.getInstance(instanceId);
+    if (instance.status !== "running") return "idle";
+    const read = await client.exec(instanceId, KEEP_AWAKE_STATE_COMMAND, { timeoutMs: 30_000 }).catch((error: unknown) => {
+      logger.warn?.("cloud.lane_keep_awake_read_failed", { instanceId, error: getErrorMessage(error) });
+      return null;
+    });
+    if (!read) return "unknown";
+    try {
+      const state = JSON.parse(read.stdout.trim()) as { busy?: unknown; reasons?: unknown };
+      const reasons = Array.isArray(state.reasons) ? state.reasons.filter((reason): reason is string => typeof reason === "string") : [];
+      return state.busy !== true || reasons.every((reason) => NOT_AGENT_WORK.has(reason)) ? "idle" : "busy";
+    } catch (error) {
+      logger.warn?.("cloud.lane_keep_awake_unreadable", { instanceId, error: getErrorMessage(error) });
+      return "unknown";
+    }
   };
 
   // ---------------------------------------------------------------------------
@@ -231,6 +263,11 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     if (!instance) return fail("ADE Cloud has no such computer.");
     const lane = cloudMachineLaneFactsOf(instance.metadata);
     if (!lane) return fail("This computer wasn't made for one lane, so there is no lane to keep. Delete it, or keep it.");
+    // A running agent could write again after its lane was pushed.
+    const work = await agentWork(args.instanceId);
+    if (work === "busy") return fail("The agent is still working. Stop it or wait, then free the computer.");
+    if (work === "unknown") return fail("ADE couldn't tell whether the agent is still working, so the computer stays. Try again in a moment.");
+    // Archived lanes too: their work goes with the computer.
     const ran = await deps.machines.runPushWork(args.instanceId, { check: false });
     if (!ran.tally) return fail(`ADE couldn't push this lane's work, so the computer stays: ${(ran.error ?? "no answer").replace(/\.$/, "")}.`);
     const left = toWorkLanes(ran.tally.lanes);
@@ -238,12 +275,22 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       const names = left.map((entry) => entry.laneName || entry.branchRef).filter(Boolean);
       return fail(`ADE couldn't push all work on this computer${names.length ? ` (${names.join(", ")})` : ""}, so it stays. Open the lane to see why, then try again.`);
     }
+    // Read once more after the push: anything new or unknown keeps the computer.
+    const after = await workState({ instanceId: args.instanceId });
+    if (after.unpushed !== false) {
+      const names = after.unpushedLanes.map((entry) => entry.laneName || entry.branchRef).filter(Boolean);
+      return fail(after.unpushed
+        ? `Work changed on this computer while ADE pushed it${names.length ? ` (${names.join(", ")})` : ""}, so it stays. Try again.`
+        : `ADE couldn't confirm all work is on GitHub, so the computer stays: ${(after.message ?? "no answer").replace(/\.$/, "")}.`);
+    }
     const ownLane = ran.tally.lanes?.find((entry) => entry.laneId === lane.laneId)
       ?? (ran.tally.lanes ?? []).filter((entry) => !entry.primary).at(0)
       ?? null;
     const branchRef = ownLane?.branchRef || instance.metadata[CLOUD_LANE_BRANCH_METADATA] || null;
     if (!branchRef) return fail("ADE couldn't tell which branch this lane is on, so the computer stays.");
     const machineKey = instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null;
+    // A refusal (the server couldn't read the lane, or knows none) deleted
+    // nothing: its sentence is shown as it is, and the lane is not freed.
     const result = await deps.machines.run({ action: "delete", instanceId: args.instanceId, machineKey, keepLane: { branchRef } });
     if (!result.ok) return fail(result.message);
     forgetConnections(machineKey, args.instanceId);
@@ -251,7 +298,10 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     const client = await deps.client();
     const kept = await client.listLanesWithoutComputer()
       .then((lanes) => lanes.find((entry) => entry.laneId === lane.laneId) ?? null)
-      .catch(() => null);
+      .catch((error: unknown) => {
+        logger.warn?.("cloud.lane_kept_read_failed", { instanceId: args.instanceId, error: getErrorMessage(error) });
+        return null;
+      });
     logger.info?.("cloud.lane_freed", { instanceId: args.instanceId, kept: kept != null });
     if (!kept) {
       // The computer is gone but the server didn't keep the lane (an older server).
@@ -277,21 +327,8 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     if (signal.aborted || disposed || record.job.phase === "cancelled") throw new JobStopped();
   };
 
-  /** True when nothing the agent does keeps the computer busy (asleep counts as idle). */
-  const agentIdle = async (instanceId: string): Promise<boolean> => {
-    const client = await deps.client();
-    const instance = await client.getInstance(instanceId);
-    if (instance.status !== "running") return true;
-    const read = await client.exec(instanceId, KEEP_AWAKE_STATE_COMMAND, { timeoutMs: 30_000 }).catch(() => null);
-    try {
-      const state = JSON.parse(read?.stdout.trim() ?? "") as { busy?: unknown; reasons?: unknown };
-      const reasons = Array.isArray(state.reasons) ? state.reasons.filter((reason): reason is string => typeof reason === "string") : [];
-      return state.busy !== true || reasons.every((reason) => NOT_AGENT_WORK.has(reason));
-    } catch {
-      // Unknown is busy, as on the computer itself.
-      return false;
-    }
-  };
+  /** True when nothing the agent does keeps the computer busy (asleep counts as idle; unknown is busy). */
+  const agentIdle = async (instanceId: string): Promise<boolean> => (await agentWork(instanceId)) === "idle";
 
   /** Save work: waits for the agent (or stops its turn), then writes the saved chat copy. */
   const runSave = async (record: JobRecord, signal: AbortSignal): Promise<void> => {
@@ -330,11 +367,19 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     const since = now();
     for (;;) {
       assertActive(record, signal);
-      const instance = await client.getInstance(instanceId).catch(() => null);
+      const instance = await client.getInstance(instanceId).catch((error: unknown) => {
+        // Read again on the next round, until the wait runs out.
+        logger.warn?.("cloud.lane_job_read_failed", { jobId: record.job.jobId, instanceId, error: getErrorMessage(error) });
+        return null;
+      });
       if (instance?.status === "running") return;
       if (instance?.status === "failed") throw new Error("ADE Cloud couldn't start the computer again.");
       // A resize leaves it asleep on some sizes: wake it, as a send would.
-      if (instance && (instance.status === "sleeping" || instance.status === "stopped")) await client.startInstance(instanceId).catch(() => undefined);
+      if (instance && (instance.status === "sleeping" || instance.status === "stopped")) {
+        await client.startInstance(instanceId).catch((error: unknown) => {
+          logger.warn?.("cloud.lane_job_wake_failed", { jobId: record.job.jobId, instanceId, error: getErrorMessage(error) });
+        });
+      }
       if (now() - since > RESTART_WAIT_MS) throw new Error("The computer didn't start again in time.");
       await sleep(RESTART_POLL_MS);
     }
@@ -365,7 +410,10 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       }
     }
     if (job.projectOrigin) {
-      const projects = await deps.listProjects(targetId).catch(() => []);
+      const projects = await deps.listProjects(targetId).catch((error: unknown) => {
+        logger.warn?.("cloud.lane_job_projects_read_failed", { jobId: job.jobId, error: getErrorMessage(error) });
+        return [];
+      });
       const has = projects.some((project) => project.exists !== false && normalizeGitRemoteIdentity(project.gitOriginUrl) === job.projectOrigin);
       if (!has) throw new Error("ADE on the computer answers, but the lane's project isn't there.");
     }
@@ -382,8 +430,48 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     deps.changed();
   };
 
+  /** The lane's name on the new computer: one lane, one name. */
+  const nameMovedComputer = async (record: JobRecord, name: string | null): Promise<void> => {
+    const job = record.job;
+    if (!job.laneName || name === job.laneName) return;
+    const client = await deps.client();
+    await client.setInstanceName(job.instanceId, job.laneName).catch((error: unknown) => {
+      logger.warn?.("cloud.lane_job_rename_failed", { jobId: job.jobId, instanceId: job.instanceId, error: getErrorMessage(error) });
+    });
+    if (job.machineKey) {
+      await deps.copyDeps.renameMachine(job.machineKey, job.laneName).catch((error: unknown) => {
+        logger.warn?.("cloud.lane_job_machine_rename_failed", { jobId: job.jobId, error: getErrorMessage(error) });
+      });
+    }
+  };
+
+  /**
+   * After a quit between the copy and the old computer's delete: the job
+   * already names the new computer. The old one goes now (or is left with a
+   * warning), and the new one takes the lane's name.
+   */
+  const finishMoveAfterCopy = async (record: JobRecord): Promise<void> => {
+    const job = record.job;
+    if (!finished(stageOf(record, "remove")) && job.fromInstanceId !== job.instanceId) {
+      setStage(record, "remove", "running");
+      const old = await readInstance(job.fromInstanceId);
+      const result = old && old.status !== "deleted"
+        ? await deps.machines.run({ action: "delete", instanceId: job.fromInstanceId, machineKey: record.fromMachineKey ?? null })
+        : { ok: true, message: "" };
+      if (result.ok) forgetConnections(record.fromMachineKey ?? null, job.fromInstanceId);
+      setStage(record, "remove", result.ok ? "done" : "warning", {
+        detail: result.ok ? null : "The old computer is still there, asleep. Delete it from Settings › ADE Cloud",
+      });
+    }
+    await nameMovedComputer(record, null);
+    deps.changed();
+  };
+
   const runMove = async (record: JobRecord, signal: AbortSignal): Promise<void> => {
-    if (finished(stageOf(record, "copy"))) return;
+    if (finished(stageOf(record, "copy"))) {
+      await finishMoveAfterCopy(record);
+      return;
+    }
     const job = record.job;
     setStage(record, "computer", "running");
     const controller = new AbortController();
@@ -408,25 +496,33 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
         const active = stageOf(record, "copy")?.status === "running" ? "copy" : "computer";
         const stage = stageOf(record, active);
         if (stage && stage.detail !== progress.message) setStage(record, active, "running", { detail: progress.message });
-      }, { signal: controller.signal });
+      }, {
+        signal: controller.signal,
+        // Saved before the old computer is deleted: a quit from here on goes
+        // on from the new computer, and Retry never starts from a deleted one.
+        onCopied: (target) => {
+          if (stageOf(record, "computer")?.status === "running") setStage(record, "computer", "done");
+          job.instanceId = target.instanceId;
+          job.machineKey = target.machineKey ?? null;
+          // ADE on the new computer registered the lane's project during the copy.
+          const start = stageOf(record, "start");
+          if (start) Object.assign(start, { status: "done", endedAt: nowIso() });
+          // One write: the copy done together with the new computer's identity.
+          setStage(record, "copy", "done", { detail: null });
+        },
+      });
     } finally {
       signal.removeEventListener("abort", onAbort);
     }
     if (stageOf(record, "computer")?.status === "running") setStage(record, "computer", "done");
-    setStage(record, "copy", "done", { detail: null });
+    if (stageOf(record, "copy")?.status !== "done") setStage(record, "copy", "done", { detail: null });
     job.instanceId = result.instanceId;
     job.machineKey = result.machineKey ?? null;
-    // ADE on the new computer registered the lane's project during the copy.
-    setStage(record, "start", "done");
+    if (stageOf(record, "start")?.status !== "done") setStage(record, "start", "done");
     setStage(record, "remove", result.sourceDeleted ? "done" : "warning", {
       detail: result.sourceDeleted ? null : "The old computer is still there, asleep. Delete it from Settings › ADE Cloud",
     });
-    // One lane, one name: the new computer takes the lane's name.
-    if (job.laneName && result.name !== job.laneName) {
-      const client = await deps.client();
-      await client.setInstanceName(result.instanceId, job.laneName).catch(() => undefined);
-      if (result.machineKey) await deps.copyDeps.renameMachine(result.machineKey, job.laneName).catch(() => undefined);
-    }
+    await nameMovedComputer(record, result.name);
     deps.changed();
   };
 
@@ -483,11 +579,24 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     if (!instanceId) throw new Error("Name the computer.");
     if (!isCloudTierId(raw?.sizeId)) throw new Error("Pick a size.");
     const timing = raw.timing === "now" ? "now" : "idle";
-    const busy = Array.from(jobs.values()).find((record) => isLive(record.job) && (record.job.instanceId === instanceId || record.job.fromInstanceId === instanceId));
-    if (busy) return structuredClone(busy.job);
+    const busy = Array.from(jobs.values()).some((record) => isLive(record.job) && (record.job.instanceId === instanceId || record.job.fromInstanceId === instanceId));
+    // Reserved before the first await: two confirms at once never start two jobs.
+    if (busy || reserving.has(instanceId)) throw new Error("A change is already running for this lane.");
+    reserving.add(instanceId);
+    try {
+      return await startTierChange(raw, instanceId, timing);
+    } finally {
+      reserving.delete(instanceId);
+    }
+  };
+
+  const startTierChange = async (raw: CloudLaneChangeTierArgs, instanceId: string, timing: "now" | "idle"): Promise<CloudLaneJobSnapshot> => {
     const instance = await readInstance(instanceId);
     if (!instance) throw new Error("ADE Cloud has no such computer.");
-    const catalog = cloudCatalogOf(await deps.machines.account().catch(() => null));
+    const catalog = cloudCatalogOf(await deps.machines.account().catch((error: unknown) => {
+      logger.warn?.("cloud.lane_job_account_read_failed", { instanceId, error: getErrorMessage(error) });
+      return null;
+    }));
     const tier = cloudTier(catalog, raw.sizeId);
     if (!tier) throw new Error("ADE Cloud doesn't offer that size now.");
     const from = tierOfInstance(instance, cloudTiers(catalog));
@@ -517,7 +626,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       updatedAt: startedAt,
       endedAt: null,
     };
-    const record: JobRecord = { v: 1, job, shape: shape.id, targetType: tier.type };
+    const record: JobRecord = { v: 1, job, shape: shape.id, targetType: tier.type, fromMachineKey: job.machineKey };
     jobs.set(job.jobId, record);
     publish(record);
     logger.info?.("cloud.lane_job_started", { jobId: job.jobId, kind, timing, toSizeId: tier.id });
@@ -570,7 +679,11 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     let entries: string[] = [];
     try {
       entries = fs.readdirSync(deps.recordsDir);
-    } catch {
+    } catch (error) {
+      // None yet is normal; anything else hides size changes still under way.
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        logger.warn?.("cloud.lane_jobs_dir_read_failed", { error: getErrorMessage(error) });
+      }
       return;
     }
     for (const entry of entries) {

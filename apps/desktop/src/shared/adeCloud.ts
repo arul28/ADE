@@ -475,6 +475,21 @@ export const CLOUD_WAKE_PORT_LABEL = "ADE wake";
 export const CLOUD_BACKSTOP_SLEEP_MINUTES = 5;
 /** The chat whose agent made a machine (create, copy, move): only that chat's unattended agent may delete it. */
 export const CLOUD_MADE_BY_CHAT_METADATA = "ade_made_by_chat";
+/**
+ * Which kind of agent made a machine (`chat`, `automation`, `mcp`), also with
+ * no chat: the agents' daily limit counts it from the account's list, so it
+ * holds across restarts and brains. A person's own make carries neither key.
+ */
+export const CLOUD_MADE_BY_AGENT_METADATA = "ade_made_by_agent";
+export type CloudAgentMaker = "chat" | "automation" | "mcp";
+
+/** The made-by keys for a new machine's metadata; empty for a person's own make. */
+export function cloudMadeByMetadata(made: { madeByChat?: string | null; madeByAgent?: CloudAgentMaker | null }): Record<string, string> {
+  return {
+    ...(made.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: made.madeByChat } : {}),
+    ...(made.madeByAgent ? { [CLOUD_MADE_BY_AGENT_METADATA]: made.madeByAgent } : {}),
+  };
+}
 
 /**
  * Set by the computer's brain when its disk is full and can't grow:
@@ -644,7 +659,7 @@ export function describeCloudSleepPolicy(policy: CloudSleepPolicy): string {
  * without asking. An agent the person is watching always asks.
  */
 export type CloudAgentLimits = {
-  /** False: an unattended agent may not make, copy, move or resize anything. */
+  /** False: an unattended agent may not make, copy or move anything. A size change always needs the person. */
   unattendedSpend: boolean;
   /** New machines (made, copied or moved) unattended agents may start in a UTC day. */
   machinesPerDay: number;

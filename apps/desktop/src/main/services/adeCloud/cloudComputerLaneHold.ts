@@ -31,6 +31,7 @@ import { pathsEqual } from "../shared/pathCompare";
 import { writeFileAtomic } from "../state/durableFile";
 import { hasTable, openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { captureError } from "../../../shared/sentry/capture";
 import {
   CLOUD_COMPUTER_LANE_CHECK_BUSY_MESSAGE,
   CloudComputerLaneLimitError,
@@ -108,7 +109,11 @@ function machineProjectListPath(): string {
 function readJson(filePath: string): unknown {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf8"));
-  } catch {
+  } catch (error) {
+    // No file yet is the usual answer; an unreadable one is worth a report.
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      captureError(error, { level: "warning", tags: { area: "cloud_lane_hold" }, extra: { file: path.basename(filePath) }, fingerprint: ["cloud_lane_hold", "read_failed"] });
+    }
     return null;
   }
 }
@@ -251,7 +256,8 @@ export function releaseCloudComputerLaneClaim(projectRoot: string, laneId: strin
       if (claims.length === claimFile.claims.length) return;
       writeFileAtomic(claimFilePath(), `${JSON.stringify({ ...claimFile, claims } satisfies ClaimFile)}\n`);
     }, { waitMs: 2_000, label: "the ADE Cloud lane lock", staleAfterMs: 30_000 });
-  } catch {
+  } catch (error) {
     // The claim stops counting on its own after two minutes.
+    captureError(error, { level: "warning", tags: { area: "cloud_lane_hold" }, fingerprint: ["cloud_lane_hold", "release_failed"] });
   }
 }

@@ -22,7 +22,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import type { CloudAgentMaker } from "../../../shared/adeCloud";
 import { isChatLaunchTerminal } from "../../../shared/chatLaunch";
+import type { CloudLaneLaunchStatus } from "../../../shared/cloudLaneLaunch";
 import type {
   ChatLaunchArgs,
   ChatLaunchEvent,
@@ -30,7 +32,7 @@ import type {
   OpenProjectBinding,
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
-import { getErrorMessage } from "../shared/utils";
+import { getErrorMessage, isRecord } from "../shared/utils";
 import { createCloudSelfApproval, type CloudBrainMakerBase } from "./cloudBrainMaker";
 import { createCloudLaneLaunchService, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
 
@@ -87,10 +89,14 @@ export function cloudLaneLaunchRecordsDir(adeDir: string): string {
 }
 
 /** Whether a quit left launches here to resume. */
-export function hasCloudLaneLaunchRecords(recordsDir: string): boolean {
+export function hasCloudLaneLaunchRecords(recordsDir: string, logger?: Pick<Logger, "warn">): boolean {
   try {
     return fs.readdirSync(recordsDir).some((entry) => entry.endsWith(".json"));
-  } catch {
+  } catch (error) {
+    // No folder yet is the usual answer; anything else is worth a line.
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+      logger?.warn("cloud_lane_launch.records_dir_read_failed", { error: getErrorMessage(error) });
+    }
     return false;
   }
 }
@@ -99,10 +105,6 @@ export function hasCloudLaneLaunchRecords(recordsDir: string): boolean {
 const FOLLOW_POLL_MS = 5_000;
 const PROBE_TIMEOUT_MS = 15_000;
 const CHAT_ACTION_TIMEOUT_MS = 60_000;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 /** An action's own result inside a forwarded `ade/actions/call` answer. */
 function unwrapActionResult(value: unknown): unknown {
@@ -140,16 +142,6 @@ function toProjectList(value: unknown): RemoteRuntimeProjectRecord[] {
   return list.map(toProjectRecord).filter((project): project is RemoteRuntimeProjectRecord => project !== null);
 }
 
-/** What `cloud.lane_launch_status` answers. */
-export type CloudLaneLaunchStatus = {
-  launch: ChatLaunchSnapshot;
-  /** The computer made for the lane, once it exists. */
-  machine: { name: string; instanceId: string | null; machineKey: string | null };
-  /** While the join waits for the person: the sign-in link to open. */
-  approvalUrl: string | null;
-  /** The agent's chat that started it, or null for a person's launch. */
-  madeByChat: string | null;
-};
 
 export type CloudLaneLaunchBrainHost = {
   /** A launch here by id, or null. */
@@ -159,6 +151,8 @@ export type CloudLaneLaunchBrainHost = {
     args: ChatLaunchArgs;
     originUrl: string | null;
     madeByChat: string | null;
+    /** The kind of agent that asked (written on the computer for the daily limit); null for a person. */
+    madeByAgent?: CloudAgentMaker | null;
     /** The yes came from what the person lets unattended agents do. */
     selfApprove: boolean;
     caller: CloudLaneLaunchCaller;
@@ -334,7 +328,7 @@ export function createCloudLaneLaunchBrainHost(deps: {
             notice: input.notice,
           });
       try {
-        let launch = await service.start({ args: input.args, originUrl: input.originUrl, madeByChat: input.madeByChat });
+        let launch = await service.start({ args: input.args, originUrl: input.originUrl, madeByChat: input.madeByChat, madeByAgent: input.madeByAgent ?? null });
         // The same command again resumes a launch that failed, on the same computer.
         if (known && launch.phase === "failed") launch = (await service.retry({ launchId: launch.launchId })) ?? launch;
         return { status: statusOf(launch), created: !known };

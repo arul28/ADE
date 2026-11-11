@@ -1,4 +1,5 @@
 import type { CloudCatalog, CloudTierId as CatalogTierId } from "../../../account-directory/src/cloud/contract";
+import { formatCloudHoursRate, type CloudMachine } from "./adeCloud";
 
 /**
  * The four sizes a person picks for an ADE Cloud lane: Small, Medium, Large
@@ -86,4 +87,39 @@ export function cloudTiers(catalog: Pick<CloudCatalog, "sizes">): CloudTier[] {
 export function cloudTier(catalog: Pick<CloudCatalog, "sizes">, id: unknown): CloudTier | null {
   if (!isCloudTierId(id)) return null;
   return cloudTiers(catalog).find((tier) => tier.id === id) ?? null;
+}
+
+/** A computer's kind and shape, as a tier is found from it. */
+export type CloudTierShape = { type: string | null; cpu?: number | null; memoryGb?: number | null };
+
+/**
+ * The lane size a computer of this shape runs at, or null when no lane size
+ * matches (or there is no shape). A `vm` is a full computer; any other kind
+ * a standard one. Callers that rule a kind out (a performance computer) pass null.
+ */
+export function cloudTierOfShape(shape: CloudTierShape | null, tiers: readonly CloudTier[]): CloudTier | null {
+  if (!shape) return null;
+  const type = shape.type === "vm" ? "vm" : "default";
+  return tiers.find((tier) => tier.type === type && tier.cpu === shape.cpu && tier.memoryGb === shape.memoryGb) ?? null;
+}
+
+/** The lane size an ADE Cloud computer runs at, or null (no shape, a performance computer, a size no lane uses). */
+export function cloudTierOfMachine(machine: Pick<CloudMachine, "type" | "resources">, tiers: readonly CloudTier[]): CloudTier | null {
+  if (!machine.resources || machine.type === "performance") return null;
+  return cloudTierOfShape({ type: machine.type, cpu: machine.resources.cpu, memoryGb: machine.resources.memoryGb }, tiers);
+}
+
+/** A tier's place, Small first (1 to 4). */
+export function cloudTierRank(id: CloudTierId): number {
+  return CLOUD_TIER_IDS.indexOf(id) + 1;
+}
+
+/** The size's hours rate from the catalog: "1× hours". */
+export function cloudTierRateLabel(tier: Pick<CloudTier, "multiplierMilli">): string {
+  return formatCloudHoursRate(tier.multiplierMilli / 1000);
+}
+
+/** "2 CPU · 4 GB" for a size row. */
+export function cloudTierShapeLabel(tier: Pick<CloudTier, "cpu" | "memoryGb">): string {
+  return `${tier.cpu} CPU · ${tier.memoryGb} GB`;
 }

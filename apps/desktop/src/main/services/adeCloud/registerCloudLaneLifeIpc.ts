@@ -1,29 +1,16 @@
 import path from "node:path";
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, ipcMain } from "electron";
 import type { CloudLaneChangeTierArgs, CloudLaneLifeCallRequest } from "../../../shared/cloudLaneLife";
 import { IPC } from "../../../shared/ipc";
 import type { RuntimeBridgeRegistration } from "../ipc/runtimeBridge";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import type { Logger } from "../logging/logger";
+import { isRecord } from "../shared/utils";
+import { sendToAllWindows } from "./broadcast";
 import { createCloudLaneLife, type CloudLaneLife } from "./cloudLaneLife";
 import type { CloudCopyDeps } from "./cloudMachineCopy";
 import type { createCloudMachines } from "./cloudMachines";
 import type { CloudProvider } from "./cloudProvider";
-
-function sendToAllWindows(channel: string, payload?: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-    try {
-      win.webContents.send(channel, payload);
-    } catch {
-      // A window closing mid-send misses one update; the next read has it.
-    }
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function textArg(args: Record<string, unknown>, key: string): string {
   const value = args[key];

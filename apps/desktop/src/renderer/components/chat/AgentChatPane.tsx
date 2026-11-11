@@ -414,20 +414,20 @@ import {
 } from "../lanes/CreateLaneDialogHost";
 import { peekNewLaneDefaultsCached, useNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { describeAutoCreateStart } from "../lanes/laneStartOptions";
-import { autoLaneMachine, originUrlForBinding } from "../lanes/laneMachines";
+import { autoLaneMachine, isAdeCloudLaneComputer, originUrlForBinding } from "../lanes/laneMachines";
 import { draftCloneRowTargetId, useDraftMachineSetup } from "./useDraftMachineSetup";
-import { ADE_CLOUD_MACHINE_ID, adeCloudAccountBlock, useAdeCloudDraft, type AdeCloudTrayAction, type AdeCloudTrayNotice } from "./useAdeCloudDraft";
+import { ADE_CLOUD_MACHINE_ID, useAdeCloudComposer, useAdeCloudDraft, type AdeCloudSend } from "./useAdeCloudDraft";
 import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
-import { AdeCloudTray, CloudSizeButton } from "./AdeCloudComposerParts";
+import { AdeCloudTray, CloudSizeButton, useCloudLaneWithoutComputerForChat } from "./AdeCloudComposerParts";
+import { cloudLaneRestartBranchRef, cloudLaneRestartProblem, cloudLaneRestartTier } from "../cloudLane/CloudLaneWithoutComputer";
+import type { CloudAccountState } from "../../../shared/adeCloud";
+import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
+import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
 import { resolveAdeCloudLaneBinding } from "./adeCloudLaneBinding";
 import { ADE_CLOUD_NAME, cloudSkylineSummary } from "../remoteTargets/cloudBrand";
-import { cloudLaneLaunchStartRefusal } from "../../../shared/cloudLaneLaunch";
-import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { autoPickSummary } from "../lanes/machineLoadText";
 import { useMachinePlacement } from "../lanes/useMachinePlacement";
-import { chatLaunchLaneStart, createChatLaunchSnapshot } from "../../../shared/chatLaunch";
-import type { AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
-import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
+import { chatLaunchLaneStart } from "../../../shared/chatLaunch";
 import { DEFAULT_LANE_START } from "../../../shared/laneStart";
 import {
   LaneCombobox,
@@ -533,6 +533,7 @@ import {
 } from "./launch/chatLaunchDock";
 import { buildChatLaunchThreadEvents } from "./launch/chatLaunchSynthetic";
 import { buildNewLaneLaunchArgs } from "./launch/newLaneLaunchArgs";
+import { adeCloudStartBranchReady, startAdeCloudLaunch } from "./launch/adeCloudLaunch";
 import {
   clearSubmittedDraftText,
   removeSubmittedDraftItems,
@@ -4994,20 +4995,13 @@ export function AgentChatPane({
    * What a send to ADE Cloud needs, written each render below where the
    * draft's ADE Cloud state exists (the send callback is defined earlier).
    */
-  const adeCloudSendRef = useRef<{
-    tierId: string;
-    origin: string | null;
-    originUrl: string | null;
-    tabBinding: OpenProjectBinding | null;
-    /** The ADE Cloud lane picked, or null for a new lane. */
-    lane: AdeCloudLaneComputer | null;
-    /** Set while Send is off; the send never starts then. */
-    notice: AdeCloudTrayNotice | null;
-    connections: readonly RemoteRuntimeConnectionStatus[];
-  } | null>(null);
-  /** Request keys of ADE Cloud sends that already started: a second press is the same launch. */
+  const adeCloudSendRef = useRef<AdeCloudSend | null>(null);
   /** The last ADE Cloud launch this draft started, so a second press of Send in the same moment is the same launch. */
   const adeCloudLastStartRef = useRef<{ key: string; at: number } | null>(null);
+  /** The open chat's lane kept without a computer, or null (written below, where the chat's binding exists). */
+  const freedChatLaneRef = useRef<CloudLaneWithoutComputer | null>(null);
+  /** The ADE Cloud account from the shared computers read, when the draft has read it. */
+  const adeCloudAccountRef = useRef<CloudAccountState | null>(null);
   // The cloud model (`devin_version`) and VM OS for the next Devin Cloud launch.
   const [devinCloudVersionSel, setDevinCloudVersionSel] = useState<string>(DEVIN_CLOUD_DEFAULT_VERSION);
   const [devinCloudPlatformSel, setDevinCloudPlatformSel] = useState("linux");
@@ -13317,9 +13311,15 @@ export function AgentChatPane({
     /**
      * ADE Cloud: main makes a new computer for this lane (`chatLaunch.start`
      * with `cloud`). `launchBinding` is the tab's project; it only names the
-     * repository to clone there.
+     * repository to clone there. `lane`: a lane kept without a computer
+     * gets the new computer, on its own id and its branch on GitHub.
      */
-    cloud: { sizeId: string; projectOrigin: string | null; launchId?: string } | null = null,
+    cloud: {
+      sizeId: string;
+      originUrl: string | null;
+      launchId?: string;
+      lane?: { laneId: string; laneName: string; branchRef: string };
+    } | null = null,
   ): boolean => {
     const prepared = prepareDraftLaunch(snapshot);
     let cli: ChatLaunchCliParams | null = null;
@@ -13352,12 +13352,17 @@ export function AgentChatPane({
     }
 
     const launchId = cloud?.launchId ?? crypto.randomUUID();
-    const newLaneId = crypto.randomUUID();
+    const existingLane = cloud?.lane ?? null;
+    const newLaneId = existingLane?.laneId ?? crypto.randomUUID();
     // The configured name wins; otherwise derive one from the prompt.
-    const laneName = configuredLane?.name.trim()
+    const laneName = existingLane?.laneName
+      || configuredLane?.name.trim()
       || createDeterministicAutoLaneName(buildDraftLaunchNamingSeed(snapshot), {
         genericSuffix: autoLaneGenericSuffix(),
       });
+    const laneConfig: ChatLaunchLaneConfig | null = existingLane
+      ? { mode: "existing", branchRef: existingLane.branchRef }
+      : configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null;
     const args = buildNewLaneLaunchArgs({
       kind,
       mode,
@@ -13368,10 +13373,9 @@ export function AgentChatPane({
       provider,
       cliTitle: cli?.title ?? null,
       chat,
-      ...(configuredLane ? { laneConfig: chatLaunchLaneConfigFromDraft(configuredLane) } : {}),
+      ...(laneConfig ? { laneConfig } : {}),
       originClientId: getChatLaunchOriginClientId(),
     });
-    if (cloud) args.cloud = { sizeId: cloud.sizeId };
     // Predict the stages the host will report so the card has its shape from
     // the first frame. Only `fetch` depends on the start: a lane that starts
     // on the remote fetches first. Unread defaults assume the built-in default
@@ -13381,36 +13385,30 @@ export function AgentChatPane({
       pin: newLaneDefaultsPin(launchBinding, useAppStore.getState().projectBinding),
     });
     const launchStart = chatLaunchLaneStart(
-      configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null,
+      laneConfig,
       knownDefaults?.defaults.start ?? DEFAULT_LANE_START,
     );
     const includeFetch = launchStart?.on === "remote";
-    registerChatLaunchLocalRecord(launchId, { args, pin: launchBinding, draftSnapshot: snapshot, cli });
-    insertOptimisticChatLaunch(
-      launchBinding,
-      cloud
-        // ADE Cloud's card starts with the computer's own steps, in blue.
-        ? {
-            ...createChatLaunchSnapshot({
-              launch: args,
-              laneId: newLaneId,
-              laneName,
-              includeFetch: true,
-              includeEnvironment: false,
-              includeCloud: true,
-              nowIso: new Date().toISOString(),
-            }),
-            cloud: {
-              sizeId: cloud.sizeId,
-              projectOrigin: cloud.projectOrigin ?? "",
-              instanceId: null,
-              machineKey: null,
-              binding: null,
-              handedOff: false,
-            },
-          }
-        : buildOptimisticChatLaunchSnapshot({ launch: { ...args, laneId: newLaneId, laneName }, includeFetch }),
-    );
+    if (cloud) {
+      // ADE Cloud's card starts with the computer's own steps, in blue. Main
+      // owns every ADE Cloud launch; there is no renderer chain to fall back to.
+      const { cloud: _cloud, originClientId: _originClientId, ...cloudArgs } = args;
+      void startAdeCloudLaunch({
+        args: { ...cloudArgs, laneId: newLaneId, laneName },
+        sizeId: cloud.sizeId,
+        originUrl: cloud.originUrl,
+        binding: launchBinding,
+        draftSnapshot: snapshot,
+        cli,
+        onUnsupported,
+      });
+    } else {
+      registerChatLaunchLocalRecord(launchId, { args, pin: launchBinding, draftSnapshot: snapshot, cli });
+      insertOptimisticChatLaunch(
+        launchBinding,
+        buildOptimisticChatLaunchSnapshot({ launch: { ...args, laneId: newLaneId, laneName }, includeFetch }),
+      );
+    }
     clearPromptSuggestionForSession(selectedSessionId);
     setError(null);
     clearNewLaneConfig();
@@ -13426,6 +13424,7 @@ export function AgentChatPane({
     if (opensNow) {
       openLaunchedDraftSession({ laneId: newLaneId, laneName, sessionId: launchId, draftKind: "chat" });
     }
+    if (cloud) return true;
     // A runtime that predates brain-owned launches rejects the action; that one
     // launch then drops its card/row and runs the renderer-owned chain, which
     // consumes this recipe so it still builds the lane the user configured.
@@ -13450,6 +13449,49 @@ export function AgentChatPane({
     projectRoot,
     selectedSessionId,
   ]);
+
+  /**
+   * Send in the chat of a lane kept without a computer: ADE makes the lane a
+   * new computer on its branch on GitHub (same lane id) and starts a new chat
+   * there with this message. The old chat stays readable as its saved copy.
+   * A refusal this window can see keeps the message in the box; one main
+   * gives later shows on the launch card, whose Delete puts it back.
+   */
+  const startFreedLaneChat = useCallback((lane: CloudLaneWithoutComputer): void => {
+    const tabBinding = useAppStore.getState().projectBinding;
+    const originUrl = originUrlForBinding(tabBinding);
+    const account = adeCloudAccountRef.current;
+    const problem = cloudLaneRestartProblem(lane, tabBinding, originUrl)
+      ?? cloudLaneStartBlock(account, { newLane: true })?.message
+      ?? null;
+    if (problem || !tabBinding || !lane.branchRef) {
+      setError({ message: problem ?? "Open the lane's project in ADE to start it.", kind: "status" });
+      return;
+    }
+    if (!modelId) {
+      setError({ message: "Select a model first", kind: "hint" });
+      return;
+    }
+    const snapshot = buildDraftLaunchSnapshotForCurrentState();
+    if (!snapshot) {
+      setError({ message: "Add a message before sending.", kind: "hint" });
+      return;
+    }
+    void copyPromptForLaunch(snapshot.text);
+    launchDraftIntoNewLane(
+      "chat",
+      "foreground",
+      snapshot,
+      tabBinding,
+      null,
+      () => setError({ message: "This ADE can't start an ADE Cloud lane. Update ADE, then send again.", kind: "status" }),
+      {
+        sizeId: cloudLaneRestartTier(lane, account, rootAppStoreApi.getState().cloudDefaultTier),
+        originUrl,
+        lane: { laneId: lane.laneId, laneName: lane.laneName, branchRef: cloudLaneRestartBranchRef(lane.branchRef) },
+      },
+    );
+  }, [buildDraftLaunchSnapshotForCurrentState, copyPromptForLaunch, launchDraftIntoNewLane, modelId]);
 
   const launchDraftSession = useCallback(async (kind: DraftLaunchKind, mode: DraftLaunchMode) => {
     // Machine selection starts the store transition synchronously, before React
@@ -13544,6 +13586,20 @@ export function AgentChatPane({
           setError({ message: "Open a project to start a lane on ADE Cloud.", kind: "status" });
           return;
         }
+        // A start from a branch the person picked: it must be on GitHub
+        // before the computer is made. Send waits here; the draft stays.
+        const branchReady = await adeCloudStartBranchReady(
+          draftNewLaneConfig ? chatLaunchLaneConfigFromDraft(draftNewLaneConfig) : null,
+        );
+        if (!branchReady.go) {
+          draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
+          if (branchReady.error) setError({ message: branchReady.error, kind: "status" });
+          return;
+        }
+        if (!paneMountedRef.current) {
+          draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
+          return;
+        }
         await ensureHarnessPresetOnBrain(draftLaunchBrainRef.current.presetId, { targetsAnotherMachine: true });
         void copyPromptForLaunch(snapshot.text);
         const started = launchDraftIntoNewLane(
@@ -13554,7 +13610,7 @@ export function AgentChatPane({
           draftNewLaneConfig,
           // Main owns every ADE Cloud launch; there is no older path to fall back to.
           () => setError({ message: "This ADE can't start an ADE Cloud lane. Update ADE, then send again.", kind: "status" }),
-          { sizeId: cloudSend.tierId, projectOrigin: cloudSend.origin },
+          { sizeId: cloudSend.tierId, originUrl: cloudSend.originUrl },
         );
         draftLaunchInFlightKeysRef.current.delete(cloudRequestKey);
         // The composer clears with the launch, so the same key can only come
@@ -15059,6 +15115,18 @@ export function AgentChatPane({
       return;
     }
 
+    // A chat whose lane has no computer now: Send gives the lane a new one
+    // and starts a new chat there (never a send to the deleted computer).
+    const freedLane = selectedSessionId && !subagentView ? freedChatLaneRef.current : null;
+    if (freedLane) {
+      if (pendingToDecline.length > 0) {
+        setError({ message: PENDING_INPUT_SEND_BLOCKED_MESSAGE, kind: "status" });
+        return;
+      }
+      startFreedLaneChat(freedLane);
+      return;
+    }
+
     const isParallelLaunch =
       !lockSessionId
       && !initialSessionId
@@ -15899,6 +15967,7 @@ export function AgentChatPane({
     return steerResult;
   }, [
     countSentMessages,
+    startFreedLaneChat,
     openSideChatFromComposer,
     isPersonalPane, attachments,
     claudeUsageAvailable,
@@ -16639,21 +16708,25 @@ export function AgentChatPane({
     enabled: showDraftLaunchControls,
     originUrl: originUrlForBinding(projectBinding),
   });
-  const adeCloudLaneMachineKeys = adeCloud.laneMachineKeys;
+  adeCloudAccountRef.current = adeCloud.account;
+  const adeCloudLaneComputers = adeCloud.computers;
   // A lane computer is a lane on ADE Cloud, not a computer to pick: it is
-  // listed under ADE Cloud. The tab's own machine and the current pick stay.
-  const isHiddenLaneComputer = useCallback((option: { id: string; targetId: string | null; isBound?: boolean }) => {
+  // listed under ADE Cloud (by host name or machine key, as every other
+  // picker matches it). The tab's own machine and the current pick stay.
+  const isHiddenLaneComputer = useCallback((option: { id: string; targetId: string | null; hostname: string | null; isBound?: boolean }) => {
     if (!option.targetId || option.isBound || option.id === selectedDraftMachineId) return false;
-    const machineKey = draftMachineKeyByTargetId.get(option.targetId);
-    return Boolean(machineKey && adeCloudLaneMachineKeys.has(machineKey));
-  }, [adeCloudLaneMachineKeys, draftMachineKeyByTargetId, selectedDraftMachineId]);
+    return isAdeCloudLaneComputer(
+      { hostname: option.hostname, machineKey: draftMachineKeyByTargetId.get(option.targetId) ?? null },
+      adeCloudLaneComputers,
+    );
+  }, [adeCloudLaneComputers, draftMachineKeyByTargetId, selectedDraftMachineId]);
   const laneMachineOptions = useMemo(
-    () => (adeCloudLaneMachineKeys.size ? routedLaneMachineOptions.filter((option) => !isHiddenLaneComputer(option)) : routedLaneMachineOptions),
-    [adeCloudLaneMachineKeys, isHiddenLaneComputer, routedLaneMachineOptions],
+    () => (adeCloudLaneComputers.length ? routedLaneMachineOptions.filter((option) => !isHiddenLaneComputer(option)) : routedLaneMachineOptions),
+    [adeCloudLaneComputers, isHiddenLaneComputer, routedLaneMachineOptions],
   );
   const draftCloneMachineOptions = useMemo(
-    () => (adeCloudLaneMachineKeys.size ? routedCloneMachineOptions.filter((option) => !isHiddenLaneComputer(option)) : routedCloneMachineOptions),
-    [adeCloudLaneMachineKeys, isHiddenLaneComputer, routedCloneMachineOptions],
+    () => (adeCloudLaneComputers.length ? routedCloneMachineOptions.filter((option) => !isHiddenLaneComputer(option)) : routedCloneMachineOptions),
+    [adeCloudLaneComputers, isHiddenLaneComputer, routedCloneMachineOptions],
   );
   // The auto-create row says where a new lane would start ("from origin/main"),
   // read from the saved new-lane defaults of the machine the draft launches on.
@@ -16782,95 +16855,29 @@ export function AgentChatPane({
   const draftShelfLaneValue = draftLaunchTargetIsAutoCreate
     ? AUTO_CREATE_LANE_OPTION.id
     : (laneId ?? "");
-  /**
-   * The lane list with ADE Cloud picked: Auto-create lane first (or the "+"
-   * lane's name), then this project's lanes on ADE Cloud by name, read from
-   * the computers' metadata with no wake. No Primary: ADE Cloud has none.
-   */
-  const adeCloudShelfLanes = useMemo<RoutedDraftLane[]>(() => {
-    const autoRow = draftLaneSelectorLanes.find((lane) => isAutoCreateLaneOptionId(lane.id))
-      ?? (AUTO_CREATE_LANE_OPTION as RoutedDraftLane);
-    return [
-      draftNewLaneConfig ? { ...autoRow, name: draftNewLaneConfig.name, detail: "New" } : { ...autoRow, detail: null },
-      ...adeCloud.projectLanes.map((lane) => ({ id: lane.laneId, name: lane.laneName } as RoutedDraftLane)),
-    ];
-  }, [adeCloud.projectLanes, draftLaneSelectorLanes, draftNewLaneConfig]);
-  const adeCloudSelectedLane = adeCloudLaneId
-    ? adeCloud.projectLanes.find((lane) => lane.laneId === adeCloudLaneId) ?? null
-    : null;
-  // A lane that went away (deleted elsewhere) falls back to a new lane.
-  useEffect(() => {
-    if (adeCloudLaneId && adeCloud.lanesKnown && !adeCloudSelectedLane) setAdeCloudLaneId(null);
-  }, [adeCloud.lanesKnown, adeCloudLaneId, adeCloudSelectedLane]);
-  const adeCloudNewLane = adeCloudMode && !adeCloudSelectedLane;
-  const adeCloudOriginUrl = originUrlForBinding(projectBinding);
-  /**
-   * Why Send can't go to ADE Cloud now, shown above the box before Send:
-   * a fact of the account (out of hours, all computers in use, disk full) or
-   * a start refusal the composer can already see (a local file, an
-   * "uncommitted" start, no GitHub origin, parallel models). A CLI draft
-   * runs there: its lane is set up, then this window starts the CLI session
-   * on the new computer.
-   * The same sentences main would refuse with, so none appears after Send.
-   */
-  const adeCloudNotice = useMemo<AdeCloudTrayNotice | null>(() => {
-    if (!adeCloudMode || !showDraftLaunchControls) return null;
-    // One rule for every start refusal, new lane or existing lane: while the
-    // pick can't run this draft, the label says why and Send is off. The pick
-    // stays, so switching back (to one model, to a chat) runs it again.
-    if (parallelChatMode) {
-      return {
-        tone: "notice",
-        message: "Parallel models runs on this computer. Pick This computer to use it.",
-        short: "Parallel models runs here only.",
-        actions: [],
-      };
-    }
-    const accountBlock = adeCloudAccountBlock(adeCloud.account, { newLane: adeCloudNewLane });
-    if (accountBlock) return accountBlock;
-    if (!adeCloudNewLane) return null;
-    const problem = cloudLaneLaunchStartRefusal({
-      args: {
-        kind: isWorkCliLaunchDraft ? "cli" : "chat",
-        mode: "foreground",
-        launchId: "",
-        prompt: "",
-        attachments,
-        cloud: { sizeId: adeCloud.tierId },
-        ...(draftNewLaneConfig ? { laneConfig: chatLaunchLaneConfigFromDraft(draftNewLaneConfig) } : {}),
-        ...(isWorkCliLaunchDraft ? {} : { chat: { create: {} as ChatLaunchChatArgs["create"], message: { text: "", attachments } } }),
-      },
-      originUrl: adeCloudOriginUrl,
-    });
-    return problem ? { tone: "notice", message: problem.message, short: problem.short, actions: [] } : null;
-  }, [
-    adeCloud.account,
-    adeCloud.tierId,
-    adeCloudMode,
-    adeCloudNewLane,
-    adeCloudOriginUrl,
-    attachments,
-    draftNewLaneConfig,
-    isWorkCliLaunchDraft,
+  const {
+    shelfLanes: adeCloudShelfLanes,
+    selectedLane: adeCloudSelectedLane,
+    newLane: adeCloudNewLane,
+    notice: adeCloudNotice,
+    openSettings: openAdeCloudSettings,
+  } = useAdeCloudComposer({
+    draft: adeCloud,
+    mode: adeCloudMode,
+    laneId: adeCloudLaneId,
+    setLaneId: setAdeCloudLaneId,
+    showControls: showDraftLaunchControls,
     parallelChatMode,
-    showDraftLaunchControls,
-  ]);
-  adeCloudSendRef.current = adeCloudMode
-    ? {
-        tierId: adeCloud.tierId,
-        origin: normalizeGitRemoteIdentity(adeCloudOriginUrl),
-        originUrl: adeCloudOriginUrl,
-        tabBinding: projectBinding ?? null,
-        lane: adeCloudSelectedLane,
-        notice: adeCloudNotice,
-        connections: draftConnections,
-      }
-    : null;
-  const openAdeCloudSettings = useCallback((_action: AdeCloudTrayAction) => {
-    // "Upgrade" and "Free up space" land on Settings › ADE Cloud until the
-    // dashboard has its own places for them.
-    navigate(settingsRouteFor("integrations.ade-cloud"));
-  }, [navigate]);
+    isCliDraft: isWorkCliLaunchDraft,
+    attachments,
+    newLaneConfig: draftNewLaneConfig,
+    laneConfigOf: chatLaunchLaneConfigFromDraft,
+    selectorLanes: draftLaneSelectorLanes,
+    tabBinding: projectBinding ?? null,
+    connections: draftConnections,
+    sendRef: adeCloudSendRef,
+    navigate,
+  });
 
   const handleShelfLaneChange = useCallback((nextLaneId: string) => {
     cancelWorkDraftLaneRequest(workDraftProjectStateKey);
@@ -16912,7 +16919,7 @@ export function AgentChatPane({
     enabled: showDraftLaunchControls,
     originUrl: originUrlForBinding(projectBinding),
     cloudMachines: adeCloud.machines,
-    hiddenMachineKeys: adeCloudLaneMachineKeys,
+    laneComputers: adeCloudLaneComputers,
     cloneCandidates: draftCloneMachineOptions,
     offlineMachines: draftOfflineMachines,
     selectableMachineIds: laneMachineOptionIds,
@@ -17178,6 +17185,11 @@ export function AgentChatPane({
   const activeComposerRuntimeBinding = selectedSessionId
     ? (chatRuntimePin ?? projectBinding)
     : draftExecutionBinding;
+  // The open chat ran on a lane kept without a computer: Send gives it a new one (`startFreedLaneChat`).
+  freedChatLaneRef.current = useCloudLaneWithoutComputerForChat(
+    activeComposerRuntimeBinding,
+    Boolean(selectedSessionId) && !personalScope && cursorRuntime !== "cloud",
+  );
   // A draft reads the launch defaults of the machine it will launch on, again
   // whenever that machine changes, a chat is created, or the window regains
   // focus (another client may have launched since).

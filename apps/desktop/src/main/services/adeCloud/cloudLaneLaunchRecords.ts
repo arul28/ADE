@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ChatLaunchArgs, ChatLaunchSnapshot } from "../../../shared/types";
 import type { CloudTier } from "../../../shared/cloudTiers";
+import type { CloudAgentMaker } from "../../../shared/adeCloud";
 import { isChatLaunchTerminal } from "../../../shared/chatLaunch";
 import { getErrorMessage } from "../shared/utils";
 
@@ -48,6 +49,8 @@ export type CloudLaneLaunchRecord = {
   cleanupDone: boolean;
   /** The agent's chat that started it, or null for a person's launch. Older records lack it. */
   madeByChat?: string | null;
+  /** The kind of agent that started it (written on the computer for the daily limit); null for a person's. */
+  madeByAgent?: CloudAgentMaker | null;
   /** Files from this computer already sent to the new one: local path to the path there. */
   carriedFiles?: Record<string, string>;
   /** The branch last written into the computer's metadata (`ade_lane_branch`). */
@@ -77,8 +80,9 @@ export function createCloudLaneLaunchRecordStore(args: {
   const unpersist = (launchId: string): void => {
     try {
       fs.rmSync(recordPath(launchId), { force: true });
-    } catch {
+    } catch (error) {
       // A leftover file is read, found finished, and removed at the next start.
+      logger.warn("cloud_lane_launch.unpersist_failed", { launchId, error: getErrorMessage(error) });
     }
   };
 
@@ -87,7 +91,11 @@ export function createCloudLaneLaunchRecordStore(args: {
     let entries: string[] = [];
     try {
       entries = fs.readdirSync(recordsDir);
-    } catch {
+    } catch (error) {
+      // None yet is normal; anything else hides launches still owed a cleanup.
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        logger.warn("cloud_lane_launch.records_dir_read_failed", { error: getErrorMessage(error) });
+      }
       return [];
     }
     const loaded: CloudLaneLaunchRecord[] = [];

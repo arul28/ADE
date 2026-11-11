@@ -8,7 +8,8 @@ import {
   type CloudMachine,
 } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine, CloudLaneWithoutComputer } from "../../../../shared/cloudLaneLaunch";
-import { cloudTiers, type CloudTier, type CloudTierId } from "../../../../shared/cloudTiers";
+import { cloudTierOfMachine, cloudTierRank, cloudTierRateLabel, cloudTiers, type CloudTier } from "../../../../shared/cloudTiers";
+import { formatAgo } from "../../../lib/format";
 
 /**
  * The ADE Cloud dashboard's facts, from reads already in memory (the account's
@@ -17,7 +18,7 @@ import { cloudTiers, type CloudTier, type CloudTierId } from "../../../../shared
  */
 
 /** A lane not used for this long gets the "not used for a long time" mark. */
-export const CLOUD_LANE_OLD_MS = 14 * 86_400_000;
+const CLOUD_LANE_OLD_MS = 14 * 86_400_000;
 /** At this share of the plan's disk, the dashboard warns and offers "Free up space". */
 export const CLOUD_DISK_WARN_SHARE = 0.8;
 
@@ -45,14 +46,6 @@ export type DashLane = {
   without: CloudLaneWithoutComputer | null;
 };
 
-const TIER_RANK: Record<CloudTierId, number> = { small: 1, medium: 2, large: 3, xlarge: 4 };
-
-export function tierOfMachine(machine: CloudMachine, tiers: readonly CloudTier[]): CloudTier | null {
-  if (!machine.resources || machine.type === "performance") return null;
-  const type = machine.type === "vm" ? "vm" : "default";
-  return tiers.find((tier) => tier.type === type && tier.cpu === machine.resources!.cpu && tier.memoryGb === machine.resources!.memoryGb) ?? null;
-}
-
 function stateOf(machine: CloudMachine): DashLaneState {
   if (machine.update?.state === "updating") return "updating";
   switch (machine.state) {
@@ -71,7 +64,7 @@ function stateOf(machine: CloudMachine): DashLaneState {
 }
 
 /** Safe to delete: the pull request is merged and nothing is only on the computer. */
-export function laneSafety(work: CloudLaneWork | null | undefined): boolean | null {
+function laneSafety(work: CloudLaneWork | null | undefined): boolean | null {
   if (!work) return null;
   return work.prState === "merged" && !work.unpushed;
 }
@@ -87,15 +80,15 @@ export function dashLanes(input: {
   const withComputer = input.machines
     .filter((machine) => machine.lane)
     .map((machine): DashLane => {
-      const tier = tierOfMachine(machine, tiers);
+      const tier = cloudTierOfMachine(machine, tiers);
       const lastActiveAt = machine.lastActiveAtMs ?? null;
       return {
         key: machine.instanceId,
         instanceId: machine.instanceId,
         name: machine.lane?.laneName ?? machine.name ?? machine.instanceId,
         tier,
-        tierRank: tier ? TIER_RANK[tier.id] : 1,
-        rateLabel: tier ? formatCloudHoursRate(tier.multiplierMilli / 1000) : machine.hoursRate != null ? formatCloudHoursRate(machine.hoursRate) : null,
+        tierRank: tier ? cloudTierRank(tier.id) : 1,
+        rateLabel: tier ? cloudTierRateLabel(tier) : machine.hoursRate != null ? formatCloudHoursRate(machine.hoursRate) : null,
         diskGb: machine.resources?.diskGb ?? 0,
         state: stateOf(machine),
         lastActiveAt,
@@ -117,8 +110,8 @@ export function dashLanes(input: {
         instanceId: null,
         name: lane.laneName,
         tier,
-        tierRank: tier ? TIER_RANK[tier.id] : 1,
-        rateLabel: tier ? formatCloudHoursRate(tier.multiplierMilli / 1000) : null,
+        tierRank: tier ? cloudTierRank(tier.id) : 1,
+        rateLabel: tier ? cloudTierRateLabel(tier) : null,
         diskGb: 0,
         state: "none",
         lastActiveAt: null,
@@ -171,17 +164,6 @@ export function hoursForecast(account: CloudAccountState, now: number): string |
 export function formatGb(gb: number): string {
   if (gb > 0 && gb < 1) return `${Math.max(1, Math.round(gb * 1000))} MB`;
   return `${gb >= 100 ? Math.round(gb) : Math.round(gb * 10) / 10} GB`;
-}
-
-/** "2 min ago", "3 h ago", "16 days ago". */
-export function formatAgo(ms: number, now: number): string {
-  const minutes = Math.max(0, Math.round((now - ms) / 60_000));
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} h ago`;
-  const days = Math.round(hours / 24);
-  return days === 1 ? "1 day ago" : `${days} days ago`;
 }
 
 /** The last-run phrase a lane row shows. */

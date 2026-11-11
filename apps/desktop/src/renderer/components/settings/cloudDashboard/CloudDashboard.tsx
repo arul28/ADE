@@ -2,10 +2,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArrowLeft, Broom, CaretRight, CreditCard, Desktop, Gauge, MagnifyingGlass, Trash, UserCircle, Warning } from "@phosphor-icons/react";
 import { cloudCatalogOf, formatCloudHours, type CloudAccountState } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../../shared/cloudLaneLaunch";
-import { cloudTiers, type CloudTierId } from "../../../../shared/cloudTiers";
+import { cloudTierRateLabel, cloudTiers, type CloudTierId } from "../../../../shared/cloudTiers";
 import { resolveSettingsHash } from "../../../../shared/settingsManifest";
 import { useLocation } from "react-router-dom";
-import { ipcErrorMessage } from "../../../lib/format";
+import { formatAgo, ipcErrorMessage } from "../../../lib/format";
 import { useRootAppStore } from "../../../state/appStore";
 import { showToast } from "../../app/toast/toastStore";
 import { ADE_CLOUD_NAME, CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
@@ -14,14 +14,13 @@ import { confirmDialog } from "../../ui/dialog";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { CloudAgentLimitsCard } from "../CloudAgentLimitsCard";
 import { CloudPlanCard } from "../CloudPlanCard";
-import { decodeSettingsHash } from "../settingsHash";
+import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, decodeSettingsHash } from "../settingsHash";
 import { CloudCity, type CityItem } from "./CloudCity";
 import { CloudFreeUpSpace } from "./CloudFreeUpSpace";
 import {
   CLOUD_DISK_WARN_SHARE,
   STATE_LABEL,
   dashLanes,
-  formatAgo,
   formatGb,
   formatShortDate,
   hoursForecast,
@@ -60,16 +59,22 @@ type RowId = "plan" | "signins" | "limits" | "size" | "other";
 
 /** The settings anchors inside the rows: a deep link to one opens its row, so the page can scroll to it. */
 const ROW_FOR_ANCHOR: Record<string, RowId> = {
-  "cloud-plan": "plan",
+  [ADE_CLOUD_PLAN_ANCHOR]: "plan",
   "cloud-sign-ins": "signins",
   "cloud-agent-limits": "limits",
   "cloud-ready": "other",
   "cloud-machines": "other",
 };
 
-function rowForHash(hash: string): RowId | null {
+/** The card anchor a hash names: its own text first (the plan card has no settings entry), then a settings entry's. */
+function anchorOfHash(hash: string): string | null {
   if (!hash) return null;
-  const anchor = resolveSettingsHash(decodeSettingsHash(hash))?.anchor;
+  const raw = decodeSettingsHash(hash).trim().toLowerCase();
+  return raw in ROW_FOR_ANCHOR || raw === ADE_CLOUD_FREE_SPACE_ANCHOR ? raw : resolveSettingsHash(raw)?.anchor ?? null;
+}
+
+function rowForHash(hash: string): RowId | null {
+  const anchor = anchorOfHash(hash);
   return anchor ? ROW_FOR_ANCHOR[anchor] ?? null : null;
 }
 
@@ -115,7 +120,11 @@ export function CloudDashboard({
     const linked = rowForHash(hash);
     if (linked) setOpenRow(linked);
   }, [hash]);
-  const [freeing, setFreeing] = useState(false);
+  // A link to Free up space (the label above the prompt box) opens its flow.
+  const [freeing, setFreeing] = useState(() => anchorOfHash(hash) === ADE_CLOUD_FREE_SPACE_ANCHOR);
+  useLayoutEffect(() => {
+    if (anchorOfHash(hash) === ADE_CLOUD_FREE_SPACE_ANCHOR) setFreeing(true);
+  }, [hash]);
   const [sizing, setSizing] = useState<DashLane | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   // One clock per read: "ran 3 h ago" moves when the list is read again, not on a timer.
@@ -463,7 +472,7 @@ function DefaultSizeRow({ account, open, onToggle }: { account: CloudAccountStat
             <CloudSizeIcon tier={tier.id} size={22} />
             <b>{tier.label}</b>
             <span>{tier.cpu} CPU, {tier.memoryGb} GB memory</span>
-            <span className="kit-num">{tier.multiplierMilli / 1000}× hours</span>
+            <span className="kit-num">{cloudTierRateLabel(tier)}</span>
           </button>
         ))}
       </div>

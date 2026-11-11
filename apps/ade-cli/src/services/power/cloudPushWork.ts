@@ -40,8 +40,8 @@ export async function pushCloudComputerWork(args: {
   projects: ReadonlyArray<() => Promise<Pick<AdeRuntime, "laneService" | "gitService">>>;
   /**
    * Only read which lanes have work that isn't on GitHub; change nothing.
-   * Delete lane asks this first so it can warn. Archived lanes count here:
-   * a delete takes their work too.
+   * Delete lane asks this first so it can warn. Archived lanes count either
+   * way: deleting or freeing the computer takes their work too.
    */
   check?: boolean;
   logger?: Logger;
@@ -52,7 +52,7 @@ export async function pushCloudComputerWork(args: {
       const runtime = await load();
       // The list keeps lane statuses for 10 s. "Everything is pushed" has to be true now.
       runtime.laneService.invalidateListCache();
-      for (const lane of await runtime.laneService.list({ includeArchived: args.check === true, includeStatus: true })) {
+      for (const lane of await runtime.laneService.list({ includeArchived: true, includeStatus: true })) {
         const primary = lane.laneType === "primary";
         const dirty = lane.status?.dirty === true;
         const ahead = lane.status?.ahead ?? 0;

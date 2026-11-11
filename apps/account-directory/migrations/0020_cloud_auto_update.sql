@@ -34,3 +34,8 @@ alter table cloud_computers add column update_failed_template text;
 alter table cloud_computers add column update_error text;
 
 create index if not exists idx_cloud_computers_updating on cloud_computers (update_started_at) where update_started_at is not null;
+-- Whether the image of the update in flight sends a boot report, decided when
+-- the update started (1 or 0; null for an update started before this column).
+-- A timed-out update rolls back from this, never from the channel setting as
+-- it reads later: a promotion or 'off' during the wait must not cancel it.
+alter table cloud_computers add column update_expects_report integer;

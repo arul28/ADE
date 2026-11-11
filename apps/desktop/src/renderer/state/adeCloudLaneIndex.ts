@@ -118,16 +118,13 @@ export type AdeCloudLaneOfBinding = { laneId: string; laneName: string; instance
  * machine. A lane computer's remote target carries the computer's id as its
  * host name; a launch made in this window also names its binding.
  */
-export function adeCloudLaneForBinding(
+function adeCloudLaneForBinding(
   binding: OpenProjectBinding | null | undefined,
   computers: readonly AdeCloudLaneComputer[] = state.computers,
 ): AdeCloudLaneOfBinding | null {
   if (!binding || binding.kind !== "remote") return null;
-  const host = binding.hostname?.trim().toLowerCase();
-  if (host) {
-    const computer = computers.find((candidate) => candidate.instanceId.toLowerCase() === host);
-    if (computer) return { laneId: computer.laneId, laneName: computer.laneName, instanceId: computer.instanceId };
-  }
+  const computer = adeCloudLaneComputerForMachine({ hostname: binding.hostname }, computers);
+  if (computer) return { laneId: computer.laneId, laneName: computer.laneName, instanceId: computer.instanceId };
   for (const entry of Object.values(chatLaunchStore.getState().entries)) {
     const cloud = entry.snapshot.cloud;
     if (cloud?.binding && cloud.binding.targetId === binding.targetId) {

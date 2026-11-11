@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { CLOUD_DISK_USAGE_MAX_ITEMS } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageReport, CloudLaneWork } from "../../../shared/adeCloud";
+import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 
 /**
  * A cloud computer measures what uses its disk (repository, dependencies,
@@ -18,7 +19,7 @@ import type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageReport, CloudLan
  */
 
 /** A new measure at most this often: a disk changes slowly, and `du` reads every file. */
-export const CLOUD_DISK_MEASURE_EVERY_MS = 6 * 60 * 60_000;
+const CLOUD_DISK_MEASURE_EVERY_MS = 6 * 60 * 60_000;
 /** One `du` or `docker` call gives up after this long. */
 const COMMAND_TIMEOUT_MS = 90_000;
 /** Deepest folder under a project root searched for `node_modules`. */
@@ -45,11 +46,22 @@ function defaultRun(command: string, args: string[]): Promise<string> {
   });
 }
 
+/**
+ * A part that doesn't answer is left out (no Docker on a standard computer is
+ * normal), with a trace for the next report rather than a report of its own.
+ */
+function leftOut(part: string): (error: unknown) => string {
+  return (error: unknown) => {
+    addSentryBreadcrumb("cloud.disk", `${part} didn't answer`, { error: error instanceof Error ? error.message : String(error) }, "warning");
+    return "";
+  };
+}
+
 /** Folders inside a cache that a tool doesn't fetch again by itself (a browser download): never cleared. */
 const KEEP_IN_CACHES = new Set(["ms-playwright", "puppeteer", "ade"]);
 
 /** The caches ADE may clear: rebuilt on next use, never work. Relative to the home folder. */
-export const CLOUD_CLEARABLE_CACHES: readonly string[] = [
+const CLOUD_CLEARABLE_CACHES: readonly string[] = [
   ".cache",
   ".npm/_cacache",
   ".local/share/pnpm/store",
@@ -79,7 +91,7 @@ async function duKb(run: Run, folders: string[], extra: string[] = []): Promise<
   const present = folders.filter(exists);
   const sizes = new Map<string, number>();
   if (!present.length) return sizes;
-  const out = await run("du", ["-sk", ...extra, ...present]).catch(() => "");
+  const out = await run("du", ["-sk", ...extra, ...present]).catch(leftOut("du"));
   for (const line of out.split("\n")) {
     const match = /^(\d+)\s+(.+)$/.exec(line.trim());
     if (match) sizes.set(match[2]!, Number(match[1]));
@@ -98,7 +110,7 @@ function dockerBytes(text: string): number {
 }
 
 async function dockerParts(run: Run): Promise<{ imagesGb: number; buildCacheGb: number }> {
-  const out = await run("docker", ["system", "df", "--format", "{{json .}}"]).catch(() => "");
+  const out = await run("docker", ["system", "df", "--format", "{{json .}}"]).catch(leftOut("docker system df"));
   let images = 0;
   let buildCache = 0;
   for (const line of out.split("\n")) {
@@ -118,7 +130,7 @@ async function dockerParts(run: Run): Promise<{ imagesGb: number; buildCacheGb: 
 async function nodeModulesFolders(run: Run, roots: string[]): Promise<string[]> {
   const present = roots.filter(exists);
   if (!present.length) return [];
-  const out = await run("find", [...present, "-maxdepth", String(NODE_MODULES_DEPTH), "-type", "d", "-name", "node_modules", "-prune"]).catch(() => "");
+  const out = await run("find", [...present, "-maxdepth", String(NODE_MODULES_DEPTH), "-type", "d", "-name", "node_modules", "-prune"]).catch(leftOut("find node_modules"));
   return out.split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
@@ -135,7 +147,7 @@ function usedDiskGb(folder: string): number | null {
  * What uses the disk now. `projectRoots` are the projects open on this
  * computer (each lane's worktree is inside its project).
  */
-export async function measureCloudDisk(input: { home?: string; projectRoots: string[]; run?: Run; now?: number }): Promise<CloudDiskUsage | null> {
+async function measureCloudDisk(input: { home?: string; projectRoots: string[]; run?: Run; now?: number }): Promise<CloudDiskUsage | null> {
   const home = input.home ?? os.homedir();
   const run = input.run ?? defaultRun;
   const totalGb = usedDiskGb(home);
@@ -183,7 +195,7 @@ export async function clearCloudDiskCaches(input: { home?: string; run?: Run } =
       fs.rmSync(path.join(full, entry), { recursive: true, force: true });
     }
   }
-  await run("docker", ["builder", "prune", "--force"]).catch(() => "");
+  await run("docker", ["builder", "prune", "--force"]).catch(leftOut("docker builder prune"));
   const after = usedDiskGb(home);
   return { freedGb: before != null && after != null ? Math.max(0, Math.round((before - after) * 1000) / 1000) : 0 };
 }

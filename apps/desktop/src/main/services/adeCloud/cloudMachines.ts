@@ -9,6 +9,7 @@
  */
 
 import {
+  CLOUD_MADE_BY_AGENT_METADATA,
   CLOUD_MADE_BY_CHAT_METADATA,
   isCloudInstanceId,
   cloudCatalogOf,
@@ -145,13 +146,15 @@ function liveMachineKeys(instances: readonly CloudInstance[]): Set<string> {
 
 /**
  * Of these computers (as the provider lists them), the ones an agent made,
- * copied or moved since UTC midnight (they carry `ade_made_by_chat`).
+ * copied or moved since UTC midnight (they carry `ade_made_by_chat` or
+ * `ade_made_by_agent`).
  */
 export function countAgentMadeToday(instances: readonly CloudInstance[], nowMs: number): number {
   const midnight = new Date(nowMs);
   midnight.setUTCHours(0, 0, 0, 0);
   return instances.filter((instance) => {
-    if (!instance.metadata[CLOUD_MADE_BY_CHAT_METADATA] || instance.created == null) return false;
+    const byAgent = instance.metadata[CLOUD_MADE_BY_CHAT_METADATA] || instance.metadata[CLOUD_MADE_BY_AGENT_METADATA];
+    if (!byAgent || instance.created == null) return false;
     // the provider answers epoch seconds; milliseconds are accepted too.
     const createdMs = instance.created < 1e12 ? instance.created * 1000 : instance.created;
     return createdMs >= midnight.getTime();
@@ -192,12 +195,19 @@ function pushWorkCommand(check: boolean): string {
   return [
     'export PATH="$ADE_HOME/bin:$PATH"',
     'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
-    check ? "ade cloud push-work --check --json" : "ade cloud push-work --json",
+    check ? "ade cloud work-state --json" : "ade cloud push-work --json",
   ].join("\n");
 }
 const PUSH_ALL_WORK_COMMAND = pushWorkCommand(false);
-/** Only reads which lanes have work that isn't on GitHub (`ade cloud push-work --check`). */
+/**
+ * Only reads which lanes have work that isn't on GitHub (`ade cloud
+ * work-state`). Never `push-work --check`: an older ADE ignores the flag and
+ * pushes. An older ADE refuses this command, so nothing changes there.
+ */
 const PUSH_WORK_CHECK_COMMAND = pushWorkCommand(true);
+/** An ADE on the computer from before `work-state`: its CLI or brain doesn't know the command. */
+const WORK_CHECK_UNKNOWN = /unknown (cloud )?command|method not found|can't read this computer's work/i;
+const WORK_CHECK_TOO_OLD = "This computer's ADE is too old to say what isn't pushed.";
 
 /** One lane as `ade cloud push-work` left it (`CloudPushWorkLane` in the CLI). Older computers leave the list out. */
 export type CloudPushWorkLane = {
@@ -505,7 +515,9 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         const ran = await client.exec(instanceId, options.check ? PUSH_WORK_CHECK_COMMAND : PUSH_ALL_WORK_COMMAND, { timeoutMs: PUSH_ALL_WORK_TIMEOUT_MS });
         const tally = ran.exitCode === 0 ? readPushAllTally(ran.stdout) : null;
         logger.info?.("cloud.push_work_ran", { instanceId, check: options.check, exitCode: ran.exitCode, pushed: tally?.pushed, failed: tally?.failed });
-        return tally ? { tally, error: null } : { tally: null, error: "ADE couldn't read this computer's work." };
+        if (tally) return { tally, error: null };
+        if (options.check && ran.exitCode !== 0 && WORK_CHECK_UNKNOWN.test(`${ran.stderr}\n${ran.stdout}`)) return { tally: null, error: WORK_CHECK_TOO_OLD };
+        return { tally: null, error: "ADE couldn't read this computer's work." };
       } catch (error) {
         logger.warn?.("cloud.push_work_failed", { instanceId, check: options.check, error: getErrorMessage(error) });
         return { tally: null, error: getErrorMessage(error) };
@@ -568,7 +580,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       const client = await deps.client();
       return client ? (await client.getInstance(instanceId)).metadata : null;
     },
-    /** Machines an agent made, copied or moved since UTC midnight that still exist (they carry `ade_made_by_chat`). */
+    /** Machines an agent made, copied or moved since UTC midnight that still exist (`countAgentMadeToday`). */
     agentMadeToday: async (): Promise<number> => {
       const client = await deps.client();
       if (!client) return 0;

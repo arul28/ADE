@@ -6,7 +6,6 @@
  * own (the rail), which stops for reduced motion.
  */
 .adecl-muted { margin: 0; font-size: 11.5px; color: var(--kit-text-3); }
-.adecl-error { margin: 6px 0 0; font-size: 12px; color: var(--kit-crit); }
 .adecl-lane-ic { color: var(--adec-mark); }
 
 /* A primary button in the Night sky blue. */

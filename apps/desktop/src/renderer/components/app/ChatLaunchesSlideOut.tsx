@@ -14,7 +14,8 @@ import {
 import { STANDARD_EASE } from "../../lib/motion";
 import { cn } from "../ui/cn";
 import { cancelChatLaunch } from "../chat/launch/chatLaunchActions";
-import { LaneSetupCard, LaunchStageGlyph } from "../chat/launch/LaneSetupCard";
+import { LaneSetupCard } from "../chat/launch/LaneSetupCard";
+import { LaunchStageGlyph } from "../chat/launch/stepCardParts";
 import { LaunchProgressRail } from "../chat/launch/LaunchProgressRail";
 import { useLaunchDurationText } from "../chat/launch/launchClock";
 import { LaneIcon } from "../ui/vcsIcons";

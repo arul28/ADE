@@ -24,9 +24,7 @@ import {
   type LaneDeleteSelection,
 } from "../lanes/ManageLaneDialog";
 import { extractError } from "../../lib/format";
-import { cloudLaneComputerOfLane } from "../cloudLane/cloudLaneActions";
-import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
-import { deleteCloudLaneWithCheck } from "../cloudLane/deleteCloudLane";
+import { useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
 
 /**
  * How long a deleted lane on another machine keeps its deleting state while that
@@ -143,22 +141,19 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
     }, "Archiving lane…");
   }, [lane, runLaneAction, runtimePin]);
 
+  // A lane on its own ADE Cloud computer gets the cloud delete.
+  const cloud = useCloudLaneDelete();
   const handleDelete = useCallback(() => {
     if (!lane || lane.laneType === "primary") return;
     // An ADE Cloud lane goes with its computer: one account-level delete, warned only when work isn't on GitHub.
-    const cloudLane = cloudLaneComputerOfLane(runtimePin, lane.id);
-    if (cloudLane) {
+    if (cloud.deleteIfCloudLane({
+      pin: runtimePin,
+      laneId: lane.id,
+      laneName: lane.name,
+      machineId: runtimePin ? machineIdForBinding(runtimePin) : null,
+    })) {
       setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
       onClose();
-      const cloudMachineId = runtimePin ? machineIdForBinding(runtimePin) : null;
-      void deleteCloudLaneWithCheck({
-        instanceId: cloudLane.instanceId,
-        laneName: lane.name,
-        askFirst: false,
-        onDeleted: () => {
-          if (cloudMachineId) requestCrossMachineLanesForMachine(cloudMachineId);
-        },
-      });
       return;
     }
 
@@ -221,13 +216,12 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
         if (machineId) requestCrossMachineLanesForMachine(machineId);
       },
     );
-  }, [deleteForce, deleteSelection, lane, onClose, runtimePin, setDeleteProgressByLaneId]);
+  }, [cloud, deleteForce, deleteSelection, lane, onClose, runtimePin, setDeleteProgressByLaneId]);
 
   // A lane on its own ADE Cloud computer gets the cloud delete: nothing to pick, no Force gate.
-  const { computers: adeCloudLaneComputers } = useAdeCloudLaneComputers();
   const cloudLaneIds = useMemo(
-    () => (lane && adeCloudLaneComputers.length && cloudLaneComputerOfLane(runtimePin, lane.id) ? new Set([lane.id]) : null),
-    [adeCloudLaneComputers, lane, runtimePin],
+    () => (lane && cloud.isCloudLane(runtimePin, lane.id) ? new Set([lane.id]) : null),
+    [cloud, lane, runtimePin],
   );
 
   if (!laneId || !lane) return null;

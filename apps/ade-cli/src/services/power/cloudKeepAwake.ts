@@ -46,6 +46,8 @@ export const CLOUD_IDLE_SLEEP_AFTER_MS = 3 * 60_000;
 export const CLOUD_UNTOUCHED_IDLE_MS = 60 * 60_000;
 /** A gap this many intervals long between checks means the machine was asleep. */
 const SLEEP_GAP_INTERVALS = 2.5;
+/** The longest wait between boot report tries after failures. */
+const BOOT_REPORT_RETRY_MAX_MS = 30 * 60_000;
 
 /** What the busy list reads, per runtime on this brain. */
 export type CloudBusyTerminal = {
@@ -235,10 +237,13 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   /** The boot report reached the server (or there is none to send); one in flight at a time. */
   let bootReported = !options.reportBooted;
   let bootReporting = false;
+  /** After a failure the next try waits, doubling up to half an hour. */
+  let bootReportFailures = 0;
+  let bootReportRetryAt = 0;
 
   /** Once per brain start, beside the checks: a slow server must not hold a busy machine's ping back. */
   const reportBoot = (): void => {
-    if (bootReported || bootReporting || !options.reportBooted) return;
+    if (bootReported || bootReporting || !options.reportBooted || now() < bootReportRetryAt) return;
     bootReporting = true;
     void options.reportBooted().then(
       ({ sleepWhenIdle }) => {
@@ -248,7 +253,17 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         if (sleepWhenIdle && !wasBusy) lastBusyAt = Math.min(lastBusyAt, now() - CLOUD_IDLE_SLEEP_AFTER_MS);
       },
       (error: unknown) => {
-        options.logger?.warn("cloud.boot_report_failed", { error: error instanceof Error ? error.message : String(error) });
+        // A server without the boot report (404) never gets one: stop for this brain's life.
+        if ((error as { status?: unknown } | null)?.status === 404) {
+          bootReported = true;
+          options.logger?.info("cloud.boot_report_unsupported", {});
+          return;
+        }
+        bootReportFailures += 1;
+        bootReportRetryAt = now() + Math.min(BOOT_REPORT_RETRY_MAX_MS, intervalMs * 2 ** (bootReportFailures - 1));
+        if (bootReportFailures === 1 || bootReportFailures % 10 === 0) {
+          options.logger?.warn("cloud.boot_report_failed", { error: error instanceof Error ? error.message : String(error), failures: bootReportFailures });
+        }
       },
     ).finally(() => {
       bootReporting = false;

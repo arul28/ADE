@@ -44,8 +44,8 @@ import type {
   PrSummary,
   RunAdeActionConfig,
 } from "../../../shared/types";
-import type { ChatLaunchArgs, ChatLaunchLaneConfig, ChatLaunchSnapshot } from "../../../shared/types/chatLaunch";
-import { isChatLaunchSucceeded } from "../../../shared/chatLaunch";
+import type { ChatLaunchArgs, ChatLaunchLaneConfig } from "../../../shared/types/chatLaunch";
+import { followCloudLaneLaunch } from "../../../shared/cloudLaneLaunch";
 import { triggerDeliveryKeyForType } from "../../../shared/types";
 import { advanceLaneToPrHead, resolvePrBranchLane, type AutomationPrLaneService } from "./automationPrBranchLane";
 import {
@@ -4153,19 +4153,33 @@ export function createAutomationService({
       ...(args.chat ? { chat: args.chat, provider: args.chat.create.provider, ...(args.chat.create.modelId ? { modelId: args.chat.create.modelId } : {}) } : {}),
       cloud: { sizeId: target.sizeId ?? null } as ChatLaunchArgs["cloud"],
     };
-    let status: Record<string, unknown> | null;
+    let followed: Awaited<ReturnType<typeof followCloudLaneLaunch>>;
     try {
-      status = await callCloud(launchAction, { launch, approval: AUTOMATION_CLOUD_APPROVAL });
+      followed = await followCloudLaneLaunch({
+        start: () => callCloud(launchAction, { launch, approval: AUTOMATION_CLOUD_APPROVAL }),
+        // The run's own approval: only the launch's starter reads its approval link.
+        read: () => callCloud(statusAction, { launchId, approval: AUTOMATION_CLOUD_APPROVAL }),
+        // The join waits for the person: the run says where to approve it.
+        onApprovalLink: (link) => {
+          updateRun(args.runId, { summary: `Waiting for you to approve the new ADE Cloud computer: ${link}` });
+          emit({ type: "runs-updated", automationId: args.rule.id, runId: args.runId });
+        },
+        pollMs: CLOUD_RUN_POLL_MS,
+        waitMs: CLOUD_RUN_WAIT_MS,
+        sleep: (ms) => new Promise((resolve) => {
+          const timer = setTimeout(resolve, ms);
+          timer.unref?.();
+        }),
+      });
     } catch (error) {
       return fail(error instanceof Error ? error.message : String(error));
     }
-    const deadline = Date.now() + CLOUD_RUN_WAIT_MS;
-    let shownLink: string | null = null;
-    for (;;) {
-      const snapshot = isRecord(status?.launch) ? status.launch as unknown as ChatLaunchSnapshot : null;
-      if (!snapshot) return fail("This machine's ADE no longer has the run's ADE Cloud launch.");
-      const machineName = (isRecord(status?.machine) ? trimToNull(status.machine.name) : null) ?? laneName;
-      if (isChatLaunchSucceeded(snapshot)) {
+    const { outcome, status } = followed;
+    if (outcome === "missing" || !status) return fail("This machine's ADE no longer has the run's ADE Cloud launch.");
+    const snapshot = status.launch;
+    switch (outcome) {
+      case "succeeded": {
+        const machineName = trimToNull(status.machine.name) ?? laneName;
         finishAction({
           id: setupActionId,
           status: "succeeded",
@@ -4173,30 +4187,14 @@ export function createAutomationService({
         });
         return { launchId, laneName: snapshot.laneName || laneName, machineName };
       }
-      if (snapshot.phase === "cancelled") return fail("The run's ADE Cloud launch was cancelled, and its computer deleted.");
-      if (snapshot.phase === "failed") {
+      case "cancelled":
+        return fail("The run's ADE Cloud launch was cancelled, and its computer deleted.");
+      case "failed": {
         const why = snapshot.error?.trim().replace(/[.\s]+$/, "") || "The lane didn't start on ADE Cloud";
         return fail(`${why}. Its computer stays for a retry: ade chat launch-status ${launchId} --machine cloud.`);
       }
-      // The join waits for the person: the run says where to approve it.
-      const link = trimToNull(status?.approvalUrl);
-      if (link && link !== shownLink) {
-        shownLink = link;
-        updateRun(args.runId, { summary: `Waiting for you to approve the new ADE Cloud computer: ${link}` });
-        emit({ type: "runs-updated", automationId: args.rule.id, runId: args.runId });
-      }
-      if (Date.now() > deadline) {
+      case "timeout":
         return fail(`The lane is still starting on ADE Cloud after ${CLOUD_RUN_WAIT_MS / 60_000} minutes. Follow it: ade chat launch-status ${launchId} --machine cloud.`);
-      }
-      await new Promise((resolve) => {
-        const timer = setTimeout(resolve, CLOUD_RUN_POLL_MS);
-        timer.unref?.();
-      });
-      try {
-        status = await callCloud(statusAction, { launchId });
-      } catch (error) {
-        return fail(error instanceof Error ? error.message : String(error));
-      }
     }
   };
 

@@ -2,10 +2,10 @@ import { useMemo, useState, type ReactNode } from "react";
 import { CaretDown, CaretRight } from "@phosphor-icons/react";
 import { cloudCatalogOf, type CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
-import { cloudTiers } from "../../../shared/cloudTiers";
+import { cloudTierOfMachine, cloudTierRateLabel, cloudTiers } from "../../../shared/cloudTiers";
+import { formatAgo } from "../../lib/format";
 import { adeCloudLaneLabel } from "../../state/adeCloudLaneIndex";
 import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
-import { formatAgo, tierOfMachine } from "../settings/cloudDashboard/cloudDashboardModel";
 import { cloudLaneJobFor, useCloudLaneJobs } from "./cloudLaneStores";
 import { cloudLaneLifeAvailable } from "./cloudLaneActions";
 import "./cloudLane.css";
@@ -39,14 +39,14 @@ export function CloudLaneConnectionRow({
 }) {
   const [open, setOpen] = useState(false);
   const tiers = useMemo(() => cloudTiers(cloudCatalogOf(account)), [account]);
-  const tier = tierOfMachine(box, tiers);
+  const tier = cloudTierOfMachine(box, tiers);
   const jobs = useCloudLaneJobs(cloudLaneLifeAvailable());
   const job = cloudLaneJobFor(jobs, { instanceId: box.instanceId, laneId: box.lane?.laneId ?? null });
   const changing = job != null && (job.phase === "waiting" || job.phase === "running");
   const laneName = box.lane?.laneName ?? box.name ?? box.instanceId;
   const awake = box.state === "running";
   const ran = awake ? "Running now" : box.lastActiveAtMs != null ? `Ran ${formatAgo(box.lastActiveAtMs, Date.now())}` : null;
-  const sub = [tier ? `${tier.label}, ${tier.multiplierMilli / 1000}× hours` : null, ran].filter(Boolean).join(". ");
+  const sub = [tier ? `${tier.label}, ${cloudTierRateLabel(tier)}` : null, ran].filter(Boolean).join(". ");
   return (
     <div className="adecl-cx-row" data-cloud-lane-computer={box.instanceId}>
       <div className="adecl-cx-main">

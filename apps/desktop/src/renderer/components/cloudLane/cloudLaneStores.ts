@@ -76,7 +76,7 @@ export function useCloudLaneJobs(enabled = true): ReadonlyMap<string, CloudLaneJ
   return useSyncExternalStore(enabled ? subscribeJobs : subscribeNoJobs, enabled ? readJobs : readNoJobs, readNoJobs);
 }
 
-export function cloudLaneJobIsLive(job: CloudLaneJobSnapshot): boolean {
+function cloudLaneJobIsLive(job: CloudLaneJobSnapshot): boolean {
   return job.phase === "waiting" || job.phase === "running";
 }
 

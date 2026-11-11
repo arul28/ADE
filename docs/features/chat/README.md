@@ -3259,7 +3259,10 @@ The setup card of an ADE Cloud launch has the cloud mark and the blue tone in
 its tile while it runs, and a short drift of cloud behind the header while the
 computer is made (CSS only, once, off with reduced motion). A failed launch
 stays amber and offers Retry, Cancel (which deletes the computer) and Copy
-details (launch id, step and sentence). A chat on an ADE Cloud lane shows
+details (launch id, step and sentence). The tier-change and move card
+(`cloudLane/CloudLaneJobCard.tsx`) is built from the same parts
+(`chat/launch/stepCardParts.tsx`) and follows the same tone: a failed step is
+amber, never red. A chat on an ADE Cloud lane shows
 "ADE Cloud" on its machine chip, with "ADE Cloud · <lane>" in the tooltip
 (`state/adeCloudLaneIndex.ts`).
 

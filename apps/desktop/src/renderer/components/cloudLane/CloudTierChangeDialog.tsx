@@ -2,9 +2,8 @@ import { useMemo, useState } from "react";
 import { cloudCatalogOf } from "../../../shared/adeCloud";
 import type { CloudLaneJobSnapshot } from "../../../shared/cloudLaneLife";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
-import { cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudTierOfMachine, cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
-import { tierOfMachine } from "../settings/cloudDashboard/cloudDashboardModel";
 import { Dialog } from "../ui/dialog";
 import { CloudLaneJobCard } from "./CloudLaneJobCard";
 import { CloudTierChangeCard } from "./CloudTierChangeCard";
@@ -30,7 +29,7 @@ export function CloudTierChangeDialog({
   const account = result?.account ?? null;
   const machine = (result?.machines as CloudLaneMachine[] | undefined)?.find((entry) => entry.instanceId === instanceId) ?? null;
   const fromSizeId = useMemo<CloudTierId | null>(
-    () => (machine ? tierOfMachine(machine, cloudTiers(cloudCatalogOf(account)))?.id ?? null : null),
+    () => (machine ? cloudTierOfMachine(machine, cloudTiers(cloudCatalogOf(account)))?.id ?? null : null),
     [account, machine],
   );
   const [started, setStarted] = useState<CloudLaneJobSnapshot | null>(null);

@@ -1,4 +1,4 @@
-import type { ChatLaunchArgs, ChatLaunchSnapshot, OpenProjectBinding } from "../../../../shared/types";
+import type { ChatLaunchArgs, ChatLaunchLaneConfig, ChatLaunchSnapshot, CloudStartBranchArgs, OpenProjectBinding } from "../../../../shared/types";
 import type { CloudAccountState } from "../../../../shared/adeCloud";
 import { createChatLaunchSnapshot } from "../../../../shared/chatLaunch";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock } from "../../../../shared/cloudLaneLaunch";
@@ -9,6 +9,8 @@ import {
   registerChatLaunchLocalRecord,
   type ChatLaunchLocalRecord,
 } from "../../../state/chatLaunchStore";
+import { ipcErrorMessage } from "../../../lib/format";
+import { confirmDialog } from "../../ui/dialog/confirm";
 import { startChatLaunch, type StartChatLaunchOutcome } from "./chatLaunchActions";
 
 /**
@@ -24,7 +26,11 @@ import { startChatLaunch, type StartChatLaunchOutcome } from "./chatLaunchAction
  * The card an ADE Cloud launch shows before main answers: the computer, join
  * and clone steps first, then the lane's own.
  */
-export function adeCloudOptimisticSnapshot(args: ChatLaunchArgs & { laneId: string; laneName: string }, sizeId: string): ChatLaunchSnapshot {
+export function adeCloudOptimisticSnapshot(
+  args: ChatLaunchArgs & { laneId: string; laneName: string },
+  sizeId: string,
+  projectOrigin = "",
+): ChatLaunchSnapshot {
   return {
     ...createChatLaunchSnapshot({
       launch: args,
@@ -38,7 +44,7 @@ export function adeCloudOptimisticSnapshot(args: ChatLaunchArgs & { laneId: stri
     }),
     cloud: {
       sizeId,
-      projectOrigin: "",
+      projectOrigin,
       instanceId: null,
       machineKey: null,
       binding: null,
@@ -78,6 +84,44 @@ export function adeCloudCapacityProblem(account: CloudAccountState | null, count
   return `This needs ${count} ADE Cloud computers, and ${free === 1 ? "1 is" : `${free} are`} free. Pick fewer, or delete lanes you no longer use.`;
 }
 
+/**
+ * "Push this branch?" before an ADE Cloud lane that starts from a branch the
+ * person picked: the new computer clones from GitHub, so a branch only on
+ * this computer (or its unpushed commits) would be missing there. Asks the
+ * tab's own machine (no pin: the project's checkout is there), offers one
+ * push, then answers whether the launch may go. The default start (the
+ * saved base branch on GitHub) needs no read.
+ */
+export async function adeCloudStartBranchReady(
+  laneConfig: ChatLaunchLaneConfig | null,
+): Promise<{ go: true } | { go: false; error: string | null }> {
+  if (!laneConfig) return { go: true };
+  const args: CloudStartBranchArgs | null = laneConfig.mode === "existing"
+    ? (laneConfig.branchRef ? { branchRef: laneConfig.branchRef } : null)
+    : laneConfig.start && laneConfig.start.from !== "default" ? { start: laneConfig.start } : null;
+  const lanes = window.ade?.lanes;
+  if (!args || !lanes?.cloudStartBranch || !lanes.pushCloudStartBranch) return { go: true };
+  try {
+    const check = await lanes.cloudStartBranch(args);
+    if (!check.push || !check.branch) return { go: true };
+    const why = check.onRemote
+      ? `${check.unpushedCommits === 1 ? "1 commit" : `${check.unpushedCommits} commits`} on ${check.branch} aren't on GitHub yet.`
+      : `${check.branch} is only on this computer.`;
+    const push = await confirmDialog({
+      title: "Push this branch?",
+      message: `${why} ADE Cloud starts from GitHub, so ADE pushes it first, then starts the lane.`,
+      confirmLabel: "Push and start",
+    });
+    if (!push) return { go: false, error: null };
+    const after = await lanes.pushCloudStartBranch(args);
+    return after.push
+      ? { go: false, error: `${check.branch} still isn't on GitHub. Push it, then send again.` }
+      : { go: true };
+  } catch (error) {
+    return { go: false, error: ipcErrorMessage(error) || "ADE couldn't check the branch on GitHub. Try again." };
+  }
+}
+
 /** The project the new computer clones, as main names it on the card. */
 export function adeCloudProjectOrigin(originUrl: string | null): string {
   return normalizeGitRemoteIdentity(originUrl) ?? "";
@@ -108,10 +152,9 @@ export function startAdeCloudLaunch(input: {
     draftSnapshot: input.draftSnapshot ?? null,
     cli: input.cli ?? null,
   });
-  const snapshot = adeCloudOptimisticSnapshot(args, input.sizeId);
-  insertOptimisticChatLaunch(input.binding, {
-    ...snapshot,
-    cloud: { ...snapshot.cloud!, projectOrigin: adeCloudProjectOrigin(input.originUrl) },
-  });
+  insertOptimisticChatLaunch(
+    input.binding,
+    adeCloudOptimisticSnapshot(args, input.sizeId, adeCloudProjectOrigin(input.originUrl)),
+  );
   return startChatLaunch(args.launchId, { onUnsupported: input.onUnsupported ?? null });
 }

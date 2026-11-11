@@ -146,7 +146,20 @@ export type CloudLaneLifeMethod =
   | "retryJob"
   | "cancelJob";
 
-export type CloudLaneLifeCallRequest = { method: CloudLaneLifeMethod; args?: unknown };
+export type CloudLaneLifeCallRequest<M extends CloudLaneLifeMethod = CloudLaneLifeMethod> = { method: M; args?: unknown };
+
+/** What each `IPC.cloudLaneLifeCall` method answers. */
+export type CloudLaneLifeResults = {
+  workState: CloudLaneWorkState;
+  deleteLane: CloudLaneDeleteResult;
+  freeLane: CloudLaneFreeResult;
+  lanesWithoutComputer: CloudLaneWithoutComputer[];
+  forgetLaneWithoutComputer: { forgotten: boolean };
+  changeTier: CloudLaneJobSnapshot;
+  listJobs: CloudLaneJobSnapshot[];
+  retryJob: CloudLaneJobSnapshot | null;
+  cancelJob: CloudLaneJobSnapshot | null;
+};
 
 export type CloudLaneChangeTierArgs = {
   instanceId: string;

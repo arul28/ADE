@@ -71,7 +71,7 @@ import {
   type ChatThreadCommentCreateArgs,
   type ChatThreadCommentUpdateArgs,
 } from "../shared/threadComments";
-import { createChatLaunchSnapshot, toQueuedMessage } from "../shared/chatLaunch";
+import { chatLaunchAlreadyStartedMessage, createChatLaunchSnapshot, toQueuedMessage } from "../shared/chatLaunch";
 // The fixture must demo the link the product actually opens, so it reads the
 // same source the host stamps onto every snapshot.
 import { usageProviderAccountUrl } from "../shared/types/usage";
@@ -7852,7 +7852,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         if (!launch) return null;
         if (launch.phase === "cancelled") return launch;
         if (launch.agentStarted || launch.phase === "completed") {
-          throw new Error("This chat already started — delete its lane from the lane menu instead.");
+          throw new Error(chatLaunchAlreadyStartedMessage(launch.kind));
         }
         return emitBrowserMockChatLaunch({ ...launch, phase: "cancelled", queuedMessages: [], endedAt: new Date().toISOString() });
       },

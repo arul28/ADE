@@ -3920,6 +3920,10 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
 const CLOUD_APPROVED_ACTIONS = new Set([
   "create", "resize", "update", "copy", "move", "delete", "ready_set", "ready_retry", "set_limits",
   "lane_launch", "lane_launch_cancel",
+  // The card goes to the stamped chat, never one the caller names.
+  "tier_request",
+  // A launch's approval link and starting chat go only to who started it.
+  "lane_launch_status",
 ]);
 
 /**
@@ -6693,12 +6697,20 @@ async function runTool(args: {
       // chatless agent, which is refused. The connection id is only an
       // environment claim, so the caller's process must also be one the
       // runner started and still runs; otherwise it stays a chatless agent.
+      // A caller with a chat is that chat's agent, asked in its chat: it never
+      // takes the unattended ADE MCP path. The run, and the connection it was
+      // started for, are this brain's own records.
+      const stampedChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
+        ?? asOptionalTrimmedString(session.identity.chatSessionId)
+        ?? null;
       const callerPid = Number(/:(\d+)$/.exec(session.identity.callerId ?? "")?.[1] ?? Number.NaN);
-      const viaAdeMcp = Boolean(session.identity.remoteMcpConnectionId)
+      const claimedConnection = asOptionalTrimmedString(session.identity.remoteMcpConnectionId);
+      const viaAdeMcp = !stampedChatSessionId
+        && Boolean(claimedConnection)
         && callerHasRoleAtLeast(session.identity.role, "cto")
         && isSyntheticCallerId(session.identity.callerId)
         && Number.isInteger(callerPid)
-        && isRunningRemoteRun(callerPid);
+        && isRunningRemoteRun(callerPid, claimedConnection);
       const { approval: _ignoredApproval, ...cloudArgs } = rawObjectArgs;
       scopedObjectArgs = {
         ...cloudArgs,
@@ -6706,9 +6718,7 @@ async function runTool(args: {
           ? { by: "person" }
           : {
               by: "agent",
-              chatSessionId: asOptionalTrimmedString(callerCtx.chatSessionId)
-                ?? asOptionalTrimmedString(session.identity.chatSessionId)
-                ?? null,
+              chatSessionId: stampedChatSessionId,
               ...(viaAdeMcp ? { viaAdeMcp: true } : {}),
             },
       };

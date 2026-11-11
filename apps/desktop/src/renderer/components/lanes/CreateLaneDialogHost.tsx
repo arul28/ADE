@@ -6,7 +6,7 @@ import { ADE_CLOUD_MACHINE_ID } from "./useAdeCloudLaneTarget";
 import type { CreateLaneAdeCloud } from "./CreateLaneDialog";
 import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
 import type { CloudTierId } from "../../../shared/cloudTiers";
-import { adeCloudLaunchProblem, startAdeCloudLaunch } from "../chat/launch/adeCloudLaunch";
+import { adeCloudLaunchProblem, adeCloudStartBranchReady, startAdeCloudLaunch } from "../chat/launch/adeCloudLaunch";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { CreateLaneDialog, type CreateLaneMode } from "./CreateLaneDialog";
 import { DEFAULT_LANE_START, plainLaneStartBranch, type LaneStart } from "../../../shared/laneStart";
@@ -881,6 +881,12 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       });
       if (problem) {
         setCreateError(problem);
+        return;
+      }
+      // A picked branch must be on GitHub before the computer is made ("Push this branch?").
+      const branchReady = await adeCloudStartBranchReady(args.laneConfig);
+      if (!branchReady.go) {
+        if (branchReady.error) setCreateError(branchReady.error);
         return;
       }
       resetCreateDialogState();

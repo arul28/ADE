@@ -83,7 +83,7 @@ import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
-import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest } from "../shared/cloudLaneLife";
+import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMethod, CloudLaneLifeResults } from "../shared/cloudLaneLife";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
@@ -2542,9 +2542,13 @@ function callChatLaunchAction<T>(
 
 // ADE Cloud lane launches: this app's main process owns one until it hands
 // the launch to the new computer's brain, and keeps serving it by id after
-// (cloudLaneLaunchService.ts). Every id-based call asks main first; an id main
-// doesn't own takes the ordinary runtime route.
+// (cloudLaneLaunchService.ts). An id-based call goes to main for a launch
+// known as a cloud one, straight to the runtime for one main already said it
+// doesn't own, and asks main first only for an id seen for the first time.
 const cloudOwnedLaunchIds = new Set<string>();
+/** Launch ids main answered it doesn't own: the runtime's, with no main round trip. Bounded. */
+const runtimeOwnedLaunchIds = new Set<string>();
+const RUNTIME_OWNED_LAUNCH_IDS_MAX = 500;
 /** Each source binding's origin as main read it (it can read a local checkout's git config). */
 const cloudSourceIdentities = new Map<string, string | null>();
 
@@ -2599,6 +2603,11 @@ function rememberCloudLaunch(snapshot: ChatLaunchSnapshot | null | undefined): v
   if (snapshot?.cloud && snapshot.launchId) cloudOwnedLaunchIds.add(snapshot.launchId);
 }
 
+function rememberRuntimeLaunch(launchId: string): void {
+  if (runtimeOwnedLaunchIds.size >= RUNTIME_OWNED_LAUNCH_IDS_MAX) runtimeOwnedLaunchIds.clear();
+  runtimeOwnedLaunchIds.add(launchId);
+}
+
 /** An id-based launch call: main's answer when it owns the launch, else the runtime's. */
 async function callChatLaunchById<T>(
   method: CloudLaneLaunchMethod,
@@ -2606,10 +2615,14 @@ async function callChatLaunchById<T>(
   args: { launchId: string },
   pin: OpenProjectBinding | null | undefined,
 ): Promise<T> {
-  const owned = await callCloudLaneLaunch(method, args);
-  if (owned.owned) {
-    rememberCloudLaunch(owned.result as ChatLaunchSnapshot | null);
-    return owned.result as T;
+  const launchId = typeof args?.launchId === "string" ? args.launchId : "";
+  if (!launchId || !runtimeOwnedLaunchIds.has(launchId) || cloudOwnedLaunchIds.has(launchId)) {
+    const owned = await callCloudLaneLaunch(method, args);
+    if (owned.owned) {
+      rememberCloudLaunch(owned.result as ChatLaunchSnapshot | null);
+      return owned.result as T;
+    }
+    if (launchId) rememberRuntimeLaunch(launchId);
   }
   return await callChatLaunchAction<T>(pin, action, { args });
 }
@@ -8200,7 +8213,10 @@ const adeBridge = {
         rememberCloudLaunch(snapshot);
         return snapshot;
       }
-      return await callChatLaunchAction<ChatLaunchSnapshot>(pin, "startLaunch", { args: withPreset });
+      const snapshot = await callChatLaunchAction<ChatLaunchSnapshot>(pin, "startLaunch", { args: withPreset });
+      // Not a cloud start: later calls by its id go straight to the runtime.
+      if (snapshot?.launchId && !snapshot.cloud) rememberRuntimeLaunch(snapshot.launchId);
+      return snapshot;
     },
     get: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
       callChatLaunchById<ChatLaunchSnapshot | null>("get", "getLaunch", args, pin),
@@ -8215,7 +8231,11 @@ const adeBridge = {
             const snapshots = Array.isArray(answer.result) ? answer.result as ChatLaunchSnapshot[] : [];
             return project ? snapshots.filter((snapshot) => snapshot.cloud?.projectOrigin === project) : [];
           })
-          .catch(() => [] as ChatLaunchSnapshot[]),
+          .catch((error: unknown) => {
+            // The runtime's launches still show; this app's cloud ones come back with the next read.
+            console.warn("ADE Cloud lane launches could not be read", error);
+            return [] as ChatLaunchSnapshot[];
+          }),
       ]);
       for (const snapshot of cloud) rememberCloudLaunch(snapshot);
       const cloudIds = new Set(cloud.map((snapshot) => snapshot.launchId));
@@ -13337,7 +13357,8 @@ const adeBridge = {
     pushAllWork: (instanceId: string): Promise<CloudMachineActionResult> =>
       ipcRenderer.invoke(IPC.cloudPushAllWork, { instanceId }),
     /** The life of a lane's computer (`CloudLaneLifeCallRequest`): account level, so no pin. */
-    laneLife: (request: CloudLaneLifeCallRequest): Promise<unknown> => ipcRenderer.invoke(IPC.cloudLaneLifeCall, request),
+    laneLife: <M extends CloudLaneLifeMethod>(request: CloudLaneLifeCallRequest<M>): Promise<CloudLaneLifeResults[M]> =>
+      ipcRenderer.invoke(IPC.cloudLaneLifeCall, request),
     /** On the lane's own computer, through its pin: the brain there refuses a call meant for another one. */
     clearCaches: (pin: OpenProjectBinding, instanceId: string): Promise<{ freedGb: number }> =>
       callPinnedRuntimeAction<{ freedGb: number }>(pin, "cloud", "clear_caches", { args: { machine: instanceId } }),

@@ -22,3 +22,17 @@ create table if not exists cloud_lanes_without_computer (
   created_at integer not null,
   primary key (user_id, lane_id)
 );
+
+-- The lane each computer holds, kept by the server itself so a lane never
+-- depends on a live provider read to survive its computer. Written at create
+-- (from the create's metadata), and whenever the server reads or writes the
+-- instance metadata (the metadata route, the list, a get, the minute tick).
+-- Cleared when the computer's row is closed.
+alter table cloud_computers add column lane_id text;
+alter table cloud_computers add column lane_name text;
+alter table cloud_computers add column lane_project_origin text;
+alter table cloud_computers add column lane_branch text;
+-- Set just before a delete that keeps the lane ('freed' or 'inactive'). Any
+-- close of the row (the delete itself, or the tick finding the computer gone
+-- after a crash) writes the lane's row above in the same batch.
+alter table cloud_computers add column lane_keep_reason text;

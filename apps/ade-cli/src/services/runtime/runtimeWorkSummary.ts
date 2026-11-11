@@ -43,8 +43,10 @@ export function readRuntimeBusyFacts(runtime: AdeRuntime): Pick<CloudBusyFacts, 
   try {
     // A launch's fetch, checkout and setup run outside any turn or terminal.
     laneSetups = runtime.chatLaunchService?.list().filter((launch) => launch.phase === "running").length ?? 0;
-  } catch {
-    laneSetups = 0;
+  } catch (error) {
+    // Unknown is busy, as for every other busy fact: never sleep under a setup.
+    laneSetups = 1;
+    runtime.logger?.warn("cloud.lane_setups_read_failed", { error: error instanceof Error ? error.message : String(error) });
   }
   return {
     chats: runtime.agentChatService?.listBusyFacts?.() ?? [],

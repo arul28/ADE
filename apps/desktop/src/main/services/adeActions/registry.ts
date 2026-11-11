@@ -157,7 +157,7 @@ import {
   type WebhookSetupGuide,
 } from "../automations/webhookAutomationFactory";
 import { defaultAutomationChatModelId } from "../automations/automationService";
-import type { AutomationWebhookListEntry, CloudStartBranchArgs, SessionAttentionSource } from "../../../shared/types";
+import type { AutomationWebhookListEntry, SessionAttentionSource } from "../../../shared/types";
 import { isTrackedAgentCliToolType } from "../../../shared/types";
 import {
   claimDraft,
@@ -291,6 +291,7 @@ import {
   optionalNonEmptyString,
   readBranchDriftResolution,
   readChatHistoryActionArgs,
+  readCloudStartBranchArgs,
   readObjectActionArg,
   readOptionalIntegerActionField,
   readRuntimeFileWatchSenderId,
@@ -2262,9 +2263,9 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       runtime.laneService.getDeleteRisk(readLaneIdActionArg(args, "lane.getDeleteRisk")),
     // "Push this branch?" before an ADE Cloud launch, on the machine that has the project.
     cloudStartBranch: async (args?: unknown) =>
-      runtime.laneService.cloudStartBranch((args && typeof args === "object" ? args : {}) as CloudStartBranchArgs),
+      runtime.laneService.cloudStartBranch(readCloudStartBranchArgs(args, "lane.cloudStartBranch")),
     pushCloudStartBranch: async (args?: unknown) =>
-      runtime.laneService.pushCloudStartBranch((args && typeof args === "object" ? args : {}) as CloudStartBranchArgs),
+      runtime.laneService.pushCloudStartBranch(readCloudStartBranchArgs(args, "lane.pushCloudStartBranch")),
     cancelDelete: async (args?: unknown) =>
       runtime.laneService.cancelDelete(readLaneIdActionArg(args, "lane.cancelDelete")),
     listSnapshots: async (args?: ListLanesArgs): Promise<LaneListSnapshot[]> => {
@@ -4158,7 +4159,7 @@ function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnT
 
 /** At a brain's start: picks up the ADE Cloud lane launches a quit left, when there are any. */
 export function resumeCloudLaneLaunches(runtime: AccountDomainRuntime): void {
-  if (!hasCloudLaneLaunchRecords(cloudLaneLaunchRecordsDir(resolveMachineAdeLayout().adeDir))) return;
+  if (!hasCloudLaneLaunchRecords(cloudLaneLaunchRecordsDir(resolveMachineAdeLayout().adeDir), runtime.logger)) return;
   const credentials = cloudAccessDeps(runtime);
   cloudLaneLaunchHostFor(runtime, createCloudMachines({
     client: () => getCloudProvider(credentials),
