@@ -26,6 +26,8 @@ export type AdeCloudSignInsState = {
   account: AdeCloudAccountPart;
   cloud: AdeCloudCloudPart;
   saved: CloudSignInStatus["saved"] | null;
+  /** The account's cloud sign-in read (`cloud.cloudSignInStatus`): saved keys, passes, the Claude approve. Null before it. */
+  signInStatus: CloudSignInStatus | null;
   /** The cloud computers that can report, the reporting one first. */
   candidates: readonly ProjectMachine[];
   reporting: ProjectMachine | null;
@@ -38,8 +40,12 @@ export type AdeCloudSignInsState = {
   rechecking: boolean;
   /** A write's returned status replaces the account part (the write and its read reach one brain). */
   applyAccountStatus: (status: ProviderLoginStatus) => void;
-  /** A saved key write's returned status replaces the saved list. */
+  /** A cloud sign-in write's returned status (a saved key, the Claude approve) replaces that read. */
   applySaved: (status: CloudSignInStatus | null | undefined) => void;
+  /** Read `cloud.cloudSignInStatus` again (the Claude approve while it runs). */
+  reloadSignInStatus: () => Promise<void>;
+  /** Read the account part again (after a pass was saved). */
+  refreshAccount: () => void;
   /** Read the reporting computer's AI status again (after a sign-in there). */
   refreshCloudAi: () => void;
 };
@@ -55,13 +61,22 @@ function reportingKey(machine: ProjectMachine | null): string | null {
   return machine ? `${machine.machineId}|${machine.pin?.key ?? "bound"}` : null;
 }
 
-export function useAdeCloudSignIns(): AdeCloudSignInsState {
+/**
+ * This computer's pin, for the account's reads and writes (null: the tab is
+ * bound here, or This computer cannot be reached). When it cannot be reached,
+ * the account goes unpinned: the account fields are still right, but the
+ * Keychain state is the bound machine's.
+ */
+export function useThisComputerPin(): { accountPin: OpenProjectBinding | null; keychainIsThisMac: boolean } {
   const { machines } = useSettingsMachines();
   const thisMachine = machines.find((machine) => machine.isThisMachine) ?? null;
-  // When This computer cannot be reached, the read goes unpinned: the account
-  // fields are still right, but the Keychain state is the bound machine's.
   const keychainIsThisMac = thisMachine?.routable === true;
-  const accountPin = keychainIsThisMac ? thisMachine!.pin : null;
+  return { accountPin: keychainIsThisMac ? thisMachine!.pin : null, keychainIsThisMac };
+}
+
+export function useAdeCloudSignIns(): AdeCloudSignInsState {
+  const { machines } = useSettingsMachines();
+  const { accountPin, keychainIsThisMac } = useThisComputerPin();
   const accountKey = accountPin?.key ?? null;
   const accountPinRef = useRef(accountPin);
   accountPinRef.current = accountPin;
@@ -113,7 +128,8 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
   const [account, setAccount] = useState<AdeCloudAccountPart>({ state: "loading" });
   const [cloudStatus, setCloudStatus] = useState<{ key: string; status: ProviderLoginStatus | null; failed: boolean } | null>(null);
   const [cloudAi, setCloudAi] = useState<{ key: string; ai: AiSettingsStatus | null } | null>(null);
-  const [saved, setSaved] = useState<CloudSignInStatus["saved"] | null>(null);
+  const [signInStatus, setSignInStatus] = useState<CloudSignInStatus | null>(null);
+  const saved = signInStatus && !signInStatus.unknown ? signInStatus.saved : null;
   // Bumped by `providerLogins.onChanged` and Re-check: both status reads run again.
   const [statusTick, setStatusTick] = useState(0);
   // Bumped by Re-check and on open only: the AI read is the heavier one.
@@ -161,23 +177,24 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
     };
   }, [accountKey, readAccount, statusTick]);
 
+  const signInMountedRef = useRef(true);
+  const reloadSignInStatus = useCallback(async () => {
+    try {
+      const status = await window.ade?.cloud?.cloudSignInStatus?.();
+      if (signInMountedRef.current && status) setSignInStatus(status);
+    } catch (error) {
+      console.warn("[providers] reading ADE Cloud's saved keys and passes failed", error);
+    }
+  }, []);
   useEffect(() => {
-    let cancelled = false;
-    const readSaved = () => {
-      void window.ade?.cloud?.cloudSignInStatus?.().then(
-        (status) => {
-          if (!cancelled) setSaved(status && !status.unknown ? status.saved : null);
-        },
-        () => undefined,
-      );
-    };
-    readSaved();
-    const off = window.ade?.cloud?.onCloudSignInChanged?.(readSaved);
+    signInMountedRef.current = true;
+    void reloadSignInStatus();
+    const off = window.ade?.cloud?.onCloudSignInChanged?.(() => void reloadSignInStatus());
     return () => {
-      cancelled = true;
+      signInMountedRef.current = false;
       off?.();
     };
-  }, []);
+  }, [reloadSignInStatus]);
 
   useEffect(() => {
     const machine = reportingRef.current;
@@ -280,14 +297,16 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
     setAccount({ state: "ok", status });
   }, []);
   const applySaved = useCallback((status: CloudSignInStatus | null | undefined) => {
-    if (status && !status.unknown) setSaved(status.saved);
+    if (status) setSignInStatus(status);
   }, []);
+  const refreshAccount = useCallback(() => setStatusTick((tick) => tick + 1), []);
   const refreshCloudAi = useCallback(() => setAiTick((tick) => tick + 1), []);
 
   return {
     account,
     cloud,
     saved,
+    signInStatus,
     candidates,
     reporting,
     pickReporting: setPickedId,
@@ -297,6 +316,8 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
     rechecking,
     applyAccountStatus,
     applySaved,
+    reloadSignInStatus,
+    refreshAccount,
     refreshCloudAi,
   };
 }

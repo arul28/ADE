@@ -41,6 +41,8 @@ import { persistOpenCodeProviderBlock } from "./keys/openCodeCustomProviders";
 import { formatProviderDiagnosticsReport } from "./providerDiagnosticsReport";
 import type { AcpSettingsProviderId, ProviderDescriptor, ProvidersViewContext } from "./types";
 import { isProviderInstanceProvider } from "../../../../shared/types/providerInstances";
+import { isProviderLoginProvider } from "../../../../shared/types/providerLogins";
+import { ProviderSignInsPanel } from "./cloud/ProviderSignInsPanel";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { usePinnedToolStatus } from "../../../hooks/usePinnedToolStatus";
@@ -180,6 +182,7 @@ export function ProviderDetailPage({
   // Claude and Codex are the only providers that can hold more than one local
   // login, so they are the only ones with an Accounts panel.
   const multiAccountProvider = isProviderInstanceProvider(descriptor.id) ? descriptor.id : null;
+  const signInsProvider = !multiAccountProvider && descriptor.id !== "claude" && isProviderLoginProvider(descriptor.id) ? descriptor.id : null;
   // ADE's pinned copy of this provider on the page's machine. Muse keeps its
   // own download row (MuseAuthActions), so it is not read twice.
   const refreshStatus = ctx.actions.refreshStatus;
@@ -225,6 +228,9 @@ export function ProviderDetailPage({
           decides what quota it spends, and the cards sit side by side. */}
       {multiAccountProvider ? (
         <ProviderAccountsPanel provider={multiAccountProvider} providerLabel={descriptor.label} />
+      ) : signInsProvider ? (
+        // One-account providers: their sign-ins in the ADE account, and which one this computer uses.
+        <ProviderSignInsPanel provider={signInsProvider} providerLabel={descriptor.label} />
       ) : null}
 
       <div className="ade-pv-provider-body">

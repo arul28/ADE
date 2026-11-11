@@ -57,7 +57,7 @@ export function ProviderTileView({
   action,
   hidden = false,
   row,
-  wrapLast = false,
+  wrapFacts = false,
 }: {
   descriptor: ProviderDescriptor;
   /** Drives the tile's dim and fact colour (`data-state`). */
@@ -75,8 +75,8 @@ export function ProviderTileView({
   hidden?: boolean;
   /** Which state row decided the tile (`data-row`), for the mock preview. */
   row?: string;
-  /** The last fact (the why, or what to do) wraps instead of being cut. */
-  wrapLast?: boolean;
+  /** Every fact line wraps instead of being cut (ADE Cloud: the account and the why must be readable). */
+  wrapFacts?: boolean;
 }) {
   const body = (
     <>
@@ -104,7 +104,7 @@ export function ProviderTileView({
       data-state={state}
       data-row={row}
       data-static={onOpen ? undefined : "true"}
-      data-wrap={wrapLast || undefined}
+      data-wrap={wrapFacts || undefined}
       hidden={hidden}
       style={{ "--pvl-accent": accent } as React.CSSProperties}
     >

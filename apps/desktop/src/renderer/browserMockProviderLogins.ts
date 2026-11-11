@@ -16,6 +16,22 @@
  *  - `copilot-fallback`: Copilot is not carried (its fallback rows).
  *  - `elsewhere`: both cloud computers are awake, but neither has this
  *    project's repo, so the page can't reach one from here.
+ *  - Claude passes: `ending`, `estimate`, `ended` (C3 / C4 / C5, P6–P8),
+ *    `upload` (C9, P14, P15), `limits` (P11–P13), `nopass` (C1).
+ *
+ * `&mockApprove=<end>` decides how a Claude pass approve ends: `match`
+ * (default), `unchecked`, `mismatch`, `saved_here` or `failed`. The approve
+ * runs on timers in the preview only (no real sign-in): the page link, then
+ * the code box, then the check.
+ *
+ * On a cloud computer's own page (picked as a machine), its Claude accounts
+ * include one pass account per pass (`pass-<id>`).
+ *
+ * `&mockGhCli=<state>` stages Mac Studio's GitHub CLI login for Copilot:
+ * `on` (default: in the account, in use), `off`, `classic` (a classic
+ * token), `timeout` (gh did not answer) or `absent` (gh not signed in).
+ * `&mockGhCliOn=<end>` decides how a press on ON ends: `ok` (default),
+ * `classic` or `timeout`, after a 2.5 s wait (the keychain prompt).
  *
  * `&mockSignInRow=<row>` stages one row: T1–T12 on the Grok tile, F1–F5 on
  * the Muse tile (T1, T2, F4 and F5 switch the scenario they need).
@@ -27,7 +43,7 @@
  * The Grok sign-in from MacBook was last renewed by cloud-a, which renews it
  * while MacBook is off (the takeover).
  */
-import type { CloudSignInId } from "../shared/cloudSignIns";
+import type { ClaudePassUseView, CloudClaudeSignInState, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type {
   ProviderLoginApplied,
   ProviderLoginProvider,
@@ -36,9 +52,22 @@ import type {
   ProviderLoginStatus,
 } from "../shared/types/providerLogins";
 
-type Scenario = "on" | "none" | "asleep" | "noanswer" | "off" | "unreadable" | "one" | "copilot-fallback" | "elsewhere";
+type Scenario =
+  | "on" | "none" | "asleep" | "noanswer" | "off" | "unreadable" | "one" | "copilot-fallback" | "elsewhere"
+  | "ending" | "estimate" | "ended" | "upload" | "limits" | "nopass";
 
-const SCENARIOS: readonly Scenario[] = ["on", "none", "asleep", "noanswer", "off", "unreadable", "one", "copilot-fallback", "elsewhere"];
+const SCENARIOS: readonly Scenario[] = [
+  "on", "none", "asleep", "noanswer", "off", "unreadable", "one", "copilot-fallback", "elsewhere",
+  "ending", "estimate", "ended", "upload", "limits", "nopass",
+];
+
+type GhCliMode = "on" | "off" | "classic" | "timeout" | "absent";
+const GH_CLI_MODES: readonly GhCliMode[] = ["on", "off", "classic", "timeout", "absent"];
+const GH_TIMEOUT_TEXT = "The GitHub CLI did not answer in time. If your computer asked to unlock its keychain, allow it, then turn this on again.";
+const GH_KEY = "copilot/mac-studio.gh";
+
+type ApproveEnd = "match" | "unchecked" | "mismatch" | "saved_here" | "failed";
+const APPROVE_ENDS: readonly ApproveEnd[] = ["match", "unchecked", "mismatch", "saved_here", "failed"];
 
 function param(name: string): string | null {
   try {
@@ -92,11 +121,150 @@ type MockState = {
   enabled: boolean;
   signIns: ProviderLoginSignIn[];
   antigravityAllowedAt: string | null;
+  /** Mac Studio's GitHub CLI login for Copilot (`allowGitHubCli`). */
+  ghCli: GhCliMode;
   saved: Set<CloudSignInId>;
   /** The account's picks (place → key, or "key"), as `cloud.inUse` carries them. */
   inUse: Record<string, string>;
   /** Claude's smart balance on ADE Cloud (`setCloudBalance`), off at the start. */
   smartBalance: boolean;
+  passes: MockPass[];
+  /** Passes switched off for ADE Cloud. */
+  passOff: Set<string>;
+  approveEnd: ApproveEnd;
+  /** The Claude approve on this computer's service. */
+  claude: NonNullable<CloudSignInStatus["claude"]>;
+};
+
+type MockPass =
+  | { key: string; unreadable: true; createdAt: number }
+  | {
+    key: string;
+    unreadable: false;
+    email: string | null;
+    check: "match" | "kept_other" | "unchecked";
+    madeOnLabel: string | null;
+    createdAt: number;
+    renewedAt: number | null;
+    expiresAt: number;
+    expiresAtSource: "estimate" | "claude";
+    state: "active" | "ending_soon" | "estimate_passed" | "ended";
+    endedAt: number | null;
+    upload: "account" | "pending" | "refused";
+    /** What a cloud computer saw on the pass's own turns. */
+    cloudUse: ClaudePassUseView;
+    /** The same Claude account's numbers on one of the person's computers. */
+    accountUse: ClaudePassUseView;
+  };
+
+const NONE_SEEN: ClaudePassUseView = { state: "none_seen" };
+
+function seenUse(
+  kind: "pass_turn" | "account_here",
+  label: string | null,
+  seenAgoMs: number,
+  windows: { fiveHour?: Partial<{ usedPct: number | null; resetsInMs: number; status: "allowed" | "rejected" | null; resetSinceSeen: boolean }>; weekly?: Partial<{ usedPct: number | null; resetsInMs: number; status: "allowed" | "rejected" | null; resetSinceSeen: boolean }> },
+): ClaudePassUseView {
+  const now = Date.now();
+  const seenAt = now - seenAgoMs;
+  const from = { kind, label };
+  const window = (fields: NonNullable<typeof windows.fiveHour> | undefined, resetsInMs: number) => (fields
+    ? {
+      usedPct: fields.usedPct === undefined ? null : fields.usedPct,
+      resetsAt: now + (fields.resetsInMs ?? resetsInMs),
+      status: kind === "pass_turn" ? (fields.status ?? "allowed") : null,
+      seenAt,
+      resetSinceSeen: fields.resetSinceSeen ?? false,
+      from,
+    }
+    : null);
+  return {
+    state: "seen",
+    lastSeenAt: seenAt,
+    fiveHour: window(windows.fiveHour, 2 * HOUR),
+    weekly: window(windows.weekly, 4 * DAY),
+    models: {},
+    from: { ...from, seenAt },
+  };
+}
+
+function initialPasses(scenario: Scenario, now: number): MockPass[] {
+  if (scenario === "nopass") return [];
+  const a: Extract<MockPass, { unreadable: false }> = {
+    key: "claude-pass/mock-a",
+    unreadable: false,
+    email: "ada@example.com",
+    check: "match",
+    madeOnLabel: "Mac Studio",
+    createdAt: now - 165 * DAY,
+    renewedAt: null,
+    expiresAt: now + 200 * DAY,
+    expiresAtSource: "estimate",
+    state: "active",
+    endedAt: null,
+    upload: "account",
+    cloudUse: seenUse("pass_turn", null, 20 * 60_000, { fiveHour: { usedPct: 42 }, weekly: { usedPct: 18 } }),
+    accountUse: NONE_SEEN,
+  };
+  const b: Extract<MockPass, { unreadable: false }> = {
+    ...a,
+    key: "claude-pass/mock-b",
+    email: null,
+    check: "unchecked",
+    createdAt: Date.UTC(new Date(now).getUTCFullYear(), 2, 2),
+    expiresAt: now + 110 * DAY,
+    cloudUse: NONE_SEEN,
+  };
+  const d: Extract<MockPass, { unreadable: false }> = {
+    ...a,
+    key: "claude-pass/mock-d",
+    email: "ada@home.example",
+    madeOnLabel: "MacBook",
+    createdAt: now - 40 * DAY,
+    renewedAt: now - 3 * DAY,
+    expiresAt: now + 362 * DAY,
+    cloudUse: NONE_SEEN,
+    accountUse: seenUse("account_here", "MacBook", 2 * HOUR, { fiveHour: { usedPct: 12 }, weekly: { usedPct: 61 } }),
+  };
+  switch (scenario) {
+    case "ending":
+      Object.assign(a, { state: "ending_soon", expiresAt: now + 5 * DAY });
+      break;
+    case "estimate":
+      Object.assign(a, { state: "estimate_passed", expiresAt: now - 3 * DAY });
+      break;
+    case "ended":
+      for (const pass of [a, b, d]) Object.assign(pass, { state: "ended", endedAt: now - 2 * DAY });
+      break;
+    case "upload":
+      a.upload = "pending";
+      d.upload = "refused";
+      break;
+    case "limits":
+      a.cloudUse = seenUse("pass_turn", null, 10 * 60_000, { fiveHour: { usedPct: 100, status: "rejected", resetsInMs: 50 * 60_000 }, weekly: { usedPct: null } });
+      d.accountUse = seenUse("account_here", "MacBook", 6 * HOUR, { fiveHour: { usedPct: 30 }, weekly: { usedPct: 70, resetSinceSeen: true } });
+      break;
+    default:
+      break;
+  }
+  return [d, a, b, { key: "claude-pass/mock-c", unreadable: true, createdAt: 0 }];
+}
+
+function endsInDays(expiresAt: number): number {
+  return Math.max(0, Math.round((expiresAt - Date.now()) / DAY));
+}
+
+const IDLE_CLAUDE: NonNullable<CloudSignInStatus["claude"]> = {
+  state: "cancelled",
+  url: null,
+  awaitingCode: false,
+  message: null,
+  forEmail: null,
+  foundEmail: null,
+  check: null,
+  renewKey: null,
+  savedKey: null,
+  upload: null,
 };
 
 function initialState(): MockState {
@@ -129,14 +297,30 @@ function initialState(): MockState {
     signIn("devin", MACBOOK, { inUseOnCloud: true }),
     signIn("qwen", MACBOOK, { inUseOnCloud: true }),
     signIn("qwen", MAC_STUDIO),
-    signIn("copilot", MAC_STUDIO, { class: "fixed", account: { email: null, id: "ada-gh" }, inUseOnCloud: true }),
+    signIn("copilot", MAC_STUDIO, { slot: "gh", key: GH_KEY, class: "fixed", account: { email: null, id: "ada-gh" }, inUseOnCloud: true }),
     // Pi: one sign-in per sub-provider; its Claude sign-in never shows.
     signIn("pi", MACBOOK, { slot: "xai", key: "pi/macbook.xai", inUseOnCloud: true }),
     signIn("pi", MAC_STUDIO, { slot: "openai", key: "pi/mac-studio.openai", class: "fixed", inUseOnCloud: true }),
     signIn("pi", MAC_STUDIO, { slot: "anthropic", key: "pi/mac-studio.anthropic", onForCloud: false }),
   ];
   const saved = new Set<CloudSignInId>(["codex", "openrouter"]);
-  const state: MockState = { scenario, row, enabled: scenario !== "off", signIns, antigravityAllowedAt: null, saved, inUse: { codex: "key" }, smartBalance: false };
+  const approve = param("mockApprove") as ApproveEnd | null;
+  const state: MockState = {
+    scenario,
+    row,
+    enabled: scenario !== "off",
+    signIns,
+    antigravityAllowedAt: null,
+    ghCli: GH_CLI_MODES.includes(param("mockGhCli") as GhCliMode) ? param("mockGhCli") as GhCliMode : "on",
+    saved,
+    inUse: scenario === "nopass" ? { codex: "key" } : { codex: "key", claude: "claude-pass/mock-a" },
+    smartBalance: false,
+    passes: initialPasses(scenario, now),
+    passOff: new Set(),
+    approveEnd: approve && APPROVE_ENDS.includes(approve) ? approve : "match",
+    claude: { ...IDLE_CLAUDE },
+  };
+  if (state.ghCli !== "on") state.signIns = state.signIns.filter((entry) => entry.key !== GH_KEY);
   applyGrokRow(state, now);
   if (row === "F3") saved.add("muse");
   return state;
@@ -176,7 +360,28 @@ function applyGrokRow(state: MockState, now: number): void {
   }
 }
 
-function providerRows(state: MockState): ProviderLoginProviderStatus[] {
+/** Copilot's row on Mac Studio (its own computer): the GitHub CLI login and what it means for the local state. */
+function copilotGhFields(state: MockState): Partial<ProviderLoginProviderStatus> {
+  const mode = state.ghCli;
+  const allowed = mode === "on" || mode === "classic" || mode === "timeout";
+  return {
+    local: {
+      state: mode === "on" ? "captured" : mode === "timeout" ? "unreadable" : mode === "absent" ? "not_signed_in" : "not_checked",
+      key: mode === "on" ? GH_KEY : null,
+    },
+    ghCli: {
+      present: mode !== "absent",
+      user: mode === "absent" ? null : "ada-gh",
+      allowed,
+      canAllow: true,
+      ...(mode === "classic" ? { unsupported: "classic_token" as const } : {}),
+      ...(mode === "timeout" ? { lastError: GH_TIMEOUT_TEXT } : {}),
+      ...(allowed ? { lastReadAt: iso(Date.now() - 60_000) } : {}),
+    },
+  };
+}
+
+function providerRows(state: MockState, own = true): ProviderLoginProviderStatus[] {
   const carry = (provider: ProviderLoginProvider): ProviderLoginProviderStatus["carry"] => {
     if (provider === "claude") return "never";
     if (provider === "opencode" || provider === "muse") return "fallback";
@@ -203,68 +408,79 @@ function providerRows(state: MockState): ProviderLoginProviderStatus[] {
         },
       }
       : {}),
+    ...(provider === "copilot" && own ? copilotGhFields(state) : {}),
   }));
 }
 
 type MockPasses = NonNullable<ProviderLoginStatus["claudePasses"]>;
 
-/** Fake passes in the shape p6 sends; typed loosely here, the page reads them through one guard. */
+/** The pass new chats use: the account's pick, else the newest one on that has not ended. */
+function newChatsKey(state: MockState): string | null {
+  const readable = state.passes.filter((pass): pass is Extract<MockPass, { unreadable: false }> => !pass.unreadable);
+  const usable = readable.filter((pass) => state.enabled && !state.passOff.has(pass.key) && pass.state !== "ended");
+  const picked = state.inUse.claude;
+  if (picked && usable.some((pass) => pass.key === picked)) return picked;
+  return usable[0]?.key ?? null;
+}
+
+/** `claudePasses` as a brain sends it: `withUse` on a cloud computer (the pass's own turns). */
 function claudePasses(state: MockState, withUse: boolean): MockPasses {
-  const now = Date.now();
-  const base = {
-    unreadable: false,
-    check: "match",
-    legacy: false,
-    madeOnLabel: "Mac Studio",
-    renewedAt: null,
-    expiresAtSource: "estimate",
-    noticeDueAt: now + 150 * DAY,
-    upload: "account",
-    localInstanceId: null,
-    appliedHere: withUse,
-    homeHasLogin: false,
-    smartBalance: false,
-    endedAt: null,
-  };
-  return [
-    {
-      ...base,
-      key: "claude-pass/mock-a",
-      label: "ada@example.com",
-      email: "ada@example.com",
-      on: state.enabled,
-      newChats: state.enabled,
-      createdAt: now - 165 * DAY,
-      expiresAt: now + 200 * DAY,
-      endsInDays: 200,
-      state: "active",
-      use: withUse
-        ? {
-          state: "seen",
-          lastSeenAt: now - 20 * 60_000,
-          fiveHour: { usedPct: 42, resetsAt: now + 2 * HOUR, status: "allowed", seenAt: now - 20 * 60_000, resetSinceSeen: false, from: { kind: "pass_turn", label: null } },
-          weekly: { usedPct: 18, resetsAt: now + 4 * DAY, status: "allowed", seenAt: now - 20 * 60_000, resetSinceSeen: false, from: { kind: "pass_turn", label: null } },
-          models: {},
-          from: { kind: "pass_turn", label: null, seenAt: now - 20 * 60_000 },
-        }
-        : { state: "none_seen" },
-    },
-    {
-      ...base,
-      key: "claude-pass/mock-b",
-      label: "Claude pass from Mar 2",
-      email: null,
-      check: "unchecked",
-      on: state.enabled,
-      newChats: false,
-      createdAt: Date.UTC(new Date(now).getUTCFullYear(), 2, 2),
-      expiresAt: now + 110 * DAY,
-      endsInDays: 110,
-      state: "active",
-      use: { state: "none_seen" },
-    },
-    { key: "claude-pass/mock-c", unreadable: true },
-  ] as unknown as MockPasses;
+  const current = newChatsKey(state);
+  return state.passes.map((pass) => {
+    if (pass.unreadable) return { key: pass.key, unreadable: true as const };
+    return {
+      key: pass.key,
+      unreadable: false as const,
+      label: pass.email ?? "Claude pass",
+      email: pass.email,
+      check: pass.check,
+      legacy: false,
+      on: state.enabled && !state.passOff.has(pass.key),
+      newChats: pass.key === current,
+      madeOnLabel: pass.madeOnLabel,
+      createdAt: pass.createdAt,
+      renewedAt: pass.renewedAt,
+      expiresAt: pass.expiresAt,
+      expiresAtSource: pass.expiresAtSource,
+      endsInDays: endsInDays(pass.expiresAt),
+      state: pass.state,
+      noticeDueAt: pass.expiresAt - 14 * DAY,
+      upload: pass.upload,
+      localInstanceId: null,
+      appliedHere: withUse,
+      homeHasLogin: false,
+      smartBalance: state.smartBalance,
+      endedAt: pass.endedAt,
+      use: withUse ? pass.cloudUse : NONE_SEEN,
+    };
+  });
+}
+
+/** `cloudSignInStatus().passes`: the account side, with the same account's numbers on a computer. */
+function accountPasses(state: MockState): NonNullable<CloudSignInStatus["passes"]> {
+  return state.passes.map((pass) => {
+    if (pass.unreadable) return { key: pass.key, unreadable: true as const };
+    return {
+      key: pass.key,
+      label: pass.email ?? "Claude pass",
+      email: pass.email,
+      check: pass.check,
+      legacy: false,
+      madeOnLabel: pass.madeOnLabel,
+      createdAt: pass.createdAt,
+      renewedAt: pass.renewedAt,
+      expiresAt: pass.expiresAt,
+      expiresAtSource: pass.expiresAtSource,
+      endsInDays: endsInDays(pass.expiresAt),
+      state: pass.state,
+      endedAt: pass.endedAt,
+      noticeDueAt: pass.expiresAt - 14 * DAY,
+      localInstanceId: null,
+      use: pass.accountUse,
+      upload: pass.upload,
+      unreadable: false as const,
+    };
+  });
 }
 
 function accountStatus(state: MockState): ProviderLoginStatus {
@@ -343,7 +559,7 @@ function cloudStatus(state: MockState, name: string): ProviderLoginStatus {
     thisComputer: { capture: "off", reason: "not_this_runtime", message: null, label: name, cloudComputer: true, lastPassAt: iso(Date.now() - 60_000) },
     cloud: { enabled: state.enabled, inUse: { ...state.inUse }, claude: { smartBalance: state.smartBalance } },
     signIns: state.signIns.map((entry) => ({ ...entry, origin: { ...entry.origin, thisComputer: false } })),
-    providers: providerRows(state),
+    providers: providerRows(state, false),
     applied: appliedRows(state),
     claudePasses: claudePasses(state, true),
   };
@@ -456,6 +672,38 @@ export function applyBrowserMockProviderLogins(ade: any): void {
       changed();
       return accountStatus(state);
     },
+    allowGitHubCli: async (args: { on: boolean }, pin?: unknown) => {
+      console.info(`[browser mock] providerLogins.allowGitHubCli ${args.on ? "on" : "off"}`);
+      if (args.on && cloudTargetOf(pin)) {
+        throw new Error("Turn this on at that computer. The GitHub CLI can ask there to unlock its keychain, so ADE reads it only on the computer you are using.");
+      }
+      const dropSignIn = () => {
+        state.signIns = state.signIns.filter((entry) => entry.key !== GH_KEY);
+        if (state.inUse.copilot === GH_KEY) delete state.inUse.copilot;
+        settleInUse("copilot");
+      };
+      if (!args.on) {
+        await wait(300);
+        state.ghCli = "off";
+        dropSignIn();
+      } else {
+        // The keychain prompt: the preview waits as long as a person reading it.
+        await wait(2500);
+        const end = param("mockGhCliOn");
+        if (end === "classic" || end === "timeout") {
+          state.ghCli = end;
+          dropSignIn();
+        } else {
+          state.ghCli = "on";
+          if (!state.signIns.some((entry) => entry.key === GH_KEY)) {
+            state.signIns.push(signIn("copilot", MAC_STUDIO, { slot: "gh", key: GH_KEY, class: "fixed", account: { email: null, id: "ada-gh" }, capturedAt: iso(Date.now()) }));
+            settleInUse("copilot");
+          }
+        }
+      }
+      changed();
+      return statusFor(pin);
+    },
     use: async (args: { provider: ProviderLoginProvider; key: string | null }) => {
       console.info(`[browser mock] providerLogins.use ${args.provider} ${args.key ?? "newest"}`);
       await wait(300);
@@ -471,7 +719,12 @@ export function applyBrowserMockProviderLogins(ade: any): void {
       return accountStatus(state);
     },
     setCloud: async (args: { key: string; on: boolean }) => {
+      console.info(`[browser mock] providerLogins.setCloud ${args.key} ${args.on ? "on" : "off"}`);
       await wait(300);
+      if (args.key.startsWith("claude-pass/")) {
+        if (args.on) state.passOff.delete(args.key);
+        else state.passOff.add(args.key);
+      }
       const entry = state.signIns.find((candidate) => candidate.key === args.key);
       if (entry) {
         entry.onForCloud = args.on;
@@ -498,6 +751,7 @@ export function applyBrowserMockProviderLogins(ade: any): void {
       console.info(`[browser mock] providerLogins.remove ${args.key}`);
       const removed = state.signIns.find((entry) => entry.key === args.key);
       state.signIns = state.signIns.filter((entry) => entry.key !== args.key);
+      state.passes = state.passes.filter((pass) => pass.key !== args.key);
       if (removed) settleInUse(removed.provider);
       for (const [place, key] of Object.entries(state.inUse)) {
         if (key === args.key) delete state.inUse[place];
@@ -515,6 +769,87 @@ export function applyBrowserMockProviderLogins(ade: any): void {
   const awake = new Set<string>(awakeComputers(state).map((computer) => computer.id));
   const savedList = () => (["claude", "codex", "cursor", "droid", "grok", "copilot", "devin", "muse", "openrouter"] as CloudSignInId[])
     .map((id) => ({ id, saved: state.saved.has(id), savedAt: state.saved.has(id) ? Date.now() - 5 * DAY : null }));
+  const signInListeners = new Set<() => void>();
+  /** What `cloud.cloudSignInStatus` answers: the saved keys, the passes, the approve, and this computer's Claude accounts. */
+  const signInStatus = (): CloudSignInStatus => ({
+    saved: savedList(),
+    unknown: false,
+    claude: { ...state.claude },
+    localAccounts: [
+      { instanceId: "claude", email: "ada@example.com", isDefault: true },
+      { instanceId: "claude-2", email: "ada@home.example", isDefault: false },
+    ],
+    passes: accountPasses(state),
+  });
+  /** A window's action changed the cloud sign-ins: every window hears it (main sends this after each action). */
+  const signInChanged = () => {
+    for (const listener of signInListeners) listener();
+  };
+  // ── The Claude approve, on timers in the preview (no real sign-in) ──
+  let approveTimer: ReturnType<typeof setTimeout> | null = null;
+  const later = (ms: number, step: () => void) => {
+    if (approveTimer) clearTimeout(approveTimer);
+    approveTimer = setTimeout(() => {
+      approveTimer = null;
+      step();
+    }, ms);
+  };
+  const setClaude = (patch: Partial<NonNullable<CloudSignInStatus["claude"]>>) => {
+    state.claude = { ...state.claude, ...patch };
+  };
+  const savePass = (email: string | null, check: "match" | "kept_other" | "unchecked", upload: "account" | "pending") => {
+    const now = Date.now();
+    const renewKey = state.claude.renewKey;
+    const key = renewKey ?? `claude-pass/mock-${Math.random().toString(16).slice(2, 8)}`;
+    const fresh: MockPass = {
+      key,
+      unreadable: false,
+      email,
+      check,
+      madeOnLabel: "Mac Studio",
+      createdAt: renewKey ? (state.passes.find((pass) => pass.key === renewKey)?.createdAt ?? now) : now,
+      renewedAt: renewKey ? now : null,
+      expiresAt: now + 365 * DAY,
+      expiresAtSource: "estimate",
+      state: "active",
+      endedAt: null,
+      upload,
+      cloudUse: NONE_SEEN,
+      accountUse: NONE_SEEN,
+    };
+    state.passes = [fresh, ...state.passes.filter((pass) => pass.key !== key)];
+    return key;
+  };
+  const finish = () => {
+    const forEmail = state.claude.forEmail;
+    switch (state.approveEnd) {
+      case "failed":
+        setClaude({ state: "failed", message: "Claude Code stopped before it made a pass. Try again." });
+        return;
+      case "saved_here": {
+        const key = savePass(forEmail, "match", "pending");
+        setClaude({ state: "saved_here", foundEmail: forEmail, check: "match", savedKey: key, upload: "pending", message: "ADE couldn't reach your account yet. The pass is kept on this computer, and ADE sends it on its own." });
+        changed();
+        return;
+      }
+      case "mismatch":
+        if (forEmail) {
+          setClaude({ state: "mismatch", foundEmail: "someone@else.example", check: null });
+          return;
+        }
+        break;
+      default:
+        break;
+    }
+    const unchecked = state.approveEnd === "unchecked";
+    const found = unchecked ? null : forEmail ?? "ada@work.example";
+    setClaude({ state: "saving", foundEmail: found, check: unchecked ? "unchecked" : "match" });
+    later(800, () => {
+      const key = savePass(found ?? forEmail, unchecked ? "unchecked" : "match", "account");
+      setClaude({ state: "succeeded", savedKey: key, upload: "account" });
+      changed();
+    });
+  };
   ade.cloud = {
     getStatus: async () => ({ connected: true, signedOut: false, instanceCount: computersShown.length, runningCount: awake.size, error: null }),
     listMachines: async () => ({
@@ -526,19 +861,58 @@ export function applyBrowserMockProviderLogins(ade: any): void {
       deleted: [],
     }),
     onStatusChanged: () => () => undefined,
-    cloudSignInStatus: async () => ({
-      saved: savedList(),
-      unknown: false,
-      claude: { state: "cancelled", url: null, awaitingCode: false, message: null, forEmail: null, foundEmail: null, check: null, renewKey: null, savedKey: null, upload: null },
-      localAccounts: [],
-    }),
-    onCloudSignInChanged: () => () => undefined,
+    cloudSignInStatus: async () => signInStatus(),
+    onCloudSignInChanged: (cb: () => void) => {
+      signInListeners.add(cb);
+      return () => signInListeners.delete(cb);
+    },
+    cloudSignInClaudeStart: async (args?: { forEmail?: string | null; renewKey?: string | null }) => {
+      console.info(`[browser mock] cloud.cloudSignInClaudeStart for ${args?.forEmail ?? "another account"}${args?.renewKey ? ` (renew ${args.renewKey})` : ""}`);
+      await wait(250);
+      state.claude = { ...IDLE_CLAUDE, state: "running" as CloudClaudeSignInState, forEmail: args?.forEmail ?? null, renewKey: args?.renewKey ?? null };
+      later(900, () => {
+        setClaude({ url: "https://claude.ai/oauth/authorize?code=true&mock=preview" });
+        later(1200, () => setClaude({ awaitingCode: true }));
+      });
+      signInChanged();
+      return signInStatus();
+    },
+    cloudSignInClaudeCode: async () => {
+      // The code itself is never kept or logged.
+      console.info("[browser mock] cloud.cloudSignInClaudeCode");
+      await wait(250);
+      setClaude({ state: "verifying", awaitingCode: false });
+      later(1500, finish);
+      signInChanged();
+      return signInStatus();
+    },
+    cloudSignInClaudeKeep: async () => {
+      console.info("[browser mock] cloud.cloudSignInClaudeKeep");
+      await wait(250);
+      const found = state.claude.foundEmail;
+      setClaude({ state: "saving", check: "kept_other" });
+      later(800, () => {
+        const key = savePass(found, "kept_other", "account");
+        setClaude({ state: "succeeded", savedKey: key, upload: "account" });
+        changed();
+      });
+      signInChanged();
+      return signInStatus();
+    },
+    cloudSignInClaudeCancel: async () => {
+      console.info("[browser mock] cloud.cloudSignInClaudeCancel");
+      if (approveTimer) clearTimeout(approveTimer);
+      approveTimer = null;
+      setClaude({ state: "cancelled", awaitingCode: false });
+      signInChanged();
+      return signInStatus();
+    },
     cloudSignInSaveKey: async (id: CloudSignInId) => {
       // The key itself is never kept or logged; only that one was saved.
       console.info(`[browser mock] cloud.cloudSignInSaveKey ${id}`);
       await wait(300);
       state.saved.add(id);
-      return { saved: savedList(), unknown: false, claude: null, localAccounts: [] };
+      return signInStatus();
     },
     cloudSignInRemove: async (id: CloudSignInId) => {
       console.info(`[browser mock] cloud.cloudSignInRemove ${id}`);
@@ -551,7 +925,7 @@ export function applyBrowserMockProviderLogins(ade: any): void {
         }
       }
       changed();
-      return { saved: savedList(), unknown: false, claude: null, localAccounts: [] };
+      return signInStatus();
     },
   };
   ade.cloudAccess = {
@@ -591,6 +965,28 @@ export function applyBrowserMockProviderLogins(ade: any): void {
         { rootPath: root, displayName: current?.displayName ?? MOCK_REPO.displayName, lastOpenedAt: iso(Date.now()), exists: true, kind: "local", gitOriginUrl: MOCK_REPO.gitOriginUrl },
         ...list.filter((entry) => entry.rootPath !== root),
       ];
+    };
+  }
+
+  // A cloud computer's own Claude accounts include one pass account per pass (`pass-<id>`).
+  const instances = ade.providerInstances;
+  if (instances?.list) {
+    const baseList = instances.list;
+    instances.list = async (args?: { provider?: string }, pin?: unknown) => {
+      const base = (await baseList(args, pin)) ?? [];
+      if (!cloudTargetOf(pin) || (args?.provider && args.provider !== "claude")) return base;
+      const passAccounts = state.passes.map((pass) => ({
+        id: `pass-${pass.key.slice("claude-pass/".length)}`,
+        provider: "claude",
+        label: (!pass.unreadable && pass.email) || "Claude pass",
+        configHome: `/home/ade/.ade/provider-homes/claude/pass-${pass.key.slice("claude-pass/".length)}`,
+        isDefault: false,
+        createdAt: iso(pass.createdAt || Date.now()),
+        ...(!pass.unreadable && pass.email ? { account: { email: pass.email, plan: "max" } } : {}),
+        signedIn: !pass.unreadable && pass.state !== "ended",
+        ...(!pass.unreadable && pass.state === "ended" ? { loginBroken: true } : {}),
+      }));
+      return [...base, ...passAccounts];
     };
   }
 

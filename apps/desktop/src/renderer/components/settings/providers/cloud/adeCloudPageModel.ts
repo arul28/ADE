@@ -96,6 +96,8 @@ export type SignInCardGroup = {
 
 function signInCard(signIn: ProviderLoginSignIn, now: number): SignInCardModel {
   const email = signIn.account?.email?.trim() || null;
+  // A computer's GitHub CLI login for Copilot names its GitHub user, not an email.
+  const ghUser = signIn.provider === "copilot" && signIn.slot === "gh" ? signIn.account?.id?.trim() || null : null;
   const origin = signIn.origin.label;
   const captured = parseTime(signIn.capturedAt);
   const source = `From ${origin}${signIn.origin.thisComputer ? " (this computer)" : ""}`;
@@ -113,8 +115,8 @@ function signInCard(signIn: ProviderLoginSignIn, now: number): SignInCardModel {
     provider: signIn.provider,
     slot: signIn.slot,
     place: cloudPlaceOf(signIn.provider, signIn.slot),
-    title: email ?? `Sign-in from ${origin}`,
-    name: email ?? `the sign-in from ${origin}`,
+    title: email ?? (ghUser ? `GitHub CLI login (${ghUser})` : `Sign-in from ${origin}`),
+    name: email ?? (ghUser ? `the GitHub CLI login (${ghUser})` : `the sign-in from ${origin}`),
     origin,
     originIsThisComputer: signIn.origin.thisComputer,
     sourceLine: captured != null ? `${source} · ${dayText(captured, now)}` : source,

@@ -75,7 +75,7 @@ import type { ProvidersViewContext } from "./types";
  * `--ade-web-zoom-factor` keeps the viewport units right in the web client.
  */
 const SHEET_TOP = "clamp(16px, calc(10vh / var(--ade-web-zoom-factor, 1)), 80px)";
-const SHEET_PANEL_PLACEMENT: React.CSSProperties = {
+export const SHEET_PANEL_PLACEMENT: React.CSSProperties = {
   top: SHEET_TOP,
   bottom: "auto",
   marginTop: 0,

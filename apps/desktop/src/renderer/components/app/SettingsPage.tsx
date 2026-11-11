@@ -322,6 +322,7 @@ export function SettingsPage({
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const openProvider = searchParams.get("provider")?.trim() || null;
 
   // Follow ?tab= when it changes underneath us (deeplinks, palette, tours).
   useEffect(() => {
@@ -418,6 +419,9 @@ export function SettingsPage({
     if (!active || !location.hash) return;
     const entry = resolveSettingsHash(decodeSettingsHash(location.hash));
     if (!entry || entry.tab !== section) return;
+    // A provider's page is the whole view: it opens at the top (the effect
+    // below), not scrolled to its own anchor under the title.
+    if (openProvider && entry.anchor === `ai-provider-${openProvider}`) return;
     let flashTimer: ReturnType<typeof setTimeout> | null = null;
     let observer: MutationObserver | null = null;
     let giveUpTimer: ReturnType<typeof setTimeout> | null = null;
@@ -460,12 +464,13 @@ export function SettingsPage({
       stopWaiting();
       if (flashTimer) clearTimeout(flashTimer);
     };
-  }, [active, section, location.hash]);
+  }, [active, section, location.hash, openProvider]);
 
-  // A new tab should open at the top, not wherever the last one was scrolled.
+  // A new tab, or a provider's page (on any machine or on ADE Cloud), opens at
+  // the top, not wherever the last view was scrolled.
   useEffect(() => {
     contentRef.current?.scrollTo({ top: 0 });
-  }, [section]);
+  }, [section, openProvider]);
 
   const trimmedQuery = deferredQuery.trim();
   const cloudEnabled = useAdeCloudEnabled();

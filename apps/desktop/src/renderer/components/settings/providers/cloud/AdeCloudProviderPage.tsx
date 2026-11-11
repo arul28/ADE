@@ -12,11 +12,10 @@ import React, { useCallback, useMemo, useState } from "react";
 import { ArrowSquareOut, Key, UserCircle } from "@phosphor-icons/react";
 import type { CloudSignInStatus } from "../../../../../shared/cloudSignIns";
 import { isAgentCliLoginProvider } from "../../../../../shared/types/agentCliLogin";
-import type { ProviderLoginProvider, ProviderLoginStatus } from "../../../../../shared/types/providerLogins";
+import type { ProviderLoginProvider } from "../../../../../shared/types/providerLogins";
 import { ipcErrorMessage } from "../../../../lib/format";
 import { openExternalUrl } from "../../../../lib/openExternal";
 import { COLORS, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
-import { confirmDialog } from "../../../ui/dialog/confirm";
 import { NoticeBadge } from "../../../ui/notice/NoticeParts";
 import { showToast } from "../../../app/toast/toastStore";
 import { SettingsTextField } from "../../primitives";
@@ -27,6 +26,7 @@ import { connectionKeyFor, providerSignIn } from "../providerSignInCommands";
 import type { ProviderTileAction } from "../ProviderTileView";
 import type { ProviderDescriptor } from "../types";
 import { COPILOT_REPO_LINE, accountUnreadable, type AdeCloudTile } from "./adeCloudSignInModel";
+import { confirmRemoveSignIn, confirmUseOnCloud, type RunWrite } from "./signInWrites";
 import {
   inUseCard,
   previousPick,
@@ -40,7 +40,7 @@ import { SignInAccountCard } from "./SignInAccountCard";
 import type { AdeCloudSignInsState } from "./useAdeCloudSignIns";
 import type { HeldWrites } from "./useHeldWrites";
 
-export type RunWrite = (id: string, write: () => Promise<ProviderLoginStatus> | undefined, failure: string) => Promise<boolean>;
+export type { RunWrite };
 
 const identity = (id: string) => id;
 
@@ -99,66 +99,29 @@ export function AdeCloudProviderPage({
     }
   }, [provider, setSwitch]);
 
-  // ── "Use on ADE Cloud": confirm, write, toast with Undo ──
-  const pickOnCloud = useCallback(async (args: { key: string; slot: string | null; place: string; name: string; busyId: string }) => {
+  // ── "Use on ADE Cloud": confirm, write, toast with Undo (one pin for the whole flow) ──
+  const pickOnCloud = useCallback((args: { key: string; slot: string | null; place: string; name: string; busyId: string }) => {
     const current = inUseCard(groups, args.place);
-    const repo = provider === "copilot" ? ` ${COPILOT_REPO_LINE}` : "";
-    const ok = await confirmDialog({
-      title: `Use ${args.name} on ADE Cloud?`,
-      message: current && current.key !== args.key
-        ? `A turn that runs now finishes on ${current.name}. The next message in each cloud chat uses ${args.name}.${repo}`
-        : `The next message in each cloud chat uses ${args.name}.${repo}`,
-      confirmLabel: "Use it",
-    });
-    if (!ok) return;
-    // The flow keeps one pin: the write and its Undo reach the same brain.
-    const pin = accountPin;
-    const previous = previousPick(account, args.place);
-    const done = await runWrite(
-      args.busyId,
-      () => window.ade?.providerLogins?.use?.({ provider, key: args.key, slot: args.slot }, pin),
-      "ADE couldn't change the sign-in for ADE Cloud. Try again.",
-    );
-    if (!done) return;
-    showToast({
-      id: `ade-cloud-use-${args.place}`,
-      tone: "success",
-      title: `ADE Cloud now uses ${args.name}`,
-      actions: previous === args.key ? [] : [{
-        label: "Undo",
-        onClick: () => {
-          void runWrite(
-            `${args.busyId}:undo`,
-            () => window.ade?.providerLogins?.use?.({ provider, key: previous, slot: args.slot }, pin),
-            "ADE couldn't change it back. Try again.",
-          );
-        },
-      }],
+    void confirmUseOnCloud({
+      provider,
+      ...args,
+      current: current ? { key: current.key, name: current.name } : null,
+      previous: previousPick(account, args.place),
+      pin: accountPin,
+      runWrite,
     });
   }, [account, accountPin, groups, provider, runWrite]);
 
   // ── Remove: confirm, hide, toast with Undo, the write when the toast ends ──
-  const removeCard = useCallback(async (card: SignInCardModel) => {
-    const from = card.originIsThisComputer ? "this computer" : card.origin;
-    const keeps = card.originIsThisComputer ? "This computer keeps its own sign-in." : `${card.origin} keeps its own sign-in.`;
-    const ok = await confirmDialog({
-      title: `Remove the ${descriptor.label} sign-in from ${from}?`,
-      message: `ADE Cloud stops using it, and each cloud computer drops it. ${keeps}`,
-      confirmLabel: "Remove",
-      destructive: true,
-    });
-    if (!ok) return;
-    const pin = accountPin;
-    hold({
-      id: card.key,
-      title: `Removed the ${descriptor.label} sign-in from ${from}.`,
-      write: () => {
-        void runWrite(
-          `remove:${card.key}`,
-          () => window.ade?.providerLogins?.remove?.({ key: card.key }, pin),
-          `ADE couldn't remove the ${descriptor.label} sign-in. It is back on the page.`,
-        );
-      },
+  const removeCard = useCallback((card: SignInCardModel) => {
+    void confirmRemoveSignIn({
+      key: card.key,
+      providerLabel: descriptor.label,
+      origin: card.origin,
+      originIsThisComputer: card.originIsThisComputer,
+      pin: accountPin,
+      hold,
+      runWrite,
     });
   }, [accountPin, descriptor.label, hold, runWrite]);
 
@@ -180,6 +143,9 @@ export function AdeCloudProviderPage({
         version={null}
         pin={accountPin}
         modelLabel={identity}
+        // The descriptor's line is about a computer's own sign-in; the line below says what ADE Cloud does.
+        tagline={null}
+        accountUsageOnly
       />
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -212,7 +178,11 @@ export function AdeCloudProviderPage({
               <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textDim }}>Reading your ADE account…</span>
             ) : cardCount === 0 ? (
               <NoSignInRow
-                text={accountUnreadable(account) ? "ADE couldn't read your ADE account." : "No sign-in in your ADE account yet."}
+                text={accountUnreadable(account)
+                  ? "ADE couldn't read your ADE account."
+                  : provider === "copilot"
+                    ? "No GitHub CLI login in your ADE account yet. Turn one on from a computer's Copilot page."
+                    : "No sign-in in your ADE account yet."}
                 action={accountUnreadable(account) ? null : tileAction}
               />
             ) : (
@@ -230,9 +200,9 @@ export function AdeCloudProviderPage({
                           key={card.key}
                           card={shown}
                           busy={busy.has(`switch:${card.key}`) || busy.has(`use:${card.key}`) || busy.has(`remove:${card.key}`)}
-                          onUse={() => void pickOnCloud({ key: card.key, slot: card.slot, place: card.place, name: card.name, busyId: `use:${card.key}` })}
+                          onUse={() => pickOnCloud({ key: card.key, slot: card.slot, place: card.place, name: card.name, busyId: `use:${card.key}` })}
                           onSwitch={(next) => void switchCard(card, next)}
-                          onRemove={() => void removeCard(card)}
+                          onRemove={() => removeCard(card)}
                         />
                       );
                     })}
@@ -276,7 +246,7 @@ export function AdeCloudProviderPage({
           busy={busy.has(`use-key:${provider}`)}
           applySaved={signIns.applySaved}
           // "your saved key": the words the chat's switch line uses for it.
-          onUse={() => void pickOnCloud({ key: "key", slot: null, place: provider, name: "your saved key", busyId: `use-key:${provider}` })}
+          onUse={() => pickOnCloud({ key: "key", slot: null, place: provider, name: "your saved key", busyId: `use-key:${provider}` })}
           onRemove={() => {
             hold({
               id: `key:${keyRow.spec.id}`,
@@ -352,7 +322,11 @@ function NoSignInRow({ text, action }: { text: string; action: ProviderTileActio
           style={outlineButton({ height: 28, padding: "0 11px", fontSize: 12 })}
         >
           {/* The page has room for the whole label the tile shortens. */}
-          {button.label === "Allow" ? "Allow on this Mac" : button.label === "Sign in" ? "Sign in on this computer" : button.label}
+          {button.label === "Allow"
+            ? "Allow on this Mac"
+            : button.label === "Sign in"
+              ? "Sign in on this computer"
+              : button.label === "Set up" ? "Set up on this computer" : button.label}
         </button>
       ) : null}
     </div>

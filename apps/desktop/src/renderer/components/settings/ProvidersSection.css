@@ -259,10 +259,10 @@
 .ade-pvl-tile .ade-pvl-fact[data-tone="crit"] { color: var(--kit-crit); }
 /* A tile with no page of its own yet: the same layout, not a button, no hover. */
 .ade-pvl-open[data-static] { cursor: default; }
-/* ADE Cloud: the last line says why or what to do, so it wraps rather than
-   being cut (two lines at most widths; the words are short for that). A
-   line marked whole wraps the same way on any tile. */
-.ade-pvl-tile[data-wrap] .ade-pvl-fact:last-child,
+/* ADE Cloud: every line wraps rather than being cut. The first names the
+   account (the check against a wrong one), the last says why or what to do.
+   A line marked whole wraps the same way on any tile. */
+.ade-pvl-tile[data-wrap] .ade-pvl-fact,
 .ade-pvl-tile .ade-pvl-fact[data-whole] {
   overflow: visible;
   white-space: normal;

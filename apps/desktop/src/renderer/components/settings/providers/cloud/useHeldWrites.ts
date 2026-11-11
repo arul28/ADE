@@ -4,12 +4,13 @@
  * a toast offers Undo, and the write runs only when the toast ends.
  *
  * A held write is never lost. It runs when its toast leaves (timed out, or
- * closed with ×), when the view that holds it unmounts, and on `pagehide`
- * (the window closes or reloads). Undo is the only way to drop it. No timer
- * of its own: the toast's timer (which pauses while pointed at) decides.
+ * closed with ×), when the view that holds it unmounts (its toast then
+ * closes, since Undo can no longer undo), and on `pagehide` (the window
+ * closes or reloads). Undo is the only way to drop it. No timer of its own:
+ * the toast's timer (which pauses while pointed at) decides.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { showToast, useToasts } from "../../../app/toast/toastStore";
+import { dismissToast, showToast, useToasts } from "../../../app/toast/toastStore";
 
 type HeldWrite = {
   toastId: string;
@@ -89,13 +90,16 @@ export function useHeldWrites(): HeldWrites {
     return () => window.removeEventListener("pagehide", flushAll);
   }, [flushAll]);
 
-  // The view goes away: run every held write now. Its toast may still show;
-  // its Undo then does nothing, since the write already ran.
+  // The view goes away: run every held write now, and close its toast. An
+  // Undo that can no longer undo would be false.
   useEffect(() => {
     mountedRef.current = true;
+    const held = heldRef.current;
     return () => {
       mountedRef.current = false;
+      const toastIds = [...held.values()].map((entry) => entry.toastId);
       flushAll();
+      for (const toastId of toastIds) dismissToast(toastId);
     };
   }, [flushAll]);
 

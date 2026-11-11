@@ -18,7 +18,7 @@ import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
 import { CloudReadyMachinesCard } from "./CloudReadyMachinesCard";
 import { CloudMachinesCard } from "./CloudMachinesCard";
-import { CloudSignInsCard, useCloudSignIns } from "./CloudSignInsCard";
+import { AdeCloudSignInsRow } from "./providers/cloud/AdeCloudSignInsRow";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
 import { CloudAgentLimitsCard } from "./CloudAgentLimitsCard";
 import { CloudPlanCard } from "./CloudPlanCard";
@@ -90,8 +90,8 @@ export function CloudSection() {
     });
   }, [machines]);
 
-  // Before the early return below: a hook runs on every render.
-  const cloudSignIns = useCloudSignIns(live);
+  // The sign-ins row's count, shared with the ready card's hint (one read, in the row).
+  const [signInCount, setSignInCount] = useState<number | null>(null);
 
   if (!bridge) {
     return (
@@ -166,8 +166,8 @@ export function CloudSection() {
         {live ? (
           <>
             {account ? <CloudPlanCard account={account} onChanged={machines.refresh} /> : null}
-            <CloudSignInsCard signIns={cloudSignIns} />
-            <CloudReadyMachinesCard cloudSignIns={cloudSignIns.status} />
+            <AdeCloudSignInsRow onCount={setSignInCount} />
+            <CloudReadyMachinesCard signInCount={signInCount} />
             <CloudMachinesCard status={status} machines={machines} onNewMachine={() => setCreating(true)} accountChangedAt={accountChangedAt} />
             <CloudAgentLimitsCard />
           </>

@@ -8,7 +8,17 @@
  * The rows are the P7 design's state table: T1–T12 for carried providers,
  * F1–F5 for fallback providers, C1–C9 for Claude.
  */
-import type { CloudSignInId, CloudSignInStatus } from "../../../../../shared/cloudSignIns";
+import {
+  newerClaudePassUse,
+  type ClaudePassCheck,
+  type ClaudePassState,
+  type ClaudePassUpload,
+  type ClaudePassUseSource,
+  type ClaudePassUseView,
+  type ClaudePassUseWindow,
+  type CloudSignInId,
+  type CloudSignInStatus,
+} from "../../../../../shared/cloudSignIns";
 import type { AiSettingsStatus } from "../../../../../shared/types";
 import {
   isClaudePassKey,
@@ -32,19 +42,6 @@ const ENDS_SOON_DAYS = 3;
 
 // ── The Claude pass rows, read through one guard ─────────────────────────
 
-/** One window of a pass's use, as the tile reads it. */
-export type CloudPassUseWindow = { usedPct: number | null; resetSinceSeen: boolean };
-
-/** A pass's use, as the tile reads it (`ClaudePassUseView` in `shared/cloudSignIns.ts`). */
-export type CloudPassUse =
-  | { state: "none_seen" }
-  | {
-    state: "seen";
-    fiveHour: CloudPassUseWindow | null;
-    weekly: CloudPassUseWindow | null;
-    from: { kind: "pass_turn" | "account_here"; label: string | null };
-  };
-
 /** One `claudePasses` entry: only the fields the ADE Cloud place reads. */
 export type CloudPassRow =
   | { key: string; unreadable: true }
@@ -53,43 +50,81 @@ export type CloudPassRow =
     unreadable: false;
     label: string;
     email: string | null;
+    check: ClaudePassCheck;
     on: boolean;
     newChats: boolean;
+    madeOnLabel: string | null;
     createdAt: number;
+    renewedAt: number | null;
+    expiresAt: number | null;
+    expiresAtSource: "estimate" | "claude";
     endsInDays: number;
-    state: "active" | "ending_soon" | "estimate_passed" | "ended";
+    state: ClaudePassState;
     endedAt: number | null;
-    upload: "account" | "pending" | "refused";
-    use: CloudPassUse | null;
+    upload: ClaudePassUpload;
+    smartBalance: boolean;
+    /** The use this brain saw (a cloud computer: the pass's own turns). Null when the shape is not known. */
+    use: ClaudePassUseView | null;
   };
+
+export type ReadableCloudPassRow = Extract<CloudPassRow, { unreadable: false }>;
 
 const PASS_STATES = new Set(["active", "ending_soon", "estimate_passed", "ended"]);
 const PASS_UPLOADS = new Set(["account", "pending", "refused"]);
+const PASS_CHECKS = new Set(["match", "kept_other", "unchecked"]);
+const WINDOW_STATUSES = new Set(["allowed", "allowed_warning", "rejected"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function readUseWindow(value: unknown): CloudPassUseWindow | null {
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readUseSource(value: unknown): ClaudePassUseSource | null {
   if (!isRecord(value)) return null;
+  const kind = value.kind;
+  if (kind !== "pass_turn" && kind !== "account_here") return null;
+  return { kind, label: typeof value.label === "string" && value.label.trim() ? value.label : null };
+}
+
+function readUseWindow(value: unknown): ClaudePassUseWindow | null {
+  if (!isRecord(value)) return null;
+  const seenAt = finiteOrNull(value.seenAt);
+  const from = readUseSource(value.from);
+  if (seenAt == null || !from) return null;
   return {
-    usedPct: typeof value.usedPct === "number" && Number.isFinite(value.usedPct) ? value.usedPct : null,
+    usedPct: finiteOrNull(value.usedPct),
+    resetsAt: finiteOrNull(value.resetsAt),
+    // The account's own reading gives no status: never "limit reached" from it.
+    status: from.kind === "pass_turn" && typeof value.status === "string" && WINDOW_STATUSES.has(value.status)
+      ? value.status as ClaudePassUseWindow["status"]
+      : null,
+    seenAt,
     resetSinceSeen: value.resetSinceSeen === true,
+    from,
   };
 }
 
-function readUse(value: unknown): CloudPassUse | null {
+/** A pass's use through the guard, as `ClaudePassUseView`; null when the shape is not one ADE knows. */
+export function readPassUse(value: unknown): ClaudePassUseView | null {
   if (!isRecord(value)) return null;
   if (value.state === "none_seen") return { state: "none_seen" };
-  if (value.state !== "seen" || !isRecord(value.from)) return null;
-  const kind = value.from.kind;
-  if (kind !== "pass_turn" && kind !== "account_here") return null;
-  return {
-    state: "seen",
-    fiveHour: readUseWindow(value.fiveHour),
-    weekly: readUseWindow(value.weekly),
-    from: { kind, label: typeof value.from.label === "string" ? value.from.label : null },
-  };
+  if (value.state !== "seen") return null;
+  const models: Partial<Record<"opus" | "sonnet", ClaudePassUseWindow>> = {};
+  if (isRecord(value.models)) {
+    for (const family of ["opus", "sonnet"] as const) {
+      const window = readUseWindow(value.models[family]);
+      if (window) models[family] = window;
+    }
+  }
+  const fiveHour = readUseWindow(value.fiveHour);
+  const weekly = readUseWindow(value.weekly);
+  const windows = [fiveHour, weekly, models.opus, models.sonnet].filter((window): window is ClaudePassUseWindow => Boolean(window));
+  if (windows.length === 0) return { state: "none_seen" };
+  const newest = windows.reduce((best, window) => (window.seenAt > best.seenAt ? window : best));
+  return { state: "seen", lastSeenAt: newest.seenAt, fiveHour, weekly, models, from: { ...newest.from, seenAt: newest.seenAt } };
 }
 
 /**
@@ -101,7 +136,7 @@ function readUse(value: unknown): CloudPassUse | null {
  */
 export function readClaudePasses(status: ProviderLoginStatus | null | undefined): CloudPassRow[] {
   const rows: CloudPassRow[] = [];
-  for (const entry of status?.claudePasses ?? []) {
+  for (const entry of (status?.claudePasses ?? []) as unknown[]) {
     if (!isRecord(entry) || typeof entry.key !== "string") continue;
     if (entry.unreadable === true) {
       rows.push({ key: entry.key, unreadable: true });
@@ -120,19 +155,50 @@ export function readClaudePasses(status: ProviderLoginStatus | null | undefined)
       unreadable: false,
       label: entry.label,
       email: typeof entry.email === "string" && entry.email.trim() ? entry.email : null,
+      check: typeof entry.check === "string" && PASS_CHECKS.has(entry.check) ? entry.check as ClaudePassCheck : "match",
       on: entry.on,
       newChats: entry.newChats,
+      madeOnLabel: typeof entry.madeOnLabel === "string" && entry.madeOnLabel.trim() ? entry.madeOnLabel : null,
       createdAt: entry.createdAt,
+      renewedAt: finiteOrNull(entry.renewedAt),
+      expiresAt: finiteOrNull(entry.expiresAt),
+      expiresAtSource: entry.expiresAtSource === "claude" ? "claude" : "estimate",
       endsInDays: entry.endsInDays,
-      state: entry.state as "active" | "ending_soon" | "estimate_passed" | "ended",
-      endedAt: typeof entry.endedAt === "number" ? entry.endedAt : null,
-      upload: typeof entry.upload === "string" && PASS_UPLOADS.has(entry.upload)
-        ? entry.upload as "account" | "pending" | "refused"
-        : "account",
-      use: readUse(entry.use),
+      state: entry.state as ClaudePassState,
+      endedAt: finiteOrNull(entry.endedAt),
+      upload: typeof entry.upload === "string" && PASS_UPLOADS.has(entry.upload) ? entry.upload as ClaudePassUpload : "account",
+      smartBalance: entry.smartBalance === true,
+      use: readPassUse(entry.use),
     });
   }
   return rows;
+}
+
+/**
+ * The account side's use of each pass (`cloudSignInStatus().passes[].use`):
+ * the limits of the Claude account with the same email that one of the
+ * person's computers tracks. By pass key; through the same guard.
+ */
+export function accountPassUse(passes: CloudSignInStatus["passes"] | null | undefined): ReadonlyMap<string, ClaudePassUseView> {
+  const byKey = new Map<string, ClaudePassUseView>();
+  for (const pass of (passes ?? []) as unknown[]) {
+    if (!isRecord(pass) || typeof pass.key !== "string" || pass.unreadable === true) continue;
+    const use = readPassUse(pass.use);
+    if (use) byKey.set(pass.key, use);
+  }
+  return byKey;
+}
+
+/**
+ * One pass's use from both reads: per window the newer reading, and one from
+ * before its reset loses to a current one (`newerClaudePassUse`). The cloud
+ * computer's own turns (`pass_turn`) and the account's numbers on a computer
+ * (`account_here`) each keep their source, so the card can say where a
+ * number comes from.
+ */
+export function joinedPassUse(cloudRow: CloudPassRow | undefined, accountUse: ClaudePassUseView | undefined): ClaudePassUseView {
+  const cloudUse = cloudRow && !cloudRow.unreadable ? cloudRow.use : null;
+  return newerClaudePassUse(cloudUse, accountUse ?? null);
 }
 
 // ── The two parts ────────────────────────────────────────────────────────
@@ -240,6 +306,8 @@ export type AdeCloudTileInput = {
   saved: CloudSignInStatus["saved"] | null;
   /** The account read reached the Mac in front of the person, so its Keychain state is this Mac's. */
   keychainIsThisMac: boolean;
+  /** The account side's use of each pass (`accountPassUse`); empty before the read. */
+  passUse?: ReadonlyMap<string, ClaudePassUseView>;
   now: number;
 };
 
@@ -362,6 +430,14 @@ function carriedTile(input: AdeCloudTileInput, row: ProviderLoginProviderStatus 
   if (provider === "antigravity" && input.keychainIsThisMac && row?.keychain?.canAllow) {
     return notSignedIn("T11", "It is in this Mac's Keychain", { kind: "allow-keychain" });
   }
+  // Copilot comes from a computer's GitHub CLI login, once it is turned on there (this computer's page).
+  if (provider === "copilot") {
+    const gh = row?.ghCli ?? null;
+    if (gh?.allowed && (gh.unsupported || gh.lastError)) {
+      return notSignedIn("T13", "Couldn't copy this computer's GitHub CLI login", { kind: "sign-in-here" });
+    }
+    return notSignedIn("T10", "Turn on a GitHub CLI login on a computer", { kind: "sign-in-here" });
+  }
   return notSignedIn("T10", "Sign in on a computer to use it here", { kind: "sign-in-here" });
 }
 
@@ -396,24 +472,29 @@ function fallbackTile(input: AdeCloudTileInput): Omit<AdeCloudTile, "provider"> 
   }
 }
 
-/** The use line of the Claude tile: a cloud chat's numbers first, then the same account's on a computer. */
-function passUseLine(account: CloudPassRow | undefined, cloud: CloudPassRow | undefined): string {
-  const passUse = (row: CloudPassRow | undefined) => (row && !row.unreadable ? row.use : null);
-  const candidates = [passUse(cloud), passUse(account)];
-  const turn = candidates.find((use) => use?.state === "seen" && use.from.kind === "pass_turn");
-  const here = candidates.find((use) => use?.state === "seen" && use.from.kind === "account_here");
-  const use = turn ?? here;
-  if (!use || use.state !== "seen") return "No use seen yet";
-  const pct = (window: CloudPassUseWindow | null) =>
-    window && window.usedPct != null && !window.resetSinceSeen ? `${Math.round(window.usedPct)} %` : null;
-  const weekly = pct(use.weekly);
-  const fiveHour = pct(use.fiveHour);
-  if (use.from.kind === "pass_turn") {
-    const parts = [weekly ? `Weekly ${weekly}` : null, fiveHour ? `5-hour ${fiveHour}` : null].filter(Boolean);
-    return parts.length > 0 ? parts.join(" · ") : "No use seen yet";
-  }
-  const from = use.from.label ? `From ${use.from.label}` : null;
-  return [weekly ? `Weekly ${weekly}` : null, from].filter(Boolean).join(" · ") || "No use seen yet";
+/** A window's share as words, or null when there is no current number. */
+function sharePct(window: ClaudePassUseWindow | null): string | null {
+  return window && window.usedPct != null && !window.resetSinceSeen ? `${Math.round(window.usedPct)} %` : null;
+}
+
+/**
+ * The use line of the Claude tile (U1–U3): the weekly share first, since the
+ * weekly limit is the one a pass runs out of. Numbers from the same account
+ * on a computer say which computer.
+ */
+export function passUseLine(use: ClaudePassUseView): string {
+  if (use.state !== "seen") return "No use seen yet";
+  const weekly = sharePct(use.weekly);
+  const fiveHour = sharePct(use.fiveHour);
+  const lead = weekly ? use.weekly : fiveHour ? use.fiveHour : null;
+  if (!lead) return "No use seen yet";
+  const parts: string[] = [];
+  if (weekly) parts.push(`Weekly ${weekly}`);
+  // Both shares only when both come from the pass's own turns; else the lead and where it is from.
+  const bothFromTurns = use.weekly?.from.kind === "pass_turn" && use.fiveHour?.from.kind === "pass_turn";
+  if (fiveHour && (!weekly || bothFromTurns)) parts.push(`5-hour ${fiveHour}`);
+  if (lead.from.kind === "account_here") parts.push(`From ${lead.from.label ?? "this computer"}`);
+  return parts.join(" · ");
 }
 
 function claudeTile(input: AdeCloudTileInput): Omit<AdeCloudTile, "provider"> {
@@ -421,7 +502,7 @@ function claudeTile(input: AdeCloudTileInput): Omit<AdeCloudTile, "provider"> {
   if (account.state !== "ok") return CHECKING_TILE;
   const passes = readClaudePasses(account.status);
   const cloudPasses = cloud.state === "ok" ? readClaudePasses(cloud.status) : [];
-  const readable = passes.filter((pass): pass is Extract<CloudPassRow, { unreadable: false }> => !pass.unreadable);
+  const readable = passes.filter((pass): pass is ReadableCloudPassRow => !pass.unreadable);
   if (passes.length === 0) return notSignedIn("C1", "Approve a Claude pass for ADE Cloud", { kind: "claude-pass", renewKey: null });
   if (readable.length === 0) return unknown("C7", "Couldn't read your Claude pass");
   if (readable.every((pass) => pass.state === "ended")) {
@@ -434,7 +515,7 @@ function claudeTile(input: AdeCloudTileInput): Omit<AdeCloudTile, "provider"> {
   const current = on.find((pass) => pass.newChats) ?? on[0]!;
   const label = current.email ?? `Claude pass from ${shortDate(current.createdAt, now)}`;
   const more = on.length > 1 ? ` · ${on.length} passes` : "";
-  const useLine: ProviderTileFact = { text: passUseLine(current, cloudPasses.find((pass) => pass.key === current.key)) };
+  const useLine: ProviderTileFact = { text: passUseLine(joinedPassUse(cloudPasses.find((pass) => pass.key === current.key), input.passUse?.get(current.key))) };
   if (current.upload !== "account") return signedIn("C9", [{ text: `${label} · Kept on this computer for now${more}` }, useLine]);
   if (current.state === "ending_soon") {
     const days = Math.max(0, Math.round(current.endsInDays));

@@ -24,24 +24,22 @@ import {
   ADE_CLOUD_REACH_LINE,
   ADE_CLOUD_TILE_ORDER,
   COPILOT_REPO_LINE,
+  accountPassUse,
   adeCloudPageLine,
+  readClaudePasses,
   adeCloudTile,
   cloudSignInsOn,
   type AdeCloudTile,
 } from "./adeCloudSignInModel";
 import { useAdeCloudSignIns, type AdeCloudSignInsState } from "./useAdeCloudSignIns";
 import { useHeldWrites } from "./useHeldWrites";
+import { useAllowKeychain } from "./useAllowKeychain";
 import { AdeCloudProviderPage } from "./AdeCloudProviderPage";
+import { AdeCloudClaudePage } from "./AdeCloudClaudePage";
+import { ClaudePassSignInSheet, type ClaudePassRequest } from "./ClaudePassSignInSheet";
 import "../../machines/machinesPage.css";
 
 const PROVIDER_ANCHOR_PREFIX = "ai-provider-";
-
-/**
- * The Allow on this Mac read in flight, kept outside the view: macOS shows
- * its prompt while it waits, so leaving the page and coming back must not
- * start a second one. Cleared when the read ends, whatever the view does.
- */
-let allowInFlight: Promise<unknown> | null = null;
 
 /**
  * What the page and the tiles draw while a Remove waits on its toast: the
@@ -51,7 +49,14 @@ let allowInFlight: Promise<unknown> | null = null;
 function withoutHeld(state: AdeCloudSignInsState, held: ReadonlySet<string>): AdeCloudSignInsState {
   if (held.size === 0) return state;
   const account = state.account.state === "ok"
-    ? { state: "ok" as const, status: { ...state.account.status, signIns: state.account.status.signIns.filter((signIn) => !held.has(signIn.key)) } }
+    ? {
+      state: "ok" as const,
+      status: {
+        ...state.account.status,
+        signIns: state.account.status.signIns.filter((signIn) => !held.has(signIn.key)),
+        claudePasses: state.account.status.claudePasses?.filter((pass) => !held.has(pass.key)),
+      },
+    }
     : state.account;
   const saved = state.saved?.map((entry) => (held.has(`key:${entry.id}`) ? { ...entry, saved: false } : entry)) ?? null;
   return { ...state, account, saved };
@@ -69,7 +74,8 @@ export function AdeCloudProvidersView({
   // Remove waits on its toast; the page and the list share one set, so leaving either runs it.
   const heldWrites = useHeldWrites();
   const signIns = useMemo(() => withoutHeld(readSignIns, heldWrites.held), [heldWrites.held, readSignIns]);
-  const { account, cloud, saved, candidates, reporting, accountPin, keychainIsThisMac } = signIns;
+  const { account, cloud, saved, signInStatus, candidates, reporting, accountPin, keychainIsThisMac } = signIns;
+  const passUse = useMemo(() => accountPassUse(signInStatus?.passes), [signInStatus?.passes]);
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -99,12 +105,13 @@ export function AdeCloudProvidersView({
         cloud,
         saved,
         keychainIsThisMac,
+        passUse,
         now,
       }),
     })),
     // `now` changes every render; the tiles only need it when a read lands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [account, cloud, descriptors, keychainIsThisMac, saved],
+    [account, cloud, descriptors, keychainIsThisMac, passUse, saved],
   );
 
   // ── The order: set while the place opens and on Re-check, never by a switch or a change event ──
@@ -176,28 +183,45 @@ export function AdeCloudProvidersView({
     void runWrite("all", () => window.ade?.providerLogins?.setCloudAll?.({ on: true }, accountPin), "ADE couldn't turn on sign-ins for ADE Cloud. Try again.");
   }, [accountPin, runWrite]);
 
-  const [allowing, setAllowing] = useState(() => allowInFlight != null);
+  const allowRun = useCallback(() => runWrite(
+    "allow:antigravity",
+    () => window.ade?.providerLogins?.allowKeychain?.({ provider: "antigravity" }, accountPin),
+    "ADE couldn't copy the Antigravity sign-in from this Mac.",
+  ), [accountPin, runWrite]);
+  const { allowing, allow: allowKeychain } = useAllowKeychain(allowRun);
+
+  // ── The Claude pass approve: one sheet for the tile and Claude's page ──
+  const [passRequest, setPassRequest] = useState<ClaudePassRequest | null>(null);
+  const closePassSheet = useCallback(() => setPassRequest(null), []);
+  const passSheet = passRequest ? (
+    <ClaudePassSignInSheet
+      request={passRequest}
+      status={signInStatus}
+      applyStatus={signIns.applySaved}
+      reload={signIns.reloadSignInStatus}
+      onSaved={signIns.refreshAccount}
+      onClose={closePassSheet}
+    />
+  ) : null;
+  /** A Renew is for the pass's own account. */
+  const renewRequest = (renewKey: string | null): ClaudePassRequest => {
+    const pass = renewKey && account.state === "ok"
+      ? readClaudePasses(account.status).find((row) => row.key === renewKey)
+      : null;
+    return { renewKey, forEmail: pass && !pass.unreadable ? pass.email : null };
+  };
+
+  // `?renew=<pass key>` (the end warning's Renew): open the approve for that pass once the account is read, then drop the param.
+  const renewParam = searchParams.get("renew");
   useEffect(() => {
-    // Opened while an earlier view's read still waits: show it as busy until it ends.
-    if (!allowInFlight) return;
-    void allowInFlight.finally(() => {
-      if (mountedRef.current) setAllowing(false);
-    });
-  }, []);
-  const allowKeychain = useCallback(() => {
-    if (allowInFlight) return;
-    setAllowing(true);
-    const run = runWrite(
-      "allow:antigravity",
-      () => window.ade?.providerLogins?.allowKeychain?.({ provider: "antigravity" }, accountPin),
-      "ADE couldn't copy the Antigravity sign-in from this Mac.",
-    );
-    allowInFlight = run;
-    void run.finally(() => {
-      if (allowInFlight === run) allowInFlight = null;
-      if (mountedRef.current) setAllowing(false);
-    });
-  }, [accountPin, runWrite]);
+    if (!renewParam || account.state === "loading") return;
+    if (account.state === "ok") setPassRequest(renewRequest(renewParam));
+    const next = new URLSearchParams(searchParams);
+    next.delete("renew");
+    navigate({ pathname: location.pathname, search: `?${next.toString()}`, hash: location.hash }, { replace: true });
+    // `renewRequest` reads the same account read; only the param and the read's state decide.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renewParam, account.state]);
 
   // Sign in for a carried provider runs on this computer: its own provider page has the sign-in.
   const openOnThisComputer = useCallback((providerId: string) => {
@@ -223,7 +247,10 @@ export function AdeCloudProvidersView({
       case "recheck":
         return { kind: "button", label: "Re-check", aria: `Re-check ${descriptor.label} on ADE Cloud`, busy: signIns.rechecking, run: () => void recheck() };
       case "sign-in-here":
-        return { kind: "button", label: "Sign in", aria: `Sign in to ${descriptor.label} on this computer`, run: () => openOnThisComputer(descriptor.id) };
+        // Copilot's sign-in is the GitHub CLI login, turned on on this computer's Copilot page.
+        return descriptor.id === "copilot"
+          ? { kind: "button", label: "Set up", aria: "Set up the GitHub CLI login on this computer's Copilot page", run: () => openOnThisComputer(descriptor.id) }
+          : { kind: "button", label: "Sign in", aria: `Sign in to ${descriptor.label} on this computer`, run: () => openOnThisComputer(descriptor.id) };
       case "allow-keychain":
         // A short label leaves the tile room for its line; the full words are its name.
         return { kind: "button", label: "Allow", aria: "Allow on this Mac: ADE copies the Antigravity sign-in from this Mac's Keychain", busy: allowing, run: allowKeychain };
@@ -232,7 +259,13 @@ export function AdeCloudProvidersView({
         return onProviderChange
           ? { kind: "button", label: "Sign in", aria: `Sign in to ${descriptor.label} on the cloud computer`, run: () => onProviderChange(descriptor.id) }
           : null;
-      // The Claude pass approve (step 4) is not built yet.
+      case "claude-pass":
+        return {
+          kind: "button",
+          label: action.renewKey ? "Renew" : "Sign in",
+          aria: action.renewKey ? "Renew your Claude pass for ADE Cloud" : "Sign in to Claude for ADE Cloud",
+          run: () => setPassRequest(renewRequest(action.renewKey)),
+        };
       default:
         return null;
     }
@@ -241,16 +274,37 @@ export function AdeCloudProvidersView({
   const line = adeCloudPageLine(account, cloud);
   const signInsOn = cloudSignInsOn(account);
 
-  // One provider's page. Claude's (passes) comes later; until then its tile stays on the list.
-  const opened = providerParam && providerParam !== "claude"
-    ? rows.find((row) => row.descriptor.id === providerParam) ?? null
-    : null;
+  // One provider's page; Claude's has the passes.
+  const opened = providerParam ? rows.find((row) => row.descriptor.id === providerParam) ?? null : null;
+  if (opened?.descriptor.id === "claude") {
+    return (
+      <div className="ade-pv-page">
+        {/* The anchor a provider page opens at (its top), as on a computer's page. */}
+        <div id={`${PROVIDER_ANCHOR_PREFIX}claude`}>
+          <AdeCloudClaudePage
+            descriptor={opened.descriptor}
+            tile={opened.tile}
+            signIns={signIns}
+            busy={busy}
+            runWrite={runWrite}
+            setSwitch={setSwitch}
+            heldWrites={heldWrites}
+            recheck={() => void recheck()}
+            openPassSheet={setPassRequest}
+          />
+        </div>
+        {passSheet}
+      </div>
+    );
+  }
   if (opened) {
     const providerRow = account.state === "ok"
       ? account.status.providers.find((entry) => entry.provider === opened.descriptor.id) ?? null
       : null;
     return (
       <div className="ade-pv-page">
+        {/* The anchor a provider page opens at (its top), as on a computer's page. */}
+        <div id={`${PROVIDER_ANCHOR_PREFIX}${opened.descriptor.id}`}>
         <AdeCloudProviderPage
           descriptor={opened.descriptor}
           tile={opened.tile}
@@ -263,6 +317,7 @@ export function AdeCloudProvidersView({
           // Until the account answers, the sign-ins part says it is reading.
           carried={account.state !== "ok" || providerRow?.carry === "carried"}
         />
+        </div>
       </div>
     );
   }
@@ -318,14 +373,14 @@ export function AdeCloudProvidersView({
                 accent={brand.neutral ? "var(--color-fg)" : brand.accent}
                 action={tileAction(descriptor, tile)}
                 row={tile.row}
-                wrapLast
-                // Claude's page (passes) comes later: its tile is not a button yet.
-                onOpen={onProviderChange && descriptor.id !== "claude" ? () => onProviderChange(descriptor.id) : undefined}
+                wrapFacts
+                onOpen={onProviderChange ? () => onProviderChange(descriptor.id) : undefined}
               />
             );
           })}
         </div>
       </section>
+      {passSheet}
     </div>
   );
 }
