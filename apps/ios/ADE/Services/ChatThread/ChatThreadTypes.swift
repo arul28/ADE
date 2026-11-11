@@ -103,10 +103,14 @@ func chatThreadIsOmittedHistoryRowNotice(_ event: ChatThreadLiveEvent) -> Bool {
 /// The stand-in's identity: the omitted row's byte offset (`omittedRow.offset`,
 /// from hosts that send it), else the page's row offset, else its timestamp.
 func chatThreadOmittedHistoryRowKey(_ event: ChatThreadLiveEvent) -> String {
-  let omittedRow = chatThreadOmittedHistoryRowBody(event)?["omittedRow"] as? [String: Any]
-  if let offset = (omittedRow?["offset"] as? NSNumber)?.intValue { return "offset:\(offset)" }
-  if let offset = event.envelope.sourceOffset { return "offset:\(offset)" }
+  if let offset = chatThreadOmittedHistoryRowOffset(event) { return "offset:\(offset)" }
   return "id:\(event.envelope.id)"
+}
+
+/// The omitted row's byte offset: `omittedRow.offset`, else the page's offset.
+func chatThreadOmittedHistoryRowOffset(_ event: ChatThreadLiveEvent) -> Int? {
+  let omittedRow = chatThreadOmittedHistoryRowBody(event)?["omittedRow"] as? [String: Any]
+  return (omittedRow?["offset"] as? NSNumber)?.intValue ?? event.envelope.sourceOffset
 }
 
 private func chatThreadOmittedHistoryRowBody(_ event: ChatThreadLiveEvent) -> [String: Any]? {

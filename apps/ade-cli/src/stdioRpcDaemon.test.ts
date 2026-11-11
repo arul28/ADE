@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
-import { createBrainLogger } from "./services/runtime/brainLogger";
+import { createFileLogger } from "../../desktop/src/main/services/logging/logger";
 import { BRAIN_CONNECTION_LOST_CODE } from "../../desktop/src/shared/brainConnectionLoss";
 
 type JsonRpcResponse = {
@@ -722,15 +722,21 @@ describe("ade rpc --stdio daemon bridge", () => {
     const deadBrainPid = exited.pid!;
     const runtimeDir = resolveMachineAdeLayout({ ...environmentWithoutAde(), ADE_HOME: adeHome }).runtimeDir;
     fs.mkdirSync(runtimeDir, { recursive: true });
-    // Written by the brain's own logger, so the lines have the shape a real brain writes.
-    const brainLog = createBrainLogger(path.join(runtimeDir, "brain.jsonl"), {
-      stderr: { write: () => true, on: () => process.stderr } as Pick<NodeJS.WriteStream, "write" | "on">,
-    });
+    // Written by the file logger the brain's logger wraps (`createBrainLogger`
+    // adds only a stderr copy), so the lines have the shape a real brain
+    // writes. Its own level, whatever ADE_LOG_LEVEL this test runs under, and
+    // `flushSync` so the lines are on disk before the relay reads them.
+    const inheritedLogLevel = process.env.ADE_LOG_LEVEL;
+    process.env.ADE_LOG_LEVEL = "info";
+    const brainLog = createFileLogger(path.join(runtimeDir, "brain.jsonl"));
+    if (inheritedLogLevel === undefined) delete process.env.ADE_LOG_LEVEL;
+    else process.env.ADE_LOG_LEVEL = inheritedLogLevel;
     brainLog.info("brain.started");
     brainLog.error("process.uncaught_exception", {
       err: Object.assign(new Error("ENOSPC: no space left on device, write '/home/tiger/.ade/ade.db-wal'"), { code: "ENOSPC" }),
     });
-    brainLog.flushSync?.();
+    expect(brainLog.flushSync, "the file logger writes queued lines synchronously").toBeTypeOf("function");
+    brainLog.flushSync!();
     const brain = net.createServer((socket) => {
       brainSockets.add(socket);
       let buffer = "";

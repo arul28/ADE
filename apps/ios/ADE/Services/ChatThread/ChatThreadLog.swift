@@ -266,7 +266,9 @@ extension ChatThreadEngine {
     for event in page.events where chatThreadIsOmittedHistoryRowNotice(event) {
       let noticeKey = chatThreadOmittedHistoryRowKey(event)
       guard omittedRowNoticeKeys.insert(noticeKey).inserted else { continue }
-      omittedRowNotices.append(LogEntry(envelope: event.envelope, raw: event.raw, sequence: nil))
+      var envelope = event.envelope
+      envelope.omittedRowOffset = chatThreadOmittedHistoryRowOffset(event)
+      omittedRowNotices.append(LogEntry(envelope: envelope, raw: event.raw, sequence: nil))
       outcomes.append(.rewritten)
     }
     hasOlderHistory = page.hasMore

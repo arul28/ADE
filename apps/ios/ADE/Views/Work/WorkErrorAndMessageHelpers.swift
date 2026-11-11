@@ -1111,6 +1111,7 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
   envelope.userMessageWrittenByAde = entry.userMessageWrittenByAde
   envelope.userMessageFromSideChat = entry.userMessageFromSideChat
   envelope.userMessageIsRecoveryHandOff = entry.userMessageIsRecoveryHandOff
+  envelope.omittedRowOffset = entry.omittedRowOffset
   if case .systemNotice(_, _, let detail, _, _) = entry.event {
     envelope.continuityNotice = workContinuityNotice(from: detail)
   }
@@ -2437,6 +2438,9 @@ func sortedWorkChatEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvel
 func workChatEnvelopeMergeKey(_ envelope: WorkChatEnvelope) -> String {
   if let stableKey = workChatEnvelopeStableUpdateKey(envelope) {
     return stableKey
+  }
+  if let omittedRowOffset = envelope.omittedRowOffset {
+    return "\(envelope.sessionId)|omitted-row|\(omittedRowOffset)"
   }
   return "\(envelope.sessionId)|\(envelope.timestamp)|\(workChatEventMergeKey(envelope.event))"
 }
