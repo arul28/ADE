@@ -616,7 +616,12 @@ apps/ios/
 │   │   │                            # HubHeaderRow (the header row and its
 │   │   │                            #   tiers: on the Duo's outer display it
 │   │   │                            #   sits in the band beside the clock, with
-│   │   │                            #   the machines as one glyph). HubComponents
+│   │   │                            #   the machines as one glyph),
+│   │   │                            # HubStatusBand (finds that band: it
+│   │   │                            #   measures the status block, or uses the
+│   │   │                            #   display's shape when the phone reports
+│   │   │                            #   none; Settings › Advanced shows the
+│   │   │                            #   reading). HubComponents
 │   │   │                            #   gives the projectless Chats button a
 │   │   │                            #   small count badge for personal chats
 │   │   │                            #   awaiting input and an equivalent
