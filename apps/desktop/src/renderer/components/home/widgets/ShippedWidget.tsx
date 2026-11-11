@@ -164,7 +164,9 @@ export default function ShippedWidget({ item }: HomeWidgetProps) {
             ))}
           </div>
         ) : (
-          <div className="ade-shipped-none">{prs.loaded ? "No merges yet this week." : "Reading pull requests…"}</div>
+          <div className="ade-shipped-none">
+            {prs.retrying || !prs.loaded ? "Reading pull requests…" : prs.error ?? "No merges yet this week."}
+          </div>
         )}
         {roomy && span.h >= 2 && merges.length > 0 ? (
           <FitList

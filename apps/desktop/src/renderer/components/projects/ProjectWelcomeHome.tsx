@@ -485,6 +485,7 @@ export type HomePullRequests = {
   loaded: boolean;
   viewer: string | null;
   error: string | null;
+  retrying: boolean;
   retry: () => void;
 };
 
@@ -492,6 +493,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
   const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   const [data, setData] = useState<{ snapshot: GitHubPrSnapshot | null; tracked: PrSummary[] } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const requestRef = useRef(0);
   /** Set by the person's Retry: the next read bypasses a cached auth refusal. */
@@ -502,10 +504,13 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
   const lastSignatureRef = useRef<string | null>(null);
   useEffect(() => {
     lastSignatureRef.current = null;
+    setLoadError(null);
     const bridge = window.ade?.prs;
     if (!projectRoot || !bridge?.getGitHubSnapshot) {
+      forceNextRef.current = false;
       setData({ snapshot: null, tracked: [] });
       setLoadError(null);
+      setRetrying(false);
       return undefined;
     }
     let timer: number | null = null;
@@ -537,11 +542,13 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
       // can carry identical data, and the error must still update.
       if (signature === lastSignatureRef.current) {
         setLoadError(nextError);
+        setRetrying(false);
         return;
       }
       lastSignatureRef.current = signature;
       setData({ snapshot, tracked });
       setLoadError(nextError);
+      setRetrying(false);
     };
     const soon = () => {
       if (timer != null) window.clearTimeout(timer);
@@ -598,12 +605,14 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
       loaded: data != null,
       viewer,
       error: loadError,
+      retrying,
       retry: () => {
         forceNextRef.current = true;
+        setRetrying(true);
         setReloadKey((key) => key + 1);
       },
     };
-  }, [data, loadError]);
+  }, [data, loadError, retrying]);
 }
 
 /** GitHub's own state colours, as a `data-state` the stylesheet maps per theme. */
@@ -681,7 +690,7 @@ export function PullRequestsCard({
   prs: HomePullRequests;
   onOpenPrs?: () => void;
 }) {
-  const { open, recent, loaded, error: prLoadError, retry: retryPullRequests } = prs;
+  const { open, recent, loaded, error: prLoadError, retrying, retry: retryPullRequests } = prs;
   const counts = useMemo(() => {
     const result = { failing: 0, review: 0, ready: 0 };
     for (const pr of open) {
@@ -727,7 +736,7 @@ export function PullRequestsCard({
             {open.length === 0 && recent.length === 0 ? (
               <div className="ade-home-empty">
                 <GitPullRequest size={18} aria-hidden />
-                <span>{prLoadError ?? (loaded ? "No pull requests this week." : "Reading pull requests…")}</span>
+                <span>{retrying || !loaded ? "Reading pull requests…" : prLoadError ?? "No pull requests this week."}</span>
                 {prLoadError ? (
                   <button type="button" className="ade-home-line-link" onClick={retryPullRequests}>
                     Retry

@@ -214,12 +214,13 @@ export function GitHubSection() {
   const pinRef = useRef(pin);
   pinRef.current = pin;
   const statusRequestRef = useRef(0);
-  const readStatus = useCallback(() => {
+  const readStatus = useCallback((force = false): Promise<void> => {
     // Switching machines while a read is in flight must not land the old
-    // machine's answer (or clear the new machine's real error).
+    // machine's answer (or clear the new machine's real error). A person's
+    // retry forces past the credential/status caches.
     const request = ++statusRequestRef.current;
-    window.ade.github
-      .getStatus(undefined, pinRef.current)
+    return window.ade.github
+      .getStatus(force ? { forceRefresh: true } : undefined, pinRef.current)
       .then((status) => {
         if (statusRequestRef.current !== request) return;
         setGithubStatus(status);
@@ -252,7 +253,7 @@ export function GitHubSection() {
   // front and when any surface reports a change. The reads are cached in the
   // main process for 30 seconds, so this costs little.
   useEffect(() => {
-    const reload = readStatus;
+    const reload = () => { void readStatus(); };
     const onVisibility = () => {
       if (document.visibilityState === "visible") reload();
     };
@@ -309,15 +310,7 @@ export function GitHubSection() {
 
   const handleRefreshStatus = () => {
     setGithubBusy(true);
-    setActionError(null);
-    window.ade.github
-      .getStatus({ forceRefresh: true }, pin)
-      .then((status) => {
-        setGithubStatus(status);
-        setStatusError(null);
-      })
-      .catch((err) => setActionError(extractError(err)))
-      .finally(() => setGithubBusy(false));
+    void readStatus(true).finally(() => setGithubBusy(false));
   };
 
   const tokenAuthenticated = Boolean(githubStatus?.tokenStored && githubStatus?.userLogin);
@@ -595,7 +588,7 @@ export function GitHubSection() {
                 label: "Retry",
                 onClick: () => {
                   setStatusError(null);
-                  readStatus();
+                  void readStatus(true);
                 },
               }],
             }}
