@@ -6007,6 +6007,40 @@ describe("sync host account authentication", () => {
         }
       });
 
+      // The right follows what a message does: a steer into an idle chat
+      // starts a turn (needs send), a send into a running turn steers it
+      // (needs steer), whatever the command's name.
+      it.each<[string, "idle" | "own-running", string, { send: boolean; steer: boolean; any?: boolean }, boolean]>([
+        ["cannot start a turn with a steer without the send right", "idle", "chat.steer", { send: false, steer: true }, false],
+        ["cannot steer its own turn with a send without the steer right", "own-running", "chat.send", { send: true, steer: false }, false],
+        ["cannot start a turn with a steer when it may steer any turn but not send", "idle", "chat.steer", { send: false, steer: true, any: true }, false],
+        ["starts a turn with a send", "idle", "chat.send", { send: true, steer: false }, true],
+      ])("message rights: a guest %s", async (_label, state, action, speak, allowed) => {
+        const rights = laneSharePresetRights("collaborate");
+        rights.speak.send = speak.send;
+        rights.speak.steer = speak.steer;
+        rights.speak.interruptAnyTurn = speak.any === true;
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          guest = await connectGuest(env.port, env.proof, directory);
+          if (state === "own-running") {
+            expect((await runCommand(guest.client, "own", "chat.send", { sessionId: "session-shared", text: "go" })).ok).toBe(true);
+            env.emitChatEvent("session-shared", { type: "user_message", text: "go", turnId: "turn-g", metadata: { author: guestAuthor } });
+            env.emitChatEvent("session-shared", { type: "status", turnStatus: "started", turnId: "turn-g" });
+            env.chatState.status = "active";
+          }
+          env.execute.mockClear();
+          const result = await runCommand(guest.client, "act", action, { sessionId: "session-shared", text: "more" });
+          expect(result.ok).toBe(allowed);
+          if (!allowed) expect(result.error?.code).toBe("lane_share_right_missing");
+          expect(env.execute.mock.calls.some(([payload]) => payload.action === action)).toBe(allowed);
+        } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
       // A guest stops or steers only the turn it started; anyone else's needs
       // `speak.interruptAnyTurn`. Steps: "own" = the guest's send, and the
       // `user_message` with the guest as author that starts its turn;

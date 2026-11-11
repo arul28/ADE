@@ -356,8 +356,10 @@ export async function readProjectCopyState(rootPath: string, sessions: ProjectCo
   ]);
   const stashOutput = completeOutput(stashRes);
   const tipsOutput = completeOutput(tipsRes);
-  const noBranches = branchesRes.exitCode !== 0 && countLines(branchesRes.stdout) === 0
-    && checkouts.every((checkout) => checkout.unpushedCommits === 0);
+  // `rev-list` fails on a repository with no commit yet. Zero only when the
+  // full branch list confirms there is no branch at all: a scan that failed
+  // or timed out on a large branch stays unknown, so the removal asks.
+  const noBranches = branchesRes.exitCode !== 0 && tipsOutput !== null && countLines(tipsOutput) === 0;
   return {
     ...base,
     isGitRepo: true,

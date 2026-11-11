@@ -15,7 +15,7 @@ import {
   type LaneShareMoveStage,
   type LaneShareMoveView,
 } from "../../../../desktop/src/shared/laneShareMove";
-import { laneShareHighRiskRefusal, laneShareMayMove, parseLaneShareRights, type LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
+import { laneShareHighRiskRefusal, laneShareMayMove, laneShareRightsEnded, parseLaneShareRights, type LaneShareRights } from "../../../../desktop/src/shared/laneShareRights";
 import type { LaneShareEvent } from "../../../../desktop/src/shared/types/laneShare";
 import type { AgentChatCrossMachineGitBundle } from "../../../../desktop/src/shared/types/chat";
 import {
@@ -421,6 +421,21 @@ export function createLaneShareMoveService(options: {
   // -------------------------------------------------------------------------
   // Host, destination (`to_owner`): the owner's consent and the landing here
 
+  /**
+   * The share still lets its guest move work here, by this host's own rights
+   * row: present (not revoked), not past its end date, still Collaborate. A
+   * read failure counts as no.
+   */
+  const shareStillAllowsMove = (grantId: string): boolean => {
+    try {
+      const rights = options.rightsStore.get(grantId)?.rights ?? null;
+      return rights != null && !laneShareRightsEnded(rights, now()) && laneShareMayMove(rights);
+    } catch (error) {
+      options.logger?.warn("lane_share_move.rights_read_failed", { grantId, error: errorText(error) });
+      return false;
+    }
+  };
+
   const landOnHost = async (record: MoveRecord, guest: LaneShareMoveGuest): Promise<void> => {
     const incoming = record.incoming;
     const payload = record.payload!;
@@ -435,6 +450,12 @@ export function createLaneShareMoveService(options: {
           })
         : null;
       landed = await requireChat().acceptLaneShareMove({ payload, bundle, fromName: guest.name, fromUserId: guest.userId });
+      // The share can end, expire or shrink while the lane lands, with no
+      // guest left connected to carry the news: check it again here.
+      if (!record.cancelled && !shareStillAllowsMove(record.grantId)) {
+        record.cancelled = true;
+        end(record, "cancelled", "The share ended while the move landed.");
+      }
       if (record.cancelled) {
         await discardLanded(record, landed.laneId);
         return;
@@ -802,6 +823,14 @@ export function createLaneShareMoveService(options: {
       if (record.role === "host_source") return await hostSourceGuestCommand(record, guest, op, args);
       if (record.role === "host_destination") return await hostDestinationGuestCommand(record, guest, op, args);
       throw new LaneShareMoveError("lane_share_move_not_found", "This shared lane has no such move.");
+    },
+
+    /** True while a move this host runs is not final: the grant checks keep going for it. */
+    hasRunningHostMoves(): boolean {
+      for (const record of moves.values()) {
+        if ((record.role === "host_source" || record.role === "host_destination") && !LANE_SHARE_MOVE_FINAL_STAGES.has(record.stage)) return true;
+      }
+      return false;
     },
 
     /** A revoke, a leave, the end of the share, or a paused lane: every move of the grant ends now. */

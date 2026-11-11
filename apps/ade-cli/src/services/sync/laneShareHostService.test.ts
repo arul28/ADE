@@ -309,7 +309,7 @@ describe("lane share move consent", () => {
       notifyGuests: () => {},
       logger,
     });
-    return { moves, landed, discarded, discardedOnce, ended };
+    return { moves, landed, discarded, discardedOnce, ended, store };
   }
 
   const moveId = (n: string) => `lsm_${n.repeat(32)}`;
@@ -377,6 +377,30 @@ describe("lane share move consent", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // The guest may be gone while the lane lands: the host checks the share
+  // again from its own rights row before the move counts as done.
+  it.each<[string, (store: ReturnType<typeof makeMoves>["store"]) => void]>([
+    ["the share was revoked", (store) => { store.deleteRights(grantId); }],
+    ["the end date passed", (store) => {
+      const rights = collaborate();
+      store.updateRights(grantId, { ...rights, limits: { ...rights.limits, endsAt: Date.now() - 1_000 } });
+    }],
+    ["the rights no longer allow a move", (store) => { store.updateRights(grantId, laneSharePresetRights("watch")); }],
+  ])("removes a landed lane when %s while it landed", async (_label, change) => {
+    const { moves, landed, discardedOnce, ended, store } = makeMoves();
+    landed.mockImplementationOnce(async () => {
+      change(store);
+      return { laneId: "lane-new", laneName: "moved", sessionId: "chat-new", branchName: "fix/login", note: null };
+    });
+    await offer(moves, "8");
+    moves.respond({ moveId: moveId("8"), accept: true });
+    await moves.guestCommand(guest(), { op: "begin", moveId: moveId("8"), payload: payload(moveId("8")) });
+    await moves.guestCommand(guest(), { op: "finish", moveId: moveId("8") });
+    expect(await ended(moveId("8"))).toBe("cancelled");
+    expect(await discardedOnce).toBe("lane-new");
+    moves.dispose();
   });
 
   it("never lands a bundle whose checksum does not match", async () => {

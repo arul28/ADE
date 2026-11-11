@@ -591,13 +591,18 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
   }
 
   /**
-   * Armed while a guest is connected or a guest's messages wait in a queue:
-   * otherwise no timer and no request. Armed for a queue alone, it reads the
+   * Armed while a guest is connected, a guest's messages wait in a queue, or
+   * a move runs here (a guest can disconnect while its move lands): otherwise
+   * no timer and no request. Armed for a queue or a move alone, it reads the
    * grants at once.
    */
   function syncLaneShareRefreshTimer(): void {
     const guests = isDisposed() ? 0 : connectedLaneShareGuests().length;
-    const needed = !isDisposed() && (guests > 0 || guestQueue.grantsWithQueued().length > 0);
+    const needed = !isDisposed() && (
+      guests > 0
+      || guestQueue.grantsWithQueued().length > 0
+      || args.laneShareMoves?.hasRunningHostMoves?.() === true
+    );
     if (needed && !laneShareRefreshTimer) {
       laneShareRefreshTimer = setInterval(() => {
         void refreshLaneShareGrants();

@@ -317,6 +317,31 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
         // Read after the last await; the service checks it again.
         const turn = laneShareExpectedTurn(sessionId, role, summary);
         if ("refusal" in turn) return { ok: false, refusal: turn.refusal };
+        // The right follows what the message does, not the command name: the
+        // service starts a turn from a steer into an idle chat and steers with
+        // a send into a running one.
+        const runningNow = typeof turn.expected === "string"
+          || (turn.expected === undefined && (laneShareTurnRunning(summary) || laneShareRunningTurns.has(sessionId)));
+        if (runningNow ? !rights.speak.steer : !rights.speak.send) {
+          return laneShareRefuse(
+            runningNow
+              ? "Your access to this shared lane does not include steering a running turn."
+              : "Your access to this shared lane does not include starting a turn.",
+            "lane_share_right_missing",
+          );
+        }
+        // A guest who may steer any turn names none; bind the state checked
+        // here when it lacks the other right, so the service refuses a change.
+        let expectedTurn = turn.expected;
+        if (expectedTurn === undefined && (!rights.speak.send || !rights.speak.steer)) {
+          const runningId = laneShareRunningTurns.get(sessionId) ?? null;
+          if (!runningNow) expectedTurn = null;
+          else if (runningId) expectedTurn = runningId;
+          else if (!rights.speak.send) {
+            // A turn with no id yet cannot be bound: if it ended first, the steer would start a turn.
+            return laneShareRefuse("A turn is starting in this chat. Try again in a moment.", "lane_share_not_your_turn");
+          }
+        }
         // Counted after every await and before the turn: one synchronous claim.
         const claimed = claimLaneShareMessage(role);
         if ("refusal" in claimed) return { ok: false, refusal: claimed.refusal };
@@ -324,7 +349,7 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
         // slash command, shell draft or mention expansion of any provider.
         context.author = laneShareGuestAuthor(role);
         context.agentNote = laneShareCoAuthorNote({ userId: role.userId, name: role.name });
-        if (turn.expected !== undefined) context.expectedTurnId = turn.expected;
+        if (expectedTurn !== undefined) context.expectedTurnId = expectedTurn;
         return { ok: true, args: gateArgs, claim: claimed.claim };
       }
       case "chat.interrupt": {

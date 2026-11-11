@@ -1119,16 +1119,18 @@ function startProjectIconResolve(
     const folders = await projectIconSignature(rootPath, null);
     const answer = await runProjectIconWorker(rootPath, Math.max(timeoutMs, PROJECT_ICON_WORKER_TIMEOUT_MS), record.mode);
     const icon = answer?.icon ?? null;
-    // A fresh answer only, so a kept one never retries an upload.
-    if (answer && record.mode === "migrate") record.onRecordValue?.(answer.recordValue);
     // A worker that failed (it crashed, ran out of time, or printed more than
     // it may) is kept as "no icon" for a minute. Not keeping it made every
     // list wait out its whole budget for a worker that fails again: measured
     // on Windows, `projects.list` took 751 ms on every call.
     const kept = icon ?? EMPTY_PROJECT_ICON;
     const signature = icon?.sourcePath ? `${folders}|${await statStamp(icon.sourcePath)}` : folders;
-    // A resolve that an icon write superseded keeps its answer to itself.
+    // A resolve that an icon write superseded keeps its answer to itself, and
+    // records nothing: an old worker must not undo a newer choice (a removed
+    // icon coming back on every machine).
     if (projectIconResolves.get(key) !== self.promise) return icon;
+    // A fresh answer only, so a kept one never retries an upload.
+    if (answer && record.mode === "migrate") record.onRecordValue?.(answer.recordValue);
     projectIconAnswers.delete(key);
     projectIconAnswers.set(key, {
       signature,
