@@ -144,7 +144,11 @@ export async function launchAgentChatCli(
   const presetTarget = arg.presetId
     ? readPresetLaunchTarget(arg.presetId, resolveMachineAdeDir())
     : null;
-  const requestedReasoningEffort = arg.reasoningEffort ?? presetTarget?.reasoningEffort ?? null;
+  // An explicit null means "the model default" after the renderer rejected a
+  // stale level; only an omitted value takes the preset's saved level.
+  const requestedReasoningEffort = arg.reasoningEffort !== undefined
+    ? arg.reasoningEffort
+    : presetTarget?.reasoningEffort ?? null;
   // A CLI is launched with a level the source model offers AND the harness can
   // send. A stale preset, an old draft, or a route with no saved ladder must
   // not put an unsupported level on the command line.

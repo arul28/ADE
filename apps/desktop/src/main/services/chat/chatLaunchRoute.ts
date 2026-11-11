@@ -4,10 +4,35 @@
 // rules; the chat service applies them.
 // ---------------------------------------------------------------------------
 
-import { normalizeHarnessPreset, presetLabel, presetSourceLabel } from "../../../shared/harnessPresets";
-import { decodeRoutePresetId, isRoutePresetId, launchModelIdFor } from "../../../shared/harnessRoutes";
+import { normalizeHarnessPreset, presetLabel, presetSourceLabel, type HarnessPresetSource } from "../../../shared/harnessPresets";
+import { decodeRoutePresetId, harnessRouteSourceKey, isRoutePresetId, launchModelIdFor } from "../../../shared/harnessRoutes";
 import type { AgentChatCrossMachineRoute, AgentChatProvider } from "../../../shared/types";
+import { listHarnessRouteCatalog } from "./harnessRouteCatalog";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
+
+/**
+ * The source model's own ladder, when the runtime catalog still knows it.
+ *
+ * An older preset (or an ad-hoc route) may carry no saved `reasoningTiers`.
+ * The catalog is a disk-cache read, so this only runs on that fallback path;
+ * a missing source or model leaves the answer undefined, and the harness
+ * allowlist remains the only filter.
+ */
+function catalogReasoningTiersFor(
+  source: HarnessPresetSource,
+  model: string,
+  adeHome: string,
+): string[] | undefined {
+  try {
+    const sourceKey = harnessRouteSourceKey(source);
+    const row = listHarnessRouteCatalog({ adeHome }).sources
+      .find((entry) => entry.key === sourceKey)
+      ?.models.find((entry) => entry.id === model.trim());
+    return row?.reasoningTiers?.length ? [...row.reasoningTiers] : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * A preset's harness and the model its launch names, spelled the way the
@@ -28,11 +53,14 @@ export function readPresetLaunchTarget(presetId: string, adeHome: string): {
   const spec = route ? decodeRoutePresetId(presetId) : saved;
   if (!spec) return null;
   const model = spec.model.trim() ? launchModelIdFor(spec.harness, spec.source, spec.model) : "";
+  const reasoningTiers = saved?.reasoningTiers?.length
+    ? [...saved.reasoningTiers]
+    : catalogReasoningTiersFor(spec.source, spec.model, adeHome);
   return {
     harness: spec.harness,
     model,
     ...(spec.reasoningEffort?.trim() ? { reasoningEffort: spec.reasoningEffort.trim() } : {}),
-    ...(saved?.reasoningTiers?.length ? { reasoningTiers: [...saved.reasoningTiers] } : {}),
+    ...(reasoningTiers?.length ? { reasoningTiers } : {}),
   };
 }
 

@@ -13275,7 +13275,7 @@ export function AgentChatPane({
       // A stale draft can carry a level the source no longer offers; the CLI
       // must receive a level the harness can send, or no level at all.
       const reasoningEffort = clampEffortToLadder(
-        prepared.reasoningEffort ?? launchTarget.reasoningEffort,
+        prepared.reasoningEffort !== undefined ? prepared.reasoningEffort : launchTarget.reasoningEffort,
         launchTarget.harness,
         launchTarget.reasoningTiers,
       ) ?? null;
@@ -15838,7 +15838,10 @@ export function AgentChatPane({
         const fastModeUpdate = selectedFastModeChanged
           ? { fastMode, fastTier: fastMode && fastTier === "ultrafast" ? "ultrafast" as const : null }
           : {};
-        const reasoningUpdate = selectedReasoningChanged ? { reasoningEffort } : {};
+        const reasoningUpdate = selectedReasoningChanged
+          || (selectedRouteChanged && Boolean(reasoningEffort))
+          ? { reasoningEffort }
+          : {};
         const pendingNativeUpdate = selectedModelChanged
           ? summarizeNativeControls(sessionProvider, nativeControlsRef.current)
           : {};
@@ -16559,6 +16562,17 @@ export function AgentChatPane({
     setReasoningEffort(nextReasoningEffort);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
+    // A preset switch with the same model is still a pending route change: the
+    // picker is showing the NEW preset's ladder, so updating the old preset's
+    // session now can clear a level the new preset supports. Send carries the
+    // selected effort with the preset switch instead.
+    const pendingRoute = sessionRoutePickRef.current;
+    if (
+      pendingRoute?.sessionId === selectedSessionId
+      && pendingRoute.presetId !== (selectedSession?.presetId ?? null)
+    ) {
+      return;
+    }
     if (isDeferredComposerModelSelection(
       composerModelIdRef.current,
       selectedSessionModelRef.current.modelId,
@@ -16597,6 +16611,7 @@ export function AgentChatPane({
     patchSessionSummary,
     reasoningEffort,
     refreshSessions,
+    selectedSession?.presetId,
     selectedSessionId,
     sessionMutationKind,
     setFastModeState,

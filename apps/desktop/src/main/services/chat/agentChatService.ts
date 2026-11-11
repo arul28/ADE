@@ -13188,13 +13188,23 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * The preset tiers for a live session. Prefer the cached plan (no file read
-   * on every send); a plan that is null because its route is temporarily
-   * unsupported falls back to the saved preset row, which needs no proxy.
+   * The preset tiers for a live session.
+   *
+   * The saved row is authoritative: a preset edit (a changed source ladder)
+   * must reach chats that are already open, so read it before the cached launch
+   * plan, which is a snapshot from when the route resolved. The plan is the
+   * fallback for a route whose preset row is not on this machine yet; a preset
+   * that exists with no ladder returns `undefined` rather than the plan's old
+   * one.
    */
-  const sessionPresetReasoningTiers = (managed: ManagedChatSession): string[] | undefined =>
-    resolveSessionLaunchPlan(managed)?.reasoningTiers
-    ?? presetReasoningSettings(managed.session.presetId?.trim() ?? "").tiers;
+  const sessionPresetReasoningTiers = (managed: ManagedChatSession): string[] | undefined => {
+    const presetId = managed.session.presetId?.trim() ?? "";
+    if (presetId) {
+      const saved = readPresetLaunchTarget(presetId, resolveMachineAdeDir());
+      if (saved) return saved.reasoningTiers;
+    }
+    return resolveSessionLaunchPlan(managed)?.reasoningTiers;
+  };
 
   /**
    * Why this chat's turn must not run, or null when it may.
@@ -63221,12 +63231,19 @@ export function createAgentChatService(args: {
     const applySessionPresetReasoningEffort = (
       provider: string,
       requested: string | null | undefined,
+      options?: { nullClears?: boolean },
     ): string | null => {
       const current = managed.session.reasoningEffort ?? null;
       if (requested === undefined && !sessionPresetTiers?.length) return current;
+      // A provider whose send path treats null as "model default" must clear
+      // it; OpenCode, Codex and Claude treat an omitted value as "keep", so
+      // their null keeps the chat's current level.
+      const effort = requested === null && options?.nullClears
+        ? null
+        : requested ?? current;
       return validateSessionReasoningEffort({
         provider,
-        effort: requested ?? current,
+        effort,
         descriptor: resolveSessionModelDescriptor(managed.session),
         tiers: sessionPresetTiers,
       });
@@ -63276,7 +63293,7 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "cursor") {
       const chatConfig = resolveChatConfig();
       if (reasoningEffort !== undefined || sessionPresetTiers?.length) {
-        managed.session.reasoningEffort = applySessionPresetReasoningEffort("cursor", reasoningEffort);
+        managed.session.reasoningEffort = applySessionPresetReasoningEffort("cursor", reasoningEffort, { nullClears: true });
       }
       managed.session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(
         managed.session,
@@ -63365,7 +63382,7 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "muse") {
       if (reasoningEffort !== undefined || sessionPresetTiers?.length) {
-        managed.session.reasoningEffort = applySessionPresetReasoningEffort("muse", reasoningEffort);
+        managed.session.reasoningEffort = applySessionPresetReasoningEffort("muse", reasoningEffort, { nullClears: true });
       }
       if (await runMuseControlCommand(managed, submittedText, { onDispatched, onBackendDispatched })) {
         return;
@@ -63391,6 +63408,7 @@ export function createAgentChatService(args: {
         managed.session.reasoningEffort = applySessionPresetReasoningEffort(
           managed.session.provider,
           reasoningEffort,
+          { nullClears: true },
         );
       }
       assertDevinCloudChatHasRelay(managed.session);
@@ -63416,7 +63434,7 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "pi") {
       if (reasoningEffort !== undefined || sessionPresetTiers?.length) {
-        managed.session.reasoningEffort = applySessionPresetReasoningEffort("pi", reasoningEffort);
+        managed.session.reasoningEffort = applySessionPresetReasoningEffort("pi", reasoningEffort, { nullClears: true });
       }
       const compactMatch = submittedText.match(/^\/compact(?:\s+([\s\S]*))?$/i);
       if (compactMatch) {

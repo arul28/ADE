@@ -3645,16 +3645,12 @@ function AgentChatComposerImpl({
   );
   // Ultrathink belongs to a Claude MODEL, not to the Claude Code harness: a
   // DeepSeek model in Claude Code must not keep a switch it has no way to use.
-  const decodedReasoningModelId = (() => {
-    try {
-      return decodeURIComponent(reasoningModelId);
-    } catch {
-      return reasoningModelId;
-    }
-  })();
+  // Test the source model id, not the catalog id: an OpenCode source can be
+  // named `claude` (opencode/claude/deepseek-v4) without being Claude.
+  const sourceModelIdForUltrathink = activeHarnessTarget?.model?.trim() || reasoningModelId;
   const sourceReadsUltrathink = !activeHarnessTarget
     || reasoningDescriptor?.family === "anthropic"
-    || /(?:^|[\/\s_-])claude(?:$|[\/\s_.-])/i.test(decodedReasoningModelId);
+    || /(?:^|[\/\s_-])claude(?:$|[\/\s_.-])/i.test(sourceModelIdForUltrathink);
   const plainUltrathinkExcludedRanges = useMemo(() => [
     ...plainComposerTokens.map(({ start, end }) => ({ start, end })),
     ...(plainUserShellChipRange ? [plainUserShellChipRange] : []),

@@ -305,17 +305,16 @@ export function harnessSubagentSameAsMain(harness: HarnessPresetBody): string {
 }
 
 /**
- * The thinking levels each harness can actually send to its model.
+ * The thinking levels each harness restricts its adapter to.
  *
- * The source model and the harness are independent: DeepSeek may advertise
- * `none`/`ultra` on OpenCode, but Claude Code's SDK only accepts its own set.
- * A saved source ladder is filtered through this at the UI and request
- * boundary, so a level the harness cannot express is never offered or sent.
- * A harness absent here has no known restriction (its own adapter decides).
+ * Claude Code's SDK has a fixed set. Codex's app-server takes a free-form
+ * effort string, and its model descriptor is the authority — once a source
+ * model advertises a tier, accept it even when ADE's global labels do not know
+ * it — so Codex is intentionally absent. A harness absent here has no known
+ * restriction.
  */
 export const HARNESS_EFFORT_VALUES: Partial<Record<HarnessPresetBody, readonly string[]>> = {
   claude: ["low", "medium", "high", "xhigh", "max", "ultracode"],
-  codex: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
 };
 
 /** The source tiers a harness can send. `undefined` means no source ladder was
