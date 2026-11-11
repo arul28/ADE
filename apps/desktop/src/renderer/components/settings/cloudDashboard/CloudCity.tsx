@@ -168,20 +168,59 @@ export function CloudCity({
   const labels = drawn.length <= 6;
   const center = geo.iso(geo.ground / 2, geo.ground / 2, 0);
   const radius = geo.ground * geo.cx * 0.98;
+  // Labels are sized in screen pixels (12 px name, 11 px line): the SVG
+  // scales with its box, so the label size follows the box's scale. A
+  // ResizeObserver sets it on a resize only; nothing runs at rest.
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  useLayoutEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const apply = (width: number, height: number) => {
+      const scale = Math.min(width / VIEW_W, height > 0 ? height / viewH : Number.POSITIVE_INFINITY);
+      if (!Number.isFinite(scale) || scale <= 0) return;
+      svg.style.setProperty("--adecd-px", (1 / scale).toFixed(4));
+    };
+    const box = svg.getBoundingClientRect();
+    apply(box.width, box.height);
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (rect) apply(rect.width, rect.height);
+    });
+    observer.observe(svg);
+    return () => observer.disconnect();
+  }, [viewH]);
   const ellipse = `translate(${center[0].toFixed(1)} ${center[1].toFixed(1)}) scale(1 .58) translate(${(-center[0]).toFixed(1)} ${(-center[1]).toFixed(1)})`;
 
-  const order = items.map((item) => item.key);
-  const move = (step: number | "first" | "last") => {
+  // The keys follow the screen: ArrowRight goes to the block on the right,
+  // ArrowDown to the nearer one below. Home and End are the leftmost and rightmost.
+  const screenOrder = useMemo(() => {
+    const live = placed.filter((item) => !item.leaving).map((item) => {
+      const at = geo.iso(item.cx, item.cy, 0);
+      return { key: item.key, x: at[0], y: at[1] };
+    });
+    return {
+      across: live.slice().sort((a, b) => a.x - b.x || a.y - b.y).map((item) => item.key),
+      down: live.slice().sort((a, b) => a.y - b.y || a.x - b.x).map((item) => item.key),
+    };
+  }, [geo, placed]);
+  const move = (order: readonly string[], step: number | "first" | "last") => {
     if (!order.length) return;
     const at = selectedKey ? order.indexOf(selectedKey) : -1;
-    const next = step === "first" ? 0 : step === "last" ? order.length - 1 : Math.max(0, Math.min(order.length - 1, (at < 0 ? 0 : at) + step));
+    const next = step === "first"
+      ? 0
+      : step === "last"
+        ? order.length - 1
+        : at < 0 ? 0 : Math.max(0, Math.min(order.length - 1, at + step));
     onSelect(order[next]!);
   };
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "ArrowRight" || event.key === "ArrowDown") move(1);
-    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") move(-1);
-    else if (event.key === "Home") move("first");
-    else if (event.key === "End") move("last");
+    if (event.key === "ArrowRight") move(screenOrder.across, 1);
+    else if (event.key === "ArrowLeft") move(screenOrder.across, -1);
+    else if (event.key === "ArrowDown") move(screenOrder.down, 1);
+    else if (event.key === "ArrowUp") move(screenOrder.down, -1);
+    else if (event.key === "Home") move(screenOrder.across, "first");
+    else if (event.key === "End") move(screenOrder.across, "last");
     else if (event.key === "Enter" && selectedKey && onOpen) onOpen(selectedKey);
     else return;
     event.preventDefault();
@@ -199,7 +238,7 @@ export function CloudCity({
         onKeyDown={onKeyDown}
         onMouseLeave={() => setHoverKey(null)}
       >
-        <svg viewBox={`0 0 ${VIEW_W} ${viewH}`} preserveAspectRatio="xMidYMid meet" className="adecd-city-svg">
+        <svg ref={svgRef} viewBox={`0 0 ${VIEW_W} ${viewH}`} preserveAspectRatio="xMidYMid meet" className="adecd-city-svg">
           <defs>
             <linearGradient id={`${id}-roof`} x1="0" y1="0" x2="1" y2="1"><stop offset="0" style={{ stopColor: "var(--adecd-roof1)" }} /><stop offset="1" style={{ stopColor: "var(--adecd-roof2)" }} /></linearGradient>
             <linearGradient id={`${id}-fl`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" style={{ stopColor: "var(--adecd-fl1)" }} /><stop offset="1" style={{ stopColor: "var(--adecd-fl2)" }} /></linearGradient>

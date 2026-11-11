@@ -250,7 +250,7 @@ export function LaneMachineChip({
             <PopItem
               icon={<span className="cl-tile" data-tone="cloud"><CloudMark size={14} bold /></span>}
               title={ADE_CLOUD_NAME}
-              sub={adeCloud.unavailableReason ? "Not available for this project" : adeCloud.detail}
+              sub={adeCloud.unavailableReason ?? adeCloud.detail}
               subTone={adeCloud.unavailableReason ? "warn" : undefined}
               selected={cloudSelected}
               disabled={Boolean(adeCloud.unavailableReason)}

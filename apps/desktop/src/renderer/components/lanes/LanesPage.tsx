@@ -91,6 +91,7 @@ import { laneCompareBase, laneRebaseLine, useLaneRebaseNeeds, type LaneRebaseLin
 import { confirmForeignLaneDeleted, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { cloudLaneComputerOfLane } from "../cloudLane/cloudLaneActions";
 import { deleteCloudLaneWithCheck } from "../cloudLane/deleteCloudLane";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { CloudLanesWithoutComputerList } from "../cloudLane/CloudLaneWithoutComputer";
 import { originUrlForBinding } from "./laneMachines";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
@@ -634,6 +635,18 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     () => managedLaneIds.map((id) => lanesById.get(id)).filter((l): l is LaneSummary => l != null && l.laneType !== "primary"),
     [managedLaneIds, lanesById],
   );
+  // The managed lanes that live on their own ADE Cloud computer: the dialog shows them the cloud delete.
+  const { computers: adeCloudLaneComputers } = useAdeCloudLaneComputers();
+  const managedCloudLaneIds = useMemo(() => {
+    if (!adeCloudLaneComputers.length) return null;
+    const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
+    const ids = new Set<string>();
+    for (const lane of targets) {
+      const target = resolveLaneTarget(lane.id);
+      if (target.ok && cloudLaneComputerOfLane(target.pin, target.laneId)) ids.add(lane.id);
+    }
+    return ids.size ? ids : null;
+  }, [adeCloudLaneComputers, managedLane, managedLanes, resolveLaneTarget]);
   const refreshLanePrTags = useCallback(async (options?: { refreshMapped?: boolean }) => {
     const requestId = ++lanePrTagsRequestRef.current;
     const startedRoot = getActiveProjectRoot();
@@ -1321,17 +1334,17 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   const deleteManagedLanes = async () => {
     const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
-    // The brain still refuses a lane that turned dirty since the dialog.
-    const deletable = lanesToDelete(targets, deleteForce);
     // ADE Cloud lanes go with their computers (one account-level delete each, warned only when
-    // work isn't on GitHub); every other lane deletes on its machine as before.
-    const cloudDeletes = deletable.flatMap((lane) => {
+    // work isn't on GitHub), split off before the local rules: no Force gate, no branch picks.
+    const cloudDeletes = targets.flatMap((lane) => {
+      if (lane.laneType === "primary") return [];
       const target = resolveLaneTarget(lane.id);
       const cloudLane = target.ok ? cloudLaneComputerOfLane(target.pin, target.laneId) : null;
       return cloudLane && target.ok ? [{ lane, cloudLane, machineId: target.machineId }] : [];
     });
     const cloudLaneIds = new Set(cloudDeletes.map((entry) => entry.lane.id));
-    const actionable = deletable.filter((lane) => !cloudLaneIds.has(lane.id));
+    // The brain still refuses a lane that turned dirty since the dialog.
+    const actionable = lanesToDelete(targets.filter((lane) => !cloudLaneIds.has(lane.id)), deleteForce);
 
     // Close the dialog and reset the transient delete UI before any async work.
     // The delete itself runs in the background: each lane's row shows the live
@@ -2424,6 +2437,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         onDelete={() => { deleteManagedLanes().catch(() => {}); }}
         onAppearanceChanged={refreshLaneAppearance}
         initialTab={manageInitialTab}
+        cloudLaneIds={managedCloudLaneIds}
       />
 
       {foreignManageRow?.pin ? (
@@ -2447,6 +2461,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           onAppearanceChanged={() => requestCrossMachineLanesForMachine(foreignManageRow.machineId)}
           initialTab={manageInitialTab}
           runtimePin={foreignManageRow.pin}
+          cloudLaneIds={cloudLaneComputerOfLane(foreignManageRow.pin, foreignManageRow.lane.id) ? new Set([foreignManageRow.lane.id]) : null}
         />
       ) : null}
 

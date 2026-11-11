@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { Dialog } from "../ui/dialog";
 import { LaneMachineSelector } from "./LaneMachineSelector";
-import type { LaneMachineOption } from "./laneMachines";
+import { isAdeCloudLaneComputer, type LaneMachineOption } from "./laneMachines";
 import type { LaneMachine } from "../../state/laneMachineRouting";
 import { adeCloudEnabled } from "../../state/cloudAccess";
 import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
@@ -95,7 +95,11 @@ export function useProjectMachinePicker(): { ask: AskForMachine; element: ReactN
   }, []);
 
   const ask = useCallback<AskForMachine>((machines, copy) => {
-    const reachable = machines.filter((machine) => machine.online && machine.routable);
+    // A lane's own ADE Cloud computer never takes a new lane: only "ADE Cloud" (a new computer) shows.
+    const reachable = machines.filter((machine) =>
+      machine.online
+      && machine.routable
+      && !isAdeCloudLaneComputer({ hostname: machine.hostname, machineKey: machine.machineId }));
     const offerCloud = copy.adeCloudOriginUrl !== undefined && adeCloudEnabled();
     if (reachable.length <= 1 && !offerCloud) return Promise.resolve(reachable[0] ?? null);
     // A second ask supersedes the first; the first resolves as cancelled.

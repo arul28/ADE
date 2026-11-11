@@ -14,6 +14,7 @@ import { useAppStore } from "../../../state/appStore";
 import { requestCrossMachineLanesForMachine, useLanesForPin } from "../../../state/crossMachineLanes";
 import { machineIdForBinding } from "../../../../shared/machineIdentity";
 import { cloudLaneComputerOfLane } from "../../cloudLane/cloudLaneActions";
+import { useAdeCloudLaneComputers } from "../../../state/adeCloudLaneIndex";
 import { deleteCloudLaneWithCheck } from "../../cloudLane/deleteCloudLane";
 
 export type PrManageLaneDialogHostProps = {
@@ -83,7 +84,6 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
 
   const handleDelete = useCallback(async () => {
     if (!lane || lane.laneType === "primary") return;
-    if (!deleteSelection.worktree && !deleteSelection.localBranch && !deleteSelection.remoteBranch) return;
 
     // An ADE Cloud lane goes with its computer: one account-level delete, warned only when work isn't on GitHub.
     const cloudLane = cloudLaneComputerOfLane(runtimePin, lane.id);
@@ -93,6 +93,8 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
       void deleteCloudLaneWithCheck({ instanceId: cloudLane.instanceId, laneName: lane.name, askFirst: false, onDeleted: refreshOwnerLanes });
       return;
     }
+    // A local lane deletes only what was picked.
+    if (!deleteSelection.worktree && !deleteSelection.localBranch && !deleteSelection.remoteBranch) return;
     const args: DeleteLaneArgs = { laneId: lane.id, force: deleteForce };
     args.deleteBranch = deleteSelection.localBranch;
     if (deleteSelection.remoteBranch) {
@@ -106,6 +108,13 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
   }, [deleteForce, deleteSelection, lane, onOpenChange, onPin, refreshOwnerLanes, runLaneAction, runtimePin]);
 
+  // A lane on its own ADE Cloud computer gets the cloud delete: nothing to pick, no Force gate.
+  const { computers: adeCloudLaneComputers } = useAdeCloudLaneComputers();
+  const cloudLaneIds = useMemo(
+    () => (lane && adeCloudLaneComputers.length && cloudLaneComputerOfLane(runtimePin, lane.id) ? new Set([lane.id]) : null),
+    [adeCloudLaneComputers, lane, runtimePin],
+  );
+
   if (!open || !lane) return null;
 
   return (
@@ -115,6 +124,7 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
       managedLane={lane}
       allLanes={dialogLanes}
       runtimePin={runtimePin}
+      cloudLaneIds={cloudLaneIds}
       deleteSelection={deleteSelection}
       setDeleteSelection={setDeleteSelection}
       deleteForce={deleteForce}

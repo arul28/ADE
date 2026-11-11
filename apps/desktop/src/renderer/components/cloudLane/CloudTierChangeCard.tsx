@@ -59,6 +59,7 @@ export function CloudTierChangeCard({
   onStarted,
   onNotNow,
   className,
+  headless = false,
 }: {
   facts: CloudTierChangeFacts;
   account: CloudAccountState | null;
@@ -69,6 +70,8 @@ export function CloudTierChangeCard({
   onStarted?: (job: CloudLaneJobSnapshot) => void;
   onNotNow: () => void;
   className?: string;
+  /** Inside a dialog whose title already names the change: no heading of its own. */
+  headless?: boolean;
 }) {
   const tiers = useMemo(() => cloudTiers(cloudCatalogOf(account)), [account]);
   const [picked, setPicked] = useState<CloudTierId | null>(facts.toSizeId);
@@ -103,10 +106,12 @@ export function CloudTierChangeCard({
 
   return (
     <div className={cn("adecl-tier", className)} data-cloud-tier-card={requestId ?? "person"}>
-      <div className="adecl-tier-head">
-        <span className="adecl-tier-mark" aria-hidden><CloudMark size={14} bold /></span>
-        <b>{title}</b>
-      </div>
+      {headless ? null : (
+        <div className="adecl-tier-head">
+          <span className="adecl-tier-mark" aria-hidden><CloudMark size={14} bold /></span>
+          <b>{title}</b>
+        </div>
+      )}
 
       {pickable ? (
         <div className="adecl-tier-pick" role="radiogroup" aria-label="New size">

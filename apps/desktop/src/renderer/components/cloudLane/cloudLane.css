@@ -100,7 +100,27 @@
 .adecl-tier-facts dd { margin: 0; font-size: 12px; line-height: 1.45; color: var(--color-fg); }
 
 .adecl-tier-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
-.adecl-tier-when { margin-right: auto; }
+.adecl-tier-actions .kit-btn { white-space: nowrap; }
+/* The note takes its own line above the buttons, so the three buttons stay together on one. */
+.adecl-tier-when { flex: 1 0 100%; text-align: right; }
+
+/* The fold toggle of the job card above the prompt box. */
+.adecl-job-fold {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: -2px -4px -2px 0;
+  border-radius: 6px;
+  color: var(--kit-text-3);
+}
+.adecl-job-fold:hover { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+.adecl-job-fold:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.adecl-job-fold svg { transition: transform 160ms ease; }
+.adecl-job-fold svg[data-open="0"] { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) { .adecl-job-fold svg { transition: none; } }
+:root[data-motion="reduced"] .adecl-job-fold svg { transition: none; }
 
 .adecl-answered {
   margin: 0;

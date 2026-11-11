@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
 import type {
   DeleteLaneArgs,
@@ -25,6 +25,7 @@ import {
 } from "../lanes/ManageLaneDialog";
 import { extractError } from "../../lib/format";
 import { cloudLaneComputerOfLane } from "../cloudLane/cloudLaneActions";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { deleteCloudLaneWithCheck } from "../cloudLane/deleteCloudLane";
 
 /**
@@ -144,7 +145,6 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
 
   const handleDelete = useCallback(() => {
     if (!lane || lane.laneType === "primary") return;
-    if (!deleteSelection.worktree && !deleteSelection.localBranch && !deleteSelection.remoteBranch) return;
     // An ADE Cloud lane goes with its computer: one account-level delete, warned only when work isn't on GitHub.
     const cloudLane = cloudLaneComputerOfLane(runtimePin, lane.id);
     if (cloudLane) {
@@ -162,6 +162,8 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       return;
     }
 
+    // A local lane deletes only what was picked.
+    if (!deleteSelection.worktree && !deleteSelection.localBranch && !deleteSelection.remoteBranch) return;
     const args: DeleteLaneArgs = {
       laneId: lane.id,
       force: deleteForce,
@@ -221,6 +223,13 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
     );
   }, [deleteForce, deleteSelection, lane, onClose, runtimePin, setDeleteProgressByLaneId]);
 
+  // A lane on its own ADE Cloud computer gets the cloud delete: nothing to pick, no Force gate.
+  const { computers: adeCloudLaneComputers } = useAdeCloudLaneComputers();
+  const cloudLaneIds = useMemo(
+    () => (lane && adeCloudLaneComputers.length && cloudLaneComputerOfLane(runtimePin, lane.id) ? new Set([lane.id]) : null),
+    [adeCloudLaneComputers, lane, runtimePin],
+  );
+
   if (!laneId || !lane) return null;
 
   return (
@@ -230,6 +239,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       managedLane={lane}
       allLanes={allLanes}
       runtimePin={runtimePin}
+      cloudLaneIds={cloudLaneIds}
       deleteSelection={deleteSelection}
       setDeleteSelection={setDeleteSelection}
       deleteForce={deleteForce}

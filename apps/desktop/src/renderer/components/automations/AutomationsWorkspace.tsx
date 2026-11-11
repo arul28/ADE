@@ -36,6 +36,8 @@ import { AUTOMATION_HOME_HANDOVER_MINUTES } from "../../../shared/automationHome
 import type { LaneMachine } from "../../state/laneMachineRouting";
 import { onMachine } from "../../state/projectMachines";
 import { parseMachineScopedId } from "../../state/foreignMachineReads";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { isAdeCloudLaneComputer } from "../lanes/laneMachines";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { clearStoredAutomationDraft, loadStoredAutomationDraft, storeAutomationDraft } from "./automationDraftStore";
 import { automationFeaturesNeedingNewerAde, explainAutomationActionError } from "../../../shared/automationFeatureVersions";
@@ -228,6 +230,18 @@ export function AutomationsWorkspace({
    */
   const [draftTarget, setDraftTarget] = useState<LaneMachine | null>(null);
   /**
+   * The machines "Runs on" offers. A rule's run makes its lane on the machine,
+   * so a lane's own ADE Cloud computer (one lane per computer) is left out,
+   * except the machine a saved rule already runs on or the draft holds.
+   */
+  const { computers: adeCloudLaneComputers } = useAdeCloudLaneComputers();
+  const ruleMachineChoices = useMemo(
+    () => machines.filter((machine) =>
+      machine.machineId === draftTarget?.machineId
+      || !isAdeCloudLaneComputer({ hostname: machine.hostname, machineKey: machine.machineId }, adeCloudLaneComputers)),
+    [adeCloudLaneComputers, draftTarget?.machineId, machines],
+  );
+  /**
    * False while a new draft has no machine yet: the "Runs on" field is empty
    * and Save is blocked. The machine is always chosen, never defaulted.
    */
@@ -359,8 +373,8 @@ export function AutomationsWorkspace({
    * A new draft names its machine in the recipe ("Runs on"), not in a popup.
    * It starts unchosen unless exactly one machine can take it.
    */
-  const machinesRef = useRef(machines);
-  machinesRef.current = machines;
+  const machinesRef = useRef(ruleMachineChoices);
+  machinesRef.current = ruleMachineChoices;
   const startNewDraftMachine = useCallback(() => {
     draftingNewRef.current = true;
     const eligible = machinesRef.current.filter((machine) => machine.online);
@@ -1062,7 +1076,7 @@ export function AutomationsWorkspace({
                 runtimePin={draftPin}
                 machineField={
                   <RuleMachineField
-                    machines={machines}
+                    machines={ruleMachineChoices}
                     valueMachineId={draftMachineChosen ? (draftTarget?.machineId ?? boundMachine?.machineId ?? null) : null}
                     savedMachineId={draftOrigin ? (draftOrigin.machine?.machineId ?? boundMachine?.machineId ?? null) : null}
                     followsAccount={Boolean(selectedRule && followsAccount(selectedRule))}

@@ -10,7 +10,7 @@ import type { CloudTierId } from "../../../shared/cloudTiers";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { rootAppStoreApi } from "../../state/appStore";
-import { adeCloudLaneComputerForMachine } from "../../state/adeCloudLaneIndex";
+import { adeCloudLaneComputerForMachine, forgetCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { resolveAdeCloudLaneBinding } from "../chat/adeCloudLaneBinding";
 
 /**
@@ -49,12 +49,20 @@ export async function cloudLaneWorkState(instanceId: string): Promise<CloudLaneW
 }
 
 export async function deleteCloudLane(instanceId: string, options: { skipCheck: boolean }): Promise<CloudLaneDeleteResult> {
-  return await call<CloudLaneDeleteResult>("deleteLane", { instanceId, skipCheck: options.skipCheck });
+  const done = await call<CloudLaneDeleteResult>("deleteLane", { instanceId, skipCheck: options.skipCheck });
+  if (done.ok) forgetCloudLaneComputer(instanceId);
+  return done;
 }
 
-/** Pushes the lane's work, removes its computer and keeps the lane: the next message makes a fresh computer. */
+/**
+ * Pushes the lane's work, removes its computer and keeps the lane: the next
+ * message makes a fresh computer. A chat on it then reads "ADE Cloud · lane"
+ * with no computer, not the old computer's name.
+ */
 export async function freeCloudLane(instanceId: string): Promise<CloudLaneFreeResult> {
-  return await call<CloudLaneFreeResult>("freeLane", { instanceId });
+  const done = await call<CloudLaneFreeResult>("freeLane", { instanceId });
+  if (done.ok) forgetCloudLaneComputer(instanceId);
+  return done;
 }
 
 export async function changeCloudLaneTier(input: {

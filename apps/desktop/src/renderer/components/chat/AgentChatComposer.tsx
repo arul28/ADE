@@ -206,6 +206,7 @@ import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
 import { adeCloudLaneLabel, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import { CloudTierChangeDialog } from "../cloudLane/CloudTierChangeDialog";
 import { cloudLaneLifeAvailable } from "../cloudLane/cloudLaneActions";
+import { cloudLaneWithoutComputerForBinding, useCloudLanesWithoutComputer } from "../cloudLane/cloudLaneStores";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
@@ -975,6 +976,7 @@ function ComposerMachineChip({
   cloud = false,
   adeCloudLaneName = null,
   adeCloudInstanceId = null,
+  adeCloudNoComputer = false,
   action = null,
 }: {
   machineName: string;
@@ -983,12 +985,14 @@ function ComposerMachineChip({
   adeCloudLaneName?: string | null;
   /** The lane computer's ADE Cloud id, once known: the chip then opens the size change. */
   adeCloudInstanceId?: string | null;
+  /** The ADE Cloud lane has no computer now (freed or removed): the next send makes one. */
+  adeCloudNoComputer?: boolean;
   action?: ComposerMachineChipAction | null;
 }) {
   const [sizing, setSizing] = useState(false);
   if (adeCloudLaneName) {
     // A person changes the lane's size here; the change is account level (no pin), by the computer's id.
-    const canResize = Boolean(adeCloudInstanceId) && cloudLaneLifeAvailable();
+    const canResize = !adeCloudNoComputer && Boolean(adeCloudInstanceId) && cloudLaneLifeAvailable();
     const chipClass = cn(
       "adec-pill inline-flex h-6 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md border px-1.5",
       "font-sans text-[9px] font-medium",
@@ -997,7 +1001,11 @@ function ComposerMachineChip({
     const chipBody = (
       <>
         <CloudMark size={11} brand />
-        <span className="min-w-0 max-w-24 truncate">{machineName}</span>
+        {adeCloudNoComputer ? (
+          <span className="min-w-0 max-w-40 truncate">{adeCloudLaneLabel(adeCloudLaneName)}</span>
+        ) : (
+          <span className="min-w-0 max-w-24 truncate">{machineName}</span>
+        )}
       </>
     );
     return (
@@ -1007,9 +1015,11 @@ function ComposerMachineChip({
           wrapperClassName={MACHINE_CHIP_WRAPPER}
           content={{
             label: adeCloudLaneLabel(adeCloudLaneName),
-            description: canResize
-              ? "This chat runs on its lane's own ADE Cloud computer. It wakes when you send. Click to change its size."
-              : "This chat runs on its lane's own ADE Cloud computer. It wakes when you send.",
+            description: adeCloudNoComputer
+              ? "This lane has no computer now. ADE makes a new one when you send."
+              : canResize
+                ? "This chat runs on its lane's own ADE Cloud computer. It wakes when you send. Click to change its size."
+                : "This chat runs on its lane's own ADE Cloud computer. It wakes when you send.",
           }}
         >
           {canResize ? (
@@ -1026,7 +1036,9 @@ function ComposerMachineChip({
           ) : (
             <span
               data-chat-composer-machine-chip="ade-cloud"
-              aria-label={`Running on ${adeCloudLaneLabel(adeCloudLaneName)}`}
+              aria-label={adeCloudNoComputer
+                ? `${adeCloudLaneLabel(adeCloudLaneName)}. It has no computer now`
+                : `Running on ${adeCloudLaneLabel(adeCloudLaneName)}`}
               className={chipClass}
               style={{ whiteSpace: "nowrap" }}
             >
@@ -6057,10 +6069,18 @@ function AgentChatComposerImpl({
      with no remote binding is running on this Mac. */
   // A chat on an ADE Cloud lane says "ADE Cloud", not its computer's name.
   const adeCloudLane = useAdeCloudLaneForBinding(sessionId && cursorRuntime !== "cloud" ? composerMachineBinding : null);
+  // A chat whose ADE Cloud lane was freed still says "ADE Cloud · lane", with no computer:
+  // the shared list of lanes without a computer (the strip above the prompt box reads it too).
+  const withoutComputer = useCloudLanesWithoutComputer(
+    Boolean(sessionId) && cursorRuntime !== "cloud" && !adeCloudLane && composerMachineBinding?.kind === "remote" && cloudLaneLifeAvailable(),
+  );
+  const adeCloudLaneWithout = !adeCloudLane && sessionId && cursorRuntime !== "cloud"
+    ? cloudLaneWithoutComputerForBinding(composerMachineBinding, withoutComputer.lanes)
+    : null;
   const composerMachineName = sessionId
     ? cursorRuntime === "cloud"
       ? cloudTargetLabel
-      : adeCloudLane
+      : adeCloudLane || adeCloudLaneWithout
         ? ADE_CLOUD_NAME
         : chatPaneScope?.machineName
         ?? (composerMachineBinding?.kind === "remote"
@@ -8228,13 +8248,14 @@ function AgentChatComposerImpl({
         <ComposerMachineChip
           machineName={composerMachineName}
           cloud={cursorRuntime === "cloud"}
-          adeCloudLaneName={adeCloudLane?.laneName ?? null}
+          adeCloudLaneName={adeCloudLane?.laneName ?? adeCloudLaneWithout?.laneName ?? null}
           adeCloudInstanceId={adeCloudLane?.instanceId ?? null}
-          action={cursorRuntime === "cloud" || adeCloudLane ? null : machineChipAction}
+          adeCloudNoComputer={!adeCloudLane && adeCloudLaneWithout != null}
+          action={cursorRuntime === "cloud" || adeCloudLane || adeCloudLaneWithout ? null : machineChipAction}
         />
       ) : null}
     </div>
-  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, runtimeCatalogTick, turnActive, ultrathinkControl]);
+  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, adeCloudLaneWithout, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, runtimeCatalogTick, turnActive, ultrathinkControl]);
   const contextUsageDial = useMemo(() => (!parallelChatMode && usageViewModel ? (
 
       <ContextUsageDial

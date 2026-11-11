@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
 import {
   ArrowClockwise,
   ArrowsOutSimple,
+  CaretDown,
   Copy,
   FloppyDisk,
   HardDrives,
@@ -87,6 +88,38 @@ function canCancel(job: CloudLaneJobSnapshot): boolean {
   return job.stages.every((stage) => stage.id === "save" || stage.status === "pending");
 }
 
+/**
+ * One card per job speaks its state to a screen reader: the same job can show
+ * in the chat, on the dashboard and in the size dialog at once, and each
+ * would announce the same failure. The card mounted last (the one the person
+ * just opened) owns the announcement.
+ */
+const announcers = new Map<string, string[]>();
+const announcerListeners = new Set<() => void>();
+function subscribeAnnouncers(listener: () => void) {
+  announcerListeners.add(listener);
+  return () => announcerListeners.delete(listener);
+}
+function changeAnnouncers(jobId: string, cardId: string, add: boolean) {
+  const list = (announcers.get(jobId) ?? []).filter((id) => id !== cardId);
+  if (add) list.push(cardId);
+  if (list.length) announcers.set(jobId, list);
+  else announcers.delete(jobId);
+  for (const listener of announcerListeners) listener();
+}
+function useAnnouncesJob(jobId: string): boolean {
+  const cardId = useId();
+  useEffect(() => {
+    changeAnnouncers(jobId, cardId, true);
+    return () => changeAnnouncers(jobId, cardId, false);
+  }, [cardId, jobId]);
+  return useSyncExternalStore(
+    subscribeAnnouncers,
+    () => announcers.get(jobId)?.at(-1) === cardId,
+    () => false,
+  );
+}
+
 function JobElapsed({ job, className }: { job: CloudLaneJobSnapshot; className?: string }) {
   const live = job.phase === "waiting" || job.phase === "running";
   const text = useLaunchDurationText(job.startedAt, job.endedAt, live);
@@ -117,10 +150,22 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
   const compact = variant === "panel";
   const failed = job.phase === "failed";
   const live = job.phase === "waiting" || job.phase === "running";
+  const announces = useAnnouncesJob(job.jobId);
+  // Above the prompt box the card folds to one line. It is open by default
+  // only while a step runs or has failed; the person's own choice holds
+  // until the job's phase changes.
+  const foldable = variant === "thread";
+  const openByDefault = job.phase === "running" || failed;
+  const [openChoice, setOpenChoice] = useState<{ phase: CloudLaneJobSnapshot["phase"]; open: boolean } | null>(null);
+  const open = !foldable || (openChoice?.phase === job.phase ? openChoice.open : openByDefault);
+  const bodyId = `adecl-job-body-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
+  // The job's own error shows once: under its failed step when that step carries it, else below the steps.
+  const stageErrors = new Set(job.stages.filter((stage) => (stage.status === "failed" || stage.status === "warning") && stage.error).map((stage) => stage.error!.trim()));
+  const jobErrorLine = failed && job.error && !stageErrors.has(job.error.trim()) ? job.error : null;
   const rail = useMemo(() => job.stages.map(railStage), [job.stages]);
   const textSize = compact ? "text-[11.5px]" : "text-[length:calc(var(--chat-font-size)*12/14)]";
   const metaSize = compact ? "text-[10.5px]" : "text-[length:calc(var(--chat-font-size)*11/14)]";
-  const tileTone = live ? "adec-tile" : failed ? TILE_TONE.failed : job.phase === "online" ? TILE_TONE.done : TILE_TONE.skipped;
+  const tileTone = live ? "adec-tile" : failed ? "border-red-400/30 bg-red-500/[0.10] text-red-300" : job.phase === "online" ? TILE_TONE.done : TILE_TONE.skipped;
   const fromLabel = sizeLabel(account, job.fromSizeId);
   const toLabel = sizeLabel(account, job.toSizeId);
 
@@ -170,7 +215,7 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
           : cn(
             CHAT_CARD_WIDTH_CLASS,
             "ade-launch-card-enter rounded-[calc(var(--chat-radius-card,16px)-6px)] border bg-fg/[0.022] px-3.5 pb-2 pt-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]",
-            failed ? "border-amber-400/20" : "border-fg/[0.07]",
+            failed ? "border-red-400/25" : "border-fg/[0.07]",
           ),
         className,
       )}
@@ -181,11 +226,24 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
         </span>
         <div className="relative min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <span className={cn("min-w-0 truncate font-medium", failed ? "text-amber-200/90" : "text-fg/82")} role="status">
+            <span className={cn("min-w-0 truncate font-medium", failed ? "text-red-200/90" : "text-fg/82")} role={announces ? "status" : undefined}>
               {cloudLaneJobTitle(job, account)}
             </span>
             <JobElapsed job={job} className={cn("ml-auto text-fg/38", metaSize)} />
+            {foldable ? (
+              <button
+                type="button"
+                className="adecl-job-fold"
+                aria-expanded={open}
+                aria-controls={bodyId}
+                aria-label={open ? "Hide the steps" : "Show the steps"}
+                onClick={() => setOpenChoice({ phase: job.phase, open: !open })}
+              >
+                <CaretDown size={11} weight="bold" aria-hidden data-open={open ? "1" : "0"} />
+              </button>
+            ) : null}
           </div>
+          {open ? (
           <div className={cn("mt-1 flex min-w-0 flex-wrap items-center gap-1.5", metaSize)}>
             <Chip title={job.laneName}>
               <LaneIcon size={10} className="adecl-lane-ic" />
@@ -200,8 +258,11 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
             </Chip>
             {job.kind === "move" ? <Chip title="A new computer gets the lane's files, then the old one goes">New computer</Chip> : null}
           </div>
+          ) : null}
         </div>
       </div>
+      {open ? (
+      <div id={bodyId}>
       <LaunchProgressRail stages={rail} cloud className="mb-1 mt-3" />
       <ul className="divide-y divide-fg/[0.045]" aria-label="Steps">
         {job.stages.map((stage) => (
@@ -213,16 +274,17 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
               detail={stage.detail?.trim() || null}
               compact={compact}
               cloud
+              danger
               trailing={<StageTime stage={stage} />}
             />
             {(stage.status === "failed" || stage.status === "warning") && stage.error ? (
-              <StageErrorCallout error={stage.error} className={metaSize} />
+              <StageErrorCallout error={stage.error} className={metaSize} danger={stage.status === "failed"} />
             ) : null}
           </li>
         ))}
       </ul>
       {error ? <p className={cn("adecl-error mt-1.5", metaSize)} role="alert">{error}</p> : null}
-      {!error && failed && job.error ? <p className={cn("adecl-error mt-1.5", metaSize)}>{job.error}</p> : null}
+      {!error && jobErrorLine ? <p className={cn("adecl-error mt-1.5", metaSize)}>{jobErrorLine}</p> : null}
       {notice ? <p className={cn("mt-1.5 leading-snug text-fg/55", metaSize)}>{notice}</p> : null}
       {failed || canCancel(job) ? (
         <div className={cn("mt-1 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-1 border-t border-fg/[0.05] pt-1.5 -mx-1.5", metaSize)}>
@@ -246,6 +308,8 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
             </TextAction>
           ) : null}
         </div>
+      ) : null}
+      </div>
       ) : null}
     </div>
   );

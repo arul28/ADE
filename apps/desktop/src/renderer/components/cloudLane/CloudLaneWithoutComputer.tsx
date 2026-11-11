@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { Plus, X } from "@phosphor-icons/react";
 import { cloudCatalogOf, type CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
@@ -100,6 +100,7 @@ export function CloudLaneWithoutComputerNotice({
 }) {
   const { problem, start } = useStartLaneOnNewComputer(lane, account);
   const [busy, setBusy] = useState<"start" | "forget" | null>(null);
+  const problemId = `adecl-nocomp-why-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
 
   const onStart = async () => {
     setBusy("start");
@@ -135,10 +136,10 @@ export function CloudLaneWithoutComputerNotice({
       <span className="adecl-nocomp-mark" aria-hidden><CloudMark size={14} brand /></span>
       <div className="adecl-nocomp-text">
         <span>{cloudLaneWithoutComputerSentence(lane)}</span>
-        {problem ? <span className="adecl-muted">{problem}</span> : null}
+        {problem ? <span id={problemId} className="adecl-muted">{problem}</span> : null}
       </div>
       <div className="adecl-nocomp-actions">
-        <button type="button" className="kit-btn adecl-btn-sky" data-size="xs" disabled={Boolean(problem) || busy != null} title={problem ?? undefined} onClick={() => void onStart()}>
+        <button type="button" className="kit-btn adecl-btn-sky" data-size="xs" disabled={Boolean(problem) || busy != null} aria-describedby={problem ? problemId : undefined} onClick={() => void onStart()}>
           <Plus size={11} />
           {busy === "start" ? "Starting…" : "New computer on the same branch"}
         </button>

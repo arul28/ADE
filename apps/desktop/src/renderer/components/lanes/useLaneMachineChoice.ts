@@ -9,11 +9,13 @@ import {
   deriveLaneMachineOptions,
   originUrlForBinding,
   rememberProjectOriginSummaries,
+  withoutAdeCloudLaneComputers,
   type LaneMachineOption,
   type LaneMachineProjectRef,
 } from "./laneMachines";
 import { useMachinePlacement } from "./useMachinePlacement";
 import { ADE_CLOUD_MACHINE_ID, useAdeCloudLaneTarget } from "./useAdeCloudLaneTarget";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 
 export type LaneMachineTarget = {
   /** Null for the tab's machine (unpinned path); else that machine's binding. */
@@ -141,9 +143,11 @@ export function useLaneMachineChoice(open: boolean) {
     return localProjects?.find((candidate) => candidate.rootPath === rootPath)?.gitOriginUrl ?? null;
   }, [localProjects, project, projectBinding, remoteSnapshot]);
 
+  // A lane's own ADE Cloud computer is never a place for a new lane (one lane per computer).
+  const { computers: adeCloudLaneComputers } = useAdeCloudLaneComputers();
   const baseMachines = useMemo(
     () =>
-      deriveLaneMachineOptions({
+      withoutAdeCloudLaneComputers(deriveLaneMachineOptions({
         connections: remoteSnapshot?.connections ?? [],
         boundTargetId,
         boundProject,
@@ -151,8 +155,8 @@ export function useLaneMachineChoice(open: boolean) {
         repoDisplayName: boundProject?.displayName ?? null,
         localProjectRoots: openProjectTabRoots,
         ...(localProjects ? { localProjects } : {}),
-      }),
-    [boundProject, boundTargetId, localProjects, openProjectTabRoots, remoteSnapshot, repoOriginUrl],
+      }), adeCloudLaneComputers),
+    [adeCloudLaneComputers, boundProject, boundTargetId, localProjects, openProjectTabRoots, remoteSnapshot, repoOriginUrl],
   );
   // Stats and preferences for "Least loaded", read while the dialog is open.
   const machines = useMachinePlacement(baseMachines, open);

@@ -5,6 +5,7 @@
  * opens) and stops for reduced motion.
  */
 
+.adecd:focus { outline: none; }
 .adecd {
   container: adecd / inline-size;
   display: flex;
@@ -123,7 +124,7 @@
   --adecd-pad: rgba(157, 196, 255, 0.07);
   --adecd-pad-edge: rgba(157, 196, 255, 0.16);
   --adecd-label: rgba(233, 242, 255, 0.82);
-  --adecd-label-dim: rgba(157, 196, 255, 0.5);
+  --adecd-label-dim: rgba(176, 204, 250, 0.84);
   --adecd-label-halo: rgba(6, 10, 24, 0.85);
   --adecd-star: #c8ddff;
   --adecd-fg: #e9f2ff;
@@ -160,7 +161,7 @@
   --adecd-pad: rgba(42, 98, 200, 0.06);
   --adecd-pad-edge: rgba(42, 98, 200, 0.22);
   --adecd-label: rgba(26, 26, 30, 0.82);
-  --adecd-label-dim: rgba(99, 99, 112, 0.85);
+  --adecd-label-dim: rgba(68, 70, 82, 0.94);
   --adecd-label-halo: rgba(245, 243, 240, 0.92);
   --adecd-star: transparent;
   --adecd-fg: var(--color-fg);
@@ -252,19 +253,24 @@
 .adecd-plot-empty polygon { fill: rgba(157, 196, 255, 0.05); stroke: var(--adec-300); stroke-opacity: 0.6; stroke-dasharray: 3 3; }
 .adecd-plot-empty line { stroke: var(--adec-300); stroke-opacity: 0.28; stroke-dasharray: 2 3; }
 .adecd-lbl { pointer-events: none; }
+/*
+ * Labels are sized in screen pixels: `--adecd-px` is SVG units per screen
+ * pixel, set by the city on a resize. The line under the name is at least
+ * 11 px and 4.5:1 on the sky in both themes; on a narrow city it hides (the
+ * List and the selected row carry the same facts) instead of shrinking.
+ */
 .adecd-lbl-n,
 .adecd-lbl-s {
   paint-order: stroke;
   stroke: var(--adecd-label-halo);
-  stroke-width: 3px;
+  stroke-width: calc(3px * var(--adecd-px, 1));
   stroke-linejoin: round;
   font-family: var(--font-mono);
 }
-.adecd-lbl-n { font-size: 10.5px; font-weight: 500; fill: var(--adecd-label); }
-.adecd-lbl-s { font-size: 9.5px; fill: var(--adecd-label-dim); }
+.adecd-lbl-n { font-size: calc(12px * var(--adecd-px, 1)); font-weight: 500; fill: var(--adecd-label); }
+.adecd-lbl-s { font-size: calc(11px * var(--adecd-px, 1)); fill: var(--adecd-label-dim); }
 @container adecd (max-width: 560px) {
-  .adecd-lbl-n { font-size: 15px; }
-  .adecd-lbl-s { font-size: 12.5px; }
+  .adecd-lbl-s { display: none; }
 }
 
 /* A drift of cloud around a block that rises or sinks: once, then gone. */
@@ -409,6 +415,8 @@
 }
 .adecd-row-btn:hover { background: var(--kit-hover); }
 .adecd-row-btn:focus-visible { outline: 2px solid var(--adec-400); outline-offset: -2px; }
+/* Every kit button on the dashboard (Clear caches, Look inside, the lane actions) takes the dashboard's ring. */
+.adecd .kit-btn:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
 .adecd-row-btn b { font-weight: 500; white-space: nowrap; }
 .adecd-row-ic { display: inline-flex; color: var(--kit-text-3); }
 .adecd-row-val { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; min-width: 0; font-size: 12px; color: var(--kit-text-3); white-space: nowrap; }

@@ -24,7 +24,8 @@ import { useCloudMachines } from "../remoteTargets/useCloudMachines";
 import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
 import { showToast } from "../app/toast/toastStore";
 import { NewCloudMachineDialog } from "../remoteTargets/NewCloudMachineDialog";
-import { CloudDashboard, cloudOtherComputersCount, cloudSignInsValue } from "./cloudDashboard/CloudDashboard";
+import { CLOUD_DASHBOARD_ID, CloudDashboard, cloudOtherComputersCount, cloudSignInsValue } from "./cloudDashboard/CloudDashboard";
+import { prefersReducedMotion } from "./cloudDashboard/cloudDashboardModel";
 import "./IntegrationsSettings.css";
 
 function errorText(error: unknown, fallback: string): string {
@@ -121,7 +122,10 @@ export function CloudSection() {
         : { tone: "neutral" as const, label: "Not available yet" };
   const account = machines.result?.state === "ok" ? machines.result.account : null;
   const accountBanner = account ? cloudAccountBanner(account) : null;
-  const facts: IntegrationFact[] = live
+  // With the dashboard below, the header says one line and links to it: the
+  // dashboard owns the hours, disk and lanes, so they are not repeated here.
+  const dashboardShown = live && account != null;
+  const facts: IntegrationFact[] = live && !dashboardShown
     ? [
         {
           label: "Computers",
@@ -139,9 +143,26 @@ export function CloudSection() {
         },
       ]
     : [];
-  const heroFoot = live && status?.instanceCount === 0
-    ? <div className="ade-ig-hero-foot-row"><b>Next</b><span>Make a computer below, or pick {ADE_CLOUD_NAME} when you start a chat.</span></div>
-    : null;
+  const heroFoot = dashboardShown
+    ? (
+      <div className="ade-ig-hero-foot-row">
+        <span>Your cloud lanes, hours and disk are on the dashboard.</span>
+        <button
+          type="button"
+          className="ade-ig-link"
+          onClick={() => {
+            const dashboard = document.getElementById(CLOUD_DASHBOARD_ID);
+            dashboard?.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+            dashboard?.focus({ preventScroll: true });
+          }}
+        >
+          Go to the dashboard
+        </button>
+      </div>
+    )
+    : live && status?.instanceCount === 0
+      ? <div className="ade-ig-hero-foot-row"><b>Next</b><span>Make a computer below, or pick {ADE_CLOUD_NAME} when you start a chat.</span></div>
+      : null;
 
   return (
     <IntegrationPage id="cloud">

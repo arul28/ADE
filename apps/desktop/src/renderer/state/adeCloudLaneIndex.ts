@@ -74,6 +74,10 @@ export function noteCloudLaneMachines(machines: readonly CloudMachine[]): void {
     if (!machine.lane || machine.state === "deleting") return [];
     return [{ ...machine.lane, instanceId: machine.instanceId, machineKey: machine.machineKey, state: machine.state }];
   }).sort((a, b) => a.laneName.localeCompare(b.laneName) || a.instanceId.localeCompare(b.instanceId));
+  noteCloudLaneComputers(computers);
+}
+
+function noteCloudLaneComputers(computers: readonly AdeCloudLaneComputer[]): void {
   if (state.known && signature(computers) === signature(state.computers)) return;
   state = { computers, known: true };
   try {
@@ -82,6 +86,16 @@ export function noteCloudLaneMachines(machines: readonly CloudMachine[]): void {
     // This computer's copy is a convenience; the next read fills it again.
   }
   for (const listener of listeners) listener();
+}
+
+/**
+ * Drops one lane computer at once, after this window freed or deleted it, so a
+ * chat's chip and the machine lists stop naming it before the next read.
+ */
+export function forgetCloudLaneComputer(instanceId: string): void {
+  const computers = state.computers.filter((computer) => computer.instanceId !== instanceId);
+  if (computers.length === state.computers.length) return;
+  noteCloudLaneComputers(computers);
 }
 
 function subscribe(listener: () => void): () => void {

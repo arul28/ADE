@@ -37,13 +37,14 @@ export function CloudTierChangeDialog({
   const jobs = useCloudLaneJobs();
   // The job's events move it on; the answer to the start shows until the first one.
   const job = started ? jobs.get(started.jobId) ?? started : null;
+  const jobLive = job != null && (job.phase === "waiting" || job.phase === "running");
 
   return (
     <Dialog
       open
       onOpenChange={(open) => { if (!open) onClose(); }}
       title={job ? `Changing ${laneName}` : `Change the size of ${laneName}`}
-      description={job ? "It goes on if you close this. The steps also show in the lane's chat and on the dashboard." : undefined}
+      description={jobLive ? "It goes on if you close this. The steps also show in the lane's chat and on the dashboard." : undefined}
       size="md"
       actions={job ? [{ label: "Close", onClick: onClose, autoFocus: true }] : []}
     >
@@ -54,6 +55,7 @@ export function CloudTierChangeDialog({
           facts={{ laneName, instanceId, fromSizeId, toSizeId: null, reason: null }}
           account={account}
           pickable
+          headless
           onStarted={setStarted}
           onNotNow={onClose}
         />

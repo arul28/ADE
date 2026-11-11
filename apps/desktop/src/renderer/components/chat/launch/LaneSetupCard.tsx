@@ -227,15 +227,19 @@ export function LaunchStageGlyph({
 }
 
 /** A status mark that fades in when the status changes (CSS, transform/opacity only). */
-function StatusMark({ status, size }: { status: Status; size: number }) {
+/** A failed step in the danger tone (red), for cards whose failure stops the work (an ADE Cloud size change). */
+const DANGER_TILE = "border-red-400/30 bg-red-500/[0.10] text-red-300";
+const DANGER_TEXT = "text-red-200/90";
+
+function StatusMark({ status, size, danger = false }: { status: Status; size: number; danger?: boolean }) {
   return (
-    <span key={normalizeStatus(status)} className="ade-launch-glyph-in grid h-4 w-4 shrink-0 place-items-center">
+    <span key={normalizeStatus(status)} className={cn("ade-launch-glyph-in grid h-4 w-4 shrink-0 place-items-center", danger && "[&>span]:text-red-300")}>
       <LaunchStageGlyph status={status} size={size} />
     </span>
   );
 }
 
-function StageTile({ icon: IconComponent, status, compact, cloud = false }: { icon: Icon; status: Status; compact: boolean; cloud?: boolean }) {
+function StageTile({ icon: IconComponent, status, compact, cloud = false, danger = false }: { icon: Icon; status: Status; compact: boolean; cloud?: boolean; danger?: boolean }) {
   const normalized = normalizeStatus(status);
   return (
     <span
@@ -243,7 +247,7 @@ function StageTile({ icon: IconComponent, status, compact, cloud = false }: { ic
         "grid shrink-0 place-items-center rounded-[6px] border transition-colors duration-300",
         compact ? "h-[18px] w-[18px]" : "h-5 w-5",
         // An ADE Cloud launch runs in the Night sky blue, not the violet.
-        cloud && normalized === "running" ? "adec-tile" : TILE_TONE[normalized],
+        cloud && normalized === "running" ? "adec-tile" : danger && normalized === "failed" ? DANGER_TILE : TILE_TONE[normalized],
       )}
       aria-hidden
     >
@@ -388,6 +392,7 @@ export function StageLine({
   trailing,
   compact,
   cloud = false,
+  danger = false,
 }: {
   icon: Icon;
   status: ChatLaunchStageStatus;
@@ -398,30 +403,34 @@ export function StageLine({
   compact: boolean;
   /** An ADE Cloud launch: the running tone is the Night sky blue. */
   cloud?: boolean;
+  /** A failed step reads in the danger tone (red) instead of amber. */
+  danger?: boolean;
 }) {
   const stackDetail = compact && Boolean(detail);
+  const dangerFailed = danger && status === "failed";
   return (
     <div className={cn("flex min-w-0 gap-2.5", stackDetail ? "items-start py-1" : "items-center", compact ? "min-h-[28px]" : "h-[32px]")}>
-      <StageTile icon={icon} status={status} compact={compact} cloud={cloud} />
+      <StageTile icon={icon} status={status} compact={compact} cloud={cloud} danger={danger} />
       <div className={cn("flex min-w-0 flex-1 gap-2", stackDetail ? "flex-col items-stretch gap-0" : "items-baseline")}>
-        <span className={cn("shrink-0 transition-colors duration-200", LABEL_TONE[status])}>{label}</span>
+        <span className={cn("shrink-0 transition-colors duration-200", dangerFailed ? DANGER_TEXT : LABEL_TONE[status])}>{label}</span>
         {detail ? <span className="min-w-0 truncate text-fg/35" title={detail}>{detail}</span> : null}
         {percent != null ? (
           <span className={cn("shrink-0 tabular-nums", cloud ? "adec-percent" : "text-violet-200/80")}>{`${percent}%`}</span>
         ) : null}
       </div>
       {trailing}
-      <StatusMark status={status} size={compact ? 11 : 12} />
+      <StatusMark status={status} size={compact ? 11 : 12} danger={dangerFailed} />
     </div>
   );
 }
 
 /** The full error a failed or warned stage shows under its row (live card and payload fallback). */
-export function StageErrorCallout({ error, className }: { error: string; className?: string }) {
+export function StageErrorCallout({ error, className, danger = false }: { error: string; className?: string; danger?: boolean }) {
   return (
     <p
       className={cn(
-        "mb-1.5 ml-[30px] rounded-md border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 leading-snug text-amber-200/85",
+        "mb-1.5 ml-[30px] rounded-md border px-2 py-1 leading-snug",
+        danger ? "border-red-400/20 bg-red-500/[0.07] text-red-200/90" : "border-amber-400/15 bg-amber-400/[0.06] text-amber-200/85",
         className,
       )}
     >

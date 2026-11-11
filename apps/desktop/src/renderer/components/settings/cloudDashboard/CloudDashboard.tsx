@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowLeft, Broom, CaretRight, CreditCard, Desktop, Gauge, MagnifyingGlass, Trash, UserCircle, Warning } from "@phosphor-icons/react";
 import { cloudCatalogOf, formatCloudHours, type CloudAccountState } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../../shared/cloudLaneLaunch";
@@ -37,6 +37,9 @@ import { CloudTierChangeDialog } from "../../cloudLane/CloudTierChangeDialog";
 import "./cloudDashboard.css";
 
 type View = "city" | "list";
+
+/** The dashboard's element id: the integration header links to it. */
+export const CLOUD_DASHBOARD_ID = "ade-cloud-dashboard";
 
 const NO_MACHINES: CloudLaneMachine[] = [];
 
@@ -139,10 +142,33 @@ export function CloudDashboard({
     empty: lane.state === "none",
   })), [lanes, now]);
 
-  const openInside = useCallback((key: string) => {
+  // Look inside moves focus into the inside view; Back returns it to what opened it
+  // (the city or list, on the same lane, or the Look inside button).
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const lookInsideButtonRef = useRef<HTMLButtonElement | null>(null);
+  const returnFocusRef = useRef<"view" | "button" | null>(null);
+  const openInside = useCallback((key: string, from: "view" | "button" = "view") => {
     const lane = lanes.find((entry) => entry.key === key);
-    if (lane?.instanceId) setInsideKey(key);
+    if (!lane?.instanceId) return;
+    returnFocusRef.current = from;
+    setSelectedKey(key);
+    setInsideKey(key);
   }, [lanes]);
+  const closeInside = useCallback(() => setInsideKey(null), []);
+  const insideOpen = inside != null;
+  useLayoutEffect(() => {
+    if (insideOpen) return;
+    const from = returnFocusRef.current;
+    returnFocusRef.current = null;
+    if (from === "button") lookInsideButtonRef.current?.focus();
+    else if (from === "view") sectionRef.current?.querySelector<HTMLElement>(".adecd-city, .adecd-list")?.focus();
+  }, [insideOpen]);
+  const showView = (next: View) => {
+    // The toggle closes the inside view; focus stays on the toggle.
+    returnFocusRef.current = null;
+    setInsideKey(null);
+    setView(next);
+  };
 
   const clearCaches = async (lane: DashLane) => {
     const asleep = lane.state !== "awake";
@@ -177,6 +203,13 @@ export function CloudDashboard({
 
   const freeLane = async (lane: DashLane) => {
     if (!lane.instanceId) return;
+    const ok = await confirmDialog({
+      title: `Free the computer of ${lane.name}?`,
+      message: "ADE pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.",
+      confirmLabel: "Free the computer",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
     setBusyKey(lane.key);
     try {
       const done = await freeCloudLane(lane.instanceId);
@@ -195,7 +228,7 @@ export function CloudDashboard({
   };
 
   return (
-    <section className="adecd" aria-label={`${ADE_CLOUD_NAME} dashboard`}>
+    <section ref={sectionRef} id={CLOUD_DASHBOARD_ID} tabIndex={-1} className="adecd" aria-label={`${ADE_CLOUD_NAME} dashboard`}>
       <header className="adecd-head">
         <CloudMark size={20} brand bold />
         <h3>{ADE_CLOUD_NAME}</h3>
@@ -205,8 +238,8 @@ export function CloudDashboard({
         ) : null}
         <span className="adecd-grow" />
         <span className="kit-seg" data-case="sentence" role="group" aria-label="View">
-          <button type="button" aria-pressed={view === "city"} onClick={() => setView("city")}>City</button>
-          <button type="button" aria-pressed={view === "list"} onClick={() => setView("list")}>List</button>
+          <button type="button" aria-pressed={!insideOpen && view === "city"} onClick={() => showView("city")}>City</button>
+          <button type="button" aria-pressed={!insideOpen && view === "list"} onClick={() => showView("list")}>List</button>
         </span>
       </header>
 
@@ -247,7 +280,7 @@ export function CloudDashboard({
       ) : null}
 
       {inside ? (
-        <LookInside lane={inside} now={now} busy={busyKey === inside.key} onBack={() => setInsideKey(null)} onClear={() => void clearCaches(inside)} />
+        <LookInside lane={inside} now={now} busy={busyKey === inside.key} onBack={closeInside} onClear={() => void clearCaches(inside)} />
       ) : view === "city" ? (
         <div className="adecd-citycard">
           <div className="adecd-citytop">
@@ -287,11 +320,11 @@ export function CloudDashboard({
           {selected.without ? <CloudLaneWithoutComputerNotice lane={selected.without} account={account} variant="row" /> : null}
           {selected.instanceId ? (
             <div className="adecd-lanesel-actions">
-              <button type="button" className="kit-btn" data-size="sm" onClick={() => openInside(selected.key)}><MagnifyingGlass size={12} />Look inside</button>
+              <button ref={lookInsideButtonRef} type="button" className="kit-btn" data-size="sm" onClick={() => openInside(selected.key, "button")}><MagnifyingGlass size={12} />Look inside</button>
               {cloudLaneLifeAvailable() ? (
                 <>
                   <button type="button" className="kit-btn" data-size="sm" disabled={busyKey === selected.key || (selectedJob != null && (selectedJob.phase === "waiting" || selectedJob.phase === "running"))} onClick={() => setSizing(selected)}>Change size</button>
-                  <button type="button" className="kit-btn" data-size="sm" disabled={busyKey === selected.key} onClick={() => void freeLane(selected)} title="Push its work, remove its computer and keep the lane. The next message makes a fresh computer.">Keep lane, free its computer</button>
+                  <button type="button" className="kit-btn" data-size="sm" disabled={busyKey === selected.key} onClick={() => void freeLane(selected)}>Keep lane, free its computer</button>
                   <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" data-tone="crit" disabled={busyKey === selected.key} onClick={() => void deleteLane(selected)}><Trash size={12} />Delete lane</button>
                 </>
               ) : null}
@@ -500,10 +533,15 @@ function LookInside({ lane, now, busy, onBack, onClear }: { lane: DashLane; now:
   const clearableGb = (usage?.items ?? []).filter((part) => part.clearable).reduce((total, part) => total + part.gb, 0);
   const total = usage?.totalGb ?? 0;
   const canClear = clearableGb > 0 && Boolean(window.ade.cloud?.clearCaches) && lane.state !== "failed";
+  // Focus moves into the inside view when it opens, onto its way back.
+  const backRef = useRef<HTMLButtonElement | null>(null);
+  useLayoutEffect(() => {
+    backRef.current?.focus();
+  }, []);
   return (
-    <div className="adecd-citycard" data-inside="true">
+    <div className="adecd-citycard" data-inside="true" role="region" aria-label={`Inside ${lane.name}`}>
       <div className="adecd-citytop">
-        <button type="button" className="kit-btn kit-btn-ghost" data-size="xs" onClick={onBack}><ArrowLeft size={11} />Your cloud lanes</button>
+        <button ref={backRef} type="button" className="kit-btn kit-btn-ghost" data-size="xs" onClick={onBack}><ArrowLeft size={11} />Your cloud lanes</button>
         <b>{lane.name}</b>
         <span className="adecd-grow" />
         <span className="adecd-hint">{usage ? `Measured ${formatAgo(usage.measuredAt, now)}` : "Not measured yet"}</span>

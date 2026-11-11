@@ -199,7 +199,7 @@ function AdeCloudCard({ choice, disabled }: { choice: AdeCloudLaneChoice; disabl
       role="radio"
       aria-checked={choice.selected}
       disabled={disabled || !available}
-      title={choice.unavailableReason ?? "Each lane gets a new ADE Cloud computer of its own. It sleeps when idle."}
+      title={available ? "Each lane gets a new ADE Cloud computer of its own. It sleeps when idle." : undefined}
       onClick={choice.onSelect}
       className={cn(CARD_CLASS_NAME, "!p-2.5", choice.selected && CARD_ACTIVE_CLASS_NAME)}
     >
@@ -215,8 +215,9 @@ function AdeCloudCard({ choice, disabled }: { choice: AdeCloudLaneChoice; disabl
           <div className="mt-0.5 text-[10px] text-muted-fg/70">A new computer for each lane</div>
         </div>
       </div>
-      <div className={cn("mt-1 truncate text-[10px] leading-snug", available ? "text-muted-fg/60" : "text-amber-300/80")}>
-        {available ? choice.detail : "Not available for this project"}
+      {/* The reason it is off is read here, not only in a tooltip. */}
+      <div className={cn("mt-1 text-[10px] leading-snug", available ? "truncate text-muted-fg/60" : "whitespace-normal text-amber-300/80")}>
+        {available ? choice.detail : choice.unavailableReason}
       </div>
     </button>
   );
