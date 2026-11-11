@@ -83,6 +83,7 @@ asks the person with a card first; with nobody watching the answer is no. A comp
 activity and wakes on use, so you rarely need `sleep` or `wake`.
 `ade cloud work-state` lists the lanes with work not pushed yet. Freeing a computer (keeping its lane) is refused while the agent works: stop it or wait.
 With nobody there you cannot change a size: ask with `ade cloud resize --request`, as in Never.
+`ade cloud invite --text` shows the person's invite link, friends joined and hours earned. Only the person enters a friend's invite, in Settings › Account.
 
 Cloud computers update themselves when idle or asleep, never while work runs.
 `ade cloud status` shows each one's `update` (image, channel, target, state).
