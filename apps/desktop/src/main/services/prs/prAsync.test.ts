@@ -566,6 +566,76 @@ describe("prPollingService", () => {
     }));
   });
 
+  it("announces one review request across an unknown-verdict dip", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    // A branch that requires a review but names no reviewer: `none` is also
+    // what a snapshot backfill or a failed GraphQL read writes, so a dip to it
+    // must not look like the review request ended.
+    let summary = createSummary({
+      title: "Needs one approval",
+      headBranch: "feature/review",
+      checksStatus: "passing",
+      reviewStatus: "none",
+      headSha: "sha-a",
+    });
+    const events: any[] = [];
+    const prService = {
+      listAll: () => [summary],
+      refresh: vi.fn(async () => [summary]),
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: (event) => events.push(event),
+    });
+    const reviewAnnouncements = () => events.filter(
+      (event) => event.type === "pr-notification" && event.kind === "review_requested",
+    ).length;
+    const poll = async () => {
+      service.poke();
+      await vi.advanceTimersByTimeAsync(0);
+    };
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000); // first look: remembered, not announced
+
+    summary = { ...summary, reviewStatus: "requested" as const };
+    await poll();
+    expect(reviewAnnouncements()).toBe(1);
+
+    summary = { ...summary, reviewStatus: "none" as const }; // verdict went unknown
+    await poll();
+    summary = { ...summary, reviewStatus: "requested" as const }; // and came back
+    await poll();
+    expect(reviewAnnouncements()).toBe(1);
+
+    summary = { ...summary, reviewStatus: "approved" as const }; // a real verdict ends the round
+    await poll();
+    summary = { ...summary, reviewStatus: "requested" as const }; // a new request announces
+    await poll();
+    expect(reviewAnnouncements()).toBe(2);
+
+    // A push does not re-request review: the same request on a new head is not news.
+    summary = { ...summary, headSha: "sha-b" };
+    await poll();
+    expect(reviewAnnouncements()).toBe(2);
+
+    // An approval that arrives with a new commit still ends the round, so the
+    // next request announces even though the head just moved.
+    summary = { ...summary, reviewStatus: "approved" as const };
+    await poll();
+    summary = { ...summary, reviewStatus: "requested" as const };
+    await poll();
+    expect(reviewAnnouncements()).toBe(3);
+  });
+
   it("emits changes_requested notification with generic messaging", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));

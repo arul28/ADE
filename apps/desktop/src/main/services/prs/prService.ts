@@ -876,6 +876,8 @@ function latestReviewStatesByUser(reviews: readonly PrReview[]): Map<string, str
 function computeReviewStatus(args: {
   reviewDecision?: PrReviewDecision;
   verdictUnavailable?: { previousStatus: string | null | undefined };
+  /** The reviews list could not be read this time, so an empty list proves nothing. */
+  reviewsUnavailable?: boolean;
   requestedReviewers: string[];
   requestedTeams?: string[];
   reviewStatesByUser: Map<string, string>;
@@ -887,7 +889,23 @@ function computeReviewStatus(args: {
   if (args.verdictUnavailable) {
     const stillApproved = Array.from(args.reviewStatesByUser.values()).includes("APPROVED");
     if (args.verdictUnavailable.previousStatus === "approved" && stillApproved) return "approved";
-    return args.requestedReviewers.length > 0 || (args.requestedTeams?.length ?? 0) > 0 ? "requested" : "none";
+    // A blocking verdict outranks a pending request while the reviews read
+    // could not say whether it ended. Keep it until a read that worked shows
+    // no visible changes-requested, so the status cannot flip
+    // changes_requested → requested → changes_requested on the wire.
+    if (args.verdictUnavailable.previousStatus === "changes_requested" && args.reviewsUnavailable) {
+      return "changes_requested";
+    }
+    // A reviewer named in the REST payload is current evidence, even with no
+    // verdict, so an explicit request still overrides a saved `none`. No
+    // verdict and no request means keep the last real status: a branch that
+    // requires a review but names no reviewer flipped to `none` on every failed
+    // read and back to `requested` on the next good one, re-announcing the same
+    // review request each time.
+    if (args.requestedReviewers.length > 0 || (args.requestedTeams?.length ?? 0) > 0) return "requested";
+    const previous = args.verdictUnavailable.previousStatus;
+    if (previous === "requested" || previous === "none") return previous;
+    return "none";
   }
   for (const state of args.reviewStatesByUser.values()) {
     if (state === "APPROVED") return "approved";
@@ -3426,6 +3444,8 @@ export function createPrService({
       lane: LaneSummary;
       state: PrSummary["state"];
       isOpen: boolean;
+      /** The live row this PR already has, if any (it is not a new row). */
+      existingRow: PullRequestRow | null;
     };
     const bestByLane = new Map<string, BackfillCandidate>();
     for (const rawPr of rawPulls) {
@@ -3451,10 +3471,27 @@ export function createPrService({
         !prev
         || (isOpen && !prev.isOpen)
         || (isOpen === prev.isOpen && prNumber > prev.prNumber);
-      if (better) bestByLane.set(lane.id, { rawPr, prNumber, headBranch, lane, state, isOpen });
+      if (better) {
+        bestByLane.set(lane.id, {
+          rawPr,
+          prNumber,
+          headBranch,
+          lane,
+          state,
+          isOpen,
+          existingRow: existingRepoRow,
+        });
+      }
     }
 
-    for (const { rawPr, prNumber, headBranch, lane, state } of bestByLane.values()) {
+    const createdIds: string[] = [];
+    for (const { rawPr, prNumber, headBranch, lane, state, existingRow } of bestByLane.values()) {
+      // This is a lane-mapping backfill, not a status read. A row that is
+      // already tracked keeps its live verdicts: the pull list this walks only
+      // carries state and branch, so writing its defaults here reset a checked,
+      // reviewed PR to `none`. The poller then saw the PR move back to
+      // `requested` and announced the same review request again on every sweep
+      // — the notice a person could not keep dismissed.
       const summary: PrSummary = {
         id: randomUUID(),
         laneId: lane.id,
@@ -3468,13 +3505,13 @@ export function createPrService({
         state,
         baseBranch: asString(rawPr?.base?.ref) || branchNameFromRef(lane.baseRef),
         headBranch,
-        checksStatus: "none",
-        checksReason: null,
-        checksMissingRequired: [],
-        reviewStatus: "none",
+        checksStatus: (existingRow?.checks_status as PrChecksStatus | null) ?? "none",
+        checksReason: existingRow?.checks_reason ?? null,
+        checksMissingRequired: parseMissingRequired(existingRow?.checks_missing_required),
+        reviewStatus: (existingRow?.review_status as PrReviewStatus | null) ?? "none",
         additions: Number(rawPr?.additions ?? 0),
         deletions: Number(rawPr?.deletions ?? 0),
-        lastSyncedAt: nowIso(),
+        lastSyncedAt: existingRow?.last_synced_at ?? nowIso(),
         createdAt: asString(rawPr?.created_at) || nowIso(),
         updatedAt: asString(rawPr?.updated_at) || nowIso(),
         mergedAt: asString(rawPr?.merged_at) || null,
@@ -3488,10 +3525,14 @@ export function createPrService({
         laneId: lane.id,
       });
       backfilledIds.push(prId);
+      // Only a row this sweep actually created needs a hot-refresh window. An
+      // already-tracked row is on its normal staleness schedule; marking it hot
+      // on every snapshot re-armed the poller (and another live fetch) forever.
+      if (!existingRow) createdIds.push(prId);
     }
 
-    if (backfilledIds.length > 0) {
-      markHotRefresh(backfilledIds, { invalidateGithubSnapshot: false });
+    if (createdIds.length > 0) {
+      markHotRefresh(createdIds, { invalidateGithubSnapshot: false });
     }
     return backfilledIds.length;
   };
@@ -5646,11 +5687,12 @@ export function createPrService({
     const requestedTeams = Array.isArray(pr?.requested_teams) ? pr.requested_teams.map((team: any) => asString(team?.slug)).filter(Boolean) : [];
 
     let checkRunsFetchFailed = false;
+    let reviewsFetchFailed = false;
     const [combinedStatus, checkRuns, reviews, compare, visibility] = shouldFetchLiveStatus
       ? await Promise.all([
           headSha ? bestEffort("refreshOne.fetchCombinedStatus", fetchCombinedStatus(repo, headSha), { state: "", statuses: [] }, () => { checkRunsFetchFailed = true; }) : Promise.resolve({ state: "", statuses: [] }),
           headSha ? bestEffort("refreshOne.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
-          bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), []),
+          bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), [], () => { reviewsFetchFailed = true; }),
           baseSha && headSha ? bestEffort("refreshOne.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
           fetchPrVisibility(repo, Number(row.github_pr_number)),
         ])
@@ -5690,6 +5732,7 @@ export function createPrService({
       ? computeReviewStatus({
         reviewDecision: visibility.reviewDecision,
         ...(visibility.verdictKnown ? {} : { verdictUnavailable: { previousStatus: row.review_status } }),
+        reviewsUnavailable: reviewsFetchFailed,
         requestedReviewers,
         requestedTeams,
         reviewStatesByUser,
@@ -6044,10 +6087,11 @@ export function createPrService({
     const mergeConflicts = mergeConflictsFromPull(pr);
 
     let checkRunsFetchFailed = false;
+    let reviewsFetchFailed = false;
     const [combinedStatus, checkRuns, reviews, compare, mergeState] = await Promise.all([
       restHeadSha ? bestEffort("computeStatus.fetchCombinedStatus", fetchCombinedStatus(repo, restHeadSha), { state: "", statuses: [] }, () => { checkRunsFetchFailed = true; }) : Promise.resolve({ state: "", statuses: [] }),
       restHeadSha ? bestEffort("computeStatus.fetchCheckRuns", fetchCheckRuns(repo, restHeadSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
-      bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), []),
+      bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), [], () => { reviewsFetchFailed = true; }),
       baseSha && restHeadSha ? bestEffort("computeStatus.fetchCompare", fetchCompare(repo, baseSha, restHeadSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
       readCache.whileQuiet(
         repo,
@@ -6082,6 +6126,7 @@ export function createPrService({
     const reviewStatus = computeReviewStatus({
       reviewDecision: mergeState ? mergeState.reviewDecision : visibility?.reviewDecision,
       ...(visibility?.verdictKnown === false ? { verdictUnavailable: { previousStatus: getRowById(prId)?.review_status } } : {}),
+      reviewsUnavailable: reviewsFetchFailed,
       requestedReviewers,
       requestedTeams,
       reviewStatesByUser,

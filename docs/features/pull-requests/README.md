@@ -1770,6 +1770,30 @@ keeps the last one we had. A pull request that is already failing on the first
 poll after start is not announced. A failed checks fetch does not store the
 new head SHA, so the old red result stays paired with the commit it belongs to.
 
+`review_requested` and `changes_requested` fire once per review round. A dip
+to `none` does not end the round: `none` is also what an unknown verdict looks
+like — a failed GraphQL read, a failed reviews read, or a lane backfill mapping
+a PR from a pull list that carries no verdict — and re-announcing on its return
+produced a toast that came back every few seconds no matter how often it was
+dismissed. A review request belongs to the pull request, not to a commit, so
+pushing does not start a new round. A round ends when a reviewer reaches a
+verdict (`approved`), and a verdict that moves between `requested` and
+`changes_requested` announces the new one. A PR already waiting on the first
+poll after start is remembered, not announced.
+
+While the verdict cannot be read, a saved `changes_requested` block is kept
+unless a reviews read that worked shows no visible blocking review; a pending
+reviewer or team request alone does not clear it. Otherwise a failed read could
+downgrade the block to `requested` and the recovery could announce the block
+again.
+
+The lane backfill in `getGitHubSnapshot` is a mapping step, not a status read.
+For a PR that already has a live row it keeps `checks_status`, `review_status`,
+the checks reason and the sync time, and it opens a hot-refresh window only for
+rows it created. Writing the pull list's `none` defaults over live verdicts was
+the other half of that re-announcement loop, and it also reset a lane's checks
+and review chips until the next poll.
+
 `prService.ingestGithubWebhook` does not emit one `prs-updated` for each
 delivery. The event carries the whole PR list (about 225 KB for 194 PRs), and a
 CI run delivers dozens of `check_run` webhooks in a few seconds. Each delivery

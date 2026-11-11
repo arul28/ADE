@@ -2742,6 +2742,10 @@ describe("prService.getGithubSnapshot", () => {
       lane_id: LANE_ID,
       github_pr_number: 134,
       head_branch: "old-feature",
+      checks_status: "passing",
+      checks_reason: "required checks passed",
+      review_status: "requested",
+      last_synced_at: "2026-01-02T00:00:00.000Z",
     });
     db.get.mockImplementation((sql: string, params: unknown[]) => {
       const text = String(sql);
@@ -2759,6 +2763,14 @@ describe("prService.getGithubSnapshot", () => {
       expect.stringContaining("update pull_requests"),
       expect.arrayContaining(["existing-pr", "proj-1"]),
     );
+    // The pull list only carries state and branch. Mapping its row onto an
+    // already-tracked PR must keep the live verdicts; resetting them to "none"
+    // is what re-announced the same review request on every poll.
+    const update = db.run.mock.calls.find(
+      ([sql, params]: [unknown, unknown[]]) =>
+        String(sql).includes("update pull_requests") && params.includes("existing-pr"),
+    );
+    expect(update?.[1]).toEqual(expect.arrayContaining(["passing", "requested"]));
     expect(db.run).not.toHaveBeenCalledWith(
       expect.stringContaining("insert into pull_requests("),
       expect.anything(),

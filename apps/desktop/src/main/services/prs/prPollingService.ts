@@ -86,6 +86,56 @@ function rememberChecksFailure(
   return { memory: { headSha, announced }, announce };
 }
 
+type ReviewAnnouncement = {
+  /** The review verdict already announced for the current round, if one was. */
+  announcedStatus: "requested" | "changes_requested" | null;
+};
+
+/**
+ * One "review requested" (and "changes requested") toast per review round.
+ *
+ * `none` is both a real state (no review required and nobody asked) and the
+ * shape an *unknown* verdict takes: a snapshot backfill or a failed GraphQL
+ * read writes it, and the next poll that can see GitHub again reports
+ * `requested`. Treating that dip as the end of the round re-announced the same
+ * review request on every poll — a toast the user could not keep dismissed.
+ *
+ * A review request belongs to the pull request, not to a commit, so a new head
+ * does not start a round: pushing to a PR that is already waiting for review
+ * does not ask anyone again. A round ends when a reviewer reaches a verdict
+ * (`approved`) or when the verdict moves between `requested` and
+ * `changes_requested`, which announces the new one.
+ *
+ * The first observation of a PR never announces: `previous === null`. If it is
+ * already waiting on a review, that is remembered, so a later unknown-verdict
+ * dip cannot announce a request the user was not shown entering.
+ */
+function rememberReviewAnnouncement(
+  previous: ReviewAnnouncement | null,
+  pr: PrSummary,
+): {
+  memory: ReviewAnnouncement;
+  announceRequested: boolean;
+  announceChangesRequested: boolean;
+} {
+  let announcedStatus = previous?.announcedStatus ?? null;
+  // A real verdict ends the round; the next request is news again.
+  if (pr.reviewStatus === "approved") announcedStatus = null;
+  const open = pr.state === "open" || pr.state === "draft";
+  const announceRequested = open
+    && previous != null
+    && pr.reviewStatus === "requested"
+    && announcedStatus !== "requested";
+  const announceChangesRequested = open
+    && previous != null
+    && pr.reviewStatus === "changes_requested"
+    && announcedStatus !== "changes_requested";
+  if (pr.reviewStatus === "requested" || pr.reviewStatus === "changes_requested") {
+    announcedStatus = pr.reviewStatus;
+  }
+  return { memory: { announcedStatus }, announceRequested, announceChangesRequested };
+}
+
 function summarizeNotification(kind: PrNotificationKind): { title: string; message: string } {
   switch (kind) {
     case "opened":
@@ -266,6 +316,7 @@ export function createPrPollingService({
       behindBaseBy: number | null;
       headSha: string | null;
       checksFailureAnnounced: boolean;
+      reviewAnnouncedStatus: ReviewAnnouncement["announcedStatus"];
     }
   >();
 
@@ -407,6 +458,7 @@ export function createPrPollingService({
         lastFingerprintByPrId.clear();
         for (const pr of prs) {
           const failure = rememberChecksFailure(null, pr);
+          const review = rememberReviewAnnouncement(null, pr);
           lastByPrId.set(pr.id, {
             checksStatus: pr.checksStatus,
             reviewStatus: pr.reviewStatus,
@@ -416,6 +468,7 @@ export function createPrPollingService({
             behindBaseBy: pr.behindBaseBy ?? null,
             headSha: failure.memory.headSha,
             checksFailureAnnounced: failure.memory.announced,
+            reviewAnnouncedStatus: review.memory.announcedStatus,
           });
           lastFingerprintByPrId.set(pr.id, getPrFingerprint(pr));
         }
@@ -446,6 +499,10 @@ export function createPrPollingService({
             : null,
           pr,
         );
+        const review = rememberReviewAnnouncement(
+          prev ? { announcedStatus: prev.reviewAnnouncedStatus } : null,
+          pr,
+        );
         // An announced failure is a change even when no field moved: a new
         // head is only announced on the poll after it appeared, still red.
         const prChanged =
@@ -471,8 +528,8 @@ export function createPrPollingService({
           if (pr.state !== "open" && pr.state !== "draft") return false;
           if (!prev) return false;
           if (kind === "checks_failing") return failure.announce;
-          if (kind === "review_requested") return prev.reviewStatus !== "requested" && pr.reviewStatus === "requested";
-          if (kind === "changes_requested") return prev.reviewStatus !== "changes_requested" && pr.reviewStatus === "changes_requested";
+          if (kind === "review_requested") return review.announceRequested;
+          if (kind === "changes_requested") return review.announceChangesRequested;
           if (kind === "merge_ready") return prev.mergeReady !== true && mergeReady === true && pr.state === "open";
           return false;
         };
@@ -518,6 +575,7 @@ export function createPrPollingService({
           behindBaseBy: pr.behindBaseBy ?? null,
           headSha: failure.memory.headSha,
           checksFailureAnnounced: failure.memory.announced,
+          reviewAnnouncedStatus: review.memory.announcedStatus,
         });
         lastFingerprintByPrId.set(pr.id, nextFingerprint);
       }
