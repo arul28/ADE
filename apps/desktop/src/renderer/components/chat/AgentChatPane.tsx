@@ -415,6 +415,7 @@ import { describeAutoCreateStart } from "../lanes/laneStartOptions";
 import { autoLaneMachine, originUrlForBinding } from "../lanes/laneMachines";
 import { draftCloneRowTargetId, useDraftMachineSetup } from "./useDraftMachineSetup";
 import { ADE_CLOUD_MACHINE_ID, adeCloudAccountBlock, useAdeCloudDraft, type AdeCloudTrayAction, type AdeCloudTrayNotice } from "./useAdeCloudDraft";
+import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
 import { AdeCloudTray, CloudSizeButton } from "./AdeCloudComposerParts";
 import { resolveAdeCloudLaneBinding } from "./adeCloudLaneBinding";
 import { ADE_CLOUD_NAME, cloudSkylineSummary } from "../remoteTargets/cloudBrand";
@@ -17503,10 +17504,18 @@ export function AgentChatPane({
    * never meet: the label needs an ADE Cloud draft, and a draft that runs in
    * a cloud has no local sign-in to ask for (`draftSkipsLocalSignIn`).
    */
-  const composerAboveSlot = useMemo(
-    () => (adeCloudNotice ? <AdeCloudTray notice={adeCloudNotice} onAction={openAdeCloudSettings} /> : providerSignInSlot),
-    [adeCloudNotice, openAdeCloudSettings, providerSignInSlot],
-  );
+  // A chat on an ADE Cloud lane: a tier change's steps, or "no computer now", above the box. The chat's own binding.
+  const cloudLaneStatusBinding = selectedSessionId ? activeComposerRuntimeBinding : null;
+  const composerAboveSlot = useMemo(() => {
+    const own = adeCloudNotice ? <AdeCloudTray notice={adeCloudNotice} onAction={openAdeCloudSettings} /> : providerSignInSlot;
+    if (cloudLaneStatusBinding?.kind !== "remote") return own;
+    return (
+      <>
+        <CloudLaneChatStatus binding={cloudLaneStatusBinding} />
+        {own}
+      </>
+    );
+  }, [adeCloudNotice, cloudLaneStatusBinding, openAdeCloudSettings, providerSignInSlot]);
   // Layout effect, not effect: this publishes the machine the model memos above
   // read from, so running it after paint would show one frame of the previous
   // machine's model list when the composer switches machines. Setting the same
@@ -20645,6 +20654,9 @@ export function AgentChatPane({
         onOpenChange={setNewLaneDialogOpen}
         behavior="configure-for-chat"
         onConfigured={handleNewLaneConfigured}
+        // A draft bound for ADE Cloud: no machine row, the size takes its place.
+        adeCloudTierId={adeCloudMode ? adeCloud.tierId : null}
+        onChooseAdeCloudTier={adeCloud.chooseTier}
       />
       <ChatHandoffDialogs
         localOpen={localHandoffOpen}

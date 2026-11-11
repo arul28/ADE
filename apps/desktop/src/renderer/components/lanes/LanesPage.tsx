@@ -89,6 +89,10 @@ import {
 import { useLanesPageMachines } from "./useLanesPageMachines";
 import { laneCompareBase, laneRebaseLine, useLaneRebaseNeeds, type LaneRebaseLine } from "./laneRebaseNeeds";
 import { confirmForeignLaneDeleted, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
+import { cloudLaneComputerOfLane } from "../cloudLane/cloudLaneActions";
+import { deleteCloudLaneWithCheck } from "../cloudLane/deleteCloudLane";
+import { CloudLanesWithoutComputerList } from "../cloudLane/CloudLaneWithoutComputer";
+import { originUrlForBinding } from "./laneMachines";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
@@ -1318,7 +1322,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const deleteManagedLanes = async () => {
     const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
     // The brain still refuses a lane that turned dirty since the dialog.
-    const actionable = lanesToDelete(targets, deleteForce);
+    const deletable = lanesToDelete(targets, deleteForce);
+    // ADE Cloud lanes go with their computers (one account-level delete each, warned only when
+    // work isn't on GitHub); every other lane deletes on its machine as before.
+    const cloudDeletes = deletable.flatMap((lane) => {
+      const target = resolveLaneTarget(lane.id);
+      const cloudLane = target.ok ? cloudLaneComputerOfLane(target.pin, target.laneId) : null;
+      return cloudLane && target.ok ? [{ lane, cloudLane, machineId: target.machineId }] : [];
+    });
+    const cloudLaneIds = new Set(cloudDeletes.map((entry) => entry.lane.id));
+    const actionable = deletable.filter((lane) => !cloudLaneIds.has(lane.id));
 
     // Close the dialog and reset the transient delete UI before any async work.
     // The delete itself runs in the background: each lane's row shows the live
@@ -1331,6 +1344,21 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setLaneActionError(null);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setMultiSelectedLaneIds(EMPTY_LANE_ID_SET);
+    if (cloudDeletes.length) {
+      void (async () => {
+        // One at a time: each may ask about its own unpushed work.
+        for (const entry of cloudDeletes) {
+          await deleteCloudLaneWithCheck({
+            instanceId: entry.cloudLane.instanceId,
+            laneName: entry.lane.name,
+            askFirst: false,
+            onDeleted: () => {
+              if (entry.machineId) requestCrossMachineLanesForMachine(entry.machineId);
+            },
+          });
+        }
+      })();
+    }
     if (actionable.length === 0) return;
 
     const deleteArgsByLaneId = new Map<string, DeleteLaneArgs>();
@@ -1995,6 +2023,23 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       return;
     }
     const target = { ...row, pin: row.pin };
+    // An ADE Cloud lane goes with its computer: one account-level delete, warned only when work isn't on GitHub.
+    const cloudLane = cloudLaneComputerOfLane(target.pin, target.lane.id);
+    if (cloudLane) {
+      setForeignManageKey(null);
+      setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
+      setLaneActionError(null);
+      void deleteCloudLaneWithCheck({
+        instanceId: cloudLane.instanceId,
+        laneName: target.lane.name,
+        askFirst: false,
+        onDeleted: () => {
+          clearForeignSelection(target.key);
+          requestCrossMachineLanesForMachine(target.machineId);
+        },
+      });
+      return;
+    }
     const args: DeleteLaneArgs = {
       laneId: target.lane.id,
       force: deleteForce,
@@ -2101,13 +2146,20 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   /* ---- Machine chips ---- */
 
-  const machineFilterToolbar = multiMachine ? (
+  const machineFilterChipsNode = multiMachine ? (
     <LaneMachineFilterChips
       machines={[...machineFilterChips.values()]}
       value={effectiveMachineFilter}
       onChange={setMachineFilter}
     />
   ) : null;
+  // This project's ADE Cloud lanes whose computer was freed or removed: each says so and offers a new one.
+  const machineFilterToolbar = (
+    <>
+      {machineFilterChipsNode}
+      <CloudLanesWithoutComputerList originUrl={originUrlForBinding(projectBinding)} />
+    </>
+  );
 
   /* ---- Render ---- */
 

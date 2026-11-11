@@ -100,6 +100,10 @@ function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudLa
     sleep: cloudSleepPolicyOf(instance),
     diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], catalog, instance.metadata[CLOUD_DISK_FULL_REASON_METADATA]),
     update: updateOf(instance),
+    // Use facts the computer reported while awake: read with the list, no wake.
+    lastActiveAtMs: instance.lastActiveAt ?? null,
+    diskUsage: instance.diskUsage ?? null,
+    laneWork: instance.laneWork ?? null,
     ...(lane ? { lane } : {}),
   };
 }
@@ -184,17 +188,63 @@ const PUSH_ALL_WORK_TIMEOUT_MS = 3 * 60_000;
  * push-work`). The new ADE sits on the disk (`$ADE_HOME/bin`), and ADE on the
  * computer answers a few seconds after a start.
  */
-const PUSH_ALL_WORK_COMMAND = [
-  'export PATH="$ADE_HOME/bin:$PATH"',
-  'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
-  "ade cloud push-work --json",
-].join("\n");
+function pushWorkCommand(check: boolean): string {
+  return [
+    'export PATH="$ADE_HOME/bin:$PATH"',
+    'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
+    check ? "ade cloud push-work --check --json" : "ade cloud push-work --json",
+  ].join("\n");
+}
+const PUSH_ALL_WORK_COMMAND = pushWorkCommand(false);
+/** Only reads which lanes have work that isn't on GitHub (`ade cloud push-work --check`). */
+const PUSH_WORK_CHECK_COMMAND = pushWorkCommand(true);
 
-function readPushAllTally(stdout: string): { pushed: number; failed: number; skipped: number } | null {
+/** One lane as `ade cloud push-work` left it (`CloudPushWorkLane` in the CLI). Older computers leave the list out. */
+export type CloudPushWorkLane = {
+  laneId: string;
+  laneName: string;
+  branchRef: string;
+  primary: boolean;
+  dirty: boolean;
+  ahead: number;
+  state: "clean" | "pushed" | "failed" | "unpushed";
+};
+
+export type CloudPushWorkTally = { pushed: number; failed: number; skipped: number; lanes: CloudPushWorkLane[] | null };
+
+const PUSH_WORK_LANE_STATES = new Set<CloudPushWorkLane["state"]>(["clean", "pushed", "failed", "unpushed"]);
+
+function readPushWorkLanes(raw: unknown): CloudPushWorkLane[] | null {
+  if (!Array.isArray(raw)) return null;
+  const lanes: CloudPushWorkLane[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const lane = entry as Record<string, unknown>;
+    if (typeof lane.laneId !== "string") continue;
+    const state = PUSH_WORK_LANE_STATES.has(lane.state as CloudPushWorkLane["state"]) ? lane.state as CloudPushWorkLane["state"] : "unpushed";
+    lanes.push({
+      laneId: lane.laneId,
+      laneName: typeof lane.laneName === "string" ? lane.laneName : "",
+      branchRef: typeof lane.branchRef === "string" ? lane.branchRef : "",
+      primary: lane.primary === true,
+      dirty: lane.dirty === true,
+      ahead: Number(lane.ahead) || 0,
+      state,
+    });
+  }
+  return lanes;
+}
+
+function readPushAllTally(stdout: string): CloudPushWorkTally | null {
   try {
     const parsed = JSON.parse(stdout.trim()) as { result?: Record<string, unknown> } & Record<string, unknown>;
     const tally = parsed.result ?? parsed;
-    return { pushed: Number(tally.pushed) || 0, failed: Number(tally.failed) || 0, skipped: Number(tally.skipped) || 0 };
+    return {
+      pushed: Number(tally.pushed) || 0,
+      failed: Number(tally.failed) || 0,
+      skipped: Number(tally.skipped) || 0,
+      lanes: readPushWorkLanes(tally.lanes),
+    };
   } catch {
     return null;
   }
@@ -395,7 +445,8 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         }
         case "delete": {
           try {
-            await client.deleteInstance(instanceId, { who: args.who ?? null, reason: "user" });
+            const keepLane = args.keepLane ? { branchRef: args.keepLane.branchRef ?? null } : null;
+            await client.deleteInstance(instanceId, { who: args.who ?? null, reason: keepLane ? "freed" : "user", ...(keepLane ? { keepLane } : {}) });
           } catch (error) {
             // A box already gone is what a delete wants.
             if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
@@ -441,6 +492,25 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
      * "Push all work to GitHub": a free short wake at 0 hours, then every lane's
      * work (committed as it stands, then pushed) over exec, so it needs no pairing.
      */
+    /**
+     * Runs `ade cloud push-work` on the computer (a check reads only) with
+     * the one wake allowed at 0 hours, and answers its tally, or null with
+     * why when it couldn't run or answered nothing ADE can read.
+     */
+    runPushWork: async (instanceId: string, options: { check: boolean }): Promise<{ tally: CloudPushWorkTally | null; error: string | null }> => {
+      const client = await deps.client();
+      if (!client) return { tally: null, error: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
+      try {
+        await wakeThroughTransition(client, instanceId, now, { reason: "push_work" });
+        const ran = await client.exec(instanceId, options.check ? PUSH_WORK_CHECK_COMMAND : PUSH_ALL_WORK_COMMAND, { timeoutMs: PUSH_ALL_WORK_TIMEOUT_MS });
+        const tally = ran.exitCode === 0 ? readPushAllTally(ran.stdout) : null;
+        logger.info?.("cloud.push_work_ran", { instanceId, check: options.check, exitCode: ran.exitCode, pushed: tally?.pushed, failed: tally?.failed });
+        return tally ? { tally, error: null } : { tally: null, error: "ADE couldn't read this computer's work." };
+      } catch (error) {
+        logger.warn?.("cloud.push_work_failed", { instanceId, check: options.check, error: getErrorMessage(error) });
+        return { tally: null, error: getErrorMessage(error) };
+      }
+    },
     pushAllWork: async (instanceId: string): Promise<CloudMachineActionResult> => {
       const client = await deps.client();
       if (!client) return { ok: false, blocker: null, message: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };

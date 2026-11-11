@@ -5,6 +5,10 @@ import { usePortalContainer } from "../ui/portalContainer";
 import { Z_LAYERS } from "../ui/zLayers";
 import { formatBytes } from "../../lib/format";
 import type { LaneTemplate } from "../../../shared/types";
+import { formatCloudHoursRate } from "../../../shared/adeCloud";
+import type { CloudTier, CloudTierId } from "../../../shared/cloudTiers";
+import { ADE_CLOUD_NAME, CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
+import type { AdeCloudLaneChoice } from "./useAdeCloudLaneTarget";
 import type { CreateLaneMode } from "./CreateLaneDialog";
 import {
   autoLaneMachine,
@@ -155,18 +159,23 @@ export function LaneMachineChip({
   selectedMachineId,
   onSelectMachine,
   onConnectMachine,
+  adeCloud = null,
 }: {
   popover: ComposerPopoverState;
   machines: LaneMachineOption[];
   selectedMachineId: string;
   onSelectMachine: (machineId: string) => void;
   onConnectMachine?: () => void;
+  /** ADE Cloud as one more place, after the machines; null when the account has no access. */
+  adeCloud?: AdeCloudLaneChoice | null;
 }) {
   const close = () => popover.onOpenChange(false);
   // Only machines automatic placement may choose: a Manual only one is not balanced across.
   const eligibleCount = machines.filter(canAutoPlaceOnMachine).length;
   const autoMachine = autoLaneMachine(machines);
-  const selectedMachine = machines.find((machine) => machine.id === selectedMachineId) ?? null;
+  const cloudSelected = adeCloud?.selected === true;
+  const selectedMachine = cloudSelected ? null : machines.find((machine) => machine.id === selectedMachineId) ?? null;
+  const chosen = cloudSelected || selectedMachine != null;
   return (
     <ComposerPopover
       {...popover}
@@ -174,17 +183,27 @@ export function LaneMachineChip({
         <button
           type="button"
           className="cl-field"
-          data-tone={selectedMachine ? undefined : "warn"}
-          data-empty={selectedMachine ? undefined : "true"}
+          data-tone={chosen ? undefined : "warn"}
+          data-empty={chosen ? undefined : "true"}
           data-tour="lanes.createDialog.machine"
-          data-testid={selectedMachine ? undefined : "lane-machine-selector-required"}
+          data-testid={chosen ? undefined : "lane-machine-selector-required"}
           aria-label="Machine for this lane"
         >
-          <span className="cl-tile" data-tone={selectedMachine ? "machine" : "warn"}>
-            <MachineIcon machineId={selectedMachine?.id ?? THIS_MACHINE_ID} />
-          </span>
-          <span className="cl-field-text">{selectedMachine?.name ?? "Choose a machine…"}</span>
-          {selectedMachine ? <span className="cl-field-meta">{machineDetail(selectedMachine).short}</span> : null}
+          {cloudSelected ? (
+            <>
+              <span className="cl-tile" data-tone="cloud"><CloudMark size={14} bold /></span>
+              <span className="cl-field-text">{ADE_CLOUD_NAME}</span>
+              <span className="cl-field-meta">Its own new computer</span>
+            </>
+          ) : (
+            <>
+              <span className="cl-tile" data-tone={selectedMachine ? "machine" : "warn"}>
+                <MachineIcon machineId={selectedMachine?.id ?? THIS_MACHINE_ID} />
+              </span>
+              <span className="cl-field-text">{selectedMachine?.name ?? "Choose a machine…"}</span>
+              {selectedMachine ? <span className="cl-field-meta">{machineDetail(selectedMachine).short}</span> : null}
+            </>
+          )}
           <CaretUpDown size={12} className="cl-field-caret" />
         </button>
       )}
@@ -215,7 +234,7 @@ export function LaneMachineChip({
               title={machine.name}
               sub={detail.text}
               subTone={detail.warn ? "warn" : undefined}
-              selected={machine.id === selectedMachineId}
+              selected={!cloudSelected && machine.id === selectedMachineId}
               disabled={!available}
               hint={available ? detail.path ?? undefined : `${machine.name} doesn't have this repo yet.`}
               onSelect={() => {
@@ -225,6 +244,24 @@ export function LaneMachineChip({
             />
           );
         })}
+        {adeCloud ? (
+          <>
+            <div className="cl-pop-rule" />
+            <PopItem
+              icon={<span className="cl-tile" data-tone="cloud"><CloudMark size={14} bold /></span>}
+              title={ADE_CLOUD_NAME}
+              sub={adeCloud.unavailableReason ? "Not available for this project" : adeCloud.detail}
+              subTone={adeCloud.unavailableReason ? "warn" : undefined}
+              selected={cloudSelected}
+              disabled={Boolean(adeCloud.unavailableReason)}
+              hint={adeCloud.unavailableReason ?? "The lane gets a new computer of its own. It sleeps when idle."}
+              onSelect={() => {
+                adeCloud.onSelect();
+                close();
+              }}
+            />
+          </>
+        ) : null}
         {onConnectMachine ? (
           <>
             <div className="cl-pop-rule" />
@@ -319,6 +356,79 @@ export function LaneTemplateChip({
               onSelect={() => {
                 close();
                 onManageTemplates();
+              }}
+            />
+          </>
+        ) : null}
+      </div>
+    </ComposerPopover>
+  );
+}
+
+/** "2 CPU · 4 GB · 1× hours" for a size row. */
+function cloudTierDetail(tier: CloudTier): string {
+  return `${tier.cpu} CPU · ${tier.memoryGb} GB · ${formatCloudHoursRate(tier.multiplierMilli / 1000)}`;
+}
+
+/**
+ * The size of a lane's new ADE Cloud computer, in the dialog's own field
+ * look: the cloud mark filled to the size, its name, and its shape and rate.
+ * The list is the catalog's sizes; the saved default is marked, and a size
+ * that is not the default can be made it.
+ */
+export function LaneCloudSizeChip({
+  popover,
+  tiers,
+  tierId,
+  defaultTier,
+  onChoose,
+  onSetDefault,
+}: {
+  popover: ComposerPopoverState;
+  tiers: readonly CloudTier[];
+  tierId: CloudTierId;
+  defaultTier: CloudTierId;
+  onChoose: (tier: CloudTierId) => void;
+  onSetDefault: (tier: CloudTierId) => void;
+}) {
+  const close = () => popover.onOpenChange(false);
+  const current = tiers.find((tier) => tier.id === tierId) ?? null;
+  return (
+    <ComposerPopover
+      {...popover}
+      trigger={(
+        <button type="button" className="cl-field" aria-label={`Computer size, ${current?.label ?? "Small"}`}>
+          <span className="cl-tile" data-tone="cloud"><CloudSizeIcon tier={tierId} size={16} /></span>
+          <span className="cl-field-text">{current?.label ?? "Small"}</span>
+          {current ? <span className="cl-field-meta">{cloudTierDetail(current)}</span> : null}
+          <CaretUpDown size={12} className="cl-field-caret" />
+        </button>
+      )}
+    >
+      <div role="group" aria-label="Computer size">
+        {tiers.map((tier) => (
+          <PopItem
+            key={tier.id}
+            icon={<span className="cl-tile" data-tone="cloud"><CloudSizeIcon tier={tier.id} size={15} /></span>}
+            title={tier.id === defaultTier ? <>{tier.label} <span className="cl-item-default">Default</span></> : tier.label}
+            sub={tier.type === "vm" ? `${cloudTierDetail(tier)} · Android and Docker` : cloudTierDetail(tier)}
+            selected={tier.id === tierId}
+            onSelect={() => {
+              onChoose(tier.id);
+              close();
+            }}
+          />
+        ))}
+        {current && current.id !== defaultTier ? (
+          <>
+            <div className="cl-pop-rule" />
+            <PopItem
+              icon={<span className="cl-tile" data-tone="muted"><Check size={12} weight="bold" /></span>}
+              title={`Start new lanes as ${current.label}`}
+              muted
+              onSelect={() => {
+                onSetDefault(current.id);
+                close();
               }}
             />
           </>

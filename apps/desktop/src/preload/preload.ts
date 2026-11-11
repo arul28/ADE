@@ -82,6 +82,7 @@ import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
+import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest } from "../shared/cloudLaneLife";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
@@ -892,6 +893,8 @@ import type {
   LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
+  CloudStartBranchArgs,
+  CloudStartBranchCheck,
   DeletedLaneSnapshot,
   RestoreDeletedLaneArgs,
   RestoreDeletedLaneResult,
@@ -7219,6 +7222,17 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "lane", "removeDeletedLane", { args }, () =>
         ipcRenderer.invoke(IPC.lanesRemoveDeleted, args),
       ),
+    /**
+     * "Push this branch?" before an ADE Cloud launch, on the machine that has
+     * the project (the pin), and its push. The project's own runtime answers
+     * both; there is no older local route for them.
+     */
+    cloudStartBranch: async (args: CloudStartBranchArgs, pin?: OpenProjectBinding | null): Promise<CloudStartBranchCheck> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "cloudStartBranch", { args }, () =>
+        Promise.reject(new Error("Open the project in ADE first."))),
+    pushCloudStartBranch: async (args: CloudStartBranchArgs, pin?: OpenProjectBinding | null): Promise<CloudStartBranchCheck> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "pushCloudStartBranch", { args }, () =>
+        Promise.reject(new Error("Open the project in ADE first."))),
     getDeleteRisk: async (
       args: { laneId: string },
       pin?: OpenProjectBinding | null,
@@ -13199,6 +13213,16 @@ const adeBridge = {
     /** Wakes a computer (free once a day at 0 hours) and pushes its lanes' work to GitHub. */
     pushAllWork: (instanceId: string): Promise<CloudMachineActionResult> =>
       ipcRenderer.invoke(IPC.cloudPushAllWork, { instanceId }),
+    /** The life of a lane's computer (`CloudLaneLifeCallRequest`): account level, so no pin. */
+    laneLife: (request: CloudLaneLifeCallRequest): Promise<unknown> => ipcRenderer.invoke(IPC.cloudLaneLifeCall, request),
+    /** On the lane's own computer, through its pin: the brain there refuses a call meant for another one. */
+    clearCaches: (pin: OpenProjectBinding, instanceId: string): Promise<{ freedGb: number }> =>
+      callPinnedRuntimeAction<{ freedGb: number }>(pin, "cloud", "clear_caches", { args: { machine: instanceId } }),
+    onLaneJob: (cb: (job: CloudLaneJobSnapshot) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, job: CloudLaneJobSnapshot) => cb(job);
+      ipcRenderer.on(IPC.cloudLaneJobEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.cloudLaneJobEvent, listener);
+    },
     machineAction: (args: CloudMachineActionArgs): Promise<CloudMachineActionResult | null> =>
       ipcRenderer.invoke(IPC.cloudMachineAction, args),
     getAgentLimits: (): Promise<CloudAgentLimits | null> => ipcRenderer.invoke(IPC.cloudGetAgentLimits),

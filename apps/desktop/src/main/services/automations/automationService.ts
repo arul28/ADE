@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { automationCloudProblem, automationCloudTarget, parseAutomationCloudTarget } from "../../../shared/automationCloud";
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -43,6 +44,8 @@ import type {
   PrSummary,
   RunAdeActionConfig,
 } from "../../../shared/types";
+import type { ChatLaunchArgs, ChatLaunchLaneConfig, ChatLaunchSnapshot } from "../../../shared/types/chatLaunch";
+import { isChatLaunchSucceeded } from "../../../shared/chatLaunch";
 import { triggerDeliveryKeyForType } from "../../../shared/types";
 import { advanceLaneToPrHead, resolvePrBranchLane, type AutomationPrLaneService } from "./automationPrBranchLane";
 import {
@@ -855,6 +858,14 @@ function listMatches(expected: string[] | undefined, actual: string[] | undefine
  * stable across a rule's runs (so its own retry keeps its lease), distinct
  * between rules, and obviously not a chat to anyone reading a status payload.
  */
+/** How an automation asks ADE Cloud: an agent with no chat, nobody watching (`CloudApproval`). */
+const AUTOMATION_CLOUD_APPROVAL = Object.freeze({ by: "agent", chatSessionId: null, automation: true });
+/** How often a run reads its ADE Cloud launch while it starts. */
+const CLOUD_RUN_POLL_MS = 5_000;
+/** A new computer, the 10 minutes a join may wait for the person, and a large clone. */
+const CLOUD_RUN_WAIT_MS = 30 * 60_000;
+const CLOUD_RUN_LANE_NAME_MAX = 120;
+
 export function scopeAutomationAdeActionArgs(
   domain: string,
   resolvedArgs: unknown,
@@ -879,6 +890,13 @@ export function scopeAutomationAdeActionArgs(
       if (isRecord(candidate) && isRecord(candidate.metadata)) {
         stripHostAuthoredMessageProvenance(candidate.metadata);
       }
+    }
+  } else if (domain === "cloud") {
+    // ADE Cloud asks who decides. A rule is never the person, whatever its
+    // args say: it is an unattended agent, held to the agent limits (sizes,
+    // new computers a day), and never deletes a computer it didn't make.
+    for (const candidate of candidates) {
+      if (isRecord(candidate)) candidate.approval = AUTOMATION_CLOUD_APPROVAL;
     }
   } else if (domain === "mac_desktop") {
     // No fallback id: two rules sharing one synthetic holder share one lease,
@@ -1235,7 +1253,9 @@ export function normalizeRuntimeRule(rule: AutomationRuleInput): AutomationRule 
     ? { kind: "built-in" as const, builtIn: { actions: legacyActions } }
     : { kind: "agent-session" as const, session: {} });
   const laneMode = normalizeAutomationLaneMode(rawExecution.laneMode);
+  const cloud = parseAutomationCloudTarget(rawExecution.cloud);
   const sharedLaneFields = {
+    ...(cloud ? { cloud } : {}),
     ...(laneMode ? { laneMode } : {}),
     ...(rawExecution.laneNamePreset ? { laneNamePreset: rawExecution.laneNamePreset } : {}),
     ...(rawExecution.laneNamePreset === "custom" && rawExecution.laneNameTemplate
@@ -3866,6 +3886,18 @@ export function createAutomationService({
     let heldForMovedChat = false;
     let completedActionBeforeOrAfterHold = false;
     try {
+      // On ADE Cloud the run's lane comes first, alone on its own computer;
+      // the steps after it (ADE actions) run here. No lane, no steps.
+      if (automationCloudTarget(rule.execution) && resolveExecutionKind(rule) === "built-in") {
+        try {
+          const started = await startRunOnAdeCloud({ rule, trigger, runId: run.id, chat: null });
+          trigger.laneName = started.laneName;
+        } catch (error) {
+          runStatus = "failed";
+          runError = error instanceof Error ? error.message : String(error);
+          aborting = true;
+        }
+      }
       for (let index = 0; index < actions.length; index += 1) {
         const action = actions[index]!;
         if (aborting && action.alwaysRun !== true) continue;
@@ -4048,6 +4080,124 @@ export function createAutomationService({
     trigger.laneName = lane.name;
     if (lane.branchRef) trigger.branch = lane.branchRef;
     return { laneId: lane.id, laneName: lane.name };
+  };
+
+  /**
+   * The name of a run's lane on ADE Cloud, from the rule's naming. The new
+   * computer holds no other lane, so no suffix is needed.
+   */
+  const cloudRunLaneName = (rule: AutomationRule, trigger: TriggerContext): string => {
+    const preset = rule.execution?.laneNamePreset;
+    const template = preset && preset !== "custom" ? presetToTemplate(preset) : rule.execution?.laneNameTemplate ?? "";
+    const rendered = resolveLaneNameTemplate(template, trigger, rule.name);
+    const name = (rendered && !/\{\{[^}]+\}\}/.test(rendered) ? rendered : "").trim()
+      || trigger.issue?.title?.trim()
+      || trigger.pr?.title?.trim()
+      || trigger.summary?.trim()
+      || rule.name;
+    return name.slice(0, CLOUD_RUN_LANE_NAME_MAX);
+  };
+
+  /**
+   * Makes a run's lane on its own new ADE Cloud computer (`cloud.lane_launch`)
+   * and waits until it is ready there: the chat started (an agent rule) or
+   * the lane set up (built-in steps). The run asks as an unattended agent, so
+   * the person's agent limits answer for it. The run id is the launch id: a
+   * run dispatched again follows the same launch, never a second computer.
+   * Records a `lane-setup` row either way.
+   */
+  const startRunOnAdeCloud = async (args: {
+    rule: AutomationRule;
+    trigger: TriggerContext;
+    runId: string;
+    chat: ChatLaunchArgs["chat"] | null;
+  }): Promise<{ launchId: string; laneName: string; machineName: string }> => {
+    const execution = args.rule.execution;
+    const target = automationCloudTarget(execution);
+    if (!execution || !target) throw new Error("This rule doesn't run on ADE Cloud.");
+    const problem = automationCloudProblem(execution);
+    if (problem) throw new Error(problem);
+    const setupActionId = insertAction(args.runId, -1, "lane-setup");
+    const fail = (message: string): never => {
+      finishAction({ id: setupActionId, status: "failed", errorMessage: message });
+      throw new Error(message);
+    };
+    const cloud = adeActionRegistryRef?.getService("cloud") ?? null;
+    const launchAction = cloud?.lane_launch;
+    const statusAction = cloud?.lane_launch_status;
+    if (typeof launchAction !== "function" || typeof statusAction !== "function") {
+      return fail("This ADE can't start a lane on ADE Cloud. Run the rule on a machine where ADE runs in the background.");
+    }
+    const callCloud = async (action: unknown, input: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
+      const answer = await (action as (input: unknown) => Promise<unknown>).call(cloud, input);
+      return isRecord(answer) ? answer : null;
+    };
+    const laneName = cloudRunLaneName(args.rule, args.trigger);
+    let laneConfig: ChatLaunchLaneConfig = { mode: "new" };
+    if (execution.laneMode === "pr-branch") {
+      const headBranch = trimToNull(args.trigger.pr?.headBranch);
+      if (!headBranch) return fail("This run has no pull request branch to open on ADE Cloud.");
+      const prUrl = trimToNull(args.trigger.pr?.url);
+      // A fresh clone has only the remote's branches; the computer links the lane to the PR.
+      laneConfig = { mode: "existing", branchRef: `origin/${headBranch}`, ...(prUrl ? { pullRequestUrl: prUrl } : {}) };
+    }
+    const launchId = args.runId.toLowerCase();
+    const launch: ChatLaunchArgs = {
+      kind: args.chat ? "chat" : "lane",
+      mode: "background",
+      launchId,
+      laneName,
+      title: laneName,
+      prompt: args.chat?.message.text ?? "",
+      laneConfig,
+      ...(args.chat ? { chat: args.chat, provider: args.chat.create.provider, ...(args.chat.create.modelId ? { modelId: args.chat.create.modelId } : {}) } : {}),
+      cloud: { sizeId: target.sizeId ?? null } as ChatLaunchArgs["cloud"],
+    };
+    let status: Record<string, unknown> | null;
+    try {
+      status = await callCloud(launchAction, { launch, approval: AUTOMATION_CLOUD_APPROVAL });
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error));
+    }
+    const deadline = Date.now() + CLOUD_RUN_WAIT_MS;
+    let shownLink: string | null = null;
+    for (;;) {
+      const snapshot = isRecord(status?.launch) ? status.launch as unknown as ChatLaunchSnapshot : null;
+      if (!snapshot) return fail("This machine's ADE no longer has the run's ADE Cloud launch.");
+      const machineName = (isRecord(status?.machine) ? trimToNull(status.machine.name) : null) ?? laneName;
+      if (isChatLaunchSucceeded(snapshot)) {
+        finishAction({
+          id: setupActionId,
+          status: "succeeded",
+          output: JSON.stringify({ launchId, laneName: snapshot.laneName || laneName, machine: machineName, adeCloud: true }),
+        });
+        return { launchId, laneName: snapshot.laneName || laneName, machineName };
+      }
+      if (snapshot.phase === "cancelled") return fail("The run's ADE Cloud launch was cancelled, and its computer deleted.");
+      if (snapshot.phase === "failed") {
+        const why = snapshot.error?.trim().replace(/[.\s]+$/, "") || "The lane didn't start on ADE Cloud";
+        return fail(`${why}. Its computer stays for a retry: ade chat launch-status ${launchId} --machine cloud.`);
+      }
+      // The join waits for the person: the run says where to approve it.
+      const link = trimToNull(status?.approvalUrl);
+      if (link && link !== shownLink) {
+        shownLink = link;
+        updateRun(args.runId, { summary: `Waiting for you to approve the new ADE Cloud computer: ${link}` });
+        emit({ type: "runs-updated", automationId: args.rule.id, runId: args.runId });
+      }
+      if (Date.now() > deadline) {
+        return fail(`The lane is still starting on ADE Cloud after ${CLOUD_RUN_WAIT_MS / 60_000} minutes. Follow it: ade chat launch-status ${launchId} --machine cloud.`);
+      }
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, CLOUD_RUN_POLL_MS);
+        timer.unref?.();
+      });
+      try {
+        status = await callCloud(statusAction, { launchId });
+      } catch (error) {
+        return fail(error instanceof Error ? error.message : String(error));
+      }
+    }
   };
 
   /**
@@ -4269,10 +4419,13 @@ export function createAutomationService({
     // A rule bound to one chat runs there: no new chat, and no new lane either
     // (the chat already lives in one).
     const boundChatId = args.trigger.linearAgent ? null : args.rule.execution?.session?.chatSessionId?.trim() || null;
+    // On ADE Cloud the lane is made with the chat, on its own computer (below).
+    // A Linear agent run answers in its own lane here.
+    const cloudTarget = args.trigger.linearAgent ? null : automationCloudTarget(args.rule.execution);
     let laneId: string | null;
     try {
       await hooks?.beforeRun?.({ rule: args.rule, trigger: args.trigger, runId: run.id });
-      laneId = boundChatId
+      laneId = boundChatId || cloudTarget
         ? null
         : (await hooks?.resolveLane?.({ rule: args.rule, trigger: args.trigger, runId: run.id }))
           ?? await resolveExecutionLaneId(args.rule, args.trigger, null, run.id);
@@ -4282,7 +4435,7 @@ export function createAutomationService({
       emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
       throw error;
     }
-    if (!laneId && !boundChatId) {
+    if (!laneId && !boundChatId && !cloudTarget) {
       const message = "No lane is available for this automation run.";
       updateRun(run.id, { ended_at: nowIso(), status: "failed", error_message: message });
       emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
@@ -4304,6 +4457,75 @@ export function createAutomationService({
     const fastMode = args.rule.execution?.session?.fastMode === true
       && modelSupportsFastMode(modelDescriptor);
     let sessionId: string | null = null;
+
+    if (cloudTarget) {
+      const create = {
+        provider: resolvedChat.provider,
+        model: resolvedChat.model,
+        modelId,
+        sessionProfile: "workflow",
+        reasoningEffort,
+        permissionMode,
+        ...(fastMode ? { fastMode: true } : {}),
+        ...(providerGroup === "cursor" ? { cursorModeId: cursorModeIdForPermissionMode(permissionMode) } : {}),
+        ...(providerGroup === "codex" && !verificationRequired && !dryRun && permissionConfig.providers?.codexSandbox
+          ? { codexSandbox: permissionConfig.providers.codexSandbox }
+          : {}),
+        ...(args.rule.execution?.session?.title?.trim() ? { title: args.rule.execution.session.title.trim() } : {}),
+        // The chat lives on the computer with its lane; the Work list there is where the person finds it.
+        surface: "work",
+      } as unknown as NonNullable<ChatLaunchArgs["chat"]>["create"];
+      try {
+        updateRun(run.id, {
+          status: "running",
+          summary: "Starting the run's lane on ADE Cloud",
+          confidence_json: JSON.stringify(confidence),
+        });
+        emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
+        const started = await startRunOnAdeCloud({
+          rule: args.rule,
+          trigger: args.trigger,
+          runId: run.id,
+          chat: { create, message: { text: prompt, displayText: args.rule.prompt?.trim() || args.rule.name } },
+        });
+        const output = `The chat runs on ADE Cloud, in the lane "${started.laneName}" on ${started.machineName}.`;
+        finishAction({ id: actionId, status: "succeeded", output });
+        updateOpenRun(run.id, {
+          ended_at: nowIso(),
+          status: "succeeded",
+          queue_status: deriveQueueStatus({
+            current: "pending-review",
+            runStatus: "succeeded",
+            verificationRequired,
+            mode: args.rule.mode,
+            summary: output,
+          }),
+          actions_completed: 1,
+          error_message: null,
+          summary: output,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        finishAction({ id: actionId, status: "failed", errorMessage: message, output: null });
+        updateOpenRun(run.id, {
+          ended_at: nowIso(),
+          status: "failed",
+          queue_status: deriveQueueStatus({
+            current: "pending-review",
+            runStatus: "failed",
+            verificationRequired,
+            mode: args.rule.mode,
+            summary: message,
+          }),
+          actions_completed: 1,
+          error_message: message,
+        });
+        emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
+        throw new Error(message);
+      }
+      emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
+      return toRun(loadRunRow(run.id)!);
+    }
 
     if (boundChatId) {
       const chatService = agentChatServiceRef;

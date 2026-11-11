@@ -12,6 +12,8 @@ import {
   type LaneMachineOption,
 } from "./laneMachines";
 import { autoPickSummary, machineLoadSummary, placementTag } from "./machineLoadText";
+import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
+import type { AdeCloudLaneChoice } from "./useAdeCloudLaneTarget";
 
 /**
  * "Create on" — the machine a new lane (and therefore every chat inside it)
@@ -28,6 +30,7 @@ export function LaneMachineSelector({
   onConnectMachine,
   disabled,
   selectableMachineIds,
+  adeCloud = null,
 }: {
   machines: LaneMachineOption[];
   selectedMachineId: string;
@@ -40,6 +43,8 @@ export function LaneMachineSelector({
    * click and does nothing.
    */
   selectableMachineIds?: readonly string[];
+  /** ADE Cloud as one more card, after the machines; null when the account has no access. */
+  adeCloud?: AdeCloudLaneChoice | null;
 }) {
   /*
    * The machine is always an explicit choice; `selectedMachineId` is "" until
@@ -58,7 +63,7 @@ export function LaneMachineSelector({
   return (
     <section className={SECTION_CLASS_NAME} data-tour="lanes.createDialog.machine">
       <span className={LABEL_CLASS_NAME}>Create on</span>
-      {!selectedMachineId ? (
+      {!selectedMachineId && !adeCloud?.selected ? (
         <span className="ml-2 text-[10px] text-amber-300/80" data-testid="lane-machine-selector-required">
           Choose a machine
         </span>
@@ -107,6 +112,7 @@ export function LaneMachineSelector({
             onSelect={() => onSelectMachine(machine.id)}
           />
         ))}
+        {adeCloud ? <AdeCloudCard choice={adeCloud} disabled={disabled} /> : null}
       </div>
       {onConnectMachine ? (
         <button
@@ -179,6 +185,38 @@ function LaneMachineCard({
       </div>
       <div className="mt-1 truncate text-[10px] leading-snug text-muted-fg/60">
         {unconfirmed ? "Can't confirm it's this repo" : machineDetailLine(machine, available)}
+      </div>
+    </button>
+  );
+}
+
+/** ADE Cloud's card: the lane gets a new computer of its own, in the cloud's own color. */
+function AdeCloudCard({ choice, disabled }: { choice: AdeCloudLaneChoice; disabled?: boolean }) {
+  const available = !choice.unavailableReason;
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={choice.selected}
+      disabled={disabled || !available}
+      title={choice.unavailableReason ?? "Each lane gets a new ADE Cloud computer of its own. It sleeps when idle."}
+      onClick={choice.onSelect}
+      className={cn(CARD_CLASS_NAME, "!p-2.5", choice.selected && CARD_ACTIVE_CLASS_NAME)}
+    >
+      <div className="flex items-start gap-2">
+        <span
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[color:var(--adec-tile-bg)] text-[color:var(--adec-mark)]"
+          aria-hidden="true"
+        >
+          <CloudMark size={14} bold />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-xs font-semibold text-fg">{ADE_CLOUD_NAME}</div>
+          <div className="mt-0.5 text-[10px] text-muted-fg/70">A new computer for each lane</div>
+        </div>
+      </div>
+      <div className={cn("mt-1 truncate text-[10px] leading-snug", available ? "text-muted-fg/60" : "text-amber-300/80")}>
+        {available ? choice.detail : "Not available for this project"}
       </div>
     </button>
   );

@@ -48,6 +48,10 @@ export type CloudLaneLaunchRecord = {
   cleanupDone: boolean;
   /** The agent's chat that started it, or null for a person's launch. Older records lack it. */
   madeByChat?: string | null;
+  /** Files from this computer already sent to the new one: local path to the path there. */
+  carriedFiles?: Record<string, string>;
+  /** The branch last written into the computer's metadata (`ade_lane_branch`). */
+  branchRecorded?: string | null;
 };
 
 export function createCloudLaneLaunchRecordStore(args: {

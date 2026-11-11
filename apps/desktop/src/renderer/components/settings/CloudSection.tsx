@@ -16,15 +16,15 @@ import {
 import { BringYourOwnCloudCard } from "./integrations/BringYourOwnCloudCard";
 import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { CloudReadyMachinesCard } from "./CloudReadyMachinesCard";
 import { CloudMachinesCard } from "./CloudMachinesCard";
 import { CloudSignInsCard, useCloudSignIns } from "./CloudSignInsCard";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
-import { CloudAgentLimitsCard } from "./CloudAgentLimitsCard";
-import { CloudPlanCard } from "./CloudPlanCard";
 import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
 import { showToast } from "../app/toast/toastStore";
 import { NewCloudMachineDialog } from "../remoteTargets/NewCloudMachineDialog";
+import { CloudDashboard, cloudOtherComputersCount, cloudSignInsValue } from "./cloudDashboard/CloudDashboard";
 import "./IntegrationsSettings.css";
 
 function errorText(error: unknown, fallback: string): string {
@@ -34,7 +34,8 @@ function errorText(error: unknown, fallback: string): string {
 /**
  * Settings › Integrations › ADE Cloud. Account-wide: access comes from the
  * account, so this page asks this desktop's own main process with no
- * pin, and what it shows is true on every computer on the account.
+ * pin (in the web app, the connected machine: `webclient/adapter/cloud.ts`),
+ * and what it shows is true on every computer on the account.
  */
 export function CloudSection() {
   const bridge = window.ade.cloud;
@@ -92,6 +93,14 @@ export function CloudSection() {
 
   // Before the early return below: a hook runs on every render.
   const cloudSignIns = useCloudSignIns(live);
+  // The web app reads ADE Cloud through the connected machine but makes no computers.
+  const newMachine = () => {
+    if (isWebClientMode()) {
+      showToast({ tone: "info", title: "Make computers in the ADE desktop app", message: "The web app shows your ADE Cloud lanes and computers." });
+      return;
+    }
+    setCreating(true);
+  };
 
   if (!bridge) {
     return (
@@ -162,15 +171,31 @@ export function CloudSection() {
 
       {live && accountBanner ? <Banner layout="inline" model={{ ...accountBanner, report: false }} /> : null}
 
+      {/* One dashboard tab in place of the column of cards. The older cards stay as its panels until Cloud 4's PR merges. */}
+      {live && account ? (
+        <CloudDashboard
+          account={account}
+          machines={machines}
+          // Cloud 4: AdeCloudSignInsRow mounts here once its PR is in main. Until then, today's sign-ins card.
+          signIns={<CloudSignInsCard signIns={cloudSignIns} />}
+          signInsValue={cloudSignInsValue(cloudSignIns.status)}
+          otherComputers={(
+            <div className="adecd-other">
+              <CloudReadyMachinesCard cloudSignIns={cloudSignIns.status} />
+              <CloudMachinesCard status={status} machines={machines} onNewMachine={newMachine} accountChangedAt={accountChangedAt} />
+            </div>
+          )}
+          otherComputersCount={cloudOtherComputersCount(machines)}
+        />
+      ) : null}
+
       <IntegrationColumns>
         {live ? (
-          <>
-            {account ? <CloudPlanCard account={account} onChanged={machines.refresh} /> : null}
-            <CloudSignInsCard signIns={cloudSignIns} />
-            <CloudReadyMachinesCard cloudSignIns={cloudSignIns.status} />
-            <CloudMachinesCard status={status} machines={machines} onNewMachine={() => setCreating(true)} accountChangedAt={accountChangedAt} />
-            <CloudAgentLimitsCard />
-          </>
+          account ? null : (
+            <p className="ade-ig-note">
+              {machines.loadError ?? <CircleNotch size={14} className="animate-spin" />}
+            </p>
+          )
         ) : !connected ? (
           <p className="ade-ig-note">
             {loading ? <CircleNotch size={14} className="animate-spin" /> : status?.signedOut ? `Sign in to ADE to use ${ADE_CLOUD_NAME}.` : `${ADE_CLOUD_NAME} isn't available on this account yet.`}

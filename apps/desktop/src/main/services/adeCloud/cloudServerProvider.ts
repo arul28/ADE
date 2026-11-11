@@ -9,7 +9,7 @@
  */
 
 import type { CloudAccountState } from "../../../shared/adeCloud";
-import type { CloudCheckoutResult } from "../../../../../account-directory/src/cloud/contract";
+import { CLOUD_PATHS, type CloudCheckoutResult, type CloudLaneWithoutComputer } from "../../../../../account-directory/src/cloud/contract";
 import {
   CLOUD_ACCESS_REFUSED,
   CloudProviderError,
@@ -49,7 +49,12 @@ export type CloudServerProviderDeps = {
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
 };
 
-export type CloudDeleteContext = { who?: string | null; reason?: string };
+export type CloudDeleteContext = {
+  who?: string | null;
+  reason?: string;
+  /** The lane the computer was made for stays, as a lane without a computer (`CloudLaneWithoutComputer`). */
+  keepLane?: { branchRef: string | null } | null;
+};
 
 const BAD_RESPONSE = "ADE Cloud answered with something ADE could not read.";
 
@@ -182,8 +187,29 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async deleteInstance(id: string, context?: CloudDeleteContext): Promise<void> {
       await request("DELETE", instancePath(id), {
-        body: { who: context?.who ?? deps.deviceName?.() ?? null, reason: context?.reason ?? "user" },
+        body: {
+          who: context?.who ?? deps.deviceName?.() ?? null,
+          reason: context?.reason ?? "user",
+          ...(context?.keepLane ? { keepLane: { branchRef: context.keepLane.branchRef } } : {}),
+        },
       });
+    },
+
+    async listLanesWithoutComputer(): Promise<CloudLaneWithoutComputer[]> {
+      let body: Record<string, unknown> | null;
+      try {
+        body = record(await request("GET", CLOUD_PATHS.lanesWithoutComputer));
+      } catch (error) {
+        // A server from before lanes without a computer has none to list.
+        if (error instanceof CloudProviderError && error.status === 404) return [];
+        throw error;
+      }
+      return Array.isArray(body?.lanes) ? body.lanes as CloudLaneWithoutComputer[] : [];
+    },
+
+    async forgetLaneWithoutComputer(laneId: string): Promise<boolean> {
+      const body = record(await request("DELETE", `${CLOUD_PATHS.lanesWithoutComputer}/${encodeURIComponent(laneId)}`));
+      return body?.forgotten === true;
     },
 
     async sleepInstance(id: string): Promise<string> {
@@ -225,6 +251,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     async reportBooted(id: string, adeVersion: string | null): Promise<{ sleepWhenIdle: boolean }> {
       const body = record(await request("POST", instancePath(id, "booted"), { body: { adeVersion } }));
       return { sleepWhenIdle: body?.sleepWhenIdle === true };
+    },
+
+    async reportDiskUsage(id, report): Promise<void> {
+      await request("POST", instancePath(id, "disk-usage"), { body: report });
     },
 
     async resizeInstance(id, resources, options): Promise<string> {

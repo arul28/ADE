@@ -24,13 +24,15 @@ manages lanes, not computers.
 `ade lanes create --machine cloud --launch-id <a new UUID> --name "<name>"` makes the lane alone, with no chat.
 Over ADE MCP (write access): the same words to the `ade` tool, with `timeout_seconds: 600`.
 
-- Size: leave out `--size` to use the person's saved size (`defaultSize`). Medium when Small is too slow. Medium when Small is too slow. Large or X-Large (full computers) only for Android or Docker.
-- Push the branch first. The lane starts from the pushed copy; uncommitted changes and local files stay here.
+- Size: leave out `--size` to use the person's saved size (`defaultSize`). Medium when Small is too slow. Large or X-Large (full computers) only for Android or Docker.
+- Push the branch first. The lane starts from the pushed copy; uncommitted changes stay here.
 - The approval card asks the person in your chat, with the size and its hours rate. No answer in 5 minutes means no.
 - In a full-auto chat, an automation or an ADE MCP app, nobody watches. ADE answers with the agent limits (`agents` in the status): only sizes in `sizesAllowed`, at most `newComputersLeftToday` new computers today. Each new lane counts one. A person never counts.
 - From a terminal with no ADE chat, it is refused: ADE can't tell a person there from an agent. Tell the person to start it in the ADE app (Run on: ADE Cloud) or in an ADE chat.
 - A CLI session (Claude Code, Codex and others in a terminal) can be the first thing in a new cloud lane, but only from the ADE app: the person picks CLI and Run on: ADE Cloud. From the command line, start a chat or the lane alone.
 - One computer holds one lane. On a cloud computer, never plain `ade lanes create`: start a new lane on ADE Cloud.
+- A Linear issue: pass the whole issue with `--linear-issue-json`; the new lane is bound to it there. A bare issue id is refused.
+- The CTO: `createLane` or `spawnChat` with `machine: "cloud"` (and `size`). An automation: "Run on ADE Cloud" in the rule; each run counts as an agent.
 
 ## 3. Follow, retry, cancel
 
@@ -65,7 +67,7 @@ Delete nothing without their yes. Deleting a lane deletes its computer.
 ## Never
 
 - Delete a computer you didn't make, or any computer over ADE MCP.
-- Change a size (`ade cloud resize`) without the person's yes.
+- Change a size (`ade cloud resize`) yourself. Ask instead: `ade cloud resize --request --size large --reason "<why>"` puts a card in your chat, and the person confirms it.
 - Wake computers to look at them: the status already knows.
 - Sign a provider in for the person, or save a sign-in. The person does it once in ADE (ade://settings/integrations.ade-cloud-sign-ins).
 - Print, ask for or pass on a key or token.

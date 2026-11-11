@@ -2,6 +2,7 @@ import * as Sentry from "@sentry/cloudflare";
 import type { CallerTokenEnv } from "../callerToken";
 import { overPlanDiskSentence, type CloudAccountState, type CloudExtraDiskState, type CloudHoursState, type CloudInstance, type CloudPlanFacts, type CloudPlanId } from "./contract";
 import type { CloudEmailEnv } from "./email";
+import { RECENT_USE_DAYS, recentUsedMilli } from "./diskUsage";
 import {
   CLOUD_PLANS,
   CENT_MICROS,
@@ -99,6 +100,13 @@ export type ComputerRow = {
   /** An image this computer failed to start on: never tried again on its own. */
   update_failed_template: string | null;
   update_error: string | null;
+  /** Use facts (migration 0022, `diskUsage.ts`): the last disk measure, as JSON, and when it was taken. */
+  disk_usage_json?: string | null;
+  disk_measured_at?: number | null;
+  /** When the computer last did work, as it reported at its idle step. */
+  last_active_at?: number | null;
+  /** Its lane's work (`CloudLaneWork`), as JSON. */
+  lane_work_json?: string | null;
 };
 
 export type AccountRow = {
@@ -836,7 +844,11 @@ async function recentlyDeletedInstanceIds(env: CloudEnv, userId: string, now: nu
 
 export async function buildAccountState(env: CloudEnv, userId: string, now: number): Promise<CloudAccountState> {
   const account = await loadAccount(env, userId, now);
-  const [computers, deletedInstanceIds] = await Promise.all([listComputers(env, userId), recentlyDeletedInstanceIds(env, userId, now)]);
+  const [computers, deletedInstanceIds, recentMilli] = await Promise.all([
+    listComputers(env, userId),
+    recentlyDeletedInstanceIds(env, userId, now),
+    recentUsedMilli(env, userId, now),
+  ]);
   const live = liveUsedMilli(account, computers, now);
   const rules = accountRules(account);
   const plan = planFacts(account);
@@ -880,6 +892,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
       awake: computers.filter((computer) => isMeteredStatus(computer.status)).length,
       limit: computerLimit(account),
     },
+    recentUse: { days: RECENT_USE_DAYS, usedMilli: recentMilli },
     dueForDeletion: due,
     deletedInstanceIds,
     catalog: cloudCatalog(offers),

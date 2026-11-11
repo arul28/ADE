@@ -133,6 +133,7 @@ import {
 import { QUIET_LABEL_CLASS } from "./sessionListStyles";
 import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";
 import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
+import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -1344,11 +1345,13 @@ export const SessionListPane = React.memo(function SessionListPane({
   // reports this repo contributes union rows. Those are the machine choices.
   const activeMachineId = machineIdForBinding(projectBinding);
   const crossMachineEntries = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  // An ADE Cloud lane's computer reads "ADE Cloud · <lane>" in the machine filter.
+  const machineLabelOf = useAdeCloudMachineLabel();
   const machineFilterOptions = useMemo<WorkFilterMachineOption[]>(() => {
     const others = Object.values(crossMachineEntries)
       .filter((entry) => entry.machineId !== activeMachineId)
       // A sleeping cloud computer is not listed as offline: a send wakes it.
-      .map((entry) => ({ id: entry.machineId, name: entry.machineName, online: machineShowsConnected(entry) }))
+      .map((entry) => ({ id: entry.machineId, name: machineLabelOf({ machineId: entry.machineId, binding: entry.binding, name: entry.machineName }), online: machineShowsConnected(entry) }))
       .sort((a, b) => a.name.localeCompare(b.name));
     return [
       {
@@ -1358,7 +1361,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       },
       ...others,
     ];
-  }, [activeMachineId, crossMachineEntries, projectBinding]);
+  }, [activeMachineId, crossMachineEntries, machineLabelOf, projectBinding]);
   // A machine that answers the connection but refuses the chat read would
   // otherwise just contribute nothing, which reads as "no chats there". Only
   // when it has nothing retained to show: a blip on a machine whose chats are

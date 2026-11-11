@@ -3,6 +3,8 @@ import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
 import { CloudBillingError, createCheckoutUrl, createPortalUrl, setExtraDisk, setExtraHours } from "./billing";
 import { routeSavedChats } from "./chats";
+import { endLaneWithoutComputer, keepLaneStatement, routeLanesWithoutComputer } from "./lanesWithoutComputer";
+import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
 import { CLOUD_PATHS, formatCloudCents, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
 import { ownerLimitState } from "./costReport";
 import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
@@ -479,6 +481,10 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
       ...adoptionStatements(env, { pendingId: reservation.pendingId, instance, machineKey: metadata.ade_machine_key ?? null, now: Date.now(), reason: "create" }),
       diskDayStatement(env, account, now),
     ]);
+    // The lane this computer is for has a computer again.
+    await endLaneWithoutComputer(env, userId, metadata).catch((error: unknown) => {
+      reportCloudFailure("cloud.lane_without_computer_end_failed", { userId, error: error instanceof Error ? error.message : String(error) });
+    });
     track({ action, tier: tierOf(size) });
     return json(withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null }, targets), 201);
   } catch (error) {
@@ -746,7 +752,15 @@ async function handleDelete(request: Request, env: CloudEnv, computer: ComputerR
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const who = shortText(body.who, 200);
-  await deleteComputer(env, provider, computer, { who, reason: shortText(body.reason, 200) ?? "user" }, now);
+  // "Keep the lane on a fresh computer": the lane outlives its computer. Its
+  // facts are in the computer's metadata, so read them before the delete.
+  const keepLane = body.keepLane && typeof body.keepLane === "object" && !Array.isArray(body.keepLane)
+    ? body.keepLane as Record<string, unknown>
+    : null;
+  const metadata = keepLane ? (await provider.getInstance(computer.instance_id).catch(() => null))?.metadata ?? null : null;
+  await deleteComputer(env, provider, computer, { who, reason: shortText(body.reason, 200) ?? (keepLane ? "freed" : "user") }, now);
+  const kept = keepLane ? keepLaneStatement(env, computer, metadata, { reason: "freed", branchRef: shortText(keepLane.branchRef, 300) }, now) : null;
+  if (kept) await kept.run();
   const size = cloudSizeFor(computer.type, computer.cpu, computer.memory_gb);
   // An agent's delete names its chat; a person's desktop leaves `who` unset.
   captureCloudAction(env, waitUntil, computer.user_id, { action: "delete", plan: await planIdFor(env, computer.user_id), origin: who ? "agent" : "person", tier: tierOf(size) }, computer.instance_id, now);
@@ -802,7 +816,11 @@ async function handleList(env: CloudEnv, userId: string, provider: CloudProvider
       }
     }
   }
-  return json({ data: all.filter((instance) => owned.has(instance.id)).map((instance) => withUpdateFacts(instance, rowById.get(instance.id), targets)) });
+  return json({
+    data: all
+      .filter((instance) => owned.has(instance.id))
+      .map((instance) => withUseFacts(withUpdateFacts(instance, rowById.get(instance.id), targets), rowById.get(instance.id))),
+  });
 }
 
 const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, ctx: CloudRequestContext) => Promise<Response>> = {
@@ -818,6 +836,13 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
     if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     const { sleepWhenIdle } = await recordBootReport(env, computer, shortText(body.adeVersion, 64), now);
     return json({ ok: true, sleepWhenIdle });
+  },
+  // The computer's own measure of its disk and its last work, sent at its idle step.
+  "POST disk-usage": async (request, env, computer, _provider, { now }) => {
+    const report = parseDiskUsageReport(await readJson(request), now);
+    if (!report) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+    await recordDiskUsage(env, computer, report);
+    return json({ ok: true });
   },
   "POST resize": handleResize,
   "POST fork": handleFork,
@@ -874,7 +899,7 @@ async function routeInstance(request: Request, env: CloudEnv, provider: CloudPro
       try {
         const instance = await provider.getInstance(instanceId);
         await recordStatus(env, computer, instance.status, now, "seen");
-        return json(withUpdateFacts(instance, computer, await readUpdateTargets(env)));
+        return json(withUseFacts(withUpdateFacts(instance, computer, await readUpdateTargets(env)), computer));
       } catch (error) {
         if (error instanceof CloudProviderError && error.status === 404) await markGone(env, computer, now);
         throw error;
@@ -980,6 +1005,10 @@ export async function handleCloudRequest(request: Request, env: CloudEnv, waitUn
   // Saved chats need no provider: they stay readable when the computer can't be.
   if (path === CLOUD_PATHS.chats || path.startsWith(`${CLOUD_PATHS.chats}/`)) {
     return routeSavedChats(request, url, path, env, caller.userId, now);
+  }
+  // Lanes without a computer are rows only: readable with no provider, like saved chats.
+  if (path === CLOUD_PATHS.lanesWithoutComputer || path.startsWith(`${CLOUD_PATHS.lanesWithoutComputer}/`)) {
+    return routeLanesWithoutComputer(request, path, env, caller.userId);
   }
   if (!provider) {
     reportCloudFailure("cloud.no_provider_key");

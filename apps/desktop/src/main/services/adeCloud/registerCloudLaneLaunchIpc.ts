@@ -45,6 +45,8 @@ function launchIdOf(args: unknown): string | null {
 export function registerCloudLaneLaunchIpc(args: {
   machineCreatorDeps: CloudMachineCreatorDeps;
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
+  /** Forgets this app's saved connections to a computer a cancel deleted. */
+  forgetMachineConnections: (machine: { machineKey: string | null; instanceId: string }) => void;
   pairMachine: (machineKey: string) => Promise<{ targetId: string }>;
   remote: RuntimeBridgeRegistration["remoteForMain"];
   logger: Logger;
@@ -60,6 +62,8 @@ export function registerCloudLaneLaunchIpc(args: {
     emit: (event: ChatLaunchEvent) => sendToAllWindows(IPC.cloudLaneLaunchEvent, event),
     creator,
     removeAccountMachine: args.removeAccountMachine,
+    forgetMachineConnections: args.forgetMachineConnections,
+    uploadAttachment: (binding, input) => remote.uploadAttachment(binding, input),
     pairMachine: args.pairMachine,
     connect: async (targetId) => {
       const connected = await remote.connect(targetId);

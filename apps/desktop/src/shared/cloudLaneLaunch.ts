@@ -9,6 +9,9 @@
 import { CLOUD_OUT_OF_HOURS_MESSAGE, cloudOutOfHours, type CloudAccountState, type CloudMachine } from "./adeCloud";
 import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
 import type { ChatLaunchArgs } from "./types/chatLaunch";
+import { CLOUD_LANE_METADATA } from "../../../account-directory/src/cloud/contract";
+
+export type { CloudLaneWithoutComputer } from "../../../account-directory/src/cloud/contract";
 
 /**
  * Why the account can't start a new ADE Cloud lane now, from facts of the
@@ -52,14 +55,21 @@ export function cloudLaneStartBlock(
   return null;
 }
 
+// The server reads these too (a lane that outlives its computer), so they live in its contract.
 /** The lane this computer was made for (the launch's reserved lane id). */
-export const CLOUD_LANE_ID_METADATA = "ade_lane_id";
+export const CLOUD_LANE_ID_METADATA = CLOUD_LANE_METADATA.laneId;
 
 /** The lane's name when the computer was made. The lane may be renamed later; this is not kept in step. */
-export const CLOUD_LANE_NAME_METADATA = "ade_lane_name";
+export const CLOUD_LANE_NAME_METADATA = CLOUD_LANE_METADATA.laneName;
 
 /** The project's normalized git origin (`github.com/owner/repo`), as `normalizeGitRemoteIdentity` writes it. */
-export const CLOUD_PROJECT_ORIGIN_METADATA = "ade_project_origin";
+export const CLOUD_PROJECT_ORIGIN_METADATA = CLOUD_LANE_METADATA.projectOrigin;
+
+/** The lane's branch, written once the computer's ADE named it, so a lane that outlives its computer knows where to start again. */
+export const CLOUD_LANE_BRANCH_METADATA = CLOUD_LANE_METADATA.branch;
+
+/** Every lane fact a computer carries: a move copies these to the new computer. */
+export const CLOUD_LANE_METADATA_KEYS: readonly string[] = Object.values(CLOUD_LANE_METADATA);
 
 /** The lane name for a computer list row, or null for a computer that was not made for one lane. */
 export function cloudLaneNameOf(metadata: Record<string, string> | null | undefined): string | null {
@@ -100,11 +110,6 @@ export function isGithubOrigin(originUrl: string | null | undefined): boolean {
   return identity != null && /^github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/i.test(identity);
 }
 
-/** A local file on this computer means nothing on the new one. Links are fine. */
-function hasLocalAttachments(attachments: ChatLaunchArgs["attachments"]): boolean {
-  return (attachments ?? []).some((attachment) => attachment.type !== "image-url");
-}
-
 /** A start refusal: the sentence, and a short form for a narrow prompt box. */
 export type CloudLaneLaunchRefusal = { message: string; short: string };
 
@@ -123,14 +128,6 @@ export function cloudLaneLaunchStartRefusal(input: { args: ChatLaunchArgs; origi
     return {
       message: "ADE Cloud sets up GitHub repositories only, and this project has no GitHub origin.",
       short: "ADE Cloud needs a GitHub origin.",
-    };
-  }
-  if (hasLocalAttachments(args.attachments) || hasLocalAttachments(args.chat?.message?.attachments)) {
-    return {
-      message: args.kind === "cli"
-        ? "Files from this computer can't go to a new ADE Cloud computer yet. Start without them, then add them once the CLI session runs."
-        : "Files from this computer can't go to a new ADE Cloud computer yet. Send without them, then add them once the chat starts.",
-      short: "Send without local files.",
     };
   }
   if (args.laneConfig?.start?.on === "uncommitted") {

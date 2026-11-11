@@ -15,6 +15,7 @@ import path from "node:path";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import type { IntegrationConnectRequestResult } from "../../../shared/integrationConnect";
+import type { AdeCardPayload } from "../../../shared/adeCard";
 import { readImageFileAsDataUrl } from "../chat/imageAttachmentConverter";
 import { createHash } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -155,7 +156,7 @@ import {
   type WebhookSetupGuide,
 } from "../automations/webhookAutomationFactory";
 import { defaultAutomationChatModelId } from "../automations/automationService";
-import type { AutomationWebhookListEntry, SessionAttentionSource } from "../../../shared/types";
+import type { AutomationWebhookListEntry, CloudStartBranchArgs, SessionAttentionSource } from "../../../shared/types";
 import { isTrackedAgentCliToolType } from "../../../shared/types";
 import {
   claimDraft,
@@ -283,6 +284,7 @@ import {
 import type { AdeActionDomain } from "./domains";
 import { ADE_ACTION_ALLOWLIST, isAutomationAllowedAdeAction } from "./actionPolicy";
 import type { AutomationAdeActionRegistry } from "../automations/automationService";
+import { readGitOriginUrl } from "../projects/recentProjectSummary";
 import {
   asActionRecord,
   optionalNonEmptyString,
@@ -2253,6 +2255,11 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     },
     getDeleteRisk: async (args?: unknown) =>
       runtime.laneService.getDeleteRisk(readLaneIdActionArg(args, "lane.getDeleteRisk")),
+    // "Push this branch?" before an ADE Cloud launch, on the machine that has the project.
+    cloudStartBranch: async (args?: unknown) =>
+      runtime.laneService.cloudStartBranch((args && typeof args === "object" ? args : {}) as CloudStartBranchArgs),
+    pushCloudStartBranch: async (args?: unknown) =>
+      runtime.laneService.pushCloudStartBranch((args && typeof args === "object" ? args : {}) as CloudStartBranchArgs),
     cancelDelete: async (args?: unknown) =>
       runtime.laneService.cancelDelete(readLaneIdActionArg(args, "lane.cancelDelete")),
     listSnapshots: async (args?: ListLanesArgs): Promise<LaneListSnapshot[]> => {
@@ -4275,6 +4282,8 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
     desktop: () => runtime.getCloudDesktop?.() ?? null,
     maker,
     laneLaunch: () => cloudLaneLaunchHostFor(runtime, machines),
+    // The project's GitHub origin, for a lane launch that names none (the CTO, an automation).
+    projectOriginUrl: () => (runtime.projectRoot ? readGitOriginUrl(runtime.projectRoot) : null),
     // The size the person picked for new lanes (Settings, the composer's size
     // button), synced through the account settings. No store: can't read it.
     savedDefaultTier: runtime.accountSettingsStore
@@ -4287,6 +4296,9 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
           requestChatInput: (input) => agentChatService.requestChatInput(input),
           permissionLevel: (chatSessionId) => agentChatService.getPermissionCeiling?.({ actor: { kind: "agent", chatSessionId } }) ?? null,
           isAutomationRun: async (chatSessionId) => Boolean((await agentChatService.getSessionSummary(chatSessionId).catch(() => null))?.automationRunId),
+          ...(typeof agentChatService.emitAdeCard === "function"
+            ? { postCard: (chatSessionId: string, card: AdeCardPayload) => agentChatService.emitAdeCard({ sessionId: chatSessionId, card }) }
+            : {}),
           notice: (chatSessionId, message) => {
             try {
               agentChatService.recordSystemNotice({ sessionId: chatSessionId, message });

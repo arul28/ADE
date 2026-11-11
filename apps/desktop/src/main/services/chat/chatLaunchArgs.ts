@@ -12,6 +12,8 @@ import type {
 } from "../../../shared/types";
 import { chatLaunchKindOf, normalizeChatLaunchPriorStages } from "../../../shared/chatLaunch";
 import { normalizeHarnessPreset } from "../../../shared/harnessPresets";
+import { parseLaneGitHubIssueValue } from "../../../shared/laneGitHubIssue";
+import { parseLaneJiraIssueValue } from "../../../shared/laneJiraIssue";
 import { parseLaneLinearIssueValue } from "../../../shared/laneLinearIssue";
 import { normalizeLaneStart } from "../../../shared/laneStart";
 import { isRecord } from "../shared/utils";
@@ -245,6 +247,10 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
   // The canonical strict parser, so a malformed issue degrades to null instead
   // of reaching the lane service and throwing on a missing field.
   const linearIssue = parseLaneLinearIssueValue(value.linearIssue);
+  const githubIssue = mode === "new" ? parseLaneGitHubIssueValue(value.githubIssue) : null;
+  const jiraIssue = mode === "new" ? parseLaneJiraIssueValue(value.jiraIssue) : null;
+  // Only a pull request page (`…/owner/repo/pull/N`): the link step looks the PR up by it.
+  const pullRequestUrl = mode === "existing" ? asTrimmedString(value.pullRequestUrl) : null;
   return {
     mode,
     ...(start ? { start } : {}),
@@ -253,6 +259,9 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
     ...(templateId ? { templateId } : {}),
     ...(color ? { color } : {}),
     ...(linearIssue ? { linearIssue } : {}),
+    ...(githubIssue ? { githubIssue } : {}),
+    ...(jiraIssue ? { jiraIssue } : {}),
+    ...(pullRequestUrl && /^https:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/pull\/\d+\/?$/i.test(pullRequestUrl) ? { pullRequestUrl } : {}),
     ...(mode === "new" && value.autoName === true ? { autoName: true } : {}),
   };
 }

@@ -1,10 +1,15 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import type {
+  CreateLaneFromPrBranchPreflight,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
   GitHubPrListItem,
 } from "../../../../shared/types";
+import type { CloudTierId } from "../../../../shared/cloudTiers";
+import { ADE_CLOUD_NAME } from "../../remoteTargets/cloudBrand";
+import { originUrlForBinding } from "../../lanes/laneMachines";
+import { startAdeCloudLaunch } from "../../chat/launch/adeCloudLaunch";
 import { openLaneOnMachinePath } from "../../../lib/laneNavigation";
 import {
   selectActiveProjectRoot,
@@ -22,7 +27,7 @@ import { useActiveRef } from "../../../lib/useActiveRef";
 import { dismissToast, showToast } from "../../app/toast/toastStore";
 import type { LaneMachine } from "../../../state/laneMachineRouting";
 import { withMachineTimeout } from "../../../state/projectMachines";
-import { useProjectMachinePicker } from "../../lanes/ProjectMachinePicker";
+import { isAdeCloudPick, useProjectMachinePicker } from "../../lanes/ProjectMachinePicker";
 import type { PrMachineIndex } from "../state/prMachines";
 import {
   CreateLaneFromPrBranchDialog,
@@ -32,6 +37,45 @@ import {
   formatActionError,
   upsertLaneSummary,
 } from "./GitHubTabCreateLaneDialog";
+
+/**
+ * What the dialog shows for a lane on ADE Cloud. Nothing on this computer is
+ * asked: the new computer clones the project and checks the branch out from
+ * GitHub. A fork's branch is in another repository, so it can't.
+ */
+function adeCloudPrPreflight(item: GitHubPrListItem): CreateLaneFromPrBranchPreflight {
+  const headOwner = item.headRepoOwner?.trim() || item.repoOwner;
+  const headRepo = item.headRepoName?.trim() || item.repoName;
+  const fromFork = headOwner.toLowerCase() !== item.repoOwner.toLowerCase()
+    || headRepo.toLowerCase() !== item.repoName.toLowerCase();
+  const headBranch = item.headBranch?.trim() || null;
+  const canCreate = !fromFork && headBranch != null;
+  return {
+    repoOwner: item.repoOwner,
+    repoName: item.repoName,
+    githubPrNumber: item.githubPrNumber,
+    githubUrl: item.githubUrl,
+    title: item.title,
+    headBranch,
+    headSha: null,
+    headRepoOwner: headOwner,
+    headRepoName: headRepo,
+    remoteBranch: headBranch,
+    importBranchRef: null,
+    targetLaneName: headBranch ?? "",
+    baseBranch: item.baseBranch,
+    canCreate,
+    status: canCreate ? "ready" : "blocked",
+    blockingConflict: null,
+    blockingConflicts: [],
+  };
+}
+
+function adeCloudPrProblem(item: GitHubPrListItem, preflight: CreateLaneFromPrBranchPreflight): string | null {
+  if (preflight.canCreate) return null;
+  if (!preflight.headBranch) return "This pull request has no branch to check out.";
+  return `This pull request's branch is in ${preflight.headRepoOwner}/${preflight.headRepoName}, a fork. ADE Cloud checks out branches of ${item.repoOwner}/${item.repoName} only.`;
+}
 
 const CREATE_LANE_MACHINE_COPY = {
   title: "Where should this lane live?",
@@ -78,6 +122,8 @@ export function useCreateLaneFromPrBranch({
   const [item, setItem] = React.useState<GitHubPrListItem | null>(null);
   /** The machine the open dialog creates on; null = the tab's machine. */
   const [target, setTarget] = React.useState<LaneMachine | null>(null);
+  /** The open dialog creates on ADE Cloud, on a new computer of this size. */
+  const [cloudSize, setCloudSize] = React.useState<CloudTierId | null>(null);
   /** Shown in the dialog whenever there was a machine to choose. */
   const [machineName, setMachineName] = React.useState<string | null>(null);
   const [preflight, setPreflight] = React.useState<CreateLaneFromPrBranchPreflightResult | null>(null);
@@ -97,6 +143,7 @@ export function useCreateLaneFromPrBranch({
     requestRef.current = null;
     setItem(null);
     setTarget(null);
+    setCloudSize(null);
     setPreflight(null);
     setError(null);
     setLoading(false);
@@ -113,8 +160,26 @@ export function useCreateLaneFromPrBranch({
         machineIndex.lanesByMachineId.get(machine.machineId)?.length ?? 0,
       ] as const),
     );
-    const chosen = await askForMachine(machineIndex.machines, { ...CREATE_LANE_MACHINE_COPY, laneCountByMachineId });
+    const chosen = await askForMachine(machineIndex.machines, {
+      ...CREATE_LANE_MACHINE_COPY,
+      laneCountByMachineId,
+      adeCloudOriginUrl: originUrlForBinding(tabBinding),
+    });
     if (!chosen) return;
+    if (isAdeCloudPick(chosen)) {
+      // Checked from what the list already knows; nothing is asked of a machine.
+      requestRef.current = null;
+      const cloudPreflight = adeCloudPrPreflight(next);
+      setItem(next);
+      setTarget(null);
+      setCloudSize(chosen.sizeId);
+      setMachineName(ADE_CLOUD_NAME);
+      setPreflight({ preflight: cloudPreflight, lane: null, pr: null });
+      setError(adeCloudPrProblem(next, cloudPreflight));
+      setLoading(false);
+      return;
+    }
+    setCloudSize(null);
     const nextTarget = chosen.isActiveBinding ? null : chosen;
     const requestId = requestIdRef.current + 1;
     const itemKey = createLaneFromPrBranchRequestKey(next);
@@ -141,7 +206,7 @@ export function useCreateLaneFromPrBranch({
       .finally(() => {
         if (isCurrent()) setLoading(false);
       });
-  }, [askForMachine, machineIndex.lanesByMachineId, machineIndex.machines]);
+  }, [askForMachine, machineIndex.lanesByMachineId, machineIndex.machines, tabBinding]);
   openRef.current = open;
 
   // The dialog closes on confirm and the create runs in the background; the
@@ -154,6 +219,38 @@ export function useCreateLaneFromPrBranch({
     const createKey = createLaneFromPrBranchRequestKey(createItem);
     const createProjectRoot = projectRoot;
     const createTarget = target;
+    // ADE Cloud: a lane-only launch checks the branch out on a new computer.
+    // Its card shows in the launches slide-out, with retry and cancel.
+    if (cloudSize) {
+      const headBranch = preflight?.preflight.headBranch ?? null;
+      if (!tabBinding || !headBranch) {
+        setError("This project is still opening. Try again in a moment.");
+        return;
+      }
+      const sizeId = cloudSize;
+      close();
+      void startAdeCloudLaunch({
+        args: {
+          kind: "lane",
+          mode: "background",
+          launchId: crypto.randomUUID(),
+          laneId: crypto.randomUUID(),
+          laneName,
+          title: laneName,
+          prompt: "",
+          // The computer links the new lane to this PR, as a lane made here is.
+          laneConfig: {
+            mode: "existing",
+            branchRef: `origin/${headBranch}`,
+            ...(createItem.githubUrl ? { pullRequestUrl: createItem.githubUrl } : {}),
+          },
+        },
+        sizeId,
+        originUrl: originUrlForBinding(tabBinding),
+        binding: tabBinding,
+      });
+      return;
+    }
     // The user is free to switch project tabs while this runs, and an unpinned
     // call follows the active tab: pin it to the tab that started it.
     const callPin = createTarget?.pin ?? tabBinding;
@@ -231,7 +328,7 @@ export function useCreateLaneFromPrBranch({
         console.warn("create_lane_from_pr.follow_up_failed", err);
       }
     })();
-  }, [appStore, close, item, navigate, projectRoot, stillHereRef, tabBinding, tabScopeKey, target]);
+  }, [appStore, close, cloudSize, item, navigate, preflight, projectRoot, stillHereRef, tabBinding, tabScopeKey, target]);
 
   const element = (
     <>
@@ -244,6 +341,7 @@ export function useCreateLaneFromPrBranch({
           onCancel={close}
           onConfirm={confirm}
           machineName={machineName}
+          onAdeCloud={cloudSize != null}
         />
       ) : null}
       {machinePicker}

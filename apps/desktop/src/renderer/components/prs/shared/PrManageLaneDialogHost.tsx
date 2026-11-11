@@ -13,6 +13,8 @@ import { extractError } from "../../../lib/format";
 import { useAppStore } from "../../../state/appStore";
 import { requestCrossMachineLanesForMachine, useLanesForPin } from "../../../state/crossMachineLanes";
 import { machineIdForBinding } from "../../../../shared/machineIdentity";
+import { cloudLaneComputerOfLane } from "../../cloudLane/cloudLaneActions";
+import { deleteCloudLaneWithCheck } from "../../cloudLane/deleteCloudLane";
 
 export type PrManageLaneDialogHostProps = {
   open: boolean;
@@ -83,6 +85,14 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
     if (!lane || lane.laneType === "primary") return;
     if (!deleteSelection.worktree && !deleteSelection.localBranch && !deleteSelection.remoteBranch) return;
 
+    // An ADE Cloud lane goes with its computer: one account-level delete, warned only when work isn't on GitHub.
+    const cloudLane = cloudLaneComputerOfLane(runtimePin, lane.id);
+    if (cloudLane) {
+      setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
+      onOpenChange(false);
+      void deleteCloudLaneWithCheck({ instanceId: cloudLane.instanceId, laneName: lane.name, askFirst: false, onDeleted: refreshOwnerLanes });
+      return;
+    }
     const args: DeleteLaneArgs = { laneId: lane.id, force: deleteForce };
     args.deleteBranch = deleteSelection.localBranch;
     if (deleteSelection.remoteBranch) {
@@ -94,7 +104,7 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
       await window.ade.lanes.delete(args, ...onPin);
     }, "Deleting lane…", "delete");
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
-  }, [deleteForce, deleteSelection, lane, onPin, runLaneAction]);
+  }, [deleteForce, deleteSelection, lane, onOpenChange, onPin, refreshOwnerLanes, runLaneAction, runtimePin]);
 
   if (!open || !lane) return null;
 

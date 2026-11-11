@@ -207,6 +207,8 @@
 .cl-tile[data-tone="linear"] { --c: var(--cl-linear); }
 .cl-tile[data-tone="warn"] { --c: var(--kit-warn); }
 .cl-tile[data-tone="muted"] { --c: var(--kit-text-2); background: var(--kit-hover); }
+/* ADE Cloud's own color (cloudBrand.css), for the lane's place and its size. */
+.cl-tile[data-tone="cloud"] { --c: var(--adec-mark); background: var(--adec-tile-bg); }
 
 .cl-tag {
   flex: none;
@@ -477,6 +479,8 @@
 .cl-item-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cl-item-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--kit-text-3); }
 .cl-item-sub[data-tone="warn"] { color: var(--kit-warn); }
+/* "Default" beside the saved size, quieter than the name. */
+.cl-item-default { margin-left: 6px; font-size: 10.5px; color: var(--kit-text-3); }
 .cl-item-check { flex: none; color: var(--color-accent); }
 .cl-item[data-muted="true"] { color: var(--kit-text-2); }
 .cl-swatch { flex: none; width: 10px; height: 10px; margin: 0 7px; border-radius: 999px; }

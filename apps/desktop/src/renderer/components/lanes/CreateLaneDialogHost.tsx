@@ -2,6 +2,11 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useAppStoreApi } from "../../state/appStore";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { useLaneMachineChoice } from "./useLaneMachineChoice";
+import { ADE_CLOUD_MACHINE_ID } from "./useAdeCloudLaneTarget";
+import type { CreateLaneAdeCloud } from "./CreateLaneDialog";
+import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
+import type { CloudTierId } from "../../../shared/cloudTiers";
+import { adeCloudLaunchProblem, startAdeCloudLaunch } from "../chat/launch/adeCloudLaunch";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { CreateLaneDialog, type CreateLaneMode } from "./CreateLaneDialog";
 import { DEFAULT_LANE_START, plainLaneStartBranch, type LaneStart } from "../../../shared/laneStart";
@@ -26,7 +31,7 @@ import {
   canCreateLaneOnMachine,
   type LaneMachineOption,
 } from "./laneMachines";
-import type { LaneBranchOption } from "./laneUtils";
+import { stripRemotePrefix, type LaneBranchOption } from "./laneUtils";
 import type {
   BranchPullRequest,
   ChatLaunchLaneConfig,
@@ -347,6 +352,17 @@ function runDetachedLaneCreate(params: DetachedCreateParams): void {
 const NO_MACHINES: LaneMachineOption[] = [];
 
 /**
+ * The ref a new ADE Cloud computer can check out: a fresh clone has only the
+ * remote's branches, so a local branch goes by its remote copy's name.
+ */
+function cloudBranchRef(branchName: string, branches: LaneBranchOption[]): string {
+  const branch = branches.find((candidate) => candidate.name === branchName);
+  if (!branch || branch.isRemote) return branchName;
+  const plain = stripRemotePrefix(branch.name);
+  return branches.find((candidate) => candidate.isRemote && stripRemotePrefix(candidate.name) === plain)?.name ?? branchName;
+}
+
+/**
  * Self-contained host for {@link CreateLaneDialog}: owns the create-lane form
  * state, base-branch loading, and the submit.
  *
@@ -367,6 +383,8 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   onConfigured,
   onNavigateToTemplates,
   onOpenLinearSettings,
+  adeCloudTierId = null,
+  onChooseAdeCloudTier,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -383,6 +401,13 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   onConfigured?: (config: NewLaneDraftConfig) => void;
   onNavigateToTemplates?: () => void;
   onOpenLinearSettings?: () => void;
+  /**
+   * "configure-for-chat" for a draft bound for ADE Cloud: the draft's size.
+   * The place is fixed, so the size takes the machine row's place.
+   */
+  adeCloudTierId?: CloudTierId | null;
+  /** Changes the draft's size (`adeCloudTierId`). */
+  onChooseAdeCloudTier?: (tier: CloudTierId) => void;
 }) {
   // Configuring a draft creates nothing and owns no machine.
   const configureForChat = behavior === "configure-for-chat";
@@ -440,6 +465,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     targetPinKey,
     targetPinRef,
     setPickedMachineId,
+    adeCloud,
+    adeCloudPicked,
+    repoOriginUrl,
   } = useLaneMachineChoice(open);
 
   const {
@@ -657,6 +685,11 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   /** Picking a machine only chooses where the lane goes; nothing is rebound. */
   const handleSelectMachine = useCallback((machineId: string) => {
     if (machineId === selectedMachineId) return;
+    if (machineId === ADE_CLOUD_MACHINE_ID) {
+      setCreateError(null);
+      setPickedMachineId(machineId);
+      return;
+    }
     const machine = machines.find((candidate) => candidate.id === machineId);
     if (!machine || !canCreateLaneOnMachine(machine)) return;
     if (!machineTargets.has(machineId)) {
@@ -679,6 +712,54 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     // `primaryLane` is read through its id; `targetPinKey` carries the pin.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, targetPinKey, targetPrimaryId]);
+
+  /*
+   * ADE Cloud as the lane's place. From the Lanes tab it is one more choice in
+   * the machine chip; from the "+" of a draft bound for ADE Cloud it is fixed
+   * and the size takes the machine row's place. The form keeps reading the
+   * tab's machine: the new computer clones the pushed project.
+   */
+  const adeCloudFixed = configureForChat && adeCloudTierId != null;
+  const adeCloudOnLane = adeCloudFixed || (!configureForChat && adeCloudPicked);
+  const handleChooseAdeCloud = useCallback(() => handleSelectMachine(ADE_CLOUD_MACHINE_ID), [handleSelectMachine]);
+  const adeCloudDialog = useMemo<CreateLaneAdeCloud | null>(() => {
+    if (!adeCloudFixed && (configureForChat || !adeCloud.offered)) return null;
+    return {
+      choice: adeCloudFixed
+        ? null
+        : {
+          selected: adeCloudPicked,
+          unavailableReason: adeCloud.unavailableReason,
+          detail: adeCloud.detail,
+          onSelect: handleChooseAdeCloud,
+        },
+      picked: adeCloudOnLane,
+      fixed: adeCloudFixed,
+      tiers: adeCloud.tiers,
+      tierId: adeCloudFixed && adeCloudTierId ? adeCloudTierId : adeCloud.tierId,
+      defaultTier: adeCloud.defaultTier,
+      onChooseTier: adeCloudFixed && onChooseAdeCloudTier ? onChooseAdeCloudTier : adeCloud.chooseTier,
+      onSetDefaultTier: adeCloud.setDefaultTier,
+      problem: adeCloudOnLane ? cloudLaneStartBlock(adeCloud.account, { newLane: true })?.message ?? null : null,
+    };
+  }, [
+    adeCloud.account,
+    adeCloud.chooseTier,
+    adeCloud.defaultTier,
+    adeCloud.detail,
+    adeCloud.offered,
+    adeCloud.setDefaultTier,
+    adeCloud.tierId,
+    adeCloud.tiers,
+    adeCloud.unavailableReason,
+    adeCloudFixed,
+    adeCloudOnLane,
+    adeCloudPicked,
+    adeCloudTierId,
+    configureForChat,
+    handleChooseAdeCloud,
+    onChooseAdeCloudTier,
+  ]);
 
   const handleConnectMachine = useCallback(() => {
     onOpenChange(false);
@@ -739,7 +820,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         mode: createMode,
         name: createLaneName.trim(),
         start: createMode === "new" ? createStart : null,
-        branchRef: createMode === "existing" ? createImportBranch : "",
+        branchRef: createMode === "existing"
+          ? (adeCloudFixed ? cloudBranchRef(createImportBranch, createBranches) : createImportBranch)
+          : "",
         ...(typedBranch ? { branchName: typedBranch } : {}),
         templateId: selectedTemplateId || null,
         color: createSelectedColor,
@@ -752,6 +835,60 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
 
     const name = createLaneName.trim();
     if (!name) return;
+
+    // ADE Cloud: a lane-only launch makes the lane on a new computer. Its
+    // card shows in the launches slide-out, from the first frame.
+    if (adeCloudPicked) {
+      const extrasError = validateLaneFormExtras();
+      if (extrasError) {
+        setCreateError(extrasError);
+        return;
+      }
+      if (createMode === "existing" && !createImportBranch) return;
+      if (!tabBinding) {
+        setCreateError("This project is still opening. Try again in a moment.");
+        return;
+      }
+      const typedBranch = createMode === "new" ? editedBranchName?.trim() ?? "" : "";
+      const typedProblem = typedBranch ? branchNameProblem(typedBranch) : null;
+      if (typedProblem) {
+        setCreateBranchProblem(typedProblem);
+        return;
+      }
+      const args = {
+        kind: "lane" as const,
+        mode: "background" as const,
+        launchId: crypto.randomUUID(),
+        laneId: crypto.randomUUID(),
+        laneName: name,
+        title: name,
+        prompt: "",
+        laneConfig: createMode === "existing"
+          ? { mode: "existing" as const, branchRef: cloudBranchRef(createImportBranch, createBranches), templateId: selectedTemplateId || null, color: createSelectedColor }
+          : {
+            mode: "new" as const,
+            start: createStart,
+            ...(typedBranch ? { branchName: typedBranch } : {}),
+            templateId: selectedTemplateId || null,
+            color: createSelectedColor,
+            linearIssue: createSelectedLinearIssue,
+          },
+      };
+      const problem = adeCloudLaunchProblem({
+        args: { ...args, cloud: { sizeId: adeCloud.tierId } },
+        originUrl: repoOriginUrl,
+        account: adeCloud.account,
+      });
+      if (problem) {
+        setCreateError(problem);
+        return;
+      }
+      resetCreateDialogState();
+      onOpenChange(false);
+      void startAdeCloudLaunch({ args, sizeId: adeCloud.tierId, originUrl: repoOriginUrl, binding: tabBinding });
+      return;
+    }
+
     // Always asks: never create on a machine nobody chose.
     const machineId = selectedMachineId;
     if (!machineId || !machineTargets.has(machineId)) {
@@ -847,6 +984,12 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     validateLaneFormExtras,
     selectedMachineId,
     machineTargets,
+    adeCloudPicked,
+    adeCloud.tierId,
+    adeCloud.account,
+    repoOriginUrl,
+    createBranches,
+    adeCloudFixed,
   ]);
   const handleCreateSubmit = useCallback(async () => {
     if (submittingRef.current) return;
@@ -903,6 +1046,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       onOpenLinearSettings={onOpenLinearSettings}
       onNavigateToTemplates={onNavigateToTemplates}
       selectedMachineId={selectedMachineId}
+      adeCloud={adeCloudDialog}
     />
   );
 });

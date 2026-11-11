@@ -65,7 +65,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "portAcquire", "portGetLease", "portRecoverOrphans", "portRelease",
     ],
     read: [
-      "checkBranchName", "diagnosticsGetLaneHealth", "diagnosticsGetStatus", "getBranchDrift",
+      "checkBranchName", "cloudStartBranch", "diagnosticsGetLaneHealth", "diagnosticsGetStatus", "getBranchDrift",
       "getDefaultTemplate", "getNewLaneDefaults", "getDeleteRisk", "getDependencyStatus", "getLeftoverWorktree", "getReclaimRisk",
       "getEnvStatus", "getOverlay", "getSummary", "getTemplate",
       "list", "listDeleteProgress", "listDeletedLanes", "listSnapshots",
@@ -79,7 +79,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: [
       "acknowledgeDependencyStatus", "archive", "archiveAndReclaim", "attachLinearIssueToSession", "attachGitHubIssueToSession",
       "attachJiraIssueToSession",
-      "cancelDelete", "cancelGitWrite", "create",
+      "cancelDelete", "cancelGitWrite", "create", "pushCloudStartBranch",
       "delete", "deleteLeftoverWorktree", "deleteTemplate", "detachLinearIssueFromSession",
       "detachGitHubIssueFromSession", "diagnosticsActivateFallback",
       "detachJiraIssueFromSession",
@@ -347,7 +347,8 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: ["access", "status", "ready_status", "list", "hours", "make_status", "limits", "cloud_sign_in_status", "lane_launch_status"],
     write: [
       "claim_ready", "release_ready", "create", "sleep", "wake", "resize", "copy", "move", "delete",
-      "update", "ready_set", "ready_off", "ready_retry", "set_limits", "lane_launch", "lane_launch_cancel",
+      "update", "ready_set", "ready_off", "ready_retry", "set_limits", "lane_launch", "lane_launch_cancel", "tier_request",
+      "clear_caches",
       "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
     ],
     // Claude's sign-in for new machines is a terminal the brain keeps open.

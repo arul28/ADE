@@ -96,6 +96,9 @@ export function useAdeCloudLaneComputers(): IndexState {
   return useSyncExternalStore(subscribe, readState, readState);
 }
 
+/** A chat's ADE Cloud lane, and its computer's ADE Cloud id once known. */
+export type AdeCloudLaneOfBinding = { laneId: string; laneName: string; instanceId: string | null };
+
 /**
  * The ADE Cloud lane a chat's binding points at, or null for any other
  * machine. A lane computer's remote target carries the computer's id as its
@@ -104,26 +107,40 @@ export function useAdeCloudLaneComputers(): IndexState {
 export function adeCloudLaneForBinding(
   binding: OpenProjectBinding | null | undefined,
   computers: readonly AdeCloudLaneComputer[] = state.computers,
-): { laneId: string; laneName: string } | null {
+): AdeCloudLaneOfBinding | null {
   if (!binding || binding.kind !== "remote") return null;
   const host = binding.hostname?.trim().toLowerCase();
   if (host) {
     const computer = computers.find((candidate) => candidate.instanceId.toLowerCase() === host);
-    if (computer) return { laneId: computer.laneId, laneName: computer.laneName };
+    if (computer) return { laneId: computer.laneId, laneName: computer.laneName, instanceId: computer.instanceId };
   }
   for (const entry of Object.values(chatLaunchStore.getState().entries)) {
     const cloud = entry.snapshot.cloud;
     if (cloud?.binding && cloud.binding.targetId === binding.targetId) {
-      return { laneId: entry.snapshot.laneId, laneName: entry.snapshot.laneName };
+      return { laneId: entry.snapshot.laneId, laneName: entry.snapshot.laneName, instanceId: cloud.instanceId ?? null };
     }
   }
   return null;
 }
 
 /** `adeCloudLaneForBinding` for a component: it follows the index as reads arrive. */
-export function useAdeCloudLaneForBinding(binding: OpenProjectBinding | null | undefined): { laneId: string; laneName: string } | null {
+export function useAdeCloudLaneForBinding(binding: OpenProjectBinding | null | undefined): AdeCloudLaneOfBinding | null {
   const { computers } = useAdeCloudLaneComputers();
   return adeCloudLaneForBinding(binding, computers);
+}
+
+/**
+ * The ADE Cloud lane computer a machine stands for, by its remote host name
+ * (a lane computer's target carries its ADE Cloud id) or its machine key.
+ */
+export function adeCloudLaneComputerForMachine(
+  machine: { hostname?: string | null; machineKey?: string | null },
+  computers: readonly AdeCloudLaneComputer[] = state.computers,
+): AdeCloudLaneComputer | null {
+  const host = machine.hostname?.trim().toLowerCase() ?? "";
+  const key = machine.machineKey?.trim() ?? "";
+  if (!host && !key) return null;
+  return computers.find((computer) => (host && computer.instanceId.toLowerCase() === host) || (key && computer.machineKey === key)) ?? null;
 }
 
 /** "ADE Cloud · fix-login": how a switcher names a chat's ADE Cloud lane. */

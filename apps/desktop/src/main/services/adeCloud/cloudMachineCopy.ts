@@ -37,6 +37,7 @@ import {
 } from "../../../shared/adeCloud";
 import { CLOUD_MADE_BY_CHAT_METADATA } from "../../../shared/adeCloud";
 import { CLOUD_READY_METADATA } from "../../../shared/cloudReady";
+import { CLOUD_LANE_METADATA_KEYS } from "../../../shared/cloudLaneLaunch";
 import { getErrorMessage } from "../shared/utils";
 import { CloudProviderError, type CloudProvider, type CloudInstance, type CloudLogger } from "./cloudProvider";
 import {
@@ -86,6 +87,16 @@ function copyMetadata(source: CloudInstance, requestId: string, extra: Record<st
     if (!NOT_COPIED_METADATA.has(key)) metadata[key] = value;
   }
   return { ...metadata, ...extra, created_by: "ade", ade_request_id: requestId };
+}
+
+/** The lane facts a computer carries (`CLOUD_LANE_METADATA_KEYS`), for the computer that replaces it. */
+function laneMetadataOf(source: CloudInstance): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of CLOUD_LANE_METADATA_KEYS) {
+    const value = source.metadata[key];
+    if (typeof value === "string" && value) out[key] = value;
+  }
+  return out;
 }
 
 async function waitForRunning(client: CloudProvider, instanceId: string, signal: AbortSignal | undefined, sleep: (ms: number) => Promise<void>): Promise<CloudInstance> {
@@ -292,7 +303,13 @@ export async function moveCloudMachine(
   }, onProgress, {
     signal: options.signal,
     moveFromInstanceId: source.id,
-    metadata: { ade_moved_from: source.id, ...(args.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: args.madeByChat } : {}) },
+    metadata: {
+      // The lane moves with its computer: pickers, the dashboard and a later
+      // delete read the lane from here with no wake.
+      ...laneMetadataOf(source),
+      ade_moved_from: source.id,
+      ...(args.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: args.madeByChat } : {}),
+    },
   });
 
   let transferMs = 0;

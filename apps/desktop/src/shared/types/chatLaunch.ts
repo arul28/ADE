@@ -1,6 +1,7 @@
 import type { AgentChatCreateArgs, AgentChatSendArgs, AgentChatFileRef } from "./chat";
 import type { LaneEnvInitStep } from "./config";
-import type { LaneLinearIssue } from "./lanes";
+import type { LaneJiraIssue } from "./jira";
+import type { LaneGitHubIssue, LaneLinearIssue } from "./lanes";
 import type { LaneStart } from "../laneStart";
 import type { OpenProjectBinding } from "./core";
 
@@ -246,6 +247,15 @@ export type ChatLaunchLaneConfig = {
   color?: string | null;
   /** Linear issue bound to the new lane. */
   linearIssue?: LaneLinearIssue | null;
+  /** New mode: a GitHub issue linked to the new lane, as a local lane from that issue links it. */
+  githubIssue?: LaneGitHubIssue | null;
+  /** New mode: a Jira issue linked to the new lane, as a local lane from that issue links it. */
+  jiraIssue?: LaneJiraIssue | null;
+  /**
+   * Existing mode: the pull request this branch belongs to. The lane is
+   * linked to it once it exists, as a local lane made from a PR's branch is.
+   */
+  pullRequestUrl?: string | null;
   /**
    * New mode: nobody chose the lane's name, so the launch names it like a
    * plain auto-create (placeholder branch, then a title from the prompt).

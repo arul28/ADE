@@ -2,6 +2,11 @@ import type {
   CloudAccountState,
   CloudCatalog,
   CloudDiskRefusalReason,
+  CloudDiskUsage,
+  CloudDiskUsageItem,
+  CloudDiskUsageKind,
+  CloudDiskUsageReport,
+  CloudLaneWork,
   CloudHoursState,
   CloudPaidPlanId,
   CloudPlanChangeTiming,
@@ -391,6 +396,12 @@ export type CloudMachine = {
   diskFull: string | null;
   /** How it keeps its image and ADE current. Absent from servers before updates. */
   update?: CloudMachineUpdate | null;
+  /** When it last did work (its own report), else when it was last awake; null when unknown. */
+  lastActiveAtMs?: number | null;
+  /** What uses its disk, as it last measured itself while awake; null before its first measure. */
+  diskUsage?: CloudDiskUsage | null;
+  /** Its lane's work as it last read it while awake (unpushed, the pull request); null before its first report. */
+  laneWork?: CloudLaneWork | null;
 };
 
 /**
@@ -667,6 +678,7 @@ export function cloudShapeWithin(shape: CloudShapeId, max: CloudShapeId): boolea
 }
 
 export type { CloudAccountState, CloudCatalog, CloudHoursState, CloudPaidPlanId, CloudPlanChangeTiming };
+export type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageKind, CloudDiskUsageReport, CloudLaneWork };
 
 /** What opening checkout did: a browser page opened, or the plan changed without one. */
 export type CloudOpenCheckoutResult = { opened: boolean; change?: CloudPlanChangeTiming };
@@ -820,6 +832,12 @@ export type CloudMachineActionArgs = {
   machineKey?: string | null;
   /** For `delete`: who asked, for the server's delete log (an agent's chat; a person's desktop leaves it unset). */
   who?: string | null;
+  /**
+   * For `delete`: keep the lane the computer was made for, as a lane without
+   * a computer on `branchRef` ("Keep the lane on a fresh computer"). The
+   * caller pushed its work first.
+   */
+  keepLane?: { branchRef: string | null } | null;
 };
 
 export type CloudMachineActionResult = {

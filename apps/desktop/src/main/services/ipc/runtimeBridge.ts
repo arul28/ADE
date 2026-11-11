@@ -569,6 +569,8 @@ export type RuntimeBridgeRegistration = {
     resolveBinding(targetId: string, projectId: string, rootPath: string): Promise<OpenProjectBinding & { kind: "remote" }>;
     /** One runtime action through a pin; the action's own result. */
     callAction(binding: OpenProjectBinding & { kind: "remote" }, request: RemoteRuntimeActionRequest): Promise<unknown>;
+    /** Streams one file from this computer to the pin's project there; the path there. */
+    uploadAttachment(binding: OpenProjectBinding & { kind: "remote" }, input: { sourcePath: string; filename: string }): Promise<{ path: string }>;
     /** The pin's runtime events of one category; `onEnded` when the stream stops by itself. */
     subscribeEvents(
       binding: OpenProjectBinding & { kind: "remote" },
@@ -831,6 +833,12 @@ export function registerRuntimeBridge({
         request,
         { projectRootPath: binding.rootPath },
       )).result,
+      uploadAttachment: (binding, input) => remoteConnectionService.uploadChatAttachment({
+        targetId: requireRemoteTarget(binding.targetId).id,
+        projectId: binding.projectId,
+        sourcePath: input.sourcePath,
+        filename: input.filename,
+      }),
       subscribeEvents: (binding, category, onEvent, onEnded) => remoteConnectionService.subscribeEvents(
         requireRemoteTarget(binding.targetId).id,
         binding.projectId,

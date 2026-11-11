@@ -12,6 +12,7 @@ import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
+import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
 import type { CloudReadyPool } from "../../desktop/src/shared/cloudReady";
 import { cloudCatalogOf, cloudPlanLabelOf, formatCloudHours, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
@@ -796,8 +797,9 @@ export type CloudLaneLaunchDraft = {
   prompt: string | null;
   /** `--launch-id`: the same id again follows (or resumes) that launch. */
   launchId: string | null;
-  /** Choices a new ADE Cloud lane can't take yet; each is refused with its own line. */
-  linearIssue: boolean;
+  /** `--from-linear-issue`: bound to the new lane on the computer, when it is the whole issue. */
+  linearIssue: JsonObject | null;
+  /** A choice a new ADE Cloud lane can't take yet; refused with its own line. */
   notify: boolean;
 };
 
@@ -2486,7 +2488,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   ade lanes create --machine cloud [--size small|medium|large|xlarge] [--launch-id <id>] --name <name> [...]
                    (the lane alone, with no chat, on its own new ADE Cloud computer; asks you first.
                    No --size: the size you saved for new lanes. The same --launch-id again follows it or
-                   goes on from a failed step. No --description, --no-template or Linear issue yet.)
+                   goes on from a failed step. A Linear issue needs its whole JSON. No --description
+                   or --no-template yet.)
   ade lanes defaults [--text|--json]
   ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
                          [--branch-pattern <pattern>]   (e.g. "ade/{slug}", "{user}/{slug}", "{slug}")
@@ -4766,6 +4769,8 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade cloud sleep <machine>                   Sleep now (uses no hours)
     $ ade cloud wake <machine>                    Wake (the server refuses it at 0 hours)
     $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
+    $ ade cloud resize --request --size large --reason "Android needs it"
+                                                    An agent asks the person (a card in its chat); nothing changes until they confirm
     $ ade cloud update <machine>                  Move to its channel's image now and restart; files stay
                                                     (each computer also updates itself when idle or asleep)
     $ ade cloud copy <machine> --name "lane box"  A new computer with the same files (a warm copy)
@@ -7446,6 +7451,9 @@ function buildLanePlan(args: string[]): CliPlan {
     if (noTemplate) input.skipSetup = true;
     // `--machine cloud`: the same choices as a lane launch with no chat. The
     // computer's brain lays them over that project's own lane defaults.
+    // The computer binds a Linear issue to a new lane only when it carries the
+    // whole issue: it has no Linear lookup for a bare id.
+    const cloudLinearIssue = parsedIssue && !existing ? parseLaneLinearIssueValue(parsedIssue) : null;
     const cloudLaneCreate: CloudLaneCreateDraft = {
       launch: {
         kind: "lane",
@@ -7460,11 +7468,14 @@ function buildLanePlan(args: string[]): CliPlan {
               ...(changes.from || changes.on ? { start: mergeLaneStart(changes, null) } : {}),
               ...(branchName ? { branchName } : {}),
               ...(requestedTemplateId != null ? { templateId: requestedTemplateId } : {}),
+              ...(cloudLinearIssue ? { linearIssue: cloudLinearIssue } : {}),
             },
       },
       launchId: cloudLaunchIdFlag ? requireCliUuid(cloudLaunchIdFlag, "--launch-id") : null,
-      refused: parsedIssue
-        ? "--machine cloud doesn't take a Linear issue yet. Make the lane on ADE Cloud, then attach the issue from it."
+      refused: parsedIssue && existing
+        ? "--machine cloud binds a Linear issue only to a new branch. Leave out --existing-branch, or attach the issue from the lane."
+        : parsedIssue && !cloudLinearIssue
+          ? "--machine cloud needs the whole Linear issue (id, identifier, title, team and state) in --linear-issue-json."
         : noTemplate
           ? "--no-template doesn't work with --machine cloud yet: the new computer sets the lane up with the project's template."
           : input.description != null
@@ -12285,9 +12296,9 @@ function buildChatPlan(args: string[]): CliPlan {
       (linearIssue && !noKickoff ? deriveLinearKickoffPrompt(linearIssue) : null);
     const cloudLaunch: CloudLaneLaunchDraft = {
       create: actionArgs,
-      prompt: explicitKickoff,
+      prompt: kickoffText,
       launchId: cloudLaunchIdFlag ? requireCliUuid(cloudLaunchIdFlag, "--launch-id") : null,
-      linearIssue: linearIssue != null,
+      linearIssue,
       notify: notify != null,
     };
     if (printConfig) {
@@ -20833,12 +20844,17 @@ function cloudStep(label: string, action: string, input: JsonObject, formatter: 
   };
 }
 
-/** `ade cloud push-work --json`: every lane's work committed and pushed. With ADE's 25 s to answer first, this fits inside the 3-minute exec that runs it. */
-function buildCloudPushWorkPlan(): CliPlan {
+/**
+ * `ade cloud push-work --json`: every lane's work committed and pushed. With
+ * ADE's 25 s to answer first, this fits inside the 3-minute exec that runs
+ * it. `--check` only reads which lanes have work that isn't on GitHub.
+ */
+function buildCloudPushWorkPlan(args: string[]): CliPlan {
+  const check = args.includes("--check");
   return {
     kind: "execute",
     label: "cloud push-work",
-    steps: [{ key: "result", method: "cloud.pushWork", params: {} }],
+    steps: [{ key: "result", method: "cloud.pushWork", params: check ? { check: true } : {} }],
     machineOnly: true,
     minTimeoutMs: 150_000,
   };
@@ -20873,6 +20889,7 @@ function buildCloudPlan(args: string[]): CliPlan {
   const shape = readValue(args, ["--shape", "--size"]);
   const name = readValue(args, ["--name"]);
   const to = readValue(args, ["--to"]);
+  const reason = readValue(args, ["--reason"]);
   const setup = readValue(args, ["--setup"]);
   const origin = readValue(args, ["--origin"]);
   // `ade cloud` alone is the whole picture, like `ade cloud status`.
@@ -20901,6 +20918,13 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "start":
       return cloudStep("wake", "wake", { machine: target() });
     case "resize": {
+      // An agent asks; the person confirms on the card in its chat.
+      if (args.includes("--request")) {
+        const size = shape;
+        if (!size || !reason) throw new CliUsageError("ade cloud resize [machine] --request --size large --reason \"why\"");
+        const machine = firstPositional(args);
+        return cloudStep("resize request", "tier_request", { size, reason, ...(machine ? { machine } : {}) });
+      }
       const machine = target();
       const size = shape ?? firstPositional(args);
       if (!size) throw new CliUsageError("ade cloud resize <machine> --shape 4x8");
@@ -29184,6 +29208,37 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
+  // What uses this computer's disk, and its last work: sent at the idle step for the dashboard.
+  const cloudDiskUsageReporter = cloudKeepAwakeModule?.isCloudMachine()
+    ? (await import("../../desktop/src/main/services/adeCloud/cloudDiskUsage")).createCloudDiskUsageReporter({
+        instanceId: process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "",
+        stateFile: path.join(layout.adeDir, "cloud", "disk-usage.json"),
+        projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
+        // Only projects already open: the idle step never boots one to look.
+        readWork: async () => {
+          const runtimes = (await Promise.all(projectRegistry.list().map(async (record) =>
+            (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null)))
+            .filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
+          if (!runtimes.length) return null;
+          let unpushed = false;
+          let prState: "draft" | "open" | "merged" | "closed" | null = null;
+          for (const runtime of runtimes) {
+            for (const lane of await runtime.laneService.list({ includeArchived: true, includeStatus: true })) {
+              if (lane.status?.dirty === true || (lane.status?.ahead ?? 0) > 0) unpushed = true;
+              if (lane.laneType !== "primary") prState ??= runtime.prService?.getForLane(lane.id)?.state ?? null;
+            }
+          }
+          return { checkedAt: Date.now(), unpushed, prState };
+        },
+        send: async (report) => {
+          const instanceId = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
+          const client = await (await getCloudBrainAccess()).client();
+          if (!client?.reportDiskUsage) throw new Error("no ADE Cloud access");
+          await client.reportDiskUsage(instanceId, report);
+        },
+        logger: headlessProjectLogger,
+      })
+    : null;
   const cloudKeepAwake = cloudKeepAwakeModule?.isCloudMachine()
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
@@ -29208,6 +29263,7 @@ async function runServe(
           await client.requestIdleSleep(instanceId);
         },
         growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
+        reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => {
           const instanceId = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
@@ -30401,9 +30457,10 @@ async function runServe(
     withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
       holdCloudWork,
       pushCloudWork: holdCloudWork
-        ? async () => {
+        ? async ({ check }: { check: boolean }) => {
             const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
             return await holdCloudWork("push_work", 10 * 60_000, () => pushCloudComputerWork({
+              check,
               projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
               logger: headlessProjectLogger,
             }));

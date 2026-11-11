@@ -3,6 +3,19 @@ import { Dialog } from "../ui/dialog";
 import { LaneMachineSelector } from "./LaneMachineSelector";
 import type { LaneMachineOption } from "./laneMachines";
 import type { LaneMachine } from "../../state/laneMachineRouting";
+import { adeCloudEnabled } from "../../state/cloudAccess";
+import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
+import type { CloudTierId } from "../../../shared/cloudTiers";
+import { CloudSizeButton } from "../chat/AdeCloudComposerParts";
+import { ADE_CLOUD_MACHINE_ID, useAdeCloudLaneTarget } from "./useAdeCloudLaneTarget";
+import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
+
+/** ADE Cloud was picked: the lane gets a new computer of this size. */
+export type AdeCloudPick = { kind: "ade-cloud"; sizeId: CloudTierId };
+
+export function isAdeCloudPick(value: LaneMachine | AdeCloudPick | null): value is AdeCloudPick {
+  return value != null && "kind" in value && value.kind === "ade-cloud";
+}
 
 /**
  * "Which machine?" for a lane created outside the create-lane dialog (a lane
@@ -43,7 +56,9 @@ type MachineRequest = {
   confirmLabel: string;
   machines: LaneMachine[];
   laneCountByMachineId: ReadonlyMap<string, number>;
-  resolve: (machine: LaneMachine | null) => void;
+  /** Offer ADE Cloud, for a project with this origin; undefined = never. */
+  adeCloudOriginUrl: string | null | undefined;
+  resolve: (machine: LaneMachine | AdeCloudPick | null) => void;
 };
 
 export type AskForMachine = (
@@ -54,19 +69,25 @@ export type AskForMachine = (
     confirmLabel?: string;
     /** Lanes each machine already has, for the placement hint. */
     laneCountByMachineId?: ReadonlyMap<string, number>;
+    /**
+     * Offer ADE Cloud as one more place (the project's origin), when the
+     * account has access. Left out: machines only.
+     */
+    adeCloudOriginUrl?: string | null;
   },
-) => Promise<LaneMachine | null>;
+) => Promise<LaneMachine | AdeCloudPick | null>;
 
 /**
- * `ask(machines, copy)` resolves with the chosen machine, or null on cancel.
- * Only reachable machines are offered. With one reachable machine there is no
- * choice to make, so it resolves to that machine without a dialog.
+ * `ask(machines, copy)` resolves with the chosen machine, ADE Cloud (when
+ * offered), or null on cancel. Only reachable machines are offered. With one
+ * reachable machine and no ADE Cloud there is no choice to make, so it
+ * resolves to that machine without a dialog.
  */
 export function useProjectMachinePicker(): { ask: AskForMachine; element: ReactNode } {
   const [request, setRequest] = useState<MachineRequest | null>(null);
   const requestRef = useRef<MachineRequest | null>(null);
 
-  const settle = useCallback((machine: LaneMachine | null) => {
+  const settle = useCallback((machine: LaneMachine | AdeCloudPick | null) => {
     const current = requestRef.current;
     requestRef.current = null;
     setRequest(null);
@@ -75,7 +96,8 @@ export function useProjectMachinePicker(): { ask: AskForMachine; element: ReactN
 
   const ask = useCallback<AskForMachine>((machines, copy) => {
     const reachable = machines.filter((machine) => machine.online && machine.routable);
-    if (reachable.length <= 1) return Promise.resolve(reachable[0] ?? null);
+    const offerCloud = copy.adeCloudOriginUrl !== undefined && adeCloudEnabled();
+    if (reachable.length <= 1 && !offerCloud) return Promise.resolve(reachable[0] ?? null);
     // A second ask supersedes the first; the first resolves as cancelled.
     requestRef.current?.resolve(null);
     return new Promise((resolve) => {
@@ -85,6 +107,7 @@ export function useProjectMachinePicker(): { ask: AskForMachine; element: ReactN
         confirmLabel: copy.confirmLabel ?? "Continue",
         machines: reachable,
         laneCountByMachineId: copy.laneCountByMachineId ?? new Map(),
+        adeCloudOriginUrl: offerCloud ? copy.adeCloudOriginUrl : undefined,
         resolve,
       };
       requestRef.current = next;
@@ -103,14 +126,25 @@ function ProjectMachinePickerDialog({
   onSettle,
 }: {
   request: MachineRequest;
-  onSettle: (machine: LaneMachine | null) => void;
+  onSettle: (machine: LaneMachine | AdeCloudPick | null) => void;
 }) {
   const [selectedMachineId, setSelectedMachineId] = useState("");
+  // The cloud read runs only while this dialog is open.
+  const offerCloud = request.adeCloudOriginUrl !== undefined;
+  const adeCloud = useAdeCloudLaneTarget(offerCloud, request.adeCloudOriginUrl ?? null);
+  const cloudPicked = offerCloud && selectedMachineId === ADE_CLOUD_MACHINE_ID;
+  const cloudProblem = cloudPicked ? cloudLaneStartBlock(adeCloud.account, { newLane: true })?.message ?? null : null;
+  // An ADE Cloud lane's computer reads "ADE Cloud · <lane>".
+  const labelOf = useAdeCloudMachineLabel();
   const options = useMemo(
-    () => request.machines.map((machine) => optionFor(machine, request.laneCountByMachineId.get(machine.machineId) ?? null)),
-    [request.laneCountByMachineId, request.machines],
+    () => request.machines.map((machine) => ({
+      ...optionFor(machine, request.laneCountByMachineId.get(machine.machineId) ?? null),
+      name: labelOf({ machineId: machine.machineId, binding: machine.binding, name: machine.machineName }),
+    })),
+    [labelOf, request.laneCountByMachineId, request.machines],
   );
   const selected = request.machines.find((machine) => machine.machineId === selectedMachineId) ?? null;
+  const canConfirm = cloudPicked ? !cloudProblem : Boolean(selected);
   return (
     <Dialog
       open
@@ -125,18 +159,41 @@ function ProjectMachinePickerDialog({
         {
           label: request.confirmLabel,
           variant: "solid",
-          disabled: !selected,
+          disabled: !canConfirm,
           onClick: () => {
-            if (selected) onSettle(selected);
+            if (cloudPicked && !cloudProblem) onSettle({ kind: "ade-cloud", sizeId: adeCloud.tierId });
+            else if (selected) onSettle(selected);
           },
         },
       ]}
     >
       <LaneMachineSelector
         machines={options}
-        selectedMachineId={selectedMachineId}
+        selectedMachineId={cloudPicked ? "" : selectedMachineId}
         onSelectMachine={setSelectedMachineId}
+        adeCloud={offerCloud && adeCloud.offered
+          ? {
+            selected: cloudPicked,
+            unavailableReason: adeCloud.unavailableReason,
+            detail: adeCloud.detail,
+            onSelect: () => setSelectedMachineId(ADE_CLOUD_MACHINE_ID),
+          }
+          : null}
       />
+      {cloudPicked ? (
+        <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-fg/75">
+          <CloudSizeButton
+            tiers={adeCloud.tiers}
+            tierId={adeCloud.tierId}
+            defaultTier={adeCloud.defaultTier}
+            onChoose={adeCloud.chooseTier}
+            onSetDefault={adeCloud.setDefaultTier}
+          />
+          <span className={cloudProblem ? "text-[color:var(--kit-warn)]" : undefined}>
+            {cloudProblem ?? `A new ${adeCloud.tiers.find((tier) => tier.id === adeCloud.tierId)?.label ?? "Small"} computer for this lane.`}
+          </span>
+        </div>
+      ) : null}
     </Dialog>
   );
 }

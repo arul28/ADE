@@ -13,6 +13,8 @@ import { cloudBoxContext, useCloudBoxActions, type CloudBoxContext } from "./use
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useCloudMachines } from "./useCloudMachines";
+import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
+import { CloudLaneConnectionRow } from "../cloudLane/CloudLaneConnectionRow";
 
 /** While a box's row lags, how often the account list is read again. */
 const CLOUD_ROW_CATCH_UP_REFRESH_MS = 15_000;
@@ -215,6 +217,9 @@ export function useCloudMachineGroup(args: {
   const showCloudGroup = cloudResult != null && cloudResult.state !== "not_connected"
     && (cloudGroupBoxes.length > 0 || cloudResult.state !== "ok");
 
+  const cloudAccount = cloudResult?.state === "ok" ? cloudResult.account : null;
+  const laneOfBox = (box: CloudMachine): box is CloudLaneMachine => Boolean((box as CloudLaneMachine).lane);
+
   /** The group, with each matched row drawn by the list's own row renderer. */
   function renderGroup(renderRow: (row: MachineRow, section: MachineSection) => ReactNode): ReactNode {
     if (!showCloudGroup) return null;
@@ -229,10 +234,14 @@ export function useCloudMachineGroup(args: {
         />
         {cloudGroupBoxes.length > 0 ? (
           <div className="ade-cx-list">
-            {cloudRows.map(({ row, section }) => renderRow(row, section))}
+            {/* A lane's computer is one small row named for its lane; ADE connects to it by itself.
+                Its full machine row stays one click away, under Details. */}
+            {cloudRows.map(({ row, section, box }) => (laneOfBox(box)
+              ? <CloudLaneConnectionRow key={`cloud-lane:${box.instanceId}`} box={box} account={cloudAccount} details={renderRow(row, section)} />
+              : renderRow(row, section)))}
             {looseBoxes.map((box) => {
               const ctx = boxContext(box, null);
-              return (
+              const row = (
                 <CloudBoxOnlyRow
                   key={`cloud:${box.instanceId}`}
                   box={box}
@@ -241,6 +250,9 @@ export function useCloudMachineGroup(args: {
                   strip={boxStrip(ctx, true)}
                 />
               );
+              return laneOfBox(box)
+                ? <CloudLaneConnectionRow key={`cloud-lane:${box.instanceId}`} box={box} account={cloudAccount} details={row} />
+                : row;
             })}
           </div>
         ) : null}

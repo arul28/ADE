@@ -1170,6 +1170,10 @@ export const IPC = {
   cloudOpenBillingPortal: "ade.cloud.openBillingPortal",
   cloudPersonIsHere: "ade.cloud.personIsHere",
   cloudPushAllWork: "ade.cloud.pushAllWork",
+  /** Delete lane, keep a lane on a fresh computer, lanes without a computer, tier changes (`cloudLaneLife.ts`). Account level. */
+  cloudLaneLifeCall: "ade.cloud.laneLife.call",
+  /** A tier change's steps (`CloudLaneJobSnapshot`), to every window. */
+  cloudLaneJobEvent: "cloud:laneJobEvent",
   cloudCopyMachine: "ade.cloud.copyMachine",
   cloudMoveMachine: "ade.cloud.moveMachine",
   cloudReconnectMachine: "ade.cloud.reconnectMachine",

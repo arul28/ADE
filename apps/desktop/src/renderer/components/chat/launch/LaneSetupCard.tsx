@@ -378,8 +378,8 @@ const EnvironmentSteps = React.memo(function EnvironmentSteps({ steps, compact }
   );
 });
 
-/** One stage line, shared by the live card and the transcript-payload fallback. */
-function StageLine({
+/** One stage line, shared by the live card, the transcript-payload fallback and the ADE Cloud tier-change card. */
+export function StageLine({
   icon,
   status,
   label,
@@ -417,7 +417,7 @@ function StageLine({
 }
 
 /** The full error a failed or warned stage shows under its row (live card and payload fallback). */
-function StageErrorCallout({ error, className }: { error: string; className?: string }) {
+export function StageErrorCallout({ error, className }: { error: string; className?: string }) {
   return (
     <p
       className={cn(
@@ -501,7 +501,7 @@ function DetailsList({ snapshot, compact }: { snapshot: ChatLaunchSnapshot; comp
   );
 }
 
-function TextAction({
+export function TextAction({
   children,
   onClick,
   tone = "default",
@@ -535,7 +535,7 @@ function TextAction({
   );
 }
 
-function Chip({ children, title, mono }: { children: React.ReactNode; title?: string; mono?: boolean }) {
+export function Chip({ children, title, mono }: { children: React.ReactNode; title?: string; mono?: boolean }) {
   return (
     <span
       className={cn(

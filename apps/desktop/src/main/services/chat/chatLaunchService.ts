@@ -21,10 +21,12 @@ import type {
   DeleteLaneArgs,
   LaneEnvInitEvent,
   LaneEnvInitProgress,
+  LaneGitHubIssue,
   LaneLinearIssue,
   LaneSummary,
   NewLaneDefaultsSnapshot,
 } from "../../../shared/types";
+import type { LaneJiraIssue } from "../../../shared/types/jira";
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import {
   chatLaunchLaneStart,
@@ -71,6 +73,9 @@ type LaneServiceLike = {
       autoNamedBranch?: boolean;
       /** Bound to the new lane the same way a manual create binds it. */
       linearIssue?: LaneLinearIssue | null;
+      /** Linked to the new lane, so its pull request names the issue. */
+      githubIssue?: LaneGitHubIssue | null;
+      jiraIssue?: LaneJiraIssue | null;
     },
     options?: LaneCreateRuntimeOptions,
   ) => Promise<LaneSummary>;
@@ -139,6 +144,11 @@ export type ChatLaunchServiceDeps = {
   logger: Logger;
   laneService: LaneServiceLike;
   agentChatService: AgentChatServiceLike;
+  /**
+   * Links a lane to its pull request (`prService.linkToLane`), for an
+   * existing-branch launch that names one. Unset: the lane stays unlinked.
+   */
+  linkPullRequest?: (args: { laneId: string; prUrlOrNumber: string }) => Promise<unknown>;
   /**
    * Fetch the branch a new lane starts from (`on: "remote"` only) and
    * report `origin/<branch>` and how fresh it is (`fetchLaneStartBranch`).
@@ -655,6 +665,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
             : laneIsAutoNamed(record) ? { autoNamedBranch: true } : {}),
           ...(start ? { start } : {}),
           ...(config?.linearIssue ? { linearIssue: config.linearIssue } : {}),
+          ...(config?.githubIssue ? { githubIssue: config.githubIssue } : {}),
+          ...(config?.jiraIssue ? { jiraIssue: config.jiraIssue } : {}),
         },
         // The fetch stage already fetched the start branch.
         startFetched ? { ...runtimeOptions, skipStartFetch: true } : runtimeOptions,
@@ -674,9 +686,20 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       clearTimeout(runtime.progressTimer);
       runtime.progressTimer = null;
     }
+    // A lane from a PR's branch is linked to that PR, as a local one is. A
+    // failed link is a warning: the lane is there and the person can link it.
+    const linkNotes: string[] = [];
+    if (config?.mode === "existing" && config.pullRequestUrl && deps.linkPullRequest) {
+      try {
+        await deps.linkPullRequest({ laneId: lane.id, prUrlOrNumber: config.pullRequestUrl });
+      } catch (error) {
+        logger.warn("chat_launch.pr_link_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+        linkNotes.push(`ADE couldn't link the lane to its pull request (${getErrorMessage(error).replace(/[.\s]+$/, "")}). Link it from the lane.`);
+      }
+    }
     // The start's fallbacks (no local branch, nothing to copy, a copy that
     // failed) finished the checkout another way than asked: say so.
-    const notes = lane.createdFrom?.notes ?? [];
+    const notes = [...(lane.createdFrom?.notes ?? []), ...linkNotes];
     setStage(record, "checkout", notes.length ? "warning" : "done", {
       percent: 100,
       detail: totalFiles > 0 ? `${totalFiles.toLocaleString("en-US")} files` : null,

@@ -254,6 +254,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { launchId: string }",
       example: "ade chat launch-status <launchId> --machine cloud",
     },
+    tier_request: {
+      description: "Ask the person to change a lane computer's size (for example Android needs Large): posts a card in your chat with the size, its hours rate and your reason. It changes nothing; the person confirms on the card (when you are idle, or now). An agent never changes a size itself.",
+      input: "object { size: \"small\" | \"medium\" | \"large\" | \"xlarge\", reason: string, machine?: string (default: the cloud computer this runs on) }",
+      example: "ade cloud resize --request --size large --reason \"Android needs a full computer\"",
+    },
+    clear_caches: {
+      description: "The person's dashboard only: on the ADE Cloud computer this runs on, delete what is rebuilt on next use (package and tool caches, Docker's build cache), then measure the disk again and send it to ADE's server. Never a repository, dependencies, an image or an emulator. Answers { freedGb }.",
+      input: "object { machine: string (the instance id of the computer this runs on: a call routed to another machine is refused) }",
+      example: "Settings › ADE Cloud › a lane › Clear caches",
+    },
     lane_launch_cancel: {
       description: "Stop an ADE Cloud lane launch before its chat starts, and delete the computer made for it. Only the chat that started it, or the person.",
       input: "object { launchId: string }",
@@ -567,6 +577,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { laneId: string, confirmation: \"RECLAIM\", forceDirty?: boolean }",
       example: "ade lanes archive-and-reclaim lane-123 --confirm RECLAIM --text",
     },
+    cloudStartBranch: {
+      description: "Before an ADE Cloud lane starts: whether the branch it starts from is on GitHub, and how many local commits no remote has. push=true means push it first.",
+      input: "object { start?: { from: \"default\" | \"primary\" | \"branch\", branch?, on: \"remote\" | \"local\" }, branchRef?: string }",
+      example: "ade actions run lane.cloudStartBranch --input-json '{\"start\":{\"from\":\"branch\",\"branch\":\"feature\",\"on\":\"local\"}}'",
+    },
+    pushCloudStartBranch: {
+      description: "Push the branch an ADE Cloud lane starts from to origin, so the new computer can clone it. Answers the check again after the push.",
+      input: "object { start?: { from, branch?, on }, branchRef?: string }",
+      example: "ade actions run lane.pushCloudStartBranch --input-json '{\"branchRef\":\"feature\"}'",
+    },
     unarchive: {
       description: "Restore an archived lane and safely recreate its managed worktree when it was reclaimed.",
       input: "object { laneId: string }",
@@ -576,7 +596,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   chat: {
     startLaunch: {
       description: "Launch a chat (or prepare a CLI lane) in a brand-new lane: reserves the chat and lane ids, returns at once, then fetches the base, checks out the worktree, applies the default lane template, creates the chat and sends the opening message. Progress streams as chat_launch_event.",
-      input: "object { launchId: uuid, prompt: string, kind?: \"chat\" | \"cli\" (default chat), mode?: \"foreground\" | \"background\" (default foreground), laneId?: uuid, laneName?, laneConfig?: { mode: \"new\" | \"existing\", start?: { from: \"default\" | \"primary\" | \"branch\", branch? (from branch), on: \"remote\" | \"local\" | \"uncommitted\" } (new; default: the project's new-lane defaults), branchRef? (existing), templateId?, color?, linearIssue? } (default: a new lane with the project's new-lane defaults), title?, displayPrompt?, attachments?, provider?, modelId?, chat?: { create: <chat.createSession args without laneId>, message: <chat.sendMessage args without sessionId> } (required for kind chat) }",
+      input: "object { launchId: uuid, prompt: string, kind?: \"chat\" | \"cli\" (default chat), mode?: \"foreground\" | \"background\" (default foreground), laneId?: uuid, laneName?, laneConfig?: { mode: \"new\" | \"existing\", start?: { from: \"default\" | \"primary\" | \"branch\", branch? (from branch), on: \"remote\" | \"local\" | \"uncommitted\" } (new; default: the project's new-lane defaults), branchRef? (existing), pullRequestUrl? (existing: link the lane to that PR), templateId?, color?, linearIssue?, githubIssue? (new), jiraIssue? (new) } (default: a new lane with the project's new-lane defaults), title?, displayPrompt?, attachments?, provider?, modelId?, chat?: { create: <chat.createSession args without laneId>, message: <chat.sendMessage args without sessionId> } (required for kind chat) }",
       example: "ade actions run chat.startLaunch --input-json '{\"kind\":\"chat\",\"mode\":\"background\",\"launchId\":\"6f1c…\",\"prompt\":\"fix the flaky test\",\"chat\":{\"create\":{\"provider\":\"codex\",\"model\":\"openai/gpt-5.6-sol\"},\"message\":{\"text\":\"fix the flaky test\"}}}'",
     },
     listLaunches: {

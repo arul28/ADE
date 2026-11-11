@@ -8,7 +8,7 @@
  * `cloudAccess.ts`.
  */
 
-import type { CloudAccountState } from "../../../shared/adeCloud";
+import type { CloudAccountState, CloudDiskUsageReport } from "../../../shared/adeCloud";
 import type {
   CloudSavedChatDeleteArgs,
   CloudSavedChatList,
@@ -20,12 +20,13 @@ import type {
   CloudCheckoutResult,
   CloudExecResult,
   CloudInstance,
+  CloudLaneWithoutComputer,
   CloudPaidPlanId,
   CloudUpdateChannel,
   CloudUpdateCheck,
 } from "../../../../../account-directory/src/cloud/contract";
 
-export type { CloudExecResult, CloudInstance, CloudUpdateChannel, CloudUpdateCheck };
+export type { CloudExecResult, CloudInstance, CloudLaneWithoutComputer, CloudUpdateChannel, CloudUpdateCheck };
 
 /** What the ADE Cloud services log through: a `cloud.*` event and its fields, never a credential. */
 export type CloudLogger = {
@@ -73,8 +74,15 @@ export type CloudProvider = {
   getInstance(id: string): Promise<CloudInstance>;
   /** Resolves once the machine is running. `signal` stops waiting; the caller finds the machine by its `ade_request_id` tag and deletes it. */
   createInstance(input: CloudCreateInstanceInput, signal?: AbortSignal): Promise<CloudInstance>;
-  /** `reason` and `who` go in the server's delete log. */
-  deleteInstance(id: string, context?: { who?: string | null; reason?: string }): Promise<void>;
+  /**
+   * `reason` and `who` go in the server's delete log. `keepLane` keeps the
+   * lane the computer was made for as a lane without a computer.
+   */
+  deleteInstance(id: string, context?: { who?: string | null; reason?: string; keepLane?: { branchRef: string | null } | null }): Promise<void>;
+  /** The account's lanes whose computer is gone while the lane stays. Needs no wake. */
+  listLanesWithoutComputer(): Promise<CloudLaneWithoutComputer[]>;
+  /** Ends a lane without a computer (the person deleted the lane). True when there was one. */
+  forgetLaneWithoutComputer(laneId: string): Promise<boolean>;
   /** Checkpoints a running machine: memory and processes kept. Answers with the new status. */
   sleepInstance(id: string): Promise<string>;
   /** The machine asks to be slept (idle three minutes); the server stops instead at 0 hours. Answers with the new status. */
@@ -94,6 +102,8 @@ export type CloudProvider = {
   checkForUpdate(id: string): Promise<CloudUpdateCheck>;
   /** The computer's brain started: settles a waiting update. `sleepWhenIdle`: it woke only for that update. */
   reportBooted(id: string, adeVersion: string | null): Promise<{ sleepWhenIdle: boolean }>;
+  /** The computer's own report at its idle step: its last work and, now and then, what uses its disk. */
+  reportDiskUsage?(id: string, report: CloudDiskUsageReport): Promise<void>;
   /** Changes the size in place: the machine restarts, files stay, the disk only grows. */
   /** `origin: "auto"` marks the computer's own disk grower, for the server's analytics. */
   resizeInstance(id: string, resources: { cpu: number; memory: number; disk?: number }, options?: { computerIdle?: boolean; origin?: "auto" }): Promise<string>;

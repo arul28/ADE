@@ -20,6 +20,7 @@
  *   POST   /cloud/instances/:id/update         { status, templateVersion }   409 `update_in_progress`
  *   GET    /cloud/instances/:id/update-check   CloudUpdateCheck   (from the computer)
  *   POST   /cloud/instances/:id/booted         CloudBootReportResult   (from the computer)
+ *   POST   /cloud/instances/:id/disk-usage     { ok: true }   (from the computer: CloudDiskUsageReport)
  *   POST   /cloud/instances/:id/resize         { status }
  *   POST   /cloud/instances/:id/backups        { id, created, sizeBytes }
  *   PUT    /cloud/instances/:id/auto-sleep     { ok: true }
@@ -38,11 +39,16 @@
  *   PUT    /cloud/chats/:machine/:chat/parts/:seq       CloudChatPartResponse   (from the computer)
  *   DELETE /cloud/chats/:machine/:chat                  { deleted }
  *   DELETE /cloud/chats/:machine/lanes/:lane            { deleted }
+ *   GET    /cloud/lanes/without-computer                { lanes: CloudLaneWithoutComputer[] }
+ *   DELETE /cloud/lanes/without-computer/:lane          { forgotten }
  *
  * `POST /cloud/instances/:id/start` with `{ reason: "push_work" }` is the one
  * wake allowed at 0 hours, or on the free plan with more disk than it has
  * (`over_plan_disk`): free, short, once a day per computer.
  * `DELETE /cloud/instances/:id` takes `{ who, reason }`, recorded in the log.
+ * With `{ keepLane: { branchRef } }` the lane the computer was made for
+ * (its lane metadata) stays as a lane without a computer; the 30-day rule
+ * keeps the lane the same way. A new computer made for that lane id ends it.
  * `POST /cloud/instances` with `{ moveFromInstanceId }` gives the new computer
  * that computer's disk (a move), under the same plan limits.
  * `POST /cloud/instances/:id/resize` needs `{ computerIdle: true }` to grow the
@@ -103,7 +109,49 @@ export const CLOUD_PATHS = {
   billingExtraHours: "/cloud/billing/extra-hours",
   billingExtraDisk: "/cloud/billing/extra-disk",
   chats: "/cloud/chats",
+  lanesWithoutComputer: "/cloud/lanes/without-computer",
 } as const;
+
+/**
+ * The metadata that links a computer to the one lane it was made for. The
+ * desktop writes it at the create; the server reads it when the computer goes
+ * but its lane stays (`keepLane`, the 30-day rule).
+ */
+export const CLOUD_LANE_METADATA = {
+  /** The lane this computer was made for (the launch's reserved lane id). */
+  laneId: "ade_lane_id",
+  /** The lane's name when the computer was made. The lane may be renamed later; this is not kept in step. */
+  laneName: "ade_lane_name",
+  /** The project's normalized git origin (`github.com/owner/repo`). */
+  projectOrigin: "ade_project_origin",
+  /** The lane's branch, once the computer's ADE named it. */
+  branch: "ade_lane_branch",
+} as const;
+
+/**
+ * A lane whose computer is gone while the lane stays: freed by the person
+ * ("Keep the lane on a fresh computer") or removed after 30 days unused. Its
+ * chats stay readable from the saved copy. The next send to it makes a new
+ * computer on the same branch, and that computer's create ends this record.
+ */
+export type CloudLaneWithoutComputer = {
+  laneId: string;
+  laneName: string;
+  projectOrigin: string | null;
+  /** The branch the lane works on, or null when ADE never learned it. */
+  branchRef: string | null;
+  /** `freed`: the person kept the lane on a fresh computer. `inactive`: the 30-day rule removed its computer. */
+  reason: "freed" | "inactive";
+  /** The size the old computer had. */
+  type: "default" | "vm";
+  cpu: number;
+  memoryGb: number;
+  formerInstanceId: string;
+  /** The old computer's ADE machine key: its saved chats are filed under it. */
+  formerMachineKey: string | null;
+  /** When the computer went, in ms. */
+  since: number;
+};
 
 export type CloudInstance = {
   id: string;
@@ -143,7 +191,46 @@ export type CloudInstance = {
   updatedAt?: number | null;
   /** Why the last update failed, one plain sentence; null unless `updateState` is `failed`. */
   updateError?: string | null;
+  /*
+   * ADE's own use facts (`diskUsage.ts`), from the computer's own reports and
+   * the meter. Servers before them leave them out.
+   */
+  /** When it last did work (its own report), else when it was last awake (ms); null if never. */
+  lastActiveAt?: number | null;
+  /** What uses its disk, as it last measured while awake; null before its first measure. */
+  diskUsage?: CloudDiskUsage | null;
+  /** Its lane's work as it last read it while awake (for "Safe to delete"); null before its first report. */
+  laneWork?: CloudLaneWork | null;
 };
+
+/**
+ * A lane computer's own read of its work at its idle step: whether anything
+ * is only on the computer (uncommitted changes or unpushed commits, in any
+ * lane on it), and the state of the lane's pull request.
+ */
+export type CloudLaneWork = {
+  checkedAt: number;
+  unpushed: boolean;
+  prState: "draft" | "open" | "merged" | "closed" | null;
+};
+
+/** What a part of a computer's disk holds. `caches` and `docker` can be cleared from ADE. */
+export const CLOUD_DISK_USAGE_KINDS = ["repository", "dependencies", "docker", "android", "caches", "other"] as const;
+export type CloudDiskUsageKind = (typeof CLOUD_DISK_USAGE_KINDS)[number];
+
+/** One part of a computer's disk, as the computer measured it. */
+export type CloudDiskUsageItem = { kind: CloudDiskUsageKind; label: string; gb: number; clearable: boolean };
+
+/** What uses a computer's disk, with when it was measured (ms). */
+export type CloudDiskUsage = { measuredAt: number; totalGb: number; items: CloudDiskUsageItem[] };
+
+/**
+ * `POST /cloud/instances/:id/disk-usage`, from the computer at its idle step:
+ * when it last did work, and a new measure when it took one (at most every
+ * few hours). Most `CLOUD_DISK_USAGE_MAX_ITEMS` items.
+ */
+export type CloudDiskUsageReport = { lastActiveAt: number | null; usage: CloudDiskUsage | null; work?: CloudLaneWork | null };
+export const CLOUD_DISK_USAGE_MAX_ITEMS = 12;
 
 /** The update channel a computer follows. A client's `alpha` counts as `beta`. */
 export type CloudUpdateChannel = "stable" | "beta";
@@ -262,6 +349,11 @@ export type CloudAccountState = {
    */
   disk: { usedGb: number; limitGb: number | null };
   computers: { total: number; awake: number; limit: number };
+  /**
+   * Hours the meter settled over the last `days` whole UTC days, for the
+   * "your hours last until" estimate. Older servers leave it out.
+   */
+  recentUse?: { days: number; usedMilli: number };
   /** Inactive computers, soonest first; each is deleted at `deletesAt` unless used. */
   dueForDeletion: Array<{ instanceId: string; name: string | null; deletesAt: number }>;
   /** Computers deleted in the last 90 days that had any use, whose ADE rows may still be on the account. */

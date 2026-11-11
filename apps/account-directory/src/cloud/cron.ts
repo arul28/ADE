@@ -1,6 +1,7 @@
 import { captureCloudAction, captureCloudDay, type CloudWaitUntil } from "./analytics";
 import { checkExtraDiskLimits, reportExtraDiskDays, type ExtraDiskOverLimit } from "./billing";
 import { sendCloudEmail } from "./email";
+import { keepLaneStatement } from "./lanesWithoutComputer";
 import type { CloudHoursState, CloudInstance } from "./contract";
 import { refreshCostEstimate, runDailyCostReport } from "./costReport";
 import { cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
@@ -641,16 +642,18 @@ async function warnDeletion(env: CloudEnv, computer: TickComputer, column: "dele
   await sendCloudEmail(env, {
     userId: computer.user_id,
     subject: `${label} will be deleted in ${days === 1 ? "1 day" : `${days} days`}`,
-    text: `${label} hasn't been used in a while, so ADE Cloud will delete it. Open ADE and choose "Push all work to GitHub" to save its work first. Using it keeps it.`,
+    text: `${label} hasn't been used in a while, so ADE Cloud will delete it. Open ADE and choose "Push all work to GitHub" to save its work first. Its lane stays, and its next message makes a new computer from what is on GitHub. Using it keeps it.`,
   });
 }
 
 /** True when the computer was deleted. */
 async function deleteInactive(env: CloudEnv, provider: CloudProvider, computer: TickComputer, now: number): Promise<boolean> {
   // The list and row are from the start of the tick: someone may have opened it since.
+  let metadata: Record<string, string> | null = null;
   try {
     const current = await provider.getInstance(computer.instance_id);
     if (!isRestingStatus(current.status)) return false;
+    metadata = current.metadata;
   } catch (error) {
     if (!(error instanceof CloudProviderError && error.status === 404)) {
       reportCloudFailure("cloud.delete_inactive_check_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
@@ -666,6 +669,13 @@ async function deleteInactive(env: CloudEnv, provider: CloudProvider, computer: 
     if (!(error instanceof CloudProviderError)) throw error;
     reportCloudFailure("cloud.delete_inactive_failed", { instanceId: computer.instance_id });
     return false;
+  }
+  // A lane's computer goes, its lane stays: the next send makes a new computer on its branch.
+  const kept = keepLaneStatement(env, computer, metadata, { reason: "inactive" }, now);
+  if (kept) {
+    await kept.run().catch((error: unknown) => {
+      reportCloudFailure("cloud.lane_without_computer_keep_failed", { instanceId: computer.instance_id, error: error instanceof Error ? error.message : String(error) });
+    });
   }
   logCloud("cloud.deleted_inactive", { instanceId: computer.instance_id });
   return true;

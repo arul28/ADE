@@ -53,6 +53,7 @@ import {
 import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { openCloudApprovalWindow } from "./cloudApprovalWindow";
 import { createCloudMachines } from "./cloudMachines";
+import type { CloudProvider } from "./cloudProvider";
 import { claimCloudReadyMachine, releaseCloudReadyMachine } from "./cloudReadyClaim";
 import { createCloudReadyKeeper } from "./cloudReadyMachines";
 import { setCloudAsleepCheck, setCloudRestChanged, setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
@@ -128,7 +129,12 @@ export function registerCloudIpc(args: {
    */
   brainAction: (action: string, actionArgs?: Record<string, unknown>) => Promise<unknown>;
   logger: Logger;
-}): { machineCreatorDeps: CloudMachineCreatorDeps } {
+}): {
+  machineCreatorDeps: CloudMachineCreatorDeps;
+  machines: ReturnType<typeof createCloudMachines>;
+  copyDeps: CloudCopyDeps;
+  client: () => Promise<CloudProvider>;
+} {
   const { logger } = args;
   const account = () => getSharedAccountAuthService();
   let machineStore: EncryptedFileCredentialStore | null = null;
@@ -708,7 +714,7 @@ export function registerCloudIpc(args: {
   );
 
   // The ADE Cloud lane launch makes its computer with these same pieces.
-  return { machineCreatorDeps };
+  return { machineCreatorDeps, machines, copyDeps, client: () => requireCloudProvider(credentials) };
 }
 
 /** This app's ADE release, or null for a development build (whose version may not be published). */

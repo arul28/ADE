@@ -378,7 +378,7 @@ export type MultiProjectRpcHandlerOptions = {
   /** On a cloud computer: interrupts work and writes the saved chat copy before a stop (`ade cloud prepare-stop`). */
   prepareCloudStop?: ((args: { timeoutMs: number }) => Promise<unknown>) | null;
   /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
-  pushCloudWork?: (() => Promise<unknown>) | null;
+  pushCloudWork?: ((args: { check: boolean }) => Promise<unknown>) | null;
   /** On a cloud computer: keeps it awake while `run` works (a first clone), and counts the end as use. */
   holdCloudWork?: (<T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>) | null;
   keepAwakeService?: Pick<
@@ -3025,7 +3025,7 @@ export function createMultiProjectRpcRequestHandler(
     // "Push all work to GitHub", run over exec on a computer that may be out of hours.
     if (method === "cloud.pushWork") {
       if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't push this computer's work.");
-      return await options.pushCloudWork();
+      return await options.pushCloudWork({ check: params.check === true });
     }
 
     if (method === "keepAwake.call") {

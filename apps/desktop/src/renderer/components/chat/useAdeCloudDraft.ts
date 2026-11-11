@@ -8,6 +8,7 @@ import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
 import { cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { useRootAppStore } from "../../state/appStore";
 import { useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
@@ -131,8 +132,11 @@ export function useAdeCloudDraft({
   const resetTier = useCallback(() => setPickedTier(null), []);
 
   return {
-    /** ADE Cloud access is on for this account: the Run on menu lists it. */
-    available: cloudEnabled,
+    /**
+     * ADE Cloud access is on for this account: the Run on menu lists it. Not
+     * in the web app: making a lane's computer is the desktop app's.
+     */
+    available: cloudEnabled && !isWebClientMode(),
     account,
     /** The account's computers from the shared read (empty until it answers). */
     machines: result?.machines ?? NO_MACHINES,

@@ -147,6 +147,13 @@ export type CloudKeepAwakeOptions = {
    */
   updateIfBehind?: (stillIdle: () => boolean) => Promise<boolean>;
   /**
+   * Sends the server when the machine last had work and, now and then, what
+   * uses its disk (the dashboard reads both without a wake). Runs at the idle
+   * moment, after the disk grow and before the sleep; a failure never holds
+   * the sleep back. `lastWorkAt` is null when nothing ran since this brain started.
+   */
+  reportUse?: (lastWorkAt: number | null, stillIdle: () => boolean) => Promise<void>;
+  /**
    * Tells the server this brain started, which settles a waiting update.
    * `sleepWhenIdle`: the machine woke only for that update, so it sleeps at
    * its first idle check instead of after three minutes. Rejects to be tried
@@ -218,6 +225,8 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   let sentWake: string | null = null;
   /** The last moment the machine had work. Starts at boot: a fresh machine gets the full three minutes. */
   let lastBusyAt = now();
+  /** The last moment real work ran (never the boot itself), for `reportUse`. */
+  let lastWorkAt: number | null = null;
   let lastTickAt: number | null = null;
   /** The last check found work. */
   let wasBusy = false;
@@ -318,6 +327,9 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
         return;
       }
       if (await options.growDiskIfNeeded?.(() => !usedSinceTick)) return;
+      await options.reportUse?.(lastWorkAt, () => !usedSinceTick).catch((error: unknown) => {
+        options.logger?.warn("cloud.idle_use_report_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
       // Work noted while the disk check ran wins: sleep waits for the next idle stretch.
       if (usedSinceTick) {
         askedToSleep = false;
@@ -377,6 +389,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       // Work ends between checks. The first idle check still counts it, so a
       // machine sleeps at least three minutes after its last work, never less.
       if (state.busy || wasBusy) lastBusyAt = at;
+      if (state.busy) lastWorkAt = at;
       wasBusy = state.busy;
       if (!state.busy) await sleepIfIdleLongEnough(at);
       if (!url && state.busy && !warnedNoUrl) {
@@ -415,6 +428,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       if (!enabled) return;
       usedSinceTick = true;
       lastBusyAt = now();
+      lastWorkAt = lastBusyAt;
       if (pingIsDue()) await tick();
     },
     tick,

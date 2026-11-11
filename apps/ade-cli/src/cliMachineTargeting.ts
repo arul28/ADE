@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { chatLaunchStatusLine, isChatLaunchSucceeded } from "../../desktop/src/shared/chatLaunch";
 import { CLOUD_TIER_IDS, isCloudTierId } from "../../desktop/src/shared/cloudTiers";
+import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
 import type { ChatLaunchSnapshot } from "../../desktop/src/shared/types/chatLaunch";
 import { pullFileFromWorkCopy, pushFileToWorkCopy, withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
@@ -1288,8 +1289,10 @@ export function isCloudLaneMachineSelector(machine: string | null | undefined): 
 
 /** `ade chat create`'s choices as a lane launch: a chat in a new lane with the project's lane defaults. */
 function cloudLaunchArgsFromChatCreate(draft: CloudLaneLaunchDraft): JsonObject {
-  if (draft.linearIssue) {
-    throw new CliUsageError("--machine cloud doesn't take a Linear issue yet. Start the chat on ADE Cloud, then attach the issue from it.");
+  // The computer binds the issue to the new lane; it has no Linear lookup for a bare id.
+  const linearIssue = draft.linearIssue ? parseLaneLinearIssueValue(draft.linearIssue) : null;
+  if (draft.linearIssue && !linearIssue) {
+    throw new CliUsageError("--machine cloud needs the whole Linear issue (id, identifier, title, team and state) in --linear-issue-json.");
   }
   if (draft.notify) throw new CliUsageError("--notify-url doesn't work with --machine cloud yet.");
   if (asString(draft.create.laneId)) {
@@ -1318,6 +1321,7 @@ function cloudLaunchArgsFromChatCreate(draft: CloudLaneLaunchDraft): JsonObject 
     provider,
     ...(modelId ? { modelId } : {}),
     ...(asString(create.title) ? { title: asString(create.title) } : {}),
+    ...(linearIssue ? { laneConfig: { mode: "new", linearIssue } } : {}),
     chat: {
       create: { ...create, provider, model: asString(create.model) ?? "" },
       message: { text: prompt },

@@ -16,6 +16,7 @@ import {
   toQueuedMessage,
 } from "../../../shared/chatLaunch";
 import {
+  CLOUD_LANE_BRANCH_METADATA,
   CLOUD_LANE_ID_METADATA,
   CLOUD_LANE_NAME_METADATA,
   CLOUD_PROJECT_ORIGIN_METADATA,
@@ -38,6 +39,7 @@ import type {
   ChatLaunchStage,
   ChatLaunchStageId,
   ChatLaunchStageStatus,
+  AgentChatFileRef,
   CloneProjectInput,
   OpenProjectBinding,
   RemoteRuntimeProjectRecord,
@@ -114,6 +116,17 @@ export type CloudLaneLaunchDeps = {
   /** The computer and join stages: the provider, the account and the approval window. */
   creator: Omit<CloudMachineCreatorDeps, "pendingCreates">;
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
+  /**
+   * A cancel deleted the launch's computer: forget this app's saved
+   * connection to it, as Delete computer does. Unset where no connections
+   * are saved (a brain).
+   */
+  forgetMachineConnections?: (machine: { machineKey: string | null; instanceId: string }) => void;
+  /**
+   * Streams one file from this computer to the project on the new computer;
+   * the path there. Unset (a brain host): files from here are refused at the start.
+   */
+  uploadAttachment?: (binding: RemoteBinding, input: { sourcePath: string; filename: string }) => Promise<{ path: string }>;
   /** Pairs this app with an account machine; this app's remote target id for it. */
   pairMachine: (machineKey: string) => Promise<{ targetId: string }>;
   /** Connects to a saved remote target (waking a sleeping cloud computer). Truthy once connected. */
@@ -181,6 +194,9 @@ const RESUBSCRIBE_MS = 15_000;
 const RESUBSCRIBE_ATTEMPTS = 20;
 
 const CANT_MAKE_COMPUTER = "ADE Cloud can't make a computer right now. Try again soon.";
+/** Where this launch can't send files to the new computer (a brain host has no upload route to it). */
+const CANT_CARRY_FILES = "Files from this computer can't go to a new ADE Cloud computer from here. Start without them, then add them once it runs.";
+
 const BRAIN_TOO_OLD = "The ADE on this cloud computer is too old for this. Update it (Settings › Machines, or ade cloud update), then retry.";
 const CANT_DELETE_YET = "ADE couldn't delete the computer it made yet. It tries again when ADE next opens, or delete it in Settings › ADE Cloud.";
 const alreadyStarted = (record: CloudLaneLaunchRecord): string => {
@@ -228,7 +244,7 @@ export function cloudLaneConfig(config: ChatLaunchLaneConfig | null | undefined)
   return { ...base, mode: "new", start: { ...(base.start ?? DEFAULT_LANE_START), on: "remote" } };
 }
 
-/** A local file on this computer means nothing on the new one. Links are fine. */
+/** A file on this computer: it goes to the new computer at the hand-off. Links need nothing. */
 function hasLocalAttachments(attachments: ChatLaunchArgs["attachments"]): boolean {
   return (attachments ?? []).some((attachment) => attachment.type !== "image-url");
 }
@@ -419,6 +435,28 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       queuedMessages: [...clone(brain.queuedMessages), ...pending],
       cloud: { ...local.cloud, handedOff: true },
     };
+  };
+
+  /**
+   * Writes the lane's branch into its computer's metadata once the brain
+   * named it, so a lane that outlives its computer (the 30-day rule) knows
+   * where to start again. Metadata writes replace, so it merges first.
+   */
+  const recordBranch = (record: CloudLaneLaunchRecord): void => {
+    const branchRef = record.snapshot.branchRef?.trim() || null;
+    const instanceId = record.snapshot.cloud.instanceId;
+    if (!branchRef || !instanceId || record.branchRecorded === branchRef || record.snapshot.phase === "cancelled") return;
+    record.branchRecorded = branchRef;
+    void (async () => {
+      const client = await providerClient();
+      const instance = await client.getInstance(instanceId);
+      if (instance.metadata[CLOUD_LANE_BRANCH_METADATA] === branchRef) return;
+      await client.setInstanceMetadata(instanceId, { ...instance.metadata, [CLOUD_LANE_BRANCH_METADATA]: branchRef });
+    })().catch((error: unknown) => {
+      // Tried again on the next snapshot that names it.
+      if (record.branchRecorded === branchRef) record.branchRecorded = null;
+      logger.warn("cloud_lane_launch.branch_metadata_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+    });
   };
 
   /** What a reader gets: the record's snapshot, unshared. */
@@ -691,6 +729,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     }
     if (event.launch.launchId !== launchId) return;
     adoptBrainSnapshot(record, event.launch);
+    recordBranch(record);
     // Progress ticks are many; only settled changes are written down.
     const settled = !event.launch.stages.some((stage) => stage.status === "running") || isChatLaunchTerminal(event.launch.phase);
     publish(record, { persist: settled });
@@ -766,10 +805,47 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         return;
       }
       adoptBrainSnapshot(record, brain);
+      recordBranch(record);
       publish(record);
     } catch (error) {
       logger.warn("cloud_lane_launch.brain_read_failed", { launchId, error: getErrorMessage(error) });
     }
+  };
+
+  /**
+   * Files from this computer named in the launch, sent to the project on the
+   * new computer: the same list with each file's path there. Each file goes
+   * once per launch (`record.carriedFiles`), so a Retry sends none twice.
+   * Links and files already there pass as they are.
+   */
+  const carryAttachments = async (record: CloudLaneLaunchRecord, list: AgentChatFileRef[] | undefined): Promise<AgentChatFileRef[] | undefined> => {
+    if (!list?.length || !hasLocalAttachments(list)) return list;
+    const binding = record.snapshot.cloud.binding;
+    const upload = deps.uploadAttachment;
+    if (!binding || !upload) throw new LaunchStepError(CANT_CARRY_FILES);
+    const carried = (record.carriedFiles ??= {});
+    const out: AgentChatFileRef[] = [];
+    for (const attachment of list) {
+      if (attachment.type === "image-url") {
+        out.push(attachment);
+        continue;
+      }
+      const there = carried[attachment.path];
+      if (there) {
+        out.push({ ...attachment, path: there });
+        continue;
+      }
+      const filename = attachment.path.split(/[\\/]/).pop() || "attachment";
+      try {
+        const uploaded = await upload(binding, { sourcePath: attachment.path, filename });
+        carried[attachment.path] = uploaded.path;
+        store.persist(record);
+        out.push({ ...attachment, path: uploaded.path });
+      } catch (error) {
+        throw new LaunchStepError(`ADE couldn't send ${filename} to the new computer: ${getErrorMessage(error).replace(/\.$/, "")}. Retry to send it again.`);
+      }
+    }
+    return out;
   };
 
   /** Messages typed before the brain had the launch, to the brain in order. Stops at the first that fails. */
@@ -790,12 +866,13 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         }
         if (!next || disposed || record.snapshot.phase === "cancelled") return;
         try {
+          const attachments = await carryAttachments(record, next.attachments);
           const brain = await deps.callChatAction(binding, "queueLaunchMessage", {
             args: {
               launchId,
               text: next.text,
               ...(next.displayText ? { displayText: next.displayText } : {}),
-              ...(next.attachments?.length ? { attachments: next.attachments } : {}),
+              ...(attachments?.length ? { attachments } : {}),
             },
           }) as ChatLaunchSnapshot;
           record.pendingMessageIds = record.pendingMessageIds.filter((id) => id !== next.id);
@@ -835,9 +912,18 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         throw new LaunchStepError(BRAIN_TOO_OLD);
       }
     }
+    // Files picked on this computer go to the clone there before the start
+    // names them. The bubble keeps showing the names picked here.
+    const attachments = await carryAttachments(record, record.launch.attachments);
+    const chat = record.launch.chat
+      ? { ...record.launch.chat, message: { ...record.launch.chat.message, attachments: await carryAttachments(record, record.launch.chat.message.attachments) } }
+      : record.launch.chat;
+    assertActive(record, signal);
     const priorStages = record.snapshot.stages.filter((stage) => isChatLaunchCloudStageId(stage.id)).map((stage) => ({ ...stage }));
     const args: ChatLaunchArgs = {
       ...record.launch,
+      ...(attachments ? { attachments } : {}),
+      ...(chat ? { chat } : {}),
       launchId,
       laneId: record.snapshot.laneId,
       laneName: record.snapshot.laneName,
@@ -964,6 +1050,18 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         logger.warn("cloud_lane_launch.account_row_left", { launchId, error: getErrorMessage(error) });
       });
     }
+    if (deleted === own.size && own.size > 0) {
+      // A saved connection left behind points at a computer that is gone,
+      // and the Connections list shows it as a machine that never answers.
+      for (const instance of own.values()) {
+        try {
+          deps.forgetMachineConnections?.({ machineKey, instanceId: instance.id });
+        } catch (error) {
+          logger.warn("cloud_lane_launch.connection_left", { launchId, error: getErrorMessage(error) });
+        }
+      }
+      record.targetId = null;
+    }
     return { found: own.size, deleted };
   };
 
@@ -1014,6 +1112,9 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (existing) return served(existing);
     const problem = cloudLaneLaunchStartProblem(input);
     if (problem) throw new Error(problem);
+    if (!deps.uploadAttachment && (hasLocalAttachments(args.attachments) || hasLocalAttachments(args.chat?.message?.attachments))) {
+      throw new Error(CANT_CARRY_FILES);
+    }
     const project = githubClone(input.originUrl)!;
     if (!args.cloud) throw new Error("Pick a size for the ADE Cloud computer.");
     // A chat, a tracked CLI session the launching window starts after the
@@ -1173,13 +1274,12 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (!text.trim() && !args.attachments?.length) throw new Error("A queued message needs text or an attachment.");
     if (record.snapshot.phase === "cancelled") throw new Error("This launch was cancelled.");
     if (record.snapshot.kind === "lane") throw new Error("This lane starts no chat, so it can't take messages.");
-    if (hasLocalAttachments(args.attachments) && !isHandedOff(record)) {
-      throw new Error("Files from this computer can't go to the new ADE Cloud computer yet. Send this once the chat starts.");
-    }
+    if (hasLocalAttachments(args.attachments) && !deps.uploadAttachment) throw new Error(CANT_CARRY_FILES);
     const waitingHere = record.pendingMessageIds.length > 0;
     if (isHandedOff(record) && !waitingHere) {
+      const attachments = await carryAttachments(record, args.attachments);
       const brain = await deps.callChatAction(record.snapshot.cloud.binding!, "queueLaunchMessage", {
-        args: { launchId: record.snapshot.launchId, text, ...(args.displayText ? { displayText: args.displayText } : {}), ...(args.attachments?.length ? { attachments: args.attachments } : {}) },
+        args: { launchId: record.snapshot.launchId, text, ...(args.displayText ? { displayText: args.displayText } : {}), ...(attachments?.length ? { attachments } : {}) },
       }) as ChatLaunchSnapshot;
       if (brain?.launchId === record.snapshot.launchId) {
         adoptBrainSnapshot(record, brain);

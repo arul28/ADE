@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { automationCloudProblem, parseAutomationCloudTarget } from "../../../shared/automationCloud";
 import fs from "node:fs";
 import path from "node:path";
 import cron from "node-cron";
@@ -1037,7 +1038,9 @@ function normalizeDraft(args: {
   }
   // The PR's branch can be named like a created lane; other modes reuse a name.
   const namesLane = requestedLaneMode === "create" || requestedLaneMode === "pr-branch";
+  const requestedCloud = parseAutomationCloudTarget(requestedExecution?.cloud);
   const laneExecutionFields = {
+    ...(requestedCloud ? { cloud: requestedCloud } : {}),
     ...(requestedLaneMode ? { laneMode: requestedLaneMode } : {}),
     ...(namesLane && requestedLaneNamePreset ? { laneNamePreset: requestedLaneNamePreset } : {}),
     ...(namesLane && requestedLaneNamePreset === "custom" && requestedLaneNameTemplate
@@ -1082,6 +1085,11 @@ function normalizeDraft(args: {
       path: "execution.builtIn.actions",
       message: "Built-in automations require at least one task.",
     });
+  }
+
+  const cloudProblem = automationCloudProblem(execution as AutomationRule["execution"]);
+  if (cloudProblem) {
+    issues.push({ level: "error", path: "execution.cloud", message: cloudProblem });
   }
 
   if (execution.kind !== "built-in" && !safeTrim(args.draft.prompt)) {

@@ -270,16 +270,52 @@ person saved for new lanes (`CLOUD_DEFAULT_TIER_SETTING_KEY`), else Small.
 `ade chat launch --machine cloud`
 takes the same flags with `chat launch`'s lane flags (`--from`, `--lane-name`,
 `--existing-branch`). The lane starts from the pushed copy of its branch:
-`--on uncommitted` and `--on local` are refused, and so are a Linear issue,
-`--notify-url`, `--lane`, `--project` and `--clone`.
+`--on uncommitted` and `--on local` are refused, and so are `--notify-url`,
+`--lane`, `--project` and `--clone`. A Linear issue goes as
+`laneConfig.linearIssue` and the computer binds it to the new lane; it must be
+the whole issue (`--linear-issue-json`), because the computer has no Linear
+lookup for a bare id.
 
 `ade lanes create --machine cloud [--size …] [--launch-id <id>] --name <n>`
 makes the lane alone, with no chat: a launch of kind `lane`. Its stages are
 computer, join, clone, fetch, checkout and environment, with no agent stage,
 and it completes when the environment stage ends. It takes `--from`,
-`--branch-name`, `--existing-branch` and `--template`. It refuses
-`--description`, `--no-template` and a Linear issue for now. The id, replay,
-one-lane, cancel and delete rules are the same as for a chat launch.
+`--branch-name`, `--existing-branch` and `--template`, and a whole Linear
+issue for a new branch. It refuses `--description` and `--no-template` for
+now. The id, replay, one-lane, cancel and delete rules are the same as for a
+chat launch.
+
+What a cloud lane is linked to, as a local lane would be: the computer's
+brain applies `laneConfig.linearIssue`, `githubIssue` and `jiraIssue` to a new
+lane (the Linear, GitHub and Jira batch sends them), and links an
+existing-branch lane to `laneConfig.pullRequestUrl` (a lane from a PR's
+branch) with `prService.linkToLane` after the checkout. A failed PR link is a
+warning on the checkout stage, not a failed launch. An older computer brain
+ignores these fields.
+
+**The CTO.** `createLane` and `spawnChat` take `machine: "cloud"` and `size`.
+They call `cloud.lane_launch` on the CTO's home brain under the CTO chat's
+identity, so the approval card shows in the CTO chat. They return when the
+launch starts, with its id, at most after the home brain's 180 s call limit.
+
+**Automations.** A rule can set `execution.cloud: { sizeId? }` ("Run on ADE
+Cloud" under "Runs on" in the builder). The machine that runs the rule still
+watches the trigger and keeps the history. Each run calls `cloud.lane_launch`
+with the run id as the launch id and the approval
+`{ by: "agent", chatSessionId: null, automation: true }`, so the agent limits
+answer (largest size, new computers a day), never the person. An agent rule
+starts a chat launch (its prompt, model and permission); a rule of built-in
+steps makes the lane alone, and then runs its ADE action steps here. The run
+waits up to 30 minutes for the chat to start or the lane to be ready. Rules
+on ADE Cloud need `laneMode` "create" or "pr-branch", no bound chat, and no
+step that works in a lane here (`automationCloudProblem`). A safe test run
+stays here. Every `ade-action` step that calls the `cloud` domain gets the
+same automation approval, whatever its args say.
+
+**Renames.** A cloud computer's brain writes a lane's new name to its
+computer's `ade_lane_name` metadata when that lane is the one the computer was
+made for (`cloudLaneNameSync.ts`). The write goes through the account server
+and wakes nothing.
 
 A CLI session can also be the first session in a new ADE Cloud lane, but only
 from the app (pick CLI, then Run on: ADE Cloud). The computer's brain parks the
@@ -349,6 +385,40 @@ a terminal in.
   `ADE Cloud · <computer>`. `--json`: `{ok, launchId, phase, laneId, laneName,
   sessionId, machine {name, instanceId, machineKey}, approvalUrl, launch}`. A
   failed or cancelled launch exits non-zero with the card's sentence.
+
+### The life of a lane's computer
+
+The main process runs these (`cloudLaneLife.ts`, `IPC.cloudLaneLifeCall`).
+Each call is account level: it names a computer of the account, never a pin.
+
+- **Work check.** `ade cloud push-work --check --json` on the computer reads
+  which lanes have uncommitted changes or unpushed commits. It changes
+  nothing and uses the free `push_work` wake.
+- **Delete lane.** The computer goes, and the lane with it. ADE never refuses
+  it. The work check runs first unless the person was already warned, and the
+  answer says whether work was only on the computer. Saved chats stay.
+- **Keep the lane on a fresh computer.** ADE pushes the work first. A push
+  that can't save everything keeps the computer. Then the server deletes the
+  computer with `keepLane` and keeps a lane without a computer
+  (`cloud_lanes_without_computer`, migration 0021). The 30-day rule keeps the
+  lane the same way. A new computer made for the same lane id ends the row.
+- **Tier change.** In place when the kind stays (resize), else a move to the
+  other kind. It starts when the agent is idle (the computer's
+  `keep-awake.json` shows no agent work) or now (`ade cloud prepare-stop`
+  stops the turn). Its steps go to every window (`IPC.cloudLaneJobEvent`).
+  The lane is Online only when ADE on the computer answers and has the
+  lane's project. A moved computer gets the lane's name and lane metadata.
+- **An agent asks.** `ade cloud resize --request --size large --reason "…"`
+  (`cloud.tier_request`) posts a `cloud_tier_request` card in the agent's
+  chat. It changes nothing; the person confirms on the card.
+- **Push this branch?** `lane.cloudStartBranch` and `lane.pushCloudStartBranch`
+  run on the machine that has the project (pinned), before a cloud launch.
+- **Files on the first message** go to the clone on the new computer at the
+  hand-off (`uploadAttachment`), once per launch.
+- **Cancel** forgets this app's saved connection to the deleted computer.
+
+The launch writes the lane's branch into the computer's metadata
+(`ade_lane_branch`) once the brain names it.
 
 ## Guidance for agents
 

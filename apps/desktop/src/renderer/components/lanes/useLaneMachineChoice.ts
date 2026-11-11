@@ -13,6 +13,7 @@ import {
   type LaneMachineProjectRef,
 } from "./laneMachines";
 import { useMachinePlacement } from "./useMachinePlacement";
+import { ADE_CLOUD_MACHINE_ID, useAdeCloudLaneTarget } from "./useAdeCloudLaneTarget";
 
 export type LaneMachineTarget = {
   /** Null for the tab's machine (unpinned path); else that machine's binding. */
@@ -36,8 +37,13 @@ export type LaneMachineTarget = {
  * checkout's binding, or its checkout was matched by git origin. A checkout
  * matched only by folder name is never a target: it may be another repository.
  *
+ * ADE Cloud is one more choice (`ADE_CLOUD_MACHINE_ID`) when the account has
+ * access. It has no pin and no lanes here: the lane is made on a new computer
+ * by an ADE Cloud launch, and the form reads the tab's machine meanwhile.
+ *
  * Reads: one connection-snapshot read + one subscription to the existing
- * broadcast, both only while `open`. No polling.
+ * broadcast, both only while `open`. No polling. ADE Cloud adds the shared
+ * cloud computer list while `open` (`useAdeCloudLaneTarget`).
  */
 export function useLaneMachineChoice(open: boolean) {
   const projectBinding = useAppStore((s) => s.projectBinding);
@@ -215,9 +221,14 @@ export function useLaneMachineChoice(open: boolean) {
       .map((machine) => machine.id),
     [machineTargets, machines],
   );
+  const adeCloud = useAdeCloudLaneTarget(open, repoOriginUrl);
+  // ADE Cloud stays the pick only while it can be picked.
+  const adeCloudPicked = pickedMachineId === ADE_CLOUD_MACHINE_ID && adeCloud.offered && !adeCloud.unavailableReason;
   // The picked machine while it is still eligible. With exactly one eligible
   // machine (once the snapshot has answered) there is nothing to ask.
-  const selectedMachineId = pickedMachineId && eligibleMachineIds.includes(pickedMachineId)
+  const selectedMachineId = adeCloudPicked
+    ? ADE_CLOUD_MACHINE_ID
+    : pickedMachineId && eligibleMachineIds.includes(pickedMachineId)
     ? pickedMachineId
     // Not before the origin read settles: until then other machines' copies
     // of the repo are unconfirmed, and "only one machine" may be wrong.
@@ -240,7 +251,13 @@ export function useLaneMachineChoice(open: boolean) {
     targetPin,
     targetPinKey,
     targetPinRef,
-    /** "" clears the pick. Only eligible machines can end up selected. */
+    /** "" clears the pick. Only eligible machines (and ADE Cloud, when it can be picked) can end up selected. */
     setPickedMachineId,
+    /** ADE Cloud as a choice: offered, why not, sizes, free computers. */
+    adeCloud,
+    /** The lane goes to ADE Cloud: no pin, no machine lanes; an ADE Cloud launch makes it. */
+    adeCloudPicked,
+    /** `origin` of the repo lanes are created for, when known. */
+    repoOriginUrl,
   };
 }

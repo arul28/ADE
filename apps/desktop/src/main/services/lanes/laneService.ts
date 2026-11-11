@@ -123,6 +123,8 @@ import type {
   LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
+  CloudStartBranchArgs,
+  CloudStartBranchCheck,
   LaneReclaimRisk,
   LaneDeleteStep,
   LaneDeleteStepName,
@@ -9224,6 +9226,51 @@ export function createLaneService({
       const cancelled = abortLaneGitWrite(`op:${operationId}`);
       if (cancelled) logger.info("lane.git_write.cancel_requested", { operationId });
       return { cancelled };
+    },
+
+    /**
+     * "Push this branch?" before an ADE Cloud launch. The new computer clones
+     * from GitHub, so a start branch only here can't be found there, and a
+     * start "on this copy" leaves unpushed commits behind.
+     */
+    async cloudStartBranch(args: CloudStartBranchArgs = {}): Promise<CloudStartBranchCheck> {
+      const start = args.branchRef ? null : (normalizeLaneStart(args.start) ?? getNewLaneDefaultsForCreate().start);
+      const branch = args.branchRef
+        ? branchNameForDelete(args.branchRef, "origin")
+        : start?.from === "branch"
+          ? plainLaneStartBranch(start.branch)
+          : start?.from === "primary"
+            ? branchNameForDelete(getActivePrimaryLane()?.branch_ref ?? "", "origin")
+            : "";
+      // The default branch is the one a clone checks out: always there.
+      if (!branch) return { branch: null, onRemote: true, unpushedCommits: 0, push: false };
+      const remote = await runGitWithGithubAuthFallback(
+        ["ls-remote", "--heads", "origin", `refs/heads/${branch}`],
+        { cwd: projectRoot, timeoutMs: 15_000 },
+      );
+      if (remote.exitCode !== 0) {
+        throw new AdeExpectedError(`ADE couldn't ask GitHub about ${branch}: ${(remote.stderr || remote.stdout).trim().split("\n").pop() ?? "no answer"}`, "user");
+      }
+      const onRemote = remote.stdout.trim().length > 0;
+      const ahead = await runGit(["rev-list", "--count", `refs/heads/${branch}`, "--not", "--remotes"], { cwd: projectRoot, timeoutMs: 8_000 });
+      const unpushedCommits = ahead.exitCode === 0 ? Number.parseInt(ahead.stdout.trim(), 10) || 0 : 0;
+      const fromLocalCopy = Boolean(args.branchRef) || start?.on !== "remote";
+      return { branch, onRemote, unpushedCommits, push: !onRemote || (fromLocalCopy && unpushedCommits > 0) };
+    },
+
+    /** Pushes the start branch to origin ("Push this branch?"), from any folder that shares the repository. */
+    async pushCloudStartBranch(args: CloudStartBranchArgs = {}): Promise<CloudStartBranchCheck> {
+      const before = await laneServiceApi.cloudStartBranch(args);
+      if (!before.branch || !before.push) return before;
+      const pushed = await runGitWithGithubAuthFallback(
+        ["push", "origin", `refs/heads/${before.branch}:refs/heads/${before.branch}`],
+        { cwd: projectRoot, timeoutMs: 120_000 },
+      );
+      if (pushed.exitCode !== 0) {
+        throw new AdeExpectedError(`ADE couldn't push ${before.branch}: ${(pushed.stderr || pushed.stdout).trim().split("\n").pop() ?? "no answer"}`, "user");
+      }
+      logger.info("lane.cloud_start_branch_pushed", { commits: before.unpushedCommits, wasOnRemote: before.onRemote });
+      return await laneServiceApi.cloudStartBranch(args);
     },
 
     async getDeleteRisk(laneId: string): Promise<LaneDeleteRisk> {
