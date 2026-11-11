@@ -788,21 +788,6 @@
   line-height: 1.5;
 }
 
-/* Two or three figures side by side: an eyebrow, a number, a quiet unit. */
-.ade-ig-figures {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
-  border: 1px solid var(--kit-panel-edge, var(--kit-rule));
-  border-radius: 10px;
-  background: var(--kit-panel-bg, transparent);
-  overflow: hidden;
-}
-.ade-ig-figure { display: flex; flex-direction: column; gap: 3px; padding: 10px 14px; min-width: 0; }
-.ade-ig-figure + .ade-ig-figure { border-left: 1px solid var(--kit-panel-edge, var(--kit-rule)); }
-.ade-ig-figure > b { font-size: 17px; font-weight: 500; letter-spacing: -0.01em; color: var(--color-fg); font-variant-numeric: tabular-nums; }
-.ade-ig-figure > b > small { font-size: 11.5px; font-weight: 400; color: var(--kit-text-3, var(--color-muted-fg)); margin-left: 3px; }
-
 /* What a card's thing is doing right now: an icon, a name, a quiet detail. */
 .ade-ig-state {
   display: flex;
@@ -830,22 +815,6 @@
 .ade-ix-group {
   display: contents;
 }
-
-/* ADE Cloud › What agents may spend: one row per limit. */
-.ade-ig-limit-rows { display: flex; flex-direction: column; border-top: 1px solid var(--kit-rule, var(--color-border)); }
-.ade-ig-limit-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px 16px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--kit-rule, var(--color-border));
-}
-.ade-ig-limit-row > div:first-child { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.ade-ig-limit-row b { font-size: 12.5px; font-weight: 500; }
-.ade-ig-limit-row small { font-size: 11.5px; color: var(--kit-text-3, var(--color-muted-fg)); }
-.ade-ig-limit-controls { display: flex; gap: 6px; align-items: center; }
 
 /* ADE Cloud: a line inside the banner under the facts (a failure, what to do next). */
 .ade-ig-hero-foot {

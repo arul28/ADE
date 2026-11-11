@@ -3,11 +3,11 @@ import {
   CLOUD_COMPUTER_HEADER,
   CLOUD_COMPUTER_PLATFORM_HEADER,
   CLOUD_COMPUTER_UNREADABLE,
-  CLOUD_FREE_PLAN_REFUSED_SENTENCE,
+  cloudFreePlanRefusedSentence,
   type CloudFreePlan,
 } from "./contract";
-import { FREE_INCLUDED_MILLI } from "./plans";
-import { accountRules, logCloud, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
+import { CLOUD_PLANS, FREE_INCLUDED_MILLI } from "./plans";
+import { PAID_RULES_SQL, accountRules, isProduction, logCloud, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
 
 /**
  * One free plan per physical computer (README, "Referrals and the free plan").
@@ -129,12 +129,12 @@ async function readClaims(env: CloudEnv, userId: string, hash: string): Promise<
 }
 
 /** SQL: the account runs on the free plan's rules (free, or a paid plan whose payment failed). */
-const FREE_RULES_SQL = "(plan = 'free' or coalesce(stripe_status, '') = 'past_due')";
+const FREE_RULES_SQL = `not ${PAID_RULES_SQL}`;
 
 type Ctx = { now: number; waitUntil: CloudWaitUntil };
 
 /** Refuses the free plan to `userId`: its hours go to 0 now while it runs on the free plan's rules. */
-async function refuse(env: CloudEnv, account: AccountRow, hash: string, platform: string | null, { now, waitUntil }: Ctx): Promise<AccountRow> {
+async function refuse(env: CloudEnv, account: AccountRow, hash: string, platform: string | null, { now, waitUntil }: Ctx): Promise<void> {
   const result = await env.DB.prepare(`
     update cloud_accounts set free_refused_at = ?, included_milli = case when ${FREE_RULES_SQL} then 0 else included_milli end, updated_at = ?
     where user_id = ? and free_refused_at is null
@@ -148,15 +148,10 @@ async function refuse(env: CloudEnv, account: AccountRow, hash: string, platform
       reportCloudFailure("cloud.free_plan.many_accounts_one_computer", { userId: account.user_id, accounts: seen?.accounts }, "cloud-free-plan");
     }
   }
-  return {
-    ...account,
-    free_refused_at: account.free_refused_at ?? now,
-    included_milli: accountRules(account) === "free" ? 0 : account.included_milli,
-  };
 }
 
 /** An account refused before now holds a computer of its own: the free plan's hours come back for this period. */
-async function restore(env: CloudEnv, account: AccountRow, platform: string | null, { now, waitUntil }: Ctx): Promise<AccountRow> {
+async function restore(env: CloudEnv, account: AccountRow, platform: string | null, { now, waitUntil }: Ctx): Promise<void> {
   await env.DB.prepare(`
     update cloud_accounts set free_refused_at = null, included_milli = case when ${FREE_RULES_SQL} then ? else included_milli end,
       warned_zero_at = null, hours_restored_at = case when warned_zero_at is not null then ? else hours_restored_at end, updated_at = ?
@@ -164,15 +159,14 @@ async function restore(env: CloudEnv, account: AccountRow, platform: string | nu
   `).bind(FREE_INCLUDED_MILLI, now, now, account.user_id).run();
   logCloud("cloud.free_plan.restored", { userId: account.user_id, platform });
   captureCloudFreePlan(env, waitUntil, account.user_id, "restored", platform, now);
-  return { ...account, free_refused_at: null, included_milli: accountRules(account) === "free" ? FREE_INCLUDED_MILLI : account.included_milli };
 }
 
 /**
  * Settles the free plan for the computer a request came from (see the top of
  * this file). `use` is a create, copy or wake; `read` is anything else. Runs
- * before the request's own hours check, so a claim or refusal counts at once.
- * Returns the account as it is after. Never throws: a failure here is logged
- * and the request goes on as it would have.
+ * before the request's own hours check, so a claim or refusal counts at once
+ * (the request reads the account after). Never throws: a failure here is
+ * logged and the request goes on as it would have.
  */
 export async function settleFreePlanComputer(
   env: CloudEnv,
@@ -180,30 +174,34 @@ export async function settleFreePlanComputer(
   signal: CloudComputerSignal,
   moment: "read" | "use",
   ctx: Ctx,
-): Promise<AccountRow> {
+): Promise<void> {
+  // Without the secret, stored ids would be keyed with a public constant, and setting it later would orphan every claim.
+  if (signal?.kind === "id" && isProduction(env) && !env.CLOUD_CHAT_MASTER_KEY?.trim()) {
+    reportCloudFailure("cloud.free_plan.no_key", { userId: account.user_id }, "cloud-free-plan");
+    return;
+  }
   try {
-    return await settle(env, account, signal, moment, ctx);
+    await settle(env, account, signal, moment, ctx);
   } catch (error) {
     reportCloudFailure("cloud.free_plan.settle_failed", { userId: account.user_id, message: error instanceof Error ? error.message : "unknown" }, "cloud-free-plan");
-    return account;
   }
 }
 
-async function settle(env: CloudEnv, account: AccountRow, signal: CloudComputerSignal, moment: "read" | "use", ctx: Ctx): Promise<AccountRow> {
+async function settle(env: CloudEnv, account: AccountRow, signal: CloudComputerSignal, moment: "read" | "use", ctx: Ctx): Promise<void> {
   const freeRules = accountRules(account) === "free";
   if (!signal) {
     if (moment === "use" && freeRules && account.free_refused_at == null) {
       const claim = await env.DB.prepare("select 1 as held from cloud_free_plan_claims where user_id = ?").bind(account.user_id).first();
       if (!claim) captureCloudFreePlan(env, ctx.waitUntil, account.user_id, "unclaimed_use", null, ctx.now);
     }
-    return account;
+    return;
   }
   if (signal.kind === "unreadable") {
     if (moment === "use") {
       logCloud("cloud.free_plan.id_unreadable", { userId: account.user_id, platform: signal.platform });
       captureCloudFreePlan(env, ctx.waitUntil, account.user_id, "id_unreadable", signal.platform, ctx.now);
     }
-    return account;
+    return;
   }
   const hash = await serverComputerHash(env, signal.clientHash);
   let view = await readClaims(env, account.user_id, hash);
@@ -213,15 +211,16 @@ async function settle(env: CloudEnv, account: AccountRow, signal: CloudComputerS
       on conflict (user_id, computer_hash) do nothing
     `).bind(account.user_id, hash, ctx.now, signal.platform).run();
   }
+  // This account holds a claim: its own computer (a reinstall, a sign-in again) or another one (a shared computer).
   if (view.own) {
-    // This account holds a claim: its own computer (a reinstall, a sign-in again) or another one (a shared computer).
-    return account.free_refused_at != null ? await restore(env, account, signal.platform, ctx) : account;
+    if (account.free_refused_at != null) await restore(env, account, signal.platform, ctx);
+    return;
   }
-  if (view.holder && view.holder !== account.user_id) return await refuse(env, account, hash, signal.platform, ctx);
+  if (view.holder && view.holder !== account.user_id) return refuse(env, account, hash, signal.platform, ctx);
   // Unclaimed computer, account without a claim. Paid accounts don't use free hours, so they claim nothing.
-  if (!freeRules) return account;
+  if (!freeRules) return;
   // A read claims only to give a refused account its hours back on a computer of its own.
-  if (moment === "read" && account.free_refused_at == null) return account;
+  if (moment === "read" && account.free_refused_at == null) return;
   await env.DB.prepare(`
     insert into cloud_free_plan_claims (computer_hash, user_id, claimed_at, platform) values (?, ?, ?, ?)
     on conflict do nothing
@@ -230,18 +229,20 @@ async function settle(env: CloudEnv, account: AccountRow, signal: CloudComputerS
   if (view.own === hash) {
     logCloud("cloud.free_plan.claimed", { userId: account.user_id, platform: signal.platform });
     captureCloudFreePlan(env, ctx.waitUntil, account.user_id, "claimed", signal.platform, ctx.now);
-    return account.free_refused_at != null ? await restore(env, account, signal.platform, ctx) : account;
   }
   // Lost a race: another account took this computer at the same moment.
-  if (view.holder && view.holder !== account.user_id && !view.own) return await refuse(env, account, hash, signal.platform, ctx);
-  // Or this account claimed another computer at the same moment: that one is its claim.
-  return account.free_refused_at != null && view.own ? await restore(env, account, signal.platform, ctx) : account;
+  if (!view.own) {
+    if (view.holder && view.holder !== account.user_id) await refuse(env, account, hash, signal.platform, ctx);
+    return;
+  }
+  // Claimed this computer, or another one at the same moment: either way the account holds a claim now.
+  if (account.free_refused_at != null) await restore(env, account, signal.platform, ctx);
 }
 
 /** The dashboard's free-plan state for an account; `hasClaim` from `cloud_free_plan_claims`. */
 export function freePlanOf(account: Pick<AccountRow, "plan" | "stripe_status" | "free_refused_at">, hasClaim: boolean): CloudFreePlan {
   if (account.free_refused_at != null && !hasClaim) {
-    return { state: "refused", sentence: accountRules(account) === "free" ? CLOUD_FREE_PLAN_REFUSED_SENTENCE : null };
+    return { state: "refused", sentence: accountRules(account) === "free" ? cloudFreePlanRefusedSentence(CLOUD_PLANS.plus.includedMilli) : null };
   }
   return { state: hasClaim ? "claimed" : "unclaimed", sentence: null };
 }

@@ -365,7 +365,7 @@ export function SettingsPage({
     );
   }, [active, location.hash, location.pathname, navigate, resolvedTab, searchParams, tabParam]);
 
-  // ADE Cloud was an Integrations page (`?integration=cloud`); it is its own tab now.
+  // ADE Cloud was an Integrations page (`?integration=cloud`); it is its own tab now. Kept for old links from outside the app.
   useEffect(() => {
     if (!active) return;
     if (searchParams.get("integration")?.trim().toLowerCase() !== "cloud") return;

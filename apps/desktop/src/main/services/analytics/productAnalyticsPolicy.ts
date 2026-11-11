@@ -772,7 +772,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // `CloudInviteRefusalReason`; a new reason is added here deliberately.
     "prompt_third", "from_pill", "from_dashboard",
     "accepted", "refused_invalid_code", "refused_unknown_code", "refused_own_code", "refused_already_referred",
-    "refused_too_late", "refused_rate_limited", "refused_unavailable",
+    "refused_mutual", "refused_too_late", "refused_rate_limited", "refused_unavailable",
   ]),
   provider: PROVIDER_VALUES,
   model_family: new Set([

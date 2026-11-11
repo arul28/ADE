@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { chatLaunchStatusLine } from "../../desktop/src/shared/chatLaunch";
-import { followCloudLaneLaunch } from "../../desktop/src/shared/cloudLaneLaunch";
+import { CLOUD_LANE_MACHINE, followCloudLaneLaunch } from "../../desktop/src/shared/cloudLaneLaunch";
 import { CLOUD_TIER_IDS, isCloudTierId } from "../../desktop/src/shared/cloudTiers";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
 import { pullFileFromWorkCopy, pushFileToWorkCopy, withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
@@ -1147,7 +1147,6 @@ function withChatCreateLane(params: JsonObject, laneId: string): JsonObject {
    on from a failed step, never with a second computer.
    ────────────────────────────────────────────────────────────────────────── */
 
-const CLOUD_LANE_MACHINE = "cloud";
 const CLOUD_LANE_POLL_MS = 2_000;
 /** Covers a new computer, the 10 minutes a join may wait for the person, and a large clone. */
 const CLOUD_LANE_WAIT_MS = 30 * 60_000;

@@ -3,24 +3,24 @@
  * main names in `cloudAccess.read().passEnd`: a Claude pass, or a key whose
  * provider gave its end date. Pure: no reads, no React.
  */
-import type { CloudPassEnd } from "../../../../../shared/cloudSignIns";
+import type { CloudKeyEnd, CloudSignInEnd } from "../../../../../shared/cloudSignIns";
 import { providerGroupLabel, type ProviderGroupKey } from "../../../../../shared/modelCatalog";
 import { endsInDaysText, shortDate } from "./adeCloudTime";
 
 export type AdeCloudEndNoticeWords = { title: string; detail: string; action: string };
 
 /** The provider's name for a key's notice. */
-export function adeCloudEndProviderName(end: CloudPassEnd): string {
-  return end.provider ? providerGroupLabel(end.provider as ProviderGroupKey) ?? end.provider : "the provider";
+export function adeCloudEndProviderName(end: CloudKeyEnd): string {
+  return providerGroupLabel(end.provider as ProviderGroupKey) ?? end.provider;
 }
 
 /** The others that are due: passes and keys alike, so "sign-ins". */
-function moreText(end: CloudPassEnd): string {
+function moreText(end: CloudSignInEnd): string {
   if (end.more === 0) return "";
   return end.more === 1 ? " 1 more sign-in needs a renew too." : ` ${end.more} more sign-ins need a renew too.`;
 }
 
-function keyWords(end: CloudPassEnd, now: number): AdeCloudEndNoticeWords {
+function keyWords(end: CloudKeyEnd, now: number): AdeCloudEndNoticeWords {
   const name = adeCloudEndProviderName(end);
   const whose = end.email ? ` (${end.email})` : "";
   const more = moreText(end);
@@ -44,7 +44,7 @@ function keyWords(end: CloudPassEnd, now: number): AdeCloudEndNoticeWords {
   };
 }
 
-export function adeCloudEndNoticeWords(end: CloudPassEnd, now: number): AdeCloudEndNoticeWords {
+export function adeCloudEndNoticeWords(end: CloudSignInEnd, now: number): AdeCloudEndNoticeWords {
   if (end.kind === "key") return keyWords(end, now);
   const more = moreText(end);
   const whose = end.email ? ` (${end.email})` : "";

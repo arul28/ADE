@@ -5,8 +5,8 @@ import type {
   ProjectRemovalRequest,
   RemoteProjectRemovalInspection,
 } from "../shared/projectRemoval";
-import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudReferralSummary, CloudStatus } from "../shared/adeCloud";
-import type { CloudPassEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
+import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type {
@@ -4790,7 +4790,7 @@ declare global {
        */
       cloudAccess?: {
         /** `passEnd`: the end warning's Claude pass, only while ADE Cloud is on (desktop only). */
-        read: () => Promise<{ enabled: boolean; passEnd?: CloudPassEnd | null }>;
+        read: () => Promise<{ enabled: boolean; passEnd?: CloudSignInEnd | null }>;
         onChanged: (cb: () => void) => () => void;
       };
       /**
@@ -4840,16 +4840,13 @@ declare global {
         /** Extra disk on with a monthly limit in whole dollars (1 to 1,000), or off. */
         setExtraDisk?: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }) => Promise<CloudAccountState | null>;
         /**
-         * The account's invite link and what it earned (no pin: account level).
-         * Null without ADE Cloud, or when the server couldn't be read. The account
-         * read (`CloudAccountState.referral`) carries the same summary.
-         */
-        getReferral?: () => Promise<CloudReferralSummary | null>;
-        /**
          * Enters a friend's invite: the pasted link (https or ade://) or the bare
-         * code. Once per account, never changed, within 30 days of making it.
+         * code (no pin: account level). Once per account, never changed, within
+         * `CLOUD_REFERRAL_ENTER_DAYS` of making it. The account read
+         * (`CloudAccountState.referral`) carries the invite link and what it earned.
          * A refusal is `{ ok: false, reason, message }` (show `message`); after a
          * success ADE Cloud's status changes, so the account reads again.
+         * Optional: the web client has no code box.
          */
         redeemInvite?: (code: string) => Promise<CloudInviteRedeemOutcome>;
         /**

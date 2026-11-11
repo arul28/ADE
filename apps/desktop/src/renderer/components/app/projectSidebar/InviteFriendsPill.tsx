@@ -5,15 +5,15 @@ import { useRootAppStore } from "../../../state/appStore";
 import { isStarPillVisible } from "../../../lib/starPill";
 import {
   INVITE_PILL_MAX_DISMISSALS,
+  INVITE_PILL_SCHEDULE,
   INVITE_PILL_SNOOZE_MESSAGES,
   captureInviteAnalytics,
-  invitePillShowing,
   isInvitePillVisible,
   updateInvitePill,
   useInvitePillPrefs,
 } from "../../../lib/invitePill";
 import { navigateToAppTarget } from "../../../lib/openExternal";
-import { useHeaderCloudAccount } from "../../usage/HeaderCloudMeter";
+import { useCloudAccount } from "../../../state/cloudAccountStore";
 
 /**
  * "Invite friends, get free cloud hours": the desktop pill in the star pill's
@@ -22,18 +22,19 @@ import { useHeaderCloudAccount } from "../../usage/HeaderCloudMeter";
  * `lib/invitePill.ts`; a click opens the invite card in Settings › ADE Cloud.
  */
 export function InviteFriendsPill() {
-  const account = useHeaderCloudAccount();
+  const account = useCloudAccount();
   const prefs = useInvitePillPrefs();
   const starUp = isStarPillVisible(useRootAppStore((s) => s.starPill));
   const visible = !starUp && isInvitePillVisible(prefs, account);
-  const showing = invitePillShowing(prefs);
+  const showing = INVITE_PILL_SCHEDULE.showing(prefs);
+  const shownDue = INVITE_PILL_SCHEDULE.shownDue(prefs);
 
   // Once per showing, not per mount.
   useEffect(() => {
-    if (!visible || prefs.shownReported > prefs.dismissCount) return;
+    if (!visible || !shownDue) return;
     captureInviteAnalytics({ action: "invite_pill_shown", outcome: showing });
-    updateInvitePill((prev) => ({ ...prev, shownReported: prev.dismissCount + 1 }));
-  }, [prefs.dismissCount, prefs.shownReported, showing, visible]);
+    updateInvitePill(INVITE_PILL_SCHEDULE.markShown);
+  }, [showing, shownDue, visible]);
 
   const open = useCallback(() => {
     captureInviteAnalytics({ action: "invite_pill_clicked", outcome: showing });
@@ -42,11 +43,7 @@ export function InviteFriendsPill() {
 
   const dismiss = useCallback(() => {
     captureInviteAnalytics({ action: "invite_pill_dismissed", outcome: showing });
-    updateInvitePill((prev) => ({
-      ...prev,
-      dismissCount: prev.dismissCount + 1,
-      snoozedUntilMessageCount: prev.messagesSent + INVITE_PILL_SNOOZE_MESSAGES,
-    }));
+    updateInvitePill(INVITE_PILL_SCHEDULE.dismissed);
   }, [showing]);
 
   if (!visible) return null;

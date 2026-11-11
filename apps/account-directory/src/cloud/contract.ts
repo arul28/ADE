@@ -484,7 +484,9 @@ export type CloudFreePlan = {
   sentence: string | null;
 };
 
-export const CLOUD_FREE_PLAN_REFUSED_SENTENCE = "This computer already used another account's free hours. Plus gives you 500 hours a month.";
+/** The dashboard's sentence for a refused free plan; the server passes `CLOUD_PLANS.plus.includedMilli` (`plans.ts`). */
+export const cloudFreePlanRefusedSentence = (plusIncludedMilli: number): string =>
+  `This computer already used another account's free hours. Plus gives you ${Math.round(plusIncludedMilli / 1000).toLocaleString("en-US")} hours a month.`;
 
 export type CloudReferralSummary = {
   /** This account's invite code and link. */
@@ -515,7 +517,9 @@ export type CloudReferralSummary = {
  * Why `POST /cloud/referrals/redeem` refused a code (`error.reason`, code
  * `invite_refused`); `error.message` is the sentence to show.
  */
-export type CloudInviteRefusalReason = "invalid_code" | "unknown_code" | "own_code" | "already_referred" | "too_late" | "rate_limited";
+export const CLOUD_INVITE_REFUSAL_REASONS = ["invalid_code", "unknown_code", "own_code", "already_referred", "mutual", "too_late", "rate_limited"] as const;
+/** `mutual`: the code's owner already entered this account's code; two accounts can't refer each other. */
+export type CloudInviteRefusalReason = (typeof CLOUD_INVITE_REFUSAL_REASONS)[number];
 
 export type CloudInviteRedeemResult = {
   result: "accepted";
@@ -584,12 +588,15 @@ export function timedWakesCancelledSentence(notice: Pick<CloudTimedWakesCancelle
     : `${what} on your ADE Cloud computers won't run (a chat's scheduled wake-up or an automation's schedule), because you're out of ADE Cloud hours, so your computers can't wake. When your hours reset or you add hours, each computer sets its next timed wake-up again the next time it runs.`;
 }
 
+/** Each plan's name inside a sentence ("To fit the free plan", "Plus allows ..."): the server's emails and ADE say the same. */
+export const CLOUD_PLAN_SENTENCE_NAMES: Readonly<Record<CloudPlanId, string>> = { free: "the free plan", plus: "Plus", pro: "Pro" };
+
 /** What a cheaper plan's limits freed and kept, for ADE's notice after the run. */
 export function planCleanupDoneSentence(done: CloudPlanCleanupDone): string {
   const parts: string[] = [];
   if (done.freed.length) {
     const list = done.freed.map((entry) => (entry.branch ? `${entry.name} (work on ${entry.branch})` : entry.name)).join(", ");
-    parts.push(`To fit ${PLAN_LABELS[done.planId]}, ADE pushed each lane's work to GitHub and removed ${done.freed.length === 1 ? "this computer" : "these computers"}: ${list}. Their lanes and chats stay; the next message to a lane makes a new computer.`);
+    parts.push(`To fit ${CLOUD_PLAN_SENTENCE_NAMES[done.planId]}, ADE pushed each lane's work to GitHub and removed ${done.freed.length === 1 ? "this computer" : "these computers"}: ${list}. Their lanes and chats stay; the next message to a lane makes a new computer.`);
   }
   if (done.kept.length) {
     parts.push(`ADE kept ${done.kept.map((entry) => entry.name).join(", ")}, because its work couldn't all be pushed to GitHub. Push its work or delete it yourself; ADE tries again tomorrow.`);
@@ -597,14 +604,13 @@ export function planCleanupDoneSentence(done: CloudPlanCleanupDone): string {
   return parts.join(" ");
 }
 
-const PLAN_LABELS: Record<CloudPlanId, string> = { free: "the free plan", plus: "Plus", pro: "Pro" };
 
 /**
  * The warning for a cheaper plan's limits, said the same by the server, its
  * emails and ADE: "Free 23 GB first: Plus allows 40 GB and you use 63 GB. ..."
  */
 export function planCleanupSentence(cleanup: Omit<CloudPlanCleanup, "sentence" | "dueAt">): string {
-  const plan = PLAN_LABELS[cleanup.planId];
+  const plan = CLOUD_PLAN_SENTENCE_NAMES[cleanup.planId];
   const parts: string[] = [];
   const overGb = cleanup.usedGb - cleanup.limitGb;
   const overComputers = cleanup.computerCount - cleanup.computerLimit;

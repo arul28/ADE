@@ -69,9 +69,9 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Sleep, wake for use, agent limits | `cloudSleep.ts`, `cloudSleepWatch.ts`, `cloudBrainAccess.ts` |
 | Saved ADE Cloud keys and Claude's sign-in (kept in the account vault) | `cloudSignInStore.ts`, `cloudSignInActions.ts`, `cloudClaudeSignIn.ts`; `cloudSignInBoot.ts` only for computers an older ADE made |
 | Claude passes (one per Claude account, cloud only) | `claudePassStore.ts`, `claudePassVerify.ts`; on a machine `services/claudePass/` |
-| The sign-in end warning (Claude passes, and keys with an end date from their provider) | `claudePassEndWarning.ts`; the banner `renderer/components/settings/providers/cloud/CloudSignInEndNotice.tsx` |
+| The sign-in end warning (Claude passes, and keys with an end date from their provider) | `cloudSignInEndWarning.ts`; the banner `renderer/components/settings/providers/cloud/CloudSignInEndNotice.tsx` |
 | Shared machine operations (metadata patch, wake through a transition) | `cloudInstanceOps.ts` |
-| Product analytics for cloud lanes (launch result, freed lane, Clear caches, default size) | `cloudLaneLaunchAnalytics.ts` |
+| Product analytics for cloud lanes (launch result, freed lane, Clear caches; the renderer sends the default size) | `cloudLaneAnalytics.ts` |
 | Account sign-ins on every computer (capture, apply, renewal) | `services/providerLogins/` (entry `providerLoginSync.ts`, one file per job) |
 | CLI and agent verbs, approvals | `cloudAgentActions.ts`, `cloudBrainMaker.ts`, `cloudDesktopActions.ts` |
 | A new lane on its own new computer (before the hand-off to its brain) | `cloudLaneLaunchService.ts`, `cloudLaneLaunchRecords.ts`, `registerCloudLaneLaunchIpc.ts` |
@@ -97,12 +97,14 @@ that stops (see Sleep and busy rules).
 
 ## Surfaces
 
-- **Settings:** Integrations › ADE Cloud (`CloudSection.tsx`), with Plan and
-  hours (`CloudPlanCard.tsx`: hours left, the plan, computers and disk at one
-  time, reset date, extra hours and extra disk for paid accounts, buy Plus or
-  Pro, move between them, and manage, which opens Stripe's portal), the
-  80% / 95% / out-of-hours banners, and computers due for deletion, ending in
-  "Powered by Agent 37". Settings entries are `integrations.ade-cloud*`.
+- **Settings:** Settings › ADE Cloud, its own tab (`CloudSection.tsx` and the
+  dashboard in `settings/cloudDashboard/`): the hero with hours, disk and
+  computers against the plan, every lane and computer, Plans (`CloudPlans.tsx`:
+  the plans side by side, buy Plus or Pro, move between them or stay on Pro,
+  extra hours and extra disk, and Manage billing, which opens Stripe's portal),
+  Sizes, Invite friends, Sign-ins and what agents may do alone, with the
+  80% / 95% / out-of-hours banners and computers due for deletion. Settings
+  entries are `integrations.ade-cloud*`.
 - **Add a computer:** a new lane on ADE Cloud makes its own computer. The old
   "New ADE Cloud computer" form and the ready machines are gone (Cloud 5);
   `ade cloud create` and the phone still make a bare computer.
@@ -322,14 +324,16 @@ inviter's first name, answered only for an inviter with ADE Cloud access (else
 screen is `invite`, the address `/invite`), replay masks the page's text, and
 the ad pixel doesn't load there. Not linked from any page while ADE Cloud is hidden.
 
-**Desktop, CLI, phone.** `window.ade.cloud.getReferral()` and
-`window.ade.cloud.redeemInvite(code)` (account-level, no pin;
-`CloudInviteRedeemOutcome`). `ade://invite/<CODE>` opens Settings › Account
-(`account.profile`) with `?invite=<CODE>` for the code box. The `cloud` actions
-`referral` and `invite_redeem` (machine-scoped; `invite_redeem` is CTO-only, so
-an agent is refused and the person's desktop, phone and terminal reach it).
-`ade cloud invite` prints the link and the summary; `ade cloud invite redeem
-<link-or-code>` enters one. Hidden with the rest of `ade cloud` when access is off.
+**Desktop, CLI, phone.** The account read carries the link and summary
+(`CloudAccountState.referral`); `window.ade.cloud.redeemInvite(code)` enters a
+code (account-level, no pin; `CloudInviteRedeemOutcome`). `ade://invite/<CODE>`
+opens Settings › Account (`account.profile`) with `?invite=<CODE>` for the code
+box, and the main log keeps it as `ade://invite/<redacted>`. The `cloud` actions
+`referral` and `invite_redeem` (machine-scoped; `invite_redeem` is user-only, so
+only the person's desktop and phone reach it: an agent, an ADE MCP app and the
+CLI are refused). `ade cloud invite` prints the link and the summary and says
+to enter a friend's invite in Settings › Account. Hidden with the rest of
+`ade cloud` when access is off.
 
 **Analytics and alerts.** Server PostHog events `ade_cloud_referral` (step
 `code_entered` with result and reason, `reward_paid` with role and
@@ -573,8 +577,11 @@ The main process runs these (`cloudLaneLife.ts`, `IPC.cloudLaneLifeCall`).
 Each call is account level: it names a computer of the account, never a pin.
 
 - **Work check.** `ade cloud push-work --check --json` on the computer reads
-  which lanes have uncommitted changes or unpushed commits. It changes
-  nothing and uses the free `push_work` wake.
+  which lanes have uncommitted changes or commits that no remote has
+  (`laneService.readUnsavedWork`, read now, uncached; the primary lane is
+  measured against the remotes, not its own base). A lane whose state can't be
+  read reports `failed`, never `clean`. It changes nothing and uses the free
+  `push_work` wake.
 - **Delete lane.** The computer goes, and the lane with it. ADE never refuses
   it. The work check runs first unless the person was already warned, and the
   answer says whether work was only on the computer. Saved chats stay.

@@ -19,7 +19,7 @@ import {
 } from "../../desktop/src/shared/laneShareRights";
 import { LANE_SHARE_GRANT_ID_PATTERN } from "../../desktop/src/shared/laneShareDirectory";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
-import { cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
+import { CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
   setSharedAccountLiveQuotaFetcher,
@@ -999,7 +999,6 @@ export type FormatterId =
   | "cloud-list"
   | "cloud-hours"
   | "cloud-invite"
-  | "cloud-invite-redeem"
   | "cloud-result"
   | "mcp-servers"
   | "mcp-servers-remove"
@@ -4788,7 +4787,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade cloud list --text                       Computers, state, size, how fast each uses hours
     $ ade cloud hours --text                      Plan, hours left, reset date, earned hours
     $ ade cloud invite --text                     Your invite link: friends joined, rewards left, hours earned
-    $ ade cloud invite redeem <link-or-code>      Enter a friend's invite (once, within 30 days of signing up)
+                                                    (enter a friend's invite in Settings › Account)
     $ ade cloud create --kind vm --shape medium --name "android vm"
     $ ade cloud sleep <machine>                   Sleep now (uses no hours)
     $ ade cloud wake <machine>                    Wake (the server refuses it at 0 hours)
@@ -4811,8 +4810,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   run in this folder's project. A new lane, create and copy are refused at
   once when status says no new lane can start, with the same sentence.
 
-  Invites: a friend who enters your link gets 20 extra free cloud hours, and
-  so do you once their first chat runs on ADE Cloud (10 rewards at most).
+  Invites: a friend who enters your link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} extra free cloud hours, and
+  so do you once their first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most).
+  A friend's invite is entered in Settings › Account, within ${CLOUD_REFERRAL_ENTER_DAYS} days of signing up.
   Earned hours never expire; they are used after the plan's hours and before
   extra hours. The free plan is given once per computer.
 
@@ -21116,10 +21116,10 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "invites": {
       const verb = firstPositional(args);
       if (!verb || verb === "status" || verb === "show") return cloudStep("invite", "referral", {}, "cloud-invite");
-      if (verb !== "redeem" && verb !== "enter") throw new CliUsageError("ade cloud invite [redeem <link-or-code>]");
-      const code = firstPositional(args);
-      if (!code) throw new CliUsageError("ade cloud invite redeem <link-or-code>: paste the invite link or its 8-character code.");
-      return cloudStep("invite redeem", "invite_redeem", { code }, "cloud-invite-redeem");
+      // Entering an invite sets the account's referrer forever: the person's
+      // own call in the app, never a terminal an agent or ADE MCP app can run.
+      if (verb === "redeem" || verb === "enter") throw new CliUsageError(CLOUD_ENTER_INVITE_HINT);
+      throw new CliUsageError("ade cloud invite");
     }
     case "create":
     case "new":
@@ -21218,6 +21218,9 @@ function formatCloudAccount(value: unknown): string {
   return (hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`) + atOneTime + earnedLine + freeLine;
 }
 
+/** Where the person enters a friend's invite: the app only, never a terminal. */
+const CLOUD_ENTER_INVITE_HINT = "Enter an invite in Settings › Account.";
+
 /** `ade cloud invite`: the link, then what it earned. */
 function formatCloudInvite(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
@@ -21229,21 +21232,9 @@ function formatCloudInvite(value: unknown): string {
     `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} rewards paid, ${formatCloudHours(referral.hoursEarnedMilli)} hours earned.`,
   ];
   if (referral.canEnterCode && referral.enterCodeUntil != null) {
-    lines.push(`You can still enter a friend's invite until ${new Date(referral.enterCodeUntil).toISOString().slice(0, 10)}: ade cloud invite redeem <link-or-code>.`);
+    lines.push(`You can still enter a friend's invite until ${new Date(referral.enterCodeUntil).toISOString().slice(0, 10)}. ${CLOUD_ENTER_INVITE_HINT}`);
   }
   return lines.join("\n");
-}
-
-function formatCloudInviteRedeem(value: unknown): string {
-  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
-  if (!isRecord(raw)) return JSON.stringify(raw, null, 2);
-  if (raw.ok === false && typeof raw.message === "string") return raw.message;
-  if (raw.ok === true) {
-    return raw.rewarded === true
-      ? "Invite entered. You both got your extra free cloud hours."
-      : "Invite entered. You both get your extra free cloud hours when your first chat runs on ADE Cloud.";
-  }
-  return JSON.stringify(raw, null, 2);
 }
 
 function formatCloudResult(value: unknown): string {
@@ -38300,8 +38291,6 @@ function formatTextOutput(
       return formatCloudAccount(value);
     case "cloud-invite":
       return formatCloudInvite(value);
-    case "cloud-invite-redeem":
-      return formatCloudInviteRedeem(value);
     case "cloud-result":
       return formatCloudResult(value);
     case "mcp-servers":

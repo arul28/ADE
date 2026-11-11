@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { CloudPassEnd } from "../../shared/cloudSignIns";
+import type { CloudSignInEnd } from "../../shared/cloudSignIns";
 
 /**
  * Whether ADE Cloud exists in this window: the server's yes for this account,
@@ -12,7 +12,7 @@ import type { CloudPassEnd } from "../../shared/cloudSignIns";
 
 let enabled = false;
 /** The end warning's pass, from the same read (desktop main fills it only while ADE Cloud is on). */
-let passEnd: CloudPassEnd | null = null;
+let passEnd: CloudSignInEnd | null = null;
 let reading = false;
 let readAgain = false;
 const listeners = new Set<() => void>();
@@ -77,12 +77,12 @@ function snapshot(): boolean {
   return enabled;
 }
 
-function passEndSnapshot(): CloudPassEnd | null {
+function passEndSnapshot(): CloudSignInEnd | null {
   return passEnd;
 }
 
 /** The Claude pass the end warning names, or null (always null while ADE Cloud is off). */
-export function useAdeCloudPassEnd(): CloudPassEnd | null {
+export function useAdeCloudPassEnd(): CloudSignInEnd | null {
   return useSyncExternalStore(subscribe, passEndSnapshot, passEndSnapshot);
 }
 

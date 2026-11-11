@@ -306,7 +306,7 @@ export function ConnectionsPanel({
   }, [location.hash, location.pathname, location.search, navigate, onClose]);
   const goToCloudSettings = useCallback(() => {
     onClose();
-    navigate("/settings?tab=integrations&integration=cloud");
+    navigate("/settings?tab=ade-cloud");
   }, [navigate, onClose]);
 
   // Only where this ADE can read this computer's routes (not hosted web).

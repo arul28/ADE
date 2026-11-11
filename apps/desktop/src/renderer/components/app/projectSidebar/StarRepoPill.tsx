@@ -5,6 +5,7 @@ import { rootAppStoreApi, useRootAppStore } from "../../../state/appStore";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
 import {
   ADE_GITHUB_REPO_URL,
+  STAR_PILL_SCHEDULE,
   STAR_PILL_SNOOZE_MESSAGES,
   isStarCheckDue,
   isStarPillVisible,
@@ -75,9 +76,9 @@ export function StarRepoPill() {
   useEffect(() => {
     if (!visible) return;
     const store = rootAppStoreApi.getState();
-    if (store.starPill.shownReported > store.starPill.dismissCount) return;
+    if (!STAR_PILL_SCHEDULE.shownDue(store.starPill)) return;
     captureStarPromptAnalytics({ action: "star_prompt_shown", outcome: showing });
-    store.updateStarPill((prev) => ({ ...prev, shownReported: prev.dismissCount + 1 }));
+    store.updateStarPill(STAR_PILL_SCHEDULE.markShown);
   }, [showing, visible]);
 
   // Periodic check: at most every 6 hours, and only while the pill would show.
@@ -121,11 +122,7 @@ export function StarRepoPill() {
   const dismiss = useCallback(() => {
     const store = rootAppStoreApi.getState();
     captureStarPromptAnalytics({ action: "star_prompt_dismissed", outcome: starPillShowing(store.starPill) });
-    store.updateStarPill((prev) => ({
-      ...prev,
-      dismissCount: prev.dismissCount + 1,
-      snoozedUntilMessageCount: prev.messagesSent + STAR_PILL_SNOOZE_MESSAGES,
-    }));
+    store.updateStarPill(STAR_PILL_SCHEDULE.dismissed);
   }, []);
 
   if (thanks !== "none") {

@@ -3485,6 +3485,15 @@ struct ADELossyArray<Element: Decodable & Equatable>: Decodable, Equatable {
   }
 }
 
+extension KeyedDecodingContainer {
+  /// An optional field read leniently: nil when it is missing, null, or shaped
+  /// differently (a newer brain), so one odd field drops alone instead of
+  /// failing the whole object.
+  func lenient<T: Decodable>(_ type: T.Type, forKey key: Key) -> T? {
+    try? decodeIfPresent(type, forKey: key)
+  }
+}
+
 struct AgentChatEventHistorySnapshot: Decodable, Equatable {
   var sessionId: String
   @ADELossyArray var events: [AgentChatEventEnvelope]

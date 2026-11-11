@@ -107,9 +107,9 @@ import type {
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
 import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMethod, CloudLaneLifeResults } from "../shared/cloudLaneLife";
-import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudReferralSummary, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
-import type { CloudPassEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -13404,7 +13404,7 @@ const adeBridge = {
   // account, so none of these take a pin.
   /** Whether ADE Cloud exists for this account (`renderer/state/cloudAccess.ts`). */
   cloudAccess: {
-    read: (): Promise<{ enabled: boolean; passEnd?: CloudPassEnd | null }> => ipcRenderer.invoke(IPC.cloudGetAccess),
+    read: (): Promise<{ enabled: boolean; passEnd?: CloudSignInEnd | null }> => ipcRenderer.invoke(IPC.cloudGetAccess),
     onChanged: (cb: () => void): (() => void) => {
       const listener = () => cb();
       ipcRenderer.on(IPC.cloudStatusChanged, listener);
@@ -13445,7 +13445,6 @@ const adeBridge = {
     setExtraHours: (enabled: boolean): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraHours, { enabled }),
     openCheckout: (plan?: CloudPaidPlanId): Promise<CloudOpenCheckoutResult> => ipcRenderer.invoke(IPC.cloudOpenCheckout, plan ? { plan } : undefined),
     setExtraDisk: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraDisk, choice),
-    getReferral: (): Promise<CloudReferralSummary | null> => ipcRenderer.invoke(IPC.cloudGetReferral),
     redeemInvite: (code: string): Promise<CloudInviteRedeemOutcome> => ipcRenderer.invoke(IPC.cloudRedeemInvite, { code }),
     openBillingPortal: (): Promise<{ opened: boolean }> => ipcRenderer.invoke(IPC.cloudOpenBillingPortal),
     copyMachine: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }): Promise<{ started: boolean }> =>

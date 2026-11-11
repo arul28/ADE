@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { cloudMachineSettling, type CloudMachinesResult } from "../../../shared/adeCloud";
 import { extractError } from "../../lib/format";
 import { noteCloudLaneMachines } from "../../state/adeCloudLaneIndex";
+import { noteCloudAccountRead, setCloudAccountFed } from "../../state/cloudAccountStore";
 
 /** While a box is waking, sleeping or resizing, how often its state is read again. */
 const SETTLING_POLL_MS = 4_000;
@@ -69,6 +70,8 @@ function load(): void {
       if (current !== generation) return;
       // The lane computers outlive this read, for the composer and chat chips.
       if (result?.state === "ok") noteCloudLaneMachines(result.machines);
+      // And the account, for the header, the invite pill and Settings › Account.
+      noteCloudAccountRead(result);
       publish({ result, loadError: null });
       scheduleSettlingRead(result);
     },
@@ -83,9 +86,11 @@ function load(): void {
 function startWatching(): void {
   const off = window.ade?.cloud?.onStatusChanged?.(load);
   window.addEventListener("focus", load);
+  setCloudAccountFed(true);
   stopWatching = () => {
     off?.();
     window.removeEventListener("focus", load);
+    setCloudAccountFed(false);
     stopWatching = null;
   };
 }

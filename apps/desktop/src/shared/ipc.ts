@@ -1169,8 +1169,6 @@ export const IPC = {
   cloudSetExtraHours: "ade.cloud.setExtraHours",
   cloudOpenCheckout: "ade.cloud.openCheckout",
   cloudSetExtraDisk: "ade.cloud.setExtraDisk",
-  /** The account's invite link and what it earned (`CloudReferralSummary`). Account level: no pin. */
-  cloudGetReferral: "ade.cloud.getReferral",
   /** Enters a friend's invite (a link or a code) for this account (`CloudInviteRedeemOutcome`). Account level: no pin. */
   cloudRedeemInvite: "ade.cloud.redeemInvite",
   cloudOpenBillingPortal: "ade.cloud.openBillingPortal",

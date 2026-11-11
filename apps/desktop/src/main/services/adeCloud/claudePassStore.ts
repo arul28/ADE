@@ -30,6 +30,7 @@ import type {
   CloudClaudePass,
   CloudClaudePassUnreadable,
 } from "../../../shared/cloudSignIns";
+import { SIGN_IN_END_NOTICE_MS } from "../../../shared/cloudSignIns";
 import { CLAUDE_PASS_KEY_PREFIX, CLAUDE_PASS_LEGACY_KEY, isClaudePassKey } from "../../../shared/types/providerLogins";
 import { CLAUDE_TOKEN_PATTERN } from "./cloudSignInStore";
 
@@ -40,8 +41,6 @@ const DAY_MS = 24 * 60 * 60_000;
 export const CLAUDE_PASS_LIFETIME_MS = 365 * DAY_MS;
 /** The tile line starts here. */
 export const CLAUDE_PASS_ENDING_SOON_MS = 14 * DAY_MS;
-/** The one notice with Renew is due here. */
-export const CLAUDE_PASS_NOTICE_MS = 7 * DAY_MS;
 
 type Logger = { warn?(event: string, meta?: Record<string, unknown>): void } | null | undefined;
 
@@ -434,7 +433,7 @@ export function summarizeClaudePass(
     endsInDays: Math.max(0, Math.floor(left / DAY_MS)),
     state,
     endedAt: pass.endedAt ?? null,
-    noticeDueAt: pass.expiresAt - CLAUDE_PASS_NOTICE_MS,
+    noticeDueAt: pass.expiresAt - SIGN_IN_END_NOTICE_MS,
     unreadable: false,
     localInstanceId: local?.instanceId ?? null,
     // The account side fills it from this computer's usage (cloudSignInActions.ts).

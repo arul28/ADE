@@ -2,6 +2,7 @@ import { authenticate } from "../callerToken";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
 import { CloudBillingError, createCheckoutUrl, createPortalUrl, setExtraDisk, setExtraHours } from "./billing";
+import { buildAccountState } from "./accountState";
 import { routeSavedChats } from "./chats";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { routeReferrals } from "./referrals";
@@ -20,7 +21,7 @@ import {
 import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
 import { CLOUD_PATHS, formatCloudCents, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
 import { ownerLimitState } from "./costReport";
-import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
+import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
 import {
   DISK_ON_CREATE_GB,
   DISK_STEP_GB,
@@ -52,7 +53,6 @@ import {
   reportCloudFailure,
   PENDING_TIMEOUT_MS,
   adoptionStatements,
-  buildAccountState,
   computerLimit,
   deleteComputer,
   goneFromProviderStatements,
@@ -95,7 +95,6 @@ import {
 
 const PREFIX = "/cloud";
 const INSTANCE_ID = /^[a-z0-9]{4,40}$/;
-const MAX_BODY_BYTES = 256_000;
 const MAX_METADATA_ENTRIES = 32;
 const MAX_ENV_ENTRIES = 64;
 const MAX_STRING = 4096;
@@ -203,26 +202,8 @@ async function planIdFor(env: CloudEnv, userId: string): Promise<CloudPlanId> {
 /** An agent's create or copy carries the chat that asked; a person's doesn't. */
 const originOf = (metadata: Record<string, string>): CloudActionOrigin => (metadata.ade_made_by_chat ? "agent" : "person");
 
-/** `CLOUD_ACCESS_ACCOUNTS`: comma list of Clerk ids, or `*`. Unset is nobody. */
-export function cloudAccessAllows(env: Pick<CloudEnv, "CLOUD_ACCESS_ACCOUNTS">, userId: string): boolean {
-  const list = (env.CLOUD_ACCESS_ACCOUNTS ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
-  return list.includes("*") || list.includes(userId);
-}
-
 export function isCloudRequest(url: URL): boolean {
   return url.pathname === PREFIX || url.pathname.startsWith(`${PREFIX}/`);
-}
-
-async function readJson(request: { text(): Promise<string> }): Promise<Record<string, unknown> | null> {
-  const text = await request.text();
-  if (!text) return {};
-  if (text.length > MAX_BODY_BYTES) return null;
-  try {
-    const value = JSON.parse(text) as unknown;
-    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-  } catch {
-    return null;
-  }
 }
 
 function stringMap(value: unknown, maxEntries: number): Record<string, string> | null {
@@ -1054,8 +1035,15 @@ function freePlanMomentOf(method: string, path: string): "read" | "use" | null {
   if (method === "GET" && (path === CLOUD_PATHS.account || path === CLOUD_PATHS.referrals)) return "read";
   if (method !== "POST") return null;
   if (path === CLOUD_PATHS.instances) return "use";
-  const action = path.startsWith(`${CLOUD_PATHS.instances}/`) ? path.slice(CLOUD_PATHS.instances.length + 1).split("/")[1] : undefined;
+  const action = instanceRouteOf(path)?.action;
   return action === "start" || action === "fork" ? "use" : null;
+}
+
+/** `/cloud/instances/<id>/<action>/<rest...>`, or null for any other path. */
+function instanceRouteOf(path: string): { instanceId: string; action: string | undefined; rest: string[] } | null {
+  if (!path.startsWith(`${CLOUD_PATHS.instances}/`)) return null;
+  const [instanceId = "", action, ...rest] = path.slice(CLOUD_PATHS.instances.length + 1).split("/");
+  return { instanceId, action, rest };
 }
 
 export async function handleCloudRequest(request: Request, env: CloudEnv, waitUntil?: CloudWaitUntil): Promise<Response> {
@@ -1118,10 +1106,10 @@ export async function handleCloudRequest(request: Request, env: CloudEnv, waitUn
       return notFound();
     }
     if (path.startsWith(`${CLOUD_PATHS.templates}/`) && request.method === "GET") return handleTemplate(env, provider);
-    if (path.startsWith(`${CLOUD_PATHS.instances}/`)) {
-      const [instanceId, action, ...rest] = path.slice(CLOUD_PATHS.instances.length + 1).split("/");
-      if (rest.length) return notFound();
-      return routeInstance(request, env, provider, caller.userId, instanceId, action, ctx);
+    const instanceRoute = instanceRouteOf(path);
+    if (instanceRoute) {
+      if (instanceRoute.rest.length) return notFound();
+      return routeInstance(request, env, provider, caller.userId, instanceRoute.instanceId, instanceRoute.action, ctx);
     }
     return notFound();
   });

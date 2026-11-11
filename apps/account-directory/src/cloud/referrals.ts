@@ -13,8 +13,9 @@ import {
   type CloudInviteRefusalReason,
   type CloudReferralSummary,
 } from "./contract";
-import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
-import { cloudAccessAllows } from "./routes";
+import { readClerkUser } from "./email";
+import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
+import { checkDeviceRateLimit } from "../deviceAuthorization";
 import { loadAccount, logCloud, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
 
 /**
@@ -43,16 +44,20 @@ import { loadAccount, logCloud, reportCloudFailure, type AccountRow, type CloudE
  *   once pay once and the cap holds.
  */
 
-const REFERRER_REASON = "referral_referrer";
-const FRIEND_REASON = "referral_friend";
+export const REFERRER_REASON = "referral_referrer";
+export const FRIEND_REASON = "referral_friend";
+/**
+ * A deleted account's kept rows (referrals, earned hours, its free-plan
+ * claim) carry `deleted:<sha256 of the Clerk id>` instead of the id
+ * (`accountDeletion.ts`), so nothing kept names the person.
+ */
+export const DELETED_ACCOUNT_PREFIX = "deleted:";
 const DAY_MS = 24 * 60 * 60_000;
 const ENTER_WINDOW_MS = CLOUD_REFERRAL_ENTER_DAYS * DAY_MS;
 /** A referrer who reaches the cap this soon after their first reward is reported. */
 const CAP_FAST_MS = 7 * DAY_MS;
 /** Friends seen on one computer past which a redeem is reported as abuse-shaped. */
 const MANY_FRIENDS_ONE_COMPUTER = 3;
-const CLERK_USERS_URL = "https://api.clerk.com/v1/users";
-const CLERK_TIMEOUT_MS = 5_000;
 const CODE_ATTEMPTS = 6;
 
 type Ctx = { now: number; waitUntil: CloudWaitUntil };
@@ -79,41 +84,34 @@ export async function ensureInviteCode(env: CloudEnv, userId: string, now: numbe
   throw new Error("invite_code_unavailable");
 }
 
-/* ---- Clerk: when the account was made, and the inviter's first name ---- */
-
-type ClerkFacts = { createdAt: number | null; firstName: string | null };
-
-async function clerkFacts(env: CloudEnv, userId: string): Promise<ClerkFacts | null> {
-  const secretKey = env.CLERK_SECRET_KEY?.trim();
-  if (!secretKey) return null;
-  const response = await fetch(`${CLERK_USERS_URL}/${encodeURIComponent(userId)}`, {
-    headers: { authorization: `Bearer ${secretKey}`, accept: "application/json" },
-    signal: AbortSignal.timeout(CLERK_TIMEOUT_MS),
-  });
-  if (!response.ok) return null;
-  const user = await response.json() as { created_at?: unknown; first_name?: unknown };
-  const firstName = typeof user.first_name === "string" ? user.first_name.trim().split(/\s+/)[0]?.slice(0, 40) || null : null;
-  return { createdAt: typeof user.created_at === "number" ? user.created_at : null, firstName };
-}
+/** After Clerk couldn't say, the account read doesn't ask again for this long (per isolate). */
+const CLERK_RETRY_MS = 10 * 60_000;
+const clerkRetryAt = new Map<string, number>();
 
 /**
  * When the ADE account was created, read from Clerk once and kept on the
  * account row. Without Clerk (development, or Clerk down) it falls back to the
- * ADE Cloud account's own creation, which is never earlier, and keeps nothing.
+ * ADE Cloud account's own creation, which is never earlier, and keeps nothing;
+ * Clerk is asked again at most every `CLERK_RETRY_MS`. A Clerk user with no
+ * creation time keeps that fallback, so it is never asked again.
  */
-async function accountCreatedAt(env: CloudEnv, account: AccountRow): Promise<number> {
+async function accountCreatedAt(env: CloudEnv, account: AccountRow, now: number): Promise<number> {
   if (account.account_created_at != null) return account.account_created_at;
-  const facts = await clerkFacts(env, account.user_id).catch((error: unknown) => {
+  if ((clerkRetryAt.get(account.user_id) ?? 0) > now) return account.created_at;
+  const facts = await readClerkUser(env, account.user_id).catch((error: unknown) => {
     reportCloudFailure("cloud.referral.clerk_read_failed", { message: error instanceof Error ? error.name : "unknown" }, "cloud-referrals");
     return null;
   });
-  if (facts?.createdAt == null) {
+  if (!facts) {
     logCloud("cloud.referral.created_at_fallback", { userId: account.user_id });
+    if (clerkRetryAt.size > 10_000) clerkRetryAt.clear();
+    clerkRetryAt.set(account.user_id, now + CLERK_RETRY_MS);
     return account.created_at;
   }
-  await env.DB.prepare("update cloud_accounts set account_created_at = ? where user_id = ?").bind(facts.createdAt, account.user_id).run();
-  account.account_created_at = facts.createdAt;
-  return facts.createdAt;
+  const createdAt = facts.createdAt ?? account.created_at;
+  await env.DB.prepare("update cloud_accounts set account_created_at = ? where user_id = ?").bind(createdAt, account.user_id).run();
+  account.account_created_at = createdAt;
+  return createdAt;
 }
 
 /* ---- The summary ---- */
@@ -144,7 +142,7 @@ export async function referralSummary(env: CloudEnv, account: AccountRow, now: n
   const [code, facts] = await Promise.all([ensureInviteCode(env, account.user_id, now), row ? Promise.resolve(row) : readSummaryRow(env, account.user_id)]);
   const hasReferrer = facts.referred_state != null;
   // Clerk is asked only while the answer can matter: no referrer yet.
-  const until = hasReferrer ? null : (await accountCreatedAt(env, account)) + ENTER_WINDOW_MS;
+  const until = hasReferrer ? null : (await accountCreatedAt(env, account, now)) + ENTER_WINDOW_MS;
   const rewardsPaid = Number(facts.rewarded) || 0;
   return {
     code,
@@ -169,6 +167,7 @@ const REFUSALS: Record<CloudInviteRefusalReason, { status: number; message: stri
   unknown_code: { status: 404, message: "No ADE account has that invite code. Check it and try again." },
   own_code: { status: 400, message: "That's your own invite code. Send it to a friend instead." },
   already_referred: { status: 409, message: "This account already used an invite code, and it can't be changed." },
+  mutual: { status: 409, message: "That account already used your invite code, so you can't use theirs." },
   too_late: { status: 403, message: `Invite codes can be entered for ${CLOUD_REFERRAL_ENTER_DAYS} days after you make your ADE account.` },
   rate_limited: { status: 429, message: "Too many tries. Wait a minute and try again." },
 };
@@ -197,13 +196,7 @@ function refused(env: CloudEnv, userId: string, reason: CloudInviteRefusalReason
 }
 
 async function redeem(request: Request, env: CloudEnv, userId: string, ctx: Ctx): Promise<Response> {
-  let body: Record<string, unknown> | null = null;
-  try {
-    const parsed = await request.json() as unknown;
-    body = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-  } catch {
-    body = null;
-  }
+  const body = await readJson(request);
   if (!body) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   if (!admitRedeemTry(userId, ctx.now)) return refused(env, userId, "rate_limited", ctx);
   const code = parseCloudInviteCode(body.code);
@@ -216,7 +209,11 @@ async function redeem(request: Request, env: CloudEnv, userId: string, ctx: Ctx)
   if (await env.DB.prepare("select 1 as taken from cloud_referrals where friend_user_id = ?").bind(userId).first()) {
     return refused(env, userId, "already_referred", ctx);
   }
-  if (ctx.now >= (await accountCreatedAt(env, account)) + ENTER_WINDOW_MS) return refused(env, userId, "too_late", ctx);
+  // Two accounts can't refer each other: that would pay each of them twice.
+  if (await env.DB.prepare("select 1 as mutual from cloud_referrals where friend_user_id = ? and referrer_user_id = ?").bind(owner.user_id, userId).first()) {
+    return refused(env, userId, "mutual", ctx);
+  }
+  if (ctx.now >= (await accountCreatedAt(env, account, ctx.now)) + ENTER_WINDOW_MS) return refused(env, userId, "too_late", ctx);
   // The primary key keeps one referrer however many redeems race here.
   const inserted = await env.DB.prepare(`
     insert into cloud_referrals (friend_user_id, referrer_user_id, entered_at, state) values (?, ?, ?, 'pending')
@@ -250,6 +247,17 @@ async function reportManyFriendsOnOneComputer(env: CloudEnv, friendId: string): 
 export type ReferralRewardOutcome = "none" | "rewarded" | "refused";
 
 /**
+ * The account a grant just landed on: its balance recomputed, and its
+ * out-of-hours warning and 30-day delete clock reset. Takes `now` twice, then
+ * the `where`.
+ */
+const GRANT_LANDED_SQL = `
+  update cloud_accounts set
+    earned_granted_milli = (select coalesce(sum(milli), 0) from cloud_earned_hours g where g.user_id = cloud_accounts.user_id),
+    hours_restored_at = case when warned_zero_at is not null then ? else hours_restored_at end,
+    warned_zero_at = null, updated_at = ?`;
+
+/**
  * Pays a friend's pending referral, or refuses it for a shared computer.
  * Safe to call any number of times, at once too: only the call whose token
  * moved the row out of `pending` writes grants. Called after the friend's
@@ -260,7 +268,9 @@ export async function rewardReferralIfDue(env: CloudEnv, friendId: string, ctx: 
     .bind(friendId).first<{ referrer_user_id: string }>();
   if (!referral) return "none";
   const referrerId = referral.referrer_user_id;
-  const [friend] = await Promise.all([loadAccount(env, friendId, ctx.now), loadAccount(env, referrerId, ctx.now)]);
+  // A deleted referrer's rows are re-keyed (`accountDeletion.ts`): the friend is still paid, the referrer isn't.
+  const referrerGone = referrerId.startsWith(DELETED_ACCOUNT_PREFIX);
+  const [friend] = await Promise.all([loadAccount(env, friendId, ctx.now), referrerGone ? null : loadAccount(env, referrerId, ctx.now)]);
   const shared = await env.DB.prepare(`
     select 1 as shared from cloud_account_computers f
     join cloud_account_computers r on r.computer_hash = f.computer_hash
@@ -290,10 +300,10 @@ export async function rewardReferralIfDue(env: CloudEnv, friendId: string, ctx: 
     // The cap is counted inside this statement, in this transaction: two rewards at once can't both be the 10th.
     env.DB.prepare(`
       insert into cloud_earned_hours (user_id, milli, reason, reference, created_at)
-      select ?, ?, '${REFERRER_REASON}', ?, ? where ${mine}
+      select ?, ?, '${REFERRER_REASON}', ?, ? where ${mine} and ? = 0
         and (select count(*) from cloud_earned_hours where user_id = ? and reason = '${REFERRER_REASON}') < ?
       on conflict (user_id, reason, reference) do nothing
-    `).bind(referrerId, CLOUD_REFERRAL_REWARD_MILLI, friendId, ctx.now, friendId, token, referrerId, CLOUD_REFERRAL_REWARD_LIMIT),
+    `).bind(referrerId, CLOUD_REFERRAL_REWARD_MILLI, friendId, ctx.now, friendId, token, referrerGone ? 1 : 0, referrerId, CLOUD_REFERRAL_REWARD_LIMIT),
     env.DB.prepare(`
       update cloud_referrals set referrer_rewarded = exists (
         select 1 from cloud_earned_hours where user_id = ? and reason = '${REFERRER_REASON}' and reference = ?
@@ -301,13 +311,12 @@ export async function rewardReferralIfDue(env: CloudEnv, friendId: string, ctx: 
     `).bind(referrerId, friendId, friendId, token),
     // Balances from the grants themselves, so a retry or a race can't count one twice.
     // Hours back after 0: the 30-day delete clock restarts, as for any hours that come back.
+    env.DB.prepare(`${GRANT_LANDED_SQL} where user_id = ? and ${mine}`).bind(ctx.now, ctx.now, friendId, friendId, token),
+    // The referrer only when its grant landed: past the cap nothing came back, so its out-of-hours warning and clock stay.
     env.DB.prepare(`
-      update cloud_accounts set
-        earned_granted_milli = (select coalesce(sum(milli), 0) from cloud_earned_hours g where g.user_id = cloud_accounts.user_id),
-        hours_restored_at = case when warned_zero_at is not null then ? else hours_restored_at end,
-        warned_zero_at = null, updated_at = ?
-      where user_id in (?, ?) and ${mine}
-    `).bind(ctx.now, ctx.now, friendId, referrerId, friendId, token),
+      ${GRANT_LANDED_SQL} where user_id = ? and ${mine}
+        and exists (select 1 from cloud_earned_hours where user_id = ? and reason = '${REFERRER_REASON}' and reference = ?)
+    `).bind(ctx.now, ctx.now, referrerId, friendId, token, referrerId, friendId),
   ]);
   const after = await env.DB.prepare("select reward_token, referrer_rewarded from cloud_referrals where friend_user_id = ?")
     .bind(friendId).first<{ reward_token: string | null; referrer_rewarded: number }>();
@@ -315,7 +324,7 @@ export async function rewardReferralIfDue(env: CloudEnv, friendId: string, ctx: 
   const referrerRewarded = after.referrer_rewarded === 1;
   logCloud("cloud.referral.reward_paid", { userId: friendId, referrerUserId: referrerId, referrerRewarded });
   captureCloudReferral(env, ctx.waitUntil, friendId, { step: "reward_paid", role: "friend", referrerRewarded }, "reward", ctx.now);
-  captureCloudReferral(env, ctx.waitUntil, referrerId, { step: "reward_paid", role: "referrer", referrerRewarded }, friendId, ctx.now);
+  if (!referrerGone) captureCloudReferral(env, ctx.waitUntil, referrerId, { step: "reward_paid", role: "referrer", referrerRewarded }, friendId, ctx.now);
   if (referrerRewarded) await noteCap(env, referrerId, ctx);
   return "rewarded";
 }
@@ -360,33 +369,13 @@ export async function routeReferrals(request: Request, path: string, env: CloudE
 /* ---- The public invite lookup, for the website's invite page ---- */
 
 const LOOKUP_PREFIX = "/invites/";
-/** Lookups one address may make in a minute. */
+/** Lookups one address may make in a minute (the device sign-in's limiter, with its own scope). */
 const LOOKUPS_PER_MINUTE = 30;
-const LOOKUP_WINDOW_MS = 60_000;
 const firstNames = new Map<string, { at: number; firstName: string | null }>();
 const FIRST_NAME_TTL_MS = 10 * 60_000;
 
 export function isInviteLookupRequest(url: URL): boolean {
   return url.pathname.startsWith(LOOKUP_PREFIX);
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-/** The device-approval limiter's table, with its own scope; its rows age out with the rest. */
-async function admitLookup(request: Request, env: Pick<CloudEnv, "DB">, now: number): Promise<boolean> {
-  const client = request.headers.get("cf-connecting-ip")?.trim() || "unknown-client";
-  const clientHash = await sha256Hex(`invite_lookup:${client}`);
-  const admitted = await env.DB.prepare(`
-    insert into device_approval_rate_limits (client_hash, window_started_at, attempts) values (?, ?, 1)
-    on conflict (client_hash) do update set
-      window_started_at = case when excluded.window_started_at - window_started_at >= ? then excluded.window_started_at else window_started_at end,
-      attempts = case when excluded.window_started_at - window_started_at >= ? then 1 else attempts + 1 end
-    where excluded.window_started_at - window_started_at >= ? or attempts < ?
-  `).bind(clientHash, now, LOOKUP_WINDOW_MS, LOOKUP_WINDOW_MS, LOOKUP_WINDOW_MS, LOOKUPS_PER_MINUTE).run();
-  return (admitted.meta.changes ?? 0) === 1;
 }
 
 /**
@@ -405,13 +394,23 @@ export async function handleInviteLookup(request: Request, env: CloudEnv): Promi
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: { ...cors, "access-control-allow-methods": "GET" } });
   if (request.method !== "GET") return answer(404, { error: { code: "not_found", message: "Not found." } });
   const now = Date.now();
-  if (!await admitLookup(request, env, now)) return answer(429, { error: { code: "rate_limited", message: "Too many requests. Try again in a minute." } });
-  const code = parseCloudInviteCode(decodeURIComponent(url.pathname.slice(LOOKUP_PREFIX.length)));
+  if (!await checkDeviceRateLimit(request, env, now, "invite_lookup", LOOKUPS_PER_MINUTE)) return answer(429, { error: { code: "rate_limited", message: "Too many requests. Try again in a minute." } });
+  let raw: string;
+  try {
+    raw = decodeURIComponent(url.pathname.slice(LOOKUP_PREFIX.length));
+  } catch {
+    // A malformed `%` sequence is no code: the same answer as an unknown one, not a 500.
+    raw = "";
+  }
+  const code = parseCloudInviteCode(raw);
   const owner = code ? await env.DB.prepare("select user_id from cloud_invite_codes where code = ?").bind(code).first<{ user_id: string }>() : null;
   if (!owner || !cloudAccessAllows(env, owner.user_id)) return answer(404, { error: { code: "not_found", message: "That invite isn't valid." } });
   let cached = firstNames.get(owner.user_id);
   if (!cached || now - cached.at > FIRST_NAME_TTL_MS) {
-    const facts = await clerkFacts(env, owner.user_id).catch(() => null);
+    const facts = await readClerkUser(env, owner.user_id).catch((error: unknown) => {
+      logCloud("cloud.referral.invite_lookup_clerk_failed", { message: error instanceof Error ? error.name : "unknown" });
+      return null;
+    });
     cached = { at: now, firstName: facts?.firstName ?? null };
     if (firstNames.size > 5_000) firstNames.clear();
     firstNames.set(owner.user_id, cached);

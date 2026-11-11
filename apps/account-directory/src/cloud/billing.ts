@@ -134,24 +134,27 @@ function billingConfig(env: CloudEnv, plan: CloudPaidPlanId): { planPrice: strin
 
 /**
  * One Stripe customer per account, even when two checkouts start at once,
- * with the account's email so Checkout shows it filled in. A customer made
- * before that (metadata only) gets the email the first time it has none. The
- * address comes from Clerk, never from the client, and is never logged; when
- * it can't be read, Checkout just asks for it.
+ * with the account's email so Checkout shows it filled in. The create's
+ * params never change (Stripe refuses a retry under the same idempotency key
+ * with other params), so the email is filled in after it, as for a customer
+ * made before emails were sent. The address comes from Clerk, never from the
+ * client, and is never logged; when it can't be read, Checkout just asks for it.
  */
 async function ensureCustomer(env: CloudEnv, account: AccountRow, now: number): Promise<string> {
-  const email = await accountEmail(env, account.user_id).catch(() => null);
+  const email = await accountEmail(env, account.user_id).catch((error: unknown) => {
+    logCloud("cloud.customer_email_read_failed", { userId: account.user_id, message: error instanceof Error ? error.name : "unknown" });
+    return null;
+  });
   if (account.stripe_customer_id) {
     if (email) await fillCustomerEmail(env, account.stripe_customer_id, email);
     return account.stripe_customer_id;
   }
-  const customer = await stripeRequest(env, "POST", "/customers", {
-    "metadata[ade_user_id]": account.user_id,
-    ...(email ? { email } : {}),
-  }, `ade-cloud-customer-${account.user_id}`);
+  const customer = await stripeRequest(env, "POST", "/customers", { "metadata[ade_user_id]": account.user_id }, `ade-cloud-customer-${account.user_id}`);
   const id = textOf(customer.id);
   if (!id) throw unavailable();
   await applyCloudPlanChange(env, account.user_id, { stripeCustomerId: id }, now);
+  // A retry's create answers the first customer, which may have its email already: the fill reads before it writes.
+  if (email) await fillCustomerEmail(env, id, email);
   return id;
 }
 
@@ -539,7 +542,12 @@ async function announceChange(env: CloudEnv, before: AccountRow, after: AccountR
   const waitingBefore = waitingPlanOf(before);
   const waitingAfter = waitingPlanOf(after);
   if (waitingAfter && waitingAfter !== waitingBefore) {
-    await warnPlanCleanupAhead(env, after, await listComputers(env, after.user_id), waitingAfter);
+    // Its own failure must not cost the past-due or restored email below: Stripe's retry sees no change and never sends it.
+    try {
+      await warnPlanCleanupAhead(env, after, await listComputers(env, after.user_id), waitingAfter);
+    } catch (error) {
+      reportCloudFailure("cloud.plan_cleanup_warn_ahead_failed", { userId: after.user_id, message: error instanceof Error ? error.message : "unknown" });
+    }
   }
   const wasPastDue = before.stripe_status === "past_due";
   const isPastDue = after.stripe_status === "past_due";

@@ -7,6 +7,13 @@ import {
   DEFAULT_ADE_TURN_USAGE_GROUP_BY,
 } from "../../../shared/types/turnUsage";
 import type { AdeActionDomain } from "./domains";
+import {
+  CLOUD_INVITE_REFUSAL_REASONS,
+  CLOUD_REFERRAL_ENTER_DAYS,
+  CLOUD_REFERRAL_REWARD_LIMIT,
+  CLOUD_REFERRAL_REWARD_MILLI,
+  formatCloudHours,
+} from "../../../shared/adeCloud";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION } from "../../../shared/types/account";
 import { PROVIDER_CONTEXT_PROVIDER_IDS } from "../../../shared/types/providerContext";
 
@@ -210,14 +217,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade cloud hours --text",
     },
     referral: {
-      description: "The account's ADE Cloud invite link and what it earned: {code, link, friendsJoined, rewardsPaid, rewardsLeft, rewardLimit, rewardMilli, hoursEarnedMilli, canEnterCode, enterCodeUntil, hasReferrer, referredState}. A friend who enters the link gets 20 hours, and so does this account when the friend's first chat runs on ADE Cloud (10 rewards at most). Milli values are thousandths of a Small-hour.",
+      description: `The account's ADE Cloud invite link and what it earned: {code, link, friendsJoined, rewardsPaid, rewardsLeft, rewardLimit, rewardMilli, hoursEarnedMilli, canEnterCode, enterCodeUntil, hasReferrer, referredState}. A friend who enters the link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} hours, and so does this account when the friend's first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most). A friend's invite is entered in Settings › Account, never from the CLI. Milli values are thousandths of a Small-hour.`,
       input: "no input",
       example: "ade cloud invite --text",
     },
     invite_redeem: {
-      description: "Enter a friend's ADE Cloud invite for this account: the invite link or its 8-character code. Once per account, never changed, within 30 days of making the account. Returns {ok: true, rewarded, referral} or {ok: false, reason (invalid_code | unknown_code | own_code | already_referred | too_late | rate_limited), message}. The person's call only: an agent is refused.",
+      description: `Enter a friend's ADE Cloud invite for this account: the invite link or its 8-character code. Once per account, never changed, within ${CLOUD_REFERRAL_ENTER_DAYS} days of making the account. Returns {ok: true, rewarded, referral} or {ok: false, reason (${CLOUD_INVITE_REFUSAL_REASONS.join(" | ")}), message}. The person's own call from the ADE app (Settings › Account, desktop or phone): an agent, an ADE MCP app and the CLI are refused.`,
       input: "object { code: string (the link https://ade-app.dev/invite/<CODE>, ade://invite/<CODE>, or the bare code) }",
-      example: "ade cloud invite redeem https://ade-app.dev/invite/ABCD2345",
+      example: "App only: Settings › Account (desktop or phone). A terminal is refused.",
     },
     update: {
       description: "Update an ADE Cloud computer to the current ADE: it restarts on the newest ADE release, files stay, running work stops. Asks the person first.",

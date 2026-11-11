@@ -16,15 +16,12 @@ import {
   type CloudMachinesResult,
   type CloudOpenCheckoutResult,
   type CloudStatus,
-  readCloudReferralSummary,
   type CloudInviteRedeemOutcome,
-  type CloudInviteRefusalReason,
-  type CloudReferralSummary,
 } from "../../../shared/adeCloud";
 import { type CloudSignInStatus } from "../../../shared/cloudSignIns";
 import { IPC } from "../../../shared/ipc";
-import { readClaudePassEnd, type ClaudePassEndList, type CloudSignInSettingRead } from "./claudePassEndWarning";
-import type { CloudPassEnd } from "../../../shared/cloudSignIns";
+import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
+import type { CloudSignInEnd } from "../../../shared/cloudSignIns";
 import type { AdeAccountMachinesResult } from "../../../shared/types/account";
 import { getSignedInAccountAccessToken } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import {
@@ -49,7 +46,7 @@ import {
 import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { openCloudApprovalWindow } from "./cloudApprovalWindow";
 import { createCloudMachines } from "./cloudMachines";
-import { CloudProviderError, type CloudProvider } from "./cloudProvider";
+import type { CloudProvider } from "./cloudProvider";
 import { setCloudAsleepCheck, setCloudRestChanged, setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
 import { startCloudSleepWatch } from "./cloudSleepWatch";
 import { setCloudDesktopActions } from "./cloudDesktopActions";
@@ -90,8 +87,8 @@ export function cloudAccountChanged(): void {
 }
 
 export function registerCloudIpc(args: {
-  /** `list` reads the account's pass store for the end warning (`claudePassEnd.ts`). */
-  vaultBridge: Parameters<typeof cloudVaultFromBridge>[0] & { list?: ClaudePassEndList };
+  /** `list` reads the account's pass store for the end warning (`cloudSignInEndWarning.ts`). */
+  vaultBridge: Parameters<typeof cloudVaultFromBridge>[0] & { list?: CloudSignInEndList };
   /** The account setting `providerLogins.cloud`, for the end warning's keys (only keys on for ADE Cloud). */
   readCloudSignInSetting?: CloudSignInSettingRead;
   listAccountMachines: () => Promise<AdeAccountMachinesResult>;
@@ -137,11 +134,11 @@ export function registerCloudIpc(args: {
   // asked when a window opens or takes focus, and on a sign-in or sign-out;
   // its cache keeps that to the server at most every 10 minutes.
   let lastAccess: boolean | null = null;
-  // The end warning's fact (`claudePassEnd.ts`), from the local pass store, only
+  // The end warning's fact (`cloudSignInEndWarning.ts`), from the local pass store, only
   // while ADE Cloud is on. A window asks on open and on focus, so one answer
   // serves a minute; a pass write here (an approve, a remove) drops it at once.
   const PASS_END_FRESH_MS = 60_000;
-  let passEndMemo: { at: number; value: CloudPassEnd | null } | null = null;
+  let passEndMemo: { at: number; value: CloudSignInEnd | null } | null = null;
   const readAccess = async (): Promise<boolean> => {
     const enabled = await cloudAccessEnabled(credentials).catch((error: unknown) => {
       logger.warn("cloud.access_read_failed", { error: getErrorMessage(error) });
@@ -313,12 +310,12 @@ export function registerCloudIpc(args: {
     return "This computer needs updating before ADE can update it. Choose Update this computer in its menu.";
   });
 
-  const readPassEnd = async (): Promise<CloudPassEnd | null> => {
+  const readPassEnd = async (): Promise<CloudSignInEnd | null> => {
     const list = args.vaultBridge.list?.bind(args.vaultBridge);
     if (!list || !credentials.signedIn()) return null;
     const now = Date.now();
     if (passEndMemo && now - passEndMemo.at < PASS_END_FRESH_MS) return passEndMemo.value;
-    const value = await readClaudePassEnd(list, now, args.readCloudSignInSetting).catch((error: unknown) => {
+    const value = await readCloudSignInEnd(list, { now, readSetting: args.readCloudSignInSetting, logger }).catch((error: unknown) => {
       logger.warn("cloud.pass_end_read_failed", { error: getErrorMessage(error) });
       return null;
     });
@@ -327,7 +324,7 @@ export function registerCloudIpc(args: {
   };
 
   // Account-level, so no pin: every computer answers the same for this account.
-  ipcMain.handle(IPC.cloudGetAccess, async (event): Promise<{ enabled: boolean; passEnd?: CloudPassEnd | null }> => {
+  ipcMain.handle(IPC.cloudGetAccess, async (event): Promise<{ enabled: boolean; passEnd?: CloudSignInEnd | null }> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetAccess)) return { enabled: false };
     const enabled = await readAccess();
     // Off: no pass read at all.
@@ -389,31 +386,17 @@ export function registerCloudIpc(args: {
     return account;
   });
 
-  // Account-level, so no pin: an account has one invite link and one referrer, whichever computer asks.
-  ipcMain.handle(IPC.cloudGetReferral, async (event): Promise<CloudReferralSummary | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetReferral)) return null;
-    try {
-      const provider = await getCloudProvider(credentials);
-      return provider ? readCloudReferralSummary(await provider.readReferral()) : null;
-    } catch (error) {
-      logger.warn("cloud.referral_read_failed", { error: getErrorMessage(error) });
-      return null;
-    }
-  });
-
+  // Account-level, so no pin: an account has one referrer, whichever computer asks.
+  // The invite link itself rides the account read (`CloudAccountState.referral`).
   ipcMain.handle(IPC.cloudRedeemInvite, async (event, arg: { code?: unknown }): Promise<CloudInviteRedeemOutcome> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudRedeemInvite)) return { ok: false, reason: "unavailable", message: "ADE can't do that from here." };
     const code = typeof arg?.code === "string" ? arg.code : "";
     try {
-      const result = await (await requireCloudProvider(credentials)).redeemInvite(code);
-      // Never the code: only that it was taken, and whether it paid at once.
-      logger.info("cloud.invite_redeemed", { rewarded: result.rewarded });
-      sendToAllWindows(IPC.cloudStatusChanged);
-      return { ok: true, rewarded: result.rewarded, referral: readCloudReferralSummary(result.referral) };
+      const outcome = await machines.redeemInvite(code);
+      if (outcome.ok) sendToAllWindows(IPC.cloudStatusChanged);
+      return outcome;
     } catch (error) {
-      const reason = error instanceof CloudProviderError && error.code === "invite_refused" ? error.detail.reason as CloudInviteRefusalReason | null : null;
-      logger.info("cloud.invite_refused", { reason: reason ?? "unavailable" });
-      return { ok: false, reason: reason ?? "unavailable", message: getErrorMessage(error) };
+      return { ok: false, reason: "unavailable", message: getErrorMessage(error) };
     }
   });
 

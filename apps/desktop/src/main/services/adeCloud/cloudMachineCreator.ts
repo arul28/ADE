@@ -20,6 +20,7 @@
  */
 
 import {
+  CLOUD_MACHINE_DEFAULT_NAME,
   CLOUD_WAKE_PORT,
   CLOUD_WAKE_PORT_LABEL,
   cloudInstanceType,
@@ -256,7 +257,7 @@ function approvalErrorMessage(status: number, code: string | null): string {
 
 export function normalizeCloudMachineName(raw: string): string {
   const cleaned = raw.replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
-  return cleaned || "ADE Cloud computer";
+  return cleaned || CLOUD_MACHINE_DEFAULT_NAME;
 }
 
 /** A published release a machine can install (`ade brain update --version`), or null. */

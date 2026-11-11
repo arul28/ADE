@@ -14,7 +14,8 @@ import { readCloudComputerIdAsync } from "../../../../../ade-cli/src/services/ac
 import { isAdeCloudComputer } from "./cloudComputerRules";
 import { getErrorMessage } from "../shared/utils";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider } from "./cloudProvider";
-import { createCloudServerProvider } from "./cloudServerProvider";
+import { createCloudServerProvider, type CloudComputerSignal } from "./cloudServerProvider";
+import { CLOUD_COMPUTER_UNREADABLE } from "../../../../../account-directory/src/cloud/contract";
 
 export const CLOUD_VAULT_KIND = "integration";
 
@@ -39,7 +40,7 @@ export type CloudAccessDeps = {
   /** This machine's update track: a computer it makes follows the same channel. */
   updateChannel?: () => "stable" | "beta" | null;
   /** This computer's id for the free plan (`cloudFreePlanComputer`); left out on an ADE Cloud computer. */
-  computer?: () => Promise<{ id: string; platform: NodeJS.Platform } | null>;
+  computer?: () => Promise<CloudComputerSignal | null>;
   fetch?: FetchLike;
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
 };
@@ -81,19 +82,30 @@ export function cloudAccessDepsFor(args: {
   };
 }
 
+/** An `unreadable` id is sent for this long, then read again. */
+const COMPUTER_ID_RETRY_MS = 10 * 60_000;
+
 /**
  * The id ADE Cloud's free plan is given once for (one per physical computer,
  * `freePlan.ts` on the server), read once per process off the event loop. An
- * ADE Cloud computer sends none: it never claims a free plan.
+ * ADE Cloud computer sends none: it never claims a free plan. `unreadable`
+ * is not kept for the process's life: a probe that timed out once (a slow
+ * `reg query`) is read again after a while, so the computer can still claim.
  */
-let freePlanComputer: Promise<{ id: string; platform: NodeJS.Platform } | null> | null = null;
-export function cloudFreePlanComputer(): Promise<{ id: string; platform: NodeJS.Platform } | null> {
+type FreePlanComputerRead = { read: Promise<CloudComputerSignal>; retryAt: number | null };
+let freePlanComputer: FreePlanComputerRead | null = null;
+export function cloudFreePlanComputer(): Promise<CloudComputerSignal | null> {
   if (isAdeCloudComputer()) return Promise.resolve(null);
-  freePlanComputer ??= readCloudComputerIdAsync().then(
-    (id) => ({ id, platform: process.platform }),
-    () => ({ id: "unreadable", platform: process.platform }),
-  );
-  return freePlanComputer;
+  if (freePlanComputer && (freePlanComputer.retryAt === null || Date.now() < freePlanComputer.retryAt)) return freePlanComputer.read;
+  const entry: FreePlanComputerRead = { read: Promise.resolve({ id: CLOUD_COMPUTER_UNREADABLE, platform: process.platform }), retryAt: null };
+  entry.read = readCloudComputerIdAsync()
+    .catch(() => CLOUD_COMPUTER_UNREADABLE)
+    .then((id) => {
+      if (id === CLOUD_COMPUTER_UNREADABLE) entry.retryAt = Date.now() + COMPUTER_ID_RETRY_MS;
+      return { id, platform: process.platform };
+    });
+  freePlanComputer = entry;
+  return entry.read;
 }
 
 type CloudVaultBridge = {

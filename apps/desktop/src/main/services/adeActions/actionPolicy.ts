@@ -141,9 +141,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   pty: { only: [...USER_SETTING_WRITES.pty.actions] },
   // A provider sign-in kept for new cloud machines is the person's; agents
   // read which are kept (never a value) and change none.
-  // Entering an invite code is once per account, forever: the person's clients
-  // (desktop, phone, their own terminal) enter it, never an agent.
-  cloud: { only: [...USER_SETTING_WRITES.cloud.actions, "invite_redeem"] },
+  cloud: { only: [...USER_SETTING_WRITES.cloud.actions] },
   // ADE MCP grants an outside app this machine. Every action is also user-only
   // (below), so only the desktop reaches it through the action bus.
   remote_mcp: { allExcept: [] },
@@ -398,8 +396,11 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // Dropping a deleted lane's saved work means it can no longer be restored.
   lane: ["removeDeletedLane"],
   // Only the person's desktop saves a key or runs Claude's sign-in for new machines.
+  // Entering an invite code sets the account's referrer once, forever: the
+  // person enters it in Settings › Account (desktop, or the phone's own
+  // `cloud.write`), never an agent, an ADE MCP app or a terminal.
   // (`clear_caches` is not here: an agent may ask, and the action asks the person with a card.)
-  cloud: [...CLOUD_SIGN_IN_WRITES],
+  cloud: [...CLOUD_SIGN_IN_WRITES, "invite_redeem"],
   // An agent asking to move a chat or batch must not approve its own request.
   // Only a person's client hosts an MCP App, so only it may pass an app's call on.
   chat: [

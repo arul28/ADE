@@ -18,7 +18,7 @@ import { isRecord } from "../shared/utils";
 import { sendToAllWindows } from "./broadcast";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { createCloudLaneLaunchService, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
-import { cloudLaneLaunchOutcomes } from "./cloudLaneLaunchAnalytics";
+import { cloudLaneLaunchOutcomes, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 
 /** The launch id of an id-based call, or null when the args carry none. */
 function launchIdOf(args: unknown): string | null {
@@ -37,8 +37,8 @@ export function registerCloudLaneLaunchIpc(args: {
   forgetMachineConnections: (machine: { machineKey: string | null; instanceId: string }) => void;
   pairMachine: (machineKey: string) => Promise<{ targetId: string }>;
   remote: RuntimeBridgeRegistration["remoteForMain"];
-  /** How each launch ends, one coarse outcome (cloudLaneLaunchAnalytics.ts). */
-  analytics?: Parameters<typeof cloudLaneLaunchOutcomes>[0];
+  /** How each launch ends, one coarse outcome (cloudLaneAnalytics.ts). */
+  analytics?: CloudLaneAnalyticsCapture;
   logger: Logger;
 }): CloudLaneLaunchService {
   const { remote, logger } = args;

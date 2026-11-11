@@ -29,6 +29,7 @@ import {
   readCloudSetting,
   type ProviderLoginsCloudSetting,
 } from "../../../shared/providerLoginsCloudSetting";
+import { isRecord } from "../shared/utils";
 import type { RotatingCredentialVault } from "../account/rotatingCredentialOwner";
 import type { CarryBundle, CarryContext, ParsedLogin } from "./providerLoginCarry";
 import type { ProviderLoginRenewer } from "./providerLoginRenew";
@@ -108,6 +109,47 @@ export const SAVED_KEYS: ReadonlyArray<{ id: string; env: string; provider: Prov
     env: spec.env,
     provider: spec.providers.length === 1 ? spec.providers[0]! : null,
   }));
+
+/** A saved key's token from its vault value (`integration/cloud-key-<id>`), or null. */
+export function savedKeyTokenOf(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isRecord(parsed) && parsed.v === 1 && typeof parsed.token === "string" && parsed.token ? parsed.token : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The vault key a saved ADE Cloud key lives under (kind `integration`). */
+export function savedKeyVaultKey(id: string): string {
+  return `cloud-key-${id}`;
+}
+
+/**
+ * Which sign-in ADE Cloud uses for one place (P5 §4.2). The apply pass and the
+ * end warning both ask, so the warning names only what ADE Cloud carries.
+ * `list` is the place's carried sign-ins that are on for ADE Cloud (never
+ * empty). The saved key wins when the person picked it, or for Copilot with
+ * no pick (a saved key goes before a carried GitHub CLI login, G1 Q2), if one
+ * is saved. Otherwise the picked sign-in, else the newest.
+ */
+export function pickCloudPlaceSignIn<T>(args: {
+  list: readonly T[];
+  provider: ProviderLoginProvider;
+  chosen: string | undefined;
+  savedKeyToken: (id: string) => string | null;
+  keyOf: (entry: T) => string;
+  stampOf: (entry: T) => number;
+}): { savedKey: { id: string; token: string } } | { signIn: T } {
+  const saved = args.provider === "pi" ? null : SAVED_KEYS.find((spec) => spec.provider === args.provider) ?? null;
+  const keyFirst = args.chosen === "key" || (args.chosen === undefined && args.provider === "copilot");
+  const token = saved && keyFirst ? args.savedKeyToken(saved.id) : null;
+  if (saved && token) return { savedKey: { id: saved.id, token } };
+  const signIn = args.list.find((entry) => args.keyOf(entry) === args.chosen)
+    ?? [...args.list].sort((left, right) => args.stampOf(right) - args.stampOf(left))[0]!;
+  return { signIn };
+}
 
 /** Local states under which apply may replace the file here: the login is safe in the account, or is the account's. */
 export const OVERWRITE_SAFE: ReadonlySet<ProviderLoginLocalState> = new Set([

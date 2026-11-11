@@ -22,6 +22,45 @@
  * already hold it keep billing on it.
  */
 
+/**
+ * What Plus and Pro include and cost, as the products say it. A copy of
+ * `CLOUD_PLANS` in `src/cloud/plans.ts`, which the Worker enforces: the script
+ * stops before any Stripe call when the two differ (`checkPlanNumbers`).
+ */
+const PLAN_NUMBERS = {
+  plus: { hours: 500, diskGb: 40, computers: 10, cents: 500 },
+  pro: { hours: 1500, diskGb: 120, computers: 30, cents: 2000 },
+};
+const planDescription = ({ hours, diskGb, computers }) =>
+  `${hours.toLocaleString("en-US")} hours a month, ${diskGb} GB of disk and up to ${computers} computers at one time. Every size, with Android and Docker.`;
+
+/**
+ * Fails when `PLAN_NUMBERS` and `CLOUD_PLANS` differ, so Stripe never sells
+ * other numbers than the Worker gives. Reads `plans.ts` with Node's type
+ * stripping (Node 22.18 or newer).
+ */
+async function checkPlanNumbers() {
+  let plans;
+  try {
+    ({ CLOUD_PLANS: plans } = await import(new URL("../src/cloud/plans.ts", import.meta.url).href));
+  } catch (error) {
+    console.error(`Couldn't read src/cloud/plans.ts to check the plan numbers (needs Node 22.18 or newer): ${error instanceof Error ? error.message : error}`);
+    process.exit(1);
+  }
+  const differences = [];
+  for (const [id, numbers] of Object.entries(PLAN_NUMBERS)) {
+    const plan = plans[id];
+    const expected = { hours: plan.includedMilli / 1000, diskGb: plan.diskGb, computers: plan.computerLimit, cents: plan.priceUsd * 100 };
+    for (const [field, value] of Object.entries(expected)) {
+      if (numbers[field] !== value) differences.push(`${id}.${field}: this script says ${numbers[field]}, plans.ts says ${value}`);
+    }
+  }
+  if (differences.length) {
+    console.error(`The plan numbers here differ from src/cloud/plans.ts; fix PLAN_NUMBERS first:\n${differences.join("\n")}`);
+    process.exit(1);
+  }
+}
+
 const API = "https://api.stripe.com/v1";
 const API_VERSION = "2026-10-28.endive";
 const PRODUCT_TAX_CODE = "txcd_10103001";
@@ -30,12 +69,12 @@ const PRODUCTS = {
   plus: {
     id: "ade_cloud",
     name: "ADE Cloud Plus",
-    description: "500 hours a month, 40 GB of disk and up to 10 computers at one time. Every size, with Android and Docker.",
+    description: planDescription(PLAN_NUMBERS.plus),
   },
   pro: {
     id: "ade_cloud_pro",
     name: "ADE Cloud Pro",
-    description: "1,500 hours a month, 120 GB of disk and up to 30 computers at one time. Every size, with Android and Docker.",
+    description: planDescription(PLAN_NUMBERS.pro),
   },
   extraHours: {
     id: "ade_cloud_extra_hours",
@@ -58,6 +97,8 @@ const METER_EVENT = "ade_cloud_small_hours";
 const DISK_METER_EVENT = "ade_cloud_extra_disk_gb_days";
 /** Finds this script's portal setup again on a rerun. */
 const PORTAL_METADATA = "plans-v1";
+
+await checkPlanNumbers();
 
 const key = process.env.STRIPE_SECRET_KEY?.trim();
 if (!key) {
@@ -214,8 +255,8 @@ const extraProduct = await ensureProduct(PRODUCTS.extraHours);
 const diskProduct = await ensureProduct(PRODUCTS.extraDisk);
 const meter = await ensureMeter(METER_EVENT, "ADE Cloud extra Small-hours");
 const diskMeter = await ensureMeter(DISK_METER_EVENT, "ADE Cloud extra disk GB-days");
-const planPrice = await ensurePlanPrice(product, PLAN_LOOKUP_KEY, 500, "ADE Cloud Plus");
-const proPrice = await ensurePlanPrice(proProduct, PRO_LOOKUP_KEY, 2000, "ADE Cloud Pro");
+const planPrice = await ensurePlanPrice(product, PLAN_LOOKUP_KEY, PLAN_NUMBERS.plus.cents, "ADE Cloud Plus");
+const proPrice = await ensurePlanPrice(proProduct, PRO_LOOKUP_KEY, PLAN_NUMBERS.pro.cents, "ADE Cloud Pro");
 const extraPrice = await ensureExtraPrice(extraProduct, meter);
 const diskPrice = await ensureDiskPrice(diskProduct, diskMeter);
 const portal = await ensurePortalConfiguration(product, proProduct, planPrice, proPrice);

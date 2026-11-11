@@ -16,7 +16,7 @@ import type {
   CloudPlanId,
   CloudTimedWakesCancelled,
 } from "../../../account-directory/src/cloud/contract";
-import { formatCloudCents, overPlanDiskSentence } from "../../../account-directory/src/cloud/contract";
+import { CLOUD_INVITE_REFUSAL_REASONS, formatCloudCents, overPlanDiskSentence } from "../../../account-directory/src/cloud/contract";
 import type {
   CloudEarnedHours,
   CloudFreePlan,
@@ -26,20 +26,27 @@ import type {
   CloudReferralSummary,
 } from "../../../account-directory/src/cloud/contract";
 export {
-  CLOUD_FREE_PLAN_REFUSED_SENTENCE,
-  CLOUD_INVITE_DEEPLINK_BASE,
-  CLOUD_INVITE_URL_BASE,
+  CLOUD_INVITE_REFUSAL_REASONS,
   CLOUD_REFERRAL_ENTER_DAYS,
   CLOUD_REFERRAL_REWARD_LIMIT,
   CLOUD_REFERRAL_REWARD_MILLI,
+  cloudFreePlanRefusedSentence,
   cloudInviteLink,
   parseCloudInviteCode,
 } from "../../../account-directory/src/cloud/contract";
 export type { CloudEarnedHours, CloudFreePlan, CloudFreePlanState, CloudInviteRedeemResult, CloudInviteRefusalReason, CloudReferralSummary };
 /** The shared sentences for a cheaper plan's limits and cancelled timed wakes (the server's emails say the same). */
-export { planCleanupDoneSentence, planCleanupSentence, timedWakesCancelledSentence, CLOUD_PLAN_CLEANUP_GRACE_DAYS } from "../../../account-directory/src/cloud/contract";
+export { planCleanupDoneSentence, timedWakesCancelledSentence, CLOUD_PLAN_CLEANUP_GRACE_DAYS } from "../../../account-directory/src/cloud/contract";
 
 export { formatCloudCents };
+
+/**
+ * Stamped on every ADE Cloud approval card (`providerMetadata`). Only the
+ * person answers one: the card is the consent to spend hours, delete a
+ * computer or clear its caches, so an agent's answer is refused
+ * (`isUserOnlyConsentCard`).
+ */
+export const ADE_CLOUD_APPROVAL_METADATA_KEY = "adeCloudApproval" as const;
 
 /**
  * ADE Cloud: Linux machines ADE runs for the person, each with ADE's brain as
@@ -175,6 +182,8 @@ export function cloudPlanLabelOf(account: Pick<CloudAccountState, "plan" | "plan
 }
 
 export const CLOUD_PLAN_LABELS: Readonly<Record<CloudPlanId, string>> = { free: "Free", plus: "Plus", pro: "Pro" };
+/** Plan order, cheapest first: whether a move between two plans is up or down. */
+export const CLOUD_PLAN_RANK: Readonly<Record<CloudPlanId, number>> = { free: 0, plus: 1, pro: 2 };
 
 /** Hours of a Small computer this size uses per hour awake. */
 export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId, catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK): number {
@@ -716,7 +725,7 @@ export function cloudShapeWithin(shape: CloudShapeId, max: CloudShapeId): boolea
   return order.indexOf(shape) <= order.indexOf(max);
 }
 
-export type { CloudAccountState, CloudCatalog, CloudHoursState, CloudPaidPlanId, CloudPlanChangeTiming };
+export type { CloudAccountState, CloudCatalog, CloudHoursState, CloudPaidPlanId, CloudPlanChangeTiming, CloudPlanFacts, CloudPlanId };
 export type { CloudPlanCleanup, CloudPlanCleanupDone, CloudTimedWakesCancelled };
 export type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageKind, CloudDiskUsageReport, CloudLaneWork };
 
@@ -748,6 +757,33 @@ const finite = (value: unknown): number => (typeof value === "number" && Number.
 export function cloudEarnedHoursOf(account: Pick<CloudAccountState, "earnedHours"> | null | undefined): CloudEarnedHours {
   const earned = account?.earnedHours;
   return { leftMilli: finite(earned?.leftMilli), usedThisPeriodMilli: finite(earned?.usedThisPeriodMilli), grantedMilli: finite(earned?.grantedMilli) };
+}
+
+/**
+ * The hours work can still use now: the plan's own left plus earned ones
+ * (used after the plan's). The one rule the header ring, the dashboard's
+ * forecast, the sizes and the composer read.
+ */
+export function cloudHoursLeftMilli(account: Pick<CloudAccountState, "hours" | "earnedHours">): number {
+  return account.hours.leftMilli + Math.max(0, cloudEarnedHoursOf(account).leftMilli);
+}
+
+/** The name ADE gives a computer it made with no lane name (`cloudMachineCreator`). */
+export const CLOUD_MACHINE_DEFAULT_NAME = "ADE Cloud computer";
+
+/** At this share of the plan's disk, ADE warns and offers "Free up space". */
+export const CLOUD_DISK_WARN_SHARE = 0.8;
+
+/** Percent of a limit used, 0 to 100; 0 for no limit. */
+export function percentOf(used: number, limit: number): number {
+  if (!(limit > 0)) return 0;
+  return Math.max(0, Math.min(100, (used / limit) * 100));
+}
+
+/** "3.4 GB", "820 MB". */
+export function formatCloudGb(gb: number): string {
+  if (gb > 0 && gb < 1) return `${Math.max(1, Math.round(gb * 1000))} MB`;
+  return `${gb >= 100 ? Math.round(gb) : Math.round(gb * 10) / 10} GB`;
 }
 
 /** Whether the account gets the free plan's hours. An older server gives every account the free plan: `unclaimed`. */
@@ -782,6 +818,38 @@ export function readCloudReferralSummary(value: unknown): CloudReferralSummary |
     enterCodeUntil: typeof raw.enterCodeUntil === "number" ? raw.enterCodeUntil : null,
     hasReferrer: raw.hasReferrer === true,
     referredState,
+  };
+}
+
+/** The server's reason for refusing an invite, or null when it isn't one it gives. */
+export function readCloudInviteRefusalReason(value: unknown): CloudInviteRefusalReason | null {
+  return (CLOUD_INVITE_REFUSAL_REASONS as readonly unknown[]).includes(value) ? value as CloudInviteRefusalReason : null;
+}
+
+/** What a cheaper plan would free (the checkout's warning), or null when the answer isn't one. */
+export function readCloudPlanCleanup(value: unknown): CloudPlanCleanup | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.sentence !== "string" || !raw.sentence) return null;
+  if (raw.planId !== "free" && raw.planId !== "plus" && raw.planId !== "pro") return null;
+  const text = (entry: unknown): string | null => (typeof entry === "string" && entry ? entry : null);
+  const computers = Array.isArray(raw.computers)
+    ? raw.computers.flatMap((entry): CloudPlanCleanup["computers"] => {
+      if (!entry || typeof entry !== "object") return [];
+      const computer = entry as Record<string, unknown>;
+      if (typeof computer.instanceId !== "string" || !computer.instanceId) return [];
+      return [{ instanceId: computer.instanceId, name: text(computer.name), laneName: text(computer.laneName), branch: text(computer.branch), diskGb: finite(computer.diskGb) }];
+    })
+    : [];
+  return {
+    planId: raw.planId,
+    computers,
+    usedGb: finite(raw.usedGb),
+    limitGb: finite(raw.limitGb),
+    computerCount: finite(raw.computerCount),
+    computerLimit: finite(raw.computerLimit),
+    dueAt: typeof raw.dueAt === "number" && Number.isFinite(raw.dueAt) ? raw.dueAt : null,
+    sentence: raw.sentence,
   };
 }
 

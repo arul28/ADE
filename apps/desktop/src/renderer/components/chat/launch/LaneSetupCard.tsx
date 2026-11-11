@@ -83,6 +83,11 @@ import {
   stepCardFrameClass,
 } from "./stepCardParts";
 
+/** A launch's own error text without Electron's wrapper; the raw text when the wrapper was all there was. */
+function launchErrorText(raw: string): string {
+  return chatLaunchErrorMessage(raw, raw);
+}
+
 /**
  * The lane setup card: a header (phase tile, title, lane + base chips, live
  * elapsed), the shared segmented progress rail, then one row per stage the
@@ -309,7 +314,7 @@ const StageRow = React.memo(function StageRow({
       />
       {(stage.status === "failed" || stage.status === "warning") && stage.error ? (
         <StageErrorCallout
-          error={chatLaunchErrorMessage(stage.error, stage.error)}
+          error={launchErrorText(stage.error)}
           className={compact ? "text-[10.5px]" : "text-[length:calc(var(--chat-font-size)*11/14)]"}
         />
       ) : null}
@@ -326,7 +331,7 @@ function DetailsList({ snapshot, compact }: { snapshot: ChatLaunchSnapshot; comp
   if (snapshot.baseRef) rows.push(["Base", snapshot.baseRef, true]);
   if (snapshot.worktreePath) rows.push(["Worktree", snapshot.worktreePath, true]);
   if (snapshot.templateName) rows.push([LANE_SETUP_CARD_TEMPLATE_METRIC, snapshot.templateName]);
-  if (snapshot.error) rows.push(["Error", chatLaunchErrorMessage(snapshot.error, snapshot.error)]);
+  if (snapshot.error) rows.push(["Error", launchErrorText(snapshot.error)]);
   if (rows.length === 0) return null;
   return (
     <dl
@@ -815,7 +820,7 @@ function LaneSetupCardFromPayload({
         // under the row, the way the live card does, instead of truncating the
         // only explanation to one line.
         const rawError = status === "failed" || status === "warning" ? row.detail?.trim() || null : null;
-        const error = rawError ? chatLaunchErrorMessage(rawError, rawError) : null;
+        const error = rawError ? launchErrorText(rawError) : null;
         return (
           <li key={row.key || `${row.text}:${index}`} data-testid="lane-setup-stage" data-stage-id={id ?? undefined} data-stage-status={status}>
             <StageLine icon={icon} status={status} label={row.text} detail={error ? null : row.detail ?? null} compact />

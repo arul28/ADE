@@ -1,19 +1,21 @@
 /**
  * Product analytics for ADE Cloud lanes (feature "connections"): how a new
- * lane on its own computer ends, a freed lane, a cache clear, and a new
- * default size. One coarse outcome each; never the lane, project, computer,
+ * lane on its own computer ends, a freed lane and a cache clear. One coarse
+ * outcome each; never the lane, project, computer,
  * branch, prompt or an error (productAnalyticsPolicy.ts allows only these).
  */
 import type { ChatLaunchEvent } from "../../../shared/types";
 import type { ProductAnalyticsCapture } from "../../../shared/types/productAnalytics";
 
-type Capture = { capture(input: ProductAnalyticsCapture): unknown } | null | undefined;
+/** The analytics service, or nothing when this process has none. */
+export type CloudLaneAnalyticsCapture = { capture(input: ProductAnalyticsCapture): unknown } | null | undefined;
 type Surface = ProductAnalyticsCapture["surface"];
 
-export type CloudLaneAnalyticsAction = "cloud_lane_launch" | "cloud_lane_freed" | "cloud_clear_caches" | "cloud_default_size";
+/** Sent from main. The renderer sends `cloud_default_size` itself (`cloudDefaultTier.ts`). */
+export type CloudLaneAnalyticsAction = "cloud_lane_launch" | "cloud_lane_freed" | "cloud_clear_caches";
 
 export function captureCloudLaneAnalytics(
-  analytics: Capture,
+  analytics: CloudLaneAnalyticsCapture,
   surface: Surface,
   action: CloudLaneAnalyticsAction,
   outcome: string,
@@ -36,7 +38,7 @@ export function captureCloudLaneAnalytics(
  * that a restart loads already finished is not counted again; a failure that a
  * Retry fixes counts the failure, then the completion.
  */
-export function cloudLaneLaunchOutcomes(analytics: Capture, surface: Surface): (event: ChatLaunchEvent) => void {
+export function cloudLaneLaunchOutcomes(analytics: CloudLaneAnalyticsCapture, surface: Surface): (event: ChatLaunchEvent) => void {
   const lastPhase = new Map<string, string>();
   return (event) => {
     if (event.type === "launch-removed") {

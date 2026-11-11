@@ -505,6 +505,8 @@ export function cloudBusyHolds(adeHome: string, now: number = Date.now()): strin
 /**
  * The template's setup job is running (`$ADE_HOME/ready/job.sh`, which the entrypoint runs). Only an older
  * ADE's ready machines wrote one; ADE no longer does, so on a new computer this is false.
+ * Remove after 2026-12-31, with the template's `ready/job.sh` hook
+ * (`infra/ade-cloud/template/ade-entrypoint.sh`): by then no computer an older ADE prepared is left.
  */
 export function cloudReadySetupRunning(adeHome: string): boolean {
   const dir = path.join(adeHome, "ready");

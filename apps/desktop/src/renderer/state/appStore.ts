@@ -267,11 +267,10 @@ export type WorkGridSet = {
  * (with its lane, null for a new one, and the size picked for this draft, null
  * for the saved default), Cursor Cloud or Devin Cloud.
  */
-export type WorkDraftCloudTarget = {
-  provider: "ade" | "cursor" | "devin";
-  laneId: string | null;
-  sizeId: string | null;
-};
+export type WorkDraftCloudTarget =
+  | { provider: "ade"; laneId: string | null; sizeId: CloudTierId | null }
+  | { provider: "cursor" }
+  | { provider: "devin" };
 
 export type WorkProjectViewState = {
   openItemIds: string[];
@@ -541,13 +540,14 @@ function normalizeWorkSidebarWidthPct(value: unknown): number {
 
 function normalizeWorkDraftCloudTarget(value: unknown): WorkDraftCloudTarget | null {
   if (!value || typeof value !== "object") return null;
-  const candidate = value as Partial<WorkDraftCloudTarget>;
-  const provider = candidate.provider;
-  if (provider !== "ade" && provider !== "cursor" && provider !== "devin") return null;
+  const candidate = value as { provider?: unknown; laneId?: unknown; sizeId?: unknown };
+  if (candidate.provider === "cursor" || candidate.provider === "devin") return { provider: candidate.provider };
+  if (candidate.provider !== "ade") return null;
   return {
-    provider,
+    provider: "ade",
     laneId: normalizeOptionalString(candidate.laneId),
-    sizeId: normalizeOptionalString(candidate.sizeId),
+    // A size this build doesn't know reads as the saved default.
+    sizeId: isCloudTierId(candidate.sizeId) ? candidate.sizeId : null,
   };
 }
 
@@ -1885,7 +1885,7 @@ export type AppState = {
   setCtoAttention: (snapshot: CtoAttentionState) => void;
   setSmartTooltipsEnabled: (enabled: boolean) => void;
   /** `synced`: the account settings sync brought it from another computer (not the person's pick here). */
-  setCloudDefaultTier: (tier: CloudTierId, options?: { synced?: boolean }) => void;
+  setCloudDefaultTier: (tier: CloudTierId) => void;
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   setDraftsButtonEnabled: (enabled: boolean) => void;
@@ -3037,21 +3037,14 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, draftsButtonEnabled: enabled });
       return { draftsButtonEnabled: enabled };
     }),
-  setCloudDefaultTier: (tier, options) => {
+  // The person's pick is counted where it's made (`lib/cloudDefaultTier.ts`), not here: sync calls this too.
+  setCloudDefaultTier: (tier) => {
     const next = normalizeCloudDefaultTier(tier);
     if (get().cloudDefaultTier === next) return;
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, cloudDefaultTier: next });
       return { cloudDefaultTier: next };
     });
-    // The person's pick here, once: a synced value was counted where it was picked.
-    if (!options?.synced) {
-      void window.ade?.analytics?.capture({
-        event: "ade_feature_used",
-        properties: { feature: "connections", action: "cloud_default_size", outcome: `size_${next}` },
-        projectId: null,
-      }).catch(() => undefined);
-    }
   },
   setVoiceInputEnabled: (enabled) =>
     set((prev) => {

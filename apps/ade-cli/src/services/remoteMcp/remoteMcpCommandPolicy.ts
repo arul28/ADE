@@ -2,6 +2,7 @@ import { ADE_ACTION_ACCESS } from "../../../../desktop/src/shared/adeActionAcces
 import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
 import { ANDROID_SDK_PERSON_ONLY_ACTIONS } from "../../../../desktop/src/shared/types/androidEmulator";
 import type { RemoteMcpScope } from "../../../../desktop/src/shared/types/remoteMcp";
+import { CLOUD_LANE_MACHINE } from "../../../../desktop/src/shared/cloudLaneLaunch";
 
 /**
  * Which `ade` commands a remote AI app may run, by the scope of its connection.
@@ -272,13 +273,15 @@ const CLOUD_LANE_SUBCOMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map
   ["lanes", new Set(["create"])],
   ["lane", new Set(["create"])],
 ]);
-const CLOUD_LANE_MACHINE = "cloud";
-
 /**
  * True when every machine flag in `args` is exactly `--machine cloud` (or
  * `--machine=cloud`) and the subcommand, right after the command word, is one
  * of `CLOUD_LANE_SUBCOMMANDS`. Any other machine value, a list, a second
  * machine, `--all-machines` or `--machine-project` is not this.
+ *
+ * Exact on purpose: the CLI also takes ` Cloud ` (`isCloudLaneMachineSelector`
+ * trims and lowercases), but this policy admits only the one spelling, so an
+ * unusual one from an outside app is refused rather than reasoned about.
  */
 function isCloudLaneMachineUse(command: string, args: readonly string[]): boolean {
   if (!CLOUD_LANE_SUBCOMMANDS.get(command)?.has(args[1] ?? "")) return false;

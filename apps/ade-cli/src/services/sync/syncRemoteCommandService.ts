@@ -3,6 +3,7 @@ import { isLaneShareGuestCommand } from "./laneShareGuestPolicy";
 import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
 import { buildProviderLoginsDomainService } from "../../../../desktop/src/main/services/providerLogins/providerLoginActions";
+import { PROVIDER_LOGIN_ACCOUNT_WRITES } from "../../../../desktop/src/shared/types/providerLogins";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
 import { cloudDomainEnabled } from "../../../../desktop/src/shared/adeCloud";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
@@ -8450,7 +8451,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   const providerLogins = buildProviderLoginsDomainService();
   register("providerLogins.status", { viewerAllowed: true }, async (payload) =>
     await providerLogins.status(payload), "runtime");
-  for (const method of ["captureNow", "use", "setCloud", "setCloudAll", "setCloudBalance", "remove"] as const) {
+  for (const method of ["captureNow", ...PROVIDER_LOGIN_ACCOUNT_WRITES] as const) {
     register(`providerLogins.${method}`, { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
       await providerLogins[method](payload), "runtime");
   }

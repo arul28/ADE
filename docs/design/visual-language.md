@@ -61,7 +61,7 @@ wall of utilities.
 | `.kit-row` | A hover-highlighted list row. |
 | `.kit-meter` | A thin bar with a `<span>` fill. `data-level="warn"` / `"crit"` recolours it. |
 | `.kit-dot` | A 6px status dot. `data-state="ok"`, `"warn"`, `"crit"`, `"accent"`. |
-| `.kit-tag` | A small tinted pill. `data-tone="ok"`, `"warn"`, `"crit"`. |
+| `.kit-tag` | A small tinted pill. `data-tone="ok"`, `"warn"`, `"crit"`, or `"accent"` (the surface's accent; a surface with its own brand sets `--kit-tag-accent`, as ADE Cloud's dashboard does). |
 | `.kit-seg` | A segmented control. Buttons use `aria-pressed`, `aria-selected` or `aria-checked`. `data-case="sentence"` for non-mono labels. |
 | `.kit-kbd` | A key or chord as the OS prints it (`⌘K`, `Ctrl+Shift+E`): one chip per chord. `data-size="sm"` inside a line of text, such as the Quick slots panel. |
 | `.kit-keys` | A chord as separate keycaps, one `<kbd>` per key, for a page about keys (Settings › Keyboard). `data-size="lg"` for a hero. |
@@ -69,6 +69,7 @@ wall of utilities.
 | `.kit-icon-btn` | A borderless square icon button. |
 | `.kit-find-bar` | On a `.kit-card`: the floating ⌘F bar, one 36px row with 24px icon buttons (`shared/FindBar.tsx`). |
 | `.kit-btn` | A 30px text button for card surfaces (recovery and error screens). `.kit-btn-primary` is the one filled button per card, in the theme's ink; `.kit-btn-ghost` is borderless. `data-size="sm"` is the 26px row size; `data-size="xs"` is an 18px inline action inside a line of text; `data-tone="crit"` colours a destructive choice's text. |
+| `.kit-num` | Tabular mono figures. `data-face="ui"` keeps the UI face (still tabular) for a big figure that should read as a number, not code. |
 | `.kit-panel` | A quiet grouped panel inside a card or popover (the usage popover's per-provider panels): hairline `--kit-panel-edge`, `--kit-panel-bg`, `--radius-lg`, no blur. |
 | `.kit-input` | A text field or select for card surfaces, the height of a `.kit-btn`. `aria-invalid="true"` tints the border. |
 | `.kit-rule` | A 1px divider. |
@@ -228,6 +229,18 @@ row with a setting behind it needs an entry in `settingsManifest.ts`.
   rest into "Other" (`USAGE_CHART_MAX_SERIES`).
 - **Light themes.** Everything above must read on light themes. Tint with
   `--color-fg`, not white, and follow the light-mode rules in `theming.md`.
+
+### Exception: the ADE Cloud hero
+
+Settings › ADE Cloud opens on a night sky (`.adecd-hero` in
+`settings/cloudDashboard/cloudDashboard.css`): an opaque, self-coloured card
+with its own radius and border, and a city of the account's lanes drawn in
+ADE Cloud's blue with warm lit windows. It breaks principle 1 (cards are
+translucent planes) and principle 3 (colour is for meaning) on purpose: the
+owner picked it as ADE Cloud's look. The exception covers that one card and
+the "look inside" city, nothing else. Everything below it on the page is kit
+(`.kit-card`, `.kit-panel`, `.kit-tag`, `.kit-btn`, `<Banner>`), and warnings
+on the sky still use `--kit-warn`. Do not copy the sky to another surface.
 
 ## Appearance page
 

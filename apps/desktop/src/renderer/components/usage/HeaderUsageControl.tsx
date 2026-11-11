@@ -32,7 +32,8 @@ import {
 import { useUsageSnapshot } from "./useUsageSnapshot";
 import { useUsageHeaderPreferences } from "./usageHeaderPreferences";
 import { humanizeProvider } from "./usageProviderNames";
-import { HeaderCloudPanel, HeaderCloudRing, headerCloudTitle, useHeaderCloudAccount } from "./HeaderCloudMeter";
+import { HeaderCloudPanel, HeaderCloudRing, headerCloudTitle } from "./HeaderCloudMeter";
+import { useCloudAccount } from "../../state/cloudAccountStore";
 
 
 function ProviderLogo({ provider, size = 14 }: { provider: UsageProvider; size?: number }) {
@@ -338,7 +339,7 @@ export function HeaderUsageControl({
   const updatedAgo = formatUpdatedAgo(snapshot, nowMs);
 
   // ADE Cloud's hours come first, for an account ADE Cloud lets in.
-  const cloudAccount = useHeaderCloudAccount();
+  const cloudAccount = useCloudAccount();
   const titleParts = [
     ...(cloudAccount ? [headerCloudTitle(cloudAccount)] : []),
     ...providersWithUsage.map(

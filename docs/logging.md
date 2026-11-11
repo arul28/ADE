@@ -1887,7 +1887,7 @@ identifier travels. A six-hour key per outcome bounds it to 16 accepted events
 per installation per UTC day, inside the existing `ade_feature_used` ceilings.
 
 ADE Cloud lanes record `feature: "connections"` with one coarse outcome
-(`cloudLaneLaunchAnalytics.ts`). `cloud_lane_launch`: how a new lane on its
+(`cloudLaneAnalytics.ts`). `cloud_lane_launch`: how a new lane on its
 own computer ends, `completed`, `failed` or `cancelled`, counted once per end
 when the launch host (the desktop's `registerCloudLaneLaunchIpc.ts`, surface
 `desktop`, or the brain's `cloudLaneLaunchBrainHost.ts`, surface `api`) saw it

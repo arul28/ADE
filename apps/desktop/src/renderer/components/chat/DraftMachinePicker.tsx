@@ -3,7 +3,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { DevinLogo } from "../shared/ProviderLogos";
-import { CloudMark, type CloudSkylineLane } from "../remoteTargets/cloudBrand";
+import { CloudMark } from "../remoteTargets/cloudBrand";
 import { cn } from "../ui/cn";
 import { MENU_ITEM_CLASS, MENU_SCROLL_CLASS, POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { usePortalContainer } from "../ui/portalContainer";
@@ -25,11 +25,9 @@ export type DraftMachineOption = {
   unavailableReason?: string | null;
   /** A second line under the name: what picking it does first ("Clone the project here"). */
   detail?: string | null;
-  /** Kept for callers; the menu no longer draws a skyline (an empty one read as a broken image). */
-  skyline?: readonly CloudSkylineLane[] | null;
   /**
    * The row's facts are not known yet (ADE Cloud before the first account
-   * read): the second line and the skyline keep their space, empty, so the
+   * read): the second line keeps its space, empty, so the
    * answer fills them in place without a claim before it.
    */
   detailPending?: boolean;
@@ -386,7 +384,7 @@ export function DraftMachinePicker({
                     <span className="min-w-0 flex-1">
                       <span className="block truncate font-medium">{machine.name}</span>
                       <span
-                        className={cn("block truncate text-[10px] tabular-nums", reason ? "text-amber-300/70" : "text-muted-fg/60")}
+                        className={cn("block truncate text-[10px] tabular-nums", reason ? "text-[var(--kit-warn)]" : "text-muted-fg/60")}
                         title={secondLine ?? undefined}
                       >
                         {machine.detailPending && !secondLine ? "\u00a0" : secondLine ?? fallbackLine(machine)}

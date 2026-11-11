@@ -11,7 +11,9 @@ const COMMIT_MESSAGE = "Work saved from ADE Cloud";
 /**
  * One lane as push-work left it. `unpushed`: work only on the computer (a
  * check, or a primary lane, which is never pushed). `failed`: a push that
- * didn't go through. `pushed`: on GitHub now. `clean`: nothing to push.
+ * didn't go through, or a lane whose state couldn't be read. `pushed`: on
+ * GitHub now. `clean`: read now, nothing GitHub doesn't have. `ahead` counts
+ * commits no remote has (not commits past the lane's base).
  */
 export type CloudPushWorkLane = {
   laneId: string;
@@ -23,7 +25,13 @@ export type CloudPushWorkLane = {
   state: "clean" | "pushed" | "failed" | "unpushed";
 };
 
-export type CloudPushWorkResult = { pushed: number; failed: number; skipped: number; lanes: CloudPushWorkLane[] };
+/**
+ * `readsRemotes: true` marks a tally from this read (`ade cloud push-work` and
+ * `work-state` both): each lane's `ahead` counts commits no remote has, and a
+ * lane it couldn't read is `failed`. An older ADE left it out; its `clean`
+ * primary lane may still hold unpushed commits, so the server trusts only this.
+ */
+export type CloudPushWorkResult = { readsRemotes: true; pushed: number; failed: number; skipped: number; lanes: CloudPushWorkLane[] };
 
 type Logger = { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
 
@@ -46,18 +54,30 @@ export async function pushCloudComputerWork(args: {
   check?: boolean;
   logger?: Logger;
 }): Promise<CloudPushWorkResult> {
-  const tally: CloudPushWorkResult = { pushed: 0, failed: 0, skipped: 0, lanes: [] };
+  const tally: CloudPushWorkResult = { readsRemotes: true, pushed: 0, failed: 0, skipped: 0, lanes: [] };
   for (const load of args.projects) {
     try {
       const runtime = await load();
-      // The list keeps lane statuses for 10 s. "Everything is pushed" has to be true now.
       runtime.laneService.invalidateListCache();
-      for (const lane of await runtime.laneService.list({ includeArchived: true, includeStatus: true })) {
+      // "Everything is on GitHub" has to be true now, so each lane is read
+      // uncached, against the remotes (the list's `ahead` counts past the base,
+      // which is 0 for the primary lane), and a read that fails is not "clean".
+      for (const lane of await runtime.laneService.list({ includeArchived: true, includeStatus: false })) {
         const primary = lane.laneType === "primary";
-        const dirty = lane.status?.dirty === true;
-        const ahead = lane.status?.ahead ?? 0;
-        const entry: CloudPushWorkLane = { laneId: lane.id, laneName: lane.name, branchRef: lane.branchRef, primary, dirty, ahead, state: "clean" };
+        const entry: CloudPushWorkLane = { laneId: lane.id, laneName: lane.name, branchRef: lane.branchRef, primary, dirty: false, ahead: 0, state: "clean" };
         tally.lanes.push(entry);
+        let unsaved: { dirty: boolean; unpushedCommits: number };
+        try {
+          unsaved = await runtime.laneService.readUnsavedWork(lane.id);
+        } catch (error) {
+          entry.state = "failed";
+          tally.failed += 1;
+          args.logger?.warn("cloud.push_work_lane_unreadable", { laneId: lane.id, error: error instanceof Error ? error.message : String(error) });
+          continue;
+        }
+        const { dirty, unpushedCommits: ahead } = unsaved;
+        entry.dirty = dirty;
+        entry.ahead = ahead;
         if (!dirty && ahead === 0) continue;
         if (primary || args.check) {
           entry.state = "unpushed";

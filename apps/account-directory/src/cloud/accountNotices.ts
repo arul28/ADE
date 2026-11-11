@@ -1,6 +1,6 @@
 import { timedWakesCancelledSentence, type CloudTimedWakesCancelled } from "./contract";
 import { sendCloudEmail } from "./email";
-import type { CloudEnv } from "./store";
+import type { AccountRow, CloudEnv } from "./store";
 
 /**
  * Timed wake-ups cancelled because an account's computers may not wake (0
@@ -12,17 +12,13 @@ import type { CloudEnv } from "./store";
  * next time it sleeps after it ran, so nothing has to be set up again.
  */
 
-export type WakeBlock = "out_of_hours" | "over_plan_disk";
-
-type NoticeColumns = {
-  period_start: number;
-  wakes_cancelled_at?: number | null;
-  wakes_cancelled_count?: number | null;
-  wakes_cancelled_reason?: string | null;
-};
+/** Why an account's computers may not wake. */
+export type WakeBlock = CloudTimedWakesCancelled["reason"];
 
 /** The notice for `GET /cloud/account`: only while the period it happened in runs. */
-export function timedWakesCancelledOf(account: NoticeColumns): CloudTimedWakesCancelled | null {
+export function timedWakesCancelledOf(
+  account: Pick<AccountRow, "period_start" | "wakes_cancelled_at" | "wakes_cancelled_count" | "wakes_cancelled_reason">,
+): CloudTimedWakesCancelled | null {
   if (account.wakes_cancelled_at == null || account.wakes_cancelled_at < account.period_start) return null;
   const reason = account.wakes_cancelled_reason === "over_plan_disk" ? "over_plan_disk" : "out_of_hours";
   return { at: account.wakes_cancelled_at, count: account.wakes_cancelled_count ?? 0, reason };

@@ -10,6 +10,7 @@ import { Reveal } from "../../components/Reveal";
 import { Section } from "../../components/Section";
 import {
   FREE_MONTHLY_HOURS,
+  INVITE_ENTER_DAYS,
   INVITE_REWARD_HOURS,
   inviteAppLink,
   inviteCodeFrom,
@@ -79,7 +80,7 @@ export function InvitePage() {
               <div className="mx-auto mt-10 max-w-md rounded-xl border border-border bg-card/40 p-5 text-left">
                 <p className="text-sm font-medium text-fg">Already have ADE?</p>
                 <p className="mt-1 text-sm leading-relaxed text-muted-fg">
-                  Open the invite in ADE, or enter the code in Settings › Account within 30 days of signing up.
+                  Open the invite in ADE, or enter the code in Settings › Account within {INVITE_ENTER_DAYS} days of signing up.
                 </p>
                 <div className="mt-4 flex flex-wrap items-center gap-3">
                   <a

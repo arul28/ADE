@@ -2,6 +2,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { CLOUD_COMPUTER_ID_DOMAIN, CLOUD_COMPUTER_UNREADABLE } from "../../../../account-directory/src/cloud/contract";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
 import { canonicalWindowsPath } from "../projects/machineLayout";
 
@@ -247,10 +248,15 @@ function runProbeAsync(command: string, args: readonly string[]): Promise<string
 export async function readHardwareAnchorUuidAsync(): Promise<string | null> {
   if (cachedAnchorUuid) return cachedAnchorUuid.value;
   let value: string | null = null;
+  // A probe that failed (a timeout, a spawn error) is not "this host has no
+  // id": it isn't cached, so the next async read asks again. Callers keep
+  // their own result (`loadMachineTelemetryId`, `cloudFreePlanComputer`).
+  let probeFailed = false;
   try {
     const platform = process.platform;
     if (platform === "darwin") {
       const output = await runProbeAsync("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]);
+      probeFailed = output === null;
       value = output ? parseIoregPlatformUuid(output) : null;
     } else if (platform === "win32") {
       const output = await runProbeAsync(resolveTrustedWindowsTool("reg"), [
@@ -259,13 +265,17 @@ export async function readHardwareAnchorUuidAsync(): Promise<string | null> {
         "/v",
         "MachineGuid",
       ]);
+      probeFailed = output === null;
       value = output ? parseWindowsMachineGuid(output) : null;
     } else {
       value = probeAnchorUuid({ platform });
     }
   } catch {
     value = null;
+    probeFailed = true;
   }
+  // A synchronous read may have filled the cache meanwhile (TS can't see the await).
+  if (probeFailed) return (cachedAnchorUuid as { value: string | null } | null)?.value ?? null;
   // A synchronous read that finished first wins; both read the same machine.
   if (!cachedAnchorUuid) cachedAnchorUuid = { value };
   return cachedAnchorUuid.value;
@@ -396,11 +406,9 @@ export function readAccountHardwareId(
  * every account and every ADE home on the computer (unlike the anchor above,
  * which is per account and per install), so two accounts on one computer send
  * one value. The raw identifier still never leaves the process, and the
- * server keys this once more before keeping it. Keep the salt in step with
- * `CLOUD_COMPUTER_ID_DOMAIN` in the account directory's contract.
+ * server keys this once more before keeping it. The salt is the contract's
+ * `CLOUD_COMPUTER_ID_DOMAIN`.
  */
-export const CLOUD_COMPUTER_ID_DOMAIN = "ade-cloud-free-plan-computer-v1";
-
 export function cloudComputerIdFor(rawUuid: string): string {
   return createHash("sha256").update(`${CLOUD_COMPUTER_ID_DOMAIN}:${rawUuid}`).digest("hex");
 }
@@ -410,7 +418,7 @@ export function cloudComputerIdFor(rawUuid: string): string {
  * gives no identifier (some VMs and containers). Off the event loop, and the
  * same process cache as every other read of the identifier.
  */
-export async function readCloudComputerIdAsync(): Promise<string | "unreadable"> {
+export async function readCloudComputerIdAsync(): Promise<string> {
   const rawUuid = await readHardwareAnchorUuidAsync();
-  return rawUuid ? cloudComputerIdFor(rawUuid) : "unreadable";
+  return rawUuid ? cloudComputerIdFor(rawUuid) : CLOUD_COMPUTER_UNREADABLE;
 }

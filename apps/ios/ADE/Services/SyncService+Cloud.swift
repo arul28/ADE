@@ -90,20 +90,20 @@ struct CloudPhoneMachine: Decodable, Identifiable, Equatable, Hashable {
     machineKey = try c.decodeIfPresent(String.self, forKey: .machineKey)
     state = try c.decode(String.self, forKey: .state)
     type = try c.decodeIfPresent(String.self, forKey: .type)
-    size = try? c.decodeIfPresent(String.self, forKey: .size)
-    shape = (try? c.decodeIfPresent(String.self, forKey: .shape)) ?? (try? c.decodeIfPresent(String.self, forKey: .shapeId))
-    hoursRate = try? c.decodeIfPresent(Double.self, forKey: .hoursRate)
-    sleep = try? c.decodeIfPresent(CloudPhoneSleep.self, forKey: .sleep)
-    pastDue = try? c.decodeIfPresent(Bool.self, forKey: .pastDue)
+    size = c.lenient(String.self, forKey: .size)
+    shape = c.lenient(String.self, forKey: .shape) ?? c.lenient(String.self, forKey: .shapeId)
+    hoursRate = c.lenient(Double.self, forKey: .hoursRate)
+    sleep = c.lenient(CloudPhoneSleep.self, forKey: .sleep)
+    pastDue = c.lenient(Bool.self, forKey: .pastDue)
     // The full list's parts are each optional: one a newer brain shapes
     // differently drops alone instead of failing the whole page.
-    resources = try? c.decodeIfPresent(Resources.self, forKey: .resources)
-    lane = try? c.decodeIfPresent(Lane.self, forKey: .lane)
-    lastActiveAtMs = try? c.decodeIfPresent(Double.self, forKey: .lastActiveAtMs)
-    createdAtMs = try? c.decodeIfPresent(Double.self, forKey: .createdAtMs)
-    diskUsage = try? c.decodeIfPresent(DiskUsage.self, forKey: .diskUsage)
-    laneWork = try? c.decodeIfPresent(LaneWork.self, forKey: .laneWork)
-    diskFull = try? c.decodeIfPresent(String.self, forKey: .diskFull)
+    resources = c.lenient(Resources.self, forKey: .resources)
+    lane = c.lenient(Lane.self, forKey: .lane)
+    lastActiveAtMs = c.lenient(Double.self, forKey: .lastActiveAtMs)
+    createdAtMs = c.lenient(Double.self, forKey: .createdAtMs)
+    diskUsage = c.lenient(DiskUsage.self, forKey: .diskUsage)
+    laneWork = c.lenient(LaneWork.self, forKey: .laneWork)
+    diskFull = c.lenient(String.self, forKey: .diskFull)
   }
 
   var id: String { instanceId }
@@ -243,19 +243,19 @@ struct CloudPhoneAccount: Decodable, Equatable {
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     plan = try c.decode(String.self, forKey: .plan)
-    planId = try? c.decodeIfPresent(String.self, forKey: .planId)
+    planId = c.lenient(String.self, forKey: .planId)
     hours = try c.decode(Hours.self, forKey: .hours)
-    extraHours = try? c.decodeIfPresent(ExtraHours.self, forKey: .extraHours)
-    disk = try? c.decodeIfPresent(Disk.self, forKey: .disk)
-    computers = try? c.decodeIfPresent(Computers.self, forKey: .computers)
-    recentUse = try? c.decodeIfPresent(RecentUse.self, forKey: .recentUse)
-    billing = try? c.decodeIfPresent(Billing.self, forKey: .billing)
-    catalog = try? c.decodeIfPresent(Catalog.self, forKey: .catalog)
-    earnedHours = try? c.decodeIfPresent(EarnedHours.self, forKey: .earnedHours)
-    freePlan = try? c.decodeIfPresent(FreePlan.self, forKey: .freePlan)
-    planCleanup = try? c.decodeIfPresent(Sentence.self, forKey: .planCleanup)
-    timedWakesCancelled = try? c.decodeIfPresent(Sentence.self, forKey: .timedWakesCancelled)
-    referral = try? c.decodeIfPresent(CloudPhoneReferral.self, forKey: .referral)
+    extraHours = c.lenient(ExtraHours.self, forKey: .extraHours)
+    disk = c.lenient(Disk.self, forKey: .disk)
+    computers = c.lenient(Computers.self, forKey: .computers)
+    recentUse = c.lenient(RecentUse.self, forKey: .recentUse)
+    billing = c.lenient(Billing.self, forKey: .billing)
+    catalog = c.lenient(Catalog.self, forKey: .catalog)
+    earnedHours = c.lenient(EarnedHours.self, forKey: .earnedHours)
+    freePlan = c.lenient(FreePlan.self, forKey: .freePlan)
+    planCleanup = c.lenient(Sentence.self, forKey: .planCleanup)
+    timedWakesCancelled = c.lenient(Sentence.self, forKey: .timedWakesCancelled)
+    referral = c.lenient(CloudPhoneReferral.self, forKey: .referral)
   }
 
   /// Out of hours for this period, as the server counts it.
@@ -387,16 +387,17 @@ extension SyncService {
   /// Whether ADE Cloud exists for this account: the connected machine's answer
   /// from the server. Off the list, on an older machine, or with no answer,
   /// it's no, and every cloud entry on the phone is gone.
+  /// An answer that lands after the phone left that machine is dropped: the
+  /// read the new connection starts decides.
   func refreshCloudAvailability() async {
     guard cloudSupported else {
       cloudAvailable = false
       return
     }
-    do {
-      cloudAvailable = try await cloudRead("access", as: CloudPhoneAccess.self).enabled
-    } catch {
-      cloudAvailable = false
-    }
+    let host = activeHostProfile?.hostIdentity
+    let enabled = (try? await cloudRead("access", as: CloudPhoneAccess.self))?.enabled ?? false
+    guard isAttached, activeHostProfile?.hostIdentity == host else { return }
+    cloudAvailable = enabled
   }
 
   /// Wakes the cloud box behind an account machine before the phone dials

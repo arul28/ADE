@@ -75,6 +75,10 @@ export function CloudSection() {
     );
   }
 
+  // Main says this account has no ADE Cloud while the renderer still says yes: the tab goes
+  // when the access change arrives, so show nothing meanwhile (never a spinner that never ends).
+  if (!loading && status && !status.connected && !status.signedOut && !status.error) return null;
+
   const unreachable = machines.result && machines.result.state !== "ok" ? machines.result.message : null;
   const problem = error
     ?? (status?.error ?? null)

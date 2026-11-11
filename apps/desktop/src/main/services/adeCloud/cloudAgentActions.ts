@@ -29,7 +29,9 @@
 
 import { randomUUID } from "node:crypto";
 import {
+  ADE_CLOUD_APPROVAL_METADATA_KEY,
   CLOUD_HOURS_UNKNOWN_MESSAGE,
+  CLOUD_MACHINE_DEFAULT_NAME,
   CLOUD_MADE_BY_CHAT_METADATA,
   CLOUD_OUT_OF_HOURS_MESSAGE,
   CLOUD_SHAPES,
@@ -60,14 +62,12 @@ import {
   type CloudMachineKind,
   type CloudMachinesResult,
   type CloudShapeId,
-  readCloudReferralSummary,
   type CloudInviteRedeemOutcome,
-  type CloudInviteRefusalReason,
   type CloudReferralSummary,
 } from "../../../shared/adeCloud";
 import type { PermissionLevel } from "../../../shared/permissionLadder";
 import { getErrorMessage } from "../shared/utils";
-import { CloudProviderError, type CloudLogger } from "./cloudProvider";
+import type { CloudLogger } from "./cloudProvider";
 import type { CloudMoveResult } from "./cloudMachineCopy";
 import type { CloudBrainMaker, CloudMakeInput } from "./cloudBrainMaker";
 import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
@@ -77,7 +77,7 @@ import type { ChatLaunchArgs } from "../../../shared/types";
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import { buildCloudTierRequestCard } from "../../../shared/cloudLaneLife";
 import { buildCloudAccountStatus, CLOUD_DAILY_LIMIT_SETTING, type CloudAccountStatus } from "./cloudAccountStatus";
-import { captureCloudLaneAnalytics } from "./cloudLaneLaunchAnalytics";
+import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import { countAgentMadeToday, type createCloudMachines } from "./cloudMachines";
 import type { CloudAgentLimitsStore } from "./cloudSleep";
 
@@ -116,6 +116,7 @@ export type CloudChatApprovals = {
     body: string;
     timeoutMs?: number;
     allowsFreeform?: boolean;
+    providerMetadata?: Record<string, unknown>;
     questions?: Array<{
       id?: string;
       header?: string;
@@ -150,8 +151,8 @@ export type CloudAgentActionDeps = {
    */
   savedDefaultTier?: (() => unknown) | null;
   approvals: CloudChatApprovals | null;
-  /** One coarse outcome per cache clear (cloudLaneLaunchAnalytics.ts); never the computer. */
-  analytics?: Parameters<typeof captureCloudLaneAnalytics>[0];
+  /** One coarse outcome per cache clear (cloudLaneAnalytics.ts); never the computer. */
+  analytics?: CloudLaneAnalyticsCapture;
   logger?: CloudLogger;
 };
 
@@ -433,6 +434,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       body: card.body,
       timeoutMs: APPROVAL_TIMEOUT_MS,
       allowsFreeform: false,
+      // Only the person answers: an agent's `chat.respondToInput` is refused.
+      providerMetadata: { [ADE_CLOUD_APPROVAL_METADATA_KEY]: true },
       questions: [{
         id: "decision",
         header: "ADE Cloud",
@@ -552,7 +555,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       if (!isCloudMachineKind(kind)) throw new Error("Make a standard or a full computer (--kind box|vm).");
       const shapeId = shapeArg(args) ?? "2x4";
       const shape = cloudShapeById(shapeId);
-      const name = text(args, "name") ?? "ADE Cloud computer";
+      const name = text(args, "name") ?? CLOUD_MACHINE_DEFAULT_NAME;
       const account = await newComputerCheck();
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const approval = readApproval(args);
@@ -937,22 +940,14 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     /**
      * Enters someone's invite for this account (a pasted link or the bare
      * code). Once, ever: an account's referrer never changes. The person's
-     * call only (`USER_SETTING_WRITES`); an agent is refused before this runs.
+     * call only (`ADE_ACTION_USER_ONLY`): the phone's `cloud.write` reaches it;
+     * an agent, an ADE MCP app and a terminal are refused before this runs.
      * Answers the outcome; a refusal is `{ ok: false, reason, message }`, not a throw.
      */
     async invite_redeem(rawArgs?: unknown): Promise<CloudInviteRedeemOutcome> {
       const code = text(record(rawArgs), "code");
-      if (!code) throw new Error("Pass the invite link or its code: ade cloud invite redeem <link-or-code>.");
-      try {
-        const result = await deps.machines.redeemInvite(code);
-        logger.info?.("cloud.invite_redeemed", { rewarded: result.rewarded });
-        return { ok: true, rewarded: result.rewarded, referral: readCloudReferralSummary(result.referral) };
-      } catch (error) {
-        const reason = error instanceof CloudProviderError && error.code === "invite_refused" ? error.detail.reason : null;
-        logger.info?.("cloud.invite_refused", { reason: reason ?? "unavailable" });
-        if (!reason) throw error;
-        return { ok: false, reason: reason as CloudInviteRefusalReason, message: getErrorMessage(error) };
-      }
+      if (!code) throw new Error("Pass the invite link or its 8-character code.");
+      return await deps.machines.redeemInvite(code);
     },
 
     /** What agents may do alone: a preset (ask, balanced, hands_off) or single limits. Loosening asks the person. */

@@ -12728,7 +12728,9 @@ export function registerIpc({
     // ADE Cloud's sign-in setting: the end warning names only keys that are on for ADE Cloud.
     readCloudSignInSetting: async () => {
       const result = await accountSettingsSyncService.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING);
-      return result.ok ? result.value : null;
+      // The warning logs an unreadable setting and counts it as on.
+      if (!result.ok) throw new Error(result.message);
+      return result.value;
     },
     // This computer's brain, with no project: the actions are the account's
     // (`cloud.call`, ADE_ACTION_MACHINE_SCOPED), so a window with no project

@@ -12,7 +12,7 @@
  */
 import type { PostHog, PostHogConfig } from "posthog-js/dist/module.slim.no-external";
 
-import { marketingCurrentUrl } from "./marketingAnalytics";
+import { marketingCurrentUrl, withoutInviteCode } from "./marketingAnalytics";
 import { marketingReplayConfig } from "./marketingAnalyticsBrowser";
 
 /** Set on <html> while a page that shows link-carried data is open. */
@@ -40,7 +40,7 @@ export function markMarketingReplayRoute(pathname: string): void {
   // The router matches routes case-insensitively, so `/Open` is `/open`.
   const normalized = pathname.replace(/\/+$/, "").toLowerCase() || "/";
   // An invite page shows the inviter's first name and the code: all text masked.
-  if (MASK_ALL_TEXT_ROUTES.has(normalized) || normalized === "/invite" || normalized.startsWith("/invite/")) {
+  if (MASK_ALL_TEXT_ROUTES.has(normalized) || withoutInviteCode(normalized) === "/invite") {
     document.documentElement.setAttribute(MASK_ALL_TEXT_ATTRIBUTE, "");
   } else {
     document.documentElement.removeAttribute(MASK_ALL_TEXT_ATTRIBUTE);

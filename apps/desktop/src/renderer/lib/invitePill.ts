@@ -1,31 +1,32 @@
 import { useSyncExternalStore } from "react";
 import { cloudReferralOf, type CloudAccountState } from "../../shared/adeCloud";
-import { isWebClientMode } from "./webClientMode";
+import { createNudgeSchedule, type NudgeCounts } from "./nudgePill";
 
 /**
  * The desktop "Invite friends, get free cloud hours" pill and the invite
- * analytics. Its own schedule, apart from the star pill's:
+ * analytics. The sidebar nudges' shared schedule (`nudgePill.ts`) with its
+ * own numbers and one more condition:
  * - it shows only after the person has used ADE Cloud (a computer exists, or
  *   hours were used), while referrer rewards are left;
  * - a dismissal hides it for the next 40 sent messages;
  * - the third dismissal is final.
  *
- * The prefs are this computer's (localStorage). Each counter only moves one
- * way, so a stale copy can never bring a dismissed pill back early.
+ * The prefs are this computer's (localStorage), apart from the star pill's
+ * account-synced ones. Each counter only moves one way, so a stale copy can
+ * never bring a dismissed pill back early.
  */
 
 export const INVITE_PILL_SNOOZE_MESSAGES = 40;
 export const INVITE_PILL_MAX_DISMISSALS = 3;
+export const INVITE_PILL_SCHEDULE = createNudgeSchedule({
+  snoozeMessages: INVITE_PILL_SNOOZE_MESSAGES,
+  maxDismissals: INVITE_PILL_MAX_DISMISSALS,
+  firstAfterMessages: 0,
+});
 const STORAGE_KEY = "ade.invitePill.v1";
 const DAY_MS = 24 * 60 * 60_000;
 
-export type InvitePillPrefs = {
-  messagesSent: number;
-  dismissCount: number;
-  /** Showings already reported as `invite_pill_shown` (once per showing). */
-  shownReported: number;
-  snoozedUntilMessageCount: number | null;
-};
+export type InvitePillPrefs = NudgeCounts;
 
 const DEFAULT_PREFS: InvitePillPrefs = { messagesSent: 0, dismissCount: 0, shownReported: 0, snoozedUntilMessageCount: null };
 
@@ -89,21 +90,13 @@ export function isInvitePillVisible(prefs: InvitePillPrefs, account: CloudAccoun
   if (!account || !usedAdeCloud(account)) return false;
   const referral = cloudReferralOf(account);
   if (!referral || referral.rewardsLeft <= 0) return false;
-  if (prefs.dismissCount >= INVITE_PILL_MAX_DISMISSALS) return false;
-  return prefs.snoozedUntilMessageCount == null || prefs.messagesSent >= prefs.snoozedUntilMessageCount;
+  return INVITE_PILL_SCHEDULE.visible(prefs);
 }
 
-export function invitePillShowing(prefs: InvitePillPrefs): "prompt_first" | "prompt_second" | "prompt_third" {
-  return prefs.dismissCount === 0 ? "prompt_first" : prefs.dismissCount === 1 ? "prompt_second" : "prompt_third";
-}
-
-/** A chat message was sent from this desktop: counts only while it can still bring the pill back. */
+/** A chat message was sent from this desktop (`nudgePillActivity.ts`): counts only while it can still bring the pill back. */
 export function recordInvitePillMessageSent(): void {
-  if (typeof window === "undefined" || isWebClientMode()) return;
-  const now = current();
-  if (now.dismissCount >= INVITE_PILL_MAX_DISMISSALS || now.snoozedUntilMessageCount == null) return;
-  if (now.messagesSent >= now.snoozedUntilMessageCount) return;
-  updateInvitePill((prev) => ({ ...prev, messagesSent: prev.messagesSent + 1 }));
+  if (!INVITE_PILL_SCHEDULE.countsMessages(current())) return;
+  updateInvitePill(INVITE_PILL_SCHEDULE.messageSent);
 }
 
 export type InviteAnalyticsFact = {

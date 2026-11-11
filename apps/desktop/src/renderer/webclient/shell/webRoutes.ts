@@ -108,8 +108,9 @@ export function targetToWebPath(target: DeeplinkTarget): string {
     }
     case "invite": {
       // Settings › Account, with the code for its box (`?invite=`), as on the desktop.
-      const [path, anchor] = settingsRouteFor(INVITE_SETTINGS_ENTRY_ID).split("#");
-      return `${path}${path!.includes("?") ? "&" : "?"}invite=${encodeURIComponent(target.code)}${anchor ? `#${anchor}` : ""}`;
+      const url = new URL(settingsRouteFor(INVITE_SETTINGS_ENTRY_ID), "https://ade.invalid");
+      url.searchParams.set("invite", target.code);
+      return `${url.pathname}${url.search}${url.hash}`;
     }
   }
 }

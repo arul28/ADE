@@ -232,8 +232,7 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
   if (byUser.size === 0) return new Set();
   const accounts = await accountsOf(env, byUser);
   let rolls = 0;
-  /** Accounts whose computers may not wake now (0 hours, or the free plan above its disk). */
-  const blockedUsers: string[] = [];
+  /** Accounts whose computers may not wake now (0 hours, or the free plan above its disk), and why. */
   const blockedWhy = new Map<string, WakeBlock>();
   await Promise.all(accounts.map(async (row) => {
     // Most accounts roll at once on the 1st: a tick does its share and leaves the rest due.
@@ -260,7 +259,6 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
         : freePlanOverDisk(account, countedDiskGb(owned)) ? "over_plan_disk"
         : null;
       if (blocked) {
-        blockedUsers.push(account.user_id);
         blockedWhy.set(account.user_id, blocked);
         await stopAll(env, provider, owned, now, blocked);
       }
@@ -273,7 +271,7 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
   // wake reaches only a sleeping computer, and these are stopped.
   // The person hears once a period that their timed wake-ups were cancelled (`accountNotices.ts`).
   await cancelTimedWakes(env, blockedWhy, now);
-  return new Set(blockedUsers);
+  return new Set(blockedWhy.keys());
 }
 
 const HOURS_WARNINGS: Record<Exclude<CloudHoursState, "none">, {
@@ -301,7 +299,7 @@ async function warnHours(env: CloudEnv, account: AccountRow, state: CloudHoursSt
  * sleeper just stops. For an account whose wakes are refused (0 hours, or
  * disk the free plan doesn't cover); the short push-work wake runs out first.
  */
-async function stopAll(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number, reason: "out_of_hours" | "over_plan_disk"): Promise<void> {
+async function stopAll(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number, reason: WakeBlock): Promise<void> {
   await Promise.all(computers.map(async (computer) => {
     if (computer.cold_storage === 1) return;
     if (computer.free_wake_until != null && computer.free_wake_until > now) return;

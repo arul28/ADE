@@ -39,7 +39,7 @@ struct SettingsAccountPage: View {
         hint: "Were you invited? You both get \(cloudHours(referral.rewardMilli)) free cloud hours.\(referral.enterCodeUntil.map { " Add it by \(cloudDate($0))." } ?? "")"
       ) {
         // The box keeps its "Invite added" line; the section is gone on the next visit.
-        CloudInviteCodeBox(syncService: syncService, onDone: { _ in })
+        CloudInviteCodeBox(syncService: syncService, rewardMilli: referral.rewardMilli, onDone: { _ in })
         .adeKitCard()
       }
     }

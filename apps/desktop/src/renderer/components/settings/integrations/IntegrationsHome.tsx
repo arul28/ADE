@@ -51,17 +51,14 @@ const DESCRIPTIONS: Record<IntegrationId, string> = {
   github: "Open, review and merge pull requests, follow checks, and work on issues.",
   linear: "Start lanes from Linear issues, link them to PRs, and let your team assign work to ADE.",
   jira: "Bring a Jira Cloud site's issues into ADE and tie them to this project.",
-  cloud: "Make cloud Linux machines for your lanes, signed in to your account with no code to type.",
 };
 
 /** Where the credential lives: what the status says, else where a new one is saved. */
 function savedIn(id: IntegrationId, summary?: Summary): string {
-  return summary?.savedIn ?? (id !== "cloud" && connectProviderSpec(id).savedScope === "account" ? "Your account" : "This project");
+  return summary?.savedIn ?? (connectProviderSpec(id).savedScope === "account" ? "Your account" : "This project");
 }
 
 async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): Promise<Summary> {
-  // ADE Cloud has its own Settings tab; it is never on this grid.
-  if (id === "cloud") return UNKNOWN;
   if (id === "github") {
     const status = await window.ade.github.getStatus(undefined, pin);
     if (status.connected) {
@@ -103,15 +100,14 @@ function useIntegrationSummaries(
     github: CHECKING,
     linear: CHECKING,
     jira: CHECKING,
-    cloud: CHECKING,
   });
   useEffect(() => {
     let cancelled = false;
     if (!online) {
-      setSummaries({ github: OFFLINE, linear: OFFLINE, jira: OFFLINE, cloud: OFFLINE });
+      setSummaries({ github: OFFLINE, linear: OFFLINE, jira: OFFLINE });
       return undefined;
     }
-    setSummaries({ github: CHECKING, linear: CHECKING, jira: CHECKING, cloud: CHECKING });
+    setSummaries({ github: CHECKING, linear: CHECKING, jira: CHECKING });
     for (const id of ids) {
       readSummary(id, pin)
         .then((summary) => { if (!cancelled) setSummaries((prev) => ({ ...prev, [id]: summary })); })
@@ -168,7 +164,7 @@ function IntegrationMark({ server, entry, integration }: {
 export function IntegrationsHome({
   pin,
   machineOnline = true,
-  integrations: integrationsProp = INTEGRATION_IDS,
+  integrations = INTEGRATION_IDS,
   onOpen,
 }: {
   /** The page's machine: each integration status is read where its credential lives. */
@@ -180,8 +176,6 @@ export function IntegrationsHome({
   /** Opens a page; `server` focuses one MCP server on it. */
   onOpen: (page: IntegrationsPageId, server?: string) => void;
 }) {
-  // ADE Cloud has its own Settings tab; it is never a tile here.
-  const integrations = useMemo(() => integrationsProp.filter((id) => id !== "cloud"), [integrationsProp]);
   const summaries = useIntegrationSummaries(pin, machineOnline, integrations);
   const registry = useMcpRegistry();
   const [query, setQuery] = useState("");
@@ -329,7 +323,7 @@ export function IntegrationsHome({
                     className="ade-ig-tile"
                     style={integrationThemeVars(brand.accent)}
                     data-testid={`integration-tile-${id}`}
-                    data-settings-anchor={settingsEntryById(id === "cloud" ? "integrations.ade-cloud" : `integrations.${id}`)?.anchor}
+                    data-settings-anchor={settingsEntryById(`integrations.${id}`)?.anchor}
                     disabled={!machineOnline}
                     onClick={() => onOpen(id)}
                   >

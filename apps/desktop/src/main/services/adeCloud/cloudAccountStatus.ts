@@ -86,7 +86,12 @@ export type CloudAccountStatus = {
     /** The plan whose rules are in force: a paid plan with a failed payment follows the free one. */
     rulesId: "free" | "paid";
     pastDue: boolean;
-    includes: { hours: number; computers: number; diskGb: number; diskShared: boolean };
+    /**
+     * `diskShared` is always true now: every plan's disk is one total its
+     * computers share. Kept in the agent-facing answer (`ade cloud status
+     * --json`, the action contract) so a reader of the older shape still works.
+     */
+    includes: { hours: number; computers: number; diskGb: number; diskShared: true };
   } | null;
   hours: {
     left: number;
@@ -188,8 +193,7 @@ export function buildCloudAccountStatus(input: {
           label: cloudPlanLabelOf(account, catalog),
           rulesId: account.rules,
           pastDue: part.billing?.notice === "past_due",
-          // Every plan's disk is one total its computers share at one time (server `plans.ts`);
-          // only a server before plans gave each free computer its own (no `limitGb`).
+          // Every plan's disk is one total its computers share at one time (server `plans.ts`).
           includes: { hours: milliToHours(plan.includedMilli), computers: plan.computerLimit, diskGb: plan.diskGb, diskShared: true },
         }
       : null,

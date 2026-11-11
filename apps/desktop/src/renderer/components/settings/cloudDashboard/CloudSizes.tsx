@@ -1,10 +1,10 @@
 import { useMemo } from "react";
 import { Check, Cpu } from "@phosphor-icons/react";
-import { cloudCatalogOf, type CloudAccountState } from "../../../../shared/adeCloud";
-import { cloudTierFacts, cloudTierHoursLeftLabel, cloudTiers, type CloudTierId } from "../../../../shared/cloudTiers";
+import { cloudCatalogOf, cloudHoursLeftMilli, type CloudAccountState } from "../../../../shared/adeCloud";
+import { cloudTierFacts, cloudTierHoursLeftLabel, cloudTiers } from "../../../../shared/cloudTiers";
+import { pickCloudDefaultTier } from "../../../lib/cloudDefaultTier";
 import { useRootAppStore } from "../../../state/appStore";
 import { CloudSizeIcon } from "../../remoteTargets/cloudBrand";
-import { earnedHoursLeftMilli } from "./cloudDashboardModel";
 
 /**
  * The four sizes, side by side: CPU, memory, how far the disk can grow, what
@@ -15,9 +15,8 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
   const catalog = cloudCatalogOf(account);
   const tiers = useMemo(() => cloudTiers(catalog), [catalog]);
   const defaultTier = useRootAppStore((state) => state.cloudDefaultTier);
-  const setDefaultTier = useRootAppStore((state) => state.setCloudDefaultTier);
   const current = tiers.find((tier) => tier.id === defaultTier) ?? tiers[0] ?? null;
-  const leftMilli = account.hours.leftMilli + Math.max(0, earnedHoursLeftMilli(account) ?? 0);
+  const leftMilli = cloudHoursLeftMilli(account);
   const extraCents = account.extraHours.available ? catalog.extraHourCents : null;
   return (
     <section id="cloud-sizes" className="kit-card adecd-card" aria-label="Sizes">
@@ -37,13 +36,13 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
                 type="button"
                 role="radio"
                 aria-checked={picked}
-                className="adecd-sizecard"
-                onClick={() => setDefaultTier(tier.id as CloudTierId)}
+                className="kit-panel adecd-sizecard"
+                onClick={() => pickCloudDefaultTier(tier.id)}
               >
                 <span className="adecd-sizecard-top">
                   <CloudSizeIcon tier={tier.id} size={26} />
                   <b>{tier.label}</b>
-                  {picked ? <span className="adecd-sizecard-pick"><Check size={10} weight="bold" />Default</span> : null}
+                  {picked ? <span className="kit-tag adecd-sizecard-pick" data-tone="accent"><Check size={10} weight="bold" />Default</span> : null}
                 </span>
                 <span className="adecd-sizecard-specs">
                   {facts.specs.map((spec) => <span key={spec}>{spec}</span>)}
@@ -53,12 +52,12 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
                   {facts.runs}
                 </span>
                 <span className="adecd-sizecard-rate">
-                  <b className="kit-num">{facts.rate}×</b>
+                  <b className="kit-num" data-face="ui">{facts.rate}×</b>
                   <span>{facts.rateLine}</span>
                 </span>
                 <span className="adecd-sizecard-left">
-                  Your hours last <b className="kit-num">{cloudTierHoursLeftLabel(tier, leftMilli)}</b> here
-                  {extraCents != null ? <>, then <span className="kit-num">{Math.round(extraCents * facts.rate * 100) / 100}¢</span> an hour</> : null}
+                  Your hours last <b className="kit-num" data-face="ui">{cloudTierHoursLeftLabel(tier, leftMilli)}</b> here
+                  {extraCents != null ? <>, then <span className="kit-num" data-face="ui">{Math.round(extraCents * facts.rate * 100) / 100}¢</span> an hour</> : null}
                 </span>
               </button>
             );

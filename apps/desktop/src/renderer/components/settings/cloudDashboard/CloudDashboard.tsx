@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowLeft, Broom, Desktop, MagnifyingGlass, Trash, Warning } from "@phosphor-icons/react";
-import { cloudAccountBanner, cloudFreePlanOf, formatCloudDate, formatCloudHours, planCleanupDoneSentence, timedWakesCancelledSentence, type CloudAccountState } from "../../../../shared/adeCloud";
+import { ArrowLeft, Broom, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
+import {
+  CLOUD_DISK_WARN_SHARE,
+  cloudAccountBanner,
+  cloudEarnedHoursOf,
+  cloudFreePlanOf,
+  formatCloudDate,
+  formatCloudGb,
+  formatCloudHours,
+  percentOf,
+  planCleanupDoneSentence,
+  timedWakesCancelledSentence,
+  type CloudAccountState,
+} from "../../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../../shared/cloudLaneLaunch";
 import { resolveSettingsHash } from "../../../../shared/settingsManifest";
 import { useLocation } from "react-router-dom";
@@ -20,15 +32,10 @@ import { CloudSizes } from "./CloudSizes";
 import { CloudSignIns } from "./CloudSignIns";
 import { CloudInviteCard } from "./CloudInvite";
 import {
-  CLOUD_DISK_WARN_SHARE,
   STATE_LABEL,
   dashLanes,
-  earnedHoursLeftMilli,
-  formatGb,
-  formatShortDate,
   hoursForecast,
   lastRunText,
-  percentOf,
   planName,
   prefersReducedMotion,
   type DashLane,
@@ -39,7 +46,6 @@ import { cloudLaneJobFor, cloudLaneJobVisible, refreshCloudLanesWithoutComputer,
 import { CloudLaneJobCard } from "../../cloudLane/CloudLaneJobCard";
 import { CloudLaneWithoutComputerNotice } from "../../cloudLane/CloudLaneWithoutComputer";
 import { CloudTierChangeDialog } from "../../cloudLane/CloudTierChangeDialog";
-import "./cloudDashboard.css";
 
 /** The dashboard's element id. */
 export const CLOUD_DASHBOARD_ID = "ade-cloud-dashboard";
@@ -123,7 +129,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
   const cityItems = useMemo<CityItem[]>(() => lanes.map((lane) => ({
     key: lane.key,
     name: lane.name,
-    sub: lane.state === "none" ? "no computer now" : lane.noLane ? `${formatGb(lane.diskGb)}, no lane` : formatGb(lane.diskGb),
+    sub: lane.state === "none" ? "no computer now" : lane.noLane ? `${formatCloudGb(lane.diskGb)}, no lane` : formatCloudGb(lane.diskGb),
     aria: laneAria(lane, now),
     detail: laneDetail(lane, now),
     size: lane.diskGb,
@@ -156,7 +162,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
     setBusyKey(lane.key);
     try {
       const { freedGb } = await clearCloudLaneCaches(lane);
-      showToast({ tone: "success", title: `Cleared caches on ${lane.name}`, message: `Freed ${formatGb(freedGb)}.` });
+      showToast({ tone: "success", title: `Cleared caches on ${lane.name}`, message: `Freed ${formatCloudGb(freedGb)}.` });
       refresh();
     } catch (error) {
       showToast({ tone: "error", title: `Couldn't clear caches on ${lane.name}`, message: errorText(error) });
@@ -216,11 +222,17 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
       {banner ? <Banner layout="inline" model={{ ...banner, report: false }} /> : null}
       <PlanNotices account={account} />
       {diskShare >= CLOUD_DISK_WARN_SHARE ? (
-        <div className="adecd-warn" role="status">
-          <Warning size={14} weight="fill" />
-          <span>Your disk is {Math.round(diskShare * 100)}% full. Free some space before your lanes need more.</span>
-          <button type="button" className="kit-btn" data-size="sm" onClick={() => setFreeing(true)}>Free up space</button>
-        </div>
+        <Banner
+          layout="inline"
+          model={{
+            id: "cloud-disk-full",
+            tone: "warning",
+            title: `Your disk is ${Math.round(diskShare * 100)}% full`,
+            detail: "Free some space before your lanes need more.",
+            actions: [{ label: "Free up space", onClick: () => setFreeing(true) }],
+            report: false,
+          }}
+        />
       ) : null}
 
       {otherJobs.length ? (
@@ -303,7 +315,7 @@ function CloudHero({
   now: number;
 }) {
   const hours = account.hours;
-  const earned = earnedHoursLeftMilli(account);
+  const earned = cloudEarnedHoursOf(account).leftMilli;
   const hoursPct = hours.includedMilli > 0 ? (hours.leftMilli / hours.includedMilli) * 100 : 0;
   const forecast = hoursForecast(account, now);
   const diskUsed = account.disk.usedGb;
@@ -312,8 +324,8 @@ function CloudHero({
   const freePlan = cloudFreePlanOf(account);
   const blockedSentence = freePlan.state === "refused" ? freePlan.sentence ?? null : null;
   const resets = account.billing.cancelAtPeriodEnd
-    ? `plan ends ${formatShortDate(account.billing.periodEnd)}`
-    : `resets ${formatShortDate(account.billing.periodEnd)}`;
+    ? `plan ends ${formatCloudDate(account.billing.periodEnd)}`
+    : `resets ${formatCloudDate(account.billing.periodEnd)}`;
   const toPlans = () => document.getElementById("cloud-plan")?.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
   return (
     <section className="adecd-citycard adecd-hero" aria-label={`${ADE_CLOUD_NAME}, ${planName(account)}`}>
@@ -322,7 +334,7 @@ function CloudHero({
         <CloudMark size={20} brand bold />
         <h2>{planName(account)}</h2>
         <span className="adecd-grow" />
-        <button type="button" className="adecd-hero-btn" onClick={toPlans}>
+        <button type="button" className="kit-btn" data-size="sm" onClick={toPlans}>
           {account.plan === "free" ? "Compare plans" : "Plan and billing"}
         </button>
       </header>
@@ -331,7 +343,7 @@ function CloudHero({
           <div className="adecd-hours">
             <span className="adecd-label">Hours left this month</span>
             <div className="adecd-hours-num">
-              <b className="kit-num">{formatCloudHours(hours.leftMilli)}</b>
+              <b className="kit-num" data-face="ui">{formatCloudHours(hours.leftMilli)}</b>
               <span>of {formatCloudHours(hours.includedMilli)} h, {resets}</span>
             </div>
             <div className="kit-meter adecd-meter" data-level={usageLeftLevel(hoursPct)}>
@@ -339,7 +351,7 @@ function CloudHero({
             </div>
             <ul className="adecd-hours-notes">
               {blockedSentence ? <li data-tone="warn">{blockedSentence}</li> : null}
-              {earned != null && earned > 0 ? <li><b>+{formatCloudHours(earned)} hours</b> earned from invites. They never expire.</li> : null}
+              {earned > 0 ? <li><b>+{formatCloudHours(earned)} hours</b> earned from invites. They never expire.</li> : null}
               {account.extraHours.available ? (
                 <li>{account.extraHours.enabled
                   ? `Extra hours are on${account.extraHours.usedMilli > 0 ? `: ${formatCloudHours(account.extraHours.usedMilli)} h used this month` : ""}.`
@@ -349,7 +361,7 @@ function CloudHero({
             </ul>
           </div>
           <div className="adecd-minis">
-            <MiniMeter label="Disk" value={formatGb(diskUsed)} of={diskLimit > 0 ? `of ${formatGb(diskLimit)}` : null} pct={percentOf(diskUsed, diskLimit)} note="All your computers together" />
+            <MiniMeter label="Disk" value={formatCloudGb(diskUsed)} of={diskLimit > 0 ? `of ${formatCloudGb(diskLimit)}` : null} pct={percentOf(diskUsed, diskLimit)} note="All your computers together" />
             <MiniMeter
               label="Computers"
               value={String(account.computers.total)}
@@ -390,7 +402,7 @@ function MiniMeter({ label, value, of, pct, note }: { label: string; value: stri
   return (
     <div className="adecd-mini">
       <span className="adecd-label">{label}</span>
-      <div className="adecd-mini-num"><b className="kit-num">{value}</b>{of ? <span>{of}</span> : null}</div>
+      <div className="adecd-mini-num"><b className="kit-num" data-face="ui">{value}</b>{of ? <span>{of}</span> : null}</div>
       <div className="kit-meter adecd-meter" data-level={usageLeftLevel(100 - pct)}><span style={{ width: `${pct}%` }} /></div>
       <span className="adecd-mini-note">{note}</span>
     </div>
@@ -409,7 +421,7 @@ function EmptyPlot() {
 
 function laneAria(lane: DashLane, now: number): string {
   if (lane.state === "none") return `${lane.name}, no computer now`;
-  return [lane.name, lane.noLane ? "no lane" : null, lane.tier?.label, formatGb(lane.diskGb), STATE_LABEL[lane.state], lastRunText(lane, now), lane.old ? "not used for a long time" : null, lane.safe ? "safe to delete" : null]
+  return [lane.name, lane.noLane ? "no lane" : null, lane.tier?.label, formatCloudGb(lane.diskGb), STATE_LABEL[lane.state], lastRunText(lane, now), lane.old ? "not used for a long time" : null, lane.safe ? "safe to delete" : null]
     .filter(Boolean)
     .join(", ");
 }
@@ -417,7 +429,7 @@ function laneAria(lane: DashLane, now: number): string {
 function laneDetail(lane: DashLane, now: number): string[] {
   if (lane.state === "none") return ["No computer. ADE makes one when you next send."];
   return [
-    [lane.tier?.label, lane.rateLabel, formatGb(lane.diskGb)].filter(Boolean).join(", "),
+    [lane.tier?.label, lane.rateLabel, formatCloudGb(lane.diskGb)].filter(Boolean).join(", "),
     `${STATE_LABEL[lane.state]}, ${lastRunText(lane, now).toLowerCase()}`,
     ...(lane.noLane ? ["No lane on this computer"] : []),
     ...(lane.old ? ["Not used for a long time"] : []),
@@ -493,7 +505,7 @@ function LaneTable({
                   : null}
               </span>
               <span className="adecd-tsize">{lane.tier ? <>{lane.tier.label}<em className="kit-num">{lane.rateLabel}</em></> : "—"}</span>
-              <span className="kit-num">{lane.state === "none" ? "—" : formatGb(lane.diskGb)}</span>
+              <span className="kit-num">{lane.state === "none" ? "—" : formatCloudGb(lane.diskGb)}</span>
               <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
               <span className="adecd-when">{lastRunText(lane, now)}</span>
             </div>
@@ -560,9 +572,9 @@ function LookInside({ lane, now, busy, onBack, onClear }: { lane: DashLane; now:
   const items = useMemo<CityItem[]>(() => (usage?.items ?? []).map((part, index) => ({
     key: `${part.kind}:${index}`,
     name: part.label,
-    sub: `${formatGb(part.gb)}${part.clearable ? ", can clear" : ""}`,
-    aria: `${part.label}, ${formatGb(part.gb)}${part.clearable ? ", safe to clear" : ""}`,
-    detail: [formatGb(part.gb), ...(part.clearable ? ["Safe to clear"] : [])],
+    sub: `${formatCloudGb(part.gb)}${part.clearable ? ", can clear" : ""}`,
+    aria: `${part.label}, ${formatCloudGb(part.gb)}${part.clearable ? ", safe to clear" : ""}`,
+    detail: [formatCloudGb(part.gb), ...(part.clearable ? ["Safe to clear"] : [])],
     size: part.gb,
     rank: 1,
     awake: lane.state === "awake",
@@ -583,7 +595,7 @@ function LookInside({ lane, now, busy, onBack, onClear }: { lane: DashLane; now:
         <span className="adecd-grow" />
         <span className="adecd-hint">{usage ? `Measured ${formatAgo(usage.measuredAt, now)}` : "Not measured yet"}</span>
         {canClear ? (
-          <button type="button" className="kit-btn" data-size="sm" disabled={busy} onClick={onClear}><Broom size={12} />{busy ? "Clearing…" : `Clear ${formatGb(clearableGb)} of caches`}</button>
+          <button type="button" className="kit-btn" data-size="sm" disabled={busy} onClick={onClear}><Broom size={12} />{busy ? "Clearing…" : `Clear ${formatCloudGb(clearableGb)} of caches`}</button>
         ) : null}
       </div>
       {usage && items.length ? (
@@ -596,12 +608,12 @@ function LookInside({ lane, now, busy, onBack, onClear }: { lane: DashLane; now:
               <li key={`${part.kind}:${index}`}>
                 <span>{part.label}</span>
                 <span className="kit-meter"><span style={{ width: `${percentOf(part.gb, total)}%` }} /></span>
-                <span className="kit-num">{formatGb(part.gb)}</span>
+                <span className="kit-num">{formatCloudGb(part.gb)}</span>
                 {part.clearable ? <span className="kit-tag" data-tone="ok">Safe to clear</span> : <span />}
               </li>
             ))}
             <li className="adecd-parts-total">
-              <span>{formatGb(total)} used of {formatGb(lane.diskGb)}</span>
+              <span>{formatCloudGb(total)} used of {formatCloudGb(lane.diskGb)}</span>
               <span />
               <span />
               <span>{lane.state === "awake" ? "" : "Asleep: its last measure"}</span>
@@ -630,22 +642,26 @@ function PlanNotices({ account }: { account: CloudAccountState }) {
   return (
     <>
       {cleanup ? (
-        <div className="adecd-warn adecd-cleanup" role="status">
-          <Warning size={14} weight="fill" />
-          <div>
-            <span>{cleanup.sentence}{cleanup.dueAt ? ` This happens on ${formatCloudDate(cleanup.dueAt)}. To choose which go, delete computers yourself before then.` : ""}</span>
-            {cleanup.computers.length ? (
-              <ul>
+        <Banner
+          layout="inline"
+          model={{
+            id: "cloud-plan-cleanup",
+            tone: "warning",
+            title: cleanup.sentence,
+            detail: cleanup.dueAt ? `This happens on ${formatCloudDate(cleanup.dueAt)}. To choose which go, delete computers yourself before then.` : undefined,
+            extra: cleanup.computers.length ? (
+              <ul className="adecd-cleanup-list">
                 {cleanup.computers.map((computer) => (
                   <li key={computer.instanceId}>
                     <b>{computer.laneName ?? computer.name ?? computer.instanceId}</b>
-                    <span>{computer.branch ? `work goes to ${computer.branch}` : "no lane"}, {formatGb(computer.diskGb)}</span>
+                    <span>{computer.branch ? `work goes to ${computer.branch}` : "no lane"}, {formatCloudGb(computer.diskGb)}</span>
                   </li>
                 ))}
               </ul>
-            ) : null}
-          </div>
-        </div>
+            ) : undefined,
+            report: false,
+          }}
+        />
       ) : null}
       {done ? <Banner layout="inline" model={{ id: `cloud-cleanup-done-${done.at}`, tone: "info", title: "ADE freed computers for your plan", detail: planCleanupDoneSentence(done), report: false }} /> : null}
       {wakes ? <Banner layout="inline" model={{ id: `cloud-wakes-${wakes.at}`, tone: "warning", title: "Timed wake-ups were cancelled", detail: timedWakesCancelledSentence(wakes), report: false }} /> : null}

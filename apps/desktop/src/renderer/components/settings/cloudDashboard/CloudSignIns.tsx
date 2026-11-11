@@ -5,8 +5,9 @@ import { isProviderLoginProvider, type ProviderLoginProvider } from "../../../..
 import { ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { availableProviderDescriptors } from "../providers/descriptors";
+import type { ProviderDescriptor } from "../providers/types";
 import { providerListMark } from "../providers/ProviderTileView";
-import { accountPassUse, adeCloudTile, cloudSignInsOn, type AdeCloudTile } from "../providers/cloud/adeCloudSignInModel";
+import { accountPassUse, adeCloudTile, cloudSignInsOn } from "../providers/cloud/adeCloudSignInModel";
 import { useAdeCloudSignIns } from "../providers/cloud/useAdeCloudSignIns";
 import { SettingsToggle } from "../primitives/SettingsControls";
 import { adeCloudSettingsSearch } from "../SettingsMachineScope";
@@ -27,12 +28,15 @@ export function CloudSignIns() {
   const navigate = useNavigate();
   const location = useLocation();
   const passUse = useMemo(() => accountPassUse(signInStatus?.passes), [signInStatus?.passes]);
-  const descriptors = useMemo(() => availableProviderDescriptors().filter((descriptor) => isProviderLoginProvider(descriptor.id)), []);
+  const descriptors = useMemo(
+    () => availableProviderDescriptors().filter((descriptor): descriptor is ProviderDescriptor & { id: ProviderLoginProvider } => isProviderLoginProvider(descriptor.id)),
+    [],
+  );
   const rows = useMemo(() => {
     const now = Date.now();
     return descriptors.map((descriptor) => ({
       descriptor,
-      tile: adeCloudTile({ provider: descriptor.id as ProviderLoginProvider, account, cloud, saved, keychainIsThisMac, passUse, now }) as AdeCloudTile,
+      tile: adeCloudTile({ provider: descriptor.id, account, cloud, saved, keychainIsThisMac, passUse, now }),
     }));
   }, [account, cloud, descriptors, keychainIsThisMac, passUse, saved]);
   const ready = rows.filter((row) => row.tile.state === "connected");
@@ -79,13 +83,13 @@ export function CloudSignIns() {
           <p className="adecd-empty">Your sign-ins aren't shared with ADE Cloud. Each cloud computer asks you to sign in on it.</p>
         ) : (
           <>
-            <p className="adecd-signins-lead">
+            <p className="adecd-lead">
               {ready.length
                 ? "Your cloud computers sign in with these accounts. A sign-in on any of your computers reaches them in about a minute."
                 : "No sign-in reaches ADE Cloud yet. Sign in to a provider on any of your computers and it reaches your cloud computers."}
             </p>
             {ready.length ? (
-              <ul className="adecd-signin-list">
+              <ul className="kit-panel adecd-signin-list">
                 {ready.map(({ descriptor, tile }) => (
                   <li key={descriptor.id}>
                     <button type="button" className="adecd-signin" onClick={() => open(descriptor.id)}>
@@ -118,7 +122,7 @@ export function CloudSignIns() {
         <div className="adecd-signin-switch">
           <div>
             <b>Share my sign-ins with ADE Cloud</b>
-            <small>{on ? "Off: you sign in on each cloud computer yourself." : "On: cloud computers use the accounts you're signed in to on your computers."}</small>
+            <small>{on ? "Cloud computers use the accounts you're signed in to on your computers." : "Off: you sign in on each cloud computer yourself."}</small>
           </div>
           <SettingsToggle
             checked={pending ?? on}

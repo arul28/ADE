@@ -3,6 +3,7 @@ import { ArrowSquareOut, CreditCard } from "@phosphor-icons/react";
 import {
   CLOUD_PLAN_CLEANUP_GRACE_DAYS,
   CLOUD_PLAN_LABELS,
+  CLOUD_PLAN_RANK,
   cloudCatalogHasPro,
   cloudCatalogOf,
   cloudPlanIdOf,
@@ -12,8 +13,9 @@ import {
   formatCloudHours,
   type CloudAccountState,
   type CloudPaidPlanId,
+  type CloudPlanFacts,
+  type CloudPlanId,
 } from "../../../../shared/adeCloud";
-import type { CloudPlanFacts, CloudPlanId } from "../../../../../account-directory/src/cloud/contract";
 import { ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog";
@@ -26,8 +28,6 @@ const EXTRA_DISK_LIMITS = ["5", "10", "20", "50"];
 const DEFAULT_EXTRA_DISK_LIMIT = "10";
 
 type Column = { id: CloudPlanId; facts: CloudPlanFacts };
-
-const RANK: Record<CloudPlanId, number> = { free: 0, plus: 1, pro: 2 };
 
 /**
  * Plans side by side (what each includes, the current one marked) with one
@@ -50,6 +50,8 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
   const pastDue = account.billing.notice === "past_due";
   const { billing, extraHours } = account;
   const nextPlanId = pro ? billing.nextPlanId ?? null : null;
+  // Pro with a move to Plus waiting: the Pro column undoes the move (uncharged).
+  const canStayOnPro = paid && !pastDue && !billing.cancelAtPeriodEnd && current === "pro" && nextPlanId === "plus";
   const columns: Column[] = [
     { id: "free", facts: catalog.plans.free },
     { id: "plus", facts: catalog.plans.plus ?? catalog.plans.paid },
@@ -78,8 +80,17 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
     else showToast({ title: `You move to ${label} on ${formatCloudDate(billing.periodEnd)}. ${cloudPlanLabelOf(account, catalog)} stays until then.` });
   });
 
+  const stayOnPro = () => run(async () => {
+    await bridge?.openCheckout?.("pro");
+    showToast({ title: "You stay on Pro.", tone: "success" });
+  });
+
   const choose = async (target: Column) => {
     if (target.id === "free") return;
+    if (target.id === "pro" && canStayOnPro) {
+      await stayOnPro();
+      return;
+    }
     if (!paid) {
       await checkout(pro ? target.id : undefined);
       return;
@@ -108,7 +119,7 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
     if (!ok) return;
     await run(async () => {
       const result = await bridge?.openCheckout?.("plus");
-      const cleanup = (result as { cleanup?: { sentence?: string } } | undefined)?.cleanup;
+      const cleanup = result?.cleanup;
       showToast({
         title: `You move to Plus on ${formatCloudDate(billing.periodEnd)}.`,
         ...(cleanup?.sentence ? { message: cleanup.sentence } : {}),
@@ -117,13 +128,13 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
   };
 
   const actionFor = (column: Column): { label: string; primary: boolean } | null => {
+    if (column.id === "pro" && canStayOnPro) return { label: "Stay on Pro", primary: true };
     if (column.id === current) return null;
     if (column.id === "free") return null;
     if (pastDue || billing.cancelAtPeriodEnd) return null;
     if (!paid) return { label: `Get ${CLOUD_PLAN_LABELS[column.id]}`, primary: column.id === "plus" };
     if (nextPlanId === column.id) return null;
-    if (column.id === "pro" && nextPlanId === "plus") return { label: "Stay on Pro", primary: true };
-    return { label: `Move to ${CLOUD_PLAN_LABELS[column.id]}`, primary: RANK[column.id] > RANK[current] };
+    return { label: `Move to ${CLOUD_PLAN_LABELS[column.id]}`, primary: CLOUD_PLAN_RANK[column.id] > CLOUD_PLAN_RANK[current] };
   };
 
   // Extra disk (paid only, and only when the server sells it).
@@ -175,12 +186,12 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
               <div key={column.id} className="adecd-plan-col" data-current={isCurrent || undefined} role="group" aria-label={`${label}${isCurrent ? ", your plan" : ""}`}>
                 <span className="adecd-plan-top">
                   <b>{label}</b>
-                  {isCurrent ? <span className="adecd-plan-you">Your plan</span> : nextPlanId === column.id ? <span className="adecd-plan-next">From {formatCloudDate(billing.periodEnd)}</span> : null}
+                  {isCurrent ? <span className="kit-tag" data-tone="accent">Your plan</span> : nextPlanId === column.id ? <span className="kit-tag">From {formatCloudDate(billing.periodEnd)}</span> : null}
                 </span>
-                <span><b className="kit-num">{column.facts.priceUsd ? `$${column.facts.priceUsd}` : "$0"}</b><small>{column.facts.priceUsd ? " a month" : " forever"}</small></span>
-                <span><b className="kit-num">{Number(formatCloudHours(column.facts.includedMilli)).toLocaleString()}</b><small> hours</small></span>
-                <span><b className="kit-num">{column.facts.diskGb} GB</b><small> in all</small></span>
-                <span><b className="kit-num">{column.facts.computerLimit}</b><small> at one time</small></span>
+                <span><b className="kit-num" data-face="ui">{column.facts.priceUsd ? `$${column.facts.priceUsd}` : "$0"}</b><small>{column.facts.priceUsd ? " a month" : " forever"}</small></span>
+                <span><b className="kit-num" data-face="ui">{Number(formatCloudHours(column.facts.includedMilli)).toLocaleString()}</b><small> hours</small></span>
+                <span><b className="kit-num" data-face="ui">{column.facts.diskGb} GB</b><small> in all</small></span>
+                <span><b className="kit-num" data-face="ui">{column.facts.computerLimit}</b><small> at one time</small></span>
                 <span className="adecd-plan-wrap">{column.id === "free" ? <small>Work stops until the next month</small> : <small>{catalog.extraHourCents}¢ an hour, if you turn it on</small>}</span>
                 <span className="adecd-plan-foot">
                   {action ? (
@@ -209,7 +220,7 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
         </p>
 
         {extraHours.available ? (
-          <div className="adecd-billing">
+          <div className="kit-panel adecd-billing">
             <div className="adecd-billing-row">
               <div>
                 <b>Extra hours</b>
@@ -262,7 +273,7 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
         ) : null}
 
         {account.dueForDeletion.length ? (
-          <div className="adecd-billing" aria-label="Computers due for deletion">
+          <div className="kit-panel adecd-billing" aria-label="Computers due for deletion">
             {account.dueForDeletion.map((computer) => (
               <div key={computer.instanceId} className="adecd-billing-row">
                 <div>

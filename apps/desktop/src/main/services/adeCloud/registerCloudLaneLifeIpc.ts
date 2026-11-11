@@ -8,7 +8,7 @@ import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
 import { sendToAllWindows } from "./broadcast";
 import { createCloudLaneLife, type CloudLaneLife } from "./cloudLaneLife";
-import { captureCloudLaneAnalytics } from "./cloudLaneLaunchAnalytics";
+import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import type { CloudCopyDeps } from "./cloudMachineCopy";
 import type { createCloudMachines } from "./cloudMachines";
 import type { CloudProvider } from "./cloudProvider";
@@ -34,8 +34,8 @@ export function registerCloudLaneLifeIpc(args: {
   /** This app's saved target for a machine already paired, or null. */
   targetIdForMachine: (machineKey: string) => string | null;
   remote: RuntimeBridgeRegistration["remoteForMain"];
-  /** One coarse outcome per freed lane (cloudLaneLaunchAnalytics.ts). */
-  analytics?: Parameters<typeof captureCloudLaneAnalytics>[0];
+  /** One coarse outcome per freed lane (cloudLaneAnalytics.ts). */
+  analytics?: CloudLaneAnalyticsCapture;
   logger: Logger;
 }): CloudLaneLife {
   const { logger, remote } = args;

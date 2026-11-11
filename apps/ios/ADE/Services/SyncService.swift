@@ -4200,6 +4200,10 @@ final class SyncService: ObservableObject {
         // the 25s budget from an attempt that has already succeeded.
         connectAttemptIsWakingMachine = false
         connectAttemptBudget = .standard
+      } else {
+        // ADE Cloud access is the connected machine's answer: off the machine
+        // it is unknown, and unknown is hidden until the next read answers.
+        if cloudAvailable { cloudAvailable = false }
       }
     }
   }
@@ -4249,7 +4253,12 @@ final class SyncService: ObservableObject {
   /// Whether this phone currently holds a Tailscale-assigned address on a
   /// tunnel interface. Drives the "iPhone isn't on Tailscale" connection hint.
   @Published private(set) var phoneHasTailnetInterface = false
-  @Published private(set) var activeHostProfile: HostConnectionProfile?
+  @Published private(set) var activeHostProfile: HostConnectionProfile? {
+    didSet {
+      // Another machine may be another account: its ADE Cloud access is unknown.
+      if cloudAvailable, activeHostProfile?.hostIdentity != oldValue?.hostIdentity { cloudAvailable = false }
+    }
+  }
   @Published private(set) var projects: [MobileProjectSummary] = []
   @Published private(set) var activeProjectId: String?
   @Published private(set) var activeProjectRootPath: String?

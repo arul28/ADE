@@ -1,6 +1,13 @@
 import { useState } from "react";
 import { Check, Copy, Gift } from "@phosphor-icons/react";
-import { cloudReferralOf, formatCloudDate, formatCloudHours, type CloudAccountState, type CloudReferralSummary } from "../../../../shared/adeCloud";
+import {
+  CLOUD_REFERRAL_REWARD_MILLI,
+  cloudReferralOf,
+  formatCloudDate,
+  formatCloudHours,
+  type CloudAccountState,
+  type CloudReferralSummary,
+} from "../../../../shared/adeCloud";
 import { captureInviteAnalytics } from "../../../lib/invitePill";
 import { showToast } from "../../app/toast/toastStore";
 import "./cloudDashboard.css";
@@ -11,11 +18,10 @@ import "./cloudDashboard.css";
  * account was made). Account level, so no pin; the server checks every rule.
  */
 export function InviteCodeBox({
-  source,
   initialCode = "",
   onDone,
 }: {
-  source: "from_settings" | "from_dashboard";
+  /** Read once: give the box a `key` of the code so a new link fills it again. */
   initialCode?: string;
   onDone?: (referral: CloudReferralSummary | null) => void;
 }) {
@@ -33,10 +39,11 @@ export function InviteCodeBox({
       const outcome = await redeem(value);
       if (outcome.ok) {
         captureInviteAnalytics({ action: "invite_code_entered", outcome: "accepted" });
+        const reward = formatCloudHours(outcome.referral?.rewardMilli || CLOUD_REFERRAL_REWARD_MILLI);
         showToast({
           tone: "success",
-          title: outcome.rewarded ? "You both got 20 free cloud hours" : "Invite added",
-          message: outcome.rewarded ? "They never expire." : "You both get 20 free cloud hours when your first chat runs on ADE Cloud.",
+          title: outcome.rewarded ? `You both got ${reward} free cloud hours` : "Invite added",
+          message: outcome.rewarded ? "They never expire." : `You both get ${reward} free cloud hours when your first chat runs on ADE Cloud.`,
         });
         onDone?.(outcome.referral);
       } else {
@@ -57,7 +64,6 @@ export function InviteCodeBox({
         event.preventDefault();
         void submit();
       }}
-      data-source={source}
     >
       <input
         className="kit-input"
@@ -105,7 +111,7 @@ export function CloudInviteCard({ account, onChanged }: { account: CloudAccountS
       </header>
       <div className="kit-card-body adecd-invite-body">
         <div className="adecd-invite-main">
-          <p className="adecd-signins-lead">
+          <p className="adecd-lead">
             When a friend you invite runs their first chat on ADE Cloud, you both get {reward} free hours. They never expire, and they're used after your plan's hours.
           </p>
           <div className="adecd-invite-link">
@@ -116,15 +122,15 @@ export function CloudInviteCard({ account, onChanged }: { account: CloudAccountS
           </div>
         </div>
         <dl className="adecd-invite-stats">
-          <div><dt>Friends joined</dt><dd className="kit-num">{referral.friendsJoined}</dd></div>
-          <div><dt>Hours earned</dt><dd className="kit-num">{formatCloudHours(referral.hoursEarnedMilli)}</dd></div>
-          <div><dt>Rewards left</dt><dd className="kit-num">{referral.rewardsLeft} of {referral.rewardLimit}</dd></div>
+          <div className="kit-panel"><dt>Friends joined</dt><dd className="kit-num" data-face="ui">{referral.friendsJoined}</dd></div>
+          <div className="kit-panel"><dt>Hours earned</dt><dd className="kit-num" data-face="ui">{formatCloudHours(referral.hoursEarnedMilli)}</dd></div>
+          <div className="kit-panel"><dt>Rewards left</dt><dd className="kit-num" data-face="ui">{referral.rewardsLeft} of {referral.rewardLimit}</dd></div>
         </dl>
         {referral.canEnterCode && !referral.hasReferrer ? (
           <div className="adecd-invite-friend">
             <b>Were you invited?</b>
             <small>{referral.enterCodeUntil ? `Add the link or code by ${formatCloudDate(referral.enterCodeUntil)}.` : "Add the link or code."}</small>
-            <InviteCodeBox source="from_dashboard" onDone={onChanged} />
+            <InviteCodeBox onDone={onChanged} />
           </div>
         ) : referral.hasReferrer ? (
           <p className="adecd-invite-note">
@@ -157,7 +163,7 @@ export function AccountInviteFact({ account, inviteParam }: { account: CloudAcco
           Were you invited? You both get {formatCloudHours(referral.rewardMilli)} free cloud hours.
           {referral.enterCodeUntil ? ` Add it by ${formatCloudDate(referral.enterCodeUntil)}.` : ""}
         </span>
-        <InviteCodeBox source="from_settings" initialCode={inviteParam ?? ""} onDone={() => setDone(true)} />
+        <InviteCodeBox key={inviteParam ?? ""} initialCode={inviteParam ?? ""} onDone={() => setDone(true)} />
       </dd>
     </div>
   );

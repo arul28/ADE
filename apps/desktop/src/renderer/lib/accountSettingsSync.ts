@@ -152,7 +152,7 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   // The size a new ADE Cloud lane starts with. A tier name this build cannot
   // read (a newer ADE's) keeps the local choice.
   pref(CLOUD_DEFAULT_TIER_SETTING_KEY, (state) => state.cloudDefaultTier, (state, value: unknown) => {
-    if (isCloudTierId(value)) state.setCloudDefaultTier(value, { synced: true });
+    if (isCloudTierId(value)) state.setCloudDefaultTier(value);
   }),
   // Harness presets are a list rather than a scalar, which the registry handles
   // unchanged: the whole list is one value under one key, so the newer-wins

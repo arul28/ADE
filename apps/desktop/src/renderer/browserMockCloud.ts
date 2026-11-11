@@ -14,11 +14,11 @@
  * It runs after the sign-ins preview (`?mockSignIns=`), keeping its sign-in
  * calls and replacing only the account and computer reads.
  */
-import type { CloudAccountState, CloudMachine, CloudMachinesResult } from "../shared/adeCloud";
+import { CLOUD_MACHINE_DEFAULT_NAME, cloudFreePlanRefusedSentence, type CloudAccountState, type CloudMachine, type CloudMachinesResult } from "../shared/adeCloud";
 import type { CloudLaneMachine, CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
 
-type Scenario = "free" | "empty" | "plus" | "pro" | "full" | "blocked";
-const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "full", "blocked"];
+type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "full" | "blocked";
+const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgrade", "full", "blocked"];
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
@@ -76,7 +76,7 @@ function machine(spec: LaneSpec, now: number): CloudLaneMachine {
   const rest = Math.max(0, spec.diskGb - repo - deps - caches);
   return {
     instanceId: spec.id,
-    name: spec.lane ? `ADE · ${spec.lane}` : "ADE Cloud computer",
+    name: spec.lane ? `ADE · ${spec.lane}` : CLOUD_MACHINE_DEFAULT_NAME,
     status: spec.state === "running" ? "running" : spec.state === "asleep" ? "sleeping" : spec.state,
     state: spec.state,
     type: shape.type,
@@ -119,6 +119,8 @@ type Fixture = {
   earnedMilli?: number;
   blocked?: boolean;
   recentUsedMilli?: number;
+  /** Pro with a move to Plus waiting, over Plus's limits: the cleanup notice and "Stay on Pro". */
+  downgrade?: boolean;
 };
 
 function fixture(scenario: Scenario): Fixture {
@@ -159,6 +161,8 @@ function fixture(scenario: Scenario): Fixture {
         })),
         without: [],
       };
+    case "downgrade":
+      return { ...fixture("pro"), downgrade: true };
     case "full":
       return {
         planId: "free",
@@ -206,7 +210,7 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
   const extra: Record<string, unknown> = {};
   if (fix.earnedMilli != null) extra.earnedHours = { leftMilli: fix.earnedMilli, usedThisPeriodMilli: 0, grantedMilli: fix.earnedMilli };
   extra.freePlan = fix.blocked
-    ? { state: "refused", sentence: "This computer already used another account's free hours. Plus gives you 500 hours a month." }
+    ? { state: "refused", sentence: cloudFreePlanRefusedSentence(CATALOG.plans.plus!.includedMilli) }
     : { state: fix.planId === "free" ? "claimed" : "unclaimed", sentence: null };
   const friends = fix.earnedMilli ? Math.round(fix.earnedMilli / 20_000) : 0;
   extra.referral = {
@@ -251,9 +255,29 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       periodEnd: period.end,
       stripeStatus: fix.planId === "free" ? null : "active",
       cancelAtPeriodEnd: false,
-      nextPlanId: null,
+      nextPlanId: fix.downgrade ? "plus" : null,
       notice: null,
     },
+    ...(fix.downgrade
+      ? {
+          planCleanup: {
+            planId: "plus",
+            computers: machines.slice(0, 2).map((box) => ({
+              instanceId: box.instanceId,
+              name: box.name ?? null,
+              laneName: box.lane?.laneName ?? null,
+              branch: box.lane ? `ade/${box.lane.laneName}` : null,
+              diskGb: box.resources?.diskGb ?? 0,
+            })),
+            usedGb: diskUsed,
+            limitGb: CATALOG.plans.plus!.diskGb,
+            computerCount: machines.length,
+            computerLimit: CATALOG.plans.plus!.computerLimit,
+            dueAt: period.end + 3 * DAY,
+            sentence: "Plus allows 10 computers and 40 GB. ADE pushes the work of the 2 oldest computers to GitHub and frees them.",
+          },
+        }
+      : {}),
     ...extra,
   } as CloudAccountState;
 }
@@ -329,7 +353,6 @@ export function applyBrowserMockCloud(ade: any): void {
     },
     onLaneJob: () => () => undefined,
     clearCaches: async () => ({ freedGb: 1.2 }),
-    getReferral: async () => (state as { referral?: unknown }).referral ?? null,
     redeemInvite: async (code: string) => {
       console.info(`[browser mock] cloud.redeemInvite (${code.length} chars)`);
       if (!code.trim().toUpperCase().includes("FRIEND")) return { ok: false, reason: "unknown_code", message: "That invite code doesn't exist. Check it and try again." };

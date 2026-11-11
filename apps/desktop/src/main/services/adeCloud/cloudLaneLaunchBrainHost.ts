@@ -34,7 +34,7 @@ import type {
 } from "../../../shared/types";
 import { getErrorMessage, isRecord } from "../shared/utils";
 import { createCloudSelfApproval, type CloudBrainMakerBase } from "./cloudBrainMaker";
-import { cloudLaneLaunchOutcomes } from "./cloudLaneLaunchAnalytics";
+import { cloudLaneLaunchOutcomes, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import { createCloudLaneLaunchService, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
 
 type Logger = {
@@ -169,8 +169,8 @@ export function createCloudLaneLaunchBrainHost(deps: {
   logger: Logger;
   /** A launch made a new cloud computer (the brain tells the sign-in renewal). */
   onComputerCreated?: () => void;
-  /** How each launch ends, one coarse outcome (cloudLaneLaunchAnalytics.ts). */
-  analytics?: Parameters<typeof cloudLaneLaunchOutcomes>[0];
+  /** How each launch ends, one coarse outcome (cloudLaneAnalytics.ts). */
+  analytics?: CloudLaneAnalyticsCapture;
 }): CloudLaneLaunchBrainHost {
   const { logger } = deps;
   const countOutcome = cloudLaneLaunchOutcomes(deps.analytics, "api");

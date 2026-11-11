@@ -90,7 +90,7 @@ enum ADEAnalyticsInviteAction: String, CaseIterable {
 
 /// The invite funnel's outcomes. Never a code, a link, an email or the friend.
 enum ADEAnalyticsInviteOutcome {
-  static let refusalReasons = ["invalid_code", "unknown_code", "own_code", "already_referred", "too_late", "rate_limited", "unavailable"]
+  static let refusalReasons = ["invalid_code", "unknown_code", "own_code", "already_referred", "too_late", "mutual", "rate_limited", "unavailable"]
   static let allowed: Set<String> = Set(["from_dashboard", "shared_from_dashboard", "accepted"] + refusalReasons.map { "refused_\($0)" })
 }
 

@@ -133,7 +133,8 @@ struct ConnectionSettingsView: View {
       }
       // Ask again whether the account has ADE Cloud each time Settings opens
       // or the connection comes back: the phone may now be on a machine of
-      // another account. Until the answer, the ADE Cloud row stays hidden.
+      // another account. Until the answer, the ADE Cloud row stays hidden
+      // (`SyncService` clears `cloudAvailable` whenever the phone leaves a machine).
       .task(id: syncService.connectionState == .connected) {
         guard syncService.connectionState == .connected else { return }
         await syncService.refreshCloudAvailability()

@@ -51,7 +51,7 @@ import { AnotherDeviceSignInPanel } from "./AnotherDeviceSignInPanel";
 import { useSignInFlow } from "./useSignInFlow";
 import { Banner } from "../ui/notice";
 import { AdeWordmark } from "../ui/AdeWordmark";
-import { useHeaderCloudAccount } from "../usage/HeaderCloudMeter";
+import { useCloudAccount } from "../../state/cloudAccountStore";
 import { AccountInviteFact } from "../settings/cloudDashboard/CloudInvite";
 
 export { describeThisComputerMissing } from "./YourMacsCard";
@@ -379,7 +379,7 @@ function AccountDetailsSection({
 }) {
   const [confirming, setConfirming] = useState(false);
   // ADE Cloud's account (null without access), for the invite box.
-  const cloudAccount = useHeaderCloudAccount();
+  const cloudAccount = useCloudAccount();
   const [searchParams] = useSearchParams();
   const inviteParam = searchParams.get("invite");
   return (

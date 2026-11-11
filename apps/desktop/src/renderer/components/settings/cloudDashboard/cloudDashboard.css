@@ -10,29 +10,18 @@
   container: adecd / inline-size;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
   min-width: 0;
+  /* The kit's accent tag ("Your plan", "Default") in ADE Cloud's blue. */
+  --kit-tag-accent: var(--adec-300);
 }
+[data-theme="light"] .adecd { --kit-tag-accent: var(--adec-600); }
 .adecd-grow { flex: 1; }
 
-/* Header */
-
-/* The three facts against the plan */
-
-/* 80% of the plan's disk */
-.adecd-warn {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 10px;
-  padding: 7px 8px 7px 12px;
-  border-radius: 10px;
-  border: 1px solid color-mix(in srgb, var(--kit-warn) 26%, transparent);
-  background: color-mix(in srgb, var(--kit-warn) 7%, transparent);
-  font-size: 12px;
-}
-.adecd-warn svg { color: var(--kit-warn); flex: none; }
-.adecd-warn .kit-btn { margin-left: auto; }
+/* A cheaper plan's cleanup: the computers it removes, under the banner's text. */
+.adecd-cleanup-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; }
+.adecd-cleanup-list li { display: flex; gap: 8px; }
+.adecd-cleanup-list li span { color: var(--kit-text-3); }
 
 /*
  * The city card: a night sky over the ground. The block colors are the
@@ -119,7 +108,8 @@
   color: var(--kit-text-2);
   text-align: center;
 }
-.adecd-citycard .adecd-empty { color: var(--adecd-fg-2); }
+/* Inside a card: tighter and quieter. */
+.adecd-card .adecd-empty { padding: 18px 16px; color: var(--kit-text-3); }
 
 .adecd-city-wrap { position: relative; }
 .adecd-city {
@@ -257,23 +247,16 @@
 .adecd-state[data-state="starting"] i { background: var(--adec-400); }
 .adecd-state[data-state="failed"] i { background: var(--kit-crit); }
 .adecd-state[data-state="none"] i { background: transparent; border: 1px dashed var(--adec-300); }
-.adecd-old { font-family: var(--font-mono); font-size: 10px; color: #d99a12; white-space: nowrap; }
-:root:not([data-theme="light"]) .adecd-old { color: #fbbf24; }
-
-/* The selected lane */
 
 /* A tier change's steps, and a lane without a computer, take the panel's full width. */
-
 .adecd-jobs { display: flex; flex-direction: column; gap: 8px; }
-
-/* Rows that open */
 
 /* Every kit button on the dashboard (Clear caches, Look inside, the lane actions) takes the dashboard's ring. */
 .adecd .kit-btn:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
 
 /* Free up space */
 .adecd-free { display: flex; flex-direction: column; gap: 8px; }
-.adecd-fl { padding: 10px 12px 12px; border-radius: 11px; border: 1px solid var(--kit-panel-edge); background: var(--kit-panel-bg); }
+.adecd-fl { padding: 10px 12px 12px; }
 .adecd-fl-top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .adecd-fl-top b { font-size: 12.5px; font-weight: 600; }
 .adecd-fl-top .kit-num { font-size: 11px; color: var(--kit-text-2); }
@@ -341,11 +324,8 @@ html[data-motion="reduced"] .adecd-glow,
 html[data-motion="reduced"] .adecd-selring { transition: none !important; }
 html[data-motion="reduced"] .adecd-puffs { display: none; }
 
-/* The older cards inside the "Other computers" row, until Cloud 4's PR merges. */
-
 /* ───────────────────────── The page (Cloud 5) ───────────────────────── */
 
-.adecd { gap: 16px; }
 .adecd-card { min-width: 0; }
 .adecd-card .kit-card-head { gap: 8px; }
 .adecd-head-note {
@@ -360,6 +340,7 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 }
 .adecd-card .kit-card-head-action { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
 .adecd-label { font-size: 11.5px; color: var(--adecd-fg-2); }
+.adecd-lead { margin: 0; font-size: 12px; line-height: 1.5; color: var(--kit-text-2); }
 
 /* The hero: the night sky with the numbers on the left and the city on the right. */
 .adecd-hero {
@@ -396,21 +377,6 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
   color: var(--adecd-fg);
 }
 
-.adecd-hero-btn {
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid color-mix(in srgb, var(--adec-300) 36%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--adec-500) 18%, transparent);
-  color: var(--adecd-fg);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 140ms ease, border-color 140ms ease;
-}
-.adecd-hero-btn:hover { background: color-mix(in srgb, var(--adec-500) 30%, transparent); border-color: color-mix(in srgb, var(--adec-300) 55%, transparent); }
-.adecd-hero-btn:focus-visible { outline: 2px solid var(--adec-300); outline-offset: 2px; }
-
 .adecd-hero-body {
   position: relative;
   display: grid;
@@ -444,11 +410,9 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
   line-height: 1.45;
   color: var(--adecd-fg-2);
 }
-.adecd-hours-notes b { font-weight: 500; color: var(--adec-lamp); }
-[data-theme="light"] .adecd-hours-notes b { color: #b26b00; }
+.adecd-hours-notes b { font-weight: 500; color: var(--adec-lamp-text); }
 .adecd-hours-notes em { font-style: normal; opacity: 0.7; }
-.adecd-hours-notes li[data-tone="warn"] { color: #fcd34d; }
-[data-theme="light"] .adecd-hours-notes li[data-tone="warn"] { color: #a16207; }
+.adecd-hours-notes li[data-tone="warn"] { color: var(--kit-warn); }
 .adecd-minis { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .adecd-mini { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .adecd-mini-num { display: flex; align-items: baseline; gap: 6px; }
@@ -481,9 +445,6 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
   .adecd-hero-city .adecd-city-svg { max-height: 220px; }
 }
 
-/* The page's warning strip (disk). */
-.adecd-warn .kit-btn { margin-left: auto; }
-
 /* Lanes and computers: one row each; the selected row opens its actions under it. */
 .adecd-table { outline: none; }
 .adecd-table:focus-visible { box-shadow: inset 0 0 0 2px var(--adec-400); border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
@@ -510,7 +471,7 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 .adecd-tr .kit-num { font-size: 11.5px; color: var(--kit-text-2); }
 .adecd-name { display: flex; align-items: center; gap: 8px; }
 .adecd-name > svg { flex: none; }
-.adecd-name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.adecd-name-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
 .adecd-name .kit-tag { flex: none; }
 .adecd-tsize { color: var(--kit-text-2); }
 .adecd-tsize em { margin-left: 6px; font-style: normal; color: var(--kit-text-3); }
@@ -525,7 +486,6 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 .adecd-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .adecd-actions .kit-btn { gap: 5px; }
 .adecd-actions-note { flex-basis: 100%; font-size: 11px; color: var(--kit-text-3); }
-.adecd-card .adecd-empty { margin: 0; padding: 18px 16px; font-size: 12px; line-height: 1.5; color: var(--kit-text-3); }
 
 @container adecd (max-width: 620px) {
   .adecd-tr { grid-template-columns: minmax(0, 1fr) 70px 90px; }
@@ -574,32 +534,17 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
   border-color: color-mix(in srgb, var(--adec-400) 40%, transparent);
   background: color-mix(in srgb, var(--adec-600) 8%, transparent);
 }
-.adecd-plan-you, .adecd-plan-next {
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 500;
-  background: color-mix(in srgb, var(--adec-500) 22%, transparent);
-  color: var(--adec-200);
-}
-[data-theme="light"] .adecd-plan-you, [data-theme="light"] .adecd-plan-next { color: var(--adec-700); }
-.adecd-plan-next { background: var(--kit-hover); color: var(--kit-text-2); }
+.adecd-plan-col > span.adecd-plan-wrap { padding: 8px 0; white-space: normal; line-height: 1.35; }
 .adecd-plan-foot { display: flex; align-items: center; }
 .adecd-plan-fine { margin: 10px 0 0; font-size: 11px; line-height: 1.5; color: var(--kit-text-3); }
+.adecd-plan-fine[data-tone="warn"] { color: var(--kit-warn); }
 @container adecd (max-width: 600px) {
   .adecd-plans { grid-template-columns: repeat(var(--adecd-plan-cols, 3), minmax(0, 1fr)); }
   .adecd-plan-keys { display: none; }
   .adecd-plan-col { padding: 0 8px; }
 }
 
-.adecd-billing {
-  display: flex;
-  flex-direction: column;
-  margin-top: 14px;
-  border: 1px solid var(--kit-panel-edge);
-  border-radius: 12px;
-  background: var(--kit-panel-bg);
-}
+.adecd-billing { display: flex; flex-direction: column; margin-top: 14px; }
 .adecd-billing-row { display: flex; align-items: center; gap: 16px; padding: 12px 14px; }
 .adecd-billing-row + .adecd-billing-row { border-top: 1px solid var(--kit-rule); }
 .adecd-billing-row > div:first-child { flex: 1; min-width: 0; }
@@ -614,11 +559,7 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-width: 0;
   padding: 14px;
-  border: 1px solid var(--kit-panel-edge);
-  border-radius: 12px;
-  background: var(--kit-panel-bg);
   color: inherit;
   text-align: left;
   cursor: pointer;
@@ -632,19 +573,7 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 }
 .adecd-sizecard-top { display: flex; align-items: center; gap: 8px; }
 .adecd-sizecard-top b { font-size: 13.5px; font-weight: 600; }
-.adecd-sizecard-pick {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  margin-left: auto;
-  padding: 1px 7px 1px 5px;
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 500;
-  background: color-mix(in srgb, var(--adec-500) 22%, transparent);
-  color: var(--adec-200);
-}
-[data-theme="light"] .adecd-sizecard-pick { color: var(--adec-700); }
+.adecd-sizecard-pick { gap: 3px; margin-left: auto; }
 .adecd-sizecard-specs { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--kit-text-2); }
 .adecd-sizecard-runs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-height: 34px; font-size: 11.5px; line-height: 1.4; color: var(--kit-text-2); }
 .adecd-sizecard-rate { display: flex; align-items: baseline; gap: 8px; padding-top: 10px; border-top: 1px solid var(--kit-rule); }
@@ -660,8 +589,7 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 /* Sign-ins. */
 .adecd-signins { display: flex; flex-direction: column; gap: 10px; }
 .adecd-signins .adecd-empty { padding: 4px 0; }
-.adecd-signins-lead { margin: 0; font-size: 12px; line-height: 1.5; color: var(--kit-text-2); }
-.adecd-signin-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border: 1px solid var(--kit-panel-edge); border-radius: 12px; background: var(--kit-panel-bg); overflow: hidden; }
+.adecd-signin-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; overflow: hidden; }
 .adecd-signin-list li + li { border-top: 1px solid var(--kit-rule); }
 .adecd-signin {
   display: flex;
@@ -709,29 +637,23 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 .adecd-pagestate { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 24px 0; }
 .adecd-pagestate-line { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 12.5px; color: var(--kit-text-2); }
 
-/* Big figures read as numbers, not code: the UI face with tabular digits. */
-.adecd-hero .kit-num,
-.adecd-plan-col .kit-num,
-.adecd-sizecard .kit-num {
-  font-family: inherit;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
-}
-.adecd-name-text { flex: 0 1 auto; }
-
-/* What agents may do alone: the same rows as the billing panel. */
+/* What agents may do alone: one row per limit, like the billing panel's. */
 .adecd-limits { display: flex; flex-direction: column; gap: 10px; }
-.adecd-limits .ade-ig-limit-rows { margin: 0; border: 1px solid var(--kit-panel-edge); border-radius: 12px; background: var(--kit-panel-bg); }
-.adecd-limits .ade-ig-limit-row { padding: 10px 12px; }
+.adecd-limit-rows { display: flex; flex-direction: column; }
+.adecd-limit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 12px;
+}
+.adecd-limit-row + .adecd-limit-row { border-top: 1px solid var(--kit-rule); }
+.adecd-limit-row > div:first-child { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.adecd-limit-row b { font-size: 12.5px; font-weight: 500; }
+.adecd-limit-row small { font-size: 11.5px; color: var(--kit-text-3); }
 .adecd-limits-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--kit-text-3); }
 .adecd-limits-note svg { flex: none; margin-top: 2px; }
-.adecd-plan-col > span.adecd-plan-wrap { padding: 8px 0; white-space: normal; line-height: 1.35; }
-.adecd-cleanup { align-items: flex-start; }
-.adecd-cleanup > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.adecd-cleanup ul { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 11.5px; }
-.adecd-cleanup li { display: flex; gap: 8px; }
-.adecd-cleanup li span { color: var(--kit-text-3); }
-.adecd-plan-fine[data-tone="warn"] { color: var(--kit-warn); }
 
 /* Invite friends. */
 .adecd-invite-body { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 14px 24px; align-items: start; }
@@ -749,9 +671,9 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 .adecd-invite-link > span { flex: 1; min-width: 0; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .adecd-invite-link .kit-btn { gap: 5px; flex: none; }
 .adecd-invite-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; }
-.adecd-invite-stats > div { padding: 10px 12px; border: 1px solid var(--kit-panel-edge); border-radius: 10px; background: var(--kit-panel-bg); }
+.adecd-invite-stats > div { padding: 10px 12px; }
 .adecd-invite-stats dt { font-size: 11px; color: var(--kit-text-3); }
-.adecd-invite-stats dd { margin: 2px 0 0; font-size: 17px; font-weight: 500; font-family: inherit; font-variant-numeric: tabular-nums; }
+.adecd-invite-stats dd { margin: 2px 0 0; font-size: 17px; font-weight: 500; }
 .adecd-invite-friend { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; padding-top: 12px; border-top: 1px solid var(--kit-rule); }
 .adecd-invite-friend b { font-size: 12.5px; font-weight: 500; }
 .adecd-invite-friend small { font-size: 11.5px; color: var(--kit-text-3); }
@@ -759,5 +681,6 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 .adecd-invite-enter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
 .adecd-invite-enter .kit-input { flex: 1 1 220px; min-width: 0; }
 .adecd-invite-error { flex-basis: 100%; font-size: 11.5px; color: var(--kit-crit); }
+/* The same box in Settings › Account. */
 .adecd-acct-invite { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
 @container adecd (max-width: 700px) { .adecd-invite-body { grid-template-columns: 1fr; } }

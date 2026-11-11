@@ -31,7 +31,8 @@ import {
   type CloudMachineActionResult,
   type CloudMachinesResult,
   type CloudResources,
-  type CloudInviteRedeemResult,
+  readCloudInviteRefusalReason,
+  type CloudInviteRedeemOutcome,
   type CloudReferralSummary,
 } from "../../../shared/adeCloud";
 import { cloudMachineLaneFactsOf, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
@@ -585,11 +586,25 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       const client = await deps.client();
       return client ? await client.readReferral() : null;
     },
-    /** Enters someone's invite (a link or a code); throws the server's sentence when refused. */
-    redeemInvite: async (code: string): Promise<CloudInviteRedeemResult> => {
+    /**
+     * Enters someone's invite (a link or a code) for the account: the one path
+     * for the desktop's Settings and the `invite_redeem` action. A refusal
+     * (`invite_refused`) answers `{ ok: false, reason, message }`; any other
+     * failure throws. Logs whether it was taken, never the code.
+     */
+    redeemInvite: async (code: string): Promise<CloudInviteRedeemOutcome> => {
       const client = await deps.client();
       if (!client) throw new Error((await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet.");
-      return await client.redeemInvite(code);
+      try {
+        const result = await client.redeemInvite(code);
+        logger.info?.("cloud.invite_redeemed", { rewarded: result.rewarded });
+        return { ok: true, rewarded: result.rewarded, referral: result.referral };
+      } catch (error) {
+        const reason = error instanceof CloudProviderError && error.code === "invite_refused" ? readCloudInviteRefusalReason(error.detail.reason) : null;
+        logger.info?.("cloud.invite_refused", { reason: reason ?? "unavailable" });
+        if (!reason) throw error;
+        return { ok: false, reason, message: getErrorMessage(error) };
+      }
     },
   };
 }

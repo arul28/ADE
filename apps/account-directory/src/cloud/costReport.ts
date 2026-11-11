@@ -15,6 +15,7 @@ import {
   logCloud,
   planIdOf,
   readSetting,
+  reportCloudFailure,
   readTimeSetting,
   writeSetting,
   type AccountRow,
@@ -157,7 +158,10 @@ async function alertCostStep(env: CloudEnv, micros: number, limitUsd: number | n
       union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ?
     ) group by user_id order by cost desc limit ?
   `).bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, STEP_ALERT_TOP_ACCOUNTS).all<{ user_id: string; cost: number }>()
-    .catch(() => ({ results: [] as Array<{ user_id: string; cost: number }> }));
+    .catch((error: unknown) => {
+      reportCloudFailure("cloud.owner_cost_top_accounts_failed", { message: error instanceof Error ? error.name : "unknown" });
+      return { results: [] as Array<{ user_id: string; cost: number }> };
+    });
   const limitLine = limitUsd == null
     ? "No cost limit is set."
     : `Your limit is $${limitUsd}, ${usd(limitUsd * 1_000_000 - micros)} away.`;

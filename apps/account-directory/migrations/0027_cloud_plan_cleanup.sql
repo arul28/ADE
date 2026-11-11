@@ -3,9 +3,13 @@
 -- hears once when timed wake-ups are cancelled. Additive only: apply this
 -- migration first, then deploy the Worker.
 
--- When ADE frees what is over the plan in force (the person was told when it
--- was set); null while the account fits its plan.
+-- The earliest due time of the warned computers below (what ADE shows); null
+-- while the account fits its plan.
 alter table cloud_accounts add column plan_cleanup_due_at integer;
+-- The computers the person was warned about, as JSON `{"<instance id>": <due
+-- ms>}`. Only these are ever freed, each from its own due time; a computer the
+-- limits pick later is warned about on its own, with its own due time.
+alter table cloud_accounts add column plan_cleanup_warned_json text;
 -- The last run that freed or kept something, as JSON (`CloudPlanCleanupDone`), and when.
 alter table cloud_accounts add column plan_cleanup_result_json text;
 alter table cloud_accounts add column plan_cleanup_result_at integer;

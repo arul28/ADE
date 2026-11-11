@@ -391,7 +391,6 @@ import { AccountSwitchRecoveryCard, ChatSignInCard } from "./ProviderLoginRecove
 import { ProviderSignInCardHolder, ProviderSignInStrip } from "./ProviderSignInSlot";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore, type WorkDraftCloudTarget } from "../../state/appStore";
-import type { CloudTierId } from "../../../shared/cloudTiers";
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
 import { cancelWorkDraftLaneRequest, type WorkDraftModelRequest } from "../../lib/workDraft";
 import { resolveHarnessLaunchTarget, type HarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
@@ -516,8 +515,7 @@ import {
   type ChatLaunchCliParams,
 } from "../../state/chatLaunchStore";
 import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
-import { recordStarPillMessageSent } from "../../lib/starPillActivity";
-import { recordInvitePillMessageSent } from "../../lib/invitePill";
+import { recordNudgeMessageSent } from "../../lib/nudgePillActivity";
 import { noteChatSendForSuggestions } from "../app/suggestions/chatSendSignals";
 import {
   COMPOSER_DRAFT_STORAGE_KEY_PREFIX,
@@ -540,6 +538,8 @@ import {
 import { buildChatLaunchThreadEvents } from "./launch/chatLaunchSynthetic";
 import { buildNewLaneLaunchArgs } from "./launch/newLaneLaunchArgs";
 import { adeCloudStartBranchReady, startAdeCloudLaunch } from "./launch/adeCloudLaunch";
+import { cloudLaunchScope, laneOnLaunchMachine } from "./launch/cloudLaunchScope";
+import { useDraftCloudPick } from "./useDraftCloudPick";
 import {
   clearSubmittedDraftText,
   removeSubmittedDraftItems,
@@ -3998,11 +3998,6 @@ const PARALLEL_MODELS_HERE_ONLY = "Parallel models runs on this computer.";
 /** A second Send of the same ADE Cloud draft this soon after the first is the same launch. */
 const ADE_CLOUD_REPEAT_SEND_MS = 5_000;
 
-function sameDraftCloudTarget(a: WorkDraftCloudTarget | null, b: WorkDraftCloudTarget | null): boolean {
-  if (!a || !b) return a === b;
-  return a.provider === b.provider && a.laneId === b.laneId && a.sizeId === b.sizeId;
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -5001,18 +4996,12 @@ export function AgentChatPane({
    * unknown or refused never clears the pick, so a saved pick survives the
    * startup moment before the access answer lands.
    */
-  const [adeCloudPicked, setAdeCloudMode] = useState(false);
+  const [adeCloudPicked, setAdeCloudPicked] = useState(false);
   const [adeCloudLaneId, setAdeCloudLaneId] = useState<string | null>(null);
   /** The effective mode (pick and access), written where `adeCloudMode` is derived. */
   const adeCloudModeRef = useRef(false);
   const adeCloudLaneIdRef = useRef(adeCloudLaneId);
   adeCloudLaneIdRef.current = adeCloudLaneId;
-  /**
-   * The project key the draft's saved cloud pick was put back for (or the
-   * person picked over it). Until then nothing is written, so the first
-   * render's "no cloud" never overwrites the saved pick.
-   */
-  const restoredDraftCloudKeyRef = useRef<string | null>(null);
   /**
    * What a send to ADE Cloud needs, written each render below where the
    * draft's ADE Cloud state exists (the send callback is defined earlier).
@@ -8112,12 +8101,12 @@ export function AgentChatPane({
     void getAiStatusCached({ projectRoot: projectRoot ?? null, pin: chatRuntimePinRef.current })
       .then((status) => setDevinCloudAuthConfigured(status.providerConnections?.devin?.authAvailable === true))
       .catch(() => setDevinCloudAuthConfigured(false));
-    // The pin is read from its ref; its key says when the machine changed.
-  }, [chatRuntimePinKey, projectRoot]);
+  }, [projectRoot]);
   useEffect(() => {
-    // Once per pane, and again when the chat moves to another machine.
+    // Once per pane, and again when the chat moves to another machine (the
+    // pin is read from its ref; its key says when the machine changed).
     refetchDevinCloudAuth();
-  }, [refetchDevinCloudAuth]);
+  }, [chatRuntimePinKey, refetchDevinCloudAuth]);
   // "Least loaded" reads machine stats only once the machine menu has opened.
   const [draftMachinePickerOpened, setDraftMachinePickerOpened] = useState(false);
   /** Set below, once the draft's machine routing exists: reads the machines' projects again. */
@@ -12087,10 +12076,10 @@ export function AgentChatPane({
       setDraftLaunchTargetId(null);
       clearNewLaneConfig();
       // The named lane runs on its own machine, not on a cloud picked earlier.
-      restoredDraftCloudKeyRef.current = workDraftProjectStateKey;
+      markDraftCloudChosen();
       setCursorCloudMode(false);
       setDevinCloudMode(false);
-      setAdeCloudMode(false);
+      setAdeCloudPicked(false);
       setAdeCloudLaneId(null);
       if (modelRequest) applyWorkDraftModelRequestRef.current(modelRequest);
     },
@@ -14035,13 +14024,8 @@ export function AgentChatPane({
       setError({ message: "The selected machine project is not available. Reconnect it or choose another machine.", kind: "status" });
       return false;
     }
-    // The chat's machine launches it, through its own (shared) Cursor
-    // sign-in. Null keeps the tab's machine on its unpinned route.
-    const cloudPin = launchBinding.key === projectBinding?.key ? null : launchBinding;
-    const pinnedGit = {
-      getSyncStatus: (args: { laneId: string }) => window.ade.git.getSyncStatus(args, cloudPin),
-      push: (args: { laneId: string }) => window.ade.git.push(args, cloudPin),
-    };
+    // The chat's machine launches it, through its own (shared) Cursor sign-in.
+    const { pin: cloudPin, git: pinnedGit } = cloudLaunchScope(launchBinding, projectBinding);
     if (cursorCloudLaunchInFlightRef.current) return false;
     cursorCloudLaunchInFlightRef.current = true;
     setError(null);
@@ -14155,8 +14139,7 @@ export function AgentChatPane({
       }, cloudPin);
       // The lane now lives on Cursor Cloud: the agent works on its branch.
       {
-        // The lane's own machine's list: another machine's lane is not in the tab's.
-        const targetLane = (cloudPin ? chatMachineLanes ?? [] : lanes).find((lane) => lane.id === targetLaneId) ?? null;
+        const targetLane = laneOnLaunchMachine(targetLaneId, cloudPin, chatMachineLanes, lanes);
         if (targetLane && !(targetLane.tags ?? []).includes(cloudLaneTag("cursor"))) {
           void window.ade.lanes.updateAppearance({
             laneId: targetLaneId,
@@ -14310,14 +14293,9 @@ export function AgentChatPane({
       return false;
     }
     // The chat's machine launches it, through its own (shared) Devin sign-in.
-    // Null keeps the tab's machine on its unpinned route. A hand-off from an
-    // open chat goes from that chat's machine.
+    // A hand-off from an open chat goes from that chat's machine.
     const launchBinding = selectedSessionId ? chatRuntimePinRef.current ?? projectBinding ?? null : draftExecutionBindingRef.current;
-    const cloudPin = !launchBinding || launchBinding.key === projectBinding?.key ? null : launchBinding;
-    const pinnedGit = {
-      getSyncStatus: (args: { laneId: string }) => window.ade.git.getSyncStatus(args, cloudPin),
-      push: (args: { laneId: string }) => window.ade.git.push(args, cloudPin),
-    };
+    const { pin: cloudPin, git: pinnedGit } = cloudLaunchScope(launchBinding, projectBinding);
     devinCloudLaunchInFlightRef.current = true;
     setError(null);
 
@@ -14387,9 +14365,8 @@ export function AgentChatPane({
       }
       if (!targetLaneId) throw new Error("Select a lane before sending.");
       // The lane now lives on Devin Cloud: its branch is where the VM works,
-      // and every chat in it is a Devin Cloud chat. The lane's own machine's
-      // list: another machine's lane is not in the tab's.
-      const targetLane = (cloudPin ? chatMachineLanes ?? [] : lanes).find((lane) => lane.id === targetLaneId) ?? null;
+      // and every chat in it is a Devin Cloud chat.
+      const targetLane = laneOnLaunchMachine(targetLaneId, cloudPin, chatMachineLanes, lanes);
       if (targetLane && !(targetLane.tags ?? []).includes(cloudLaneTag("devin"))) {
         await window.ade.lanes.updateAppearance({
           laneId: targetLaneId,
@@ -15157,8 +15134,7 @@ export function AgentChatPane({
     }
     clearPromptSuggestionForSession(selectedSessionId);
     if (draft.trim().length || attachments.length) {
-      recordStarPillMessageSent();
-      recordInvitePillMessageSent();
+      recordNudgeMessageSent();
     }
 
     if (launchRoutesSends && chatLaunch && selectedSessionId && selectedSessionId === chatLaunch.sessionId) {
@@ -16801,6 +16777,7 @@ export function AgentChatPane({
     enabled: showDraftLaunchControls,
     originUrl: originUrlForBinding(projectBinding),
   });
+  const chooseAdeCloudTier = adeCloud.chooseTier;
   // Every reader (the Run on value, the lane list, the create-lane dialog,
   // the send path) sees the pick only while ADE Cloud is available here.
   const adeCloudMode = adeCloudPicked && adeCloud.available;
@@ -17130,7 +17107,6 @@ export function AgentChatPane({
             kind: "cloud" as const,
             cloudProvider: "cursor" as const,
             unavailableReason: cloudUnavailableReason,
-            detail: cloudUnavailableReason,
             separatorBefore: adeCloudRow.length === 0,
           }]
         : []),
@@ -17141,7 +17117,6 @@ export function AgentChatPane({
             kind: "cloud" as const,
             cloudProvider: "devin" as const,
             unavailableReason: devinUnavailableReason,
-            detail: devinUnavailableReason,
           }]
         : []),
     ];
@@ -17178,10 +17153,55 @@ export function AgentChatPane({
         : devinCloudMode
           ? DEVIN_CLOUD_MACHINE_ID
           : selectedDraftMachineId;
+  // A draft opened in a cloud lane (from the sidebar, a deeplink) is on that
+  // cloud: the lane has no other machine.
+  useEffect(() => {
+    if (selectedSession || !laneId || draftLaunchTargetIsAutoCreate) return;
+    const cloud = laneCloudById.get(laneId) ?? null;
+    if (cloud === "devin" && !devinCloudMode && devinCloudCanLaunch) {
+      setCursorCloudMode(false);
+      setAdeCloudPicked(false);
+      setDevinCloudMode(true);
+    } else if (cloud === "cursor" && !cursorCloudMode && cursorCloudCanLaunch) {
+      setDevinCloudMode(false);
+      setAdeCloudPicked(false);
+      setCursorCloudMode(true);
+    }
+  }, [
+    cursorCloudCanLaunch,
+    cursorCloudMode,
+    devinCloudCanLaunch,
+    devinCloudMode,
+    draftLaunchTargetIsAutoCreate,
+    laneCloudById,
+    laneId,
+    selectedSession,
+    setCursorCloudMode,
+  ]);
+  // The Run on pick, when a cloud, is kept with the draft's machine pick.
+  const applySavedDraftCloud = useCallback((saved: WorkDraftCloudTarget) => {
+    setCursorCloudMode(saved.provider === "cursor");
+    setDevinCloudMode(saved.provider === "devin");
+    setAdeCloudPicked(saved.provider === "ade");
+    if (saved.provider !== "ade") return;
+    setAdeCloudLaneId(saved.laneId);
+    if (saved.sizeId) chooseAdeCloudTier(saved.sizeId);
+  }, [chooseAdeCloudTier, setCursorCloudMode]);
+  const { markChosen: markDraftCloudChosen } = useDraftCloudPick({
+    projectKey: workDraftProjectStateKey,
+    keeps: Boolean(onDraftMachineChange) && !selectedSessionId && !lockSessionId,
+    adePicked: adeCloudPicked,
+    adeLaneId: adeCloudLaneId,
+    adeSizeId: adeCloud.pickedTier,
+    cursorPicked: cursorCloudMode,
+    devinPicked: devinCloudMode,
+    cursorCanLaunch: cursorCloudCanLaunch,
+    devinCanLaunch: devinCloudCanLaunch,
+    apply: applySavedDraftCloud,
+  });
   const handleDraftShelfMachineChange = useCallback((nextMachineId: string) => {
     cancelWorkDraftLaneRequest(workDraftProjectStateKey);
-    // The person chose: a saved pick still waiting to be put back must not replace it.
-    restoredDraftCloudKeyRef.current = workDraftProjectStateKey;
+    markDraftCloudChosen();
     // A setup row starts its own attempt; any other pick ends the last one,
     // so a clone or wake that finishes later can't replace this choice.
     if (!draftSetupOwnsRow(nextMachineId)) abandonDraftMachineSetup();
@@ -17191,10 +17211,10 @@ export function AgentChatPane({
       setError(null);
       setCursorCloudMode(false);
       setDevinCloudMode(false);
-      setAdeCloudMode(true);
+      setAdeCloudPicked(true);
       return;
     }
-    setAdeCloudMode(false);
+    setAdeCloudPicked(false);
     setAdeCloudLaneId(null);
     if (draftSetupOwnsRow(nextMachineId)) {
       // Waking, cloning, then selecting; the chat keeps its machine until then.
@@ -17221,106 +17241,16 @@ export function AgentChatPane({
     setDevinCloudMode(false);
     keepLaneOnMachine(null);
     handleDraftMachineChange(nextMachineId);
-  }, [abandonDraftMachineSetup, chooseDraftSetupRow, draftSetupOwnsRow, handleDraftMachineChange, keepLaneOnMachine, setCursorCloudMode, workDraftProjectStateKey]);
-  // A draft opened in a cloud lane (from the sidebar, a deeplink) is on that
-  // cloud: the lane has no other machine.
-  useEffect(() => {
-    if (selectedSession || !laneId || draftLaunchTargetIsAutoCreate) return;
-    const cloud = laneCloudById.get(laneId) ?? null;
-    if (cloud === "devin" && !devinCloudMode && devinCloudCanLaunch) {
-      setCursorCloudMode(false);
-      setAdeCloudMode(false);
-      setDevinCloudMode(true);
-    } else if (cloud === "cursor" && !cursorCloudMode && cursorCloudCanLaunch) {
-      setDevinCloudMode(false);
-      setAdeCloudMode(false);
-      setCursorCloudMode(true);
-    }
-  }, [
-    cursorCloudCanLaunch,
-    cursorCloudMode,
-    devinCloudCanLaunch,
-    devinCloudMode,
-    draftLaunchTargetIsAutoCreate,
-    laneCloudById,
-    laneId,
-    selectedSession,
-    setCursorCloudMode,
-  ]);
+  }, [abandonDraftMachineSetup, chooseDraftSetupRow, draftSetupOwnsRow, handleDraftMachineChange, keepLaneOnMachine, markDraftCloudChosen, setCursorCloudMode, workDraftProjectStateKey]);
   const useThisComputerForDraft = useCallback(() => {
-    restoredDraftCloudKeyRef.current = workDraftProjectStateKey;
+    markDraftCloudChosen();
     setCursorCloudMode(false);
     setDevinCloudMode(false);
-    setAdeCloudMode(false);
+    setAdeCloudPicked(false);
     setAdeCloudLaneId(null);
     handleDraftMachineChange(THIS_MACHINE_ID);
     setError(null);
-  }, [handleDraftMachineChange, setCursorCloudMode, setError, workDraftProjectStateKey]);
-  /**
-   * A cloud picked in the Run on menu (ADE Cloud with its lane and size,
-   * Cursor Cloud, Devin Cloud) is kept with the draft's machine pick
-   * (`draftCloudTarget` beside `draftMachineId` in Work's view state), so
-   * leaving the draft and coming back shows the same pick. Only the draft
-   * surface that keeps its machine pick keeps this one.
-   */
-  const keepsDraftCloudPick = Boolean(onDraftMachineChange) && !selectedSessionId && !lockSessionId;
-  const currentDraftCloudTarget = useMemo<WorkDraftCloudTarget | null>(() => (
-    adeCloudPicked
-      ? { provider: "ade", laneId: adeCloudLaneId, sizeId: adeCloud.pickedTier }
-      : cursorCloudMode
-        ? { provider: "cursor", laneId: null, sizeId: null }
-        : devinCloudMode
-          ? { provider: "devin", laneId: null, sizeId: null }
-          : null
-  ), [adeCloud.pickedTier, adeCloudLaneId, adeCloudPicked, cursorCloudMode, devinCloudMode]);
-  useEffect(() => {
-    if (!keepsDraftCloudPick || !workDraftProjectStateKey) return;
-    if (restoredDraftCloudKeyRef.current === workDraftProjectStateKey) return;
-    const saved = useAppStore.getState().getWorkViewState(workDraftProjectStateKey).draftCloudTarget;
-    // ADE Cloud's pick is put back at once: it takes effect only while
-    // access says so (`adeCloudMode`). Cursor and Devin Cloud are put back
-    // once they can be picked here (sign-in read); until then the saved pick
-    // waits, untouched.
-    if (saved?.provider === "ade") {
-      setCursorCloudMode(false);
-      setDevinCloudMode(false);
-      setAdeCloudMode(true);
-      setAdeCloudLaneId(saved.laneId);
-      if (saved.sizeId) adeCloud.chooseTier(saved.sizeId as CloudTierId);
-    } else if (saved?.provider === "cursor") {
-      if (!cursorCloudCanLaunch) return;
-      setDevinCloudMode(false);
-      setAdeCloudMode(false);
-      setCursorCloudMode(true);
-    } else if (saved?.provider === "devin") {
-      if (!devinCloudCanLaunch) return;
-      setCursorCloudMode(false);
-      setAdeCloudMode(false);
-      setDevinCloudMode(true);
-    }
-    restoredDraftCloudKeyRef.current = workDraftProjectStateKey;
-  }, [
-    adeCloud.chooseTier,
-    cursorCloudCanLaunch,
-    devinCloudCanLaunch,
-    keepsDraftCloudPick,
-    setCursorCloudMode,
-    workDraftProjectStateKey,
-  ]);
-  useEffect(() => {
-    if (!keepsDraftCloudPick || !workDraftProjectStateKey) return;
-    if (restoredDraftCloudKeyRef.current !== workDraftProjectStateKey) return;
-    const saved = useAppStore.getState().getWorkViewState(workDraftProjectStateKey).draftCloudTarget;
-    if (sameDraftCloudTarget(saved, currentDraftCloudTarget)) return;
-    // A Cursor or Devin pick dropped because that cloud can't be picked here
-    // right now (sign-in, a chat that already started) was dropped by its
-    // gate, not by the person: the saved pick stays for when it can.
-    if (!currentDraftCloudTarget && (
-      (saved?.provider === "cursor" && !cursorCloudCanLaunch)
-      || (saved?.provider === "devin" && !devinCloudCanLaunch)
-    )) return;
-    setWorkViewState(workDraftProjectStateKey, { draftCloudTarget: currentDraftCloudTarget });
-  }, [cursorCloudCanLaunch, currentDraftCloudTarget, devinCloudCanLaunch, keepsDraftCloudPick, setWorkViewState, workDraftProjectStateKey]);
+  }, [handleDraftMachineChange, markDraftCloudChosen, setCursorCloudMode, setError]);
   /**
    * The bound machine's own name. Reached only when the picked machine IS the
    * bound one, so it must never label a remote-bound tab "This computer".

@@ -92,6 +92,9 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
     // What cloud machines spent, what unattended agents may spend, the optional cap.
     "integrations.ade-cloud-spending",
     "integrations.ade-cloud-agent-limits",
+    // The plan (the Stripe subscription) and the size new lanes start at (its hours rate).
+    "ade-cloud.plans",
+    "ade-cloud.sizes",
     "agents.budget",
     "stats.usage",
     "chat.fast-mode",

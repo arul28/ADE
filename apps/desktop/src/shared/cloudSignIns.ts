@@ -211,6 +211,9 @@ export type ClaudePassLabelSource = "checked" | "pressed" | "typed" | "none";
  */
 export type ClaudePassState = "active" | "ending_soon" | "estimate_passed" | "ended";
 
+/** The end warning is due this long before a sign-in's end: a Claude pass's or a provider key's. */
+export const SIGN_IN_END_NOTICE_MS = 7 * 24 * 60 * 60_000;
+
 /**
  * The sign-in the end warning names (`cloudAccess.read().passEnd`): the
  * soonest one whose notice is due (7 days before its end), whose expected end
@@ -219,13 +222,21 @@ export type ClaudePassState = "active" | "ending_soon" | "estimate_passed" | "en
  * with no end date from its provider is never named (no guess). Computed in
  * desktop main from the account's vault, only while ADE Cloud is on. No token.
  */
-export type CloudPassEnd = {
-  /** Absent on a Claude pass (older answers have no kind). */
-  kind?: "claude_pass" | "key";
-  /** For a key: the provider it signs in. */
-  provider?: ProviderLoginProvider;
-  /** For a key: the computer the sign-in that made it was on, or null. */
-  madeOnLabel?: string | null;
+export type CloudSignInEnd =
+  | (CloudSignInEndFacts & { kind: "claude_pass" })
+  | CloudKeyEnd;
+
+/** A key ADE Cloud carries whose end its provider wrote. */
+export type CloudKeyEnd = CloudSignInEndFacts & {
+  kind: "key";
+  /** The provider it signs in. */
+  provider: ProviderLoginProvider;
+  /** The computer the sign-in that made it was on, or null. */
+  madeOnLabel: string | null;
+};
+
+/** What every due sign-in carries, a pass or a key. */
+export type CloudSignInEndFacts = {
   /** The vault key: `claude-pass/<id>` or `<provider>/<origin>.<slot>`. */
   key: string;
   /** `estimate_passed` is a Claude pass only: a key's end date is the provider's own. */
