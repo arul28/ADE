@@ -2,6 +2,7 @@ import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } f
 import * as Popover from "@radix-ui/react-popover";
 import { CaretDown, Check } from "@phosphor-icons/react";
 import { usesCodexNamedEffortLabels, type ModelDescriptor } from "../../../../shared/modelRegistry";
+import { harnessEffortTiers, type HarnessPresetBody } from "../../../../shared/harnessPresets";
 import { cn } from "../../ui/cn";
 import { toneText } from "../../lanes/laneDesignTokens";
 import { usePortalContainer } from "../../ui/portalContainer";
@@ -14,6 +15,19 @@ export type ReasoningEffortPickerProps = {
   modelId: string;
   reasoningEffort: string | null;
   onChange: (effort: string | null) => void;
+  /**
+   * The levels the source model advertised when the active preset was saved.
+   * Overrides the runtime catalog's ladder, which may describe the harness
+   * rather than a routed source model — or may not be loaded yet.
+   */
+  reasoningTiers?: readonly string[];
+  /**
+   * The harness that will send this level. Filters the ladder to what that
+   * harness can express, so a source tier such as `none` or `ultra` is not
+   * offered to Claude Code’s SDK. Omitted for a plain chat, whose descriptor
+   * already belongs to its harness.
+   */
+  harness?: HarnessPresetBody | null;
   /** When false, each picker uses only its explicit value (no shared per-family defaults). */
   useFamilyDefaults?: boolean;
   compact?: boolean;
@@ -220,6 +234,8 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   modelId,
   reasoningEffort,
   onChange,
+  reasoningTiers,
+  harness,
   useFamilyDefaults = true,
   compact = false,
   disabled = false,
@@ -262,10 +278,12 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
     [catalogScopeKey, catalogRevision, modelId],
   );
 
-  const tiers = useMemo(
-    () => descriptor?.reasoningTiers ?? [],
-    [descriptor?.reasoningTiers],
-  );
+  const tiers = useMemo(() => {
+    const source = reasoningTiers?.length
+      ? reasoningTiers
+      : descriptor?.reasoningTiers ?? [];
+    return harnessEffortTiers(harness, source) ?? [];
+  }, [harness, reasoningTiers, descriptor?.reasoningTiers]);
   const family = descriptor?.family;
   const useCodex56Labels = usesCodexNamedEffortLabels(descriptor?.providerModelId);
 

@@ -305,6 +305,32 @@ export function harnessSubagentSameAsMain(harness: HarnessPresetBody): string {
 }
 
 /**
+ * The thinking levels each harness can actually send to its model.
+ *
+ * The source model and the harness are independent: DeepSeek may advertise
+ * `none`/`ultra` on OpenCode, but Claude Code's SDK only accepts its own set.
+ * A saved source ladder is filtered through this at the UI and request
+ * boundary, so a level the harness cannot express is never offered or sent.
+ * A harness absent here has no known restriction (its own adapter decides).
+ */
+export const HARNESS_EFFORT_VALUES: Partial<Record<HarnessPresetBody, readonly string[]>> = {
+  claude: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+  codex: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+};
+
+/** The source tiers a harness can send, or undefined when it has no such tiers. */
+export function harnessEffortTiers(
+  harness: HarnessPresetBody | null | undefined,
+  tiers: readonly string[] | null | undefined,
+): string[] | undefined {
+  if (!tiers?.length) return undefined;
+  const allowed = harness ? HARNESS_EFFORT_VALUES[harness] : undefined;
+  if (!allowed) return [...tiers];
+  const out = tiers.filter((tier) => allowed.includes(tier));
+  return out.length ? out : undefined;
+}
+
+/**
  * The sentence shown when a built-in agent is pinned to a specific model.
  *
  * Pinning takes the agent off Claude Code's own prompt and onto ADE's copy of
@@ -336,6 +362,13 @@ export type HarnessPreset = {
   model: string;
   /** Thinking level, when the model offers tiers. Absent means "runtime default". */
   reasoningEffort?: string;
+  /**
+   * The thinking levels the SOURCE model advertised when this preset was
+   * saved. The composer's effort picker uses these, so a saved preset still
+   * shows the model's own ladder when the runtime catalog is stale, missing,
+   * or describes the harness rather than the source model.
+   */
+  reasoningTiers?: string[];
   /** `"inherit"` = same as main. Otherwise a model id. */
   subagentModel: string;
   /** The subagent thinking level, where the harness takes one. Absent = runtime default. */
@@ -497,6 +530,30 @@ function normalizeAgentEfforts(value: unknown): HarnessPresetAgentEfforts {
   return out;
 }
 
+/**
+ * The source model's thinking levels, as saved with the preset.
+ *
+ * Kept conservative: only non-empty strings, deduplicated, in the order the
+ * model advertised them. A missing or malformed list means "ask the catalog",
+ * which is what presets saved before this field existed do.
+ */
+export function normalizeHarnessPresetReasoningTiers(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    // Effort matching is case-insensitive (`normalizeReasoningEffort`); a
+    // catalog that spells a tier "High" must still match the value sent.
+    // The length cap keeps a malformed row from becoming a picker label.
+    const tier = entry.trim().slice(0, 32).toLowerCase();
+    if (tier && !out.includes(tier)) out.push(tier);
+    // No model advertises anywhere near this many levels. A malformed or
+    // hand-edited row must not make the effort picker render an endless row.
+    if (out.length >= 16) break;
+  }
+  return out.length ? out : undefined;
+}
+
 function normalizeSource(value: unknown): HarnessPresetSource | null {
   if (validateSource(value)) return null;
   const raw = value as Record<string, unknown>;
@@ -554,6 +611,11 @@ export function normalizeHarnessPreset(value: unknown): HarnessPreset | null {
       ? raw.accentColor.toLowerCase()
       : DEFAULT_HARNESS_PRESET_ACCENT;
   const createdAt = isNonEmptyString(raw.createdAt) ? raw.createdAt : new Date(0).toISOString();
+  const reasoningTiers = normalizeHarnessPresetReasoningTiers(raw.reasoningTiers);
+  // Lossless on read: the launch validates the level against the saved ladder
+  // and the harness at the point of use. Dropping it here would make the next
+  // account sync persist the deletion.
+  const reasoningEffort = isNonEmptyString(raw.reasoningEffort) ? raw.reasoningEffort.trim() : undefined;
 
   return {
     id: raw.id.trim(),
@@ -561,7 +623,8 @@ export function normalizeHarnessPreset(value: unknown): HarnessPreset | null {
     harness: raw.harness,
     source,
     model: raw.model.trim(),
-    ...(isNonEmptyString(raw.reasoningEffort) ? { reasoningEffort: raw.reasoningEffort.trim() } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(reasoningTiers ? { reasoningTiers } : {}),
     subagentModel: isNonEmptyString(raw.subagentModel) ? raw.subagentModel.trim() : HARNESS_PRESET_SUBAGENT_INHERIT,
     ...(isNonEmptyString(raw.subagentEffort) ? { subagentEffort: raw.subagentEffort.trim() } : {}),
     agentOverrides: normalizeAgentOverrides(raw.agentOverrides),
@@ -732,6 +795,7 @@ export type HarnessPresetExport = {
     source: HarnessPresetSource;
     model: string;
     reasoningEffort?: string;
+    reasoningTiers?: string[];
     subagentModel: string;
     subagentEffort?: string;
     agentOverrides: HarnessPresetAgentOverrides;
@@ -823,6 +887,7 @@ export function exportHarnessPreset(preset: HarnessPreset, now: () => Date = () 
       source: sourceForExport(preset.source),
       model: preset.model,
       ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
+      ...(preset.reasoningTiers?.length ? { reasoningTiers: [...preset.reasoningTiers] } : {}),
       subagentModel: preset.subagentModel,
       ...(preset.subagentEffort ? { subagentEffort: preset.subagentEffort } : {}),
       agentOverrides: normalizeAgentOverrides(preset.agentOverrides),
@@ -931,6 +996,7 @@ export function importHarnessPreset(
     missing.push("opencode-signin");
   }
 
+  const reasoningTiers = normalizeHarnessPresetReasoningTiers(raw.reasoningTiers);
   const preset: HarnessPresetDraft = {
     name: isNonEmptyString(raw.name)
       ? raw.name.trim().slice(0, HARNESS_PRESET_NAME_MAX_LENGTH)
@@ -939,6 +1005,7 @@ export function importHarnessPreset(
     source,
     model: raw.model.trim(),
     ...(isNonEmptyString(raw.reasoningEffort) ? { reasoningEffort: raw.reasoningEffort.trim() } : {}),
+    ...(reasoningTiers ? { reasoningTiers } : {}),
     subagentModel: isNonEmptyString(raw.subagentModel) ? raw.subagentModel.trim() : HARNESS_PRESET_SUBAGENT_INHERIT,
     ...(isNonEmptyString(raw.subagentEffort) ? { subagentEffort: raw.subagentEffort.trim() } : {}),
     agentOverrides: normalizeAgentOverrides(raw.agentOverrides),

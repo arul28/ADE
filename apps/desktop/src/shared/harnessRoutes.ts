@@ -668,3 +668,17 @@ export function launchModelIdFor(harness: HarnessPresetBody, source: HarnessPres
   }
   return id;
 }
+
+/**
+ * The id the catalog files a source model under, independent of the harness.
+ * OpenCode names every one of its models `opencode/<provider>/<model>`; every
+ * other source keeps the id as typed. The composer uses this for the source
+ * model's effort ladder, and the model row's label uses the same rule.
+ */
+export function catalogModelIdFor(source: HarnessPresetSource, model: string): string {
+  const id = model.trim();
+  if (source.kind === "opencode" && !id.startsWith("opencode/")) {
+    return encodeOpenCodeRegistryId(source.providerId, id);
+  }
+  return id;
+}

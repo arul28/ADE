@@ -393,9 +393,9 @@ import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_A
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore, type WorkDraftCloudTarget } from "../../state/appStore";
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
 import { cancelWorkDraftLaneRequest, type WorkDraftModelRequest } from "../../lib/workDraft";
-import { resolveHarnessLaunchTarget, type HarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { reasoningModelIdForLaunchTarget, resolveHarnessLaunchTarget, type HarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import { isDefaultProviderInstanceId } from "../../../shared/types/providerInstances";
-import type { HarnessPreset } from "../../../shared/harnessPresets";
+import { harnessEffortTiers, type HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle, resolveChatContentWidthPx } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
@@ -7177,6 +7177,25 @@ export function AgentChatPane({
     return ids;
   }, [resolvedPendingInputsBySession, selectedSessionId]), sameSetContents);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
+  /* The exact preset the composer is showing: a running chat's own preset (or
+     the pick still waiting for Send), or the draft's. The launch must read its
+     source-model ladder, not the harness's ladder, or a picked level is lost
+     before the chat is created. */
+  const activeLaunchTarget = useMemo(() => {
+    const presetId = selectedSessionId
+      ? (sessionRoutePick?.sessionId === selectedSessionId
+        ? sessionRoutePick.presetId
+        : selectedSession?.presetId ?? null)
+      : draftHarnessPresetId;
+    return resolveHarnessLaunchTarget(presetId, harnessPresets, modelCatalogScopeKey);
+  }, [
+    draftHarnessPresetId,
+    harnessPresets,
+    modelCatalogScopeKey,
+    selectedSession?.presetId,
+    selectedSessionId,
+    sessionRoutePick,
+  ]);
   const selectedModelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
   const subagentViewCacheKey = subagentView
     ? `subagent:${renderedSessionId ?? "chat-draft"}:${subagentView.taskId}`
@@ -7188,7 +7207,21 @@ export function AgentChatPane({
       reasoningEffort: subagentViewSnapshot?.reasoningEffort,
     }))
     : null;
-  const reasoningTiers = selectedModelDesc?.reasoningTiers ?? EMPTY_REASONING_TIERS;
+  const presetReasoningDescriptor = activeLaunchTarget
+    ? resolveScopedModelDescriptor(
+        reasoningModelIdForLaunchTarget(activeLaunchTarget),
+        modelCatalogScopeKey,
+      )
+    : undefined;
+  const reasoningDescriptor = activeLaunchTarget
+    ? presetReasoningDescriptor ?? selectedModelDesc
+    : selectedModelDesc;
+  const reasoningTiers = harnessEffortTiers(
+    activeLaunchTarget?.harness,
+    activeLaunchTarget?.reasoningTiers?.length
+      ? activeLaunchTarget.reasoningTiers
+      : reasoningDescriptor?.reasoningTiers ?? [],
+  ) ?? EMPTY_REASONING_TIERS;
   /**
    * What the reasoning control is DISPLAYING, which is what a launch must send.
    *
@@ -7196,16 +7229,17 @@ export function AgentChatPane({
    * nothing explicit is set, but the launch used to read the unset state — so
    * the trigger said "High" while the request went out on the model default.
    * Resolving it here, at the owner of the value, keeps the two in step without
-   * a presentational component writing its parent's state on mount.
+   * a presentational component writing its parent's state on mount. A Custom
+   * pick reads the source model's ladder; a plain chat reads its own row.
    */
   const effectiveReasoningEffort = useMemo(() => resolveDisplayedReasoningEffort({
     tiers: reasoningTiers,
     explicitEffort: reasoningEffort,
-    rememberedForFamily: selectedModelDesc?.family
-      ? getReasoningForFamily(selectedModelDesc.family) ?? null
+    rememberedForFamily: reasoningDescriptor?.family
+      ? getReasoningForFamily(reasoningDescriptor.family) ?? null
       : null,
-    modelDefault: selectedModelDesc?.defaultReasoningEffort ?? null,
-  }), [getReasoningForFamily, reasoningEffort, reasoningTiers, selectedModelDesc]);
+    modelDefault: reasoningDescriptor?.defaultReasoningEffort ?? null,
+  }), [getReasoningForFamily, reasoningEffort, reasoningDescriptor, reasoningTiers]);
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
       ? (selectedModelDesc.family as LocalProviderFamily)
@@ -13238,7 +13272,17 @@ export function AgentChatPane({
       });
       if (!cliPrompt.trim().length) throw new Error("Enter a prompt or attach context before launching a CLI session.");
       const cliSessionId = provider === "claude" ? createClaudeSessionIdForCliLaunch() : undefined;
-      const reasoningEffort = prepared.reasoningEffort ?? launchTarget.reasoningEffort ?? null;
+      const requestedEffort = prepared.reasoningEffort ?? launchTarget.reasoningEffort ?? null;
+      const allowedTiers = harnessEffortTiers(launchTarget.harness, launchTarget.reasoningTiers);
+      // A stale draft can carry a level the source no longer offers; the CLI
+      // must receive a level the harness can send, or no level at all.
+      const reasoningEffort = allowedTiers?.length
+        ? (requestedEffort && allowedTiers.includes(requestedEffort)
+          ? requestedEffort
+          : launchTarget.reasoningEffort && allowedTiers.includes(launchTarget.reasoningEffort)
+            ? launchTarget.reasoningEffort
+            : null)
+        : requestedEffort;
       return {
         profile: provider,
         title: workCliTitleFromPrompt(prepared.text || prepared.finalDisplayText || prepared.finalText, LAUNCH_PROFILE_TITLE[provider]),

@@ -4,7 +4,7 @@
 // rules; the chat service applies them.
 // ---------------------------------------------------------------------------
 
-import { normalizeHarnessPreset, presetLabel, presetSourceLabel } from "../../../shared/harnessPresets";
+import { normalizeHarnessPreset, presetLabel, presetSourceLabel, type HarnessPreset } from "../../../shared/harnessPresets";
 import { decodeRoutePresetId, isRoutePresetId, launchModelIdFor } from "../../../shared/harnessRoutes";
 import type { AgentChatCrossMachineRoute, AgentChatProvider } from "../../../shared/types";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
@@ -15,13 +15,25 @@ import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
  * ad-hoc route id carries its spec in the id. Null when this machine has no
  * such preset.
  */
-export function readPresetLaunchTarget(presetId: string, adeHome: string): { harness: AgentChatProvider; model: string } | null {
-  const spec = isRoutePresetId(presetId)
+export function readPresetLaunchTarget(presetId: string, adeHome: string): {
+  harness: AgentChatProvider;
+  model: string;
+  reasoningEffort?: string;
+  reasoningTiers?: string[];
+} | null {
+  const route = isRoutePresetId(presetId);
+  const spec = route
     ? decodeRoutePresetId(presetId)
     : readHarnessPresetsFromMachine(adeHome)?.find((preset) => preset.id === presetId) ?? null;
   if (!spec) return null;
   const model = spec.model.trim() ? launchModelIdFor(spec.harness, spec.source, spec.model) : "";
-  return { harness: spec.harness, model };
+  const reasoningTiers = !route ? (spec as HarnessPreset).reasoningTiers : undefined;
+  return {
+    harness: spec.harness,
+    model,
+    ...(spec.reasoningEffort?.trim() ? { reasoningEffort: spec.reasoningEffort.trim() } : {}),
+    ...(reasoningTiers?.length ? { reasoningTiers: [...reasoningTiers] } : {}),
+  };
 }
 
 export type LaunchRouteTransition = {
