@@ -8,6 +8,11 @@ import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
 import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../../shared/claudePluginUi";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
 import { ANDROID_AGENT_ACTIONS, ANDROID_PERSON_ONLY_ACTIONS, ANDROID_USER_ONLY_ACTIONS } from "../../../shared/types/androidEmulator";
+import {
+  PROVIDER_LOGIN_ACCOUNT_WRITES,
+  PROVIDER_LOGIN_ACTIONS,
+  PROVIDER_LOGIN_PERSON_ACTIONS,
+} from "../../../shared/types/providerLogins";
 import type { AdeActionDomain } from "./domains";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -41,6 +46,7 @@ export type CtoOnlyRule =
 /** Saving a key, Claude's sign-in, and forgetting one: Settings › Integrations › the provider only. */
 const CLOUD_SIGN_IN_WRITES = [
   "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
+  "cloud_sign_in_keep",
 ] as const;
 
 /**
@@ -49,6 +55,7 @@ const CLOUD_SIGN_IN_WRITES = [
  * agent is told where the setting is rather than that it lacks a role.
  * `ADE_ACTION_CTO_ONLY` reads these lists, so a write added here is refused.
  */
+
 const USER_SETTING_WRITES = {
   account_settings: { actions: ["set", "remove"], entryId: null },
   provider_instances: {
@@ -58,6 +65,10 @@ const USER_SETTING_WRITES = {
     ],
     entryId: "agents.providers",
   },
+  // Copying this computer's sign-ins into the account, and which ones ADE
+  // Cloud uses, are the person's calls (P5). The five account writes are also
+  // user-only below: outside apps and agents read the status, never change it.
+  provider_logins: { actions: [...PROVIDER_LOGIN_PERSON_ACTIONS], entryId: "agents.providers" },
   keybindings: { actions: ["set"], entryId: null },
   project_config: { actions: ["setPrTranscriptGists"], entryId: "lanes-git.pr-chat-transcripts" },
   keep_awake: { actions: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"], entryId: "general.keep-awake" },
@@ -158,7 +169,8 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // automation scheduled, so it is operator-only like the webhook lifecycle.
   automations: { only: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"] },
   // Writing or destroying a provider credential is operator work.
-  // `acpProviderDiagnostics` can run a provider CLI's doctor, so it is
+  // `acpProviderDiagnostics` can run a provider CLI's doctor, and
+  // `verifyProviderSignIn` starts the provider's CLI or agent, so both are
   // operator-only.
   // `harnessLaunchEnv` returns a routed launch's environment WITH its tokens
   // (it is how `ade harness env` runs a custom provider in the user's own
@@ -166,7 +178,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Both are operator work, like `project_secret.exportEnv`. `museSettings`
   // opens a Muse host on the user's credential to read or change Muse's own
   // settings, the same tier.
-  ai: { only: ["setContinueAfterRestart", "harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel", ...USER_SETTING_WRITES.ai.actions] },
+  ai: { only: ["setContinueAfterRestart", "harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "verifyProviderSignIn", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel", ...USER_SETTING_WRITES.ai.actions] },
   budget: { only: USER_SETTING_WRITES.budget.actions },
   // `applyAccountRollups` writes another machine's history into a
   // CRR-replicated table. The desktop app pushes it over the local socket
@@ -192,6 +204,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // (`ownerOnlyProjectConfigChange`).
   account_settings: { only: USER_SETTING_WRITES.account_settings.actions },
   provider_instances: { only: USER_SETTING_WRITES.provider_instances.actions },
+  provider_logins: { only: USER_SETTING_WRITES.provider_logins.actions },
   keybindings: { only: USER_SETTING_WRITES.keybindings.actions },
   project_config: { only: USER_SETTING_WRITES.project_config.actions },
   /*
@@ -370,6 +383,8 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   android_emulator: ANDROID_PERSON_ONLY_ACTIONS,
   // Another machine's chat owns each copy; only a person deletes one for it.
   remote_work: ["list", "delete"],
+  // Which sign-ins ADE Cloud uses, removing one from the account, and the one Keychain read on a Mac (P5).
+  provider_logins: [...PROVIDER_LOGIN_ACCOUNT_WRITES, "allowKeychain", "allowGitHubCli"],
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
@@ -418,6 +433,8 @@ export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): bo
 export const ADE_ACTION_MACHINE_SCOPED = {
   cloud: ["access", "list", "hours", "limits", "sleep", "wake", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
   account_vault: ["get", "set", "remove"],
+  // The account's sign-ins, from a window with no project here (`providerLogins.call`).
+  provider_logins: PROVIDER_LOGIN_ACTIONS,
 } as const satisfies Partial<Record<AdeActionDomain, readonly string[]>>;
 
 export type AdeMachineScopedDomain = keyof typeof ADE_ACTION_MACHINE_SCOPED;
@@ -1018,6 +1035,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "storeApiCredential",
     "removeApiCredential",
     "verifyApiKeyConnection",
+    "verifyProviderSignIn",
     "storeApiKey",
     "deleteApiKey",
     "listApiKeys",
@@ -1551,6 +1569,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "loginCommand",
     "refresh",
   ],
+  /*
+   * The sign-ins the account keeps for ADE Cloud (P5). `status` returns no
+   * token, key, file content or hash, so agents and other machines may read
+   * it. `captureNow`, `allowKeychain` and `allowGitHubCli` are the person's.
+   */
+  provider_logins: [...PROVIDER_LOGIN_ACTIONS],
 };
 
 /* ──────────────────────────────────────────────────────────────────────────

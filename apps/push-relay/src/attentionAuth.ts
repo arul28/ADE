@@ -125,6 +125,23 @@ function configuredClerkVerifiers(env: AttentionAuthEnv): ClerkVerificationConfi
   );
 }
 
+/** The relay's account key for a Clerk user: SHA-256 of `issuer \0 subject`, hex. Every relay table keys its rows by it. */
+async function relayAccountKey(issuer: string, subject: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${issuer}\0${subject}`));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * The relay account keys a Clerk user id can have: one for each configured
+ * issuer. The account directory names a deleted account by its raw Clerk id,
+ * and the relay's rows are keyed by the hash, so a purge deletes these keys.
+ */
+export async function relayAccountKeysForClerkUser(env: AttentionAuthEnv, clerkUserId: string): Promise<string[]> {
+  const subject = clerkUserId.trim();
+  if (!subject) return [];
+  return await Promise.all(configuredClerkVerifiers(env).map((config) => relayAccountKey(config.issuer, subject)));
+}
+
 export async function verifyAttentionBearerToken(
   request: Request,
   env: AttentionAuthEnv,
@@ -169,12 +186,7 @@ export async function verifyAttentionBearerToken(
     ) {
       return null;
     }
-    const digest = await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(`${config.issuer}\0${subject}`),
-    );
-    return Array.from(new Uint8Array(digest), (byte) =>
-      byte.toString(16).padStart(2, "0")).join("");
+    return await relayAccountKey(config.issuer, subject);
   } catch (error) {
     if (
       error instanceof TypeError

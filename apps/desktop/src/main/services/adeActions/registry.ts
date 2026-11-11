@@ -67,6 +67,7 @@ import type {
   AgentCliLoginSubmitCodeArgs,
 } from "../../../shared/types/agentCliLogin";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
+import { noteProviderLoginChanged } from "../ai/providerLoginChanged";
 import { buildHarnessLaunchEnv, listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
 import { testHarnessRoute } from "../chat/harnessRouteTest";
 import { resolveHarnessPresetForLaunch } from "../chat/harnessPresetLaunch";
@@ -302,9 +303,12 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
+import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
+import { observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
 import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import { cloudMachineEnv, type CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
+import { claudePassVaultFromStore } from "../adeCloud/claudePassStore";
 import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
 import { buildCloudReadyActions } from "../adeCloud/cloudReadyActions";
 import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
@@ -957,6 +961,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
           runtime.ptyService,
           "Terminal service not available.",
         ),
+        pickAccount: (provider, modelId) => agentChatService.pickNewCliSessionAccount(provider, modelId),
       }),
     // Object form `{ laneId?, ...options }`, or the desktop's positional
     // `argsList [laneId?, options?]`.
@@ -2669,19 +2674,9 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         providerId,
         ...(args?.method ? { method: args.method } : {}),
       });
-      // Signing in unlocks models, so the readiness cache is stale until it is
-      // dropped. The IPC handler does the same; this keeps the action path
-      // (remote runtime, `ade actions run`) consistent with it.
-      if (result.ok) {
-        try {
-          aiIntegrationService.invalidateProviderReadinessCaches();
-        } catch (error) {
-          runtime.logger.warn("ai.pi_auth_cache_invalidation_failed", {
-            provider: providerId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
+      // The one "login changed" path, here as on the IPC handler, so a
+      // remote runtime or `ade actions run` sign-in reads fresh too.
+      if (result.ok) noteProviderLoginChanged("pi");
       return result;
     },
     piLoginSubmit: (args?: { providerId?: string; requestId?: string; value?: string }) =>
@@ -2697,6 +2692,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     cursorAuthLogin: async () => {
       const result = await loginCursorSdk();
       if (result.ok) {
+        noteProviderLoginChanged("cursor");
         try {
           aiIntegrationService.invalidateProviderReadinessCaches();
         } catch (error) {
@@ -2709,6 +2705,7 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     cursorAuthLogout: async () => {
       const result = await logoutCursorSdk();
+      if (result.ok) noteProviderLoginChanged("cursor");
       try {
         aiIntegrationService.invalidateProviderReadinessCaches();
       } catch (error) {
@@ -2836,20 +2833,9 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     cliLoginStatus: async (args?: AgentCliLoginRefArgs) => {
       const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
-      const status = getMachineAgentCliLoginRunner().status(requireNonEmptyString(args?.loginId, "loginId"));
-      // Signing in unlocks models, so the readiness cache is stale until it
-      // is dropped; the IPC handler does the same.
-      if (status.state === "succeeded") {
-        try {
-          aiIntegrationService.invalidateProviderReadinessCaches();
-        } catch (error) {
-          runtime.logger.warn("ai.cli_login_cache_invalidation_failed", {
-            provider: status.provider,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-      return status;
+      // A sign-in that succeeded already dropped that provider's cached
+      // answers (the runner's `onSignedIn`); other providers keep theirs.
+      return getMachineAgentCliLoginRunner().status(requireNonEmptyString(args?.loginId, "loginId"));
     },
     cliLoginSubmitCode: async (args?: AgentCliLoginSubmitCodeArgs) => {
       const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
@@ -2883,6 +2869,10 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     verifyApiKeyConnection: (args?: { provider?: string }) =>
       aiIntegrationService.verifyApiKeyConnection(requireNonEmptyString(args?.provider, "provider")),
+    // The one-provider sign-in check: it runs that provider's own check (its
+    // CLI, agent or SDK) on this machine, within 20 s.
+    verifyProviderSignIn: (args?: { provider?: string }) =>
+      aiIntegrationService.verifyProviderSignIn(requireNonEmptyString(args?.provider, "provider")),
     storeApiKey: (args?: { provider?: string; key?: string }) =>
       aiIntegrationService.storeApiKey(
         requireNonEmptyString(args?.provider, "provider"),
@@ -3963,20 +3953,10 @@ export function buildProviderInstancesDomainService(
       };
     },
     loginStatus(args: unknown) {
+      // A sign-in that succeeded already dropped that provider's cached
+      // answers, the signed-out mark a failed turn left included (the
+      // runner's `verify`), so the next send is not refused.
       const login = getMachineProviderLoginRunner().status(String((isRecord(args) ? args.loginId : "") ?? ""));
-      // Signing in unlocks models, and a turn that failed on the sign-in left
-      // the provider marked signed out: drop both, or the next send (a chat's
-      // automatic resend) is refused. The IPC handler does the same.
-      if (login.state === "succeeded") {
-        try {
-          runtime.aiIntegrationService?.invalidateProviderReadinessCaches();
-        } catch (error) {
-          runtime.logger?.warn("provider_instances.login_cache_invalidation_failed", {
-            provider: login.provider,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
       return { login };
     },
     loginSubmitCode(args: unknown) {
@@ -4197,7 +4177,9 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
     machineStore: () => cloudMachineStore(),
     logger: runtime.logger,
   });
-  const machines = createCloudMachines({
+  // A good list or a finished make also tells the sign-in renewal that the
+  // account has cloud computers, with no request of its own.
+  const machines = observeCloudComputerLists(createCloudMachines({
     client: () => getCloudProvider(credentials),
     whyNoClient: () => cloudNoProviderSentence(credentials),
     removeAccountMachine: async (machineKey) => {
@@ -4208,9 +4190,9 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
       }).deleteMachine(machineKey);
     },
     logger: runtime.logger,
-  });
+  }));
   const agentChatService = runtime.agentChatService ?? null;
-  const maker = cloudBrainMakerFor(runtime, machines);
+  const maker = observeCloudComputerMakes(cloudBrainMakerFor(runtime, machines));
   const ready = buildCloudReadyActions({
     credentials,
     readSettings: async () => (await settings.read()).projects,
@@ -4251,6 +4233,7 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   });
   const cloudSignIns = buildCloudSignInActions({
     vaults: () => cloudSignInVaults(runtime),
+    passVault: () => (runtime.accountVaultStore && runtime.accountAuthService?.getStatus().signedIn === true ? claudePassVaultFromStore(runtime.accountVaultStore) : null),
     accountId: () => runtime.accountAuthService?.getStatus().userId ?? null,
     // Which providers people sign in for cloud machines. A six-hour dedupe per
     // provider: at most 36 accepted events a day.
@@ -4283,10 +4266,13 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
 export function buildMachineAccountDomainServices(runtime: AccountDomainRuntime): {
   cloud: OpaqueService;
   account_vault: OpaqueService | null;
+  provider_logins: OpaqueService | null;
 } {
   return {
     cloud: buildCloudDomainService(runtime),
     account_vault: cloudOnlyVaultService(buildAccountVaultDomainService(runtime)),
+    // The brain's one sign-in sync, the same service a project runtime serves.
+    provider_logins: toService(buildProviderLoginsDomainService()),
   };
 }
 
@@ -4548,6 +4534,8 @@ export function getAdeActionDomainServices(
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
     provider_instances: toService(buildProviderInstancesDomainService(runtime)),
+    // The sign-ins the account keeps for ADE Cloud; the brain's one service answers.
+    provider_logins: toService(buildProviderLoginsDomainService()),
   };
 }
 

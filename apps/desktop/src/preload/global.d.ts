@@ -1,9 +1,10 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
-import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudPassEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
+import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
 import type { UpdateTrack } from "../shared/updateTrack";
@@ -509,6 +510,8 @@ import type {
   AgentCliLoginStatus,
   AgentCliLoginSubmitCodeArgs,
   AiApiKeyVerificationResult,
+  AiProviderSignInCheck,
+  AiVerifyProviderSignInArgs,
   AiConfig,
   AiSettingsStatus,
   OpenCodeOAuthStartResult,
@@ -1779,6 +1782,12 @@ declare global {
         deleteApiKey: (provider: string, pin?: OpenProjectBinding | null) => Promise<void>;
         listApiKeys: (pin?: OpenProjectBinding | null) => Promise<string[]>;
         verifyApiKey: (provider: string, pin?: OpenProjectBinding | null) => Promise<AiApiKeyVerificationResult>;
+        /**
+         * Runs one provider's own sign-in check (up to 20 s): right after a
+         * sign-in and on Re-check only. A remote ADE older than this action
+         * rejects it; callers read that as "unknown".
+         */
+        verifyProviderSignIn: (args: AiVerifyProviderSignInArgs, pin?: OpenProjectBinding | null) => Promise<AiProviderSignInCheck>;
         updateConfig: (config: Partial<AiConfig>, pin?: OpenProjectBinding | null) => Promise<void>;
         /**
          * Optional: shipped after this group did, so an older preload will not
@@ -4157,6 +4166,37 @@ declare global {
         signOut: (args: SubscriptionProxySignOutArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
         setDisabled: (args: SubscriptionProxySetDisabledArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
       };
+      /**
+       * The account's provider sign-ins for ADE Cloud (P5). `status` reads (any
+       * caller); the rest are the person's, and the brain refuses them to
+       * anything but this desktop. Pass the machine's pin from
+       * `useSettingsMachineScope().pin` for its "this computer" part; the
+       * account part is the same from any brain of the person's.
+       */
+      providerLogins: {
+        status: (args?: { provider?: ProviderLoginProvider | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        captureNow: (args?: { provider?: ProviderLoginProvider | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        /**
+         * Copy Antigravity's sign-in from this Mac's Keychain, once (macOS asks first).
+         * Refused off macOS and for another computer's pin or binding ("Run this on that Mac").
+         */
+        allowKeychain: (args: { provider: "antigravity"; slot?: "personal" | "business" | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        /**
+         * Copilot's GitHub CLI login (github.com) for ADE Cloud on one computer, off at the start.
+         * `on: true` runs one `gh auth token` there at once and returns what it found in
+         * `providers[copilot].ghCli`; refused for another computer's pin or binding.
+         * `on: false` removes that computer's copy from the account; pass the computer's pin.
+         */
+        allowGitHubCli: (args: { on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        use: (args: { provider: ProviderLoginProvider; key: string | null; slot?: string | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        setCloud: (args: { key: string; on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        setCloudAll: (args: { on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        /** Claude's smart balance on ADE Cloud: one switch for ADE Cloud, apart from each computer's own. */
+        setCloudBalance: (args: { provider: "claude"; on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        remove: (args: { key: string }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        /** A capture, an apply or a setting change on the bound or pinned brain. */
+        onChanged: (cb: () => void) => () => void;
+      };
       providerInstances: {
         list: (
           args?: ProviderInstanceListArgs,
@@ -4701,7 +4741,8 @@ declare global {
        * reads as no. Account-wide, so no pin.
        */
       cloudAccess?: {
-        read: () => Promise<{ enabled: boolean }>;
+        /** `passEnd`: the end warning's Claude pass, only while ADE Cloud is on (desktop only). */
+        read: () => Promise<{ enabled: boolean; passEnd?: CloudPassEnd | null }>;
         onChanged: (cb: () => void) => () => void;
       };
       /**
@@ -4737,7 +4778,8 @@ declare global {
          * computer's brain, so no pin: every computer answers the same.
          */
         cloudSignInStatus?: () => Promise<CloudSignInStatus | null>;
-        cloudSignInClaudeStart?: () => Promise<CloudSignInStatus | null>;
+        cloudSignInClaudeStart?: (args?: CloudSignInClaudeStartArgs) => Promise<CloudSignInStatus | null>;
+        cloudSignInClaudeKeep?: () => Promise<CloudSignInStatus | null>;
         cloudSignInClaudeCode?: (code: string) => Promise<CloudSignInStatus | null>;
         cloudSignInClaudeCancel?: () => Promise<CloudSignInStatus | null>;
         cloudSignInSaveKey?: (id: CloudSignInId, key: string) => Promise<CloudSignInStatus | null>;

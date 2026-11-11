@@ -132,6 +132,7 @@ export type CreateAcpRuntimeArgs<TSteer> = {
   initialConfigValues?: ReadonlyArray<{ configId: string; value: string }>;
   spawnOverride?: OpenAcpSessionArgs["spawnOverride"];
   pool?: OpenAcpSessionArgs["pool"];
+  loginGeneration?: number;
   binarySource: string;
   callbacks: AcpRuntimeCoordinatorCallbacks<TSteer>;
 };
@@ -486,6 +487,7 @@ export async function createAcpRuntime<TSteer>(
       logger: args.logger,
       ...(args.spawnOverride ? { spawnOverride: args.spawnOverride } : {}),
       ...(args.pool ? { pool: args.pool } : {}),
+      ...(args.loginGeneration !== undefined ? { loginGeneration: args.loginGeneration } : {}),
       callbacks: {
         onEvents: (events) => args.callbacks.onEvents(runtime, events),
         onPermissionRequested: (pending) => args.callbacks.onPermissionRequested(runtime, pending),

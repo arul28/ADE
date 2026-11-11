@@ -6,6 +6,7 @@ import { pinnedToolDownload, pinnedToolFetchInFlight, pinnedToolNeedsFetch } fro
 import { ENV_KEY_MAP } from "../ai/authDetector";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { resolveMuseConfigDir } from "../ai/museAuth";
+import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 import {
   claudeConfigHome,
   codexConfigHome,
@@ -82,7 +83,7 @@ function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, pla
     case "copilot":
     case "copilot-cli":
       return onPath("copilot", env)
-        || hasEnv(env, COPILOT_TOKEN_ENV_KEYS)
+        || hasEnv(withCopilotCarriedEnv(env, platform), COPILOT_TOKEN_ENV_KEYS)
         || exists(path.join(copilotConfigHome(homeArgs), "config.json"))
         || ghHostsFiles({ env, homeDir: home, platform }).some(exists);
     case "opencode":

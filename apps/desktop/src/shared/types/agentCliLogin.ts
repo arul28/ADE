@@ -44,6 +44,11 @@ export type AgentCliSavedLogin = {
   fingerprint: string;
   /** The account the saved login names, when it names one (Copilot's GitHub login). */
   account?: string;
+  /**
+   * The CLI keeps this login in the OS keyring, where ADE does not read
+   * (Kimi set to keyring storage): `signedIn` is false, yet a login may exist.
+   */
+  inKeyring?: boolean;
 };
 
 export type AgentCliLoginStatus = {

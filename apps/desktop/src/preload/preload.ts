@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
+import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -83,7 +84,7 @@ import type { MachineConnectionRoutes } from "../shared/types/account";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
-import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudPassEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -243,7 +244,7 @@ import type {
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
 } from "../shared/types";
-import { adeActionAccess } from "../shared/adeActionAccess";
+import { adeActionAccess, thisDesktopOnlyRefusal, thisDesktopOnlyRefusalFor } from "../shared/adeActionAccess";
 import type {
   ClaudePluginUiActArgs,
   ClaudePluginUiActResult,
@@ -347,6 +348,8 @@ import type {
   AgentCliLoginStatus,
   AgentCliLoginSubmitCodeArgs,
   AiApiKeyVerificationResult,
+  AiProviderSignInCheck,
+  AiVerifyProviderSignInArgs,
   AiConfig,
   AiSettingsStatus,
   OpenCodeOAuthStartResult,
@@ -2378,6 +2381,16 @@ function callPinnedOrBoundRuntimeActionOr<T>(
 }
 
 /**
+ * The account's provider sign-ins (P5): the pinned machine, else the tab's
+ * bound runtime, else this computer's brain with no project
+ * (`providerLogins.call`), so Settings works in a window with no project.
+ */
+function callProviderLogins<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr<T>(pin, "provider_logins", action, { args: { ...args } }, () =>
+    ipcRenderer.invoke(IPC.providerLoginsCall, { action, args: { ...args } }));
+}
+
+/**
  * The lane machine's dev servers. The runtime's list is the source; this
  * Electron process's own registry is added only when the lane is on this
  * computer, because it describes this computer's terminals. A runtime too old
@@ -2935,6 +2948,12 @@ const remoteAccountSettingsChangedFanout = createRemoteRuntimeFanout<Record<stri
   onSubscribe: () => ensureRemoteRuntimeEventPump(),
   extract: (payload) => payload.type === "account_settings_changed" ? {} : null,
 });
+const remoteProviderLoginsChangedFanout = createRemoteRuntimeFanout<Record<string, never>>({
+  eventType: "provider_logins_changed",
+  label: "provider sign-ins",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => payload.type === "provider_logins_changed" ? {} : null,
+});
 const remoteSessionChangedFanout = createRemoteRuntimeFanout<TerminalSessionChangedEvent>({
   eventType: "terminal_session_changed",
   label: "session",
@@ -3155,6 +3174,7 @@ const remoteWorkToolShowRequestFanout = createRemoteRuntimeFanout<WorkToolShowRe
 export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteAgentChatEventFanout,
   remoteAccountSettingsChangedFanout,
+  remoteProviderLoginsChangedFanout,
   remoteSessionChangedFanout,
   remoteLaneDeleteEventFanout,
   remoteLaneLifecycleEventFanout,
@@ -4567,6 +4587,20 @@ async function clearAround<T>(
   }
 }
 
+/**
+ * The preload half of the "login changed" path. A sign-in that just
+ * succeeded changes the saved logins, so the unpinned status cache drops and
+ * the next read asks again; no caller has to pass `force` after a sign-in.
+ */
+async function clearAiStatusOnSignIn<T>(action: Promise<T>, succeeded: (result: T) => boolean): Promise<T> {
+  const result = await action;
+  if (succeeded(result)) aiStatusCache.clear();
+  return result;
+}
+
+const loginSucceeded = (status: { state: string }): boolean => status.state === "succeeded";
+const antigravitySignInSucceeded = (state: AntigravitySignInState): boolean => state.phase === "succeeded";
+
 async function runProjectRuntimeTransition<T>(
   action: () => Promise<T>,
 ): Promise<T> {
@@ -5729,16 +5763,25 @@ const adeBridge = {
     // agent; start, its status reads, a pasted return URL and cancel all go
     // to that same machine.
     antigravitySignInStatus: async (pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInStatus", {}, () =>
-        ipcRenderer.invoke(IPC.aiAntigravitySignInStatus),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AntigravitySignInState>(pin, "ai", "antigravitySignInStatus", {}, () =>
+          ipcRenderer.invoke(IPC.aiAntigravitySignInStatus),
+        ),
+        antigravitySignInSucceeded,
       ),
     antigravitySignInStart: async (args: AntigravitySignInStartArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInStart", { args }, () =>
-        ipcRenderer.invoke(IPC.aiAntigravitySignInStart, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AntigravitySignInState>(pin, "ai", "antigravitySignInStart", { args }, () =>
+          ipcRenderer.invoke(IPC.aiAntigravitySignInStart, args),
+        ),
+        antigravitySignInSucceeded,
       ),
     antigravitySignInComplete: async (args: AntigravitySignInCompleteArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInComplete", { args }, () =>
-        ipcRenderer.invoke(IPC.aiAntigravitySignInComplete, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AntigravitySignInState>(pin, "ai", "antigravitySignInComplete", { args }, () =>
+          ipcRenderer.invoke(IPC.aiAntigravitySignInComplete, args),
+        ),
+        antigravitySignInSucceeded,
       ),
     antigravitySignInCancel: async (args: AntigravitySignInCancelArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInCancel", { args }, () =>
@@ -5748,16 +5791,25 @@ const adeBridge = {
     // machine that owns it: a pin goes there, else the tab's runtime, else this
     // computer. Keep one pin for a sign-in's start, polls, code and cancel.
     cliLoginStart: async (args: AgentCliLoginStartArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginStart", { args }, () =>
-        ipcRenderer.invoke(IPC.aiCliLoginStart, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AgentCliLoginStatus>(pin, "ai", "cliLoginStart", { args }, () =>
+          ipcRenderer.invoke(IPC.aiCliLoginStart, args),
+        ),
+        loginSucceeded,
       ),
     cliLoginStatus: async (args: AgentCliLoginRefArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginStatus", { args }, () =>
-        ipcRenderer.invoke(IPC.aiCliLoginStatus, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AgentCliLoginStatus>(pin, "ai", "cliLoginStatus", { args }, () =>
+          ipcRenderer.invoke(IPC.aiCliLoginStatus, args),
+        ),
+        loginSucceeded,
       ),
     cliLoginSubmitCode: async (args: AgentCliLoginSubmitCodeArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginSubmitCode", { args }, () =>
-        ipcRenderer.invoke(IPC.aiCliLoginSubmitCode, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AgentCliLoginStatus>(pin, "ai", "cliLoginSubmitCode", { args }, () =>
+          ipcRenderer.invoke(IPC.aiCliLoginSubmitCode, args),
+        ),
+        loginSucceeded,
       ),
     cliLoginCancel: async (args: AgentCliLoginRefArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginCancel", { args }, () =>
@@ -5831,6 +5883,22 @@ const adeBridge = {
             "verifyApiKeyConnection",
             { args: { provider } },
             () => ipcRenderer.invoke(IPC.aiVerifyApiKey, { provider }),
+          ),
+      ),
+    // Runs the provider's own sign-in check on the pinned machine (up to
+    // 20 s), so the status cache is stale on both sides of it.
+    verifyProviderSignIn: async (
+      args: AiVerifyProviderSignInArgs, pin?: OpenProjectBinding | null
+    ): Promise<AiProviderSignInCheck> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callPinnedOrBoundRuntimeActionOr(
+            pin,
+            "ai",
+            "verifyProviderSignIn",
+            { args },
+            () => ipcRenderer.invoke(IPC.aiVerifyProviderSignIn, args),
           ),
       ),
     updateConfig: async (config: Partial<AiConfig>, pin?: OpenProjectBinding | null): Promise<void> =>
@@ -11352,6 +11420,52 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.proxySetDisabled, args),
       ),
   },
+  providerLogins: {
+    status: (args: { provider?: ProviderLoginProvider | null } = {}, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("status", args, pin),
+    captureNow: (args: { provider?: ProviderLoginProvider | null } = {}, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("captureNow", args, pin),
+    /**
+     * The one Keychain read that macOS asks the person about, on the Mac in
+     * front of them. Never the tab's bound machine: a call for another
+     * computer (a remote pin or a remote binding) is refused here, since the
+     * prompt would show on that computer's screen.
+     */
+    allowKeychain: async (args: { provider: "antigravity"; slot?: "personal" | "business" | null }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> => {
+      if (pin?.kind === "remote" || (!pin && await getRemoteProjectBinding())) {
+        throw new Error(thisDesktopOnlyRefusal("provider_logins", "allowKeychain") ?? "Run this on that Mac.");
+      }
+      return await ipcRenderer.invoke(IPC.providerLoginsCall, { action: "allowKeychain", args: { ...args } }) as ProviderLoginSyncStatus;
+    },
+    /**
+     * Copilot's GitHub CLI login for ADE Cloud, on one computer. On runs `gh`
+     * there, which can ask to unlock a keychain on that screen, so on is only
+     * for the computer in front of the person (a remote pin or binding is
+     * refused here, and the brain refuses it too). Off goes to the pinned
+     * computer from any of the person's desktops.
+     */
+    allowGitHubCli: async (args: { on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> => {
+      if (args.on !== false) {
+        if (pin?.kind === "remote" || (!pin && await getRemoteProjectBinding())) {
+          throw new Error(thisDesktopOnlyRefusalFor("provider_logins", "allowGitHubCli", args) ?? "Turn this on at that computer.");
+        }
+        return await ipcRenderer.invoke(IPC.providerLoginsCall, { action: "allowGitHubCli", args: { on: true } }) as ProviderLoginSyncStatus;
+      }
+      return await callProviderLogins<ProviderLoginSyncStatus>("allowGitHubCli", { on: false }, pin);
+    },
+    use: (args: { provider: ProviderLoginProvider; key: string | null; slot?: string | null }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("use", args, pin),
+    setCloud: (args: { key: string; on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("setCloud", args, pin),
+    setCloudAll: (args: { on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("setCloudAll", args, pin),
+    setCloudBalance: (args: { provider: "claude"; on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("setCloudBalance", args, pin),
+    remove: (args: { key: string }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("remove", args, pin),
+    onChanged: (cb: () => void): (() => void) =>
+      remoteProviderLoginsChangedFanout.subscribe(() => cb()),
+  },
   providerInstances: {
     list: async (
       args: ProviderInstanceListArgs = {},
@@ -11418,7 +11532,10 @@ const adeBridge = {
         "loginStart",
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesLoginStart, args),
-      ).then(normalizeProviderLoginStatus),
+      ).then(normalizeProviderLoginStatus).then((status) => {
+        if (loginSucceeded(status)) aiStatusCache.clear();
+        return status;
+      }),
     loginStatus: async (
       args: ProviderLoginRefArgs,
       pin?: OpenProjectBinding | null,
@@ -11429,7 +11546,10 @@ const adeBridge = {
         "loginStatus",
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesLoginStatus, args),
-      ).then(normalizeProviderLoginStatus),
+      ).then(normalizeProviderLoginStatus).then((status) => {
+        if (loginSucceeded(status)) aiStatusCache.clear();
+        return status;
+      }),
     loginSubmitCode: async (
       args: ProviderLoginSubmitCodeArgs,
       pin?: OpenProjectBinding | null,
@@ -11440,7 +11560,10 @@ const adeBridge = {
         "loginSubmitCode",
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesLoginSubmitCode, args),
-      ).then(normalizeProviderLoginStatus),
+      ).then(normalizeProviderLoginStatus).then((status) => {
+        if (loginSucceeded(status)) aiStatusCache.clear();
+        return status;
+      }),
     loginCancel: async (
       args: ProviderLoginRefArgs,
       pin?: OpenProjectBinding | null,
@@ -13044,7 +13167,7 @@ const adeBridge = {
   // account, so none of these take a pin.
   /** Whether ADE Cloud exists for this account (`renderer/state/cloudAccess.ts`). */
   cloudAccess: {
-    read: (): Promise<{ enabled: boolean }> => ipcRenderer.invoke(IPC.cloudGetAccess),
+    read: (): Promise<{ enabled: boolean; passEnd?: CloudPassEnd | null }> => ipcRenderer.invoke(IPC.cloudGetAccess),
     onChanged: (cb: () => void): (() => void) => {
       const listener = () => cb();
       ipcRenderer.on(IPC.cloudStatusChanged, listener);
@@ -13096,7 +13219,13 @@ const adeBridge = {
       delete: (args: CloudSavedChatDeleteArgs): Promise<void> => ipcRenderer.invoke(IPC.cloudSavedChatsDelete, args),
     },
     cloudSignInStatus: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInStatus),
-    cloudSignInClaudeStart: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInClaudeStart),
+    cloudSignInClaudeStart: (args?: CloudSignInClaudeStartArgs): Promise<CloudSignInStatus | null> =>
+      ipcRenderer.invoke(IPC.cloudSignInClaudeStart, {
+        forEmail: args?.forEmail ?? null,
+        renewKey: args?.renewKey ?? null,
+        labelEmail: args?.labelEmail ?? null,
+      }),
+    cloudSignInClaudeKeep: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInClaudeKeep),
     cloudSignInClaudeCode: (code: string): Promise<CloudSignInStatus | null> =>
       ipcRenderer.invoke(IPC.cloudSignInClaudeCode, { code }),
     cloudSignInClaudeCancel: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInClaudeCancel),

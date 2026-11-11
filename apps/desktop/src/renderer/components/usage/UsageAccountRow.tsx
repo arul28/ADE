@@ -35,6 +35,7 @@ import { usageProviderLogo } from "../terminals/ToolLogos";
 import { PacePill } from "./UsagePaceBar";
 import type { AccountLimitRow, AccountWindowCell } from "./usageLimitModel";
 import { accountNoticeLine } from "./usageLimitModel";
+import { useUsageMachineName } from "./usageMachineNames";
 import {
   USAGE_OVERLAY_CLASS,
   usageLeftLevel,
@@ -127,6 +128,20 @@ export function ProviderMark({
   return <Logo size={size} className={cn("shrink-0 text-fg", dim && "opacity-55")} />;
 }
 
+/**
+ * Whether this computer is signed in to the row's account: a broken login or
+ * one signed in only elsewhere is not; a login this computer read, or a
+ * reading of its own, is; a reading from another computer with no login read
+ * here is unknown. A row with no account and no reading says nothing.
+ */
+function accountSignInState(row: AccountLimitRow): "signed-in" | "not-signed-in" | "unknown" | null {
+  const account = row.account;
+  if (account?.notSignedInHere || account?.login === "signed_out") return "not-signed-in";
+  if (account?.login === "ok" || account?.login === "expired") return "signed-in";
+  if (account?.readingFrom) return "unknown";
+  return row.cells.length > 0 ? "signed-in" : account ? "unknown" : null;
+}
+
 export function UsageAccountRow({
   row,
   pin,
@@ -163,6 +178,7 @@ export function UsageAccountRow({
   const account = row.account;
   const [openCell, setOpenCell] = useState<string | null>(null);
   const [spending, setSpending] = useState(false);
+  const machineName = useUsageMachineName();
   const [outcome, setOutcome] = useState<string | null>(null);
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -215,36 +231,52 @@ export function UsageAccountRow({
     null,
   );
   const pace = paceVisual(tightest?.segment.window.pacing);
+  const signIn = accountSignInState(row);
+  const readingFromName = account?.readingFrom
+    ? machineName(account.readingFrom.machineKey, account.readingFrom.label)
+    : null;
+  const notSignedInTitle = account?.notSignedInHere
+    ? `Signed in on ${readingFromName ?? "another computer"}, not on this one. These are that computer's numbers. Sign in to it here in Settings to use it for chats on this computer.`
+    : "The saved login for this account no longer works. Sign in to it again in Settings. The bars show its last reading.";
 
   return (
     <div className="usage-account">
-      {/* The email is the account; the plan is a quiet second word. */}
+      {/* The email is the account; the plan is a quiet second word. When the
+          marks do not fit beside them, the marks move to a second line rather
+          than run past the card's edge. */}
       <div className="usage-account-head">
         {hideIdentity ? null : (
-          <>
+          <span className="usage-account-id">
             <span
               className={cn("usage-account-email", (dim || account?.notSignedInHere) && "opacity-70")}
               title={providerTitle ? `${identity} · ${providerTitle}` : identity}
             >
               {identity}
             </span>
-            {account?.plan ? <span className="usage-account-plan">{account.plan}</span> : null}
-          </>
+            {account?.plan ? <span className="usage-account-plan" title={account.plan}>{account.plan}</span> : null}
+          </span>
         )}
         <span className="usage-account-marks">
-        {/* The pace line, back outside the details panel where it was legible
-            without hovering anything. */}
-        {account?.login === "signed_out" ? (
-          // The bars below are the last reading before the login broke. They
-          // still reset on time, but this login cannot use them.
-          <span
-            className="kit-tag"
-            data-tone="warn"
-            title="The saved login for this account no longer works. Sign in to it again in Settings. The bars show its last reading."
-          >
-            Signed out
+        {/* Every row says whether this computer is signed in to the account,
+            in the same three words as Settings. */}
+        {signIn === "not-signed-in" ? (
+          <span className="kit-tag" data-tone="warn" title={notSignedInTitle}>
+            Not signed in
           </span>
-        ) : account?.login === "expired" && row.cells.length > 0 && !account.readingFrom ? (
+        ) : signIn === "signed-in" ? (
+          <span className="kit-tag" title="This computer is signed in to this account.">
+            Signed in
+          </span>
+        ) : signIn === "unknown" ? (
+          <span className="kit-tag" title="This computer has not read this account's login yet.">
+            Unknown
+          </span>
+        ) : null}
+        {/* The pace line, back outside the details panel where it was legible
+            without hovering anything. A broken login's bars are its last
+            reading before it broke; they still reset on time, but this login
+            cannot use them, so they get no pace. */}
+        {account?.login === "signed_out" ? null : account?.login === "expired" && row.cells.length > 0 && !account.readingFrom ? (
           // This machine's token for the login expired, so the bars are its
           // last reading and may be hours old. The account still takes chats.
           <span
@@ -254,25 +286,14 @@ export function UsageAccountRow({
             Last reading
           </span>
         ) : pace ? <PacePill pace={pace} /> : null}
-        {account?.notSignedInHere ? (
-          // Signed in on another machine only: shown so every account's room is
-          // in one place, but it can't take a chat here.
-          <span
-            className="kit-tag"
-            data-tone="warn"
-            title={`Signed in on ${account.readingFrom?.label ?? "another computer"}, not on this one. These are that computer's numbers. Sign in to it here in Settings to use it for chats on this computer.`}
-          >
-            Not signed in here
-          </span>
-        ) : null}
         {account?.readingFrom && row.cells.length > 0 ? (
           // Quota is the login's: another machine read it more recently than
           // this one could, so these bars are that machine's reading.
           <span
             className="kit-tag"
-            title={`Read on ${account.readingFrom.label}, the freshest reading of this account across your machines.`}
+            title={`Read on ${readingFromName}, the freshest reading of this account across your machines.`}
           >
-            via {account.readingFrom.label}
+            <span className="usage-account-tag-text">via {readingFromName}</span>
           </span>
         ) : null}
         {hasCredit ? (
@@ -557,6 +578,7 @@ function WindowPopover({
       window.removeEventListener("scroll", place, true);
     };
   }, [anchorRef]);
+  const machineName = useUsageMachineName();
   const { segment, card } = cell;
   const account = segment.account;
   const resetClock = formatResetClock(segment.window.resetsAt);
@@ -565,7 +587,7 @@ function WindowPopover({
   const pace = paceVisual(segment.window.pacing);
   const outlook = paceOutlook(segment.window.pacing, nowMs);
   const via = account?.machines
-    .map((machine) => machine.label)
+    .map((machine) => (machine.label ? machineName(machine.machineKey, machine.label) : ""))
     .filter(Boolean)
     .join(" · ");
   // A model's own weekly cap (Claude's Fable) is worth seeing at 0% too: it

@@ -1,9 +1,11 @@
 /**
- * The parts the agent-raised composer cards share: the connect card
- * (`IntegrationConnectCard.tsx`) and the MCP server card (`McpServerCard.tsx`).
- * Both take the composer's place with a branded banner ("Claude asks to …"),
- * one row of fields and a button, an error line under it, and a one-line
- * receipt in the transcript. Styles: `integrationConnectCard.css` (`ade-icc-*`).
+ * The parts the composer cards share: the connect card
+ * (`IntegrationConnectCard.tsx`), the MCP server card (`McpServerCard.tsx`)
+ * and the provider cards (`ProviderSignInCard.tsx`,
+ * `ProviderLoginRecoveryCards.tsx`). Each takes the composer's place with a
+ * branded banner ("Claude asks to …"), one row of fields and a button, an
+ * error line under it, and a one-line receipt in the transcript. Styles:
+ * `integrationConnectCard.css` (`ade-icc-*`).
  */
 import React, { useState, type KeyboardEvent, type ReactNode } from "react";
 import { CheckCircle, Eye, EyeSlash, GearSix, Prohibit, X } from "@phosphor-icons/react";
@@ -110,16 +112,17 @@ export function CardHeading({
 export function CardBannerButtons({
   onOpenSettings,
   onDecline,
-  responding,
-  signingIn,
+  responding = false,
+  signingIn = false,
   cancelSignIn,
   testIdPrefix,
 }: {
   onOpenSettings: () => void;
   onDecline: () => void;
-  responding: boolean;
-  signingIn: boolean;
-  cancelSignIn: () => void;
+  responding?: boolean;
+  /** A browser sign-in runs: Not now stops it first (`cancelSignIn`). */
+  signingIn?: boolean;
+  cancelSignIn?: () => void;
   testIdPrefix: string;
 }) {
   return (
@@ -142,7 +145,7 @@ export function CardBannerButtons({
         aria-label="Not now"
         data-testid={`${testIdPrefix}-decline`}
         onClick={() => {
-          if (signingIn) cancelSignIn();
+          if (signingIn) cancelSignIn?.();
           onDecline();
         }}
       >
@@ -154,8 +157,8 @@ export function CardBannerButtons({
 
 /** Esc stops a running sign-in first; otherwise it says not now. */
 export function cardEscapeHandler(args: {
-  signingIn: boolean;
-  cancelSignIn: () => void;
+  signingIn?: boolean;
+  cancelSignIn?: () => void;
   responding: boolean;
   onDecline: () => void;
 }) {
@@ -163,7 +166,7 @@ export function cardEscapeHandler(args: {
     if (isImeComposing(event) || event.key !== "Escape") return;
     event.preventDefault();
     event.stopPropagation();
-    if (args.signingIn) args.cancelSignIn();
+    if (args.signingIn && args.cancelSignIn) args.cancelSignIn();
     else if (!args.responding) args.onDecline();
   };
 }

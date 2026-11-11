@@ -105,6 +105,7 @@ export function Banner({
   onDurableDismiss,
   style,
   testId,
+  announce = true,
 }: {
   model: BannerModel;
   layout?: BannerLayout;
@@ -114,9 +115,14 @@ export function Banner({
   style?: CSSProperties;
   /** `data-testid` on the banner's root. */
   testId?: string;
+  /**
+   * False: the banner takes no `alert`/`status` role (a note to read, or a
+   * caller that has its own live region). The suggestion layout ignores it.
+   */
+  announce?: boolean;
 }): JSX.Element {
   if (layout === "suggestion") return <SuggestionCard model={model} style={style} testId={testId} />;
-  return <NoticeBanner model={model} layout={layout} onDurableDismiss={onDurableDismiss} style={style} testId={testId} />;
+  return <NoticeBanner model={model} layout={layout} onDurableDismiss={onDurableDismiss} style={style} testId={testId} announce={announce} />;
 }
 
 function NoticeBanner({
@@ -125,12 +131,14 @@ function NoticeBanner({
   onDurableDismiss,
   style,
   testId,
+  announce,
 }: {
   model: BannerModel;
   layout: Exclude<BannerLayout, "suggestion">;
   onDurableDismiss?: (dismiss: { key: string; fingerprint: string }) => void;
   style?: CSSProperties;
   testId?: string;
+  announce: boolean;
 }): JSX.Element | null {
   const failure = useNoticeFailure({
     report: model.report,
@@ -216,7 +224,7 @@ function NoticeBanner({
 
   return (
     <div
-      role={model.tone === "error" ? "alert" : "status"}
+      role={announce ? (model.tone === "error" ? "alert" : "status") : undefined}
       aria-label={model.ariaLabel}
       data-testid={testId}
       data-notice-tone={model.tone}

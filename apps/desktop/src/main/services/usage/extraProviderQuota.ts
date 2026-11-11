@@ -22,6 +22,7 @@ import { readCopilotAccountQuota } from "../chat/copilotSdkPool";
 import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
 import { COPILOT_TOKEN_ENV_KEYS, copilotConfigHome, grokConfigHome, openCodeDataDirs } from "../shared/providerConfigHomes";
+import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 import { asRecord, finiteNumberOrNull, sha256Hex, toOptionalString } from "../shared/utils";
 import { runReapedCommand } from "../shared/runReapedCommand";
 import {
@@ -601,7 +602,8 @@ export async function pollCopilotQuota(
   io: ExtraQuotaIo = {},
 ): Promise<UsageProviderPollResult> {
   const resolved = resolveIo(io);
-  let token = envToken(resolved.env, ...COPILOT_TOKEN_ENV_KEYS);
+  // On a cloud computer the account's Copilot token is in the launch helper, not in process.env.
+  let token = envToken(withCopilotCarriedEnv(resolved.env), ...COPILOT_TOKEN_ENV_KEYS);
   if (!token) {
     const hosts = await resolved.readText(copilotHostsPath(resolved));
     token = hosts ? readCopilotTokenFromHosts(hosts) : null;

@@ -185,11 +185,11 @@ describe("account vault", () => {
   });
 
   it("accepts the account credential kinds ADE actually stores", async () => {
-    for (const kind of ["secret", "provider_key", "integration", "provider_api_key", "linear_refresh_token", "project_secret"]) {
+    for (const kind of ["secret", "provider_key", "integration", "provider_api_key", "linear_refresh_token", "project_secret", "provider_login"]) {
       expect((await put([sealed({ kind, key: `k-${kind}` })])).status, kind).toBe(200);
     }
     const read = await call("GET", "/attention/account/vault");
-    expect(read.body.items).toHaveLength(6);
+    expect(read.body.items).toHaveLength(7);
   });
 
   it("round-trips a project secret kind", async () => {
@@ -310,21 +310,26 @@ describe("account vault", () => {
         sealed({ kind: "ssh_key", key: "other" }),
         sealed({ key: "big", value: "x".repeat(10_000) }),
         sealed({ kind: "linear_refresh_token", key: "default", value: "eight-days-old", writtenAt: eightDaysAgo }),
+        // A provider sign-in is a whole login file, so its kind alone has room for 16,000.
+        sealed({ kind: "provider_login", key: "codex", value: "y".repeat(16_000) }),
+        sealed({ kind: "provider_login", key: "too-big", value: "y".repeat(16_001) }),
       ],
     });
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({
       ok: true,
-      written: 1,
+      written: 2,
       results: [
         { status: "written" },
         { status: "rejected", reason: "unknown kind" },
         { status: "rejected", reason: "value too large" },
         { status: "stale", current: { key: "default", value: "rotated", refreshOwner: "device-1" } },
+        { status: "written" },
+        { status: "rejected", reason: "value too large" },
       ],
     });
     const items = (await call("GET", "/attention/account/vault")).body.items as Array<{ key: string; value: string }>;
-    expect(items.map((item) => [item.key, item.value]).sort()).toEqual([["anthropic", expect.any(String)], ["default", "rotated"]]);
+    expect(items.map((item) => [item.key, item.value.length]).sort()).toEqual([["anthropic", expect.any(Number)], ["codex", 16_000], ["default", "rotated".length]]);
   });
 
   describe("a write made before the stored row", () => {

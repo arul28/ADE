@@ -90,6 +90,13 @@ import {
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
 import { getMachineProviderInstanceStore, sameLoginOwner } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { claudePassKeyOfAccountId } from "../../../shared/types/providerLogins";
+import {
+  claudePassUsageWindows,
+  claudePassUseOf,
+  claudePassVerifiedEmail,
+} from "../claudePass/claudePassUse";
+import type { ClaudePassCheck } from "../../../shared/cloudSignIns";
 import { machineProviderUsageHomes } from "./providerUsageHomes";
 import {
   accountBalanceModelWeight,
@@ -971,8 +978,10 @@ export async function recheckSignedOutLogins(
 ): Promise<string[]> {
   if (args.provider && args.provider !== "claude") return [];
   const wanted = args.instanceId?.trim();
-  const targets = getMachineProviderInstanceStore().list("claude").filter((instance) => (
-    wanted ? instance.id === wanted : instance.loginBroken === true
+  const store = getMachineProviderInstanceStore();
+  // A Claude pass account has no login file to read (its token joins at the spawn).
+  const targets = store.list("claude").filter((instance) => (
+    (wanted ? instance.id === wanted : instance.loginBroken === true) && !store.cloudPassOf(instance.id)
   ));
   const restored: string[] = [];
   await Promise.all(targets.map(async (instance) => {
@@ -990,9 +999,25 @@ export async function recheckSignedOutLogins(
   return restored;
 }
 
-function attachAccountLogins(accounts: UsageAccount[]): void {
+/**
+ * Each account's login state on this machine. A poll's reading wins. With
+ * none, an account the registry counts as signed in here (its email is known
+ * and no poll found the login broken) is `ok`: Codex polls never record a
+ * state, and a Codex login kept in the keyring has no file to read, so its row
+ * said "Unknown" while Settings said "Signed in" for the same account.
+ */
+function attachAccountLogins(
+  accounts: UsageAccount[],
+  listInstances: (provider: QuotaInstanceProvider) => QuotaInstance[],
+): void {
+  const signedInHere = new Set<string>();
+  for (const provider of ["claude", "codex"] as const) {
+    for (const instance of listInstances(provider)) {
+      if (instance.signedIn === true) signedInHere.add(usageAccountId({ provider, instanceId: instance.id }));
+    }
+  }
   for (const account of accounts) {
-    const login = accountLogins.get(account.id);
+    const login = accountLogins.get(account.id) ?? (signedInHere.has(account.id) ? "ok" : undefined);
     if (login) account.login = login;
   }
 }
@@ -1295,6 +1320,33 @@ async function refreshClaudeLoginInBackground(
   return refreshed;
 }
 
+function claudePassOfInstance(instanceId: string): { key: string; email: string | null; check: ClaudePassCheck } | null {
+  try {
+    return getMachineProviderInstanceStore().cloudPassOf(instanceId);
+  } catch {
+    return null;
+  }
+}
+
+function isClaudePassAccount(instanceId: string): boolean {
+  return claudePassOfInstance(instanceId) !== null;
+}
+
+function claudePassUsageIdentity(pass: { email: string | null; check: ClaudePassCheck }): ProviderAccountIdentity {
+  const email = claudePassVerifiedEmail(pass);
+  return email ? { email } : {};
+}
+
+function claudePassMachines(pass: { key: string }, machineLabel: string): UsageAccount["machines"] {
+  const use = claudePassUseOf(pass.key);
+  return [{ label: machineLabel, ...(use.state === "seen" ? { checkedAt: new Date(use.lastSeenAt).toISOString() } : {}) }];
+}
+
+function withoutEmail(account: UsageAccount): UsageAccount {
+  const { email: _email, ...rest } = account;
+  return rest;
+}
+
 /**
  * Quota for ONE Claude account. `null` = this account's config home holds no
  * login, so it has nothing to report.
@@ -1304,6 +1356,14 @@ async function pollClaudeInstance(
   context: UsageProviderPollContext,
   instance: QuotaInstance,
 ): Promise<UsageProviderPollResult | null> {
+  // A Claude pass account (cloud computer) has no login file or Keychain item
+  // to read, so a read would mark it signed out. Its limits come from its own
+  // turns (`rate_limit_event`, claudePassUse.ts): memory only, no read, no
+  // network. Nothing seen yet → null, which shows no number, never 0 %.
+  if (isClaudePassAccount(instance.id)) {
+    const windows = claudePassUsageWindows(instance.id);
+    return windows.length > 0 ? { windows, extraUsage: null, errors: [] } : null;
+  }
   // The CLI probe is for a user who just asked — background polls must not
   // spawn Claude. The Keychain is narrower: the default account still skips
   // it on background polls (that lookup can prompt), but a scoped account's
@@ -1496,6 +1556,11 @@ async function pollCodexInstance(
   instance: QuotaInstance,
 ): Promise<FreshUsageProviderPollResult | null> {
   const configHome = scopedConfigHome("codex", instance);
+  // Windows read with this account's own login prove the login works. A miss
+  // proves nothing: a login kept in the keyring has no auth.json to read.
+  const loginWorked = (): void => {
+    noteAccountLogin(usageAccountId({ provider: "codex", instanceId: instance.id }), instance.id, "ok");
+  };
   const creds = await measureUsagePhase(
     logger,
     { provider: "codex", phase: "credentials", reason: context.reason },
@@ -1523,6 +1588,7 @@ async function pollCodexInstance(
     if (result.ok && isRecord(result.data)) {
       const snapshot = parseCodexRateLimitSnapshot(result.data);
       if (snapshot.windows.length > 0) {
+        loginWorked();
         return { ...snapshot, source: "http", errors: [] };
       }
       const fallback = await measureUsagePhase(
@@ -1530,6 +1596,7 @@ async function pollCodexInstance(
         { provider: "codex", phase: "cli_rpc_fallback", reason: context.reason },
         () => pollCodexViaCliRpc(logger, configHome),
       );
+      if (fallback.windows.length > 0) loginWorked();
       return fallback.windows.length > 0
         ? { ...fallback, source: "cli", errors: [] }
         : {
@@ -1545,7 +1612,10 @@ async function pollCodexInstance(
         { provider: "codex", phase: "cli_rpc_fallback", reason: context.reason },
         () => pollCodexViaCliRpc(logger, configHome),
       );
-      if (fallback.windows.length > 0) return { ...fallback, source: "cli", errors: [] };
+      if (fallback.windows.length > 0) {
+        loginWorked();
+        return { ...fallback, source: "cli", errors: [] };
+      }
       return {
         ...fallback,
         source: "cli",
@@ -3678,9 +3748,15 @@ async function stampProviderAccounts(
       // a scoped home reports a signed-in machine as signed out), and every
       // other row is read from its own home (stamping the base email on a
       // promoted secondary shows one account under another's address).
-      const identity = isBaseProviderInstance({ id: instance.id, provider: key })
-        ? baseIdentity
-        : await readInstanceAccountIdentity(key, instance);
+      // A Claude pass has no account file: its identity is the email Claude
+      // named at the check, never a typed one, so peers' readings of that
+      // account pool onto it (smart balance before its first turn).
+      const pass = key === "claude" ? claudePassOfInstance(instance.id) : null;
+      const identity = pass
+        ? claudePassUsageIdentity(pass)
+        : isBaseProviderInstance({ id: instance.id, provider: key })
+          ? baseIdentity
+          : await readInstanceAccountIdentity(key, instance);
       if (instance.isDefault) defaultIdentity = identity;
       if (identity.email && instance.account?.email
         && identity.email.trim().toLowerCase() !== instance.account.email.trim().toLowerCase()) {
@@ -3704,7 +3780,8 @@ async function stampProviderAccounts(
         instanceId: instance.id,
         label: instance.label,
         ...(instance.accentColor ? { accentColor: instance.accentColor } : {}),
-        machines,
+        // A pass's reading is as old as its last turn, not as the poll that copied it.
+        machines: pass ? claudePassMachines(pass, machineLabel) : machines,
         ...(url ? { url } : {}),
         ...(resetCredits ? { resetCredits } : {}),
       });
@@ -4127,6 +4204,27 @@ let cachedLocalMachineKey: string | null = null;
  * skipped, `getUsageRollup` answers null, and the next scan tries again because
  * the failure is not memoized.
  */
+let deviceDisplayName: (() => string) | null = null;
+let deviceDisplayNameLoad: Promise<void> | null = null;
+
+/**
+ * The name the person gave this computer ("Arul's Mac Studio"), as the machine
+ * picker shows it; peers print it in "via". The network hostname ("Mac.lan")
+ * stands in until the name is known. The device registry loads on first use,
+ * as the brain loads it: at module load it would bring the Tailscale probe in.
+ */
+function localMachineLabel(): string {
+  if (!deviceDisplayName && !deviceDisplayNameLoad) {
+    deviceDisplayNameLoad = import("../../../../../ade-cli/src/services/sync/deviceRegistryService")
+      .then((module) => {
+        deviceDisplayName = module.resolveDeviceDisplayName;
+        deviceDisplayName();
+      })
+      .catch(() => undefined);
+  }
+  return deviceDisplayName?.() ?? os.hostname();
+}
+
 function defaultLocalMachineIdentity(): LocalMachineIdentity | null {
   if (!cachedLocalMachineKey) {
     try {
@@ -4138,7 +4236,7 @@ function defaultLocalMachineIdentity(): LocalMachineIdentity | null {
   if (!cachedLocalMachineKey) return null;
   return {
     machineKey: cachedLocalMachineKey,
-    label: os.hostname(),
+    label: localMachineLabel(),
     platform: process.platform,
   };
 }
@@ -4826,7 +4924,7 @@ export function createUsageTrackingService({
     const localKey = identity?.machineKey ?? `unidentified:${os.hostname()}`;
     const contributions: AccountUsageContribution[] = [{
       machineKey: localKey,
-      label: identity?.label ?? os.hostname(),
+      label: identity?.label ?? localMachineLabel(),
       platform: identity?.platform ?? process.platform,
       isLocal: true,
       origin: "live",
@@ -5823,7 +5921,7 @@ export function createUsageTrackingService({
         ]);
         const { accounts, defaultAccountIdByProvider, duplicateAccountIds } = await stampProviderAccounts(
           providerStatus,
-          readLocalMachineIdentity()?.label ?? os.hostname(),
+          readLocalMachineIdentity()?.label ?? localMachineLabel(),
           new Set(allWindows.map((window) => window.accountId).filter((id): id is string => Boolean(id))),
           readQuotaInstances,
         );
@@ -5836,7 +5934,7 @@ export function createUsageTrackingService({
         // default account's before the notice decides the account has nothing.
         attachAccountRateLimitNotices(accounts, allWindows);
         stampAccountReadTimes(accounts, allWindows);
-        attachAccountLogins(accounts);
+        attachAccountLogins(accounts, readQuotaInstances);
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
@@ -6364,7 +6462,10 @@ export function createUsageTrackingService({
   function getOwnLiveQuota(): { windows: UsageWindow[]; accounts: UsageAccount[] } {
     return {
       windows: lastSnapshot.windows.slice(0, MAX_LIVE_QUOTA_WINDOWS),
-      accounts: (lastSnapshot.accounts ?? []).slice(0, MAX_LIVE_QUOTA_ACCOUNTS),
+      // A Claude pass gives peers no email, as before: its own numbers reach
+      // the person's computers through its status, named as the pass's.
+      accounts: (lastSnapshot.accounts ?? []).slice(0, MAX_LIVE_QUOTA_ACCOUNTS)
+        .map((account) => (account.email && claudePassKeyOfAccountId(account.instanceId) ? withoutEmail(account) : account)),
     };
   }
 

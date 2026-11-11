@@ -986,6 +986,7 @@ export const IPC = {
   apiCredentialsRemove: "ade.apiCredentials.remove",
   apiCredentialsGet: "ade.apiCredentials.get",
   aiVerifyApiKey: "ade.ai.verifyApiKey",
+  aiVerifyProviderSignIn: "ade.ai.verifyProviderSignIn",
   aiUpdateConfig: "ade.ai.updateConfig",
   aiGetContinueAfterRestart: "ade.ai.getContinueAfterRestart",
   aiSetContinueAfterRestart: "ade.ai.setContinueAfterRestart",
@@ -1170,6 +1171,7 @@ export const IPC = {
   cloudSignInStatus: "ade.cloud.cloudSignInStatus",
   cloudSignInClaudeStart: "ade.cloud.cloudSignInClaudeStart",
   cloudSignInClaudeCode: "ade.cloud.cloudSignInClaudeCode",
+  cloudSignInClaudeKeep: "ade.cloud.cloudSignInClaudeKeep",
   cloudSignInClaudeCancel: "ade.cloud.cloudSignInClaudeCancel",
   cloudSignInSaveKey: "ade.cloud.cloudSignInSaveKey",
   cloudSignInRemove: "ade.cloud.cloudSignInRemove",
@@ -1185,6 +1187,12 @@ export const IPC = {
   accountSettingsGet: "ade.accountSettings.get",
   accountSettingsSet: "ade.accountSettings.set",
   accountSettingsSync: "ade.accountSettings.sync",
+  /**
+   * The account's provider sign-ins (P5) on this computer's brain, with no
+   * project bound: `{ action, args }` through the brain's `providerLogins.call`.
+   * A bound or pinned window calls the `provider_logins` action domain instead.
+   */
+  providerLoginsCall: "ade.providerLogins.call",
 
   /**
    * Settings > Integrations > MCP servers: what the renderer cannot do itself. It reads and

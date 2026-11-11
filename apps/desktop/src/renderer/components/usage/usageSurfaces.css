@@ -392,11 +392,19 @@
    by a hairline rather than by empty space. */
 .usage-account { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .usage-provider-body > .usage-account + .usage-account { border-top: 1px solid var(--kit-rule); padding-top: 8px; }
-.usage-account-head { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 6px; min-height: 24px; }
-.usage-account-email { flex: 0 0 auto; max-width: 72%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500; color: var(--color-fg); }
-/* The plan gives way first: a long plan name must never cut the email. */
-.usage-account-plan { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: var(--kit-text-3); white-space: nowrap; }
-.usage-account-marks { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; flex: none; }
+/* The identity and the marks share one line when they fit. When they do not,
+   the marks wrap to a second line, right-aligned, instead of being cut at the
+   card's edge. */
+.usage-account-head { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; row-gap: 4px; min-width: 0; padding: 0 6px; min-height: 24px; }
+.usage-account-id { display: flex; align-items: baseline; gap: 8px; flex: 1 1 auto; min-width: 0; max-width: 100%; }
+/* The email gives way first and keeps its full text on the hover; the plan is
+   one or two words and keeps them until it reaches 45% of the line. */
+.usage-account-email { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500; color: var(--color-fg); }
+.usage-account-plan { flex: 0 0 auto; max-width: 45%; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: var(--kit-text-3); white-space: nowrap; }
+.usage-account-marks { margin-left: auto; display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; max-width: 100%; }
+/* A long computer name in "via" ends in an ellipsis; the hover has it whole. */
+.usage-account-marks > .kit-tag { max-width: 100%; min-width: 0; }
+.usage-account-tag-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .usage-account .usage-footnote { padding: 0 6px; color: var(--kit-text-3); }
 
 /* The pace in words with a status dot. */
@@ -615,4 +623,4 @@
 
 /* In Settings the card already names the account, so the row's head is only
    its pace and marks: they read as a status line under the email, from the left. */
-.usage-account-head > .usage-account-marks:first-child { margin-left: 0; }
+.usage-account-head > .usage-account-marks:first-child { margin-left: 0; justify-content: flex-start; }

@@ -125,6 +125,30 @@ const ACCESS_FAILURE_TTL_MS = 60_000;
 let accessCache: { key: string; enabled: boolean; at: number } | null = null;
 let accessAsking: { key: string; answer: Promise<boolean | null> } | null = null;
 let accessFailure: { key: string; at: number } | null = null;
+const accessAnswerListeners = new Set<() => void>();
+
+/**
+ * Hear when the cached answer changes (a new yes or no, or a sign-out that
+ * clears it), whoever asked. A listener reads the answer again for free: the
+ * cache is fresh when it runs. For work that must not ask on a timer.
+ */
+export function onCloudAccessAnswerChanged(listener: () => void): () => void {
+  accessAnswerListeners.add(listener);
+  return () => accessAnswerListeners.delete(listener);
+}
+
+function setAccessCache(next: { key: string; enabled: boolean; at: number } | null): void {
+  const changed = next?.key !== accessCache?.key || next?.enabled !== accessCache?.enabled;
+  accessCache = next;
+  if (!changed) return;
+  for (const listener of [...accessAnswerListeners]) {
+    try {
+      listener();
+    } catch {
+      // A listener's failure is its own; the answer stays cached.
+    }
+  }
+}
 
 const accessKey = (deps: CloudAccessDeps): string => `${deps.directoryBaseUrl() ?? ""}|${deps.accountId() ?? ""}`;
 
@@ -135,6 +159,15 @@ const accessKey = (deps: CloudAccessDeps): string => `${deps.directoryBaseUrl() 
  */
 export async function cloudAccessEnabled(deps: CloudAccessDeps): Promise<boolean> {
   return (await readCloudAccess(deps)).state === "ready";
+}
+
+/**
+ * The account's ADE Cloud answer as one word, from the same cached ask as
+ * `cloudAccessEnabled`: `ready`, `no_access`, `signed_out`, or `unreadable`
+ * (the server could not be asked and no earlier yes is cached).
+ */
+export async function readCloudAccessState(deps: CloudAccessDeps): Promise<CloudAccess["state"]> {
+  return (await readCloudAccess(deps)).state;
 }
 
 /**
@@ -161,7 +194,7 @@ async function readAccessFlag(key: string, provider: CloudProvider, deps: CloudA
   if (accessAsking?.key === key) return await accessAsking.answer;
   const answer = provider.accessEnabled().then(
     (enabled) => {
-      accessCache = { key, enabled, at: Date.now() };
+      setAccessCache({ key, enabled, at: Date.now() });
       accessFailure = null;
       return enabled;
     },
@@ -188,7 +221,7 @@ async function readCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
 async function askCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
   if (!deps.signedIn()) {
     // Not a fact about any account: the next sign-in asks again, even the same one.
-    accessCache = null;
+    setAccessCache(null);
     accessFailure = null;
     return { state: "signed_out" };
   }

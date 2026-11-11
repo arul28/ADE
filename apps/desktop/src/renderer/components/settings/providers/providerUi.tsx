@@ -19,6 +19,7 @@ const STATUS_COLORS: Record<ProviderStatusState, string> = {
   checking: COLORS.info,
   connected: COLORS.success,
   "sign-in": COLORS.warning,
+  unknown: COLORS.textMuted,
   attention: COLORS.danger,
   "not-installed": COLORS.textDim,
   disabled: COLORS.textDim,

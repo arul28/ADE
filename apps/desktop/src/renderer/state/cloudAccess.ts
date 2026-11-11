@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import type { CloudPassEnd } from "../../shared/cloudSignIns";
 
 /**
  * Whether ADE Cloud exists in this window: the server's yes for this account,
@@ -10,6 +11,8 @@ import { useSyncExternalStore } from "react";
  */
 
 let enabled = false;
+/** The end warning's pass, from the same read (desktop main fills it only while ADE Cloud is on). */
+let passEnd: CloudPassEnd | null = null;
 let reading = false;
 let readAgain = false;
 const listeners = new Set<() => void>();
@@ -28,12 +31,15 @@ function read(): void {
   }
   reading = true;
   void bridge.read().then(
-    (answer) => answer?.enabled === true,
-    () => false,
+    (answer) => ({ on: answer?.enabled === true, end: answer?.enabled === true ? answer.passEnd ?? null : null }),
+    () => ({ on: false, end: null }),
   ).then((next) => {
     reading = false;
-    const changed = next !== enabled;
-    enabled = next;
+    const changed = next.on !== enabled || (next.end?.fingerprint ?? null) !== (passEnd?.fingerprint ?? null)
+      || (next.end?.endsInDays ?? null) !== (passEnd?.endsInDays ?? null);
+    enabled = next.on;
+    // The same pass state keeps its object, so the warning does not render again for nothing.
+    if (changed) passEnd = next.end;
     if (changed) emit();
     if (readAgain) {
       readAgain = false;
@@ -47,9 +53,12 @@ function startWatch(): void {
   const onFocus = () => read();
   window.addEventListener("focus", onFocus);
   const offChanged = window.ade?.cloudAccess?.onChanged(read) ?? null;
+  // A pass approved, renewed or removed in any window: the end warning reads again.
+  const offSignIns = window.ade?.cloud?.onCloudSignInChanged?.(read) ?? null;
   stopWatch = () => {
     window.removeEventListener("focus", onFocus);
     offChanged?.();
+    offSignIns?.();
     stopWatch = null;
   };
   read();
@@ -66,6 +75,15 @@ function subscribe(listener: () => void): () => void {
 
 function snapshot(): boolean {
   return enabled;
+}
+
+function passEndSnapshot(): CloudPassEnd | null {
+  return passEnd;
+}
+
+/** The Claude pass the end warning names, or null (always null while ADE Cloud is off). */
+export function useAdeCloudPassEnd(): CloudPassEnd | null {
+  return useSyncExternalStore(subscribe, passEndSnapshot, passEndSnapshot);
 }
 
 /** The hook every ADE Cloud surface sits behind. */

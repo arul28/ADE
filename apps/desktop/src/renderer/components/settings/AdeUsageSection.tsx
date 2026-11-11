@@ -43,6 +43,7 @@ import { sumCostSplitsOrNull } from "../../../shared/usageCostSplit";
 import { UsageBreakdown } from "./UsageBreakdown";
 import { UsageModelDetailDialog } from "./UsageModelDetailDialog";
 import { formatUpdatedAge } from "../usage/usageWindowFormat";
+import { useUsageMachineName } from "../usage/usageMachineNames";
 import { SettingsColumn } from "./primitives";
 import "../usage/usageSurfaces.css";
 import { Banner } from "../ui/notice";
@@ -583,6 +584,8 @@ function ChartCostUnavailable({
  * and when is what keeps the total honest.
  */
 function MachineList({ machines }: { machines: readonly AdeUsageMachineContribution[] }) {
+  // The same names the usage rows show in "via".
+  const machineName = useUsageMachineName();
   // The clock lives here, not on the page, so ageing one relative timestamp
   // re-renders only these rows — never the 365-column chart above them.
   const [nowMs, setNowMs] = React.useState(() => Date.now());
@@ -599,7 +602,7 @@ function MachineList({ machines }: { machines: readonly AdeUsageMachineContribut
             <span aria-hidden className="text-muted-fg">
               {platformGlyph(machine.platform)}
             </span>
-            <span className="truncate">{machine.label.trim() || machine.machineKey}</span>
+            <span className="truncate">{machineName(machine.machineKey, machine.label.trim() || machine.machineKey)}</span>
             {machine.state === "deduped" && machine.dedupedAgainstMachineKey ? (
               <span className="usage-card-sub truncate">
                 counted once with {machine.dedupedAgainstMachineKey}

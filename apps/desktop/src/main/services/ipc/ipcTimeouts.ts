@@ -217,8 +217,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return PI_LOGIN_IPC_TIMEOUT_MS;
     case IPC.aiCursorAuthLogin:
       return CURSOR_LOGIN_IPC_TIMEOUT_MS;
-    // A forced refresh waits on the ACP auth probes; see AI_STATUS_TIMEOUT_MS.
-    // A plain read keeps the default.
+    // A forced refresh on a remote ADE older than the disk-only status read
+    // still waits on its ACP auth probes; see AI_STATUS_TIMEOUT_MS. A plain
+    // read keeps the default.
     case IPC.aiGetStatus:
       return isRecord(args[0]) && args[0].force === true
         ? AI_STATUS_TIMEOUT_MS + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS
