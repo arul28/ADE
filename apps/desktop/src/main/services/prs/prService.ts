@@ -3436,7 +3436,7 @@ export function createPrService({
       state: PrSummary["state"];
       isOpen: boolean;
       /** The live row this PR already has, if any (it is not a new row). */
-      existingRow: ReturnType<typeof getLiveRowForRepoPr>;
+      existingRow: PullRequestRow | null;
     };
     const bestByLane = new Map<string, BackfillCandidate>();
     for (const rawPr of rawPulls) {
