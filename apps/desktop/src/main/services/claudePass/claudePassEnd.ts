@@ -28,7 +28,7 @@
 const REFUSED_CREDENTIAL = /authentication_error|invalid authentication credentials|api error: 401|status code: 401|status 401\b|authentication_failed/i;
 
 /** True when `signal` means Claude refused the token as no longer valid. */
-export function claudePassEndSignal(signal: string | null | undefined): boolean {
+function claudePassEndSignal(signal: string | null | undefined): boolean {
   const text = signal?.trim() ?? "";
   if (!text) return false;
   if (text === "status_401" || text === "authentication_failed") return true;

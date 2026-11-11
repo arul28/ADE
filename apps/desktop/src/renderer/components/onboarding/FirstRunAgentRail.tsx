@@ -22,13 +22,9 @@ import { CircleNotch, SignIn } from "@phosphor-icons/react";
 import { isAgentCliLoginProvider, isAntigravitySignInRunning, type AgentCliLoginProvider, type AntigravitySignInState } from "../../../shared/types";
 import { checkProviderSignIn } from "../../lib/providerSignInCheck";
 import { useSettingsMachineScope } from "../settings/SettingsMachineScope";
-import {
-  AntigravitySignInSheetView,
-  CursorSignInSheetView,
-  useAccountSignInSheet,
-  useAgentCliSignInSheet,
-  type CursorSignInOutcome,
-} from "../settings/providers/ProviderSignInSheet";
+import { AntigravitySignInSheetView, CursorSignInSheetView, type CursorSignInOutcome } from "../settings/providers/ProviderSignInSheet";
+import { useAccountSignInSheet } from "../settings/providers/AccountSignInSheet";
+import { useAgentCliSignInSheet } from "../settings/providers/CliSignInSheet";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { useDefaultProviderInstance } from "../settings/providers/accounts/useProviderInstances";
 import { providerBrand, type ProviderBrandLogo } from "../settings/providers/providerBrand";

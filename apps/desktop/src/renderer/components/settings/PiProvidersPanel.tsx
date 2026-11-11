@@ -539,7 +539,7 @@ function PiSignInFlowCard({
             report={failureReport}
             live={false}
           >
-            <span className="ade-sis-actions">
+            <span className="ade-sis-actions" style={{ marginTop: 3 }}>
               <button
                 ref={retryButtonRef}
                 type="button"

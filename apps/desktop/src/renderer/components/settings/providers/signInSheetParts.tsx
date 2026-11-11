@@ -5,18 +5,20 @@
  * sign-ins of Pi and OpenCode. Each place owns its flow, its machine (pin)
  * and its words; these only draw them, so thirteen providers look like one.
  *
- * The parts: the banner (logo, "Sign in to …", the computer), the account
- * note, the three steps, the code with its page button and QR, the paste box,
- * the raw output, and the end states (signed in, the wrong account, failed).
+ * The parts: the sheet's dialog and its header (logo, "Sign in to …", the
+ * computer), the account note, the three steps, the code with its page button
+ * and QR, the paste box, the raw output, and the end states (signed in, the
+ * wrong account, failed).
  */
 import React, { useEffect, useId, useRef, useState } from "react";
-import { ArrowSquareOut, CaretRight, Check, CheckCircle, Copy, QrCode, UserFocus, Warning, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, CaretRight, Check, CheckCircle, CircleNotch, Copy, QrCode, UserFocus, WarningCircle, X } from "@phosphor-icons/react";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { AdeQrCodeTile } from "../../ui/AdeQrCode";
-import { DialogTitle } from "../../ui/dialog";
+import { Dialog, DialogTitle, type DialogAction } from "../../ui/dialog";
+import { Banner } from "../../ui/notice";
 import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
 import { isImeComposing } from "../../../lib/imeComposition";
-import { providerBrand } from "./providerBrand";
+import { providerBrand, providerThemeVars } from "./providerBrand";
 import { SolidLogo } from "./ProviderHero";
 import { CopyReportButton } from "./providerUi";
 import "./signInSheet.css";
@@ -86,11 +88,11 @@ export function SignInBrandLogo({ providerId, size, turn = false }: { providerId
 }
 
 /**
- * The top of the sheet: the provider's banner, logo, title and the computer it
- * runs on. Only inside a `Dialog` with `hideHeader` and `titleInBody`: its
- * heading is the dialog's title.
+ * The top of the sheet: the provider's banner art, logo, title and the
+ * computer it runs on. Only inside a `Dialog` with `hideHeader` and
+ * `titleInBody`: its heading is the dialog's title.
  */
-export function SignInBanner({
+function SignInSheetHeader({
   providerId,
   title,
   place,
@@ -133,6 +135,85 @@ export function SignInBanner({
   );
 }
 
+/**
+ * The sign-in sheet's dialog: the header with the provider's art, a body that
+ * scrolls under it, and the footer (a status line while the sign-in runs, then
+ * the actions). Its top edge stays put while the body changes height.
+ * Closing (Cancel, Esc, the ×) runs `onClose`; mid-flow only those do it.
+ */
+export function SignInSheetDialog({
+  providerId,
+  title,
+  place,
+  turn,
+  running,
+  closeOnScrimClick = !running,
+  closeLabel,
+  onClose,
+  footerStatus,
+  actions,
+  width = 540,
+  rootRef,
+  testId,
+  children,
+}: {
+  providerId: string;
+  title: string;
+  place: string | null;
+  /** The logo turns once (the success moment). */
+  turn: boolean;
+  /** The sign-in runs: the footer shows `footerStatus`. */
+  running: boolean;
+  closeOnScrimClick?: boolean;
+  closeLabel: string;
+  onClose: () => void;
+  footerStatus: React.ReactNode;
+  actions: DialogAction[];
+  width?: number;
+  rootRef?: React.Ref<HTMLDivElement>;
+  testId?: string;
+  children: React.ReactNode;
+}) {
+  const brand = providerBrand(providerId);
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      title={title}
+      hideHeader
+      // The header's heading names the dialog; no hidden copy of the title.
+      titleInBody
+      closeLabel={closeLabel}
+      closeOnScrimClick={closeOnScrimClick}
+      width={width}
+      placement="top"
+      preventAutoFocus
+      bodyPadding={false}
+      // The sheet scrolls its own body under a fixed header, so the
+      // scrollbar never cuts into the header's art.
+      scrollBody={false}
+      bodyStyle={{ display: "flex", flexDirection: "column" }}
+      tone="accent"
+      panelStyle={providerThemeVars(brand)}
+      footerStart={running ? (
+        <SignInFooterStatus>
+          <CircleNotch size={13} className="animate-spin motion-reduce:animate-none" />
+          {footerStatus}
+        </SignInFooterStatus>
+      ) : undefined}
+      actions={actions}
+    >
+      {/* The header stays put; only the part under it scrolls (`data-sheet`). */}
+      <div className="ade-sis" data-sheet="true" ref={rootRef} data-testid={testId}>
+        <SignInSheetHeader providerId={providerId} title={title} place={place} turn={turn} onClose={onClose} closeLabel={closeLabel} />
+        <div className="ade-sis-body">{children}</div>
+      </div>
+    </Dialog>
+  );
+}
+
 // ── The account note ──
 
 /**
@@ -142,17 +223,26 @@ export function SignInBanner({
 export function SignInAccountNote({ providerLabel, expectedAccount }: { providerLabel: string; expectedAccount: string | null | undefined }) {
   const account = expectedAccount?.trim() || null;
   return (
-    <div className="ade-sis-note" role="note">
-      <UserFocus size={14} weight="bold" />
-      <span>
-        {account ? (
-          <>
-            Sign in as <b>{account}</b>. Your browser can be on another account. Check the name on {providerLabel}'s page before you approve.
-          </>
-        ) : (
-          <>Check the account on {providerLabel}'s page before you approve.</>
-        )}
-      </span>
+    <div role="note">
+      <Banner
+        layout="inline"
+        // A note to read, not news: no live region.
+        announce={false}
+        model={account
+          ? {
+            id: "sign-in-account-note",
+            tone: "warning",
+            icon: <UserFocus size={14} weight="bold" />,
+            title: `Sign in as ${account}.`,
+            detail: `Your browser can be on another account. Check the name on ${providerLabel}'s page before you approve.`,
+          }
+          : {
+            id: "sign-in-account-note",
+            tone: "warning",
+            icon: <UserFocus size={14} weight="bold" />,
+            title: `Check the account on ${providerLabel}'s page before you approve.`,
+          }}
+      />
     </div>
   );
 }
@@ -454,16 +544,30 @@ export function OutputDisclosure({ output }: { output: string }) {
 // ── End states ──
 
 /**
- * "Signed in as you@example.com." `live` false: the caller already wraps it in
- * a live region (one region, never one inside another).
+ * "Signed in as you@example.com." `title` replaces that line (a sign-in ADE
+ * could not check); `detail` adds a line under it. `live` false: the caller
+ * already wraps it in a live region (one region, never one inside another).
  */
-export function SignInSuccess({ account, providerLabel, live = true }: { account: string | null | undefined; providerLabel: string; live?: boolean }) {
+export function SignInSuccess({
+  account,
+  providerLabel,
+  title,
+  detail,
+  live = true,
+}: {
+  account: string | null | undefined;
+  providerLabel: string;
+  title?: string;
+  detail?: string | null;
+  live?: boolean;
+}) {
   const name = account?.trim() || null;
   return (
     <div className="ade-sis-end" data-tone="ok" role={live ? "status" : undefined}>
       <CheckCircle size={18} weight="fill" />
       <span className="ade-sis-end-text">
-        <span className="ade-sis-end-title">{name ? `Signed in as ${name}.` : `Signed in to ${providerLabel}.`}</span>
+        <span className="ade-sis-end-title">{title ?? (name ? `Signed in as ${name}.` : `Signed in to ${providerLabel}.`)}</span>
+        {detail ? <span className="ade-sis-end-detail">{detail}</span> : null}
       </span>
     </div>
   );
@@ -486,24 +590,29 @@ export function SignInMismatch({
   onTryAgain: () => void;
 }) {
   return (
-    <div className="ade-sis-end" data-tone="crit" role="alert">
-      <Warning size={18} weight="fill" />
-      <span className="ade-sis-end-text">
-        <span className="ade-sis-end-title">This is {actual}, not {expected}.</span>
-        <span className="ade-sis-end-detail">The browser approved another account. Keep it, or sign in again with {expected}.</span>
-        <span className="ade-sis-actions">
-          <button type="button" className="ade-sis-button" data-primary="true" onClick={onTryAgain}>Try again</button>
-          <button type="button" className="ade-sis-button" onClick={onKeep}>Keep {actual}</button>
-        </span>
-      </span>
-    </div>
+    <Banner
+      layout="inline"
+      model={{
+        id: "sign-in-mismatch",
+        tone: "error",
+        title: `This is ${actual}, not ${expected}.`,
+        detail: `The browser approved another account. Keep it, or sign in again with ${expected}.`,
+        actions: [
+          { label: "Try again", onClick: onTryAgain, variant: "primary" },
+          { label: `Keep ${actual}`, onClick: onKeep, variant: "secondary" },
+        ],
+        // The person's choice, not a failure to report.
+        report: false,
+      }}
+    />
   );
 }
 
 /**
  * A failed (or stopped) sign-in: the cause in plain words, and the details
  * for support with every token, code and key taken out
- * (`formatSignInFailureReport`).
+ * (`formatSignInFailureReport`). The banner's own Report stays off: the
+ * copied details are the redacted report.
  */
 export function SignInFailure({
   title,
@@ -523,24 +632,34 @@ export function SignInFailure({
   /** Extra lines under the cause (the account it had before). */
   children?: React.ReactNode;
 }) {
+  const extra = children || report ? (
+    <span style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      {children}
+      {report ? (
+        <span style={{ marginTop: 2, maxWidth: 240 }}>
+          <CopyReportButton report={report} label="Copy details for support" />
+        </span>
+      ) : null}
+    </span>
+  ) : undefined;
   return (
-    <div className="ade-sis-end" data-tone={tone} role={live ? (tone === "crit" ? "alert" : "status") : undefined}>
-      <WarningCircle size={18} weight="fill" />
-      <span className="ade-sis-end-text" style={{ flex: 1 }}>
-        <span className="ade-sis-end-title">{title}</span>
-        {detail ? <span className="ade-sis-end-detail">{detail}</span> : null}
-        {children}
-        {report ? (
-          <span style={{ marginTop: 6, maxWidth: 240 }}>
-            <CopyReportButton report={report} label="Copy details for support" />
-          </span>
-        ) : null}
-      </span>
-    </div>
+    <Banner
+      layout="inline"
+      announce={live}
+      model={{
+        id: "sign-in-failure",
+        tone: tone === "crit" ? "error" : "neutral",
+        icon: <WarningCircle size={14} weight="fill" />,
+        title,
+        detail: detail || undefined,
+        extra,
+        report: false,
+      }}
+    />
   );
 }
 
 /** The footer's status line while a sign-in runs. */
-export function SignInFooterStatus({ children }: { children: React.ReactNode }) {
+function SignInFooterStatus({ children }: { children: React.ReactNode }) {
   return <span className="ade-sis-footer-status" role="status">{children}</span>;
 }

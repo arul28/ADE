@@ -49,7 +49,9 @@ import { setUsageHeaderVisible, useUsageHeaderPreferences } from "../usage/usage
 import { availableProviderDescriptors, providerDescriptor, providerStatusFor } from "./providers/descriptors";
 import { useProviderAccountCounts } from "./providers/accounts/useProviderInstances";
 import { ProviderDetailPage } from "./providers/ProviderDetailPage";
-import { CliSignInSheet, TerminalSignInSheet, agentCliSignInSupported, type CursorSignInOutcome } from "./providers/ProviderSignInSheet";
+import type { CursorSignInOutcome } from "./providers/ProviderSignInSheet";
+import { CliSignInSheet, agentCliSignInSupported } from "./providers/CliSignInSheet";
+import { TerminalSignInSheet } from "./providers/TerminalSignInSheet";
 import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
 import { AdeCloudProvidersView } from "./providers/cloud/AdeCloudProvidersView";
 import { acpLoginCommand } from "./providers/acpProviders";

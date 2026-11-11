@@ -363,10 +363,15 @@ export async function probeAcpProviderAuth(
         return { state: "auth-failed", message: loginBlocker(provider) };
       }
 
+      const authWaitMs = within(PROBE_TIMEOUT_MS);
       try {
-        await connection.request(ACP_METHOD.authenticate, { methodId }, { timeoutMs: within(PROBE_TIMEOUT_MS) });
+        await connection.request(ACP_METHOD.authenticate, { methodId }, { timeoutMs: authWaitMs });
         return { state: "ready", message: null };
       } catch (error) {
+        // The shared limit cut this wait short: no answer yet, not "signed out".
+        if (authWaitMs < PROBE_TIMEOUT_MS && ranOutOfLimit(error)) {
+          return { state: "runtime-failed", message: error instanceof Error ? error.message : String(error) };
+        }
         if (error instanceof AcpRpcError && error.isMethodNotFound) {
           // No `authenticate` on this agent. session/new already failed as
           // auth, so this is still a sign-in problem.

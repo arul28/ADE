@@ -14,7 +14,6 @@ import { isProviderLoginProvider } from "../../../../../shared/types/providerLog
 import { AnchoredMenu } from "../../../ui/AnchoredMenu";
 import { Banner } from "../../../ui/notice";
 import { confirmDialog } from "../../../ui/dialog/confirm";
-import { showToast } from "../../../app/toast/toastStore";
 import { availableProviderDescriptors } from "../descriptors";
 import { providerBrand } from "../providerBrand";
 import { ProviderTileView, type ProviderTileAction } from "../ProviderTileView";
@@ -32,8 +31,9 @@ import {
   type AdeCloudTile,
 } from "./adeCloudSignInModel";
 import { useAdeCloudSignIns, type AdeCloudSignInsState } from "./useAdeCloudSignIns";
+import { useSignInWrites } from "./signInWrites";
 import { useHeldWrites } from "./useHeldWrites";
-import { useAllowKeychain } from "./useAllowKeychain";
+import { useAllowAntigravityKeychain } from "./useAllowKeychain";
 import { AdeCloudProviderPage } from "./AdeCloudProviderPage";
 import { AdeCloudClaudePage } from "./AdeCloudClaudePage";
 import { ClaudePassSignInSheet, type ClaudePassRequest } from "./ClaudePassSignInSheet";
@@ -144,28 +144,14 @@ export function AdeCloudProvidersView({
   }, [signIns]);
 
   // ── Writes: account-wide, through This computer; the returned status replaces the account part ──
-  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
-  const busyRef = useRef(new Set<string>());
-  const runWrite = useCallback(async (id: string, write: () => Promise<ProviderLoginStatus> | undefined, failure: string): Promise<boolean> => {
-    // A second press while one waits starts nothing.
-    if (busyRef.current.has(id)) return false;
-    busyRef.current.add(id);
-    setBusy(new Set(busyRef.current));
-    const keyAtStart = accountKeyRef.current;
-    try {
-      const status = await write();
-      if (status && mountedRef.current && accountKeyRef.current === keyAtStart) signIns.applyAccountStatus(status);
-      return true;
-    } catch (error) {
-      console.warn("[providers] ADE Cloud sign-in change failed", error);
-      if (mountedRef.current) showToast({ tone: "error", title: failure });
-      return false;
-    } finally {
-      busyRef.current.delete(id);
-      // Leaving the page while it waits leaves nothing behind: the state goes with the view.
-      if (mountedRef.current) setBusy(new Set(busyRef.current));
-    }
-  }, [signIns]);
+  const { applyAccountStatus } = signIns;
+  const { busy, runWrite } = useSignInWrites({
+    keyRef: accountKeyRef,
+    onStatus: useCallback((status: ProviderLoginStatus | undefined) => {
+      if (status) applyAccountStatus(status);
+    }, [applyAccountStatus]),
+    warning: "[providers] ADE Cloud sign-in change failed",
+  });
 
   const setSwitch = useCallback(async (key: string, on: boolean, confirmOn: boolean) => {
     if (on && confirmOn) {
@@ -183,12 +169,7 @@ export function AdeCloudProvidersView({
     void runWrite("all", () => window.ade?.providerLogins?.setCloudAll?.({ on: true }, accountPin), "ADE couldn't turn on sign-ins for ADE Cloud. Try again.");
   }, [accountPin, runWrite]);
 
-  const allowRun = useCallback(() => runWrite(
-    "allow:antigravity",
-    () => window.ade?.providerLogins?.allowKeychain?.({ provider: "antigravity" }, accountPin),
-    "ADE couldn't copy the Antigravity sign-in from this Mac.",
-  ), [accountPin, runWrite]);
-  const { allowing, allow: allowKeychain } = useAllowKeychain(allowRun);
+  const { allowing, allow: allowKeychain } = useAllowAntigravityKeychain(runWrite, accountPin);
 
   // ── The Claude pass approve: one sheet for the tile and Claude's page ──
   const [passRequest, setPassRequest] = useState<ClaudePassRequest | null>(null);

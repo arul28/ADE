@@ -4,61 +4,16 @@
  * no React. Like `adeCloudSignInModel.ts`, every word the page says about a
  * sign-in lives here.
  */
-import { CLOUD_SIGN_INS, type CloudSignInId, type CloudSignInSpec, type CloudSignInStatus } from "../../../../../shared/cloudSignIns";
+import { CLOUD_SIGN_INS, cloudSignInKeyFor, type CloudSignInSpec, type CloudSignInStatus } from "../../../../../shared/cloudSignIns";
+import { cloudChoiceKey } from "../../../../../shared/providerLoginsCloudSetting";
 import {
   isClaudePassKey,
   type ProviderLoginProvider,
   type ProviderLoginSignIn,
 } from "../../../../../shared/types/providerLogins";
 import { adeCloudPageLine, ADE_CLOUD_REACH_LINE, type AdeCloudAccountPart, type AdeCloudCloudPart, type AdeCloudTile } from "./adeCloudSignInModel";
-
-const MINUTE_MS = 60_000;
-const HOUR_MS = 60 * MINUTE_MS;
-const DAY_MS = 24 * HOUR_MS;
-
-/** "just now", "5 min ago", "2 h ago", "3 days ago". Computed at render; nothing ticks. */
-export function agoText(ms: number, now: number): string {
-  const delta = Math.max(0, now - ms);
-  if (delta < MINUTE_MS) return "just now";
-  if (delta < HOUR_MS) return `${Math.floor(delta / MINUTE_MS)} min ago`;
-  if (delta < DAY_MS) return `${Math.floor(delta / HOUR_MS)} h ago`;
-  const days = Math.floor(delta / DAY_MS);
-  return `${days} day${days === 1 ? "" : "s"} ago`;
-}
-
-/** "today", "yesterday", "Nov 3", or "Nov 3, 2025" outside this year. */
-export function dayText(ms: number, now: number): string {
-  const day = new Date(ms);
-  const today = new Date(now);
-  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-  if (ms >= startOfToday) return "today";
-  if (ms >= startOfToday - DAY_MS) return "yesterday";
-  const sameYear = day.getFullYear() === today.getFullYear();
-  return day.toLocaleDateString(undefined, sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
-}
-
-function parseTime(iso: string | null | undefined): number | null {
-  if (!iso) return null;
-  const ms = Date.parse(iso);
-  return Number.isFinite(ms) ? ms : null;
-}
-
-/** The ADE Cloud place of a sign-in: the provider, or `pi:<sub>` for Pi (the sync's `cloudChoiceKey`). */
-export function cloudPlaceOf(provider: ProviderLoginProvider, slot: string): string {
-  return provider === "pi" ? `pi:${slot}` : provider;
-}
-
-/** The names Pi's sub-providers show as ("Pi · xAI"). An unknown sub shows its own id. */
-const PI_SUB_LABEL: Record<string, string> = {
-  openai: "OpenAI",
-  xai: "xAI",
-  openrouter: "OpenRouter",
-  google: "Google",
-  gemini: "Gemini",
-  groq: "Groq",
-  mistral: "Mistral",
-  deepseek: "DeepSeek",
-};
+import { formatPiProviderLabel } from "../../../../../shared/modelRegistry";
+import { agoText, dayText, parseTime } from "./adeCloudTime";
 
 // ── The cards ────────────────────────────────────────────────────────────
 
@@ -114,7 +69,7 @@ function signInCard(signIn: ProviderLoginSignIn, now: number): SignInCardModel {
     key: signIn.key,
     provider: signIn.provider,
     slot: signIn.slot,
-    place: cloudPlaceOf(signIn.provider, signIn.slot),
+    place: cloudChoiceKey(signIn.provider, signIn.slot),
     title: email ?? (ghUser ? `GitHub CLI login (${ghUser})` : `Sign-in from ${origin}`),
     name: email ?? (ghUser ? `the GitHub CLI login (${ghUser})` : `the sign-in from ${origin}`),
     origin,
@@ -150,7 +105,7 @@ export function signInCardGroups(
     const card = signInCard(signIn, now);
     const group = groups.get(card.place) ?? {
       place: card.place,
-      title: provider === "pi" ? `Pi · ${PI_SUB_LABEL[signIn.slot] ?? signIn.slot}` : null,
+      title: provider === "pi" ? `Pi · ${formatPiProviderLabel(signIn.slot)}` : null,
       cards: [],
     };
     group.cards.push(card);
@@ -179,19 +134,6 @@ export function inUseCard(groups: readonly SignInCardGroup[], place: string): Si
 
 // ── The saved key row ────────────────────────────────────────────────────
 
-/** The saved ADE Cloud key that stands in for a provider. Pi and OpenCode share the OpenRouter key. */
-const KEY_SPEC_FOR: Partial<Record<ProviderLoginProvider, CloudSignInId>> = {
-  codex: "codex",
-  cursor: "cursor",
-  droid: "droid",
-  grok: "grok",
-  copilot: "copilot",
-  devin: "devin",
-  muse: "muse",
-  opencode: "openrouter",
-  pi: "openrouter",
-};
-
 export type SavedKeyRowModel = {
   spec: CloudSignInSpec;
   /** null before the read, or when the account can't be read. */
@@ -209,8 +151,9 @@ export function savedKeyRow(
   account: AdeCloudAccountPart,
   saved: CloudSignInStatus["saved"] | null,
 ): SavedKeyRowModel | null {
-  const id = KEY_SPEC_FOR[provider];
-  const spec = id ? CLOUD_SIGN_INS.find((entry) => entry.id === id && entry.method === "key") ?? null : null;
+  // Pi and OpenCode share the OpenRouter key.
+  const id = cloudSignInKeyFor(provider);
+  const spec = id ? CLOUD_SIGN_INS.find((entry) => entry.id === id) ?? null : null;
   if (!spec) return null;
   const isSaved = saved ? saved.some((entry) => entry.id === spec.id && entry.saved) : null;
   const picked = account.state === "ok" ? account.status.cloud.inUse[provider] ?? null : null;
@@ -238,7 +181,7 @@ export function providerPageLine(
   cloud: AdeCloudCloudPart,
 ): string {
   const page = adeCloudPageLine(account, cloud);
-  if (tile.row === "T6" || tile.row === "F3") return "ADE Cloud uses the saved key.";
+  if (tile.source === "saved-key") return "ADE Cloud uses the saved key.";
   if (cloud.state === "ok" && account.state === "ok") {
     const applied = (cloud.status.applied ?? []).find((entry) => entry.place === tile.provider && entry.state === "applied");
     const signIn = applied?.key ? account.status.signIns.find((entry) => entry.key === applied.key) : null;

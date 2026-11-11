@@ -17,15 +17,16 @@ import { ipcErrorMessage } from "../../../../lib/format";
 import { showToast } from "../../../app/toast/toastStore";
 import { IntegrationCard } from "../../integrations/IntegrationChrome";
 import { SettingsToggle } from "../../primitives/SettingsControls";
-import { ADE_CLOUD_PLACE_ID } from "../../SettingsMachineScope";
+import { adeCloudSettingsSearch } from "../../SettingsMachineScope";
 import { readClaudePasses } from "./adeCloudSignInModel";
 import { useThisComputerPin } from "./useAdeCloudSignIns";
+import { usePinnedProviderLoginStatus } from "./usePinnedProviderLoginStatus";
 
 /** The settings anchor of this row; the manifest's `integrations.ade-cloud-sign-ins` points here. */
-export const ADE_CLOUD_SIGN_INS_ANCHOR = "cloud-sign-ins";
+const ADE_CLOUD_SIGN_INS_ANCHOR = "cloud-sign-ins";
 
 /** Sign-ins ADE Cloud uses now: carried sign-ins in use, saved keys in use, and passes that are on and not ended. */
-export function adeCloudSignInCount(status: ProviderLoginStatus): number {
+function adeCloudSignInCount(status: ProviderLoginStatus): number {
   const signIns = status.signIns.filter((signIn) => signIn.inUseOnCloud && !isClaudePassKey(signIn.key)).length;
   const keys = Object.values(status.cloud.inUse).filter((key) => key === "key").length;
   const passes = readClaudePasses(status).filter((pass) => !pass.unreadable && pass.on && pass.state !== "ended").length;
@@ -40,41 +41,13 @@ export function AdeCloudSignInsRow({
 }) {
   const bridge = typeof window === "undefined" ? undefined : window.ade?.providerLogins;
   const { accountPin } = useThisComputerPin();
-  const pinKey = accountPin?.key ?? null;
   const pinRef = useRef(accountPin);
   pinRef.current = accountPin;
   const navigate = useNavigate();
   const location = useLocation();
-
-  const [read, setRead] = useState<{ key: string | null; status: ProviderLoginStatus } | null>(null);
-  const [failed, setFailed] = useState(false);
-  const [tick, setTick] = useState(0);
+  const { status, failed, apply } = usePinnedProviderLoginStatus({ pin: accountPin });
   const [pending, setPending] = useState<boolean | null>(null);
 
-  useEffect(() => {
-    const off = bridge?.onChanged?.(() => setTick((value) => value + 1));
-    return () => off?.();
-  }, [bridge]);
-
-  useEffect(() => {
-    if (typeof bridge?.status !== "function") return undefined;
-    let cancelled = false;
-    bridge.status({}, pinRef.current).then(
-      (next) => {
-        if (cancelled || !next) return;
-        setRead({ key: pinKey, status: next });
-        setFailed(false);
-      },
-      () => {
-        if (!cancelled) setFailed(true);
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [bridge, pinKey, tick]);
-
-  const status = read && read.key === pinKey ? read.status : null;
   const enabled = pending ?? status?.cloud.enabled ?? false;
   const count = status ? (status.cloud.enabled ? adeCloudSignInCount(status) : 0) : null;
   useEffect(() => {
@@ -87,7 +60,7 @@ export function AdeCloudSignInsRow({
     setPending(on);
     try {
       const next = await bridge?.setCloudAll?.({ on }, pin);
-      if (next) setRead({ key, status: next });
+      if (next) apply(key, next);
     } catch (error) {
       showToast({
         tone: "error",
@@ -97,13 +70,12 @@ export function AdeCloudSignInsRow({
     } finally {
       setPending(null);
     }
-  }, [bridge]);
+  }, [apply, bridge]);
 
   if (typeof bridge?.status !== "function") return null;
 
   const openProviders = () => {
-    const params = new URLSearchParams({ tab: "agents", machine: ADE_CLOUD_PLACE_ID });
-    navigate({ pathname: location.pathname, search: `?${params.toString()}` });
+    navigate({ pathname: location.pathname, search: adeCloudSettingsSearch() });
   };
 
   const summary = failed && !status

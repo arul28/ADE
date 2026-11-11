@@ -8,6 +8,11 @@ import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
 import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../../shared/claudePluginUi";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
 import { ANDROID_AGENT_ACTIONS, ANDROID_PERSON_ONLY_ACTIONS, ANDROID_USER_ONLY_ACTIONS } from "../../../shared/types/androidEmulator";
+import {
+  PROVIDER_LOGIN_ACCOUNT_WRITES,
+  PROVIDER_LOGIN_ACTIONS,
+  PROVIDER_LOGIN_PERSON_ACTIONS,
+} from "../../../shared/types/providerLogins";
 import type { AdeActionDomain } from "./domains";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -50,16 +55,6 @@ const CLOUD_SIGN_IN_WRITES = [
  * agent is told where the setting is rather than that it lacks a role.
  * `ADE_ACTION_CTO_ONLY` reads these lists, so a write added here is refused.
  */
-/**
- * The provider_logins writes that change the account's sign-ins for ADE Cloud
- * (P5 §8.1). User-only (`ADE_ACTION_USER_ONLY`): the owner's rule is that
- * outside apps and agents read the status and never change the sign-in in
- * use, switch one off, or remove one. A person's `ade` and an ADE MCP app with
- * full access both run as `cto` with no chat identity, so the CTO and
- * user-client checks alone would let them through; only the desktop's client
- * names reach a user-only action.
- */
-const PROVIDER_LOGIN_ACCOUNT_WRITES = ["use", "setCloud", "setCloudAll", "setCloudBalance", "remove"] as const;
 
 const USER_SETTING_WRITES = {
   account_settings: { actions: ["set", "remove"], entryId: null },
@@ -73,7 +68,7 @@ const USER_SETTING_WRITES = {
   // Copying this computer's sign-ins into the account, and which ones ADE
   // Cloud uses, are the person's calls (P5). The five account writes are also
   // user-only below: outside apps and agents read the status, never change it.
-  provider_logins: { actions: ["captureNow", "allowKeychain", "allowGitHubCli", ...PROVIDER_LOGIN_ACCOUNT_WRITES], entryId: "agents.providers" },
+  provider_logins: { actions: [...PROVIDER_LOGIN_PERSON_ACTIONS], entryId: "agents.providers" },
   keybindings: { actions: ["set"], entryId: null },
   project_config: { actions: ["setPrTranscriptGists"], entryId: "lanes-git.pr-chat-transcripts" },
   keep_awake: { actions: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"], entryId: "general.keep-awake" },
@@ -439,7 +434,7 @@ export const ADE_ACTION_MACHINE_SCOPED = {
   cloud: ["access", "list", "hours", "limits", "sleep", "wake", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
   account_vault: ["get", "set", "remove"],
   // The account's sign-ins, from a window with no project here (`providerLogins.call`).
-  provider_logins: ["status", "captureNow", "allowKeychain", "allowGitHubCli", ...PROVIDER_LOGIN_ACCOUNT_WRITES],
+  provider_logins: PROVIDER_LOGIN_ACTIONS,
 } as const satisfies Partial<Record<AdeActionDomain, readonly string[]>>;
 
 export type AdeMachineScopedDomain = keyof typeof ADE_ACTION_MACHINE_SCOPED;
@@ -1579,7 +1574,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
    * token, key, file content or hash, so agents and other machines may read
    * it. `captureNow`, `allowKeychain` and `allowGitHubCli` are the person's.
    */
-  provider_logins: ["status", "captureNow", "allowKeychain", "allowGitHubCli", ...PROVIDER_LOGIN_ACCOUNT_WRITES],
+  provider_logins: [...PROVIDER_LOGIN_ACTIONS],
 };
 
 /* ──────────────────────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@
 import type { ClaudePassStatusEntry } from "../cloudSignIns";
 import type { AgentChatProviderLoginNotice } from "./chat";
 
-export const PROVIDER_LOGIN_PROVIDERS = [
+const PROVIDER_LOGIN_PROVIDERS = [
   "claude",
   "codex",
   "cursor",
@@ -32,6 +32,26 @@ export type ProviderLoginProvider = (typeof PROVIDER_LOGIN_PROVIDERS)[number];
 
 export function isProviderLoginProvider(value: unknown): value is ProviderLoginProvider {
   return typeof value === "string" && (PROVIDER_LOGIN_PROVIDERS as readonly string[]).includes(value);
+}
+
+/**
+ * The `provider_logins` actions, one list for the IPC allow-list and the
+ * action policy (`actionPolicy.ts`). The five account writes change which
+ * sign-ins ADE Cloud uses; only the person makes them (`ADE_ACTION_USER_ONLY`):
+ * outside apps and agents read the status and never change the sign-in in use,
+ * switch one off, or remove one. A person's `ade` and an ADE MCP app with full
+ * access both run as `cto` with no chat identity, so the CTO and user-client
+ * checks alone would let them through; only the desktop's client names reach a
+ * user-only action.
+ */
+export const PROVIDER_LOGIN_ACCOUNT_WRITES = ["use", "setCloud", "setCloudAll", "setCloudBalance", "remove"] as const;
+/** Every action but `status`: the person's (copy now, the Keychain read, the GitHub CLI switch, and the account writes). */
+export const PROVIDER_LOGIN_PERSON_ACTIONS = ["captureNow", "allowKeychain", "allowGitHubCli", ...PROVIDER_LOGIN_ACCOUNT_WRITES] as const;
+export const PROVIDER_LOGIN_ACTIONS = ["status", ...PROVIDER_LOGIN_PERSON_ACTIONS] as const;
+export type ProviderLoginAction = (typeof PROVIDER_LOGIN_ACTIONS)[number];
+
+export function isProviderLoginAction(value: unknown): value is ProviderLoginAction {
+  return typeof value === "string" && (PROVIDER_LOGIN_ACTIONS as readonly string[]).includes(value);
 }
 
 /** Fixed: copy once. Renewing: the provider renews it; one computer may renew it. */
@@ -71,6 +91,11 @@ export type ProviderLoginLocalState =
   | "too_large"
   /** The file is there but ADE could not read a login from it. */
   | "unreadable"
+  /**
+   * The account holds this sign-in, but ADE could not read the account's copy
+   * on this computer. Capture leaves that copy as it is.
+   */
+  | "account_unreadable"
   /** The person removed this sign-in from the account; a new sign-in here adds it again. */
   | "removed_from_account"
   /** Another computer renews this sign-in, and its copy is newer. */
@@ -170,6 +195,8 @@ export type ProviderLoginProviderStatus = {
 export type ProviderLoginGhCliStatus = {
   /** gh has a github.com login on this computer. */
   present: boolean;
+  /** ADE couldn't read gh's `hosts.yml` here (not a missing file): `present` is unknown, and `lastError` says so. */
+  readFailed?: boolean;
   /** Its active user, from `hosts.yml`. */
   user: string | null;
   /** The person turned it on for this computer (it lasts until they turn it off or sign out of ADE). */
@@ -305,9 +332,36 @@ export type ProviderLoginStatusParts = {
  * The vault kind `provider_login` also holds Claude passes (P6), under this
  * key prefix. They are never a carried sign-in: not listed, applied, removed
  * or pruned by the sign-in sync.
+ *
+ * The one definition of a pass's names: its vault key `claude-pass/<id>`, and
+ * the Claude account a cloud computer makes for it, `pass-<id>`. The id is 12
+ * hex characters, or `legacy` for the single item of older versions.
  */
 export const CLAUDE_PASS_KEY_PREFIX = "claude-pass/";
+export const CLAUDE_PASS_LEGACY_KEY = "claude-pass/legacy";
+const CLAUDE_PASS_ACCOUNT_ID_PREFIX = "pass-";
+export const CLAUDE_PASS_KEY_PATTERN = /^claude-pass\/(legacy|[0-9a-f]{12})$/;
+export const CLAUDE_PASS_ACCOUNT_ID_PATTERN = /^pass-(legacy|[0-9a-f]{12})$/;
 
-export function isClaudePassKey(key: string): boolean {
-  return key.startsWith(CLAUDE_PASS_KEY_PREFIX) && key.length > CLAUDE_PASS_KEY_PREFIX.length;
+/** A Claude pass's vault key (strict: the id ADE writes). On a string it does not narrow, so the other branch keeps the string. */
+export function isClaudePassKey(key: string): boolean;
+export function isClaudePassKey(key: unknown): key is string;
+export function isClaudePassKey(key: unknown): boolean {
+  return typeof key === "string" && CLAUDE_PASS_KEY_PATTERN.test(key);
+}
+
+/** The Claude account id of a pass (`pass-<id>`). */
+export function isClaudePassAccountId(id: string | null | undefined): boolean {
+  return typeof id === "string" && CLAUDE_PASS_ACCOUNT_ID_PATTERN.test(id);
+}
+
+/** `claude-pass/<id>` → `pass-<id>`. Only for a key `isClaudePassKey` accepts. */
+export function claudePassAccountId(key: string): string {
+  return `${CLAUDE_PASS_ACCOUNT_ID_PREFIX}${key.slice(CLAUDE_PASS_KEY_PREFIX.length)}`;
+}
+
+/** `pass-<id>` → `claude-pass/<id>`; null for any other account id. */
+export function claudePassKeyOfAccountId(id: string | null | undefined): string | null {
+  const match = CLAUDE_PASS_ACCOUNT_ID_PATTERN.exec(id?.trim() ?? "");
+  return match ? `${CLAUDE_PASS_KEY_PREFIX}${match[1]}` : null;
 }

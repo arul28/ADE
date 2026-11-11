@@ -30,12 +30,10 @@ import type {
   CloudClaudePass,
   CloudClaudePassUnreadable,
 } from "../../../shared/cloudSignIns";
+import { CLAUDE_PASS_KEY_PREFIX, CLAUDE_PASS_LEGACY_KEY, isClaudePassKey } from "../../../shared/types/providerLogins";
 import { CLAUDE_TOKEN_PATTERN } from "./cloudSignInStore";
 
 export const CLAUDE_PASS_VAULT_KIND = "provider_login";
-export const CLAUDE_PASS_KEY_PREFIX = "claude-pass/";
-export const CLAUDE_PASS_LEGACY_KEY = "claude-pass/legacy";
-const CLAUDE_PASS_KEY_PATTERN = /^claude-pass\/(?:legacy|[0-9a-f]{12})$/;
 
 const DAY_MS = 24 * 60 * 60_000;
 /** A pass lasts about a year; ADE's estimate until Claude Code reports the date. */
@@ -156,11 +154,7 @@ export async function uploadClaudePass(
   return state;
 }
 
-export function isClaudePassKey(key: unknown): key is string {
-  return typeof key === "string" && CLAUDE_PASS_KEY_PATTERN.test(key);
-}
-
-export function newClaudePassKey(random: () => string = () => randomBytes(6).toString("hex")): string {
+function newClaudePassKey(random: () => string = () => randomBytes(6).toString("hex")): string {
   return `${CLAUDE_PASS_KEY_PREFIX}${random()}`;
 }
 
@@ -237,7 +231,7 @@ export function listClaudePasses(vault: ClaudePassVault): StoredPass[] {
  * The key a new pass is saved under: the renewed pass, else the pass of the
  * same email (one pass per account), else a new random key.
  */
-export function chooseClaudePassKey(
+function chooseClaudePassKey(
   passes: readonly StoredPass[],
   args: { email: string | null; renewKey?: string | null },
   newKey: () => string = newClaudePassKey,
@@ -248,7 +242,7 @@ export function chooseClaudePassKey(
 }
 
 /** The payload a save writes; a pass it replaces keeps its creation date. */
-export function buildClaudePass(
+function buildClaudePass(
   previous: ClaudePassPayload | null,
   args: {
     token: string;
@@ -353,7 +347,7 @@ function parseLegacyItem(raw: string | null | undefined): { token: string; saved
  * `claude-pass/legacy` (a live row or a tombstone: a Renew or a Remove of the
  * legacy pass is the last word) and no pass carries that token already.
  */
-export function planLegacyClaudePass(args: {
+function planLegacyClaudePass(args: {
   legacyRaw: string | null | undefined;
   passKeys: readonly { key: string; deleted: boolean }[];
   passes: readonly StoredPass[];

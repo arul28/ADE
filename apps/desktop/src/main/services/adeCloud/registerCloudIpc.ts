@@ -29,7 +29,7 @@ import {
 import { type CloudSignInStatus } from "../../../shared/cloudSignIns";
 import { IPC } from "../../../shared/ipc";
 import { cloudMachineEnv, type CloudSignInVaults } from "./cloudSignInStore";
-import { readClaudePassEnd, type ClaudePassEndList } from "./claudePassEnd";
+import { readClaudePassEnd, type ClaudePassEndList } from "./claudePassEndWarning";
 import type { CloudPassEnd } from "../../../shared/cloudSignIns";
 import type { AdeAccountMachinesResult } from "../../../shared/types/account";
 import { getSignedInAccountAccessToken } from "../../../../../ade-cli/src/services/account/accountAuthService";

@@ -15,10 +15,9 @@ import { SpinnerGap, X } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { CloudSignInStatus } from "../../../shared/cloudSignIns";
 import { useCloudComputer } from "../remoteTargets/useCloudComputer";
-import { providerBrand, providerThemeVars } from "../settings/providers/providerBrand";
-import { SignInBrandLogo } from "../settings/providers/signInSheetParts";
 import { ClaudePassSignInSheet, type ClaudePassRequest } from "../settings/providers/cloud/ClaudePassSignInSheet";
 import { CardBannerButtons, CardError, cardEscapeHandler } from "./composerCardParts";
+import { ProviderCardFrame } from "./providerCardFrame";
 import { ProviderSignInComposer, providerSignInSpec, type ProviderSignInNeed } from "./ProviderSignInCard";
 
 /** How long the card shows a saved pass before it hands the prompt box back. */
@@ -29,8 +28,9 @@ type ChatSignInCardProps = Parameters<typeof ProviderSignInComposer>[0];
 
 export function ChatSignInCard(props: ChatSignInCardProps) {
   const { need, pin } = props;
-  // Only a Claude chat on another machine can be on a cloud computer.
-  const maybeCloud = need.provider === "claude" && pin?.kind === "remote";
+  // A null pin is the tab's own machine, which can itself be a cloud computer:
+  // `useCloudComputer` reads the effective machine and asks only for a remote one.
+  const maybeCloud = need.provider === "claude";
   const { box } = useCloudComputer(pin, maybeCloud);
   const [signInHere, setSignInHere] = useState(false);
   if (maybeCloud && box && !signInHere) {
@@ -66,7 +66,6 @@ function CloudClaudePassCard({
   onDismiss: () => void;
   onOpenSettings: () => void;
 }) {
-  const brand = providerBrand("claude");
   const [sheetOpen, setSheetOpen] = useState(false);
   const [saved, setSaved] = useState(false);
   const [status, setStatus] = useState<CloudSignInStatus | null>(null);
@@ -129,65 +128,45 @@ function CloudClaudePassCard({
     : `${machineName} runs on ADE Cloud. One approve lets your cloud chats use your Claude plan for about a year.`;
 
   return (
-    <div
-      role="group"
-      aria-label={heading}
-      data-testid="cloud-claude-pass-card"
-      data-sign-in-card="true"
-      className="ade-icc"
-      data-light={brand.lightBanner ? "true" : undefined}
-      style={{ ...providerThemeVars(brand), ["--ig-accent" as string]: brand.accent }}
-      tabIndex={-1}
+    <ProviderCardFrame
+      brandId="claude"
+      heading={heading}
+      turn={saved}
+      testId="cloud-claude-pass-card"
+      signInCard
       // The sheet's own keys bubble here through React; while it is open, Esc is the sheet's.
-      onKeyDown={cardEscapeHandler({ signingIn: false, cancelSignIn: () => undefined, responding: sheetOpen, onDecline: onDismiss })}
-    >
-      <div className="ade-icc-banner" style={brand.banner}>
-        {brand.bannerArt ? (
-          <img className="ade-icc-banner-art ade-psc-banner-art" src={brand.bannerArt.src} alt="" draggable={false} style={{ opacity: brand.bannerArt.opacity ?? 1 }} />
-        ) : null}
-        <div className="ade-icc-banner-shade" aria-hidden />
-        <span className="ade-icc-logo"><SignInBrandLogo providerId="claude" size={25} turn={saved} /></span>
-        <span className="ade-icc-heading">
-          <span className="ade-icc-heading-text"><span className="ade-icc-title">{heading}</span></span>
-        </span>
-        <span className="ade-icc-banner-tools">
+      onKeyDown={cardEscapeHandler({ responding: sheetOpen, onDecline: onDismiss })}
+      tools={(
+        <>
           <span className="ade-icc-chip" title={`This chat runs on ${machineName}`}>on {machineName}</span>
-          <CardBannerButtons
-            onOpenSettings={onOpenSettings}
-            onDecline={onDismiss}
-            responding={false}
-            signingIn={false}
-            cancelSignIn={() => undefined}
-            testIdPrefix="cloud-claude-pass"
-          />
-        </span>
-      </div>
-      <div className="ade-icc-body">
-        <div className="ade-sis" data-compact="true" data-card="true">
-          {saved ? (
-            <p className="ade-icc-reason" role="status">
-              <SpinnerGap size={13} weight="bold" className="motion-safe:animate-spin" /> Pass saved. Sending to {machineName}…
-            </p>
-          ) : (
-            <>
-              <p className="ade-icc-reason">{reason}</p>
-              <div className="ade-sis-start-row">
-                <button
-                  type="button"
-                  className="ade-icc-primary ade-icc-primary-brand"
-                  autoFocus
-                  data-testid="cloud-claude-pass-start"
-                  onClick={() => setSheetOpen(true)}
-                >
-                  Approve a pass
-                </button>
-                <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={onSignInHere}>
-                  Sign in on {machineName} instead
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+          <CardBannerButtons onOpenSettings={onOpenSettings} onDecline={onDismiss} testIdPrefix="cloud-claude-pass" />
+        </>
+      )}
+    >
+      <div className="ade-sis" data-compact="true" data-card="true">
+        {saved ? (
+          <p className="ade-icc-reason" role="status">
+            <SpinnerGap size={13} weight="bold" className="motion-safe:animate-spin" /> Pass saved. Sending to {machineName}…
+          </p>
+        ) : (
+          <>
+            <p className="ade-icc-reason">{reason}</p>
+            <div className="ade-sis-start-row">
+              <button
+                type="button"
+                className="ade-icc-primary ade-icc-primary-brand"
+                autoFocus
+                data-testid="cloud-claude-pass-start"
+                onClick={() => setSheetOpen(true)}
+              >
+                Approve a pass
+              </button>
+              <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={onSignInHere}>
+                Sign in on {machineName} instead
+              </button>
+            </div>
+          </>
+        )}
       </div>
       {sheetOpen ? (
         <ClaudePassSignInSheet
@@ -199,7 +178,7 @@ function CloudClaudePassCard({
           onClose={() => setSheetOpen(false)}
         />
       ) : null}
-    </div>
+    </ProviderCardFrame>
   );
 }
 
@@ -222,7 +201,6 @@ export function AccountSwitchRecoveryCard({
   onDismiss: () => void;
 }) {
   const label = providerSignInSpec(provider)?.label ?? provider;
-  const brand = providerBrand(provider);
   const [busy, setBusy] = useState<"new" | "back" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const run = useCallback(async (which: "new" | "back", action: () => Promise<string | null>) => {
@@ -234,61 +212,49 @@ export function AccountSwitchRecoveryCard({
   }, []);
   const heading = `${label} did not continue this chat`;
   return (
-    <div
-      role="group"
-      aria-label={heading}
-      data-testid="account-switch-recovery-card"
-      className="ade-icc"
-      data-light={brand.lightBanner ? "true" : undefined}
-      style={{ ...providerThemeVars(brand), ["--ig-accent" as string]: brand.accent }}
-      tabIndex={-1}
-      onKeyDown={cardEscapeHandler({ signingIn: false, cancelSignIn: () => undefined, responding: busy != null, onDecline: onDismiss })}
+    <ProviderCardFrame
+      brandId={provider}
+      heading={heading}
+      art={false}
+      testId="account-switch-recovery-card"
+      onKeyDown={cardEscapeHandler({ responding: busy != null, onDecline: onDismiss })}
+      tools={(
+        <button type="button" className="ade-icc-close" aria-label="Not now" title="Not now (Esc)" onClick={onDismiss} disabled={busy != null}>
+          <X size={13} weight="bold" />
+        </button>
+      )}
     >
-      <div className="ade-icc-banner" style={brand.banner}>
-        <div className="ade-icc-banner-shade" aria-hidden />
-        <span className="ade-icc-logo"><SignInBrandLogo providerId={provider} size={25} turn={false} /></span>
-        <span className="ade-icc-heading">
-          <span className="ade-icc-heading-text"><span className="ade-icc-title">{heading}</span></span>
-        </span>
-        <span className="ade-icc-banner-tools">
-          <button type="button" className="ade-icc-close" aria-label="Not now" title="Not now (Esc)" onClick={onDismiss} disabled={busy != null}>
-            <X size={13} weight="bold" />
+      <div className="ade-sis" data-compact="true" data-card="true">
+        <p className="ade-icc-reason">
+          The last message failed after the switch from {fromLabel} to {toLabel}. {label} may not continue a
+          conversation that another account started. Your message is saved.
+        </p>
+        <div className="ade-sis-start-row">
+          <button
+            type="button"
+            className="ade-icc-primary ade-icc-primary-brand"
+            autoFocus
+            disabled={busy != null}
+            data-testid="account-switch-new-thread"
+            onClick={() => void run("new", onNewThread)}
+          >
+            {busy === "new" ? <SpinnerGap size={13} weight="bold" className="motion-safe:animate-spin" /> : null}
+            Continue in a new thread
           </button>
-        </span>
-      </div>
-      <div className="ade-icc-body">
-        <div className="ade-sis" data-compact="true" data-card="true">
-          <p className="ade-icc-reason">
-            The last message failed after the switch from {fromLabel} to {toLabel}. {label} may not continue a
-            conversation that another account started. Your message is saved.
-          </p>
-          <div className="ade-sis-start-row">
+          {canChangeBack ? (
             <button
               type="button"
-              className="ade-icc-primary ade-icc-primary-brand"
-              autoFocus
+              className="ade-icc-link"
               disabled={busy != null}
-              data-testid="account-switch-new-thread"
-              onClick={() => void run("new", onNewThread)}
+              data-testid="account-switch-change-back"
+              onClick={() => void run("back", onChangeBack)}
             >
-              {busy === "new" ? <SpinnerGap size={13} weight="bold" className="motion-safe:animate-spin" /> : null}
-              Continue in a new thread
+              {busy === "back" ? "Changing back…" : `Change back to ${fromLabel}`}
             </button>
-            {canChangeBack ? (
-              <button
-                type="button"
-                className="ade-icc-link"
-                disabled={busy != null}
-                data-testid="account-switch-change-back"
-                onClick={() => void run("back", onChangeBack)}
-              >
-                {busy === "back" ? "Changing back…" : `Change back to ${fromLabel}`}
-              </button>
-            ) : null}
-          </div>
+          ) : null}
         </div>
-        {error ? <CardError id="account-switch-error" message={error} /> : null}
       </div>
-    </div>
+      {error ? <CardError id="account-switch-error" message={error} /> : null}
+    </ProviderCardFrame>
   );
 }

@@ -11,7 +11,8 @@
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import type { CloudPassEnd } from "../../../shared/cloudSignIns";
 import type { AccountVaultItem, AccountVaultResult } from "../../../shared/types/accountVault";
-import { CLAUDE_PASS_VAULT_KIND, isClaudePassKey, parseClaudePass, summarizeClaudePass } from "./claudePassStore";
+import { CLAUDE_PASS_VAULT_KIND, parseClaudePass, summarizeClaudePass } from "./claudePassStore";
+import { isClaudePassKey } from "../../../shared/types/providerLogins";
 
 export type ClaudePassEndList = (scope: string) => Promise<AccountVaultResult<AccountVaultItem[]>>;
 

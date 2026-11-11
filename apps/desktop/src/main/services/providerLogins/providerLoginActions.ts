@@ -13,6 +13,7 @@
 
 import {
   isProviderLoginProvider,
+  type ProviderLoginAction,
   type ProviderLoginProvider,
   type ProviderLoginStatus,
 } from "../../../shared/types/providerLogins";
@@ -66,7 +67,8 @@ function requireSync() {
   return sync;
 }
 
-export function buildProviderLoginsDomainService() {
+/** One method per action of `PROVIDER_LOGIN_ACTIONS` (the IPC allow-list and the action policy read that list). */
+export function buildProviderLoginsDomainService(): Record<ProviderLoginAction, (args?: unknown) => Promise<ProviderLoginStatus>> {
   return {
     async status(args?: unknown): Promise<ProviderLoginStatus> {
       const provider = readProvider(args);

@@ -22,7 +22,7 @@ import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { useSettingsAction } from "../../useSettingsAction";
 import { usePolling } from "../../../../hooks/usePolling";
 import type { MuseBinaryStatus } from "../../../../../shared/museBinary";
-import { SettingsAgentCliSignIn } from "../ProviderSignInSheet";
+import { SettingsAgentCliSignIn } from "../CliSignInSheet";
 import type { ProvidersViewContext } from "../types";
 
 /** How often the download's progress is re-read while it runs. */

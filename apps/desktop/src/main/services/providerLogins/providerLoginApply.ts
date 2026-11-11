@@ -96,7 +96,7 @@ export function emptyAppliedState(accountUserId: string | null): AppliedStateFil
   return { v: 1, accountUserId, applied: {}, env: {} };
 }
 
-export function appliedStatePath(adeDir: string): string {
+function appliedStatePath(adeDir: string): string {
   return path.join(adeDir, "provider-logins", "applied.json");
 }
 
@@ -126,8 +126,27 @@ export function writeAppliedState(adeDir: string, state: AppliedStateFile): void
 
 // ── writing ───────────────────────────────────────────────────────────
 
+/** Windows refuses a rename over a file another process holds open for a moment (a CLI reading its login). */
+const WINDOWS_RENAME_BUSY = new Set(["EPERM", "EBUSY", "EACCES"]);
+const WINDOWS_RENAME_TRIES = 3;
+const WINDOWS_RENAME_WAIT_MS = 50;
+
+/** `renameSync`, with up to 3 tries 50 ms apart on Windows when the target is busy. */
+function renameOverTarget(draft: string, target: string): void {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      fs.renameSync(draft, target);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code ?? "";
+      if (process.platform !== "win32" || attempt >= WINDOWS_RENAME_TRIES || !WINDOWS_RENAME_BUSY.has(code)) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, WINDOWS_RENAME_WAIT_MS);
+    }
+  }
+}
+
 /** Draft, sync, rename: mode 600 (or `mode`) in a mode-700 folder. */
-export function writePrivateFileAtomic(target: string, data: Buffer, mode = 0o600): void {
+function writePrivateFileAtomic(target: string, data: Buffer, mode = 0o600): void {
   const dir = path.dirname(target);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const draft = path.join(dir, `.${path.basename(target)}.ade-${process.pid}-${crypto.randomBytes(4).toString("hex")}.tmp`);
@@ -140,7 +159,7 @@ export function writePrivateFileAtomic(target: string, data: Buffer, mode = 0o60
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fd = null;
-    fs.renameSync(draft, target);
+    renameOverTarget(draft, target);
   } catch (error) {
     if (fd != null) {
       try {
@@ -193,7 +212,7 @@ const PI_LOCK_WAIT_MS = 20;
  * older than 30 s is a dead process's and is taken over, as proper-lockfile
  * does. No new dependency.
  */
-export async function withPiAuthLock<T>(authPath: string, fn: () => T): Promise<T> {
+async function withPiAuthLock<T>(authPath: string, fn: () => T): Promise<T> {
   const lockDir = `${authPath}.lock`;
   fs.mkdirSync(path.dirname(authPath), { recursive: true, mode: 0o700 });
   for (let attempt = 0; ; attempt += 1) {
@@ -588,7 +607,7 @@ export async function writeBackSignIn(back: WriteBack, ctx: CarryContext): Promi
 }
 
 /** The Codex `auth.json` a saved OpenAI key becomes, in the shape `codex login --with-api-key` writes. */
-export function codexKeyFileBytes(token: string): Buffer {
+function codexKeyFileBytes(token: string): Buffer {
   return encodeJson({ auth_mode: "apikey", OPENAI_API_KEY: token });
 }
 

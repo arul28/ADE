@@ -9,6 +9,7 @@ import { handleAccountVaultRoute } from "./accountVault";
 import {
   AttentionAuthVerificationUnavailableError,
   inspectAttentionAuthConfiguration,
+  relayAccountKeysForClerkUser,
   verifyAttentionBearerToken,
 } from "./attentionAuth";
 import {
@@ -3970,17 +3971,23 @@ export async function handleDirectoryAccountPurge(
   if (parts.length !== 3 || request.method !== "DELETE") return attentionRouteNotFound();
   const provenance = assertDirectoryProvenance(request, env);
   if ("response" in provenance) return provenance.response;
-  const userId = requiredString(decodePathSegment(parts[2]), 512);
-  if (!userId) return json({ ok: false, error: "invalid account" }, { status: 400 });
-  const [vault, settings] = await env.DB.batch([
-    env.DB.prepare("delete from account_vault_items where user_id = ?").bind(userId),
-    env.DB.prepare("delete from account_settings where user_id = ?").bind(userId),
-  ]);
-  return json({
-    ok: true,
-    vaultItems: vault?.meta?.changes ?? 0,
-    settings: settings?.meta?.changes ?? 0,
-  });
+  const clerkUserId = requiredString(decodePathSegment(parts[2]), 256);
+  if (!clerkUserId) return json({ ok: false, error: "invalid account" }, { status: 400 });
+  // The directory names the raw Clerk id; the rows are keyed by the relay's
+  // hash of issuer and id (`verifyAttentionBearerToken`), one per issuer.
+  const accountKeys = await relayAccountKeysForClerkUser(env, clerkUserId);
+  if (accountKeys.length === 0) {
+    // No issuer configured: nothing can be matched, so the directory must try again later.
+    return json({ ok: false, error: "account sign-in is not configured" }, { status: 503 });
+  }
+  const results = await env.DB.batch(accountKeys.flatMap((accountKey) => [
+    env.DB.prepare("delete from account_vault_items where user_id = ?").bind(accountKey),
+    env.DB.prepare("delete from account_settings where user_id = ?").bind(accountKey),
+  ]));
+  const changes = (offset: number) => results
+    .filter((_, index) => index % 2 === offset)
+    .reduce((sum, result) => sum + (result?.meta?.changes ?? 0), 0);
+  return json({ ok: true, vaultItems: changes(0), settings: changes(1) });
 }
 
 async function deleteAttentionDeviceOwnership(

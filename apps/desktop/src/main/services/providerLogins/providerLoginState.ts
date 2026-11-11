@@ -74,7 +74,7 @@ export function emptyState(accountUserId: string | null): ProviderLoginStateFile
   return { v: 1, accountUserId, bundles: {}, pushed: {} };
 }
 
-export function providerLoginStatePath(adeDir: string): string {
+function providerLoginStatePath(adeDir: string): string {
   return path.join(adeDir, "provider-logins", "state.json");
 }
 

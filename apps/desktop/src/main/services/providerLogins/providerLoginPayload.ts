@@ -141,6 +141,17 @@ function stringOr(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
 }
 
+/** A payload a newer ADE wrote (`v` above 1): this ADE cannot read it, but it is not damaged. */
+export function isNewerProviderLoginPayload(value: string | null): boolean {
+  if (!value) return false;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return isRecord(parsed) && typeof parsed.v === "number" && parsed.v > 1;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The parts of a stored value that are not the login, or null for a value
  * that is not payload v1. The login itself is dropped here, before the

@@ -27,6 +27,7 @@ import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "../shared/processExecution";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
+import { signalChildProcessTree } from "../shared/utils";
 
 export const CLAUDE_PASS_VERIFY_TIMEOUT_MS = 15_000;
 /** How long ADE waits for Claude Code to exit before it kills it and deletes the folder. */
@@ -79,7 +80,7 @@ function withoutEnvNames(base: NodeJS.ProcessEnv, names: readonly string[]): Nod
 }
 
 /** The environment of the check: the person's env, no other credential, the pass, the private folder. */
-export function claudePassVerifyEnv(base: NodeJS.ProcessEnv, token: string, configDir: string): NodeJS.ProcessEnv {
+function claudePassVerifyEnv(base: NodeJS.ProcessEnv, token: string, configDir: string): NodeJS.ProcessEnv {
   return {
     ...withoutEnvNames(base, CREDENTIAL_ENV_NAMES),
     ...providerSelfUpdateEnv("claude"),
@@ -119,7 +120,12 @@ async function removeDir(dir: string, logger: Logger): Promise<void> {
   }
 }
 
-/** Waits for the exit, then kills what is left (the whole tree on Windows). */
+/**
+ * Waits for the exit, then kills what is left: the whole tree (taskkill on
+ * Windows; the process group on POSIX, where the child starts as its leader).
+ * On POSIX the spawn also kills the group when the leader exits first. On
+ * Windows a parent that already exited leaves no tree for taskkill to find.
+ */
 async function endProcess(child: ChildProcess | null): Promise<void> {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
@@ -128,11 +134,8 @@ async function endProcess(child: ChildProcess | null): Promise<void> {
   if (process.platform === "win32" && child.pid) {
     await killWindowsProcessTreeAsync(child.pid).catch(() => undefined);
   } else {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      // Already gone.
-    }
+    // Refuses a reaped child itself (the pid could be reused); falls back to the leader when no group exists.
+    signalChildProcessTree(child, "SIGKILL");
   }
   await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 1_000).unref?.())]);
 }
@@ -212,12 +215,26 @@ export async function verifyClaudePass(
       env: spawnOptions.env,
       signal: spawnOptions.signal,
       stdio: ["pipe", "pipe", "ignore"],
+      // POSIX: its own process group, so the end kills what it started too (they hold the token in their env).
+      detached: process.platform !== "win32",
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       windowsHide: true,
     });
     // The abort signal makes Node emit an AbortError on the child; with no
     // listener left (the SDK closed) that would be an uncaught error in the brain.
     created.on("error", () => undefined);
+    if (process.platform !== "win32") {
+      // The leader can end first (a timeout or cancel kills only it): its group goes
+      // with it, at once, while no new process can have taken the group id.
+      created.once("exit", () => {
+        if (!created.pid) return;
+        try {
+          process.kill(-created.pid, "SIGKILL");
+        } catch {
+          // ESRCH: nothing of the group is left.
+        }
+      });
+    }
     child = created;
     return created as unknown as SpawnedProcess;
   };

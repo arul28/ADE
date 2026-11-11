@@ -174,22 +174,6 @@
 .ade-sis-form { display: flex; flex-direction: column; gap: 10px; }
 .ade-sis-form-label { font-size: 12px; color: var(--sis-text-2); }
 
-/* The account note: which account to approve, before the person approves. */
-.ade-sis-note {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  padding: 9px 11px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--color-warning) 8%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-warning) 22%, transparent);
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--sis-text-2);
-}
-.ade-sis-note > svg { flex: none; margin-top: 2px; color: var(--color-warning); }
-.ade-sis-note b { font-weight: 650; color: var(--color-fg); }
-
 /* ── Steps: 1 started, 2 approve, 3 check. ── */
 .ade-sis-steps {
   display: flex;
@@ -372,7 +356,7 @@
   word-break: break-all;
 }
 
-/* ── End states ── */
+/* ── End states: the signed-in line (the others are inline banners). ── */
 .ade-sis-end {
   display: flex;
   align-items: flex-start;
@@ -391,18 +375,6 @@
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-success) 26%, transparent);
 }
 .ade-sis-end[data-tone="ok"] > svg { color: var(--color-success); }
-.ade-sis-end[data-tone="crit"] {
-  background: color-mix(in srgb, var(--color-error) 9%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-error) 32%, transparent);
-}
-.ade-sis-end[data-tone="crit"] > svg,
-.ade-sis-end[data-tone="crit"] .ade-sis-end-title { color: var(--color-error); }
-.ade-sis-end[data-tone="neutral"] {
-  background: var(--sis-soft);
-  box-shadow: inset 0 0 0 1px var(--sis-rule);
-}
-.ade-sis-end[data-tone="neutral"] > svg { color: var(--sis-text-3); }
-.ade-sis-end .ade-sis-actions { margin-top: 6px; }
 
 /* The status line beside the footer buttons. */
 .ade-sis-footer-status { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; color: var(--sis-text-3); }

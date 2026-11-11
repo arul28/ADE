@@ -6,21 +6,21 @@
  * Cost: no read of its own. Desktop main adds `passEnd` to the answer of
  * `cloudAccess.read()`, the read every window already makes on open and on
  * focus, and computes it from the local pass store only while ADE Cloud is on
- * (`main/services/adeCloud/claudePassEnd.ts`). Off: nothing is read.
+ * (`main/services/adeCloud/claudePassEndWarning.ts`). Off: nothing is read.
  *
  * One Renew button: the same approve sheet as the ADE Cloud page, for that
  * pass. Dismissed, it stays away until a pass changes state (once per state).
  */
 import type { NavigateFunction } from "react-router-dom";
-import { Warning } from "@phosphor-icons/react";
 import { useAdeCloudEnabled, useAdeCloudPassEnd } from "../../../../state/cloudAccess";
+import { ProviderLogo } from "../../../shared/ProviderLogos";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../../../ui/notice";
+import { adeCloudSettingsSearch } from "../../SettingsMachineScope";
 import { adeCloudEndNoticeWords } from "./adeCloudEndNotice";
 
 /** Settings › Providers › ADE Cloud › Claude, opening the renew sheet for one pass. */
 function renewRoute(renewKey: string): string {
-  const params = new URLSearchParams({ tab: "agents", machine: "ade-cloud", provider: "claude", renew: renewKey });
-  return `/settings?${params.toString()}`;
+  return `/settings${adeCloudSettingsSearch({ provider: "claude", renew: renewKey })}`;
 }
 
 export function CloudSignInEndNotice({ navigate }: { navigate: NavigateFunction }): null {
@@ -33,7 +33,8 @@ export function CloudSignInEndNotice({ navigate }: { navigate: NavigateFunction 
           id: "ade-cloud-pass-end",
           // Warning, also for an ended pass: it is the plan's normal end, not an ADE failure to report.
           tone: "warning",
-          icon: <Warning size={13} weight="bold" />,
+          // The notice is about Claude: its logo, as for any integration's notice.
+          icon: <ProviderLogo family="claude" size={13} />,
           title: words.title,
           detail: words.detail,
           actions: [{ label: "Renew", variant: "primary", onClick: () => navigate(renewRoute(end.key)) }],

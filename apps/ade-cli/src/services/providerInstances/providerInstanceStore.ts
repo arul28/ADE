@@ -11,6 +11,7 @@ import {
 } from "../../../../desktop/src/main/services/shared/providerConfigHomes";
 import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { isAdeProviderHomePath } from "../../../../desktop/src/shared/parentAgentEnv";
+import { isClaudePassAccountId, isClaudePassKey } from "../../../../desktop/src/shared/types/providerLogins";
 import { resolveMachineAdeDir } from "../projects/machineLayout";
 import { isCloudMachine } from "../power/cloudKeepAwake";
 import {
@@ -116,14 +117,13 @@ export type CloudPassAccount = StoredCloudPass & {
   createdAt: number;
 };
 
-const CLOUD_PASS_ID_PATTERN = /^pass-(?:legacy|[0-9a-f]{12})$/;
 const CLOUD_PASS_CHECKS: readonly StoredCloudPass["check"][] = ["match", "kept_other", "unchecked"];
 
 function decodeCloudPass(value: unknown): StoredCloudPass | undefined {
   if (!isRecord(value)) return undefined;
   const key = trimmedString(value.key);
   const expiresAt = typeof value.expiresAt === "number" && Number.isFinite(value.expiresAt) ? value.expiresAt : null;
-  if (!key || !/^claude-pass\/(?:legacy|[0-9a-f]{12})$/.test(key) || expiresAt == null) return undefined;
+  if (!key || !isClaudePassKey(key) || expiresAt == null) return undefined;
   return {
     key,
     email: trimmedString(value.email) ?? null,
@@ -252,7 +252,7 @@ function decodeStoredInstance(value: unknown): StoredInstance | null {
   const replacedEmail = trimmedString(replaced?.email);
   const replacedPlan = trimmedString(replaced?.plan);
   const claudeLoginEndsAt = provider === "claude" ? trimmedString(value.claudeLoginEndsAt) : undefined;
-  const cloudPass = provider === "claude" && CLOUD_PASS_ID_PATTERN.test(id) ? decodeCloudPass(value.cloudPass) : undefined;
+  const cloudPass = provider === "claude" && isClaudePassAccountId(id) ? decodeCloudPass(value.cloudPass) : undefined;
   const replacedAccount: ProviderInstanceReplacedAccount | undefined = replaced && replacedEmail
     ? {
       email: replacedEmail,
@@ -464,19 +464,32 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     if (record) emit({ reason: "login", provider: record.provider, instanceId: id });
   }
 
+  /** The login cannot run a chat: its check failed, or Claude ended its pass. */
+  function loginBrokenOf(record: StoredInstance): boolean {
+    return brokenLogins.has(record.id) || record.cloudPass?.endedAt != null;
+  }
+
+  /** `sameLoginOwner`'s check for `holders`: an ended pass has no quota to share either. */
+  function brokenAmong(holders: readonly StoredInstance[]): (id: string) => boolean {
+    return (id) => {
+      const holder = holders.find((record) => record.id === id);
+      return holder ? loginBrokenOf(holder) : brokenLogins.has(id);
+    };
+  }
+
   function toPublic(stored: StoredInstance, file: RegistryFile): ProviderInstance {
     const pass = stored.cloudPass;
     // A pass is a login by itself, with or without an email. Only Claude's
     // refusal ends it (`endedAt`); a past estimate of its year does not.
     const known = Boolean(pass || stored.account?.email || stored.account?.plan);
-    const loginBroken = known && (brokenLogins.has(stored.id) || pass?.endedAt != null);
+    const loginBroken = known && loginBrokenOf(stored);
     const signedIn = known && !loginBroken;
     const siblings = allRecords(file).filter((record) => record.provider === stored.provider);
     // Two config homes signed in to one email are one login and one quota.
     const holders = stored.account?.email
       ? siblings.filter((record) => sameEmail(record.account?.email, stored.account?.email))
       : [];
-    const owner = sameLoginOwner(holders, defaultIdFor(stored.provider, file), (id) => brokenLogins.has(id));
+    const owner = sameLoginOwner(holders, defaultIdFor(stored.provider, file), brokenAmong(holders));
     const sameLoginAs = owner && owner.id !== stored.id ? owner.id : undefined;
     // A replaced login another account holds again is not lost.
     const replacedAccount = stored.replacedAccount
@@ -563,7 +576,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     if (!holders.length) return null;
     const holderProvider = holders[0]!.provider;
     if (holders.some((entry) => entry.provider !== holderProvider)) return null;
-    return sameLoginOwner(holders, defaultIdFor(holderProvider, file), (id) => brokenLogins.has(id)) ?? null;
+    return sameLoginOwner(holders, defaultIdFor(holderProvider, file), brokenAmong(holders)) ?? null;
   }
 
   /**
@@ -1014,7 +1027,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
    */
   function cloudPassOf(id: string): StoredCloudPass | null {
     const trimmed = typeof id === "string" ? id.trim() : "";
-    if (!CLOUD_PASS_ID_PATTERN.test(trimmed) || !isCloudMachine(env)) return null;
+    if (!isClaudePassAccountId(trimmed) || !isCloudMachine(env)) return null;
     return readFile().instances.find((entry) => entry.id === trimmed)?.cloudPass ?? null;
   }
 
@@ -1036,11 +1049,11 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const result = { added: [] as string[], removed: [] as string[], changed: [] as string[], wrote: false };
     if (!isCloudMachine(env)) return result;
     const file = readFile();
-    const wanted = new Map(args.passes.filter((pass) => CLOUD_PASS_ID_PATTERN.test(pass.id)).map((pass) => [pass.id, pass]));
+    const wanted = new Map(args.passes.filter((pass) => isClaudePassAccountId(pass.id)).map((pass) => [pass.id, pass]));
     let dirty = false;
     const kept: StoredInstance[] = [];
     for (const entry of file.instances) {
-      if (!entry.cloudPass && !CLOUD_PASS_ID_PATTERN.test(entry.id)) {
+      if (!entry.cloudPass && !isClaudePassAccountId(entry.id)) {
         kept.push(entry);
         continue;
       }
@@ -1077,7 +1090,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
         file.defaults.claude = args.defaultId;
         dirty = true;
       }
-    } else if (currentDefault && (CLOUD_PASS_ID_PATTERN.test(currentDefault) || !kept.some((entry) => entry.id === currentDefault))) {
+    } else if (currentDefault && (isClaudePassAccountId(currentDefault) || !kept.some((entry) => entry.id === currentDefault))) {
       delete file.defaults.claude;
       dirty = true;
     }

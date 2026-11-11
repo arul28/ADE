@@ -10,6 +10,8 @@
  * box at boot (cloudSignInBoot.ts).
  */
 
+import type { ProviderLoginProvider } from "./types/providerLogins";
+
 /** One sign-in kept for new machines. Pi shares OpenCode's OpenRouter key. */
 export type CloudSignInId =
   | "claude"
@@ -26,6 +28,8 @@ export type CloudSignInSpec = {
   id: CloudSignInId;
   /** The providers it signs in, as the card names them. */
   label: string;
+  /** The providers it signs in. OpenRouter's key is shared by OpenCode and Pi. */
+  providers: readonly ProviderLoginProvider[];
   /** `claude-token`: Claude Code's own sign-in makes the token. `key`: the person pastes a key. */
   method: "claude-token" | "key";
   /** The variable a new machine gets it in. */
@@ -42,6 +46,7 @@ export const CLOUD_SIGN_INS: readonly CloudSignInSpec[] = [
   {
     id: "claude",
     label: "Claude",
+    providers: ["claude"],
     method: "claude-token",
     env: "CLAUDE_CODE_OAUTH_TOKEN",
     keyName: "Claude sign-in",
@@ -51,6 +56,7 @@ export const CLOUD_SIGN_INS: readonly CloudSignInSpec[] = [
   {
     id: "codex",
     label: "Codex",
+    providers: ["codex"],
     method: "key",
     env: "OPENAI_API_KEY",
     keyName: "OpenAI API key",
@@ -62,6 +68,7 @@ export const CLOUD_SIGN_INS: readonly CloudSignInSpec[] = [
   {
     id: "cursor",
     label: "Cursor",
+    providers: ["cursor"],
     method: "key",
     env: "CURSOR_API_KEY",
     keyName: "Cursor API key",
@@ -71,6 +78,7 @@ export const CLOUD_SIGN_INS: readonly CloudSignInSpec[] = [
   {
     id: "droid",
     label: "Droid",
+    providers: ["droid"],
     method: "key",
     env: "FACTORY_API_KEY",
     keyName: "Factory API key",
@@ -80,6 +88,7 @@ export const CLOUD_SIGN_INS: readonly CloudSignInSpec[] = [
   {
     id: "grok",
     label: "Grok",
+    providers: ["grok"],
     method: "key",
     env: "XAI_API_KEY",
     keyName: "xAI API key",
@@ -89,6 +98,7 @@ export const CLOUD_SIGN_INS: readonly CloudSignInSpec[] = [
   {
     id: "copilot",
     label: "GitHub Copilot",
+    providers: ["copilot"],
     method: "key",
     env: "COPILOT_GITHUB_TOKEN",
     keyName: "GitHub token",
@@ -98,6 +108,7 @@ export const CLOUD_SIGN_INS: readonly CloudSignInSpec[] = [
   {
     id: "devin",
     label: "Devin",
+    providers: ["devin"],
     method: "key",
     env: "WINDSURF_API_KEY",
     keyName: "Windsurf API key",
@@ -107,6 +118,7 @@ export const CLOUD_SIGN_INS: readonly CloudSignInSpec[] = [
   {
     id: "muse",
     label: "Muse",
+    providers: ["muse"],
     method: "key",
     env: "META_API_KEY",
     keyName: "Meta API key",
@@ -116,6 +128,7 @@ export const CLOUD_SIGN_INS: readonly CloudSignInSpec[] = [
   {
     id: "openrouter",
     label: "OpenCode and Pi",
+    providers: ["opencode", "pi"],
     method: "key",
     env: "OPENROUTER_API_KEY",
     keyName: "OpenRouter API key",
@@ -145,6 +158,11 @@ export const CLOUD_SIGN_IN_GAPS: readonly { provider: string; label: string; rea
 
 export function cloudSignInSpec(id: string): CloudSignInSpec | null {
   return CLOUD_SIGN_INS.find((spec) => spec.id === id) ?? null;
+}
+
+/** The saved ADE Cloud key (a pasted key, never Claude's token) that signs in `provider`, or null. */
+export function cloudSignInKeyFor(provider: ProviderLoginProvider): CloudSignInId | null {
+  return CLOUD_SIGN_INS.find((spec) => spec.method === "key" && spec.providers.includes(provider))?.id ?? null;
 }
 
 /**

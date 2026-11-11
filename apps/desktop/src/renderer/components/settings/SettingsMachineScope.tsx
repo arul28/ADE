@@ -90,6 +90,21 @@ export function useSettingsMachineScope(): SettingsMachineScope {
 export const ADE_CLOUD_PLACE_ID = "ade-cloud";
 
 /**
+ * The search part (with its "?") of Settings › Providers › ADE Cloud.
+ * `base` keeps the page's own params (the tab); without it the route opens
+ * the Providers tab. `provider` opens one provider's page, `renew` the renew
+ * sheet for one Claude pass.
+ */
+export function adeCloudSettingsSearch({ base, provider, renew }: { base?: URLSearchParams; provider?: string; renew?: string } = {}): string {
+  const params = new URLSearchParams(base ?? { tab: "agents" });
+  params.set("machine", ADE_CLOUD_PLACE_ID);
+  if (provider) params.set("provider", provider);
+  if (renew) params.set("renew", renew);
+  params.delete("harnesses");
+  return `?${params.toString()}`;
+}
+
+/**
  * Where Settings › Providers is: one machine (the scope above says which), or
  * ADE Cloud, which is not a machine. On ADE Cloud the machine scope stays
  * This computer's, so the account-wide calls of the page go through it.

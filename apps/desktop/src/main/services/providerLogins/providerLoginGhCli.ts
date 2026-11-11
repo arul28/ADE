@@ -16,7 +16,7 @@
 
 import path from "node:path";
 
-import { mergePathEntries, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
+import { getPathEnvValue, mergePathEntries, resolveExecutableFromKnownLocations, setPathEnvValue } from "../ai/cliExecutableResolver";
 import { runReapedCommand } from "../shared/runReapedCommand";
 
 /** Env names gh reads before its stored login; never passed to the read. */
@@ -81,10 +81,13 @@ export function ghReadEnv(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = pr
 export const runGhAuthToken: GhTokenRunner = async ({ env, timeoutMs }) => {
   const resolved = resolveExecutableFromKnownLocations("gh", env);
   if (!resolved?.path) return { ok: false, reason: "not_installed" };
+  // The PATH key keeps its spelling (`Path` on Windows), so the child gets one PATH, not two.
+  const childEnv = ghReadEnv(env);
+  setPathEnvValue(childEnv, mergePathEntries(getPathEnvValue(env), path.dirname(resolved.path)));
   const result = await runReapedCommand(resolved.path, ["auth", "token", "--hostname", "github.com"], {
     timeoutMs,
     maxBuffer: 64 * 1024,
-    env: { ...ghReadEnv(env), PATH: mergePathEntries(env.PATH, path.dirname(resolved.path)) },
+    env: childEnv,
   });
   if (result.timedOut) return { ok: false, reason: "timeout" };
   const token = result.stdout.trim();

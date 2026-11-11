@@ -16,8 +16,8 @@ import {
   type ClaudePassUseSource,
   type ClaudePassUseView,
   type ClaudePassUseWindow,
-  type CloudSignInId,
   type CloudSignInStatus,
+  cloudSignInKeyFor,
 } from "../../../../../shared/cloudSignIns";
 import type { AiSettingsStatus } from "../../../../../shared/types";
 import {
@@ -30,13 +30,14 @@ import {
 } from "../../../../../shared/types/providerLogins";
 import { NOT_SIGNED_IN_LABEL, SIGNED_IN_LABEL, UNKNOWN_LABEL } from "../providerSignInView";
 import type { ProviderTileFact } from "../ProviderTileView";
+import { isRecord } from "../../../../../shared/agentObservationNormalizers";
+import { DAY_MS, endsInDaysText, parseTime, shortDate } from "./adeCloudTime";
 
 /** "Sign-ins from your computers reach …": the one sentence under the title. */
 export const ADE_CLOUD_REACH_LINE = "Sign-ins from your computers reach each cloud computer in about a minute.";
 export const ADE_CLOUD_OFF_BANNER = "Sign-ins are off for ADE Cloud. Cloud chats sign in on each cloud computer.";
 export const COPILOT_REPO_LINE = "This login also gives access to your GitHub repos.";
 
-const DAY_MS = 86_400_000;
 /** A sign-in that ends within this many days warns on its tile (T12). */
 const ENDS_SOON_DAYS = 3;
 
@@ -69,14 +70,15 @@ export type CloudPassRow =
 
 export type ReadableCloudPassRow = Extract<CloudPassRow, { unreadable: false }>;
 
+/** A pass's name: its account, or "Claude pass from Nov 3" when the account is not known. */
+export function passTitle(pass: { email: string | null; createdAt: number }, now: number): string {
+  return pass.email ?? `Claude pass from ${shortDate(pass.createdAt, now)}`;
+}
+
 const PASS_STATES = new Set(["active", "ending_soon", "estimate_passed", "ended"]);
 const PASS_UPLOADS = new Set(["account", "pending", "refused"]);
 const PASS_CHECKS = new Set(["match", "kept_other", "unchecked"]);
 const WINDOW_STATUSES = new Set(["allowed", "allowed_warning", "rejected"]);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function finiteOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -108,7 +110,7 @@ function readUseWindow(value: unknown): ClaudePassUseWindow | null {
 }
 
 /** A pass's use through the guard, as `ClaudePassUseView`; null when the shape is not one ADE knows. */
-export function readPassUse(value: unknown): ClaudePassUseView | null {
+function readPassUse(value: unknown): ClaudePassUseView | null {
   if (!isRecord(value)) return null;
   if (value.state === "none_seen") return { state: "none_seen" };
   if (value.state !== "seen") return null;
@@ -282,9 +284,9 @@ export type AdeCloudTileAction =
   | { kind: "sign-in-here" }
   /** Copy Antigravity's sign-in from this Mac's Keychain. */
   | { kind: "allow-keychain" }
-  /** Sign in on the reporting cloud computer (fallback providers). Step 2. */
+  /** Sign in on the reporting cloud computer (fallback providers). */
   | { kind: "sign-in-cloud" }
-  /** Approve a Claude pass, or renew one. Step 4. */
+  /** Approve a Claude pass, or renew one. */
   | { kind: "claude-pass"; renewKey: string | null };
 
 export type AdeCloudTile = {
@@ -296,6 +298,8 @@ export type AdeCloudTile = {
   chipTone: "ok" | "warn" | undefined;
   facts: readonly ProviderTileFact[];
   action: AdeCloudTileAction | null;
+  /** "saved-key": ADE Cloud uses a saved ADE Cloud key in place of a sign-in. */
+  source?: "saved-key";
 };
 
 export type AdeCloudTileInput = {
@@ -317,6 +321,11 @@ function signedIn(row: string, facts: ProviderTileFact[], action: AdeCloudTileAc
   return { row, state: "connected" as const, chipLabel: SIGNED_IN_LABEL, chipTone: "ok" as const, facts, action };
 }
 
+/** Signed in through a saved ADE Cloud key ("Copied key"). */
+function savedKeyTile(row: string) {
+  return { ...signedIn(row, [{ text: "Copied key" }]), source: "saved-key" as const };
+}
+
 function notSignedIn(row: string, text: string, action: AdeCloudTileAction | null = null, tone?: ProviderTileFact["tone"]) {
   return { row, state: "sign-in" as const, chipLabel: NOT_SIGNED_IN_LABEL, chipTone: "warn" as const, facts: [{ text, tone }], action };
 }
@@ -325,34 +334,8 @@ function unknown(row: string, text: string, action: AdeCloudTileAction | null = 
   return { row, state: "unknown" as const, chipLabel: UNKNOWN_LABEL, chipTone: undefined, facts: [{ text }], action };
 }
 
-/** "Nov 12", or "Nov 12, 2027" outside this year. */
-export function shortDate(ms: number, now: number): string {
-  const date = new Date(ms);
-  const sameYear = date.getFullYear() === new Date(now).getFullYear();
-  return date.toLocaleDateString(undefined, sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
-}
-
-function parseTime(iso: string | null | undefined): number | null {
-  if (!iso) return null;
-  const ms = Date.parse(iso);
-  return Number.isFinite(ms) ? ms : null;
-}
-
-/** The saved ADE Cloud key that stands in for a provider, by its key row. */
-const SAVED_KEY_FOR: Partial<Record<ProviderLoginProvider, CloudSignInId>> = {
-  codex: "codex",
-  cursor: "cursor",
-  droid: "droid",
-  grok: "grok",
-  copilot: "copilot",
-  devin: "devin",
-  muse: "muse",
-  opencode: "openrouter",
-  pi: "openrouter",
-};
-
 function hasSavedKey(provider: ProviderLoginProvider, saved: CloudSignInStatus["saved"] | null): boolean {
-  const id = SAVED_KEY_FOR[provider];
+  const id = cloudSignInKeyFor(provider);
   return Boolean(id && saved?.some((entry) => entry.id === id && entry.saved));
 }
 
@@ -368,11 +351,6 @@ function appliedFor(provider: ProviderLoginProvider, cloud: AdeCloudCloudPart, i
 
 function providerRow(account: AdeCloudAccountPart, provider: ProviderLoginProvider): ProviderLoginProviderStatus | null {
   return account.state === "ok" ? account.status.providers.find((row) => row.provider === provider) ?? null : null;
-}
-
-/** Copilot is carried only when the status says so; everything else about it follows from that. */
-function isCarried(provider: ProviderLoginProvider, row: ProviderLoginProviderStatus | null): boolean {
-  return row?.carry === "carried";
 }
 
 /** A computer's name with its hyphens kept on one line ("cloud-a" never breaks as "cloud-" / "a"). */
@@ -409,7 +387,7 @@ function carriedTile(input: AdeCloudTileInput, row: ProviderLoginProviderStatus 
   const keySaved = hasSavedKey(provider, input.saved);
   const keyPicked = account.status.cloud.inUse[provider] === "key";
   if (keySaved && (keyPicked || !signIns.some((signIn) => signIn.onForCloud))) {
-    return signedIn("T6", [{ text: "Copied key" }]);
+    return savedKeyTile("T6");
   }
   if (inUse) {
     const action = switchFor(only);
@@ -454,7 +432,7 @@ function fallbackTile(input: AdeCloudTileInput): Omit<AdeCloudTile, "provider"> 
   const { provider, cloud } = input;
   const login = cloud.state === "ok" ? cloudLoginFor(provider, cloud.ai) : null;
   if (login === true) return signedIn("F1", [{ text: "Signed in on the cloud computer" }]);
-  if (hasSavedKey(provider, input.saved)) return signedIn("F3", [{ text: "Copied key" }]);
+  if (hasSavedKey(provider, input.saved)) return savedKeyTile("F3");
   switch (cloud.state) {
     case "no_computer":
       return notSignedIn("F4", "Sign in once you have a cloud computer, or use a key");
@@ -482,7 +460,7 @@ function sharePct(window: ClaudePassUseWindow | null): string | null {
  * weekly limit is the one a pass runs out of. Numbers from the same account
  * on a computer say which computer.
  */
-export function passUseLine(use: ClaudePassUseView): string {
+function passUseLine(use: ClaudePassUseView): string {
   if (use.state !== "seen") return "No use seen yet";
   const weekly = sharePct(use.weekly);
   const fiveHour = sharePct(use.fiveHour);
@@ -513,15 +491,14 @@ function claudeTile(input: AdeCloudTileInput): Omit<AdeCloudTile, "provider"> {
   const on = readable.filter((pass) => pass.on && pass.state !== "ended");
   if (on.length === 0) return notSignedIn("C6", "Off for ADE Cloud");
   const current = on.find((pass) => pass.newChats) ?? on[0]!;
-  const label = current.email ?? `Claude pass from ${shortDate(current.createdAt, now)}`;
+  const label = passTitle(current, now);
   const more = on.length > 1 ? ` · ${on.length} passes` : "";
   const useLine: ProviderTileFact = { text: passUseLine(joinedPassUse(cloudPasses.find((pass) => pass.key === current.key), input.passUse?.get(current.key))) };
   if (current.upload !== "account") return signedIn("C9", [{ text: `${label} · Kept on this computer for now${more}` }, useLine]);
   if (current.state === "ending_soon") {
-    const days = Math.max(0, Math.round(current.endsInDays));
     return signedIn(
       on.length > 1 ? "C8" : "C3",
-      [{ text: `${label} · Cloud pass · Ends in ${days} day${days === 1 ? "" : "s"}${more}`, tone: "warn" }, useLine],
+      [{ text: `${label} · Cloud pass · Ends in ${endsInDaysText(current.endsInDays)}${more}`, tone: "warn" }, useLine],
       { kind: "claude-pass", renewKey: current.key },
     );
   }
@@ -544,7 +521,7 @@ export function adeCloudTile(input: AdeCloudTileInput): AdeCloudTile {
     if (provider === "claude") return claudeTile(input);
     if (account.state !== "ok") return CHECKING_TILE;
     const row = providerRow(account, provider);
-    return isCarried(provider, row) ? carriedTile(input, row) : fallbackTile(input);
+    return row?.carry === "carried" ? carriedTile(input, row) : fallbackTile(input);
   };
   return { provider, ...decide() };
 }

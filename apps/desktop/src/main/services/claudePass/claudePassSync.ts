@@ -29,10 +29,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import type { ClaudePassStatusEntry } from "../../../shared/cloudSignIns";
+import { PROVIDER_LOGINS_CLOUD_SETTING, readCloudSetting } from "../../../shared/providerLoginsCloudSetting";
+import { CLAUDE_PASS_LEGACY_KEY, claudePassAccountId, isClaudePassAccountId } from "../../../shared/types/providerLogins";
 import type { CloudPassAccount } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import {
-  CLAUDE_PASS_LEGACY_KEY,
-  CLAUDE_PASS_VAULT_KIND,
+  type CLAUDE_PASS_VAULT_KIND,
   adoptLegacyClaudePass,
   claudePassVaultFromStore,
   listClaudePasses,
@@ -51,7 +52,6 @@ const TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 const WHOLE_CLAUDE_TOKEN = /^sk-ant-oat\d{2}-[A-Za-z0-9_-]{20,}$/;
 /** The base Claude account (`~/.claude`, no `CLAUDE_CONFIG_DIR`). */
 const BASE_ACCOUNT_ID = "claude";
-const CLOUD_SETTING_KEY = "providerLogins.cloud";
 
 type Logger = {
   info(event: string, data?: Record<string, unknown>): void;
@@ -115,27 +115,16 @@ export type ClaudePassReconcileResult = {
 
 export type { ClaudePassStatusEntry } from "../../../shared/cloudSignIns";
 
-/** `claude-pass/<12 hex>` → `pass-<12 hex>`; `claude-pass/legacy` → `pass-legacy`. */
-export function claudePassInstanceId(key: string): string {
-  return `pass-${key.slice("claude-pass/".length)}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 type CloudSettingView = { enabled: boolean; inUseClaude: string | null; off: Set<string>; smartBalance: boolean };
 
-/** The account setting `providerLogins.cloud`, read as P5 writes it; `claude.smartBalance` absent = false. */
-export function readClaudeCloudSetting(raw: unknown): CloudSettingView {
-  const record = isRecord(raw) ? raw : {};
-  const inUse = isRecord(record.inUse) ? record.inUse : {};
-  const claude = isRecord(record.claude) ? record.claude : {};
+/** Claude's part of the account setting `providerLogins.cloud`, from the one parser the sync writes by. */
+function readClaudeCloudSetting(raw: unknown): CloudSettingView {
+  const setting = readCloudSetting(raw);
   return {
-    enabled: record.enabled !== false,
-    inUseClaude: typeof inUse.claude === "string" ? inUse.claude : null,
-    off: new Set(Array.isArray(record.off) ? record.off.filter((key): key is string => typeof key === "string") : []),
-    smartBalance: claude.smartBalance === true,
+    enabled: setting.enabled,
+    inUseClaude: setting.inUse.claude ?? null,
+    off: new Set(setting.off),
+    smartBalance: setting.smartBalance,
   };
 }
 
@@ -204,11 +193,27 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
     const result: ClaudePassReconcileResult = {
       ran: false, legacyAdopted: false, envToken: null, baseHomeLogin: false, added: [], removed: [], restarted: [], wrote: false,
     };
+    const accountUserId = info.accountUserId?.trim() || null;
+    if (!accountUserId) {
+      // Signed out: the last account's pass tokens leave memory, so no Claude
+      // process starts on them (a managed computer then gives none at all).
+      // Idle processes that hold one restart (a running turn finishes first).
+      const held = [...tokens.keys()];
+      if (managed && accountlessToken) held.push(BASE_ACCOUNT_ID);
+      if (held.length > 0) {
+        tokens = new Map();
+        keyById = new Map();
+        if (managed) accountlessToken = null;
+        setClaudePassLaunchState({ homes: [], defaultHome: null, managed });
+        logger?.info("claude_pass.tokens_dropped", { reason: "signed_out" });
+        deps.noteChanged("claude");
+        deps.restart("claude", { instanceIds: held });
+      }
+      return { ...result, skipped: "signed_out", restarted: held };
+    }
     const vault = deps.vault();
     if (!vault) return { ...result, skipped: "no_vault" };
     if (vault.health().syncReady === false) return { ...result, skipped: "vault_not_ready" };
-    const accountUserId = info.accountUserId?.trim() || null;
-    if (!accountUserId) return { ...result, skipped: "signed_out" };
     const passVault = claudePassVaultFromStore(vault);
     const writeOptions = { expectedAccountUserId: accountUserId };
     result.ran = true;
@@ -224,11 +229,11 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
     if (!deps.cloudComputer) return result;
 
     result.envToken = takeEnvToken(passVault, accountUserId);
-    const setting = readClaudeCloudSetting(deps.settings()?.get(ACCOUNT_SCOPE_ALL, CLOUD_SETTING_KEY));
+    const setting = readClaudeCloudSetting(deps.settings()?.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING));
     const passes = listClaudePasses(passVault);
     const desired = setting.enabled ? passes.filter((entry) => !setting.off.has(entry.key)) : [];
     const accounts: CloudPassAccount[] = desired.map((entry) => ({
-      id: claudePassInstanceId(entry.key),
+      id: claudePassAccountId(entry.key),
       key: entry.key,
       email: entry.pass.account.email,
       check: entry.pass.account.check,
@@ -250,7 +255,7 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
     result.wrote = synced.wrote;
 
     const nextTokens = new Map<string, string>();
-    for (const entry of desired) nextTokens.set(claudePassInstanceId(entry.key), entry.pass.token);
+    for (const entry of desired) nextTokens.set(claudePassAccountId(entry.key), entry.pass.token);
     const changedIds = new Set<string>([...synced.added, ...synced.removed]);
     for (const [id, token] of nextTokens) {
       const before = tokens.get(id);
@@ -259,7 +264,7 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
     }
     for (const id of tokens.keys()) if (!nextTokens.has(id)) changedIds.add(id);
     for (const id of synced.added) {
-      const key = desired.find((entry) => claudePassInstanceId(entry.key) === id)?.key ?? id;
+      const key = desired.find((entry) => claudePassAccountId(entry.key) === id)?.key ?? id;
       logger?.info("claude_pass.applied", { key });
       // Someone signed in inside a pass folder: kept, and named in the status.
       try {
@@ -278,7 +283,7 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
     result.baseHomeLogin = baseHomeHasLogin();
     const accountlessPassId = managed && !result.baseHomeLogin ? defaultId : null;
     tokens = nextTokens;
-    keyById = new Map(desired.map((entry) => [claudePassInstanceId(entry.key), entry.key]));
+    keyById = new Map(desired.map((entry) => [claudePassAccountId(entry.key), entry.key]));
     setClaudePassLaunchState({
       homes: [...nextTokens].map(([id, token]) => ({ configHome: homeOf(id), token })),
       // Unmanaged (the boot token kept) or a login in the base home: a process
@@ -344,11 +349,11 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
     const vault = deps.vault();
     if (!vault) return null;
     const passVault = claudePassVaultFromStore(vault);
-    const setting = readClaudeCloudSetting(deps.settings()?.get(ACCOUNT_SCOPE_ALL, CLOUD_SETTING_KEY));
+    const setting = readClaudeCloudSetting(deps.settings()?.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING));
     let localAccounts: Array<{ instanceId: string; email: string; isDefault: boolean }> = [];
     try {
       localAccounts = (deps.store()?.list("claude") ?? [])
-        .filter((instance) => instance.signedIn && !instance.sameLoginAs && !/^pass-/.test(instance.id) && instance.account?.email)
+        .filter((instance) => instance.signedIn && !instance.sameLoginAs && !isClaudePassAccountId(instance.id) && instance.account?.email)
         .map((instance) => ({ instanceId: instance.id, email: instance.account!.email!, isDefault: false }));
     } catch {
       // No local account names; the passes still show.
@@ -385,7 +390,7 @@ export function createClaudePassSync(deps: ClaudePassSyncDeps) {
         localInstanceId: pass.email
           ? localAccounts.find((account) => sameClaudeEmail(account.email, pass.email))?.instanceId ?? null
           : null,
-        appliedHere: deps.cloudComputer && tokens.has(claudePassInstanceId(pass.key)),
+        appliedHere: deps.cloudComputer && tokens.has(claudePassAccountId(pass.key)),
         homeHasLogin: deps.cloudComputer && homeHasLogin.has(pass.key),
         smartBalance: setting.smartBalance,
         endedAt: pass.endedAt,

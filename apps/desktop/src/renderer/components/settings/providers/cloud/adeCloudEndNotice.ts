@@ -3,7 +3,7 @@
  * desktop main names in `cloudAccess.read().passEnd`. Pure: no reads, no React.
  */
 import type { CloudPassEnd } from "../../../../../shared/cloudSignIns";
-import { shortDate } from "./adeCloudSignInModel";
+import { endsInDaysText, shortDate } from "./adeCloudTime";
 
 export type AdeCloudEndNoticeWords = { title: string; detail: string };
 
@@ -28,7 +28,7 @@ export function adeCloudEndNoticeWords(end: CloudPassEnd, now: number): AdeCloud
       return {
         title: days === 0
           ? `Your Claude pass for ADE Cloud${whose} ends today`
-          : `Your Claude pass for ADE Cloud${whose} ends in ${days} day${days === 1 ? "" : "s"}`,
+          : `Your Claude pass for ADE Cloud${whose} ends in ${endsInDaysText(days)}`,
         detail: `Renew it so cloud chats keep working.${more}`,
       };
     }

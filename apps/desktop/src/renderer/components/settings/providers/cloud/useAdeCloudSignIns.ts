@@ -10,7 +10,8 @@
  * The account part draws the tiles at once; the cloud part fills in when it
  * answers. Reads run on open, on `providerLogins.onChanged` and on Re-check.
  * No timer and no poll. Every effect keys on a pin's key, and a result that
- * arrives for an old key is dropped.
+ * arrives for an old key is dropped. The account read is
+ * `usePinnedProviderLoginStatus`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CloudSignInStatus } from "../../../../../shared/cloudSignIns";
@@ -21,6 +22,7 @@ import { cloudBoxForMachine } from "../../../remoteTargets/cloudMachineModel";
 import { useCloudMachines } from "../../../remoteTargets/useCloudMachines";
 import { useSettingsMachines } from "../../machines/settingsMachinesContext";
 import type { AdeCloudAccountPart, AdeCloudCloudPart } from "./adeCloudSignInModel";
+import { usePinnedProviderLoginStatus } from "./usePinnedProviderLoginStatus";
 
 export type AdeCloudSignInsState = {
   account: AdeCloudAccountPart;
@@ -77,7 +79,6 @@ export function useThisComputerPin(): { accountPin: OpenProjectBinding | null; k
 export function useAdeCloudSignIns(): AdeCloudSignInsState {
   const { machines } = useSettingsMachines();
   const { accountPin, keychainIsThisMac } = useThisComputerPin();
-  const accountKey = accountPin?.key ?? null;
   const accountPinRef = useRef(accountPin);
   accountPinRef.current = accountPin;
 
@@ -125,12 +126,17 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
   reportingRef.current = reporting;
 
   // ── Reads ──
-  const [account, setAccount] = useState<AdeCloudAccountPart>({ state: "loading" });
+  const accountRead = usePinnedProviderLoginStatus({ pin: accountPin, warning: "[providers] reading ADE Cloud sign-ins failed" });
+  const { apply: applyAccountRead, refresh: refreshAccountRead, reload: reloadAccount } = accountRead;
+  const account = useMemo<AdeCloudAccountPart>(
+    () => (accountRead.status ? { state: "ok", status: accountRead.status } : accountRead.failed ? { state: "failed" } : { state: "loading" }),
+    [accountRead.failed, accountRead.status],
+  );
   const [cloudStatus, setCloudStatus] = useState<{ key: string; status: ProviderLoginStatus | null; failed: boolean } | null>(null);
   const [cloudAi, setCloudAi] = useState<{ key: string; ai: AiSettingsStatus | null } | null>(null);
   const [signInStatus, setSignInStatus] = useState<CloudSignInStatus | null>(null);
   const saved = signInStatus && !signInStatus.unknown ? signInStatus.saved : null;
-  // Bumped by `providerLogins.onChanged` and Re-check: both status reads run again.
+  // Bumped by `providerLogins.onChanged`: the cloud status read runs again (the account read listens on its own).
   const [statusTick, setStatusTick] = useState(0);
   // Bumped by Re-check and on open only: the AI read is the heavier one.
   const [aiTick, setAiTick] = useState(0);
@@ -138,22 +144,6 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
   useEffect(() => {
     const off = window.ade?.providerLogins?.onChanged?.(() => setStatusTick((tick) => tick + 1));
     return () => off?.();
-  }, []);
-
-  /** One account read; `stale()` drops a result that arrives too late. */
-  const readAccount = useCallback(async (stale: () => boolean) => {
-    const read = window.ade?.providerLogins?.status;
-    if (typeof read !== "function") {
-      setAccount({ state: "failed" });
-      return;
-    }
-    try {
-      const status = await read({}, accountPinRef.current);
-      if (!stale()) setAccount({ state: "ok", status });
-    } catch (error) {
-      console.warn("[providers] reading ADE Cloud sign-ins failed", error);
-      if (!stale()) setAccount((current) => (current.state === "ok" ? current : { state: "failed" }));
-    }
   }, []);
 
   /** One status read on the reporting cloud computer, kept under its pin key. */
@@ -168,14 +158,6 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
       if (!stale()) setCloudStatus({ key, status: null, failed: true });
     }
   }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    void readAccount(() => cancelled);
-    return () => {
-      cancelled = true;
-    };
-  }, [accountKey, readAccount, statusTick]);
 
   const signInMountedRef = useRef(true);
   const reloadSignInStatus = useCallback(async () => {
@@ -269,7 +251,6 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
     setRechecking(true);
     const machine = reportingRef.current;
     const key = reportingKey(machine);
-    const accountKeyAtStart = accountPinRef.current?.key ?? null;
     const stale = () => !mountedRef.current;
     try {
       const capture = window.ade?.providerLogins?.captureNow;
@@ -280,7 +261,7 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
         });
       }
       await Promise.all([
-        readAccount(() => stale() || (accountPinRef.current?.key ?? null) !== accountKeyAtStart),
+        reloadAccount(),
         machine && key ? readCloudStatus(machine, key, () => stale() || reportingKey(reportingRef.current) !== key) : null,
       ]);
     } finally {
@@ -291,15 +272,18 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
         setAiTick((tick) => tick + 1);
       }
     }
-  }, [readAccount, readCloudStatus, refreshCloudMachines]);
+  }, [readCloudStatus, refreshCloudMachines, reloadAccount]);
 
   const applyAccountStatus = useCallback((status: ProviderLoginStatus) => {
-    setAccount({ state: "ok", status });
-  }, []);
+    applyAccountRead(accountPinRef.current?.key ?? null, status);
+  }, [applyAccountRead]);
   const applySaved = useCallback((status: CloudSignInStatus | null | undefined) => {
     if (status) setSignInStatus(status);
   }, []);
-  const refreshAccount = useCallback(() => setStatusTick((tick) => tick + 1), []);
+  const refreshAccount = useCallback(() => {
+    refreshAccountRead();
+    setStatusTick((tick) => tick + 1);
+  }, [refreshAccountRead]);
   const refreshCloudAi = useCallback(() => setAiTick((tick) => tick + 1), []);
 
   return {

@@ -51,6 +51,7 @@ import type {
   ProviderLoginSignIn,
   ProviderLoginStatus,
 } from "../shared/types/providerLogins";
+import { claudePassAccountId } from "../shared/types/providerLogins";
 
 type Scenario =
   | "on" | "none" | "asleep" | "noanswer" | "off" | "unreadable" | "one" | "copilot-fallback" | "elsewhere"
@@ -191,7 +192,7 @@ function seenUse(
 function initialPasses(scenario: Scenario, now: number): MockPass[] {
   if (scenario === "nopass") return [];
   const a: Extract<MockPass, { unreadable: false }> = {
-    key: "claude-pass/mock-a",
+    key: "claude-pass/a0a0a0a0a0a1",
     unreadable: false,
     email: "ada@example.com",
     check: "match",
@@ -208,7 +209,7 @@ function initialPasses(scenario: Scenario, now: number): MockPass[] {
   };
   const b: Extract<MockPass, { unreadable: false }> = {
     ...a,
-    key: "claude-pass/mock-b",
+    key: "claude-pass/b0b0b0b0b0b2",
     email: null,
     check: "unchecked",
     createdAt: Date.UTC(new Date(now).getUTCFullYear(), 2, 2),
@@ -217,7 +218,7 @@ function initialPasses(scenario: Scenario, now: number): MockPass[] {
   };
   const d: Extract<MockPass, { unreadable: false }> = {
     ...a,
-    key: "claude-pass/mock-d",
+    key: "claude-pass/d0d0d0d0d0d4",
     email: "ada@home.example",
     madeOnLabel: "MacBook",
     createdAt: now - 40 * DAY,
@@ -247,7 +248,7 @@ function initialPasses(scenario: Scenario, now: number): MockPass[] {
     default:
       break;
   }
-  return [d, a, b, { key: "claude-pass/mock-c", unreadable: true, createdAt: 0 }];
+  return [d, a, b, { key: "claude-pass/c0c0c0c0c0c3", unreadable: true, createdAt: 0 }];
 }
 
 function endsInDays(expiresAt: number): number {
@@ -313,7 +314,7 @@ function initialState(): MockState {
     antigravityAllowedAt: null,
     ghCli: GH_CLI_MODES.includes(param("mockGhCli") as GhCliMode) ? param("mockGhCli") as GhCliMode : "on",
     saved,
-    inUse: scenario === "nopass" ? { codex: "key" } : { codex: "key", claude: "claude-pass/mock-a" },
+    inUse: scenario === "nopass" ? { codex: "key" } : { codex: "key", claude: "claude-pass/a0a0a0a0a0a1" },
     smartBalance: false,
     passes: initialPasses(scenario, now),
     passOff: new Set(),
@@ -800,7 +801,7 @@ export function applyBrowserMockProviderLogins(ade: any): void {
   const savePass = (email: string | null, check: "match" | "kept_other" | "unchecked", upload: "account" | "pending") => {
     const now = Date.now();
     const renewKey = state.claude.renewKey;
-    const key = renewKey ?? `claude-pass/mock-${Math.random().toString(16).slice(2, 8)}`;
+    const key = renewKey ?? `claude-pass/${Math.random().toString(16).slice(2, 8).padEnd(6, "0")}${Date.now().toString(16).slice(-6)}`;
     const fresh: MockPass = {
       key,
       unreadable: false,
@@ -994,10 +995,10 @@ export function applyBrowserMockProviderLogins(ade: any): void {
       const base = (await baseList(args, pin)) ?? [];
       if (!cloudTargetOf(pin) || (args?.provider && args.provider !== "claude")) return base;
       const passAccounts = state.passes.map((pass) => ({
-        id: `pass-${pass.key.slice("claude-pass/".length)}`,
+        id: claudePassAccountId(pass.key),
         provider: "claude",
         label: (!pass.unreadable && pass.email) || "Claude pass",
-        configHome: `/home/ade/.ade/provider-homes/claude/pass-${pass.key.slice("claude-pass/".length)}`,
+        configHome: `/home/ade/.ade/provider-homes/claude/${claudePassAccountId(pass.key)}`,
         isDefault: false,
         createdAt: iso(pass.createdAt || Date.now()),
         ...(!pass.unreadable && pass.email ? { account: { email: pass.email, plan: "max" } } : {}),

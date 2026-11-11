@@ -37,13 +37,14 @@ import {
 } from "../../../../../shared/types/providerInstances";
 import { accountLimitRow, accountSignedOut, providerOffersAutoStart } from "./accountPresentation";
 import { AccountCard, type CardState, type ClaudeAccountSettingPatch, type RowMenuAction } from "./AccountCard";
-import { useAccountSignInSheet } from "../ProviderSignInSheet";
+import { useAccountSignInSheet } from "../AccountSignInSheet";
 import { pinnedProviderInstances, useProviderInstances } from "./useProviderInstances";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { checkProviderSignIn } from "../../../../lib/providerSignInCheck";
 import { providerActionMessage } from "../providerErrorMessage";
 import { CompactionSettings } from "../CompactionSettings";
-import { AdeCloudPassLink, isPassAccountId, passAccountLine, passAccountTitle, passKeyForAccountId, useComputerPassRows } from "../cloud/passAccounts";
+import { AdeCloudPassLink, passAccountLine, passAccountTitle, useComputerPassRows } from "../cloud/passAccounts";
+import { claudePassKeyOfAccountId, isClaudePassAccountId } from "../../../../../shared/types/providerLogins";
 
 export const SMART_BALANCE_HINT =
   "On: each new chat goes to the account furthest behind the pace needed to use its weekly room before it resets, after counting the chats already running there, so no account's room expires unused and no account is stacked with more work than it can finish. A chat that hits a usage limit moves to another account that still has room. Off: new chats use the account marked New chats. Click an account to use it.";
@@ -220,7 +221,7 @@ export function ProviderAccountsPanel({
   const showAutoStart = providerOffersAutoStart(snapshot, provider);
   const nextPickId = snapshot?.balanceNext?.find((entry) => entry.provider === provider)?.instanceId ?? null;
   // A cloud computer holds each Claude pass as an account; their state comes from its own status, read only then.
-  const hasPassAccounts = provider === "claude" && instances.some((instance) => isPassAccountId(instance.id));
+  const hasPassAccounts = provider === "claude" && instances.some((instance) => isClaudePassAccountId(instance.id));
   const passRows = useComputerPassRows(hasPassAccounts, pin);
 
   const run = useCallback(
@@ -487,10 +488,10 @@ export function ProviderAccountsPanel({
                 onAction={onAction}
                 onSignIn={(target) => openSheet({ existing: target })}
                 replacedNote={replacedNote}
-                pass={isPassAccountId(instance.id)
+                pass={isClaudePassAccountId(instance.id)
                   ? {
-                    title: passAccountTitle(passRows.get(passKeyForAccountId(instance.id) ?? ""), nowMs),
-                    line: <AdeCloudPassLink state={passAccountLine(passRows.get(passKeyForAccountId(instance.id) ?? ""), nowMs)} />,
+                    title: passAccountTitle(passRows.get(claudePassKeyOfAccountId(instance.id) ?? ""), nowMs),
+                    line: <AdeCloudPassLink state={passAccountLine(passRows.get(claudePassKeyOfAccountId(instance.id) ?? ""), nowMs)} />,
                   }
                   : null}
               />

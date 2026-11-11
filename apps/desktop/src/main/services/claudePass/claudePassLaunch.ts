@@ -83,11 +83,6 @@ export function claudePassSignedInHere(): boolean {
   return tokenByHome.size > 0;
 }
 
-/** True when `configHome` is a pass account's home with a token here. */
-export function isClaudePassHome(configHome: string | null | undefined): boolean {
-  return Boolean(configHome && tokenByHome.has(pathKey(configHome)));
-}
-
 /** The value of `name` in `env`, by a case-folded name on Windows. */
 function envValue(env: NodeJS.ProcessEnv, name: string, platform: NodeJS.Platform): string | undefined {
   const direct = env[name];

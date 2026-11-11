@@ -20,7 +20,7 @@ import { listModelDescriptorsForProvider, providerTierIsPreview } from "../../..
 import { ACP_PROVIDER_METADATA } from "../../../../shared/acpProviderMetadata";
 import { SubsectionTitle } from "./providerUi";
 import { AntigravitySignIn } from "./bodies/AntigravitySignIn";
-import { SettingsAgentCliSignIn } from "./ProviderSignInSheet";
+import { SettingsAgentCliSignIn } from "./CliSignInSheet";
 import { isAgentCliLoginProvider } from "../../../../shared/types/agentCliLogin";
 import type {
   AcpSettingsProviderId,

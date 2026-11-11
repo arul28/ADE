@@ -18,18 +18,19 @@
  * account-wide and go through This computer, with the pin of the flow's start.
  * No timer and no poll.
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef } from "react";
 import { UserCircle } from "@phosphor-icons/react";
 import type { ProviderLoginProvider, ProviderLoginStatus } from "../../../../../shared/types/providerLogins";
 import { COLORS, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
-import { showToast } from "../../../app/toast/toastStore";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { signInMachineWords } from "../signInSheetParts";
 import { COPILOT_REPO_LINE } from "./adeCloudSignInModel";
 import { inUseCard, previousPick, signInCardGroups, type SignInCardModel } from "./adeCloudPageModel";
 import { SignInAccountCard } from "./SignInAccountCard";
-import { confirmRemoveSignIn, confirmUseOnCloud, type RunWrite } from "./signInWrites";
-import { useAllowKeychain } from "./useAllowKeychain";
+import { confirmRemoveSignIn, confirmUseOnCloud, useSignInWrites } from "./signInWrites";
+import { useAllowAntigravityKeychain } from "./useAllowKeychain";
+import { Banner } from "../../../ui/notice/Banner";
+import { usePinnedProviderLoginStatus } from "./usePinnedProviderLoginStatus";
 import { GitHubCliLoginRow } from "./GitHubCliLoginRow";
 import { useHeldWrites } from "./useHeldWrites";
 import { useThisComputerPin } from "./useAdeCloudSignIns";
@@ -39,78 +40,30 @@ const noteStyle: React.CSSProperties = { fontSize: 12, fontFamily: SANS_FONT, co
 export function ProviderSignInsPanel({ provider, providerLabel }: { provider: ProviderLoginProvider; providerLabel: string }) {
   const { pin, isThisMachine, machineName } = useSettingsMachineScope();
   const pageKey = pin?.key ?? null;
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
   const { accountPin, keychainIsThisMac } = useThisComputerPin();
   const { held, hold } = useHeldWrites();
 
   // ── The page machine's read ──
-  const [read, setRead] = useState<{ key: string | null; status: ProviderLoginStatus } | null>(null);
-  const [tick, setTick] = useState(0);
-  const bridge = typeof window === "undefined" ? undefined : window.ade?.providerLogins;
-  useEffect(() => {
-    const off = bridge?.onChanged?.(() => setTick((value) => value + 1));
-    return () => off?.();
-  }, [bridge]);
-  useEffect(() => {
-    if (typeof bridge?.status !== "function") return undefined;
-    let cancelled = false;
-    const key = pageKey;
-    bridge.status({ provider }, pinRef.current).then(
-      (status) => {
-        if (!cancelled) setRead({ key, status });
-      },
-      (error: unknown) => console.warn("[providers] reading the account's sign-ins for this page failed", error),
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [bridge, pageKey, provider, tick]);
-  // A read for another machine (the page changed) is not this page's.
-  const status = read && read.key === pageKey ? read.status : null;
+  const { status, apply: applyPageStatus, refresh } = usePinnedProviderLoginStatus({
+    provider,
+    pin,
+    warning: "[providers] reading the account's sign-ins for this page failed",
+  });
 
   // ── Writes: through This computer; its status is this page's only when the page is This computer ──
-  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
-  const busyRef = useRef(new Set<string>());
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-  const runWrite = useCallback<RunWrite>(async (id, write, failure) => {
-    if (busyRef.current.has(id)) return false;
-    busyRef.current.add(id);
-    setBusy(new Set(busyRef.current));
-    const keyAtStart = pageKey;
-    try {
-      const next = await write();
-      if (!mountedRef.current || (pinRef.current?.key ?? null) !== keyAtStart) return true;
+  const pageKeyRef = useRef(pageKey);
+  pageKeyRef.current = pageKey;
+  const { busy, runWrite } = useSignInWrites({
+    keyRef: pageKeyRef,
+    onStatus: useCallback((next: ProviderLoginStatus | undefined, keyAtStart: string | null) => {
       // The write answered from This computer: that status is this page's only on This computer's page.
-      if (next && isThisMachine) setRead({ key: keyAtStart, status: next });
-      else setTick((value) => value + 1);
-      return true;
-    } catch (error) {
-      console.warn("[providers] changing a sign-in from a computer's page failed", error);
-      if (mountedRef.current) showToast({ tone: "error", title: failure });
-      return false;
-    } finally {
-      busyRef.current.delete(id);
-      if (mountedRef.current) setBusy(new Set(busyRef.current));
-    }
-  }, [isThisMachine, pageKey]);
-
-  const allowRun = useCallback(() => runWrite(
-    "allow:antigravity",
-    () => window.ade?.providerLogins?.allowKeychain?.({ provider: "antigravity" }, accountPin),
-    "ADE couldn't copy the Antigravity sign-in from this Mac.",
-  ), [accountPin, runWrite]);
-  const { allowing, allow } = useAllowKeychain(allowRun);
-  // A GitHub CLI write answers from the page's own machine: apply it while the page still shows that machine.
-  const applyPageStatus = useCallback((key: string | null, next: ProviderLoginStatus) => {
-    if (mountedRef.current && (pinRef.current?.key ?? null) === key) setRead({ key, status: next });
-  }, []);
+      if (next && isThisMachine) applyPageStatus(keyAtStart, next);
+      else refresh();
+    }, [applyPageStatus, isThisMachine, refresh]),
+    warning: "[providers] changing a sign-in from a computer's page failed",
+  });
+  const { allowing, allow } = useAllowAntigravityKeychain(runWrite, accountPin);
+  // A GitHub CLI write answers from the page's own machine: `applyPageStatus` keeps it while the page still shows that machine.
 
   const account = useMemo(() => (status ? { state: "ok" as const, status } : { state: "loading" as const }), [status]);
   const now = Date.now();
@@ -131,8 +84,11 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
   // Copilot's GitHub CLI login: on an own computer its row, on a cloud computer where to turn it on.
   const ghCli = provider === "copilot" ? row.ghCli ?? null : null;
   const ghCliCloudLine = provider === "copilot" && !ghCli && cloudComputer;
+  // This computer's copy in the account can't be read here (another key wrote it, or a newer ADE):
+  // capture keeps it, so the person removes it, and this computer saves its own sign-in again.
+  const unreadableKey = row.local.state === "account_unreadable" ? row.local.key : null;
   // Nothing to show: no sign-in in the account, nothing is captured here, no Keychain to allow, no GitHub CLI login.
-  if (cardCount === 0 && status.thisComputer.capture === "off" && !keychain && !ghCli && !ghCliCloudLine) return null;
+  if (cardCount === 0 && status.thisComputer.capture === "off" && !keychain && !ghCli && !ghCliCloudLine && !unreadableKey) return null;
 
   const machineWords = signInMachineWords(isThisMachine, machineName);
   const inUseHere = (card: SignInCardModel): boolean => {
@@ -165,8 +121,34 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
         {cardCount ? <span className="kit-card-head-count">{cardCount}</span> : null}
       </header>
       <div className="kit-card-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {unreadableKey ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: `sign-in-unreadable-${unreadableKey}`,
+              tone: "warning",
+              title: `ADE can't read this computer's ${providerLabel} sign-in in your account.`,
+              detail: "Remove it, and ADE saves this computer's sign-in again.",
+              actions: [{
+                label: "Remove from account",
+                busy: busy.has(`remove:${unreadableKey}`),
+                onClick: () => {
+                  void confirmRemoveSignIn({
+                    key: unreadableKey,
+                    providerLabel,
+                    origin: "this computer",
+                    originIsThisComputer: true,
+                    pin: accountPin,
+                    hold,
+                    runWrite,
+                  });
+                },
+              }],
+            }}
+          />
+        ) : null}
         {cardCount === 0 ? (
-          <span style={noteStyle}>No {providerLabel} sign-in in your ADE account yet.</span>
+          unreadableKey ? null : <span style={noteStyle}>No {providerLabel} sign-in in your ADE account yet.</span>
         ) : (
           groups.map((group) => (
             <div key={group.place} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -205,6 +187,7 @@ export function ProviderSignInsPanel({ provider, providerLabel }: { provider: Pr
         {ghCli ? (
           <GitHubCliLoginRow
             row={row}
+            gh={ghCli}
             status={status}
             pin={pin}
             pageKey={pageKey}

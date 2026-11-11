@@ -358,6 +358,10 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // batch can take as long as `lane.unarchive` / `lane.delete` on its own.
   ["archive.restore", ARCHIVE_RESTORE_TIMEOUT_MS],
   ["archive.delete", ARCHIVE_DELETE_TIMEOUT_MS],
+  // The Keychain read and the GitHub CLI read wait for the person to answer a
+  // prompt on that computer (their own limit is 2 min).
+  ["provider_logins.allowKeychain", 150_000],
+  ["provider_logins.allowGitHubCli", 150_000],
   ["chat.suggestLaneNameFromPrompt", 120_000],
   ["chat.generateAutoLaneIdentity", 120_000],
   // Handoff = AI brief generation (bounded at 45s) + session creation +

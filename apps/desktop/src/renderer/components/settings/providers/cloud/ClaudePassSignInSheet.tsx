@@ -12,25 +12,22 @@
  * other state. The sign-in page opens once, from the window that started it.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle, CircleNotch, Info } from "@phosphor-icons/react";
 import type { CloudSignInClaudeStartArgs, CloudSignInStatus } from "../../../../../shared/cloudSignIns";
 import { ipcErrorMessage } from "../../../../lib/format";
 import { openExternalUrl } from "../../../../lib/openExternal";
 import { COLORS, outlineButton } from "../../../lanes/laneDesignTokens";
-import { Dialog, type DialogAction } from "../../../ui/dialog";
+import type { DialogAction } from "../../../ui/dialog";
 import { Banner } from "../../../ui/notice/Banner";
-import { providerBrand, providerThemeVars } from "../providerBrand";
 import { formatSignInFailureReport } from "../providerDiagnosticsReport";
-import { SHEET_PANEL_PLACEMENT } from "../ProviderSignInSheet";
 import {
   SignInAccountNote,
-  SignInBanner,
   SignInCodePanel,
   SignInFailure,
-  SignInFooterStatus,
   SignInMismatch,
   SignInPasteBox,
+  SignInSheetDialog,
   SignInSteps,
+  SignInSuccess,
   type SignInStage,
 } from "../signInSheetParts";
 
@@ -219,7 +216,6 @@ export function ClaudePassSignInSheet({
                   : flow.state === "failed" ? "failed"
                     : "starting";
   const running = stage === "starting" || stage === "waiting" || stage === "verifying" || stage === "saving";
-  const brand = providerBrand("claude");
   const title = request.renewKey ? "Renew your Claude pass" : "Sign in to Claude";
   const closeLabel = "Close Claude sign-in";
 
@@ -257,128 +253,105 @@ export function ClaudePassSignInSheet({
   const found = flow?.foundEmail ?? null;
 
   return (
-    <Dialog
-      open
-      onOpenChange={(next) => {
-        if (!next) close();
-      }}
+    <SignInSheetDialog
+      providerId="claude"
       title={title}
-      hideHeader
-      titleInBody
-      closeLabel={closeLabel}
+      place="on ADE Cloud"
+      turn={stage === "succeeded"}
+      running={running}
       closeOnScrimClick={!running && !waitingOnPerson}
-      width={540}
-      preventAutoFocus
-      bodyPadding={false}
-      scrollBody={false}
-      bodyStyle={{ display: "flex", flexDirection: "column" }}
-      tone="accent"
-      panelStyle={{ ...providerThemeVars(brand), ...SHEET_PANEL_PLACEMENT }}
-      footerStart={running ? (
-        <SignInFooterStatus>
-          <CircleNotch size={13} className="animate-spin motion-reduce:animate-none" />
-          {stage === "saving" ? "Saving to your ADE account…" : stage === "verifying" ? "Checking the account…" : stage === "starting" ? "Starting the sign-in…" : "Waiting for you to approve in the browser"}
-        </SignInFooterStatus>
-      ) : undefined}
+      closeLabel={closeLabel}
+      onClose={close}
+      footerStatus={stage === "saving" ? "Saving to your ADE account…" : stage === "verifying" ? "Checking the account…" : stage === "starting" ? "Starting the sign-in…" : "Waiting for you to approve in the browser"}
       actions={actions}
+      testId="claude-pass-sign-in"
     >
-      <div className="ade-sis" data-sheet="true" data-testid="claude-pass-sign-in">
-        <SignInBanner providerId="claude" title={title} place="on ADE Cloud" turn={stage === "succeeded"} onClose={close} closeLabel={closeLabel} />
-        <div className="ade-sis-body">
-          {error ? <Banner layout="inline" model={{ id: "claude-pass-sign-in-error", tone: "error", title: error }} /> : null}
+      {error ? <Banner layout="inline" model={{ id: "claude-pass-sign-in-error", tone: "error", title: error }} /> : null}
 
-          {stage === "reading" ? <span className="ade-sis-hint">Reading your Claude accounts…</span> : null}
+      {stage === "reading" ? <span className="ade-sis-hint">Reading your Claude accounts…</span> : null}
 
-          {stage === "pick" ? (
-            <div className="ade-sis-form">
-              <span className="ade-sis-form-label">Which Claude account?</span>
-              <div role="radiogroup" aria-label="Claude account" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {[...accounts.map((account) => ({ value: account.email, label: account.email })), { value: ANOTHER, label: "Another account" }].map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    role="radio"
-                    aria-checked={pick === option.value}
-                    onClick={() => setPicked(option.value)}
-                    style={{
-                      ...outlineButton({ height: 36, padding: "0 12px", fontSize: 12.5 }),
-                      justifyContent: "flex-start",
-                      gap: 9,
-                      borderColor: pick === option.value ? COLORS.accent : undefined,
-                    }}
-                  >
-                    <span
-                      aria-hidden
-                      style={{
-                        width: 12,
-                        height: 12,
-                        borderRadius: 999,
-                        flex: "none",
-                        boxShadow: `inset 0 0 0 ${pick === option.value ? 4 : 1.5}px ${pick === option.value ? COLORS.accent : COLORS.outlineBorder}`,
-                      }}
-                    />
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-              <span className="ade-sis-hint">A pass lets cloud chats use your Claude plan. It lasts about a year.</span>
-            </div>
-          ) : null}
-
-          {stage === "pick" || running ? <SignInAccountNote providerLabel="Claude" expectedAccount={stage === "pick" ? (pick === ANOTHER ? null : pick) : expected} /> : null}
-
-          {running || stage === "succeeded" || stage === "saved_here" ? (
-            <SignInSteps stage={steps}>
-              <SignInCodePanel url={url} deviceCode={null} hint="Approve in the browser. Claude then shows a code." focusOpen={!flow?.awaitingCode} />
-              {flow?.awaitingCode ? (
-                <SignInPasteBox
-                  label="Paste the code Claude shows"
-                  value={code}
-                  onChange={setCode}
-                  onSubmit={submitCode}
-                  submitting={busy}
-                  submitLabel="Continue"
-                  autoFocus
+      {stage === "pick" ? (
+        <div className="ade-sis-form">
+          <span className="ade-sis-form-label">Which Claude account?</span>
+          <div role="radiogroup" aria-label="Claude account" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {[...accounts.map((account) => ({ value: account.email, label: account.email })), { value: ANOTHER, label: "Another account" }].map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={pick === option.value}
+                onClick={() => setPicked(option.value)}
+                style={{
+                  ...outlineButton({ height: 36, padding: "0 12px", fontSize: 12.5 }),
+                  justifyContent: "flex-start",
+                  gap: 9,
+                  borderColor: pick === option.value ? COLORS.accent : undefined,
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 12,
+                    height: 12,
+                    borderRadius: 999,
+                    flex: "none",
+                    boxShadow: `inset 0 0 0 ${pick === option.value ? 4 : 1.5}px ${pick === option.value ? COLORS.accent : COLORS.outlineBorder}`,
+                  }}
                 />
-              ) : null}
-            </SignInSteps>
-          ) : null}
-
-          {stage === "succeeded" ? (
-            <div className="ade-sis-end" data-tone="ok" role="status">
-              <CheckCircle size={18} weight="fill" />
-              <span className="ade-sis-end-text">
-                {flow?.check === "unchecked" ? (
-                  <>
-                    <span className="ade-sis-end-title">{expected ? `Signed in. Labelled ${expected}.` : "Signed in."}</span>
-                    {expected ? <span className="ade-sis-end-detail">ADE couldn't check this account.</span> : null}
-                  </>
-                ) : (
-                  <span className="ade-sis-end-title">{found ? `Signed in as ${found}.` : "Signed in to Claude."}</span>
-                )}
-              </span>
-            </div>
-          ) : null}
-
-          {stage === "saved_here" ? (
-            <div className="ade-sis-end" data-tone="neutral" role="status">
-              <Info size={18} weight="fill" />
-              <span className="ade-sis-end-text">
-                <span className="ade-sis-end-title">Saved on this computer for now</span>
-                {flow?.message ? <span className="ade-sis-end-detail">{flow.message}</span> : null}
-              </span>
-            </div>
-          ) : null}
-
-          {stage === "mismatch" && expected && found ? (
-            <SignInMismatch expected={expected} actual={found} onKeep={keep} onTryAgain={() => void tryAgain()} />
-          ) : null}
-
-          {stage === "failed" ? (
-            <SignInFailure title="Claude sign-in didn't finish" detail={flow?.message ?? null} report={report} />
-          ) : null}
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <span className="ade-sis-hint">A pass lets cloud chats use your Claude plan. It lasts about a year.</span>
         </div>
-      </div>
-    </Dialog>
+      ) : null}
+
+      {stage === "pick" || running ? <SignInAccountNote providerLabel="Claude" expectedAccount={stage === "pick" ? (pick === ANOTHER ? null : pick) : expected} /> : null}
+
+      {running || stage === "succeeded" || stage === "saved_here" ? (
+        <SignInSteps stage={steps}>
+          <SignInCodePanel url={url} deviceCode={null} hint="Approve in the browser. Claude then shows a code." focusOpen={!flow?.awaitingCode} />
+          {flow?.awaitingCode ? (
+            <SignInPasteBox
+              label="Paste the code Claude shows"
+              value={code}
+              onChange={setCode}
+              onSubmit={submitCode}
+              submitting={busy}
+              submitLabel="Continue"
+              autoFocus
+            />
+          ) : null}
+        </SignInSteps>
+      ) : null}
+
+      {stage === "succeeded" ? (
+        flow?.check === "unchecked" ? (
+          <SignInSuccess
+            account={null}
+            providerLabel="Claude"
+            title={expected ? `Signed in. Labelled ${expected}.` : "Signed in."}
+            detail={expected ? "ADE couldn't check this account." : null}
+          />
+        ) : (
+          <SignInSuccess account={found} providerLabel="Claude" />
+        )
+      ) : null}
+
+      {stage === "saved_here" ? (
+        <Banner
+          layout="inline"
+          model={{ id: "claude-pass-saved-here", tone: "neutral", title: "Saved on this computer for now", detail: flow?.message || undefined }}
+        />
+      ) : null}
+
+      {stage === "mismatch" && expected && found ? (
+        <SignInMismatch expected={expected} actual={found} onKeep={keep} onTryAgain={() => void tryAgain()} />
+      ) : null}
+
+      {stage === "failed" ? (
+        <SignInFailure title="Claude sign-in didn't finish" detail={flow?.message ?? null} report={report} />
+      ) : null}
+    </SignInSheetDialog>
   );
 }

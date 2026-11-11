@@ -61,7 +61,7 @@ its own (single D1 database, no Durable Objects, no queues).
 | GET | `/attention/account/vault?since=<iso>&scope=<key>` | Read vault items changed after a cursor. Values are opened with the Worker's key; an item the key cannot open returns `value: null`. |
 | PUT | `/attention/account/vault` | Upsert a batch of credentials. Values arrive as plaintext over TLS and are sealed before storage. Same `itemResults` option as settings. |
 | DELETE | `/attention/account/vault/:scope/:kind/:key[?writtenAt=&sentAt=]` | Revoke one credential. Idempotent. A key with `/` is sent encoded (`%2F`); one a proxy decoded arrives as several segments and is joined back. With `writtenAt`, `409 stale` when a newer row exists. |
-| DELETE | `/directory/accounts/:userId` | Hard-delete a deleted account's vault items and settings in one batch. No account token: only the `x-ade-directory-auth` header (see "Directory provenance"). Idempotent. Called by the account directory on Clerk `user.deleted`. |
+| DELETE | `/directory/accounts/:userId` | Hard-delete a deleted account's vault items and settings in one batch. `:userId` is the raw Clerk id; the relay deletes the rows of its account key (SHA-256 of issuer and id) for each configured issuer, and answers `503` when no issuer is configured. No account token: only the `x-ade-directory-auth` header (see "Directory provenance"). Idempotent. Called by the account directory on Clerk `user.deleted`. |
 
 ### Account Activity semantics
 
@@ -416,7 +416,8 @@ revocation stands. Unset on the relay it fails closed with
 
 `DELETE /directory/accounts/:userId` takes this header as its only credential:
 a deleted account has no token, and the route deletes for whichever account the
-path names. The same `403` and `503` answers apply.
+path names. The path holds the raw Clerk id, and the relay turns it into its own
+account key for each configured issuer. The same `403` and `503` answers apply.
 
 A Cloudflare service binding leaves no attestable marker on the inbound request,
 so the header is what proves provenance regardless of whether the directory

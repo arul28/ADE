@@ -13,7 +13,7 @@
  *   "Try again".
  */
 import React, { useCallback } from "react";
-import type { ProviderLoginProviderStatus, ProviderLoginStatus } from "../../../../../shared/types/providerLogins";
+import type { ProviderLoginGhCliStatus, ProviderLoginProviderStatus, ProviderLoginStatus } from "../../../../../shared/types/providerLogins";
 import type { OpenProjectBinding } from "../../../../../shared/types";
 import { ipcErrorMessage } from "../../../../lib/format";
 import { COLORS, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
@@ -28,17 +28,20 @@ const lineStyle: React.CSSProperties = { fontSize: 12, fontFamily: SANS_FONT, co
 type RowWords = { line: string; tone: "muted" | "warn"; retry: boolean };
 
 /** What the row says, from the page machine's read. Pure. */
-export function gitHubCliWords(input: {
+function gitHubCliWords(input: {
   row: ProviderLoginProviderStatus;
+  /** The row's GitHub CLI login (`row.ghCli`). */
+  gh: ProviderLoginGhCliStatus;
   status: ProviderLoginStatus;
   isThisMachine: boolean;
   machineName: string;
   running: boolean;
 }): RowWords {
-  const { row, status, isThisMachine, machineName, running } = input;
-  const gh = row.ghCli!;
+  const { row, gh, status, isThisMachine, machineName, running } = input;
   const where = isThisMachine ? "this computer" : machineName;
   if (running) return { line: "Reading the GitHub CLI login. Your computer may ask you to unlock its keychain.", tone: "muted", retry: false };
+  // An unreadable hosts.yml is not "not signed in".
+  if (gh.readFailed && gh.lastError) return { line: gh.lastError, tone: "muted", retry: false };
   if (!gh.allowed) {
     if (!isThisMachine) return { line: `Off. Turn this on at ${machineName}.`, tone: "muted", retry: false };
     if (!gh.present) return { line: "The GitHub CLI here is not signed in to github.com. Run gh auth login, then turn this on.", tone: "muted", retry: false };
@@ -68,6 +71,7 @@ export function gitHubCliWords(input: {
 
 export function GitHubCliLoginRow({
   row,
+  gh,
   status,
   pin,
   pageKey,
@@ -76,6 +80,8 @@ export function GitHubCliLoginRow({
   onStatus,
 }: {
   row: ProviderLoginProviderStatus;
+  /** Copilot's GitHub CLI login on the page's machine (`row.ghCli`). */
+  gh: ProviderLoginGhCliStatus;
   status: ProviderLoginStatus;
   /** The page machine's pin (`useSettingsMachineScope().pin`): Off goes there. */
   pin: OpenProjectBinding | null;
@@ -86,7 +92,6 @@ export function GitHubCliLoginRow({
   onStatus: (key: string | null, next: ProviderLoginStatus) => void;
 }) {
   const bridge = typeof window === "undefined" ? undefined : window.ade?.providerLogins;
-  const gh = row.ghCli!;
 
   // On: never pinned; it can wait for the keychain prompt (up to 2 min).
   const turnOn = useCallback(async () => {
@@ -116,7 +121,7 @@ export function GitHubCliLoginRow({
     }
   }, [bridge, onStatus, pageKey, pin]);
 
-  const words = gitHubCliWords({ row, status, isThisMachine, machineName, running });
+  const words = gitHubCliWords({ row, gh, status, isThisMachine, machineName, running });
   // On is offered only here and only when it can work; Off wherever it is on.
   const canTurnOn = isThisMachine && gh.present && gh.canAllow;
   const toggleShown = gh.allowed || canTurnOn || running;

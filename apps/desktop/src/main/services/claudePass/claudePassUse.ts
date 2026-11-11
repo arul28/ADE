@@ -22,6 +22,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { UsageSnapshot, UsageWindow } from "../../../shared/types/usage";
+import { claudePassKeyOfAccountId, isClaudePassKey } from "../../../shared/types/providerLogins";
 import type { ClaudePassCheck, ClaudePassUseSource, ClaudePassUseView, ClaudePassUseWindow } from "../../../shared/cloudSignIns";
 import { normalizeResetsAtMs, utilizationToPercent } from "../../../shared/claudeSessionQuota";
 
@@ -64,11 +65,6 @@ let dirty = false;
 let lastWriteAt = 0;
 let writing = false;
 
-/** `pass-<12 hex>` → `claude-pass/<12 hex>`; null for any other account id. */
-export function claudePassKeyOfInstance(instanceId: string | null | undefined): string | null {
-  const match = /^pass-(legacy|[0-9a-f]{12})$/.exec(instanceId?.trim() ?? "");
-  return match ? `claude-pass/${match[1]}` : null;
-}
 
 function isStatus(value: unknown): value is Status {
   return value === "allowed" || value === "allowed_warning" || value === "rejected";
@@ -100,7 +96,7 @@ export function configureClaudePassUse(args: { adeDir: string }): void {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as { v?: unknown; passes?: unknown };
     if (parsed?.v !== 1 || !parsed.passes || typeof parsed.passes !== "object") return;
     for (const [key, raw] of Object.entries(parsed.passes as Record<string, unknown>).slice(0, MAX_PASSES)) {
-      if (!claudePassKeyOfInstance(`pass-${key.slice("claude-pass/".length)}`) || !raw || typeof raw !== "object") continue;
+      if (!isClaudePassKey(key) || !raw || typeof raw !== "object") continue;
       const row = raw as Record<string, unknown>;
       const models = row.models && typeof row.models === "object" ? row.models as Record<string, unknown> : {};
       const use: PassUse = {};
@@ -133,7 +129,7 @@ export function noteClaudePassRateLimit(
   info: Record<string, unknown> | null | undefined,
   now: number = Date.now(),
 ): boolean {
-  const key = claudePassKeyOfInstance(instanceId);
+  const key = claudePassKeyOfAccountId(instanceId);
   if (!key || !info || !isStatus(info.status)) return false;
   const type = info.rateLimitType;
   const slot = type === "five_hour" ? "fiveHour"
@@ -252,7 +248,7 @@ export function claudePassAccountUse(
   let best: { windows: ClaudePassUseWindow[]; fiveHour: ClaudePassUseWindow | null; weekly: ClaudePassUseWindow | null; seenAt: number } | null = null;
   for (const account of snapshot.accounts ?? []) {
     if (account.provider !== "claude" || account.email?.trim().toLowerCase() !== email) continue;
-    if (claudePassKeyOfInstance(account.instanceId)) continue;
+    if (claudePassKeyOfAccountId(account.instanceId)) continue;
     const machine = account.readingFrom ?? account.machines[0];
     const checkedAt = Date.parse(machine?.checkedAt ?? "");
     const from: ClaudePassUseSource = { kind: "account_here", label: machine?.label ?? null };
@@ -293,7 +289,7 @@ export function claudePassAccountUse(
  * never 0 %.
  */
 export function claudePassUsageWindows(instanceId: string, now: number = Date.now()): UsageWindow[] {
-  const key = claudePassKeyOfInstance(instanceId);
+  const key = claudePassKeyOfAccountId(instanceId);
   const use = key ? useByKey.get(key) : undefined;
   if (!use) return [];
   const windows: UsageWindow[] = [];

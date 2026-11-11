@@ -7,6 +7,7 @@
  * Each flow keeps the pin it starts with: the write, its Undo and its held
  * Remove reach the same brain, even if the page's machine changes meanwhile.
  */
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { OpenProjectBinding } from "../../../../../shared/types";
 import type { ProviderLoginProvider, ProviderLoginStatus } from "../../../../../shared/types/providerLogins";
 import { confirmDialog } from "../../../ui/dialog/confirm";
@@ -16,6 +17,56 @@ import type { HeldWrites } from "./useHeldWrites";
 
 /** One write: a busy id (a second press waits), the call, and the error toast's words. True when it went through. */
 export type RunWrite = (id: string, write: () => Promise<ProviderLoginStatus> | undefined, failure: string) => Promise<boolean>;
+
+/**
+ * The writes of one page: `runWrite` and the busy ids. A second press of a
+ * busy id starts nothing. `onStatus` gets a write's answer only while the
+ * page is open and `keyRef` still holds the key the write started with.
+ * Leaving the page while a write waits leaves nothing behind.
+ */
+export function useSignInWrites({
+  keyRef,
+  onStatus,
+  warning,
+}: {
+  /** The pin key the page shows now. */
+  keyRef: RefObject<string | null>;
+  /** A write went through: `status` is its answer (undefined when it gave none), for the key it started with. */
+  onStatus: (status: ProviderLoginStatus | undefined, keyAtStart: string | null) => void;
+  /** The console line when a write fails. */
+  warning: string;
+}): { busy: ReadonlySet<string>; runWrite: RunWrite } {
+  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
+  const busyRef = useRef(new Set<string>());
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  const onStatusRef = useRef(onStatus);
+  onStatusRef.current = onStatus;
+  const runWrite = useCallback<RunWrite>(async (id, write, failure) => {
+    if (busyRef.current.has(id)) return false;
+    busyRef.current.add(id);
+    setBusy(new Set(busyRef.current));
+    const keyAtStart = keyRef.current;
+    try {
+      const status = await write();
+      if (mountedRef.current && keyRef.current === keyAtStart) onStatusRef.current(status ?? undefined, keyAtStart);
+      return true;
+    } catch (error) {
+      console.warn(warning, error);
+      if (mountedRef.current) showToast({ tone: "error", title: failure });
+      return false;
+    } finally {
+      busyRef.current.delete(id);
+      if (mountedRef.current) setBusy(new Set(busyRef.current));
+    }
+  }, [keyRef, warning]);
+  return { busy, runWrite };
+}
 
 /** "Use on ADE Cloud": the confirm, the write, and a toast with Undo back to the pick before it. */
 export async function confirmUseOnCloud(args: {

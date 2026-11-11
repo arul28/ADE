@@ -2117,7 +2117,7 @@ video it replaced), so a computer set up before it existed never sees it.
    - Claude Code and Codex use the account sheet.
    - Cursor uses its browser login.
    - Antigravity uses its Google sign-in.
-   - Grok, Devin, Muse, Copilot, Droid and Kimi use the agent CLI sheet (`AgentCliSignInSheet.tsx`).
+   - Grok, Devin, Muse, Copilot, Droid and Kimi use the agent CLI sheet (`CliSignInSheet.tsx`).
 
    A sheet's item stays mounted when the status turns connected, so a refresh
    never cancels the sign-in it is finishing. The swing runs on animation

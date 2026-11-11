@@ -152,7 +152,8 @@ import {
 } from "./claudeOutputStyles";
 import { createClaudeSubprocessReaper, type ClaudeSubprocessReaper } from "./claudeSubprocessReaper";
 import { claudePassForAccountless, claudePassSignedInHere, withClaudePassEnv } from "../claudePass/claudePassLaunch";
-import { claudePassKeyOfInstance, noteClaudePassRateLimit } from "../claudePass/claudePassUse";
+import { noteClaudePassRateLimit } from "../claudePass/claudePassUse";
+import { claudePassKeyOfAccountId } from "../../../shared/types/providerLogins";
 import { noteClaudePassAuthFailure } from "../claudePass/claudePassEnd";
 import {
   ChatRuntimeOwnedElsewhereError,
@@ -66551,8 +66552,8 @@ export function createAgentChatService(args: {
   const claudePassAccountOf = (managed: ManagedChatSession, purpose: "use" | "end"): string | null => {
     if (!claudePassSignedInHere()) return null;
     const pinned = managed.session.instanceId?.trim() || null;
-    const id = pinned && claudePassKeyOfInstance(pinned) ? pinned : resolvedInstanceIdOf(managed);
-    if (claudePassKeyOfInstance(id)) return id;
+    const id = pinned && claudePassKeyOfAccountId(pinned) ? pinned : resolvedInstanceIdOf(managed);
+    if (claudePassKeyOfAccountId(id)) return id;
     return purpose === "use" && id === "claude" ? claudePassForAccountless() : null;
   };
 

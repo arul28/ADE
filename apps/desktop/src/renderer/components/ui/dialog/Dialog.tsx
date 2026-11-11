@@ -26,8 +26,10 @@ export type DialogLayer = "dialog" | "nestedDialog";
  * `center` is the modal. `right` is a side sheet: full height, docked to the
  * window's right edge, floating over the page rather than pushing it aside, for
  * "peek at this thing" content (an issue) that you read beside the page.
+ * `top` is the modal with a fixed top edge: for a flow whose body changes
+ * height step by step (a sign-in), so its header does not move each time.
  */
-export type DialogPlacement = "center" | "right";
+export type DialogPlacement = "center" | "right" | "top";
 
 const SIZE_WIDTH: Record<DialogSize, number> = { sm: 400, md: 520, lg: 720 };
 
@@ -49,6 +51,14 @@ const SHEET_SCRIM_STYLE: CSSProperties = {
 
 /** Gap between a side sheet and the window edges. */
 const SHEET_EDGE_GAP = 8;
+
+/**
+ * The top edge of a `top` panel. `--ade-web-zoom-factor` keeps the viewport
+ * units right in the hosted web client.
+ */
+const TOP_PANEL_EDGE = "clamp(16px, calc(10vh / var(--ade-web-zoom-factor, 1)), 80px)";
+/** A `top` panel's room: the window under its top edge, less a 16 px gap (the body scrolls inside). */
+const TOP_PANEL_MAX_HEIGHT = `calc(100vh / var(--ade-web-zoom-factor, 1) - ${TOP_PANEL_EDGE} - 16px)`;
 
 /** The panel material (the notice card, lifted). */
 const DIALOG_PANEL_MATERIAL: CSSProperties = {
@@ -332,14 +342,18 @@ export function Dialog({
                 left: "auto",
                 margin: 0,
               }
-              : { inset: 0, margin: "auto" }),
+              : placement === "top"
+                ? { inset: 0, margin: "auto", top: TOP_PANEL_EDGE, bottom: "auto", marginTop: 0, marginBottom: 0 }
+                : { inset: 0, margin: "auto" }),
             zIndex,
             // Viewport units ignore the hosted web client's body zoom
             // (`webZoom.ts`); dividing by its factor keeps a wide dialog inside
             // the window there. Electron's page zoom needs nothing (factor 1).
             width: `min(${resolvedWidth}, calc((100vw - ${placement === "right" ? SHEET_EDGE_GAP * 2 : 32}px) / var(--ade-web-zoom-factor, 1)))`,
             height: placement === "right" ? "auto" : cssLength(height) ?? "fit-content",
-            maxHeight: placement === "right" ? "none" : cssLength(maxHeight) ?? "calc((100vh - 48px) / var(--ade-web-zoom-factor, 1))",
+            maxHeight: placement === "right"
+              ? "none"
+              : cssLength(maxHeight) ?? (placement === "top" ? TOP_PANEL_MAX_HEIGHT : "calc((100vh - 48px) / var(--ade-web-zoom-factor, 1))"),
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",

@@ -172,7 +172,7 @@ function jwtClaims(token: string | null): Record<string, unknown> | null {
 }
 
 /** Carry the bytes as they are: UTF-8 text when it round-trips, else base64. */
-export function carriedFile(spec: CarryFileSpec, buffer: Buffer): CarriedFile {
+function carriedFile(spec: CarryFileSpec, buffer: Buffer): CarriedFile {
   const asText = buffer.toString("utf8");
   return Buffer.from(asText, "utf8").equals(buffer)
     ? { root: spec.root, rel: spec.rel, enc: "utf8", data: asText }
@@ -400,12 +400,7 @@ const ROWS: CarryRow[] = [
     carry: "carried",
     message: "ADE copies this computer's GitHub CLI login for Copilot only when you turn it on here. The login also gives access to your GitHub repos. "
       + "A Copilot sign-in made with `copilot login` is not copied.",
-    locate: (ctx) => {
-      // The file gh reads, or where it would be: a logout that deletes it is "not signed in", so the item leaves.
-      const candidates = ghHostsFiles({ env: ctx.env, homeDir: ctx.homeDir, platform: ctx.platform });
-      const hosts = candidates.find(exists) ?? candidates[0]!;
-      return [{ id: GH_BUNDLE_ID, files: [file("ghConfig", path.dirname(hosts), "hosts.yml", { carry: false })] }];
-    },
+    locate: (ctx) => [copilotGhBundle(ctx)],
     parse: (_bundle, contents) => {
       const host = readGhHostsGithubCom(text(contents, "hosts.yml"));
       // No github.com login (another host's only, or none): not signed in here.
@@ -645,6 +640,21 @@ export function antigravityBundle(ctx: CarryContext, slot: "personal" | "busines
       file("geminiHome", geminiHome, ANTIGRAVITY_SETTINGS_REL, { carry: false, required: false }),
     ],
   };
+}
+
+/**
+ * Copilot's GitHub CLI login (G1): the file gh reads, or where it would be.
+ * A logout that deletes it is "not signed in", so the item leaves.
+ */
+export function copilotGhBundle(ctx: CarryContext): CarryBundle {
+  const candidates = ghHostsFiles({ env: ctx.env, homeDir: ctx.homeDir, platform: ctx.platform });
+  const hosts = candidates.find(exists) ?? candidates[0]!;
+  return { id: GH_BUNDLE_ID, files: [file("ghConfig", path.dirname(hosts), "hosts.yml", { carry: false })] };
+}
+
+/** The path of gh's `hosts.yml` on this computer (present or not). */
+export function copilotGhHostsPath(ctx: CarryContext): string {
+  return copilotGhBundle(ctx).files[0]!.abs;
 }
 
 export function carryRow(provider: ProviderLoginProvider): CarryRow {

@@ -31,13 +31,12 @@ import { checkProviderSignIn } from "../../lib/providerSignInCheck";
 import { openExternalUrl } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { ProviderLogo } from "../shared/ProviderLogos";
-import { providerBrand, providerThemeVars } from "../settings/providers/providerBrand";
+import { providerBrand } from "../settings/providers/providerBrand";
 import { pinnedProviderInstances } from "../settings/providers/accounts/useProviderInstances";
 import { formatSignInFailureReport } from "../settings/providers/providerDiagnosticsReport";
 import { providerActionMessage } from "../settings/providers/providerErrorMessage";
 import {
   SignInAccountNote,
-  SignInBrandLogo,
   SignInCodePanel,
   SignInFailure,
   SignInMismatch,
@@ -52,6 +51,7 @@ import {
 } from "../settings/providers/signInSheetParts";
 import { CHAT_AUTH_RECOVERED_EVENT } from "./AgentCliAuthCard";
 import { CardBannerButtons, CardError, CardReceipt, cardEscapeHandler } from "./composerCardParts";
+import { ProviderCardFrame } from "./providerCardFrame";
 import "./providerSignInCard.css";
 
 const POLL_MS = 1_000;
@@ -504,7 +504,6 @@ export function ProviderSignInComposer({
   onOpenSettings: () => void;
 }) {
   const spec = providerSignInSpec(need.provider) ?? { label: need.provider, via: need.provider, kind: "settings" as const };
-  const brand = providerBrand(spec.brandId ?? need.provider);
   // The machine inside a sentence or the chip: "this computer" for the local
   // one (never its stored "This computer"), else its own name.
   const where = signInMachineWords(runsHere || machineName === THIS_MACHINE_NAME, machineName);
@@ -608,137 +607,122 @@ export function ProviderSignInComposer({
       : `${host ?? "The sign-in page"} opens in your browser. Approve there.`;
 
   return (
-    <div
-      ref={rootRef}
-      role="group"
-      aria-label={heading}
-      data-testid="provider-sign-in-composer"
-      data-provider={need.provider}
-      data-sign-in-card="true"
-      className="ade-icc"
-      data-light={brand.lightBanner ? "true" : undefined}
-      style={{ ...providerThemeVars(brand), ["--ig-accent" as string]: brand.accent }}
+    <ProviderCardFrame
+      rootRef={rootRef}
+      brandId={spec.brandId ?? need.provider}
+      heading={heading}
+      turn={stage === "done"}
+      testId="provider-sign-in-composer"
+      provider={need.provider}
+      signInCard
       onKeyDown={onKeyDown}
-      tabIndex={-1}
-    >
-      <div className="ade-icc-banner" style={brand.banner}>
-        {brand.bannerArt ? (
-          <img className="ade-icc-banner-art ade-psc-banner-art" src={brand.bannerArt.src} alt="" draggable={false} style={{ opacity: brand.bannerArt.opacity ?? 1 }} />
-        ) : null}
-        <div className="ade-icc-banner-shade" aria-hidden />
-        <span className="ade-icc-logo"><SignInBrandLogo providerId={spec.brandId ?? need.provider} size={25} turn={stage === "done"} /></span>
-        <span className="ade-icc-heading">
-          <span className="ade-icc-heading-text"><span className="ade-icc-title">{heading}</span></span>
-        </span>
-        <span className="ade-icc-banner-tools">
+      tools={(
+        <>
           <span className="ade-icc-chip" title={`This chat runs on ${where}`}>on {where}</span>
           {accountEmail ? <span className="ade-icc-chip" title="The account this chat runs as">{accountEmail}</span> : null}
           <CardBannerButtons
             onOpenSettings={onOpenSettings}
             onDecline={onDismiss}
-            responding={false}
             signingIn={signingIn}
             cancelSignIn={cancel}
             testIdPrefix="provider-sign-in"
           />
-        </span>
-      </div>
+        </>
+      )}
+    >
+      <div className="ade-sis" data-compact="true" data-card="true">
+        {stage === "form" || stage === "failed" ? <p className="ade-icc-reason">{reason}</p> : null}
+        {spec.kind !== "settings" && (stage === "form" || signingIn) ? (
+          <SignInAccountNote providerLabel={spec.label} expectedAccount={expectedAccount} />
+        ) : null}
 
-      <div className="ade-icc-body">
-        <div className="ade-sis" data-compact="true" data-card="true">
-          {stage === "form" || stage === "failed" ? <p className="ade-icc-reason">{reason}</p> : null}
-          {spec.kind !== "settings" && (stage === "form" || signingIn) ? (
-            <SignInAccountNote providerLabel={spec.label} expectedAccount={expectedAccount} />
-          ) : null}
-
-          {signingIn || stage === "done" ? (
-            <SignInSteps stage={stage}>
-              <SignInCodePanel
-                url={flow.url}
-                deviceCode={flow.deviceCode}
-                open={openExternalUrl}
-                hint={codeHint}
-                focusOpen={!flow.awaitingCode}
-                codeTestId="provider-sign-in-device-code"
-              />
-              {flow.awaitingCode ? (
-                <SignInPasteBox
-                  label={pasteLabel}
-                  placeholder={spec.kind === "antigravity" ? "http://127.0.0.1:…/?state=…&code=…" : "Paste the code here"}
-                  value={code}
-                  onChange={setCode}
-                  onSubmit={submit}
-                  submitLabel={spec.kind === "antigravity" ? "Continue" : "Submit"}
-                  autoFocus
-                  testId="provider-sign-in-code"
-                  submitTestId="provider-sign-in-submit-code"
-                />
-              ) : null}
-            </SignInSteps>
-          ) : null}
-
-          {stage === "done" ? <SignInSuccess account={signedInAs} providerLabel={spec.label} /> : null}
-          {stage === "mismatch" && expectedAccount && signedInAs ? (
-            <SignInMismatch
-              expected={expectedAccount}
-              actual={signedInAs}
-              onKeep={() => onSignedInRef.current()}
-              onTryAgain={begin}
+        {signingIn || stage === "done" ? (
+          <SignInSteps stage={stage}>
+            <SignInCodePanel
+              url={flow.url}
+              deviceCode={flow.deviceCode}
+              open={openExternalUrl}
+              hint={codeHint}
+              focusOpen={!flow.awaitingCode}
+              codeTestId="provider-sign-in-device-code"
             />
-          ) : null}
-          {stage === "failed" ? (
-            <SignInFailure title={failureTitle} detail={failureDetail} report={report} tone={flow.message ? "crit" : "neutral"} />
-          ) : null}
+            {flow.awaitingCode ? (
+              <SignInPasteBox
+                label={pasteLabel}
+                placeholder={spec.kind === "antigravity" ? "http://127.0.0.1:…/?state=…&code=…" : "Paste the code here"}
+                value={code}
+                onChange={setCode}
+                onSubmit={submit}
+                submitLabel={spec.kind === "antigravity" ? "Continue" : "Submit"}
+                autoFocus
+                testId="provider-sign-in-code"
+                submitTestId="provider-sign-in-submit-code"
+              />
+            ) : null}
+          </SignInSteps>
+        ) : null}
 
-          {stage === "form" || stage === "failed" ? (
-            <div className="ade-sis-start-row">
-                {need.provider === "kimi" ? (
-                  <span className="ade-icc-tabs" role="tablist" aria-label="Kimi account region">
-                    {KIMI_REGIONS.map((entry) => (
-                      <button
-                        key={entry.id}
-                        type="button"
-                        role="tab"
-                        aria-selected={entry.id === region}
-                        className="ade-icc-tab"
-                        onClick={() => setRegion(entry.id)}
-                      >
-                        {entry.label}
-                      </button>
-                    ))}
-                  </span>
-                ) : null}
-                <button
-                  type="button"
-                  className="ade-icc-primary ade-icc-primary-brand"
-                  autoFocus
-                  data-testid="provider-sign-in-start"
-                  onClick={begin}
-                >
-                  <span className="ade-icc-primary-mark" aria-hidden>{brandMark(need.provider, 14)}</span>
-                  {spec.kind === "settings"
-                    ? `Set up ${spec.label} on ${where}`
-                    : stage === "failed" ? "Try again" : startLabel}
-                </button>
-            </div>
-          ) : signingIn ? (
-            // The sheet's footer: what ADE waits for on the left, Cancel on the right.
-            <div className="ade-sis-status-row">
-                <span className="ade-sis-footer-status" role="status">
-                  <SpinnerGap size={13} weight="bold" className="motion-safe:animate-spin" />
-                  {stage === "starting"
-                    ? "Starting the sign-in…"
-                    : stage === "verifying"
-                      ? "Checking the sign-in…"
-                      : host ? `Waiting for ${host}…` : "Waiting for the browser…"}
+        {stage === "done" ? <SignInSuccess account={signedInAs} providerLabel={spec.label} /> : null}
+        {stage === "mismatch" && expectedAccount && signedInAs ? (
+          <SignInMismatch
+            expected={expectedAccount}
+            actual={signedInAs}
+            onKeep={() => onSignedInRef.current()}
+            onTryAgain={begin}
+          />
+        ) : null}
+        {stage === "failed" ? (
+          <SignInFailure title={failureTitle} detail={failureDetail} report={report} tone={flow.message ? "crit" : "neutral"} />
+        ) : null}
+
+        {stage === "form" || stage === "failed" ? (
+          <div className="ade-sis-start-row">
+              {need.provider === "kimi" ? (
+                <span className="ade-icc-tabs" role="tablist" aria-label="Kimi account region">
+                  {KIMI_REGIONS.map((entry) => (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={entry.id === region}
+                      className="ade-icc-tab"
+                      onClick={() => setRegion(entry.id)}
+                    >
+                      {entry.label}
+                    </button>
+                  ))}
                 </span>
-                <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={cancel}>Cancel</button>
-            </div>
-          ) : null}
-        </div>
-        {submitError && signingIn ? <CardError id="provider-sign-in-error" message={submitError} /> : null}
+              ) : null}
+              <button
+                type="button"
+                className="ade-icc-primary ade-icc-primary-brand"
+                autoFocus
+                data-testid="provider-sign-in-start"
+                onClick={begin}
+              >
+                <span className="ade-icc-primary-mark" aria-hidden>{brandMark(need.provider, 14)}</span>
+                {spec.kind === "settings"
+                  ? `Set up ${spec.label} on ${where}`
+                  : stage === "failed" ? "Try again" : startLabel}
+              </button>
+          </div>
+        ) : signingIn ? (
+          // The sheet's footer: what ADE waits for on the left, Cancel on the right.
+          <div className="ade-sis-status-row">
+              <span className="ade-sis-footer-status" role="status">
+                <SpinnerGap size={13} weight="bold" className="motion-safe:animate-spin" />
+                {stage === "starting"
+                  ? "Starting the sign-in…"
+                  : stage === "verifying"
+                    ? "Checking the sign-in…"
+                    : host ? `Waiting for ${host}…` : "Waiting for the browser…"}
+              </span>
+              <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={cancel}>Cancel</button>
+          </div>
+        ) : null}
       </div>
-    </div>
+      {submitError && signingIn ? <CardError id="provider-sign-in-error" message={submitError} /> : null}
+    </ProviderCardFrame>
   );
 }
 

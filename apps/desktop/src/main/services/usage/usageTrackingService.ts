@@ -90,8 +90,8 @@ import {
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
 import { getMachineProviderInstanceStore, sameLoginOwner } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import { claudePassKeyOfAccountId } from "../../../shared/types/providerLogins";
 import {
-  claudePassKeyOfInstance,
   claudePassUsageWindows,
   claudePassUseOf,
   claudePassVerifiedEmail,
@@ -6465,7 +6465,7 @@ export function createUsageTrackingService({
       // A Claude pass gives peers no email, as before: its own numbers reach
       // the person's computers through its status, named as the pass's.
       accounts: (lastSnapshot.accounts ?? []).slice(0, MAX_LIVE_QUOTA_ACCOUNTS)
-        .map((account) => (account.email && claudePassKeyOfInstance(account.instanceId) ? withoutEmail(account) : account)),
+        .map((account) => (account.email && claudePassKeyOfAccountId(account.instanceId) ? withoutEmail(account) : account)),
     };
   }
 

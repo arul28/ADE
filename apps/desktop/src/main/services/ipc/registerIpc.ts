@@ -114,6 +114,7 @@ import {
 import type { AcpChatProvider, ConvertImageToJpegResult } from "../../../shared/types/chat";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
+import { isProviderLoginAction } from "../../../shared/types/providerLogins";
 import type { MachineInventoryDetail } from "../../../shared/types/machineInventory";
 import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { detectCliAuthStatuses } from "../ai/authDetector";
@@ -12524,7 +12525,7 @@ export function registerIpc({
   ipcMain.handle(IPC.providerLoginsCall, async (_event, arg: unknown): Promise<unknown> => {
     const request = arg && typeof arg === "object" ? arg as { action?: unknown; args?: unknown } : {};
     const action = typeof request.action === "string" ? request.action : "";
-    if (!["status", "captureNow", "allowKeychain", "allowGitHubCli", "use", "setCloud", "setCloudAll", "setCloudBalance", "remove"].includes(action)) {
+    if (!isProviderLoginAction(action)) {
       throw new Error(`provider_logins has no ${action || "?"} action.`);
     }
     const pool = localRuntimeConnectionPool;
@@ -12536,8 +12537,8 @@ export function registerIpc({
         action,
         ...(request.args && typeof request.args === "object" ? { args: request.args } : {}),
       }, {
-        // The Keychain read (and the GitHub CLI read) waits for the person to answer a prompt (its own limit is 2 min).
-        timeoutMs: action === "allowKeychain" || action === "allowGitHubCli" ? 150_000 : localRuntimeActionTimeoutMs("provider_logins", action),
+        // The Keychain and GitHub CLI reads have the long limit in the table: they wait for the person's answer.
+        timeoutMs: localRuntimeActionTimeoutMs("provider_logins", action),
       });
       return response?.result;
     } catch (error) {

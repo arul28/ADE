@@ -1,7 +1,7 @@
 /**
  * The few seams between the sign-in sync (one per brain process) and the
- * services of each project runtime. Kept in a module with no runtime
- * imports, so the chat service reads the gate without loading the sync
+ * services of each project runtime. Kept in a module whose only runtime
+ * import is the SDK-free Sentry capture, so the chat service reads the gate without loading the sync
  * service, and a process with no sync (the desktop main, a dev brain) pays
  * one null check.
  *
@@ -10,8 +10,12 @@
  * a part of the status (`registerProviderLoginStatusPart`), and a restart
  * limited to some accounts (`restartProviderRuntimesWhenIdle` with
  * `instanceIds`).
+ *
+ * A failure in one seam never stops the caller; it goes to Sentry (handled)
+ * with the seam's name, so a broken gate or hook does not hide.
  */
 
+import { captureError } from "../../../shared/sentry/capture";
 import type {
   ProviderLoginGateOptions,
   ProviderLoginGateOutcome,
@@ -24,6 +28,16 @@ type Gate = (provider: string) => Promise<void>;
 type BaseGate = (provider: string, options?: ProviderLoginGateOptions) => Promise<ProviderLoginGateOutcome | void>;
 
 let gate: BaseGate | null = null;
+
+/** A seam's failure: reported, never thrown. No value of the sign-in goes in, only names. */
+function reportSeamFailure(seam: string, error: unknown, provider?: string | null): void {
+  captureError(error, {
+    level: "warning",
+    handled: true,
+    tags: { area: "provider_logins", seam, ...(provider ? { provider } : {}) },
+    fingerprint: ["provider-login-seam", seam],
+  });
+}
 /** Checks before a turn for a provider the carry table does not handle (P6: Claude). */
 const beforeTurnChecks = new Map<string, Set<Gate>>();
 
@@ -60,8 +74,14 @@ async function runGate(
   extra: Set<Gate> | undefined,
   options: ProviderLoginGateOptions | undefined,
 ): Promise<ProviderLoginGateOutcome | null> {
-  const outcome = await base(provider, options).catch(() => undefined);
-  for (const check of [...(extra ?? [])]) await check(provider).catch(() => undefined);
+  // The turn goes ahead either way; a failed gate is reported, so it does not read as "nothing to do".
+  const outcome = await base(provider, options).catch((error: unknown) => {
+    reportSeamFailure("gate", error, provider);
+    return undefined;
+  });
+  for (const check of [...(extra ?? [])]) {
+    await check(provider).catch((error: unknown) => reportSeamFailure("before_turn_check", error, provider));
+  }
   return outcome ?? null;
 }
 
@@ -122,8 +142,9 @@ export function restartProviderRuntimesWhenIdle(provider: string, options?: Prov
   for (const hooks of [...runtimes]) {
     try {
       hooks.restartProviderRuntimesWhenIdle(provider, options);
-    } catch {
+    } catch (error) {
       // One runtime's failure must not keep the others on the old login.
+      reportSeamFailure("restart_when_idle", error, provider);
     }
   }
 }
@@ -132,8 +153,9 @@ export function notifyProviderLoginsChanged(): void {
   for (const hooks of [...runtimes]) {
     try {
       hooks.notifyChanged();
-    } catch {
+    } catch (error) {
       // A client that misses one event reads the status again on its next open.
+      reportSeamFailure("notify_changed", error);
     }
   }
 }
@@ -169,9 +191,10 @@ export function onProviderLoginPass(listener: PassListener): () => void {
 export function notifyProviderLoginPass(info: ProviderLoginPassInfo): void {
   for (const listener of [...passListeners]) {
     try {
-      void Promise.resolve(listener(info)).catch(() => undefined);
-    } catch {
+      void Promise.resolve(listener(info)).catch((error: unknown) => reportSeamFailure("pass_listener", error));
+    } catch (error) {
       // A listener's failure never stops the pass or the other listeners.
+      reportSeamFailure("pass_listener", error);
     }
   }
 }
@@ -195,8 +218,9 @@ export async function readProviderLoginStatusParts(provider: ProviderLoginProvid
   for (const part of [...statusParts]) {
     try {
       merged = { ...merged, ...(await part({ provider })) };
-    } catch {
+    } catch (error) {
       // The rest of the status still answers.
+      reportSeamFailure("status_part", error, provider);
     }
   }
   return merged;

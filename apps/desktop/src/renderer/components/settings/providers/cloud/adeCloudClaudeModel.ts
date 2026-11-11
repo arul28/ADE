@@ -16,13 +16,13 @@ import {
   adeCloudPageLine,
   ADE_CLOUD_REACH_LINE,
   joinedPassUse,
+  passTitle,
   readClaudePasses,
-  shortDate,
   type AdeCloudAccountPart,
   type AdeCloudCloudPart,
   type ReadableCloudPassRow,
 } from "./adeCloudSignInModel";
-import { agoText, dayText } from "./adeCloudPageModel";
+import { agoText, dayText, endsInDaysText, shortDate } from "./adeCloudTime";
 
 export type PassLine = { text: string; tone: "warn" | "crit" | null };
 
@@ -97,7 +97,7 @@ function windowView(label: string, window: ClaudePassUseWindow | null, now: numb
 }
 
 /** U1–U3: the bars, and where the numbers come from when they are the account's. */
-export function passUseModel(use: ClaudePassUseView, now: number): PassUseModel {
+function passUseModel(use: ClaudePassUseView, now: number): PassUseModel {
   if (use.state !== "seen") return { kind: "none" };
   const windows = [windowView("5-hour", use.fiveHour, now), windowView("Weekly", use.weekly, now)].filter((view): view is PassWindowView => Boolean(view));
   if (windows.length === 0) return { kind: "none" };
@@ -111,20 +111,18 @@ export function passUseModel(use: ClaudePassUseView, now: number): PassUseModel 
   };
 }
 
-export function passTitle(pass: { email: string | null; createdAt: number }, now: number): string {
-  return pass.email ?? `Claude pass from ${shortDate(pass.createdAt, now)}`;
-}
-
-function stateLine(pass: ReadableCloudPassRow, now: number): PassLine {
+/**
+ * A pass's state in one line (P5–P8). `short` leaves out the advice (a
+ * computer's page sends the person to ADE Cloud for it).
+ */
+export function stateLine(pass: ReadableCloudPassRow, now: number, { short = false }: { short?: boolean } = {}): PassLine {
   switch (pass.state) {
     case "ended":
-      return { text: `Claude ended this pass${pass.endedAt != null ? ` on ${shortDate(pass.endedAt, now)}` : ""}. Renew it or remove it.`, tone: "crit" };
+      return { text: `Claude ended this pass${pass.endedAt != null ? ` on ${shortDate(pass.endedAt, now)}` : ""}${short ? "" : ". Renew it or remove it."}`, tone: "crit" };
     case "estimate_passed":
-      return { text: "Its expected end date has passed. Renew it to be sure.", tone: "warn" };
-    case "ending_soon": {
-      const days = Math.max(0, Math.round(pass.endsInDays));
-      return { text: `Ends in ${days} day${days === 1 ? "" : "s"}`, tone: "warn" };
-    }
+      return { text: `Its expected end date has passed${short ? "" : ". Renew it to be sure."}`, tone: "warn" };
+    case "ending_soon":
+      return { text: `Ends in ${endsInDaysText(pass.endsInDays)}`, tone: "warn" };
     default:
       if (pass.expiresAt == null) return { text: "", tone: null };
       return { text: `${pass.expiresAtSource === "claude" ? "Ends on" : "Ends around"} ${shortDate(pass.expiresAt, now)}`, tone: null };

@@ -43,8 +43,8 @@ import {
   saveCloudSignIn,
   type CloudSignInVaults,
 } from "./cloudSignInStore";
+import { isClaudePassKey } from "../../../shared/types/providerLogins";
 import {
-  isClaudePassKey,
   localClaudePassMachine,
   readClaudePassSummaries,
   removeAllClaudePasses,

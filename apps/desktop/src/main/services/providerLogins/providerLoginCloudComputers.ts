@@ -35,7 +35,7 @@ const countListeners = new Set<CountListener>();
  * deleted, not failed), with no extra request. Nothing happens when no check
  * listens (the desktop process, a cloud computer).
  */
-export function noteCloudComputerCount(count: number): void {
+function noteCloudComputerCount(count: number): void {
   if (!Number.isFinite(count) || count < 0) return;
   for (const listener of countListeners) {
     try {
