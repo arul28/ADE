@@ -199,3 +199,16 @@ Failure modes for /test (add to the list above):
 12. A watching phone (viewer) can redeem a code (`invite_redeem` must stay a controller-only write).
 13. A code, link or email reaches analytics (the iOS sanitizer must drop any outcome outside the closed list).
 14. The box stays after the account got a referrer, or is missing inside the 30 days.
+
+### Lead's re-request (items 1 to 4)
+
+Items 1 to 3 are the follow-up above, already built, built for iOS and shown (proof `5caa2812`). Refusals show the
+outcome's `message`; the box shows only while `canEnterCode && !hasReferrer`; everything sits behind the access gate;
+no box on the sign-up screen.
+
+Item 4, the default-size picker on the iPhone Sizes card: **not done, on purpose.** It isn't a small addition. The
+size lives in the account setting `cloudDefaultTier` (scope `all`), which the desktop writes from its own preferences
+(`accountSettingsSync.ts`). The phone has no sync command that writes account settings. A new brain write would also
+race with the desktop, which writes the setting again from its preferences. That could undo the phone's pick on its
+next sync. The phone could show which size is the default, read from `cloud.read status` `defaultSize`, at the cost of
+a second account read. The picker needs a decision on who owns the setting first.
