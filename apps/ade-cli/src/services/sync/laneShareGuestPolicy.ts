@@ -545,7 +545,7 @@ export function laneShareCheckLocks(
 }
 
 /** The session fields that decide the mode a turn really runs in. */
-type LaneShareSessionModes = {
+export type LaneShareSessionModes = {
   provider?: string | null;
   modelId?: string | null;
   permissionMode?: string | null;

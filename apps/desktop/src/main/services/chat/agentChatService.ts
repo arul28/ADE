@@ -48682,7 +48682,7 @@ export function createAgentChatService(args: {
    * The lane share host's check of a queued guest message, run when the
    * message starts (`installQueuedGuestSteerGate`). False drops the message.
    */
-  let queuedGuestSteerGate: ((args: { sessionId: string; steerId: string; author: AdeMessageAuthor }) => boolean) | null = null;
+  let queuedGuestSteerGate: ((args: { sessionId: string; steerId: string; author: AdeMessageAuthor; session: AgentChatSession }) => boolean) | null = null;
 
   /**
    * Whether a queued message may start now: always, unless a guest sent it
@@ -48696,7 +48696,9 @@ export function createAgentChatService(args: {
     // A guest's message with no host check to pass does not start.
     if (!queuedGuestSteerGate) return false;
     try {
-      return queuedGuestSteerGate({ sessionId: managed.session.id, steerId: steer.steerId, author });
+      // The chat as it is now: the owner may have narrowed the model or mode
+      // locks after the message was queued.
+      return queuedGuestSteerGate({ sessionId: managed.session.id, steerId: steer.steerId, author, session: managed.session });
     } catch (error) {
       logger.warn("agent_chat.guest_steer_gate_failed", {
         sessionId: managed.session.id,

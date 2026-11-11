@@ -1562,7 +1562,13 @@ describe("createAgentChatService", () => {
       });
       expect(send.mock.calls.map((call) => String(call[0])).join("\n").includes("GUEST-QUEUED")).toBe(gateAnswer === true);
       if (gateAnswer !== null) {
-        expect(gate).toHaveBeenCalledWith({ sessionId: session.id, steerId: guest.steerId, author: { kind: "guest", userId: "user_guest", name: "Guest" } });
+        // The host also gets the chat as it is now, to recheck the model and mode locks.
+        expect(gate).toHaveBeenCalledWith({
+          sessionId: session.id,
+          steerId: guest.steerId,
+          author: { kind: "guest", userId: "user_guest", name: "Guest" },
+          session: expect.objectContaining({ id: session.id, modelId: session.modelId }),
+        });
       }
     });
 

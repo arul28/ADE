@@ -4895,7 +4895,7 @@ describe("sync host account authentication", () => {
       };
       const chatListeners = new Set<(event: unknown) => void>();
       // The host's check of a queued guest message, as the chat service runs it when the message starts.
-      let queuedGuestSteerGate: ((input: { sessionId: string; steerId: string; author: typeof guestAuthor }) => boolean) | null = null;
+      let queuedGuestSteerGate: ((input: { sessionId: string; steerId: string; author: typeof guestAuthor; session: Record<string, unknown> }) => boolean) | null = null;
       const agentChatService = {
         installQueuedGuestSteerGate: (gate: typeof queuedGuestSteerGate) => {
           queuedGuestSteerGate = gate;
@@ -5001,7 +5001,7 @@ describe("sync host account authentication", () => {
         chatState,
         /** The chat service starts a queued guest message: whether the host lets it run (no host check: no). */
         startQueuedGuestSteer: (steerId: string) =>
-          queuedGuestSteerGate?.({ sessionId: "session-shared", steerId, author: guestAuthor }) ?? false,
+          queuedGuestSteerGate?.({ sessionId: "session-shared", steerId, author: guestAuthor, session: chatState }) ?? false,
         /** One chat event, as the chat service emits it. */
         emitChatEvent: (sessionId: string, event: Record<string, unknown>) => {
           for (const listener of chatListeners) listener({ sessionId, timestamp: new Date().toISOString(), event });
@@ -6110,6 +6110,10 @@ describe("sync host account authentication", () => {
         // "For the whole session" saves rules in the provider's settings.
         ["approve for the whole session", "chat.approve", { kind: "approval" }, "lane_share_owner_only", { decision: "accept_for_session" }],
         ["answer a question for the whole session", "chat.respondToInput", { kind: "question" }, "lane_share_owner_only", { decision: "accept_for_session" }],
+        ["approve for the whole session with spaces", "chat.approve", { kind: "approval" }, "lane_share_owner_only", { decision: " accept_for_session " }],
+        // The choice saved by a picked option, not by the decision.
+        ["pick Claude's Allow for Session", "chat.respondToInput", { kind: "approval" }, "lane_share_owner_only", { decision: "accept", answers: { tool_decision: ["allow_session"] } }],
+        ["pick Copilot's session approval", "chat.respondToInput", { kind: "approval" }, "lane_share_owner_only", { decision: "accept", answers: { choice: " Approve-For-Session " } }],
         // An answer can reach the agent as a message.
         ["answer a question with a shell line", "chat.respondToInput", { kind: "question" }, "lane_share_plain_text_only", { answers: { q1: ["!cat ~/.ssh/id_ed25519"] } }],
         ["answer a question with a slash command in its reply", "chat.respondToInput", { kind: "question" }, "lane_share_plain_text_only", { responseText: "/shell ls" }],
@@ -6533,6 +6537,15 @@ describe("sync host account authentication", () => {
         }, false],
         ["the rights no longer send or steer", (env) => { env.store.updateRights(grantId("a"), laneSharePresetRights("watch")); }, false],
         ["the share was revoked here", (env) => { env.store.deleteRights(grantId("a")); }, false],
+        // Sending is still allowed, but the chat now runs outside the locks.
+        ["the owner narrowed the permission modes while it waited", (env) => {
+          const rights = laneSharePresetRights("collaborate");
+          env.store.updateRights(grantId("a"), { ...rights, run: { ...rights.run, permissionModes: ["plan"] } });
+        }, false],
+        ["the owner locked another model while it waited", (env) => {
+          const rights = laneSharePresetRights("collaborate");
+          env.store.updateRights(grantId("a"), { ...rights, run: { ...rights.run, models: ["claude-opus"] } });
+        }, false],
         ["the grant list is older than the age bound", () => {
           const later = Date.now() + 91_000;
           vi.spyOn(Date, "now").mockReturnValue(later);

@@ -36,6 +36,22 @@ import {
 } from "./laneShareGuestPolicy";
 import type { SyncRemoteCommandExecutionContext } from "./syncRemoteCommandService";
 
+
+/**
+ * Option values that save an approval past this one request: a guest never
+ * picks one (the owner-only rule on saved permissions). Values from the chat
+ * service's approval cards: Claude and Pi `allow_session`, Copilot
+ * `approve-for-session`, the session approval `allow_always`, the MCP app
+ * `always`, and Copilot's `yes_always` for the Auto switch.
+ */
+const LANE_SHARE_SESSION_WIDE_OPTION_VALUES = new Set([
+  "allow_session",
+  "approve-for-session",
+  "allow_always",
+  "always",
+  "yes_always",
+]);
+
 /**
  * The host's checks of a lane share guest's command that need this host's
  * services (`syncHostService.ts` runs the gate, then this, then the action):
@@ -43,7 +59,6 @@ import type { SyncRemoteCommandExecutionContext } from "./syncRemoteCommandServi
  * here, before the turn), ownership of the draft, comment or queued message
  * a command names, and the card it answers. Sets the verified author.
  */
-
 export type LaneShareGuestCommandPrepDeps = {
   /** Whether this machine lets a guest type into a CLI (`laneShareCliTypingFor`). */
   cliTyping: LaneShareCliTyping;
@@ -159,6 +174,19 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
   }
 
   /** Every free text in a guest's answer to a card: the typed reply and each answer value. */
+  /** Every picked option of an answer, trimmed and in lower case. */
+  function laneShareAnswerOptionValues(answerArgs: Record<string, unknown>): string[] {
+    const answers = answerArgs.answers;
+    if (!answers || typeof answers !== "object" || Array.isArray(answers)) return [];
+    const values: string[] = [];
+    for (const value of Object.values(answers as Record<string, unknown>)) {
+      for (const entry of Array.isArray(value) ? value : [value]) {
+        if (typeof entry === "string") values.push(entry.trim().toLowerCase());
+      }
+    }
+    return values;
+  }
+
   function laneShareAnswerTexts(answerArgs: Record<string, unknown>): string[] {
     const texts: string[] = [];
     if (typeof answerArgs.responseText === "string") texts.push(answerArgs.responseText);
@@ -382,7 +410,14 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
         // "For the whole session" saves the choice: Claude writes the
         // suggested rules to its settings, Codex keeps the grant or the MCP
         // answer. That changes this computer's setup, so only the owner does it.
-        if (gateArgs.decision === "accept_for_session") {
+        // The choice is saved by the decision or by a picked option (Claude's
+        // and Pi's "Allow for Session", Copilot's session approval, the
+        // "always" answers). The chat service reads both trimmed, so this does too.
+        const decision = typeof gateArgs.decision === "string" ? gateArgs.decision.trim().toLowerCase() : "";
+        const savesChoice = decision === "accept_for_session"
+          || decision === "acceptforsession"
+          || laneShareAnswerOptionValues(gateArgs).some((value) => LANE_SHARE_SESSION_WIDE_OPTION_VALUES.has(value));
+        if (savesChoice) {
           return { ok: false, refusal: { code: "lane_share_owner_only", message: "Only the owner can allow this for the whole session." } };
         }
         // An answer can reach the agent as a message (a question answered by

@@ -3,6 +3,7 @@ import type { LaneShareRightsStore } from "../../../../desktop/src/main/services
 import { laneShareRightsEnded } from "../../../../desktop/src/shared/laneShareRights";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { activeLaneShareGrantsFor, LANE_SHARE_GRANT_MAX_AGE_MS, type LaneShareGrantSnapshot } from "./laneShareGrantService";
+import { laneShareSessionWithinLocks, type LaneShareSessionModes } from "./laneShareGuestPolicy";
 
 /**
  * The messages a lane share guest queued in a chat on this host (the rights
@@ -58,6 +59,21 @@ export function createLaneShareGuestQueue(deps: {
       .some((grant) => grant.grantId === grantId && deps.rightsMatchLane(grant.grantId, grant.laneId));
   }
 
+  /**
+   * The chat's model and mode, as they are when the message starts, against
+   * the grant's rights as they are now. No chat to compare fails closed.
+   */
+  function withinLocksNow(grantId: string, session: LaneShareSessionModes | null): boolean {
+    if (!session) return false;
+    try {
+      const rights = store?.get(grantId)?.rights ?? null;
+      return rights != null && laneShareSessionWithinLocks(rights, session) == null;
+    } catch (error) {
+      logger.warn("sync_host.lane_share_queue_read_failed", { grantId, error: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  }
+
   /** A message that left the queue: no longer the guest's to remove. */
   function forget(steerId: string): string | null {
     try {
@@ -75,9 +91,9 @@ export function createLaneShareGuestQueue(deps: {
    * no longer queued either way; it runs only when its share still allows
    * it. A message no grant recorded (not yet, or no more) does not run.
    */
-  function admit(input: { steerId: string; author: { userId: string } }): boolean {
+  function admit(input: { steerId: string; author: { userId: string }; session?: LaneShareSessionModes | null }): boolean {
     const grantId = forget(input.steerId);
-    const admitted = grantId != null && mayStart(grantId, input.author.userId);
+    const admitted = grantId != null && mayStart(grantId, input.author.userId) && withinLocksNow(grantId, input.session ?? null);
     if (!admitted) logger.info("sync_host.lane_share_queued_message_dropped", { grantId });
     return admitted;
   }
