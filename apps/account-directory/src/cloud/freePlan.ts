@@ -23,11 +23,13 @@ import { PAID_RULES_SQL, accountRules, isProduction, logCloud, reportCloudFailur
  * The free plan is settled per account, not per chat or computer:
  * - The first time an account on the free plan's rules USES ADE Cloud from a
  *   computer (a create, a copy, a wake), that computer is claimed for it. A
- *   read (the dashboard) never claims, so a family member who only opened the
- *   page doesn't take the shared computer's free plan.
+ *   read (the dashboard) never claims or restores, so a family member who only
+ *   opened the page doesn't take the shared computer's free plan, and a forged
+ *   id on a read gives a refused account nothing.
  * - An account with no claim that is seen on a computer already claimed by
  *   another account is refused: its free plan has 0 hours everywhere (CLI,
- *   phone, MCP) until it claims a computer of its own. Paid plans, earned
+ *   phone, MCP) until it uses ADE Cloud from a computer of its own (a create,
+ *   copy or wake runs before the hours check, so it can), which claims it. Paid plans, earned
  *   hours and extra hours are untouched. Settled on any request carrying the
  *   header, reads included, so the dashboard says why before anything starts.
  * - An account holds at most one claim. Once it has one, using any other
@@ -213,14 +215,15 @@ async function settle(env: CloudEnv, account: AccountRow, signal: CloudComputerS
   }
   // This account holds a claim: its own computer (a reinstall, a sign-in again) or another one (a shared computer).
   if (view.own) {
-    if (account.free_refused_at != null) await restore(env, account, signal.platform, ctx);
+    if (moment === "use" && account.free_refused_at != null) await restore(env, account, signal.platform, ctx);
     return;
   }
   if (view.holder && view.holder !== account.user_id) return refuse(env, account, hash, signal.platform, ctx);
   // Unclaimed computer, account without a claim. Paid accounts don't use free hours, so they claim nothing.
   if (!freeRules) return;
-  // A read claims only to give a refused account its hours back on a computer of its own.
-  if (moment === "read" && account.free_refused_at == null) return;
+  // A read never claims or restores, not even for a refused account: the computer id is the
+  // client's word (decision 5), so only something that spends hours may move the free plan.
+  if (moment === "read") return;
   await env.DB.prepare(`
     insert into cloud_free_plan_claims (computer_hash, user_id, claimed_at, platform) values (?, ?, ?, ?)
     on conflict do nothing

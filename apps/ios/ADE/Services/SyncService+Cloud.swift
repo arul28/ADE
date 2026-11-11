@@ -188,8 +188,36 @@ struct CloudPhoneAccount: Decodable, Equatable {
     let sentence: String?
   }
 
-  struct Sentence: Decodable, Equatable {
+  /// The computers a cheaper plan's limits will free (`CloudPlanCleanup`):
+  /// the server's warning and when ADE frees them (null in a preview).
+  struct PlanCleanup: Decodable, Equatable {
     let sentence: String?
+    let dueAt: Double?
+  }
+
+  /// What a cheaper plan's limits freed and kept (`CloudPlanCleanupDone`, no
+  /// sentence: the phone builds it as `planCleanupDoneSentence` does).
+  struct PlanCleanupDone: Decodable, Equatable {
+    struct Freed: Decodable, Equatable {
+      let name: String
+      let branch: String?
+    }
+    struct Kept: Decodable, Equatable {
+      let name: String
+    }
+    let at: Double
+    let planId: String
+    let freed: [Freed]
+    let kept: [Kept]
+  }
+
+  /// Timed wake-ups this period cancelled (`CloudTimedWakesCancelled`, no
+  /// sentence: the phone builds it as `timedWakesCancelledSentence` does).
+  struct TimedWakesCancelled: Decodable, Equatable {
+    let at: Double
+    let count: Int
+    /// `out_of_hours` or `over_plan_disk`.
+    let reason: String
   }
 
   /// What one plan includes. The price is in the payload but the phone never
@@ -231,13 +259,14 @@ struct CloudPhoneAccount: Decodable, Equatable {
   let catalog: Catalog?
   let earnedHours: EarnedHours?
   let freePlan: FreePlan?
-  let planCleanup: Sentence?
-  let timedWakesCancelled: Sentence?
+  let planCleanup: PlanCleanup?
+  let planCleanupDone: PlanCleanupDone?
+  let timedWakesCancelled: TimedWakesCancelled?
   let referral: CloudPhoneReferral?
 
   private enum CodingKeys: String, CodingKey {
     case plan, planId, hours, extraHours, disk, computers, recentUse, billing, catalog
-    case earnedHours, freePlan, planCleanup, timedWakesCancelled, referral
+    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, referral
   }
 
   init(from decoder: Decoder) throws {
@@ -253,8 +282,9 @@ struct CloudPhoneAccount: Decodable, Equatable {
     catalog = c.lenient(Catalog.self, forKey: .catalog)
     earnedHours = c.lenient(EarnedHours.self, forKey: .earnedHours)
     freePlan = c.lenient(FreePlan.self, forKey: .freePlan)
-    planCleanup = c.lenient(Sentence.self, forKey: .planCleanup)
-    timedWakesCancelled = c.lenient(Sentence.self, forKey: .timedWakesCancelled)
+    planCleanup = c.lenient(PlanCleanup.self, forKey: .planCleanup)
+    planCleanupDone = c.lenient(PlanCleanupDone.self, forKey: .planCleanupDone)
+    timedWakesCancelled = c.lenient(TimedWakesCancelled.self, forKey: .timedWakesCancelled)
     referral = c.lenient(CloudPhoneReferral.self, forKey: .referral)
   }
 

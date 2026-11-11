@@ -155,3 +155,53 @@ relative to `apps/account-directory/` unless they say otherwise.
   `browserMockCloud.ts` can call `cloudFreePlanRefusedSentence(CLOUD_PLANS.plus.includedMilli)`.
 - **fix-main and iOS:** add `mutual` to the three client refusal-reason lists.
 - **Not done here:** the production D1 read in qa-server's deploy note, and the release-notes line for qa-main L6.
+
+## PR bot findings (round 2, on top of a89d2323c)
+
+### Cursor 4540634914 (High): a computer the cleanup woke and then kept was left running
+
+- **The fix.** `freeComputer` now records whether this run started the computer, and the resting status the provider
+  reported before the start. The record is a `WakeRecord` that `wakeForPush` fills in `apps/account-directory/src/cloud/planCleanup.ts`.
+  - It is set right after `startInstance`, before the wait. So a wake that times out is covered too.
+- **Where it applies.** Both `keep` (any code) and the second-check `release` call the new `putBackToRest`
+  (`planCleanup.ts:444` and `:452`).
+  - `putBackToRest` (`:534`) does what the rest of the server does: a computer that was `stopped` is stopped again,
+    and any other is put to sleep.
+  - It writes the change with `statusChangeStatements` (`reason: plan_cleanup`), as the tick's no-check-in sleep does.
+    That closes the free push wake without charging it.
+  - It is best effort: a failure is reported as `cloud.plan_cleanup_put_back_failed`, and `sleepUnseen` is the
+    backstop.
+- **Computers already awake.** A computer that was awake before the run is never started, so it stays as it was.
+
+### Greptile 4540477215 (P2): a failed referral reward was never retried
+
+- **The fix.** `apps/account-directory/src/cloud/chats.ts:388` now calls `rewardAfterCloudChat` on every saved part, not
+  only a chat's first. With nothing pending, the call costs one primary-key read of the friend's pending row
+  (`rewardReferralIfDue`'s first statement). The reward stays idempotent because of its token.
+- **Why not a cron sweep.** This is the cheaper path. A sweep would join pending referrals to saved chats every tick.
+- **Docs.** Both the module header and the function docstring in `referrals.ts` now say this.
+
+### Greptile 4540477197 (P1 security): a read could restore a refused account's free hours
+
+- **The fix.** In `apps/account-directory/src/cloud/freePlan.ts` `settle`, a `read` never claims and never restores,
+  not even for a refused account. A restore through an existing claim also needs a `use` moment.
+  - A read still refuses, so the dashboard can say why.
+  - A refused account gets its hours back by using ADE Cloud from a computer of its own. Create, copy and wake settle
+    the free plan before the hours check, so that works even at 0 hours.
+- **Docs.** The file header now says this.
+
+### Tests
+
+These are rows in existing tables in `test/cloudAccount.test.ts`.
+
+- **Free-plan table.** The row "a refused account gets its free hours back" changed behavior on purpose: its last step
+  is now a `POST` (a use). A new row covers the security contract: "a refused account's read from another computer (any
+  id it sends) gives nothing back".
+- **Plan-cleanup table.** A new row: "a sleeping computer it woke for the push and then kept goes back to sleep". The
+  table body now also checks that a kept computer ends in the state it started in, on both the provider and the row.
+- **Failure checks.** I broke each fix on purpose and saw its row fail:
+  - Putting back removed: the new sleep row fails.
+  - The read-restore restored: the new security row fails.
+- **No test for the retry.** It is a one-line change to an unconditional call, and I checked it by reading the code.
+- **Checks.** `npx tsc -p tsconfig.json --noEmit` in `apps/account-directory` passes. `npx vitest run
+  test/cloudAccount.test.ts test/directory.test.ts`: 2 files, 177 tests, all pass.

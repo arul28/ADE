@@ -10,10 +10,9 @@ import SwiftUI
 func cloudHoursNotes(_ account: CloudPhoneAccount, now: Date) -> [String] {
   var lines: [String] = []
   if let free = account.freePlan, free.state == "refused" {
-    // The server's sentence, as the desktop shows it; the phone's own words
-    // only when an older server sends none.
-    let sentence = free.sentence?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    lines.append(sentence.isEmpty ? "This computer already used another account's free hours, so the free plan has no hours here." : sentence)
+    // The phone's own words: the server's sentence names a plan to get
+    // (App Store 3.1.1, see `cloudPhoneWords`).
+    lines.append("This computer already used another account's free hours, so the free plan has no hours here.")
   }
   if let earned = account.earnedHours, earned.leftMilli > 0 {
     lines.append("+\(cloudHours(earned.leftMilli)) hours earned from invites. They never expire.")
@@ -30,6 +29,61 @@ func cloudHoursNotes(_ account: CloudPhoneAccount, now: Date) -> [String] {
     lines.append("\(forecast) (estimate)")
   }
   return lines
+}
+
+/// Each plan's name inside a sentence (`CLOUD_PLAN_SENTENCE_NAMES`).
+func cloudPlanSentenceName(_ id: String) -> String {
+  switch id {
+  case "free": return "the free plan"
+  case "pro": return "Pro"
+  default: return "Plus"
+  }
+}
+
+/// What a cheaper plan's limits freed and kept, in the server's words
+/// (`planCleanupDoneSentence`); nil when it freed and kept nothing.
+func cloudPlanCleanupDoneSentence(_ done: CloudPhoneAccount.PlanCleanupDone) -> String? {
+  var parts: [String] = []
+  if !done.freed.isEmpty {
+    let list = done.freed.map { entry in entry.branch.map { "\(entry.name) (work on \($0))" } ?? entry.name }.joined(separator: ", ")
+    let these = done.freed.count == 1 ? "this computer" : "these computers"
+    parts.append("To fit \(cloudPlanSentenceName(done.planId)), ADE pushed each lane's work to GitHub and removed \(these): \(list). Their lanes and chats stay; the next message to a lane makes a new computer.")
+  }
+  if !done.kept.isEmpty {
+    parts.append("ADE kept \(done.kept.map(\.name).joined(separator: ", ")), because its work couldn't all be pushed to GitHub. Push its work or delete it yourself; ADE tries again tomorrow.")
+  }
+  return parts.isEmpty ? nil : parts.joined(separator: " ")
+}
+
+/// Why timed wake-ups were cancelled and how they come back
+/// (`timedWakesCancelledSentence`), in the phone's own words: what the person
+/// can do that isn't a purchase (App Store 3.1.1). `resetsAt` is when the
+/// hours reset, when the account says.
+func cloudTimedWakesCancelledSentence(_ notice: CloudPhoneAccount.TimedWakesCancelled, resetsAt: Double?) -> String {
+  let what = notice.count == 1 ? "A timed wake-up" : "\(notice.count) timed wake-ups"
+  let head = "\(what) on your ADE Cloud computers won't run (a chat's scheduled wake-up or an automation's schedule)"
+  let after = "each computer sets its next timed wake-up again the next time it runs."
+  if notice.reason == "over_plan_disk" {
+    return "\(head), because your computers hold more disk than the free plan has, so they can't wake. Once you delete a computer, \(after)"
+  }
+  let reset = resetsAt.map { "When your hours reset on \(cloudDate($0))" } ?? "When your hours reset"
+  return "\(head), because you're out of ADE Cloud hours, so your computers can't wake. \(reset), \(after)"
+}
+
+/// The iPhone never points at a purchase (App Store 3.1.1/3.1.3): a server
+/// message keeps only its sentences that don't mention one (getting a plan,
+/// a paid plan, upgrading, adding or buying hours, extra hours or disk). A
+/// plan named as a fact ("Plus allows 40 GB") stays. Nil when nothing is left.
+func cloudPhoneWords(_ message: String?) -> String? {
+  guard let message else { return nil }
+  let purchase = ["get plus", "get pro", "get a paid plan", "paid plan", "upgrade", "add hours", "buy", "extra hours", "extra disk"]
+  var kept: [String] = []
+  message.enumerateSubstrings(in: message.startIndex..., options: .bySentences) { sentence, _, _, _ in
+    guard let sentence = sentence?.trimmingCharacters(in: .whitespacesAndNewlines), !sentence.isEmpty else { return }
+    let lower = sentence.lowercased()
+    if !purchase.contains(where: lower.contains) { kept.append(sentence) }
+  }
+  return kept.isEmpty ? nil : kept.joined(separator: " ")
 }
 
 /// "At this pace your hours last until Nov 24", from the last days' use; nil

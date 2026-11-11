@@ -270,7 +270,7 @@ final class CloudPaneStore: ObservableObject {
       _ = try await syncService.cloudWrite(action, args: input, as: CloudPhoneAck.self)
       ADEHaptics.success()
     } catch {
-      actionError = error.localizedDescription
+      actionError = cloudPhoneWords(error.localizedDescription) ?? "ADE Cloud couldn't do that."
       ADEHaptics.error()
     }
     await reload()
@@ -282,7 +282,7 @@ final class CloudPaneStore: ObservableObject {
       limits = nil
       _ = try await syncService.cloudWrite("set_limits", args: args, as: CloudPhoneAck.self)
     } catch {
-      actionError = error.localizedDescription
+      actionError = cloudPhoneWords(error.localizedDescription) ?? "ADE Cloud couldn't do that."
     }
     limits = try? await syncService.cloudRead("limits", as: CloudPhoneLimits.self)
   }

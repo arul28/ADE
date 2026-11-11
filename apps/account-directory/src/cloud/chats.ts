@@ -381,9 +381,11 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     userId, machineKey, chatId, instanceId, row.projectKey, row.laneId, summary, prefix, lastActivityMs, row.lastSeq, sealed.byteLength, now,
     delta,
   ).run();
-  // A chat's first saved part is the server's proof a chat ran on an ADE Cloud computer:
-  // an invited friend's first one pays the referral (`referrals.ts`). Never fails the save.
-  if (!existing) await rewardAfterCloudChat(env, userId, now);
+  // A saved part is the server's proof a chat ran on an ADE Cloud computer: it pays an
+  // invited friend's pending referral (`referrals.ts`). Every save asks, not only a chat's
+  // first, so a reward that failed is retried by the next save; with nothing pending that is
+  // one primary-key read. Never fails the save.
+  await rewardAfterCloudChat(env, userId, now);
   return json({ ok: true, lastSeq: row.lastSeq } satisfies CloudChatPartResponse);
 }
 

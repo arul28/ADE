@@ -65,7 +65,7 @@ struct CloudMachineFacts: View {
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
       }
-      if let full = machine.diskFull {
+      if let full = cloudPhoneWords(machine.diskFull) {
         ADESettingsNotice(message: full, tone: .warn)
       }
     }

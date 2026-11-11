@@ -26,6 +26,7 @@ import {
   logCloud,
   powerLogStatement,
   reportCloudFailure,
+  statusChangeStatements,
   type AccountRow,
   type CloudEnv,
   type ComputerRow,
@@ -437,7 +438,10 @@ async function freeComputer(env: CloudEnv, provider: CloudProvider, computer: Cl
     where instance_id = ? and deleted_at is null and (plan_cleanup_claimed_at is null or plan_cleanup_claimed_at < ?)
   `).bind(now, computer.instance_id, now - CLAIM_STALE_MS).run();
   if ((claimed.meta?.changes ?? 0) !== 1) return { kind: "skipped" };
+  // Set once this run woke the computer: a computer it keeps goes back to how it was, not left running.
+  const wake: WakeRecord = { woke: false, from: computer.status };
   const release = async (): Promise<Outcome> => {
+    if (wake.woke) await putBackToRest(env, provider, computer.instance_id, wake.from);
     await env.DB.prepare("update cloud_computers set plan_cleanup_claimed_at = null where instance_id = ?").bind(computer.instance_id).run();
     logCloud("cloud.plan_cleanup_no_longer_due", { instanceId: computer.instance_id });
     return { kind: "skipped" };
@@ -445,6 +449,7 @@ async function freeComputer(env: CloudEnv, provider: CloudProvider, computer: Cl
   const keep = async (reason: string, code: string): Promise<Outcome> => {
     if (USER_STATE_CODES.has(code)) logCloud("cloud.plan_cleanup_kept", { instanceId: computer.instance_id, code });
     else reportCloudFailure("cloud.plan_cleanup_kept", { instanceId: computer.instance_id, code });
+    if (wake.woke) await putBackToRest(env, provider, computer.instance_id, wake.from);
     await env.DB.prepare("update cloud_computers set plan_cleanup_claimed_at = null, plan_cleanup_failed_at = ? where instance_id = ?")
       .bind(now, computer.instance_id).run();
     return { kind: "kept", name: nameOf(computer), reason };
@@ -452,7 +457,7 @@ async function freeComputer(env: CloudEnv, provider: CloudProvider, computer: Cl
   try {
     // Never woken for nothing.
     if (!(await stillDue(env, computer.user_id, computer.instance_id, now))) return await release();
-    const metadata = await wakeForPush(env, provider, computer, now);
+    const metadata = await wakeForPush(env, provider, computer, now, wake);
     // Agents stopped and chats saved first: anything still writing could land after the check.
     const prepared = await provider.exec(computer.instance_id, PREPARE_COMMAND, PREPARE_TIMEOUT_MS);
     if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) return await keep("ADE on the computer couldn't stop its agents and save its chats.", "prepare_stop_failed");
@@ -487,15 +492,21 @@ async function freeComputer(env: CloudEnv, provider: CloudProvider, computer: Cl
   }
 }
 
+/** Whether this run started the computer, and the resting status it had before (`stopped` or `sleeping`). */
+type WakeRecord = { woke: boolean; from: string };
+
 /**
  * Wakes a resting computer for the push, as the person's push-work wake does:
  * the time isn't charged, isn't counted as use, and the tick's stops and
- * sleeps leave it alone. Answers the computer's metadata.
+ * sleeps leave it alone. Answers the computer's metadata, and notes in `wake`
+ * that it started it (before the wait, so a wake that times out is put back too).
  */
-async function wakeForPush(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, now: number): Promise<Record<string, string>> {
+async function wakeForPush(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, now: number, wake: WakeRecord): Promise<Record<string, string>> {
   let instance = await provider.getInstance(computer.instance_id);
   if (isMeteredStatus(instance.status)) return instance.metadata;
+  wake.from = instance.status;
   const status = await provider.startInstance(computer.instance_id);
+  wake.woke = true;
   await env.DB.batch([
     env.DB.prepare(`
       update cloud_computers set status = ?, status_changed_at = ?, awake_since = ?, free_wake_started_at = ?, free_wake_until = ?, zero_stop_started_at = null, cold_storage = 0
@@ -511,6 +522,26 @@ async function wakeForPush(env: CloudEnv, provider: CloudProvider, computer: Com
   }
   if (!awake) throw new CloudProviderError("The computer didn't wake.", "wake_timeout", 0);
   return instance.metadata;
+}
+
+/**
+ * A computer this run woke and then kept goes back to rest the way the rest of
+ * the server rests one: a stopped computer is stopped again, any other is put
+ * to sleep, and the row's status change closes the free push wake (its time
+ * isn't charged). Best effort: a failure is reported, and the tick's
+ * no-check-in sleep is the backstop.
+ */
+async function putBackToRest(env: CloudEnv, provider: CloudProvider, instanceId: string, from: string): Promise<void> {
+  try {
+    const row = await env.DB.prepare("select * from cloud_computers where instance_id = ? and deleted_at is null").bind(instanceId).first<ComputerRow>();
+    if (!row) return;
+    const status = from === "stopped" ? await provider.stopInstance(instanceId) : await provider.sleepInstance(instanceId);
+    const statements = statusChangeStatements(env, row, status, Date.now(), "plan_cleanup");
+    if (statements.length) await env.DB.batch(statements);
+    logCloud("cloud.plan_cleanup_put_back", { instanceId, status });
+  } catch (error) {
+    reportCloudFailure("cloud.plan_cleanup_put_back_failed", { instanceId, code: error instanceof CloudProviderError ? error.code : "unknown" });
+  }
 }
 
 /** The JSON a `--json` command printed: its `result`, or the object itself. Null when unreadable. */

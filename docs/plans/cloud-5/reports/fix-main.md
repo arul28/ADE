@@ -110,3 +110,5 @@ The same change as L3. The iOS catalog was regenerated with `node apps/desktop/s
 Caveats on the cli run:
 - `cli.test.ts` fails one case when it runs inside an ADE chat: the `setSessionActivity` case picks up `ADE_CHAT_SESSION_ID` and `ADE_ACTIVITY_SESSION_ID` from the environment. It passes with those unset. The leak is in the test's environment, not in this change.
 - No test was added or bent.
+
+Re-checked on the lead's second request. `readsRemotes: true` is already in the code (`cloudPushWork.ts:34,57`), and every lane carries `primary: boolean` (`:67`). That matches the server's `TallyLane`/`Tally` parser (`planCleanup.ts:539-561`). Both `cloud.pushWork` and `cloud.workState` print that one tally. cli `power.test.ts`: 54 tests passed.

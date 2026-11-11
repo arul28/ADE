@@ -65,3 +65,56 @@ Added `mutual` to `refusalReasons` in `Services/ProductAnalytics.swift:93`, so `
 ## Left / not done
 - `CloudSignInsCard`'s hint under the switch is still inverted (`enabled ? "Off: …" : "On: …"`), as is the desktop's `CloudSignIns.tsx:121` (qb-ui Track A note). It was not in my brief and the behavior was kept. If the desktop helper rewords it, iOS should match.
 - Typecheck and tests were not run for other packages: iOS only.
+
+## Follow-up: Greptile 4540477228 (ADE Cloud notices on iPhone)
+
+**The bug.** `CloudPhoneAccount` decoded `timedWakesCancelled` as `{ sentence }`. The server sends `{ at, count, reason }`, so the notice never showed. `planCleanupDone` was not decoded at all.
+
+**What changed:**
+- **Decoding** (`Services/SyncService+Cloud.swift`). The shared `Sentence` struct is replaced by three:
+  - `PlanCleanup { sentence, dueAt }`: the server does send `sentence`.
+  - `PlanCleanupDone { at, planId, freed[{ name, branch }], kept[{ name }] }`.
+  - `TimedWakesCancelled { at, count, reason }`.
+
+  Each is still read with `lenient`, so a mismatch drops only that notice.
+- **Words** (`Views/Cloud/CloudPhoneFormat.swift`). The phone now builds the sentences itself, copied word for word from `contract.ts`:
+  - `cloudTimedWakesCancelledSentence` (`timedWakesCancelledSentence`).
+  - `cloudPlanCleanupDoneSentence` (`planCleanupDoneSentence`). It returns nil when nothing was freed or kept.
+  - `cloudPlanSentenceName` (`CLOUD_PLAN_SENTENCE_NAMES`).
+- **Notices** (`CloudNotices` in `CloudDashboardCards.swift`), in the desktop's `PlanNotices` order:
+  - The plan cleanup warning now adds the desktop's "This happens on <date>. To choose which go, delete computers yourself before then." when `dueAt` is set.
+  - A new neutral notice, "ADE freed computers for your plan. <sentence>".
+  - The timed wake-ups warning now shows.
+
+**Build.** One `xcodebuild build` (same setup as before): **BUILD SUCCEEDED**. The DerivedData is deleted.
+
+**Not checked.** I did not look at the notices on the simulator, because no fixture carries them; that needs a fixture or a live account with one of them set.
+
+**Flag for the lead.** Two of the server's sentences, now shown on the iPhone, mention buying: "Once you delete a computer or get Plus" (`over_plan_disk`) and "or you add hours" (`out_of_hours`). This is the same App Store 3.1.1 question as the free plan sentence above. I kept the server's words, as the brief asked.
+
+## Follow-up: no mention of buying anywhere on the iPhone (lead's rule)
+
+**Rule.** The iPhone never points at a purchase. Plan names may still appear as facts.
+
+This replaces the two "flag for the lead" notes above. Both are resolved now.
+
+**What changed:**
+- **Timed wake-ups cancelled.** `cloudTimedWakesCancelledSentence(_:resetsAt:)` now uses the phone's own words:
+  - Over the free plan's disk: "… Once you delete a computer, each computer sets its next timed wake-up again …".
+  - Out of hours: "… When your hours reset on <billing.periodEnd date>, each computer sets …". Without a period end it says "When your hours reset".
+  - The server's "get Plus" and "add hours" are gone.
+- **Refused free plan.** The phone always uses its own sentence again ("…so the free plan has no hours here."). This undoes the earlier switch to the server's `freePlan.sentence`, which says "Plus gives you 500 hours a month."
+- **Plans freed (`planCleanupDone`).** Already built in the phone's own words. They name the plan only as a fact ("To fit the free plan, …").
+- **New safety net for server text.** `cloudPhoneWords(_:)` in `CloudPhoneFormat.swift` drops every sentence of a server message that mentions a purchase: "get Plus/Pro", "get a paid plan", "paid plan", "upgrade", "add hours", "buy", "extra hours", "extra disk". It returns nil when nothing is left.
+- **Where the safety net applies:**
+  - The `planCleanup` sentence. The server's text names plans as facts today ("Plus allows 40 GB"), so nothing in it is dropped.
+  - A computer's `diskFull`. For example, "A paid plan gives more." and "…or turn on extra disk in Settings." are dropped; "This computer's disk is full." and the free-disk fact stay.
+  - Every `cloud.write` error the page shows (sleep, wake, delete, limits). An example is `overPlanDiskSentence`'s "Delete a computer, or get Plus.", which keeps only its first sentence. If nothing is left, the page says "ADE Cloud couldn't do that."
+- **Checked:**
+  - Invite refusal messages mention no purchase, so they are unchanged.
+  - A grep of `apps/ios` finds no phone-written words that mention a purchase.
+  - I ran the filter on five sample server messages; each came out as intended.
+
+**Build.** One `xcodebuild build`: **BUILD SUCCEEDED**. The DerivedData is deleted.
+
+**Not checked.** I did not look at the notices on the simulator, because no fixture carries them.

@@ -28,9 +28,10 @@ import { loadAccount, logCloud, reportCloudFailure, type AccountRow, type CloudE
  *   within 30 days of creating their ADE account. One referrer per account,
  *   never changed (the friend is `cloud_referrals`' primary key); not their own.
  * - The reward, 20 hours to both, is paid when the friend's first chat runs
- *   on an ADE Cloud computer. The server sees that as the first saved part of
- *   any chat from one of the friend's computers (`chats.ts`, which only a
- *   computer the account owns can write), or, when the friend already had one
+ *   on an ADE Cloud computer. The server sees that as a saved part of any
+ *   chat from one of the friend's computers (`chats.ts`, which only a
+ *   computer the account owns can write; every save asks, so a reward that
+ *   failed is retried by the next one), or, when the friend already had one
  *   before entering the code, at the redeem itself. Either way a free or a
  *   paid plan counts.
  * - A referrer gets at most 10 rewards ever; past that the friend still gets 20.
@@ -261,7 +262,7 @@ const GRANT_LANDED_SQL = `
  * Pays a friend's pending referral, or refuses it for a shared computer.
  * Safe to call any number of times, at once too: only the call whose token
  * moved the row out of `pending` writes grants. Called after the friend's
- * first saved cloud chat part and at the redeem.
+ * saved cloud chat parts (each save asks, so a failed reward is retried) and at the redeem.
  */
 export async function rewardReferralIfDue(env: CloudEnv, friendId: string, ctx: Ctx): Promise<ReferralRewardOutcome> {
   const referral = await env.DB.prepare("select referrer_user_id from cloud_referrals where friend_user_id = ? and state = 'pending'")

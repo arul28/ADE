@@ -1154,8 +1154,10 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
       [[OWNER, "POST", from(COMPUTER)], [OWNER, "POST", from(COMPUTER)]], { [OWNER]: "claimed", [OTHER]: "unclaimed" }],
     ["an account with its own computer may use a shared one",
       [[OWNER, "POST", from(COMPUTER)], [OTHER, "POST", from(OTHER_COMPUTER)], [OTHER, "POST", from(COMPUTER)]], { [OWNER]: "claimed", [OTHER]: "claimed" }],
-    ["a refused account gets its free hours back on a computer of its own",
-      [[OWNER, "POST", from(COMPUTER)], [OTHER, "GET", from(COMPUTER)], [OTHER, "GET", from(OTHER_COMPUTER)]], { [OWNER]: "claimed", [OTHER]: "claimed" }],
+    ["a refused account gets its free hours back by using a computer of its own",
+      [[OWNER, "POST", from(COMPUTER)], [OTHER, "GET", from(COMPUTER)], [OTHER, "POST", from(OTHER_COMPUTER)]], { [OWNER]: "claimed", [OTHER]: "claimed" }],
+    ["a refused account's read from another computer (any id it sends) gives nothing back",
+      [[OWNER, "POST", from(COMPUTER)], [OTHER, "GET", from(COMPUTER)], [OTHER, "GET", from(OTHER_COMPUTER)]], { [OWNER]: "claimed", [OTHER]: "refused" }],
     ["a computer that can't read its id, and the phone, claim nothing",
       [[OWNER, "POST", { "x-ade-computer": "unreadable" }], [OTHER, "POST", {}]], { [OWNER]: "unclaimed", [OTHER]: "unclaimed" }],
   ])("free plan per computer: %s", async (_label, steps, expected) => {
@@ -1278,13 +1280,21 @@ describe("ADE Cloud plan cleanup", () => {
       // Lands as the computer is read for the push: after the first check, before the delete.
       harness.net.after.push({ match: new RegExp(`GET .*/instances/${INSTANCE}$`), run: () => { harness.exec("update cloud_computers set deleted_at = ? where instance_id = ?", NOW, NEWER[2]); } });
     }, false],
+    ["a sleeping computer it woke for the push and then kept goes back to sleep", () => {
+      harness.exec("update cloud_computers set status = 'sleeping', awake_since = null where instance_id = ?", INSTANCE);
+      harness.net.instances.get(INSTANCE)!.status = "sleeping";
+      answerExecs(quiet, tally([lane({ primary: false, state: "unpushed" })], { readsRemotes: true }), tally([lane()], { readsRemotes: true }));
+    }, false],
   ])("%s", async (_label, arrange, freed) => {
     seedOverFreePlan();
     arrange();
+    const startedAs = harness.net.instances.get(INSTANCE)!.status;
 
     await run();
 
     expect(computer(harness).deleted_at != null).toBe(freed);
+    // A computer it keeps ends as it started: one it woke is never left running.
+    if (!freed) expect([harness.net.instances.get(INSTANCE)?.status, computer(harness).status]).toEqual([startedAs, startedAs]);
     expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toHaveLength(freed ? 1 : 0);
   });
 });
