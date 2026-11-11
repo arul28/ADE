@@ -1423,13 +1423,21 @@ export function createGitOperationsService({
       return action;
     },
 
-    async fetch(args: { laneId: string; signal?: AbortSignal }): Promise<GitActionResult> {
+    /**
+     * `keepDeleted`: fetch every remote without pruning (`--all --no-prune`),
+     * for a check of unsaved work: a branch merged and deleted on GitHub keeps
+     * its tracking ref (so its squashed commits still read as saved and are
+     * never pushed back), while a force-pushed branch's ref moves to what
+     * GitHub has now.
+     */
+    async fetch(args: { laneId: string; signal?: AbortSignal; keepDeleted?: boolean }): Promise<GitActionResult> {
+      const fetchArgs = args.keepDeleted ? ["fetch", "--all", "--no-prune"] : ["fetch", "--prune"];
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_fetch",
         reason: "fetch",
         fn: async (lane) => {
-          await runGitWithGithubAuthFallbackOrThrow(["fetch", "--prune"], {
+          await runGitWithGithubAuthFallbackOrThrow(fetchArgs, {
             cwd: lane.worktreePath,
             timeoutMs: GIT_FETCH_TIMEOUT_MS,
             signal: args.signal,

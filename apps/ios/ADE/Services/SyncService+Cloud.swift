@@ -201,6 +201,8 @@ struct CloudPhoneAccount: Decodable, Equatable {
     struct Freed: Decodable, Equatable {
       let name: String
       let branch: String?
+      /// The computer held a lane, which ADE kept; nil (an older server) reads as no.
+      let laneKept: Bool?
     }
     struct Kept: Decodable, Equatable {
       let name: String

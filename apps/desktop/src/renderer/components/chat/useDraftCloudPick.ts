@@ -73,10 +73,13 @@ export function useDraftCloudPick({
   const personPickedRef = useRef(false);
   /**
    * The restore ran in this pass: the save effect after it still sees the
-   * old `current` (none, or the previous project's pick), so it skips once and
-   * the restored pick is saved when it lands.
+   * old `current` (none, or the previous project's pick), so it skips that
+   * value once and the restored pick is saved when it lands. Holding the
+   * value (not a flag) means a skip left over from a pass the save didn't run
+   * in can never swallow a later, different pick.
    */
-  const justRestoredRef = useRef(false);
+  const justRestoredRef = useRef<{ value: WorkDraftCloudTarget | null } | null>(null);
+  const currentRef = useRef<WorkDraftCloudTarget | null>(null);
   // A pick that changes no state here (This computer while the draft already
   // shows no cloud) still has to reach the save.
   const [chosenSeq, setChosenSeq] = useState(0);
@@ -90,6 +93,7 @@ export function useDraftCloudPick({
     () => draftCloudTargetOf({ ade: adePicked, adeLaneId, adeSizeId, cursor: cursorPicked, devin: devinPicked }),
     [adeLaneId, adePicked, adeSizeId, cursorPicked, devinPicked],
   );
+  currentRef.current = current;
   /** Cursor or Devin Cloud can't be picked here right now (sign-in, a chat that already started). */
   const gateClosed = useCallback((target: WorkDraftCloudTarget | null) => (
     (target?.provider === "cursor" && !cursorCanLaunch)
@@ -106,15 +110,15 @@ export function useDraftCloudPick({
     if (gateClosed(saved)) return;
     if (saved) apply(saved);
     restoredKeyRef.current = projectKey;
-    justRestoredRef.current = true;
+    justRestoredRef.current = { value: currentRef.current };
   }, [appStoreApi, apply, gateClosed, keeps, projectKey]);
 
   useEffect(() => {
     const byPerson = personPickedRef.current;
     personPickedRef.current = false;
     const justRestored = justRestoredRef.current;
-    justRestoredRef.current = false;
-    if (justRestored) return;
+    justRestoredRef.current = null;
+    if (justRestored && sameDraftCloudTarget(justRestored.value, current)) return;
     if (!keeps || !projectKey) return;
     if (restoredKeyRef.current !== projectKey) return;
     const saved = appStoreApi.getState().getWorkViewState(projectKey).draftCloudTarget;

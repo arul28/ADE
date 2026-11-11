@@ -47,7 +47,17 @@ func cloudPlanCleanupDoneSentence(_ done: CloudPhoneAccount.PlanCleanupDone) -> 
   if !done.freed.isEmpty {
     let list = done.freed.map { entry in entry.branch.map { "\(entry.name) (work on \($0))" } ?? entry.name }.joined(separator: ", ")
     let these = done.freed.count == 1 ? "this computer" : "these computers"
-    parts.append("To fit \(cloudPlanSentenceName(done.planId)), ADE pushed each lane's work to GitHub and removed \(these): \(list). Their lanes and chats stay; the next message to a lane makes a new computer.")
+    // Only a computer that held a lane keeps one: a computer made for no lane is simply gone.
+    let lanesKept = done.freed.filter { $0.laneKept == true }.count
+    let kept: String
+    if lanesKept == 0 {
+      kept = ""
+    } else if lanesKept == done.freed.count {
+      kept = " \(lanesKept == 1 ? "Its lane and chats stay" : "Their lanes and chats stay"); the next message to a lane makes a new computer."
+    } else {
+      kept = " \(lanesKept == 1 ? "The lane among them and its chats stay" : "The lanes among them and their chats stay"); the next message to a lane makes a new computer."
+    }
+    parts.append("To fit \(cloudPlanSentenceName(done.planId)), ADE pushed each lane's work to GitHub and removed \(these): \(list).\(kept)")
   }
   if !done.kept.isEmpty {
     parts.append("ADE kept \(done.kept.map(\.name).joined(separator: ", ")), because its work couldn't all be pushed to GitHub. Push its work or delete it yourself; ADE tries again tomorrow.")

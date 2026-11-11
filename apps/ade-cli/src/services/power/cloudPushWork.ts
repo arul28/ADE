@@ -7,8 +7,12 @@
 import type { AdeRuntime } from "../../bootstrap";
 
 const COMMIT_MESSAGE = "Work saved from ADE Cloud";
-/** The one fetch per project before a push: short, so a computer GitHub can't reach is kept quickly. */
-const FETCH_TIMEOUT_MS = 60_000;
+/**
+ * The whole fetch step per project, including the wait for the lane's queue
+ * (git's own fetch budget is GIT_FETCH_TIMEOUT_MS): a computer GitHub can't
+ * reach is kept quickly.
+ */
+const FETCH_STEP_TIMEOUT_MS = 60_000;
 
 /**
  * One lane as push-work left it. `unpushed`: work only on the computer (a
@@ -65,16 +69,19 @@ export async function pushCloudComputerWork(args: {
       // uncached, against the remotes (the list's `ahead` counts past the base,
       // which is 0 for the primary lane), and a read that fails is not "clean".
       const lanes = await runtime.laneService.list({ includeArchived: true, includeStatus: false });
-      // Before a push, one `fetch --prune` per project (every lane shares its
-      // refs): a branch deleted or force-pushed on GitHub must not leave a
-      // stale `origin/<branch>` that makes unpushed commits read as saved. A
-      // fetch that fails marks every lane of the project `failed`, so the
-      // computer is kept. The check (`work-state`) reads what it has.
+      // One fetch of every remote per project before the read (every lane
+      // shares its refs), in a push and in a check alike: a branch
+      // force-pushed on GitHub must not leave a stale tracking ref that makes
+      // unpushed commits read as saved. No pruning: a branch merged and
+      // deleted on GitHub keeps its ref, so its squashed commits read as saved
+      // and are never pushed back. A fetch that fails marks every lane of the
+      // project `failed`, so the computer is kept and delete says ADE couldn't
+      // read the work.
       let fetchFailed = false;
       const anchor = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0];
-      if (!args.check && anchor) {
+      if (anchor) {
         try {
-          await runtime.gitService.fetch({ laneId: anchor.id, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+          await runtime.gitService.fetch({ laneId: anchor.id, keepDeleted: true, signal: AbortSignal.timeout(FETCH_STEP_TIMEOUT_MS) });
         } catch (error) {
           fetchFailed = true;
           args.logger?.warn("cloud.push_work_fetch_failed", { error: error instanceof Error ? error.message : String(error) });

@@ -581,10 +581,14 @@ Each call is account level: it names a computer of the account, never a pin.
   (`laneService.readUnsavedWork`, read now, uncached; the primary lane is
   measured against the remotes, not its own base). A lane whose state can't be
   read reports `failed`, never `clean`. It changes nothing and uses the free
-  `push_work` wake. A push (`push-work` without `--check`) first runs one
-  `git fetch --prune` per project (60 s), so a branch deleted or force-pushed
-  on GitHub doesn't leave a stale tracking ref that hides unpushed commits; a
-  fetch that fails marks that project's lanes `failed` and keeps the computer.
+  `push_work` wake. Both the check and a push first run one
+  `git fetch --all --no-prune` per project (60 s), so a branch force-pushed on
+  GitHub doesn't leave a stale tracking ref that hides unpushed commits. No
+  pruning: a branch merged and deleted on GitHub keeps its ref, so its squashed
+  commits read as saved and are never pushed back (a branch deleted on GitHub
+  without being merged reads as saved too). A fetch that fails marks that
+  project's lanes `failed`: the computer is kept, and delete says ADE couldn't
+  read the work.
 - **Delete lane.** The computer goes, and the lane with it. ADE never refuses
   it. The work check runs first unless the person was already warned, and the
   answer says whether work was only on the computer. Saved chats stay.
