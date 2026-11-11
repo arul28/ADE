@@ -119,7 +119,20 @@ export function PassCard({
           </div>
         </>
       ) : (
-        <span style={lineStyle}>ADE can't read this pass. Remove it, or approve a new one.</span>
+        // Remove is the only thing to do here, so it is on the card, not only in the menu.
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ ...lineStyle, flex: "1 1 200px" }}>ADE can't read this pass. Remove it, or approve a new one.</span>
+          <button
+            type="button"
+            disabled={busy}
+            aria-busy={busy || undefined}
+            aria-label={`Remove ${card.title}`}
+            onClick={onRemove}
+            style={outlineButton({ height: 26, padding: "0 10px", fontSize: 12, flexShrink: 0 })}
+          >
+            Remove
+          </button>
+        </div>
       )}
     </div>
   );
@@ -130,11 +143,17 @@ function PassUse({ use, dim }: { use: PassUseModel; dim: boolean }) {
   if (use.kind === "none") return <span style={{ ...lineStyle, color: COLORS.textDim }}>No use seen yet</span>;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 7, opacity: dim ? 0.7 : 1 }}>
-      {use.windows.map((window) => (
+      {use.windows.map((window) => window.pct == null ? (
+        // No number: one line, never an empty bar that reads as 0 %.
+        <span key={window.label} style={{ fontSize: 11.5, fontFamily: SANS_FONT, color: COLORS.textDim }}>
+          <span style={{ color: COLORS.textSecondary, fontWeight: 500 }}>{window.label}</span>
+          {window.note ? `: ${window.note}` : ""}
+        </span>
+      ) : (
         <div key={window.label} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <span style={{ display: "flex", alignItems: "baseline", gap: 6, fontSize: 11.5, fontFamily: SANS_FONT }}>
             <span style={{ color: COLORS.textSecondary, fontWeight: 500 }}>{window.label}</span>
-            {window.pct != null && window.tone !== "crit" ? <span style={{ color: COLORS.textPrimary }}>{Math.round(window.pct)} %</span> : null}
+            {window.tone !== "crit" ? <span style={{ color: COLORS.textPrimary }}>{Math.round(window.pct)} %</span> : null}
             {window.note ? (
               <span style={{ marginLeft: "auto", color: window.tone === "crit" ? COLORS.danger : COLORS.textDim, textAlign: "right" }}>{window.note}</span>
             ) : null}
@@ -143,17 +162,15 @@ function PassUse({ use, dim }: { use: PassUseModel; dim: boolean }) {
             aria-hidden
             style={{ position: "relative", height: 4, borderRadius: 999, background: "color-mix(in srgb, var(--color-fg) 9%, transparent)", overflow: "hidden" }}
           >
-            {window.pct != null ? (
-              <i
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  width: `${window.pct}%`,
-                  borderRadius: 999,
-                  background: window.tone === "crit" ? COLORS.danger : "var(--color-accent)",
-                }}
-              />
-            ) : null}
+            <i
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: `${window.pct}%`,
+                borderRadius: 999,
+                background: window.tone === "crit" ? COLORS.danger : "var(--color-accent)",
+              }}
+            />
           </span>
         </div>
       ))}

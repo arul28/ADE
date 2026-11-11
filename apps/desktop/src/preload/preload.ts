@@ -84,7 +84,7 @@ import type { MachineConnectionRoutes } from "../shared/types/account";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
-import type { CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudPassEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -13167,7 +13167,7 @@ const adeBridge = {
   // account, so none of these take a pin.
   /** Whether ADE Cloud exists for this account (`renderer/state/cloudAccess.ts`). */
   cloudAccess: {
-    read: (): Promise<{ enabled: boolean }> => ipcRenderer.invoke(IPC.cloudGetAccess),
+    read: (): Promise<{ enabled: boolean; passEnd?: CloudPassEnd | null }> => ipcRenderer.invoke(IPC.cloudGetAccess),
     onChanged: (cb: () => void): (() => void) => {
       const listener = () => cb();
       ipcRenderer.on(IPC.cloudStatusChanged, listener);

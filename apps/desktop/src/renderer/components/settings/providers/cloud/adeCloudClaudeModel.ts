@@ -30,7 +30,7 @@ export type PassWindowView = {
   label: string;
   /** 0–100 for the bar, or null: no current number (never drawn as 0 %). */
   pct: number | null;
-  /** "Resets 3:40 PM", "reset since last turn", "Limit reached until 3:40 PM", "no number yet". */
+  /** "Resets 3:40 PM", "reset since the last turn", "Limit reached until 3:40 PM", "no number yet". */
   note: string | null;
   tone: "crit" | null;
 };
@@ -84,7 +84,7 @@ function windowView(label: string, window: ClaudePassUseWindow | null, now: numb
   }
   // P12: the share is from before the reset, so it is not shown.
   if (window.resetSinceSeen) {
-    return { label, pct: null, note: window.from.kind === "pass_turn" ? "reset since last turn" : "reset since then", tone: null };
+    return { label, pct: null, note: window.from.kind === "pass_turn" ? "reset since the last turn" : "reset since then", tone: null };
   }
   // P11: no number is not 0 %.
   if (window.usedPct == null) return { label, pct: null, note: "no number yet", tone: null };

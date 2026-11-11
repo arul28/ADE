@@ -193,6 +193,25 @@ export type ClaudePassLabelSource = "checked" | "pressed" | "typed" | "none";
 export type ClaudePassState = "active" | "ending_soon" | "estimate_passed" | "ended";
 
 /**
+ * The Claude pass the end warning names (`cloudAccess.read().passEnd`): the
+ * soonest pass whose notice is due (7 days before its expected end), whose
+ * expected end has passed, or that Claude ended. Computed in desktop main from
+ * the account's local pass store, only while ADE Cloud is on. No token.
+ */
+export type CloudPassEnd = {
+  key: string;
+  state: "ending" | "estimate_passed" | "ended";
+  email: string | null;
+  expiresAt: number;
+  endedAt: number | null;
+  endsInDays: number;
+  /** Other passes that are also due. */
+  more: number;
+  /** Every due pass as `key:state`: a dismiss lasts until this changes (once per pass state). */
+  fingerprint: string;
+};
+
+/**
  * Where one window of a pass's use comes from. `pass_turn`: the pass's own
  * turns on a cloud computer (`rate_limit_event`). `account_here`: the Claude
  * account with the same verified email that one of the person's computers

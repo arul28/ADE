@@ -1,7 +1,7 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
-import type { CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudPassEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
@@ -4741,7 +4741,8 @@ declare global {
        * reads as no. Account-wide, so no pin.
        */
       cloudAccess?: {
-        read: () => Promise<{ enabled: boolean }>;
+        /** `passEnd`: the end warning's Claude pass, only while ADE Cloud is on (desktop only). */
+        read: () => Promise<{ enabled: boolean; passEnd?: CloudPassEnd | null }>;
         onChanged: (cb: () => void) => () => void;
       };
       /**
