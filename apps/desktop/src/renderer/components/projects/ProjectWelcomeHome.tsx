@@ -494,13 +494,14 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const requestRef = useRef(0);
+  /** Set by the person's Retry: the next read bypasses a cached auth refusal. */
+  const forceNextRef = useRef(false);
   // What the last reload returned, as text: PR events arrive every few seconds
   // during a sync, and a reload that changed nothing must not re-render the
   // whole home page (every widget under it renders with it).
   const lastSignatureRef = useRef<string | null>(null);
   useEffect(() => {
     lastSignatureRef.current = null;
-    setLoadError(null);
     const bridge = window.ade?.prs;
     if (!projectRoot || !bridge?.getGitHubSnapshot) {
       setData({ snapshot: null, tracked: [] });
@@ -510,10 +511,14 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
     let timer: number | null = null;
     const load = async () => {
       const request = ++requestRef.current;
+      // A person's Retry forces past the cached "no GitHub sign-in" answer;
+      // automatic reloads keep the short cache.
+      const force = forceNextRef.current;
+      forceNextRef.current = false;
       // One page of closed history (cached ten minutes in main) brings the
       // week's merges with it; open PRs come in the same snapshot.
       const [snapshotResult, trackedResult] = await Promise.allSettled([
-        getGitHubSnapshotCoalesced({ automaticRefresh: true, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: projectBindingKey }),
+        getGitHubSnapshotCoalesced({ automaticRefresh: !force, force, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: projectBindingKey }),
         listPrsCoalesced({ projectRoot }),
       ]);
       if (requestRef.current !== request) return;
@@ -593,7 +598,10 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
       loaded: data != null,
       viewer,
       error: loadError,
-      retry: () => setReloadKey((key) => key + 1),
+      retry: () => {
+        forceNextRef.current = true;
+        setReloadKey((key) => key + 1);
+      },
     };
   }, [data, loadError]);
 }

@@ -1792,10 +1792,15 @@ export function FilesWorkbench({
             model={{
               id: "files-workbench-error",
               tone: "error",
-              title: error,
-              // Most of these are the person's own local state (a name in use,
-              // a permission); they are not ADE defects to report.
-              report: false,
+              // A file error can carry a path with spaces; keep it out of
+              // session replay text.
+              title: <span data-ph-mask>{error}</span>,
+              ariaLabel: error,
+              // Local, person-fixable state (a name in use, a permission) is
+              // not an ADE defect; an unexpected IPC/remote failure is.
+              report: /EEXIST|ENOENT|EACCES|EPERM|ENOSPC|EISDIR|ENOTDIR|EEXIST|Path does not exist|already exists|not a directory|permission/i.test(error)
+                ? false
+                : undefined,
               actions: [{
                 // A file operation (rename, create, delete) cannot be replayed
                 // safely from here; refreshing the tree is the honest action.

@@ -312,7 +312,10 @@ export function GitHubSection() {
     setActionError(null);
     window.ade.github
       .getStatus({ forceRefresh: true }, pin)
-      .then((status) => setGithubStatus(status))
+      .then((status) => {
+        setGithubStatus(status);
+        setStatusError(null);
+      })
       .catch((err) => setActionError(extractError(err)))
       .finally(() => setGithubBusy(false));
   };

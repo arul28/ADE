@@ -2707,7 +2707,12 @@ export function registerIpc({
    * second door behind that topology, not a capability check. Declared after
    * the scope/trace wrappers so every registration gets them too.
    */
-  const handle = createTrustedIpcHandle(getTraceLogger());
+  const handle = createTrustedIpcHandle({
+    // Resolve the active project logger at refusal time, not at registration:
+    // the context swaps on every project open, and a captured logger writes
+    // to the idle log.
+    warn: (event, data) => getTraceLogger().warn(event, data),
+  });
 
   const ensureComputerUseBroker = (): AppContextWith<"computerUseArtifactBrokerService"> => {
     const ctx = getCtx();
