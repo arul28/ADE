@@ -196,6 +196,8 @@ import {
   type PinnedProviderCli,
 } from "./pinnedProviderCli";
 import { museCredentialEnv } from "../ai/museAuth";
+import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
+import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
   buildTrackedCliResumeCommand,
@@ -2674,6 +2676,29 @@ export function createPtyService({
   disposePtyBackend?: () => void;
 }) {
   const ptys = new Map<string, PtyEntry>();
+  /**
+   * The account a new CLI session starts on when it names none, the same pick
+   * a new chat makes. Set once the chat service exists, which is created after
+   * this service; until then a launch keeps the machine's own login.
+   */
+  let pickNewCliSessionAccount: ((provider: string, modelId: string | null) => string | null | undefined) | null = null;
+  /**
+   * A new CLI session that names no account starts on the one a new chat
+   * would (smart balance, else the default), and its resume metadata records
+   * it, so it keeps that account until it ends. A named account, a harness
+   * preset, a stored key, a resume, or a session that already exists keeps
+   * what it has.
+   */
+  const withNewCliSessionAccount = (args: PtyCreateArgs): PtyCreateArgs["runtimeCliLaunch"] => {
+    const launch = args.runtimeCliLaunch;
+    if (!launch || !pickNewCliSessionAccount) return launch;
+    if (launch.instanceId?.trim() || launch.presetId?.trim() || launch.credentialId?.trim()) return launch;
+    if (args.resumeMetadata) return launch;
+    const requestedSessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+    if (requestedSessionId && sessionService.get(requestedSessionId)) return launch;
+    const instanceId = pickNewCliSessionAccount(String(launch.provider), launch.model?.trim() || null);
+    return instanceId ? { ...launch, instanceId } : launch;
+  };
   const runtimeStates = new Map<string, RuntimeStateEntry>();
   const dataListeners = new Set<PtyDataListener>();
   const exitListeners = new Set<PtyExitListener>();
@@ -6446,6 +6471,11 @@ export function createPtyService({
       }
     },
 
+    /** See `pickNewCliSessionAccount`. */
+    setNewCliSessionAccountPicker(picker: ((provider: string, modelId: string | null) => string | null | undefined) | null): void {
+      pickNewCliSessionAccount = picker;
+    },
+
     async create(args: PtyCreateArgs): Promise<PtyCreateResult> {
       const { laneId } = args;
       const title = normalizePtySessionTitle(args.title);
@@ -6460,7 +6490,7 @@ export function createPtyService({
       });
       const { laneWorktreePath: worktreePath, cwd } = launchContext;
       const { cols, rows } = clampDims(args.cols, args.rows);
-      const runtimeCliLaunch = args.runtimeCliLaunch;
+      const runtimeCliLaunch = withNewCliSessionAccount(args);
       if (runtimeCliLaunch) {
         // A routed CLI (Claude Code on an OpenAI-only model) needs ADE's proxy
         // running before the synchronous materializer resolves its endpoint.
@@ -7299,12 +7329,18 @@ export function createPtyService({
           });
         }
         const ptyLib = loadPty();
+        // A Claude CLI on a Claude pass account gets the pass here, at the
+        // spawn: never in `launchEnv`, which a tracked command can carry. The
+        // Copilot CLI on a cloud computer gets the account's Copilot token the same way.
+        const spawnEnv = isClaudeTrackedCliToolType(toolTypeHint)
+          ? withClaudePassEnv(launchEnv)
+          : toolTypeHint === "copilot" ? withCopilotCarriedEnv(launchEnv) : launchEnv;
         const opts: IWindowsPtyForkOptions = {
           name: "xterm-256color",
           cols,
           rows,
           cwd,
-          env: launchEnv
+          env: spawnEnv
         };
         let lastErr: unknown = null;
         let created: IPty | null = null;
@@ -7334,7 +7370,7 @@ export function createPtyService({
             try {
               created = await spawnPtyWhenReady(() => ptyLib.spawn(shell.file, shell.args, {
                 ...opts,
-                env: shell.env ? { ...launchEnv, ...shell.env } : launchEnv,
+                env: shell.env ? { ...spawnEnv, ...shell.env } : spawnEnv,
               }));
               selectedShell = shell;
               launchedDirectCommand = false;

@@ -17,6 +17,8 @@ import {
   type MachineUpdateTarget,
 } from "./remoteMachineModel";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { adeCloudEnabled } from "../../state/cloudAccess";
+import { selfUpdatingCloudMachineKeys } from "../../../shared/adeCloud";
 
 /**
  * "Update & restart" for other machines, as one store.
@@ -115,16 +117,35 @@ export function useKnownAdeVersions(): string[] {
 }
 
 /**
+ * The machine keys of the cloud computers that update themselves, read from
+ * the account (no pin: cloud access is the account's). Empty when ADE Cloud is
+ * off or the read fails, so a machine then keeps today's Update button.
+ * Never rejects.
+ */
+export async function readSelfUpdatingCloudKeys(): Promise<Set<string>> {
+  const listMachines = window.ade?.cloud?.listMachines;
+  if (!adeCloudEnabled() || !isAdeAvailable(listMachines)) return new Set();
+  return selfUpdatingCloudMachineKeys(await listMachines().catch(() => null));
+}
+
+/** Leaves out the cloud computers that update themselves: they are never "behind". */
+export function withoutSelfUpdatingCloud<T extends Pick<ConnectedMachine, "id" | "colorKey">>(machines: readonly T[], keys: ReadonlySet<string>): T[] {
+  return keys.size === 0 ? [...machines] : machines.filter((machine) => !keys.has(machine.colorKey ?? machine.id));
+}
+
+/**
  * Connected machines behind the newest build this computer knows on their
  * own track (`knownAdeVersions`), each with the version it would be sent.
- * Never rejects.
+ * A cloud computer that updates itself is never one. Never rejects.
  */
 export async function listOutdatedConnectedMachines(known: readonly string[]): Promise<MachineUpdateTarget[]> {
   if (known.length === 0 || !canUpdateOtherMachines()) return [];
   try {
     const snapshot = await window.ade.remoteRuntime.getConnectionSnapshot();
-    return machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), known)
+    const behind = machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), known)
       .filter((machine) => !machineUpdateIsManual(machine));
+    // The cloud list is read only when something is behind.
+    return behind.length ? withoutSelfUpdatingCloud(behind, await readSelfUpdatingCloudKeys()) : behind;
   } catch {
     return [];
   }

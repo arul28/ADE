@@ -158,6 +158,12 @@ export type ModelPickerContentProps = {
   models: readonly ModelDescriptor[];
   isAvailable: (modelId: string) => boolean;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
+  /**
+   * Families whose runtime is not installed, from the same status as
+   * `providerAuthStatus` (`familiesWithoutRuntime`). Their rows stay dimmed;
+   * without it, a family that is not ready reads as a missing sign-in.
+   */
+  providerRuntimeMissing?: Partial<Record<ProviderFamily, true>>;
   onSelect: (modelId: string, options?: ModelPickerSelection) => void;
   onRequestClose: () => void;
   /** Opens Settings › Providers › Custom from the Custom empty state. */
@@ -246,6 +252,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   models,
   isAvailable,
   providerAuthStatus,
+  providerRuntimeMissing,
   onSelect,
   onRequestClose,
   onOpenHarnessSettings,
@@ -327,6 +334,21 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     [effectiveAuth],
   );
 
+  // The family's runtime is not installed on the picker's machine, so a
+  // sign-in alone cannot make it usable: its rows stay dimmed, as before.
+  // A host that passes its own `providerAuthStatus` passes this from the same
+  // status, or nothing: then its families read as a missing sign-in.
+  const runtimeMissing = hasExternalAuthStatus ? providerRuntimeMissing : internalAuth.runtimeMissing;
+  const familyRuntimeMissing = useCallback(
+    (family: ProviderFamily): boolean => runtimeMissing?.[family] === true,
+    [runtimeMissing],
+  );
+  // Ready, or only its sign-in is missing: a click selects the model.
+  const familySelectable = useCallback(
+    (family: ProviderFamily): boolean => familyIsReady(family) || !familyRuntimeMissing(family),
+    [familyIsReady, familyRuntimeMissing],
+  );
+
   const matchesCursorAvailabilityMode = useCallback(
     (m: ModelDescriptor): boolean => {
       if (m.family !== "cursor" || cursorAvailabilityMode === "all") return true;
@@ -375,8 +397,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     }
     // Always include first-class provider families (Cursor, Droid, ACP CLIs,
     // OpenCode, local runtimes). Their models may not exist until a catalog
-    // refresh runs, but the rail entry must still be reachable without
-    // toggling "Show all models".
+    // refresh runs, but the rail entry must still be reachable with
+    // "Only models I can use" on.
     for (const family of families) set.add(family);
     // Stabilize rail order so it doesn't flicker as catalog discovery streams in.
     return families.filter((family) => set.has(family))
@@ -426,8 +448,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     searchRef.current?.focus({ preventScroll: true });
   }, [onProviderRailSelect]);
 
-  // authOnly === true hides models whose family isn't ready;
-  // when off, all models are shown (including unauthed, which the row dims + offers sign-in).
+  // authOnly ("Only models I can use") hides models whose family isn't ready;
+  // when off, all models are shown (a signed-out one is tagged "Not signed in").
   const filterAvailable = useCallback(
     (m: ModelDescriptor): boolean => {
       // Models for opencode/ollama/lmstudio require the OpenCode CLI runtime.
@@ -645,6 +667,23 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     focusRowOnNextRenderRef.current = false;
   }, [focusedIndex, renderedVirtualRows, visibleModels]);
 
+  // The provider family is signed out on this picker's machine, and its
+  // runtime is there. Only this reason leaves a model selectable: the row says
+  // "Not signed in" and a run with it fails with the usual sign-in message
+  // until the person signs in.
+  const modelNeedsSignIn = useCallback(
+    (m: ModelDescriptor): boolean => {
+      if (Object.keys(effectiveAuth).length === 0) return false;
+      const family = pickerFamilyForModel(m);
+      return !familyIsReady(family) && !familyRuntimeMissing(family);
+    },
+    [effectiveAuth, familyIsReady, familyRuntimeMissing],
+  );
+
+  // Selectable. False only for reasons other than a missing sign-in: the model
+  // needs configuration, the Cursor mode excludes it, its runtime is not
+  // installed, or the caller's own list does not offer it on a signed-in
+  // provider. Those rows stay dimmed.
   const isAvailableForUse = useCallback(
     (m: ModelDescriptor): boolean => {
       if (!matchesCursorAvailabilityMode(m)) return false;
@@ -655,15 +694,28 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       // family is authed.
       if (modelRequiresConfiguration(m)) return false;
       if (cursorAvailabilityMode === "cli" && pickerFamilyForModel(m) === "cursor" && m.cursorAvailability?.cli === true) {
-        return Object.keys(effectiveAuth).length > 0 ? familyIsReady(pickerFamilyForModel(m)) : true;
+        return Object.keys(effectiveAuth).length > 0 ? familySelectable("cursor") : true;
       }
       if (Object.keys(effectiveAuth).length > 0) {
-        if (providerAuthEstablishesModelAvailability(m)) return familyIsReady(pickerFamilyForModel(m));
-        return familyIsReady(pickerFamilyForModel(m)) && isAvailable(m.id);
+        const family = pickerFamilyForModel(m);
+        if (providerAuthEstablishesModelAvailability(m)) return familySelectable(family);
+        // A signed-out family lists none of its models, so the caller's list
+        // saying no is the sign-in, not another reason.
+        if (!familyIsReady(family)) return familySelectable(family);
+        return isAvailable(m.id);
       }
       return isAvailable(m.id);
     },
-    [cursorAvailabilityMode, effectiveAuth, familyIsReady, isAvailable, matchesCursorAvailabilityMode],
+    [cursorAvailabilityMode, effectiveAuth, familyIsReady, familySelectable, isAvailable, matchesCursorAvailabilityMode],
+  );
+
+  // One row with a Sign in button makes every row keep its column, so the
+  // capability and speed columns line up down the list.
+  const listReservesSignIn = useMemo(
+    () => Boolean(onOpenSignIn) && visibleModels.some((m) =>
+      (!isAvailableForUse(m) || modelNeedsSignIn(m))
+      && !hideSignInFamilies?.includes(pickerFamilyForModel(m))),
+    [hideSignInFamilies, isAvailableForUse, modelNeedsSignIn, onOpenSignIn, visibleModels],
   );
 
   const handleRowSelect = useCallback(
@@ -1050,17 +1102,17 @@ export const ModelPickerContent = memo(function ModelPickerContent({
             <button
               type="button"
               role="switch"
-              aria-checked={!authOnly}
+              aria-checked={authOnly}
               data-model-picker-auth-toggle="true"
               title={
                 authOnly
-                  ? "Only providers you have keys / subscriptions for. Click to include unauthenticated providers."
-                  : "Including providers you haven't signed in to. Click to hide them."
+                  ? "Showing only models you are signed in to. Click to show every model."
+                  : "Showing every model, including ones you are not signed in to. Click to hide those."
               }
               onClick={toggleAuthOnly}
               className={cn(
                 "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full border px-2 text-[10px] font-medium leading-none transition-colors",
-                !authOnly
+                authOnly
                   ? "border-violet-400/30 bg-violet-500/[0.10] text-violet-100"
                   : "border-fg/[0.08] bg-fg/[0.02] text-muted-fg/70 hover:border-fg/[0.12] hover:text-fg/85",
               )}
@@ -1069,17 +1121,17 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 aria-hidden
                 className={cn(
                   "relative inline-block h-3 w-5 rounded-full transition-colors",
-                  !authOnly ? "bg-violet-400/70" : "bg-fg/[0.10]",
+                  authOnly ? "bg-violet-400/70" : "bg-fg/[0.10]",
                 )}
               >
                 <span
                   className={cn(
                     "absolute top-[1px] inline-block h-2.5 w-2.5 rounded-full bg-fg shadow-sm transition-all duration-150",
-                    !authOnly ? "left-[9px]" : "left-[2px]",
+                    authOnly ? "left-[9px]" : "left-[2px]",
                   )}
                 />
               </span>
-              <span>Show all models</span>
+              <span>Only models I can use</span>
             </button>
             )}
           </div>
@@ -1232,6 +1284,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         isActive={isActive}
                         isFocused={isFocused}
                         isAvailable={isAvailableForUse(m)}
+                        needsSignIn={modelNeedsSignIn(m)}
+                        reservesSignInSlot={listReservesSignIn}
                         onSelect={handleRowSelect}
                         onToggleFavorite={toggleFavorite}
                         onFocus={() => setFocusedIndex(virtualRow.index)}

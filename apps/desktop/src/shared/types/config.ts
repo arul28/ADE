@@ -9,6 +9,7 @@ import type { LaneType } from "./lanes";
 import type { ModelConfig, ThinkingLevel } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
 import type { LocalProviderFamily } from "../modelRegistry";
+import type { CloudTierId } from "../cloudTiers";
 
 export type TestRunStatus = "running" | "passed" | "failed" | "canceled" | "timed_out";
 export type TestSuiteTag = "unit" | "lint" | "integration" | "e2e" | "custom";
@@ -888,8 +889,21 @@ export type AutomationLaneNamePreset =
   | "pr-title-author"
   | "custom";
 
+/**
+ * Each run's lane on its own new ADE Cloud computer, instead of on the
+ * machine that runs the rule. That machine still watches the trigger and
+ * keeps the run history; the lane and the agent's chat live on the computer.
+ * See `shared/automationCloud.ts` for what such a rule may hold.
+ */
+export type AutomationCloudTarget = {
+  /** The computer's size; null or absent = the size the person saved for new lanes. */
+  sizeId?: CloudTierId | null;
+};
+
 export type AutomationExecution = {
   kind: AutomationExecutionKind;
+  /** Set: every run makes its lane on ADE Cloud (`laneMode` "create" or "pr-branch"). */
+  cloud?: AutomationCloudTarget | null;
   /**
    * Whether each run should spawn a fresh lane (`"create"`) or reuse the
    * configured / trigger / primary lane (`"reuse"`), or require the trigger
@@ -1254,6 +1268,35 @@ export type AiProviderConnectionStatus = {
   accountEmail?: string;
   /** Subscription the account is on, e.g. "ChatGPT Pro" / "Claude Max". */
   accountPlan?: string;
+  /**
+   * The sign-in as the status read saw it: a saved login on disk, or the last
+   * check that ran this provider for real (a chat, a sign-in, Re-check).
+   * "unknown" means ADE cannot tell from what it read, for example a keychain
+   * that did not answer. Absent on older hosts; read `authAvailable` there.
+   */
+  signInState?: AiProviderSignInState;
+};
+
+export type AiProviderSignInState = "signed-in" | "signed-out" | "unknown";
+
+/** Args for `ai.verifyProviderSignIn`: the one provider to check for real. */
+export type AiVerifyProviderSignInArgs = {
+  provider: string;
+};
+
+/**
+ * The answer of `ai.verifyProviderSignIn`. It runs that provider's own check
+ * (its CLI auth command, the agent's session handshake, the SDK's auth call)
+ * with a short limit. A timeout or an error is "unknown", never a long wait.
+ */
+export type AiProviderSignInCheck = {
+  provider: string;
+  state: AiProviderSignInState;
+  /** One short sentence: why, or what the provider said. Null when there is nothing to add. */
+  reason: string | null;
+  /** The account the provider named, when it names one. */
+  account: string | null;
+  checkedAt: string;
 };
 
 export type AiProviderConnections = {

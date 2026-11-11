@@ -9,6 +9,7 @@
  */
 
 import {
+  CLOUD_MADE_BY_AGENT_METADATA,
   CLOUD_MADE_BY_CHAT_METADATA,
   isCloudInstanceId,
   cloudCatalogOf,
@@ -25,12 +26,14 @@ import {
   type CloudAccountState,
   type CloudMachine,
   type CloudMachineActionArgs,
+  type CloudMachineUpdate,
   type CloudCatalog,
   type CloudMachineActionResult,
   type CloudMachinesResult,
   type CloudResources,
 } from "../../../shared/adeCloud";
 import { CLOUD_READY_METADATA, readCloudReadyMachineState } from "../../../shared/cloudReady";
+import { cloudMachineLaneFactsOf, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider, type CloudInstance } from "./cloudProvider";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
 import { cloudSleepPolicyOf } from "./cloudSleep";
@@ -70,7 +73,13 @@ function resourcesOf(instance: CloudInstance): CloudResources | null {
   return { cpu: raw.cpu, memoryGb: raw.memory, diskGb: raw.disk };
 }
 
-function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudMachine {
+/**
+ * One computer as the list shows it. A lane computer also carries its lane
+ * facts from its metadata (`CloudLaneMachine.lane`), so the composer can list
+ * a project's ADE Cloud lanes without waking any of them.
+ */
+function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudLaneMachine {
+  const lane = cloudMachineLaneFactsOf(instance.metadata);
   const resources = resourcesOf(instance);
   const type = cloudMachineType(instance.type);
   const shape = cloudShapeFor(resources);
@@ -91,6 +100,26 @@ function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudMa
     ready: readyOf(instance),
     sleep: cloudSleepPolicyOf(instance),
     diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], catalog, instance.metadata[CLOUD_DISK_FULL_REASON_METADATA]),
+    update: updateOf(instance),
+    // Use facts the computer reported while awake: read with the list, no wake.
+    lastActiveAtMs: instance.lastActiveAt ?? null,
+    diskUsage: instance.diskUsage ?? null,
+    laneWork: instance.laneWork ?? null,
+    ...(lane ? { lane } : {}),
+  };
+}
+
+/** The server's update facts, or null from a server before updates. */
+function updateOf(instance: CloudInstance): CloudMachineUpdate | null {
+  if (!instance.channel) return null;
+  return {
+    channel: instance.channel === "beta" ? "beta" : "stable",
+    image: instance.templateVersion ?? null,
+    target: instance.targetTemplate ?? null,
+    auto: instance.autoUpdate === true,
+    state: instance.updateState === "updating" || instance.updateState === "failed" ? instance.updateState : "auto",
+    error: instance.updateState === "failed" ? instance.updateError ?? null : null,
+    updatedAtMs: instance.updatedAt ?? null,
   };
 }
 
@@ -113,6 +142,23 @@ function liveMachineKeys(instances: readonly CloudInstance[]): Set<string> {
       .map((instance) => instance.metadata[CLOUD_MACHINE_KEY_METADATA])
       .filter((key): key is string => Boolean(key)),
   );
+}
+
+/**
+ * Of these computers (as the provider lists them), the ones an agent made,
+ * copied or moved since UTC midnight (they carry `ade_made_by_chat` or
+ * `ade_made_by_agent`).
+ */
+export function countAgentMadeToday(instances: readonly CloudInstance[], nowMs: number): number {
+  const midnight = new Date(nowMs);
+  midnight.setUTCHours(0, 0, 0, 0);
+  return instances.filter((instance) => {
+    const byAgent = instance.metadata[CLOUD_MADE_BY_CHAT_METADATA] || instance.metadata[CLOUD_MADE_BY_AGENT_METADATA];
+    if (!byAgent || instance.created == null) return false;
+    // the provider answers epoch seconds; milliseconds are accepted too.
+    const createdMs = instance.created < 1e12 ? instance.created * 1000 : instance.created;
+    return createdMs >= midnight.getTime();
+  }).length;
 }
 
 /** One read of the computers for the known keys must not hold up a connect for long. */
@@ -145,17 +191,70 @@ const PUSH_ALL_WORK_TIMEOUT_MS = 3 * 60_000;
  * push-work`). The new ADE sits on the disk (`$ADE_HOME/bin`), and ADE on the
  * computer answers a few seconds after a start.
  */
-const PUSH_ALL_WORK_COMMAND = [
-  'export PATH="$ADE_HOME/bin:$PATH"',
-  'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
-  "ade cloud push-work --json",
-].join("\n");
+function pushWorkCommand(check: boolean): string {
+  return [
+    'export PATH="$ADE_HOME/bin:$PATH"',
+    'i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 25 ]; do sleep 1; i=$((i+1)); done',
+    check ? "ade cloud work-state --json" : "ade cloud push-work --json",
+  ].join("\n");
+}
+const PUSH_ALL_WORK_COMMAND = pushWorkCommand(false);
+/**
+ * Only reads which lanes have work that isn't on GitHub (`ade cloud
+ * work-state`). Never `push-work --check`: an older ADE ignores the flag and
+ * pushes. An older ADE refuses this command, so nothing changes there.
+ */
+const PUSH_WORK_CHECK_COMMAND = pushWorkCommand(true);
+/** An ADE on the computer from before `work-state`: its CLI or brain doesn't know the command. */
+const WORK_CHECK_UNKNOWN = /unknown (cloud )?command|method not found|can't read this computer's work/i;
+const WORK_CHECK_TOO_OLD = "This computer's ADE is too old to say what isn't pushed.";
 
-function readPushAllTally(stdout: string): { pushed: number; failed: number; skipped: number } | null {
+/** One lane as `ade cloud push-work` left it (`CloudPushWorkLane` in the CLI). Older computers leave the list out. */
+export type CloudPushWorkLane = {
+  laneId: string;
+  laneName: string;
+  branchRef: string;
+  primary: boolean;
+  dirty: boolean;
+  ahead: number;
+  state: "clean" | "pushed" | "failed" | "unpushed";
+};
+
+export type CloudPushWorkTally = { pushed: number; failed: number; skipped: number; lanes: CloudPushWorkLane[] | null };
+
+const PUSH_WORK_LANE_STATES = new Set<CloudPushWorkLane["state"]>(["clean", "pushed", "failed", "unpushed"]);
+
+function readPushWorkLanes(raw: unknown): CloudPushWorkLane[] | null {
+  if (!Array.isArray(raw)) return null;
+  const lanes: CloudPushWorkLane[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const lane = entry as Record<string, unknown>;
+    if (typeof lane.laneId !== "string") continue;
+    const state = PUSH_WORK_LANE_STATES.has(lane.state as CloudPushWorkLane["state"]) ? lane.state as CloudPushWorkLane["state"] : "unpushed";
+    lanes.push({
+      laneId: lane.laneId,
+      laneName: typeof lane.laneName === "string" ? lane.laneName : "",
+      branchRef: typeof lane.branchRef === "string" ? lane.branchRef : "",
+      primary: lane.primary === true,
+      dirty: lane.dirty === true,
+      ahead: Number(lane.ahead) || 0,
+      state,
+    });
+  }
+  return lanes;
+}
+
+function readPushAllTally(stdout: string): CloudPushWorkTally | null {
   try {
     const parsed = JSON.parse(stdout.trim()) as { result?: Record<string, unknown> } & Record<string, unknown>;
     const tally = parsed.result ?? parsed;
-    return { pushed: Number(tally.pushed) || 0, failed: Number(tally.failed) || 0, skipped: Number(tally.skipped) || 0 };
+    return {
+      pushed: Number(tally.pushed) || 0,
+      failed: Number(tally.failed) || 0,
+      skipped: Number(tally.skipped) || 0,
+      lanes: readPushWorkLanes(tally.lanes),
+    };
   } catch {
     return null;
   }
@@ -356,7 +455,8 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
         }
         case "delete": {
           try {
-            await client.deleteInstance(instanceId, { who: args.who ?? null, reason: "user" });
+            const keepLane = args.keepLane ? { branchRef: args.keepLane.branchRef ?? null } : null;
+            await client.deleteInstance(instanceId, { who: args.who ?? null, reason: keepLane ? "freed" : "user", ...(keepLane ? { keepLane } : {}) });
           } catch (error) {
             // A box already gone is what a delete wants.
             if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
@@ -402,6 +502,27 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
      * "Push all work to GitHub": a free short wake at 0 hours, then every lane's
      * work (committed as it stands, then pushed) over exec, so it needs no pairing.
      */
+    /**
+     * Runs `ade cloud push-work` on the computer (a check reads only) with
+     * the one wake allowed at 0 hours, and answers its tally, or null with
+     * why when it couldn't run or answered nothing ADE can read.
+     */
+    runPushWork: async (instanceId: string, options: { check: boolean }): Promise<{ tally: CloudPushWorkTally | null; error: string | null }> => {
+      const client = await deps.client();
+      if (!client) return { tally: null, error: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
+      try {
+        await wakeThroughTransition(client, instanceId, now, { reason: "push_work" });
+        const ran = await client.exec(instanceId, options.check ? PUSH_WORK_CHECK_COMMAND : PUSH_ALL_WORK_COMMAND, { timeoutMs: PUSH_ALL_WORK_TIMEOUT_MS });
+        const tally = ran.exitCode === 0 ? readPushAllTally(ran.stdout) : null;
+        logger.info?.("cloud.push_work_ran", { instanceId, check: options.check, exitCode: ran.exitCode, pushed: tally?.pushed, failed: tally?.failed });
+        if (tally) return { tally, error: null };
+        if (options.check && ran.exitCode !== 0 && WORK_CHECK_UNKNOWN.test(`${ran.stderr}\n${ran.stdout}`)) return { tally: null, error: WORK_CHECK_TOO_OLD };
+        return { tally: null, error: "ADE couldn't read this computer's work." };
+      } catch (error) {
+        logger.warn?.("cloud.push_work_failed", { instanceId, check: options.check, error: getErrorMessage(error) });
+        return { tally: null, error: getErrorMessage(error) };
+      }
+    },
     pushAllWork: async (instanceId: string): Promise<CloudMachineActionResult> => {
       const client = await deps.client();
       if (!client) return { ok: false, blocker: null, message: (await deps.whyNoClient?.()) ?? "ADE Cloud isn't available on this account yet." };
@@ -459,18 +580,11 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
       const client = await deps.client();
       return client ? (await client.getInstance(instanceId)).metadata : null;
     },
-    /** Machines an agent made, copied or moved since UTC midnight that still exist (they carry `ade_made_by_chat`). */
+    /** Machines an agent made, copied or moved since UTC midnight that still exist (`countAgentMadeToday`). */
     agentMadeToday: async (): Promise<number> => {
       const client = await deps.client();
       if (!client) return 0;
-      const midnight = new Date(now());
-      midnight.setUTCHours(0, 0, 0, 0);
-      return (await client.listInstances()).filter((instance) => {
-        if (!instance.metadata[CLOUD_MADE_BY_CHAT_METADATA] || instance.created == null) return false;
-        // the provider answers epoch seconds; milliseconds are accepted too.
-        const createdMs = instance.created < 1e12 ? instance.created * 1000 : instance.created;
-        return createdMs >= midnight.getTime();
-      }).length;
+      return countAgentMadeToday(await client.listInstances(), now());
     },
     /** Plan and hours (a costly action from elsewhere checks them). */
     account: async (): Promise<CloudAccountState | null> => {

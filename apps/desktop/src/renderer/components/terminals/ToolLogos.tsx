@@ -2,7 +2,7 @@ import React from "react";
 import { Claude, Codex, Cursor, GithubCopilot, Grok, Kimi, OpenCode, Qwen } from "@lobehub/icons";
 import type { TerminalToolType } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { DevinLogo, DroidLogo, MuseLogo, PiLogo, ProviderLogo } from "../shared/ProviderLogos";
+import { CodexAvatarMark, DevinLogo, DroidLogo, MuseLogo, PiLogo, ProviderLogo } from "../shared/ProviderLogos";
 import droidMarkSrc from "../../assets/provider-logos/droid-mark.svg";
 import piMarkSrc from "../../assets/provider-logos/pi.svg";
 import museGlyphSrc from "@lobehub/icons-static-svg/icons/meta.svg";
@@ -45,7 +45,7 @@ export const ClaudeLogo: React.FC<LogoProps> = ({ size = 16, className, appearan
 export const CodexLogo: React.FC<LogoProps> = ({ size = 16, className, appearance }) => (
   appearance === "provider-mark"
     ? <Codex size={size} className={lobeMarkClass(className)} style={{ color: "#78D6B1" }} />
-    : <Codex.Avatar size={size} className={lobeMarkClass(cn("opacity-95", className))} />
+    : <CodexAvatarMark size={size} className={className} />
 );
 
 // Round, like every provider avatar, so a shell row keeps the logo column.

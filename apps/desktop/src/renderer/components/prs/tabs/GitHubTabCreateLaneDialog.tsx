@@ -196,8 +196,11 @@ export function CreateLaneFromPrBranchDialog({
   onCancel,
   onConfirm,
   machineName = null,
+  onAdeCloud = false,
 }: {
   item: GitHubPrListItem;
+  /** The lane goes to a new ADE Cloud computer, not a checkout here. */
+  onAdeCloud?: boolean;
   /** The machine the lane will be created on, when there was a choice. */
   machineName?: string | null;
   preflight: CreateLaneFromPrBranchPreflight | null;
@@ -254,7 +257,9 @@ export function CreateLaneFromPrBranchDialog({
       open
       onOpenChange={(open) => { if (!open) onCancel(); }}
       title="Create lane from PR branch"
-      description="Check this pull request's branch out into a local lane. Give the lane a name you'll recognize in the Lanes tab."
+      description={onAdeCloud
+        ? "Check this pull request's branch out into a new lane on its own ADE Cloud computer. Give the lane a name you'll recognize in the Lanes tab."
+        : "Check this pull request's branch out into a local lane. Give the lane a name you'll recognize in the Lanes tab."}
       size="md"
       // Only point the primitive's open-time autofocus at the field once it is
       // enabled. While the preflight runs the field is disabled, so a focus
@@ -265,7 +270,7 @@ export function CreateLaneFromPrBranchDialog({
       actions={[
         { label: "Cancel", variant: "secondary", onClick: onCancel },
         {
-          label: "Create lane",
+          label: onAdeCloud ? "Create lane on ADE Cloud" : "Create lane",
           variant: "solid",
           icon: <GitBranch size={14} />,
           disabled: !canConfirm,

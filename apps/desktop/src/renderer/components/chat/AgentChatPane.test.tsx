@@ -5950,7 +5950,13 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
-    fireEvent.click((await screen.findAllByRole("button", { name: /Fast mode for/i }))[0]!);
+    // Every model is listed now, so press the chip on the chat's own model row.
+    const sessionModelRow = await waitFor(() => {
+      const row = document.querySelector<HTMLElement>(`[data-model-id="${session.modelId}"]`);
+      if (!row) throw new Error("session model row not rendered");
+      return row;
+    });
+    fireEvent.click(within(sessionModelRow).getByRole("button", { name: /Fast mode for/i }));
     fireEvent.keyDown(document, { key: "Escape" });
 
     await waitFor(() => {
@@ -6346,7 +6352,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(cursorCloudListAgents).not.toHaveBeenCalled();
   });
 
-  it("puts the sign-in card in the composer's place when the loaded history ends on a Claude auth failure", async () => {
+  it("shows the sign-in card above a kept prompt box when the loaded history ends on a Claude auth failure", async () => {
     const session = buildSession("session-1", {
       provider: "claude",
       model: "claude-sonnet-5",
@@ -6395,12 +6401,13 @@ describe("AgentChatPane submit recovery", () => {
     const card = await screen.findByTestId("provider-sign-in-composer");
     expect(card.getAttribute("data-provider")).toBe("claude");
     expect(screen.getByTestId("provider-sign-in-start")).toBeTruthy();
-    expect(screen.queryByRole("textbox")).toBeNull();
+    // The prompt box stays below the card, so typed text never hides.
+    expect(screen.getByRole("textbox")).toBeTruthy();
 
-    // Not now gives the composer back for this failure.
+    // Not now hides the card for this failure; the prompt box stays.
     fireEvent.click(screen.getByTestId("provider-sign-in-decline"));
     await waitFor(() => expect(screen.queryByTestId("provider-sign-in-composer")).toBeNull());
-    expect(await screen.findByRole("textbox")).toBeTruthy();
+    expect(screen.getByRole("textbox")).toBeTruthy();
   });
 
   it("keeps model handoff local until the next message is sent", async () => {
@@ -14446,7 +14453,8 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     const cloudRow = await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ });
     expect((cloudRow as HTMLButtonElement).disabled).toBe(true);
     await revealRowTooltip(cloudRow);
-    expect(await screen.findByText("Parallel models runs locally.")).toBeTruthy();
+    // The reason says parallel models stay on this computer; match that meaning, not the sentence.
+    expect(await screen.findByText(/Parallel models .*this computer/)).toBeTruthy();
   });
 
   it("disables the cloud row while repos load and surfaces the real API-key error with retry", async () => {

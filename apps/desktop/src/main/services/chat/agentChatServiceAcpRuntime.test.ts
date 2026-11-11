@@ -23,6 +23,7 @@ import {
 import { afterEach, describe, expect, it, test, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createDraft } from "./draftService";
+import { noteProviderModelsChanged } from "../ai/providerLoginChanged";
 
 
 // ---------------------------------------------------------------------------
@@ -1217,5 +1218,81 @@ describe("acp chat runtime", () => {
     expect(presentation?.technicalDetail).toContain("unknown flag --model");
     const done = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "done").at(-1);
     expect(done?.status).toBe("failed");
+  });
+
+  it("ends idle processes on a login change, never a running turn, and never hands out the older login's process", async () => {
+    // P5 §6. One agent per spawn, so each process is told apart by its agent.
+    const agents: MockAcpAgent[] = [];
+    const held: Array<() => void> = [];
+    let sessionCounter = 0;
+    const spawnAgent = () => {
+      const agent = createMockAcpAgent();
+      const session = () => ({ result: { sessionId: `acp-${++sessionCounter}` } });
+      agent.on("session/new", session);
+      agent.on("session/load", session);
+      agent.on("session/resume", session);
+      agent.on("session/close", () => ({ result: {} }));
+      agent.on("session/set_config_option", () => ({ result: {} }));
+      agent.on("session/cancel", () => ({ result: {} }));
+      agent.on("session/prompt", async (params) => {
+        // A prompt that says "hold" runs until the test lets it end.
+        const text = JSON.stringify(params);
+        if (text.includes("hold")) await new Promise<void>((resolve) => { held.push(resolve); });
+        return { result: { stopReason: "end_turn" } };
+      });
+      agents.push(agent);
+      return agent.child;
+    };
+    const pool = createAcpSessionPool();
+    acpTeardown.push(() => pool.disposeAll("test teardown"));
+    const events: AgentChatEventEnvelope[] = [];
+    const harness = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      acpSpawnOverride: spawnAgent,
+      acpSessionPool: pool,
+    });
+    acpTeardown.push(() => { void harness.service.disposeAll(); });
+    const open = () => harness.service.createSession({ laneId: "lane-1", provider: "grok", model: "grok-4.6", modelId: "xai/grok-4-6" });
+    const doneFor = (sessionId: string) => events
+      .filter((envelope) => envelope.sessionId === sessionId && envelope.event.type === "done")
+      .map((envelope) => envelope.event as Record<string, any>);
+    const sessionStartsOn = (agent: MockAcpAgent) => agent.methodsReceived()
+      .filter((method) => method === "session/new" || method === "session/load" || method === "session/resume").length;
+
+    const busy = await open();
+    const idle = await open();
+    await harness.service.sendMessage({ sessionId: idle.id, text: "first" });
+    await vi.waitFor(() => expect(doneFor(idle.id)).toHaveLength(1));
+    void harness.service.sendMessage({ sessionId: busy.id, text: "hold this turn" });
+    await vi.waitFor(() => expect(held).toHaveLength(1));
+    // Both chats share the one Grok process of the old login.
+    expect(agents).toHaveLength(1);
+
+    // The generation bump `noteProviderLoginChanged` makes (its cache resets are mocked here).
+    noteProviderModelsChanged("grok");
+    harness.service.restartProviderRuntimesWhenIdle("grok");
+
+    // The idle chat's next turn runs in a new process, on the new login.
+    await harness.service.sendMessage({ sessionId: idle.id, text: "second" });
+    await vi.waitFor(() => expect(doneFor(idle.id)).toHaveLength(2));
+    expect(agents).toHaveLength(2);
+    expect(sessionStartsOn(agents[1]!)).toBe(1);
+    // A new chat never gets the process the running turn still holds.
+    const fresh = await open();
+    await harness.service.sendMessage({ sessionId: fresh.id, text: "hello" });
+    await vi.waitFor(() => expect(doneFor(fresh.id)).toHaveLength(1));
+    expect(sessionStartsOn(agents[0]!)).toBe(2);
+
+    // The running turn was never cut: it ends on its own, completed.
+    expect((agents[0]!.child as unknown as { killed?: boolean }).killed).not.toBe(true);
+    expect(doneFor(busy.id)).toHaveLength(0);
+    held[0]!();
+    await vi.waitFor(() => expect(doneFor(busy.id)).toHaveLength(1));
+    expect(doneFor(busy.id)[0]?.status).toBe("completed");
+    // Then its process of the old login ends too, and its next turn starts on the new one.
+    await vi.waitFor(() => expect(agents[0]!.methodsReceived()).toContain("session/close"));
+    await harness.service.sendMessage({ sessionId: busy.id, text: "after" });
+    await vi.waitFor(() => expect(doneFor(busy.id)).toHaveLength(2));
+    expect(sessionStartsOn(agents[0]!)).toBe(2);
   });
 });

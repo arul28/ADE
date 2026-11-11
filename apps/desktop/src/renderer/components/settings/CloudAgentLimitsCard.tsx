@@ -117,7 +117,7 @@ export function CloudAgentLimitsCard() {
         ) : null}
       </div>
 
-      <p className="ade-ig-note"><Lock size={13} weight="fill" /> Always yours to decide: keeping a computer awake for good, raising these limits, and deleting a computer an agent didn't make.</p>
+      <p className="ade-ig-note"><Lock size={13} weight="fill" /> Always yours to decide: changing a computer's size, keeping a computer awake for good, raising these limits, and deleting a computer an agent didn't make.</p>
       {error ? (
         <Banner layout="inline" model={{ id: "cloud-limits-error", tone: "error", title: "What agents may do", detail: error, actions: [{ label: "Dismiss", onClick: () => setError(null) }] }} />
       ) : null}

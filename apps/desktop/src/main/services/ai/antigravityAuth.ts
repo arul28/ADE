@@ -76,8 +76,9 @@ const AGENT_PLATFORM_AMBIENT_KEYS = [
 export const ANTIGRAVITY_GEMINI_KEY_CREDENTIAL = "antigravity-gemini";
 export const ANTIGRAVITY_AGENT_PLATFORM_KEY_CREDENTIAL = "antigravity-agent-platform";
 
-const KEYCHAIN_SERVICE = "gemini";
-const KEYCHAIN_ACCOUNT: Partial<Record<AntigravityAuthMethod, string>> = {
+/** The agent's Keychain item on a Mac: this service, with one account per Google sign-in method. */
+export const ANTIGRAVITY_KEYCHAIN_SERVICE = "gemini";
+export const ANTIGRAVITY_KEYCHAIN_ACCOUNT: Readonly<Partial<Record<AntigravityAuthMethod, string>>> = {
   "oauth-personal": "antigravity-acp",
   "oauth-business": "antigravity-acp-business",
 };
@@ -283,7 +284,7 @@ function keychainItemExists(account: string): Promise<boolean> {
   return new Promise((resolve) => {
     execFile(
       "/usr/bin/security",
-      ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account],
+      ["find-generic-password", "-s", ANTIGRAVITY_KEYCHAIN_SERVICE, "-a", account],
       { timeout: 2_000, windowsHide: true },
       (error) => {
         const present = !error;
@@ -338,7 +339,7 @@ export async function inspectAntigravityCredentials(
   }
   if (env.AGY_ACP_FORCE_FILE_STORAGE?.trim()) return result(false);
   for (const candidate of tokenMethods) {
-    const account = KEYCHAIN_ACCOUNT[candidate];
+    const account = ANTIGRAVITY_KEYCHAIN_ACCOUNT[candidate];
     if (account && (await keychainItemExists(account))) return result(true);
   }
   return result(false);

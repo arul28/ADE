@@ -1,9 +1,10 @@
 name: Build the ADE Cloud template
 
-# Builds the template new ADE Cloud computers start from, from a release's tag,
-# and prints the new build number. It changes nothing else: ADE's server keeps
-# creating computers from the build it has pinned until someone tests the new
-# one and moves the version with infra/ade-cloud/promote-template.mjs.
+# Builds the template ADE Cloud computers start from, from a release's tag,
+# then tests that build on a real computer (infra/ade-cloud/promote-template.mjs)
+# and, only when the test passes, moves the image setting of the tag's update
+# channel: a prerelease tag moves Beta, a stable tag moves Stable. Cloud
+# computers on that channel then update themselves when idle or asleep.
 #
 # The release's files must be public first, because the image installs that
 # release. A stable release turns public when the release skill undrafts it,
@@ -47,6 +48,8 @@ jobs:
       cancel-in-progress: false
     env:
       TAG: ${{ inputs.tag || github.event.release.tag_name }}
+    outputs:
+      build: ${{ steps.build.outputs.build }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,6 +60,7 @@ jobs:
           node-version: 24
 
       - name: Build the template
+        id: build
         env:
           AGENT37_API_KEY: ${{ secrets.AGENT37_API_KEY }}
         run: |
@@ -67,4 +71,53 @@ jobs:
           fi
           build="$(sh infra/ade-cloud/build-template.sh ade "$TAG" | tail -n 1)"
           echo "Built $build from $TAG"
-          echo "ADE Cloud template: \`$build\` from \`$TAG\`. Test it with \`node infra/ade-cloud/promote-template.mjs ${build#*@}\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "build=${build#*@}" >> "$GITHUB_OUTPUT"
+          echo "ADE Cloud template: \`$build\` from \`$TAG\`." >> "$GITHUB_STEP_SUMMARY"
+
+  # Tests the new build the way a person uses it (a real repository opened as
+  # a project, lanes, a terminal, sleep and wake) and moves the channel's image
+  # only on a pass. A failed test moves nothing and computers stay where they are.
+  promote-template:
+    needs: build-template
+    if: ${{ needs.build-template.outputs.build != '' }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    # The test itself gives up after 20 minutes and deletes its computer.
+    timeout-minutes: 30
+    concurrency:
+      group: ade-cloud-template-promote
+      cancel-in-progress: false
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      BUILD: ${{ needs.build-template.outputs.build }}
+    steps:
+      # The workflow's own commit, not the tag: an older tag's script has no --channel.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The pinned wrangler the script runs (npx finds it here, so nothing is downloaded).
+      - name: Install the account server's tools
+        working-directory: apps/account-directory
+        run: npm ci --no-audit --no-fund
+
+      - name: Test the build and move the channel
+        env:
+          AGENT37_API_KEY: ${{ secrets.AGENT37_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AGENT37_API_KEY" ] || [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::warning::A secret for the template test is not set; ade@$BUILD stays untested and no channel moves."
+            exit 0
+          fi
+          # Any prerelease tag (beta, alpha, rc) is Beta; stable never moves to a prerelease.
+          case "$TAG" in
+            *-*) channel=beta ;;
+            *) channel=stable ;;
+          esac
+          node infra/ade-cloud/promote-template.mjs "$BUILD" --move --channel "$channel" --expect-version "$TAG" --env production
+          echo "ADE Cloud template: \`ade@$BUILD\` passed and is now the $channel image." >> "$GITHUB_STEP_SUMMARY"

@@ -18,6 +18,7 @@ import {
   providerInstanceEnvPatch,
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
+import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import {
@@ -241,7 +242,7 @@ export function createWindowAutoStartScheduler({
   };
 
   const runRequest = async (state: AutoStartTimer, opener: WindowOpener): Promise<boolean> => {
-    const env = {
+    const accountEnv = {
       ...process.env,
       ...providerInstanceEnvPatch({
         id: state.instanceId,
@@ -249,6 +250,8 @@ export function createWindowAutoStartScheduler({
         configHome: state.configHome,
       }),
     };
+    // A Claude pass account gets its token at the spawn.
+    const env = state.provider === "claude" ? withClaudePassEnv(accountEnv) : accountEnv;
     try {
       const resolved = opener.resolveExecutable(env);
       const invocation = resolveCliSpawnInvocation(resolved.path, opener.args(opener.model), env);

@@ -69,13 +69,27 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Sleep, wake for use, agent limits | `cloudSleep.ts`, `cloudSleepWatch.ts`, `cloudBrainAccess.ts` |
 | Ready machines | `cloudReadyMachines.ts`, `cloudReadyClaim.ts`, `cloudReadySettings.ts`, `cloudReadyActions.ts` |
 | Sign-ins new machines start with | `cloudSignInStore.ts`, `cloudSignInActions.ts`, `cloudSignInBoot.ts`, `cloudClaudeSignIn.ts` |
+| Claude passes (one per Claude account, cloud only) | `claudePassStore.ts`, `claudePassVerify.ts`, `claudePassEndWarning.ts`; on a machine `services/claudePass/` |
+| Account sign-ins on every computer (capture, apply, renewal) | `services/providerLogins/` (entry `providerLoginSync.ts`, one file per job) |
 | CLI and agent verbs, approvals | `cloudAgentActions.ts`, `cloudBrainMaker.ts`, `cloudDesktopActions.ts` |
+| A new lane on its own new computer (before the hand-off to its brain) | `cloudLaneLaunchService.ts`, `cloudLaneLaunchRecords.ts`, `registerCloudLaneLaunchIpc.ts` |
+| Rules on a cloud computer (one lane, Codex full access) | `cloudComputerRules.ts`, `cloudComputerLaneHold.ts` |
 | Desktop IPC | `registerCloudIpc.ts` |
 | Reaching ADE's server, access | `cloudServerProvider.ts`, `cloudAccess.ts`, `cloudVaultItems.ts` |
 | Server (account directory, `apps/account-directory/src/cloud/`) | `routes.ts`, `store.ts`, `billing.ts`, `cron.ts`, `chats.ts`, `provider.ts`, `accountDeletion.ts` |
+| Lane launch: the launch's steps and stage cards, the account status a launch checks first | `cloudLaneLaunchSteps.ts`, `cloudLaneComputerStages.ts`, `cloudAccountStatus.ts` |
+| Lane life: delete, keep the lane and free its computer, tier change, work check; the job events to every window | `cloudLaneLife.ts`, `registerCloudLaneLifeIpc.ts`, `broadcast.ts` |
+| Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
+| The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
+| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts` |
+| CLI status read (`ade cloud status`) | `apps/ade-cli/src/cliCloudStatus.ts` |
+| The launch card in chat (its step rows share one parts module with the lane job card) | `apps/desktop/src/renderer/components/chat/launch/adeCloudLaunch.ts`, `apps/desktop/src/renderer/components/chat/launch/stepCardParts.tsx` |
+| The dashboard in Settings › ADE Cloud, and the lane pieces (cities, job card, tier change, lanes without a computer) | `apps/desktop/src/renderer/components/settings/cloudDashboard/*`, `apps/desktop/src/renderer/components/cloudLane/*` |
+| Server: automatic updates, lanes without a computer, the disk usage report (migrations `0020`, `0021`, `0022` in `apps/account-directory/migrations/`) | `apps/account-directory/src/cloud/updates.ts`, `lanesWithoutComputer.ts`, `diskUsage.ts` |
 
-Shared contracts are in `apps/desktop/src/shared/adeCloud.ts`, `cloudReady.ts`
-and `cloudSignIns.ts`. On a machine, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`
+Shared contracts are in `apps/desktop/src/shared/adeCloud.ts`, `cloudReady.ts`,
+`cloudSignIns.ts`, `cloudTiers.ts` (the four lane sizes, read from the catalog)
+and `cloudLaneLaunch.ts`. On a machine, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`
 keeps it awake while it works and asks the server to sleep it 3 minutes after
 that stops (see Sleep and busy rules).
 
@@ -87,11 +101,35 @@ that stops (see Sleep and busy rules).
   Pro, move between them, and manage, which opens Stripe's portal), the
   80% / 95% / out-of-hours banners, and computers due for deletion, ending in
   "Powered by Agent 37". Settings entries are `integrations.ade-cloud*`.
-- **Add a computer and the chat picker:** New ADE Cloud computer (a size and a
-  "Full computer (Android, Docker)" switch), and `Ready` for a project that
-  keeps one.
-- **CLI:** `ade cloud` (`ade help cloud`), and `ade chat create --machine cloud:ready`.
-- **Agents:** the `ade-cloud` skill.
+- **Add a computer:** New ADE Cloud computer (a size and a "Full computer
+  (Android, Docker)" switch) in Settings and Your computers. The composer no
+  longer offers it.
+- **New lane on ADE Cloud:** a chat launch with a `cloud` target makes one
+  computer for one lane, then hands the launch to that computer's brain. See
+  [ADE Cloud lanes](../chat/README.md#ade-cloud-lanes).
+- **The composer:** "Run on" lists one ADE Cloud row (the person's lanes as a
+  small skyline), the lane list shows this project's ADE Cloud lanes from the
+  computers' metadata with no wake, and a size button picks the tier for a new
+  lane. The default size is the account preference `cloudDefaultTier`, Small
+  at first. A label above the box turns Send off when the account is out of
+  hours, uses all its computers, or has a full disk. See
+  [Run on ADE Cloud in the composer](../chat/README.md#run-on-ade-cloud-in-the-composer).
+- **Dashboard:** Settings › ADE Cloud is one tab (`settings/cloudDashboard/CloudDashboard.tsx`):
+  hours, disk and lanes against the plan, every cloud lane as a city or a list,
+  and "Free up space" at 80% of the plan's disk (`CloudFreeUpSpace.tsx`: the
+  biggest lanes first, then the longest unused; each one is kept with its
+  computer freed, or deleted). The disk measure is each computer's own
+  (`cloudDiskUsage.ts`): its repository, dependencies, Docker, Android and
+  caches, measured at its idle step at most every 6 hours and sent with its
+  last work. The dashboard reads it with the computer list, so it wakes nothing.
+  Clear caches runs on that lane's own computer, through its brain.
+- **Look:** the Night sky tokens, the cloud mark, the size icon and the skyline
+  live in `remoteTargets/cloudBrand.tsx` and `cloudBrand.css`. A light theme
+  changes the tokens there once.
+- **CLI:** `ade cloud` (`ade help cloud`), `ade chat create --machine cloud:ready`,
+  and `ade chat create --machine cloud [--size <size>]` (a new lane on its own
+  computer; see [From the CLI and agents](#from-the-cli-and-agents)).
+- **Agents:** the `ade-cloud` skill (see [Guidance for agents](#guidance-for-agents)).
 - **Phone:** the cloud page, over the `cloud.read` and `cloud.write` sync commands.
 - **Bring your own provider:** `BringYourOwnCloudCard.tsx` is layout only and
   shows only when `BRING_YOUR_OWN_CLOUD_ENABLED` is on. Nothing is wired to it.
@@ -190,8 +228,244 @@ $3 a month, a day at twice the week's mean) and emails the owner the report.
 Account vault items, scope `all`, kind `integration`: `cloud-budget` (agent
 limits only; the name is historical), `cloud-ready` (which projects keep a machine ready),
 `cloud-claude-token` and `cloud-key-<provider>` (sign-ins for new machines).
+Kind `provider_login` holds the account's provider sign-ins: `<provider>/<origin>.<slot>`
+(the origin is 12 hex of the computer's machine key) and the Claude passes,
+`claude-pass/<12 hex>` (`claude-pass/legacy` for the item older versions saved).
+The relay caps one such value at 16,000 characters. The account setting
+`providerLogins.cloud` says which sign-in ADE Cloud uses for each provider, which
+are off, and the Claude smart balance switch. Each computer keeps marks only,
+never a token, in `<ADE home>/provider-logins/state.json` and `applied.json`,
+and the use of each pass in `claude-pass-use.json`.
 Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
-`ade_made_by_chat`, `ade_disk_full` and `ade_disk_full_reason`, and the ready-machine keys in `cloudReady.ts`), plus `created_by: ade`.
+`ade_made_by_chat`, `ade_disk_full` and `ade_disk_full_reason`, the ready-machine keys in `cloudReady.ts`,
+and the lane keys `ade_lane_id`, `ade_lane_name`, `ade_project_origin` in
+`cloudLaneLaunch.ts`), plus `created_by: ade`.
+
+A create or copy that repeats a request id this account already used gets the
+computer that request made, with status 200, before any hours or limit check.
+A reservation with no computer yet answers 409 `create_in_progress` until the
+provider's list shows the computer by its tag. A reservation older than 15
+minutes with no computer is released, and a fresh create goes ahead. The
+reserve insert refuses a second live row for the same account and request id,
+so two requests at once make one computer. Another account's request id is
+still refused.
+
+The desktop keeps one record per lane launch in
+`<userData>/cloud-lane-launches/<launchId>.json` until the launch is finished
+and its cleanup is done. A brain keeps its own in
+`<machine ADE folder>/cloud-lane-launches/<launchId>.json`.
+
+## From the CLI and agents
+
+### The status read
+
+`cloud.status` (`ade cloud status`, and `ade cloud` alone) answers the whole
+account in one call: one list of the computers and one account read, so it
+wakes nothing and spends nothing. It never throws for "no ADE Cloud": the
+answer says why in `canStartLane`.
+
+- `canStartLane {ok, reason, code}`: whether a new lane can start now. The
+  reason is the sentence the composer's label shows (`cloudLaneStartBlock` in
+  `shared/cloudLaneLaunch.ts`: out of hours, all computers in use, disk
+  full), or the access sentence (`NO_PROVIDER_SENTENCE` in `cloudAccess.ts`:
+  not signed in, not available), or that ADE couldn't read the plan and hours.
+- `plan`, `hours` (left, included, used, reset date, extra hours), `disk`,
+  `computers` (in use, awake, the most at once).
+- `lanes`: every computer, lanes first, with the lane name and project origin
+  from its metadata (`lane: null` for a computer made for no lane), the lane
+  size, the catalog's hours rate, its state, its disk size and a full-disk
+  sentence, and `deletesAt` for one unused for long. ADE Cloud doesn't report
+  last use, so `lastUsedAt` is null.
+- `sizes` (`cloudTiers(catalog)`) and `defaultSize`: the account setting
+  `cloudDefaultTier` (scope `all`), read from this machine's copy of the
+  account settings; Small when nothing is saved; null when this ADE has no
+  settings store.
+- `agents`: the agent limits, the new computers agents started today (the
+  count the daily limit uses), how many are left, and the sizes agents
+  nobody watches may pick alone.
+
+`list`, `hours` and `limits` stay as narrow views of the same reads. The text
+view puts "No new lane on ADE Cloud now: <reason>" first when the answer is
+no. `cloud.status` is a read for ADE MCP read access, the phone
+(`cloud.read`) and a brain with no project open.
+
+### A new lane
+
+`ade chat create --machine cloud --size <small|medium|large|xlarge> --prompt "…"`
+makes one new computer for one new lane, gets the repository there, and starts
+the chat there. `--size` is optional: without it, the brain uses the size the
+person saved for new lanes (`CLOUD_DEFAULT_TIER_SETTING_KEY`), else Small.
+`ade chat launch --machine cloud`
+takes the same flags with `chat launch`'s lane flags (`--from`, `--lane-name`,
+`--existing-branch`). The lane starts from the pushed copy of its branch:
+`--on uncommitted` and `--on local` are refused, and so are `--notify-url`,
+`--lane`, `--project` and `--clone`. A Linear issue goes as
+`laneConfig.linearIssue` and the computer binds it to the new lane; it must be
+the whole issue (`--linear-issue-json`), because the computer has no Linear
+lookup for a bare id.
+
+`ade lanes create --machine cloud [--size …] [--launch-id <id>] --name <n>`
+makes the lane alone, with no chat: a launch of kind `lane`. Its stages are
+computer, join, clone, fetch, checkout and environment, with no agent stage,
+and it completes when the environment stage ends. It takes `--from`,
+`--branch-name`, `--existing-branch` and `--template`, and a whole Linear
+issue for a new branch. It refuses `--description` and `--no-template` for
+now. The id, replay, one-lane, cancel and delete rules are the same as for a
+chat launch.
+
+What a cloud lane is linked to, as a local lane would be: the computer's
+brain applies `laneConfig.linearIssue`, `githubIssue` and `jiraIssue` to a new
+lane (the Linear, GitHub and Jira batch sends them), and links an
+existing-branch lane to `laneConfig.pullRequestUrl` (a lane from a PR's
+branch) with `prService.linkToLane` after the checkout. A failed PR link is a
+warning on the checkout stage, not a failed launch. An older computer brain
+ignores these fields.
+
+**The CTO.** `createLane` and `spawnChat` take `machine: "cloud"` and `size`.
+They call `cloud.lane_launch` on the CTO's home brain under the CTO chat's
+identity, so the approval card shows in the CTO chat. They return when the
+launch starts, with its id, at most after the home brain's 180 s call limit.
+
+**Automations.** A rule can set `execution.cloud: { sizeId? }` ("Run on ADE
+Cloud" under "Runs on" in the builder). The machine that runs the rule still
+watches the trigger and keeps the history. Each run calls `cloud.lane_launch`
+with the run id as the launch id and the approval
+`{ by: "agent", chatSessionId: null, automation: true }`, so the agent limits
+answer (largest size, new computers a day), never the person. An agent rule
+starts a chat launch (its prompt, model and permission); a rule of built-in
+steps makes the lane alone, and then runs its ADE action steps here. The run
+waits up to 30 minutes for the chat to start or the lane to be ready. Rules
+on ADE Cloud need `laneMode` "create" or "pr-branch", no bound chat, and no
+step that works in a lane here (`automationCloudProblem`). A safe test run
+stays here. Every `ade-action` step that calls the `cloud` domain gets the
+same automation approval, whatever its args say.
+
+**Renames.** A cloud computer's brain writes a lane's new name to its
+computer's `ade_lane_name` metadata when that lane is the one the computer was
+made for (`cloudLaneNameSync.ts`). The write goes through the account server
+and wakes nothing.
+
+A CLI session can also be the first session in a new ADE Cloud lane, but only
+from the app (pick CLI, then Run on: ADE Cloud). The computer's brain parks the
+launch at `awaiting-client`. The launching window then starts the tracked CLI
+session on the new computer through `snapshot.cloud.binding`. The brain's
+`cloud.lane_launch` refuses kind `cli`, because a brain has no window to start
+a terminal in.
+
+- **Who runs it.** This computer's brain (`ade serve`), not the CLI process:
+  the brain holds the account and the provider key. The CLI calls
+  `cloud.lane_launch` and then reads `cloud.lane_launch_status` every 2 s,
+  printing the card's own status line on stderr. The core is the desktop's
+  (`cloudLaneLaunchService.ts`); `cloudLaneLaunchBrainHost.ts` fills its deps
+  in the brain. One host per process; only a process that set the machine
+  transport (`ade serve`) builds one.
+- **How it reaches the new computer.** Through the brain's agent machine
+  bridge, by account machine key, the path `--machine <name>` takes: the
+  connect probe is `projects.list`, the clone is `machines.cloneForAgent` (the
+  computer's own Git sign-in), and the hand-off is `chat.startLaunch` there.
+  The bridge has no event stream, so the brain reads the computer's
+  `chat.listLaunches` every 5 s until the launch ends.
+- **Asking first.** `lane_launch` and `lane_launch_cancel` get the RPC
+  server's caller stamp (`CLOUD_APPROVED_ACTIONS`), and `lane_launch` asks
+  with the same `approve()` as `cloud.create`: a card in an attended chat; in a
+  full-auto chat or an automation, the agent limits (daily count, largest
+  size, hours). A chatless terminal is an agent with no chat, so it is
+  refused with the same sentence as `ade cloud create`. A new launch counts
+  once toward the daily limit, and the computer carries `ade_made_by_chat`.
+  The start checks (`cloudLaneLaunchStartProblem`) run before the question,
+  then the account's (`cloudLaneStartBlock`: hours, computers, disk), so an
+  agent and an ADE MCP app get the status read's sentence before any card or
+  spend. `create` and `copy` make the same account check. An account ADE
+  couldn't read goes on: the server decides, and an unattended agent is still
+  refused for unknown hours.
+- **A person at a plain terminal.** Refused, with "Start it in the ADE app
+  (pick ADE Cloud under Run on in a new chat), or ask for it in an ADE chat,
+  where ADE can ask you." The RPC server knows a person only by the desktop's
+  client name (`mayUseUserOnlyActions`) or the trusted CTO thread. A chatless
+  `ade` at any role looks exactly like an agent's shell (the same caller id,
+  role and environment), so no signal there can prove a person.
+- **ADE MCP.** An outside app on an ADE MCP connection with write access is
+  an unattended agent: the RPC server stamps `viaAdeMcp` on its approval only
+  when the caller claims the connection, runs with the operator role, and its
+  process is one the MCP runner started and still runs
+  (`isRunningRemoteRun`). It is answered like a full-auto chat, within the
+  agent limits, and it counts toward the daily limit. A resize, a delete, a
+  move, a cancel of a lane launch and loosening the limits always need the
+  person. It has no chat, so ADE's line about its answer goes to the log. A
+  read-only connection is a chatless agent and is refused.
+- **The daily limit.** When agents have already started the day's number of
+  new computers, the refusal reads "your agents hit today's limit of N new
+  computers a day. Change it in Settings › Integrations › ADE Cloud › What
+  agents may do › New computers a day." A person is never counted.
+- **The join.** The same rule as a brain's make: the brain approves itself
+  only for an unattended yes with a headless browser here (a cloud computer);
+  otherwise the sign-in link goes to the agent's chat and to the CLI (stderr,
+  and `approvalUrl` in the status).
+- **One computer per id.** The launch id is printed first (stderr, `--json`
+  too). The same `--launch-id` again answers that launch, and a failed one
+  goes on from its failed step; the server returns the same computer for a
+  repeated request id. Ctrl-C stops only the waiting: the launch goes on in
+  the brain, which resumes saved records 5 s after it starts.
+  `ade chat launch-status <id> --machine cloud` reads it, and
+  `ade chat launch-cancel <id> --machine cloud` stops it and deletes its
+  computer (only the chat that started it, or the person).
+- **Output.** Text: the launch view with the lane, the chat and
+  `ADE Cloud · <computer>`. `--json`: `{ok, launchId, phase, laneId, laneName,
+  sessionId, machine {name, instanceId, machineKey}, approvalUrl, launch}`. A
+  failed or cancelled launch exits non-zero with the card's sentence.
+
+### The life of a lane's computer
+
+The main process runs these (`cloudLaneLife.ts`, `IPC.cloudLaneLifeCall`).
+Each call is account level: it names a computer of the account, never a pin.
+
+- **Work check.** `ade cloud push-work --check --json` on the computer reads
+  which lanes have uncommitted changes or unpushed commits. It changes
+  nothing and uses the free `push_work` wake.
+- **Delete lane.** The computer goes, and the lane with it. ADE never refuses
+  it. The work check runs first unless the person was already warned, and the
+  answer says whether work was only on the computer. Saved chats stay.
+- **Keep the lane on a fresh computer.** ADE pushes the work first. A push
+  that can't save everything keeps the computer, and freeing is refused while
+  the agent works ("Stop it or wait, then free the computer"). `ade cloud
+  work-state` lists the lanes with uncommitted or unpushed work, the same check
+  as `ade cloud push-work --check`, and pushes nothing. Then the server deletes the
+  computer with `keepLane` and keeps a lane without a computer
+  (`cloud_lanes_without_computer`, migration 0021). The 30-day rule keeps the
+  lane the same way. A new computer made for the same lane id ends the row.
+- **Tier change.** In place when the kind stays (resize), else a move to the
+  other kind. It starts when the agent is idle (the computer's
+  `keep-awake.json` shows no agent work) or now (`ade cloud prepare-stop`
+  stops the turn). Its steps go to every window (`IPC.cloudLaneJobEvent`).
+  The lane is Online only when ADE on the computer answers and has the
+  lane's project. A moved computer gets the lane's name and lane metadata.
+- **An agent asks.** `ade cloud resize --request --size large --reason "…"`
+  (`cloud.tier_request`) posts a `cloud_tier_request` card in the agent's
+  chat. It changes nothing; the person confirms on the card. An agent with
+  nobody there (a full-auto chat, an automation, an ADE MCP app) cannot change
+  a size at all: `cloud.resize` is declined for it.
+- **Push this branch?** `lane.cloudStartBranch` and `lane.pushCloudStartBranch`
+  run on the machine that has the project (pinned), before a cloud launch.
+- **Files on the first message** go to the clone on the new computer at the
+  hand-off (`uploadAttachment`), once per launch.
+- **Cancel** forgets this app's saved connection to the deleted computer.
+
+The launch writes the lane's branch into the computer's metadata
+(`ade_lane_branch`) once the brain names it.
+
+## Guidance for agents
+
+One text serves every agent: `apps/desktop/resources/agent-skills/ade-cloud/SKILL.md`.
+ADE's own agents load it as the `ade-cloud` skill. ADE MCP serves bundled
+skills as prompts, so outside apps get the same text as the `ade-cloud`
+prompt; the server's instructions say to run `cloud status` and follow that
+prompt, and the `ade-mcp-client` skill has the three-step version. Both are
+shown only to an account with ADE Cloud access (`setAdeCloudSkillVisible`).
+The skill states, in order: what ADE Cloud is, read the status first and stop
+on a no, how to start a lane (size, approval card, daily limit, the terminal
+rule), how to follow, retry and cancel, what each refusal means, cleanup
+before any delete, and what an agent must never do. Rates are never in the
+text: an agent reads them from the status.
 
 ## The machine template
 
@@ -199,12 +473,99 @@ Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
 `ADE_HOST_INSTANCE_ID=cloud:<hostname>` and `ADE_CLOUD_INSTANCE_ID`, the only
 variables the rest of ADE reads to know it runs on a cloud machine. ADE does
 not build the template from the app: every release builds it
-(`.github/workflows/cloud-template.yml`), and a tested build is moved to with
-`infra/ade-cloud/promote-template.mjs`. The server creates from one pinned
-version; the client doesn't choose. "Update this computer" moves one computer
-to it (`updateInstance`).
+(`.github/workflows/cloud-template.yml`), tests the build on a real computer
+and moves the image of the tag's update channel only on a pass
+(`infra/ade-cloud/promote-template.mjs`). The server creates from the pinned
+image of the computer's channel; the client picks only the channel. "Update
+this computer" moves one computer to it (`updateInstance`).
 On first boot a new machine installs the ADE version of the app that made it,
 when the image's ADE is older.
+
+## Updates
+
+Cloud computers update themselves: image and ADE together, onto their
+channel's image, only when nothing runs on them. The server's rules are in
+`apps/account-directory/src/cloud/updates.ts`.
+
+- **Channels.** The server keeps one image per channel in `cloud_settings`:
+  `template_version_stable` and `template_version_beta` (`template_version` is
+  the older single setting and the fallback; a Stable move writes both). A
+  computer follows the channel of the app that made it: the create sends
+  `channel` from the machine's update track (`~/.ade/update-track.json`, else
+  the build's track; an Alpha build makes Beta computers). A copy follows its
+  original. The column is `cloud_computers.channel`.
+- **When.** Idle: when the keep-awake loop
+  (`apps/ade-cli/src/services/power/cloudKeepAwake.ts`) would sleep the
+  computer, it first asks `GET /cloud/instances/:id/update-check`. When the
+  computer is behind, it calls `POST .../update` with
+  `{ reason: "idle", computerIdle: true }` instead of sleeping, and the new
+  brain sleeps it once idle again. Asleep: the minute cron updates up to three
+  computers per tick that slept 10 minutes or more and are behind, unless the
+  account is out of hours, over the plan's disk, or the computer is in cold
+  storage or a move. Never while work runs.
+- **Only a tested image.** Automatic updates go only to the image a passed
+  template test named in `auto_update_<channel>` (`off` stops them). A
+  person's "Update this computer" (`ade cloud update`) goes to the channel's
+  image whatever it says, and one update runs at a time (`409 update_in_progress`).
+- **Proof and rollback.** Every brain start sends
+  `POST /cloud/instances/:id/booted { adeVersion }`, which settles a waiting
+  update (`updated_at`). An automatic update with no report 15 minutes after
+  the computer came up has failed: the cron moves it back once to
+  `previous_template`, sets `update_state = 'failed'`, `update_error` and
+  `update_failed_template`, and never tries that image on its own again (a
+  newer image clears it). A rollback that fails or never reports stays failed
+  and is never retried on its own. An update to an image older than boot
+  reports is settled after 15 minutes, not rolled back.
+- **Hours.** The minutes awake for an automatic update or a rollback are free.
+  They use the push-work wake's free window (`free_wake_started_at`,
+  `free_wake_until`, `awake_since` held at its end), which settling and the
+  daily reconcile already leave out. The boot report closes the window, so
+  hours count from then on; a computer the cron woke only for the update
+  sleeps at its first idle check. Asleep, the update does not reset the
+  30-day delete clock. A person's update is metered as before.
+- **What people see.** Where another machine has an Update button (Settings
+  "Update other machines", the General page rows, the Machines list), a cloud
+  computer shows one line: "Updates itself when idle", "Updating…", or
+  "Update failed: <why>." with Retry (the person's update). `ade cloud status`
+  and the `cloud.status` action give each computer's `update {image, channel,
+  target, state, error}`. Each update and rollback writes a row to
+  `cloud_power_log` (reason `update_manual`, `update_idle`, `update_asleep`,
+  `update_rollback`).
+
+## Rules on a cloud computer
+
+`adeCloud/cloudComputerRules.ts` holds the check (`isAdeCloudComputer`,
+the `ADE_CLOUD_INSTANCE_ID` variable) and every sentence of these rules. The
+keep-awake code reads the same function. A normal computer never meets these
+rules.
+
+- **One lane per cloud computer, across every project on it.** An archived
+  lane counts; a primary lane never does. `laneService.ts` checks at every
+  place a lane row comes to exist (create, import, adoption of a worktree
+  found on disk), with the computer-wide count and the lock against two
+  creates at once in `cloudComputerLaneHold.ts`. On Linux the machine
+  template's own file also marks the computer, so a process with a filtered
+  environment meets the rule too. The refusal is `CloudComputerLaneLimitError`
+  (an expected `user` error). For an active lane: "This ADE Cloud computer
+  already holds a lane, and each cloud computer holds one. Start a new lane on
+  ADE Cloud instead: it gets its own computer." For an archived one: "This
+  ADE Cloud computer belongs to the archived lane "<name>". Restore that lane
+  to use this computer again, or start a new lane on ADE Cloud: it gets its
+  own computer." A chat launch and the destination check of a hand-off give
+  the same sentence before any work starts. The launch's own lane, a chat
+  moved or copied to a new computer, an unarchive, and a restore when the
+  computer holds no other lane are not refused. A computer from the older
+  flow that holds several lanes keeps them all and cannot get one more. See
+  [One lane per ADE Cloud computer](../lanes/README.md#one-lane-per-ade-cloud-computer).
+- **Codex runs with full access.** A Codex chat there runs with approval
+  `never` and the `danger-full-access` sandbox, set on the chat's own fields at
+  create, load, every update and every thread start, so the mode the chat
+  shows is the mode that runs. Plan (a read-only sandbox, also every side
+  chat), a chat an agent started or spawned (the permission ceiling), a
+  recovery chat (it copies the mode of the chat it continues), and a chat
+  with a host permission policy keep their mode. An agent's update is
+  judged at full access, so an agent can never lift a chat past its own level
+  this way. Other providers are unchanged.
 
 ## Sleep and busy rules
 
@@ -212,7 +573,10 @@ One busy list, `decideCloudBusy` in `apps/ade-cli/src/services/power/cloudKeepAw
 fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
 
 - Busy: a running chat turn, a real running command, an agent CLI actually working,
-  setup, first clone, move, copy (holds in `$ADE_HOME/cloud/holds/*.json`), someone
+  setup, a new-lane launch still setting up (`lane_setup`: fetch, checkout,
+  environment), first clone, move, copy, a lane launch between join and its
+  hand-off (`lane_launch`, a 30-minute hold the desktop sets and releases)
+  (holds in `$ADE_HOME/cloud/holds/*.json`), someone
   watching a tool (`work_tools.noteWatching`, once a minute, from the desktop, while
   its window is in front and the person moved in the last 3 minutes).
 - A hold also counts as use when it ends (`holdCloudWork` in `cli.ts`): the checks

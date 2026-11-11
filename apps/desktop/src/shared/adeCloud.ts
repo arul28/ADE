@@ -2,6 +2,11 @@ import type {
   CloudAccountState,
   CloudCatalog,
   CloudDiskRefusalReason,
+  CloudDiskUsage,
+  CloudDiskUsageItem,
+  CloudDiskUsageKind,
+  CloudDiskUsageReport,
+  CloudLaneWork,
   CloudHoursState,
   CloudPaidPlanId,
   CloudPlanChangeTiming,
@@ -389,7 +394,71 @@ export type CloudMachine = {
   sleep: CloudSleepPolicy;
   /** A plain sentence when its disk is full and can't grow, or null. */
   diskFull: string | null;
+  /** How it keeps its image and ADE current. Absent from servers before updates. */
+  update?: CloudMachineUpdate | null;
+  /** When it last did work (its own report), else when it was last awake; null when unknown. */
+  lastActiveAtMs?: number | null;
+  /** What uses its disk, as it last measured itself while awake; null before its first measure. */
+  diskUsage?: CloudDiskUsage | null;
+  /** Its lane's work as it last read it while awake (unpushed, the pull request); null before its first report. */
+  laneWork?: CloudLaneWork | null;
 };
+
+/**
+ * A cloud computer updates itself (the server's `updates.ts`): when it is idle
+ * or asleep, never while work runs, onto its channel's image.
+ */
+export type CloudMachineUpdate = {
+  channel: "stable" | "beta";
+  /** The image it runs and the one its channel is on (`ade@N`). */
+  image: string | null;
+  target: string | null;
+  /**
+   * Its channel's automatic updates are on, so it updates itself. False when
+   * the channel is `off`: it then keeps the ordinary Update button.
+   */
+  auto: boolean;
+  /** `auto`: settled, it updates itself when idle. */
+  state: "auto" | "updating" | "failed";
+  /** Why the last update failed, one plain sentence; null unless `failed`. */
+  error: string | null;
+  updatedAtMs: number | null;
+};
+
+/**
+ * A cloud computer that updates itself: its server reports updates and its
+ * channel's automatic updates are on. Such a computer shows `cloudUpdateLine`
+ * instead of an Update button and never counts as behind.
+ */
+export function cloudMachineSelfUpdating(box: Pick<CloudMachine, "update"> | null | undefined): boolean {
+  return box?.update?.auto === true;
+}
+
+/**
+ * The machine keys of the cloud computers that update themselves, from a
+ * cloud list. A machine's connection names it by this key (its color key).
+ */
+export function selfUpdatingCloudMachineKeys(result: CloudMachinesResult | null | undefined): Set<string> {
+  if (result?.state !== "ok") return new Set();
+  return new Set(result.machines.flatMap((box) => (box.machineKey && cloudMachineSelfUpdating(box) ? [box.machineKey] : [])));
+}
+
+/**
+ * The one line a cloud computer shows where another machine has an Update
+ * button. `retry`: the line offers the person's own update again.
+ */
+export function cloudUpdateLine(update: CloudMachineUpdate | null | undefined): { text: string; tone: "muted" | "busy" | "error"; retry: boolean } {
+  if (update?.state === "updating") return { text: "Updating…", tone: "busy", retry: false };
+  if (update?.state === "failed") {
+    const reason = update.error?.trim().replace(/\.$/, "") ?? "";
+    return {
+      text: reason ? `Update failed: ${reason.charAt(0).toLowerCase()}${reason.slice(1)}.` : "Update failed.",
+      tone: "error",
+      retry: true,
+    };
+  }
+  return { text: "Updates itself when idle", tone: "muted", retry: false };
+}
 
 /*
  * Sleep. the provider puts a box to sleep once nothing has reached its URLs for
@@ -406,6 +475,21 @@ export const CLOUD_WAKE_PORT_LABEL = "ADE wake";
 export const CLOUD_BACKSTOP_SLEEP_MINUTES = 5;
 /** The chat whose agent made a machine (create, copy, move): only that chat's unattended agent may delete it. */
 export const CLOUD_MADE_BY_CHAT_METADATA = "ade_made_by_chat";
+/**
+ * Which kind of agent made a machine (`chat`, `automation`, `mcp`), also with
+ * no chat: the agents' daily limit counts it from the account's list, so it
+ * holds across restarts and brains. A person's own make carries neither key.
+ */
+export const CLOUD_MADE_BY_AGENT_METADATA = "ade_made_by_agent";
+export type CloudAgentMaker = "chat" | "automation" | "mcp";
+
+/** The made-by keys for a new machine's metadata; empty for a person's own make. */
+export function cloudMadeByMetadata(made: { madeByChat?: string | null; madeByAgent?: CloudAgentMaker | null }): Record<string, string> {
+  return {
+    ...(made.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: made.madeByChat } : {}),
+    ...(made.madeByAgent ? { [CLOUD_MADE_BY_AGENT_METADATA]: made.madeByAgent } : {}),
+  };
+}
 
 /**
  * Set by the computer's brain when its disk is full and can't grow:
@@ -575,7 +659,7 @@ export function describeCloudSleepPolicy(policy: CloudSleepPolicy): string {
  * without asking. An agent the person is watching always asks.
  */
 export type CloudAgentLimits = {
-  /** False: an unattended agent may not make, copy, move or resize anything. */
+  /** False: an unattended agent may not make, copy or move anything. A size change always needs the person. */
   unattendedSpend: boolean;
   /** New machines (made, copied or moved) unattended agents may start in a UTC day. */
   machinesPerDay: number;
@@ -609,6 +693,7 @@ export function cloudShapeWithin(shape: CloudShapeId, max: CloudShapeId): boolea
 }
 
 export type { CloudAccountState, CloudCatalog, CloudHoursState, CloudPaidPlanId, CloudPlanChangeTiming };
+export type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageKind, CloudDiskUsageReport, CloudLaneWork };
 
 /** What opening checkout did: a browser page opened, or the plan changed without one. */
 export type CloudOpenCheckoutResult = { opened: boolean; change?: CloudPlanChangeTiming };
@@ -762,6 +847,12 @@ export type CloudMachineActionArgs = {
   machineKey?: string | null;
   /** For `delete`: who asked, for the server's delete log (an agent's chat; a person's desktop leaves it unset). */
   who?: string | null;
+  /**
+   * For `delete`: keep the lane the computer was made for, as a lane without
+   * a computer on `branchRef` ("Keep the lane on a fresh computer"). The
+   * caller pushed its work first.
+   */
+  keepLane?: { branchRef: string | null } | null;
 };
 
 export type CloudMachineActionResult = {

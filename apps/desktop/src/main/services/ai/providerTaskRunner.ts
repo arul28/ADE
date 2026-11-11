@@ -21,6 +21,7 @@ import { getApiKey } from "./apiKeyStore";
 import { parseStructuredOutput } from "./utils";
 import { runOpenCodeTextPrompt } from "../opencode/openCodeSession";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
+import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";
 import { runCursorSdkLocalPrompt } from "../chat/cursorSdkPool";
 import { resolveCursorSdkModelSelectionParams } from "../chat/cursorModelSelection";
@@ -234,13 +235,15 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   cliArgs.push("-p");
 
   const resolved = await requirePinnedProviderExecutable("claude", () => resolveClaudeCodeExecutable());
+  // The whole env, so a Claude pass account gets its token at the spawn.
+  const baseEnv = withClaudePassEnv({ ...userProcessEnv(), ...providerSelfUpdateEnv("claude"), ...args.accountEnv });
   const run = (command: string) => runCommand({
     command,
     argv: cliArgs,
     cwd: args.cwd,
     timeoutMs: args.timeoutMs,
     stdinText: prompt,
-    env: { ...providerSelfUpdateEnv("claude"), ...args.accountEnv },
+    baseEnv,
   });
   let result = await run(resolved.path);
   const versionRejection = claudeTaskVersionRejection(result);

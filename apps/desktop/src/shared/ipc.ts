@@ -990,6 +990,7 @@ export const IPC = {
   apiCredentialsRemove: "ade.apiCredentials.remove",
   apiCredentialsGet: "ade.apiCredentials.get",
   aiVerifyApiKey: "ade.ai.verifyApiKey",
+  aiVerifyProviderSignIn: "ade.ai.verifyProviderSignIn",
   aiUpdateConfig: "ade.ai.updateConfig",
   aiGetContinueAfterRestart: "ade.ai.getContinueAfterRestart",
   aiSetContinueAfterRestart: "ade.ai.setContinueAfterRestart",
@@ -1152,6 +1153,13 @@ export const IPC = {
   cloudCreateProgress: "cloud:createProgress",
   cloudCancelCreate: "ade.cloud.cancelCreate",
   cloudStatusChanged: "cloud:statusChanged",
+  /**
+   * ADE Cloud lane launches: one call for every `chatLaunch` method, answered
+   * by this app while it owns the launch (`cloudLaneLaunchService.ts`), and
+   * their snapshots to every window.
+   */
+  cloudLaneLaunchCall: "ade.cloud.laneLaunch.call",
+  cloudLaneLaunchEvent: "cloud:laneLaunchEvent",
   cloudSavedChatsList: "ade.cloud.savedChats.list",
   cloudSavedChatsRead: "ade.cloud.savedChats.read",
   cloudSavedChatsDelete: "ade.cloud.savedChats.delete",
@@ -1172,6 +1180,10 @@ export const IPC = {
   cloudOpenBillingPortal: "ade.cloud.openBillingPortal",
   cloudPersonIsHere: "ade.cloud.personIsHere",
   cloudPushAllWork: "ade.cloud.pushAllWork",
+  /** Delete lane, keep a lane on a fresh computer, lanes without a computer, tier changes (`cloudLaneLife.ts`). Account level. */
+  cloudLaneLifeCall: "ade.cloud.laneLife.call",
+  /** A tier change's steps (`CloudLaneJobSnapshot`), to every window. */
+  cloudLaneJobEvent: "cloud:laneJobEvent",
   cloudCopyMachine: "ade.cloud.copyMachine",
   cloudMoveMachine: "ade.cloud.moveMachine",
   cloudReconnectMachine: "ade.cloud.reconnectMachine",
@@ -1179,6 +1191,7 @@ export const IPC = {
   cloudSignInStatus: "ade.cloud.cloudSignInStatus",
   cloudSignInClaudeStart: "ade.cloud.cloudSignInClaudeStart",
   cloudSignInClaudeCode: "ade.cloud.cloudSignInClaudeCode",
+  cloudSignInClaudeKeep: "ade.cloud.cloudSignInClaudeKeep",
   cloudSignInClaudeCancel: "ade.cloud.cloudSignInClaudeCancel",
   cloudSignInSaveKey: "ade.cloud.cloudSignInSaveKey",
   cloudSignInRemove: "ade.cloud.cloudSignInRemove",
@@ -1195,6 +1208,12 @@ export const IPC = {
   accountSettingsSet: "ade.accountSettings.set",
   accountSettingsRemove: "ade.accountSettings.remove",
   accountSettingsSync: "ade.accountSettings.sync",
+  /**
+   * The account's provider sign-ins (P5) on this computer's brain, with no
+   * project bound: `{ action, args }` through the brain's `providerLogins.call`.
+   * A bound or pinned window calls the `provider_logins` action domain instead.
+   */
+  providerLoginsCall: "ade.providerLogins.call",
 
   /**
    * Settings > Integrations > MCP servers: what the renderer cannot do itself. It reads and

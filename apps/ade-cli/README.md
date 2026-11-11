@@ -574,6 +574,7 @@ ade lane drift --lane lane-id --text              # did someone `git checkout` i
 ade lane drift resolve --lane lane-id --switch-back        # put the worktree back on the lane's branch (refuses on a dirty tree)
 ade lane drift resolve --lane lane-id --keep-head          # re-point the lane (and its name) at the live HEAD branch
 ade lane drift resolve --lane lane-id --keep-head --expected-head hotfix-auth --force   # --expected-head guards a stale read; --force acknowledges active work
+ade lanes create --machine cloud --size medium --name fix-login   # the lane alone, on its own new ADE Cloud computer (small, medium, large, xlarge); asks first; prints the launch id on stderr
 ade lanes rename lane-id --name "OAuth refactor"            # rename the lane; its branch keeps its name
 ade lanes reclaim-preview lane-id --text                   # show reclaimable space and anything that needs review
 ade lanes archive lane-id                                  # archive, and bring down the Docker services the lane's env init started (best-effort; a failed teardown still archives)
@@ -907,8 +908,16 @@ ade secrets delete STRIPE_API_KEY
 ade secrets request WEBHOOK_SECRET --reason "Signs deliveries" --generate  # private secret card in the chat; prints the outcome, never the value
 ade integrations status --text                    # GitHub, Linear, Jira: connected here or not, and as whom; never a credential
 ade integrations connect linear --reason "…"      # connect card in the chat (browser sign-in or key); saved for the project on your machines, prints the outcome
+ade cloud status --text                         # the whole ADE Cloud account in one read: can a new lane start (the reason when not), plan, hours, disk, computers, each lane, sizes, default size, agent limits; `ade cloud` alone is the same
 ade cloud ready --json                          # ADE Cloud ready machines per project: ready / preparing / in use / failed
 ade chat create --machine cloud:ready --prompt "…"  # start on this project's ready ADE Cloud machine: wakes it, waits until it is online, then sends
+ade chat create --machine cloud --size medium --prompt "…"  # a new lane on its own new ADE Cloud computer (small, medium, large, xlarge; default small); asks first; prints the launch id on stderr
+ade chat create --machine cloud --launch-id <id> --prompt "…"  # the same id again: follows that launch, or goes on from its failed step, never a second computer
+ade chat launch-status <id> --machine cloud        # an ADE Cloud lane launch: stages, the computer, the approval link while the join waits
+ade chat launch-cancel <id> --machine cloud        # stop it before the chat starts and delete its computer
+ade cloud work-state --json                       # ADE Cloud: the lanes of this cloud computer with uncommitted or unpushed work; pushes nothing
+ade cloud push-work --check --json                # the same check; without --check it commits and pushes every lane (ADE's server runs it before a free)
+ade cloud resize --request --size large --reason "…"  # ask the person to change this computer's size: a card in the chat, nothing changes; an agent with nobody there cannot resize
 ade usage snapshot --text                          # live quota headroom per window, the account it belongs to, and the provider limits link
 ade usage stats --preset 7d --text                 # tokens, cost, and activity for a range
 ade usage stats --scope account --text             # merged across every machine on the account

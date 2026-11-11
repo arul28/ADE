@@ -2,6 +2,7 @@ import * as Sentry from "@sentry/cloudflare";
 import type { CallerTokenEnv } from "../callerToken";
 import { overPlanDiskSentence, type CloudAccountState, type CloudExtraDiskState, type CloudHoursState, type CloudInstance, type CloudPlanFacts, type CloudPlanId } from "./contract";
 import type { CloudEmailEnv } from "./email";
+import { RECENT_USE_DAYS, recentUsedMilli } from "./diskUsage";
 import {
   CLOUD_PLANS,
   CENT_MICROS,
@@ -20,6 +21,7 @@ import {
   type CloudPaidPlanId,
 } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
+import { keepLaneStatement, laneFactsOf } from "./lanesWithoutComputer";
 
 /**
  * The computers and accounts in D1, and the one place that moves hours. Live
@@ -85,6 +87,36 @@ export type ComputerRow = {
   zero_stop_started_at: number | null;
   delete_warned_7d_at: number | null;
   delete_warned_1d_at: number | null;
+  /** Updates (migration 0020, `updates.ts`): the channel the computer follows, `stable` or `beta`. */
+  channel: string;
+  /** The image before the last update, for the rollback. */
+  previous_template: string | null;
+  /** null, `updating` (waiting for the boot report) or `failed`. */
+  update_state: string | null;
+  update_started_at: number | null;
+  /** `manual`, `idle`, `asleep` or `rollback`. */
+  update_reason: string | null;
+  /** The last boot report on a new image. */
+  updated_at: number | null;
+  /** An image this computer failed to start on: never tried again on its own. */
+  update_failed_template: string | null;
+  update_error: string | null;
+  /** Whether the update in flight's image sends a boot report (1/0), saved at its start; null before migration 0020's column. */
+  update_expects_report?: number | null;
+  /** The lane the computer holds (migration 0021, `lanesWithoutComputer.ts`), kept here so no live read is needed to keep it. */
+  lane_id?: string | null;
+  lane_name?: string | null;
+  lane_project_origin?: string | null;
+  lane_branch?: string | null;
+  /** `freed` or `inactive` while a delete that keeps the lane runs: closing the row writes the lane's row. */
+  lane_keep_reason?: string | null;
+  /** Use facts (migration 0022, `diskUsage.ts`): the last disk measure, as JSON, and when it was taken. */
+  disk_usage_json?: string | null;
+  disk_measured_at?: number | null;
+  /** When the computer last did work, as it reported at its idle step. */
+  last_active_at?: number | null;
+  /** Its lane's work (`CloudLaneWork`), as JSON. */
+  lane_work_json?: string | null;
 };
 
 export type AccountRow = {
@@ -230,7 +262,7 @@ export function restartStretchStatements(env: CloudEnv, computer: ComputerRow, n
 }
 
 /** The free push-work time of a closing stretch, so the daily reconcile doesn't charge it. */
-function freeWakeStatements(env: CloudEnv, computer: ComputerRow, closedAt: number, guard: StatusGuard): D1PreparedStatement[] {
+export function freeWakeStatements(env: CloudEnv, computer: ComputerRow, closedAt: number, guard: StatusGuard): D1PreparedStatement[] {
   if (computer.free_wake_started_at == null || computer.free_wake_until == null) return [];
   const freeEnd = Math.min(closedAt, computer.free_wake_until);
   return splitByUtcDay(computer.free_wake_started_at, freeEnd).map(({ day, ms }) =>
@@ -328,19 +360,34 @@ export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: 
   const statements = settleStatements(env, computer, now, statusGuard(computer));
   computer.awake_since = null;
   computer.deleted_at = now;
-  statements.push(env.DB.prepare("update cloud_computers set deleted_at = ?, awake_since = null, status = 'deleted', status_changed_at = ? where instance_id = ?")
-    .bind(now, now, computer.instance_id));
+  // The disk breakdown, the lane's work (branch names, pull request state) and the lane's facts go with the computer.
+  statements.push(env.DB.prepare(`
+    update cloud_computers set deleted_at = ?, awake_since = null, status = 'deleted', status_changed_at = ?, disk_usage_json = null, lane_work_json = null,
+      lane_id = null, lane_name = null, lane_project_origin = null, lane_branch = null, lane_keep_reason = null
+    where instance_id = ?
+  `).bind(now, now, computer.instance_id));
   return statements;
 }
 
-/** The log entry and the closed row for a computer that's gone. */
+/**
+ * The log entry and the closed row for a computer that's gone. A row marked to
+ * keep its lane (`lane_keep_reason`, set just before the delete) writes the
+ * lane's row in the same batch, read from the row as stored, so a close after a
+ * crash (the tick finding the computer gone) keeps it too. An account being
+ * deleted keeps nothing.
+ */
 export function closedComputerStatements(
   env: CloudDb,
   computer: ComputerRow,
   args: { who: string | null; reason: string; events: unknown[] | null },
   now: number,
 ): D1PreparedStatement[] {
-  return [deleteLogStatement(env, computer, args, now), ...markDeletedStatements(env, computer, now)];
+  return [
+    deleteLogStatement(env, computer, args, now),
+    // Before the close below clears the lane's facts.
+    ...(args.reason === "account_deleted" ? [] : [keepLaneStatement(env, computer.instance_id, now)]),
+    ...markDeletedStatements(env, computer, now),
+  ];
 }
 
 /** A computer the provider no longer has, though nobody here deleted it. */
@@ -382,12 +429,27 @@ export function adoptionStatements(
   args: { pendingId: string; instance: CloudInstance; machineKey: string | null; now: number; reason: string },
 ): D1PreparedStatement[] {
   const { pendingId, instance, machineKey, now, reason } = args;
+  // A reservation made before the row kept lane facts gets them from the instance.
+  const lane = laneFactsOf(instance.metadata);
   return [
     env.DB.prepare(`
       update cloud_computers set instance_id = ?, machine_key = coalesce(?, machine_key), status = ?, status_changed_at = ?,
-        awake_since = ?, last_awake_at = ?
+        awake_since = ?, last_awake_at = ?,
+        lane_id = coalesce(lane_id, ?), lane_name = coalesce(lane_name, ?), lane_project_origin = coalesce(lane_project_origin, ?),
+        lane_branch = coalesce(?, lane_branch)
       where instance_id = ? and not exists (select 1 from cloud_computers where instance_id = ?)
-    `).bind(instance.id, machineKey, instance.status, now, isMeteredStatus(instance.status) ? now : null, now, pendingId, instance.id),
+    `).bind(
+      instance.id, machineKey, instance.status, now, isMeteredStatus(instance.status) ? now : null, now,
+      lane.laneId, lane.laneName, lane.projectOrigin, lane.branch,
+      pendingId, instance.id,
+    ),
+    // The lane this computer is for has a computer again. In the adoption's
+    // batch, and safe to repeat, so a create that died after it (or a replay
+    // of it) can't leave the lane listed twice.
+    env.DB.prepare(`
+      delete from cloud_lanes_without_computer
+      where (user_id, lane_id) in (select user_id, lane_id from cloud_computers where instance_id = ? and deleted_at is null and lane_id is not null)
+    `).bind(instance.id),
     env.DB.prepare(`
       insert into cloud_power_log (instance_id, user_id, action, reason, created_at)
       select ?, user_id, 'start', ?, ? from cloud_computers where instance_id = ? and status_changed_at = ?
@@ -822,7 +884,11 @@ async function recentlyDeletedInstanceIds(env: CloudEnv, userId: string, now: nu
 
 export async function buildAccountState(env: CloudEnv, userId: string, now: number): Promise<CloudAccountState> {
   const account = await loadAccount(env, userId, now);
-  const [computers, deletedInstanceIds] = await Promise.all([listComputers(env, userId), recentlyDeletedInstanceIds(env, userId, now)]);
+  const [computers, deletedInstanceIds, recentMilli] = await Promise.all([
+    listComputers(env, userId),
+    recentlyDeletedInstanceIds(env, userId, now),
+    recentUsedMilli(env, userId, now),
+  ]);
   const live = liveUsedMilli(account, computers, now);
   const rules = accountRules(account);
   const plan = planFacts(account);
@@ -866,6 +932,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
       awake: computers.filter((computer) => isMeteredStatus(computer.status)).length,
       limit: computerLimit(account),
     },
+    recentUse: { days: RECENT_USE_DAYS, usedMilli: recentMilli },
     dueForDeletion: due,
     deletedInstanceIds,
     catalog: cloudCatalog(offers),

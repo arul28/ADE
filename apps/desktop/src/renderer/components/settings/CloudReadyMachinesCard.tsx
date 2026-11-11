@@ -18,7 +18,6 @@ import {
   type CloudReadyStatus,
   type CloudReadyStep,
 } from "../../../shared/cloudReady";
-import { type CloudSignInStatus } from "../../../shared/cloudSignIns";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { useAppStore } from "../../state/appStore";
 import { originUrlForBinding } from "../lanes/laneMachines";
@@ -80,7 +79,7 @@ function setupSuggestion(fileNames: readonly string[]): string | null {
  * seconds. Account-wide (the choice is in the account vault, the machines on
  * the provider), so it asks this desktop's main process with no pin.
  */
-export function CloudReadyMachinesCard({ cloudSignIns }: { cloudSignIns: CloudSignInStatus | null }) {
+export function CloudReadyMachinesCard({ signInCount }: { signInCount: number | null }) {
   const bridge = window.ade.cloud;
   const catalog = cloudCatalogOf(useCloudMachines(true).result?.account);
   const binding = useAppStore((state) => state.projectBinding);
@@ -132,8 +131,8 @@ export function CloudReadyMachinesCard({ cloudSignIns }: { cloudSignIns: CloudSi
     setSetup(saved?.setup ?? "");
   }, [identity, saved?.identity, saved?.kind, saved?.shape, saved?.setup]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Whether new ready machines start with any provider signed in (the card above).
-  const noSignIns = cloudSignIns != null && !cloudSignIns.unknown && !cloudSignIns.saved.some((entry) => entry.saved);
+  // Whether new ready machines start with any provider signed in (the sign-ins row above).
+  const noSignIns = signInCount === 0;
 
   // A setup to offer from the repo's lockfile, read from the project's top
   // folder once the settings are open. Unpinned on purpose: the files are
@@ -247,7 +246,7 @@ export function CloudReadyMachinesCard({ cloudSignIns }: { cloudSignIns: CloudSi
             })}
           </ol>
           {noSignIns ? (
-            <p className="ade-ig-note">New ready machines start signed in to a provider only after you add one under Sign-ins for your cloud machines.</p>
+            <p className="ade-ig-note">New ready machines start signed in only when ADE Cloud uses one of your sign-ins (Sign-ins on ADE Cloud, above).</p>
           ) : null}
 
           <div className="ade-ig-field">

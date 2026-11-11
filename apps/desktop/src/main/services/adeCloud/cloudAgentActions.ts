@@ -1,6 +1,12 @@
 /**
- * The `cloud` action domain's machine verbs, behind `ade cloud …`: list,
- * create, sleep, wake, resize, update, copy, move, delete, hours, and "keep a cloud machine ready" on, off or retry.
+ * The `cloud` action domain's machine verbs, behind `ade cloud …`: status
+ * (the whole account in one read), list, create, sleep, wake, resize, update,
+ * copy, move, delete, hours, and "keep a cloud machine ready" on, off or retry.
+ * `list`, `hours` and `limits` are narrow views of the reads `status` makes.
+ *
+ * What adds a computer (a new lane, a make, a copy) refuses before any card
+ * when the account is out of hours, uses all its computers, or has a full
+ * disk, with the same sentence `status` gives in `canStartLane`.
  *
  * Account-level like the rest of the integration: each acts on the account's
  * cloud machines, from whichever brain is asked, and takes
@@ -14,9 +20,14 @@
  * nobody watching, so ADE answers for it, never stalling the agent: yes to
  * spending hours within the agent limits, no to deleting a machine that chat didn't
  * make. Plan mode says no to all of it. Every answer ADE gives itself leaves
- * a line in the chat.
+ * a line in the chat. An outside app on ADE MCP with write access is answered
+ * the same way (it has no chat, so the line goes to the log), and a delete or
+ * a cancel from it always needs the person. A size change always needs the
+ * person: an agent nobody watches never makes one. A person is never counted
+ * against the daily limit.
  */
 
+import { randomUUID } from "node:crypto";
 import {
   CLOUD_HOURS_UNKNOWN_MESSAGE,
   CLOUD_MADE_BY_CHAT_METADATA,
@@ -24,6 +35,7 @@ import {
   CLOUD_SHAPES,
   cloudCatalogOf,
   cloudMachineKindOf,
+  cloudShapeFor,
   cloudKindLabel,
   cloudOutOfHours,
   cloudShape,
@@ -35,6 +47,7 @@ import {
   CLOUD_LIMITS_PRESETS,
   type CloudAccountState,
   type CloudAgentLimits,
+  type CloudAgentMaker,
   type CloudLimitsPreset,
   describeCloudHoursUse,
   describeCloudMachineSize,
@@ -55,20 +68,43 @@ import { getErrorMessage } from "../shared/utils";
 import type { CloudLogger } from "./cloudProvider";
 import type { CloudMoveResult } from "./cloudMachineCopy";
 import type { CloudBrainMaker, CloudMakeInput } from "./cloudBrainMaker";
-import type { createCloudMachines } from "./cloudMachines";
+import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
+import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierRateLabel, cloudTiers, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock, type CloudLaneLaunchStatus, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
+import type { ChatLaunchArgs } from "../../../shared/types";
+import type { AdeCardPayload } from "../../../shared/adeCard";
+import { buildCloudTierRequestCard } from "../../../shared/cloudLaneLife";
+import { buildCloudAccountStatus, CLOUD_DAILY_LIMIT_SETTING, type CloudAccountStatus } from "./cloudAccountStatus";
+import { countAgentMadeToday, type createCloudMachines } from "./cloudMachines";
 import { normalizeCloudReadySettings, type CloudReadySettingsStore } from "./cloudReadySettings";
 import type { CloudAgentLimitsStore } from "./cloudSleep";
 
-/** Who is asking, stamped by the RPC server from the caller's session; never taken from the arguments. */
+/**
+ * Who is asking, stamped by the RPC server from the caller's session; never
+ * taken from the arguments. `viaAdeMcp`: an outside AI app on an ADE MCP
+ * connection with write access. It has no chat and nobody watches it, so it
+ * is an unattended agent: held to the agent limits, never a person.
+ */
+/**
+ * Who asks. `automation` marks a rule's own run (an `ade-action` step, or the
+ * run's lane on ADE Cloud): it has no chat to ask in, and is held to the
+ * agent limits like a chat nobody watches. Only in-process callers set it;
+ * the RPC server rebuilds `approval` for every outside call.
+ */
 export type CloudApproval =
   | { by: "person" }
-  | { by: "agent"; chatSessionId: string | null };
+  | { by: "agent"; chatSessionId: string | null; viaAdeMcp?: boolean; automation?: boolean };
+
+export { CLOUD_DAILY_LIMIT_SETTING } from "./cloudAccountStatus";
+export type { CloudAccountStatus, CloudCanStartLane, CloudCanStartLaneCode, CloudStatusComputer } from "./cloudAccountStatus";
 
 /** What a desktop does for the brain over the bridge (cloudDesktopActions.ts). */
+type CloudMadeBy = { madeByChat?: string | null; madeByAgent?: CloudAgentMaker | null };
+
 export type CloudDesktopBridge = {
-  create(args: CloudCreateMachineArgs & { madeByChat?: string | null }): Promise<CloudCreateMachineResult>;
-  copy(args: { instanceId: string; name?: string | null; shape?: CloudShapeId | null; madeByChat?: string | null }): Promise<CloudCreateMachineResult & { copiedFrom: string; forkMs: number }>;
-  move(args: { instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null; madeByChat?: string | null }): Promise<CloudMoveResult>;
+  create(args: CloudCreateMachineArgs & CloudMadeBy): Promise<CloudCreateMachineResult>;
+  copy(args: { instanceId: string; name?: string | null; shape?: CloudShapeId | null } & CloudMadeBy): Promise<CloudCreateMachineResult & { copiedFrom: string; forkMs: number }>;
+  move(args: { instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null } & CloudMadeBy): Promise<CloudMoveResult>;
   readyRefresh(): Promise<unknown>;
 };
 
@@ -91,6 +127,8 @@ export type CloudChatApprovals = {
   permissionLevel(chatSessionId: string): PermissionLevel | null;
   isAutomationRun(chatSessionId: string): Promise<boolean>;
   notice(chatSessionId: string, message: string): void;
+  /** Posts a card in the chat (a tier change request). Unset where the chat service can't. */
+  postCard?: (chatSessionId: string, card: AdeCardPayload) => Promise<void>;
 };
 
 export type CloudAgentActionDeps = {
@@ -101,9 +139,25 @@ export type CloudAgentActionDeps = {
   desktop: () => CloudDesktopBridge | null;
   /** Makes machines here when no desktop is attached; the person approves from a link. */
   maker?: CloudBrainMaker | null;
+  /** ADE Cloud lane launches this brain owns (`lane_launch*`); null where it can't own them. */
+  laneLaunch?: (() => CloudLaneLaunchBrainHost | null) | null;
+  /** The project's git origin, for a lane launch that doesn't name one. */
+  projectOriginUrl?: (() => string | null) | null;
+  /**
+   * The person's saved size for new lanes (`cloudDefaultTier` in the account
+   * settings), as stored: undefined when nothing is saved, null when this
+   * ADE can't read the account settings. Leave the dep out for "can't read".
+   */
+  savedDefaultTier?: (() => unknown) | null;
   approvals: CloudChatApprovals | null;
   logger?: CloudLogger;
 };
+
+/** An agent's reason on a tier request card: one short paragraph. */
+function clipReason(reason: string): string {
+  const flat = reason.replace(/\s+/g, " ").trim();
+  return flat.length > 300 ? `${flat.slice(0, 299)}…` : flat;
+}
 
 /** An approval card that gives up: nobody watching must never hold an agent. */
 const APPROVAL_TIMEOUT_MS = 5 * 60_000;
@@ -133,7 +187,12 @@ function text(args: Record<string, unknown>, key: string): string | null {
 function readApproval(args: Record<string, unknown>): CloudApproval {
   const raw = record(args.approval);
   if (raw.by === "person") return { by: "person" };
-  return { by: "agent", chatSessionId: typeof raw.chatSessionId === "string" && raw.chatSessionId.trim() ? raw.chatSessionId.trim() : null };
+  return {
+    by: "agent",
+    chatSessionId: typeof raw.chatSessionId === "string" && raw.chatSessionId.trim() ? raw.chatSessionId.trim() : null,
+    ...(raw.viaAdeMcp === true ? { viaAdeMcp: true } : {}),
+    ...(raw.automation === true ? { automation: true } : {}),
+  };
 }
 
 const NO_DESKTOP = "This ADE can't make ADE Cloud machines: it isn't signed in to your ADE account.";
@@ -156,6 +215,13 @@ const countMadeHere = () => {
  * first one counts.
  */
 let reservedHere = 0;
+
+/** New computers unattended agents started today, as the daily limit counts them: the account list or this brain's own count, plus makes still running. */
+const agentNewComputersToday = (listed: number): number => Math.max(listed, madeHereToday()) + reservedHere;
+
+/** Where a person starts a lane on ADE Cloud when the caller has no chat to ask in. */
+const CLOUD_LANE_PERSON_PLACE =
+  "Start it in the ADE app (pick ADE Cloud under Run on in a new chat), or ask for it in an ADE chat, where ADE can ask you.";
 
 export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
   const logger = deps.logger ?? {};
@@ -195,6 +261,37 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
   };
 
   /**
+   * For what adds a computer (a new lane, a make, a copy): refuses before any
+   * card and any spend when the account is out of hours, uses all its
+   * computers or has a full disk, with the sentence `cloud.status` and the
+   * composer show. An account it couldn't read goes on: the server decides,
+   * and an unattended agent is still refused for unknown hours in `approve()`.
+   */
+  const newComputerCheck = async (): Promise<CloudAccountState | null> => {
+    const account = await readAccount();
+    const block = cloudLaneStartBlock(account, { newLane: true });
+    if (block) throw new Error(block.message);
+    return account;
+  };
+
+  /**
+   * The person's saved default lane size. Small when nothing is saved (the
+   * app's default); null when it can't be read, or names a size this ADE
+   * doesn't know (a newer ADE's).
+   */
+  const readDefaultTier = (): CloudTierId | null => {
+    if (!deps.savedDefaultTier) return null;
+    try {
+      const saved = deps.savedDefaultTier();
+      if (saved === undefined) return "small";
+      return isCloudTierId(saved) ? saved : null;
+    } catch (error) {
+      logger.warn?.("cloud.default_tier_read_failed", { error: getErrorMessage(error) });
+      return null;
+    }
+  };
+
+  /**
    * Asks before spending or deleting. Resolves when it may go ahead, with what
    * to call once a new machine really exists (it counts toward an unattended
    * agent's daily limit then, so a make that failed costs no slot) and whether
@@ -219,37 +316,69 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       newMachine?: boolean;
       /** The size it picks (make, copy, move, resize): within the largest allowed. */
       shape?: CloudShapeId | null;
+      /** Changes a computer's size (resize): only the person decides it, never an agent nobody watches. */
+      tierChange?: boolean;
+      /** Where the person can do it instead, when the caller has no chat to ask in. */
+      personPlace?: string;
     },
-  ): Promise<{ counted: () => void; release: () => void; unattended: boolean }> => {
-    const nothing = { counted: () => undefined, release: () => undefined, unattended: false };
+  ): Promise<{ counted: () => void; release: () => void; unattended: boolean; maker: CloudAgentMaker | null }> => {
+    const nothing = { counted: () => undefined, release: () => undefined, unattended: false, maker: null };
+    const noChatToAsk = () => new CloudDeclined(`${card.title} uses hours or deletes something, so it needs your yes, and ADE has no chat to ask you in. ${card.personPlace ?? "Run it from an ADE chat, or use the machine's card in ADE (Your computers)."}`);
     if (approval.by === "person") return nothing;
     const chatSessionId = approval.chatSessionId;
-    if (!chatSessionId || !deps.approvals) {
-      throw new CloudDeclined(`${card.title} uses hours or deletes something, so it needs your yes, and ADE has no chat to ask you in. Run it from an ADE chat, or use the machine's card in ADE (Your computers).`);
+    // An app on ADE MCP has no chat to ask in: it is answered like a chat
+    // nobody watches, within the agent limits, never as the person.
+    const viaAdeMcp = approval.viaAdeMcp === true;
+    // A rule's own run: nobody to ask, the agent limits answer.
+    const automationRun = !viaAdeMcp && approval.automation === true;
+    if (!viaAdeMcp && !automationRun && (!chatSessionId || !deps.approvals)) {
+      throw noChatToAsk();
     }
     const approvals = deps.approvals;
-    const level = approvals.permissionLevel(chatSessionId);
-    const automation = await approvals.isAutomationRun(chatSessionId).catch(() => false);
+    const notice = (message: string) => {
+      if (chatSessionId && approvals) approvals.notice(chatSessionId, message);
+      else logger.info?.("cloud.unattended_answer", { message });
+    };
+    const level = !viaAdeMcp && chatSessionId && approvals ? approvals.permissionLevel(chatSessionId) : null;
+    const automation = automationRun || (!viaAdeMcp && chatSessionId && approvals
+      ? await approvals.isAutomationRun(chatSessionId).catch((error: unknown) => {
+          logger.warn?.("cloud.automation_run_read_failed", { chatSessionId, error: getErrorMessage(error) });
+          return false;
+        })
+      : false);
+    // Written on a new machine, so the agents' daily limit counts it after a restart too.
+    const maker: CloudAgentMaker = viaAdeMcp ? "mcp" : automation ? "automation" : "chat";
     if (level === "plan") {
-      approvals.notice(chatSessionId, `ADE said no to "${card.title}" for this chat: plan mode changes nothing.`);
+      notice(`ADE said no to "${card.title}" for this chat: plan mode changes nothing.`);
       throw new CloudDeclined(`${card.title}: declined, because this chat is in plan mode.`);
     }
-    if (automation || level === "full-auto") {
-      const where = automation ? "this automation run" : "this full-auto chat";
+    if (viaAdeMcp || automation || level === "full-auto") {
+      const where = viaAdeMcp ? "this app connected through ADE MCP" : automation ? "this automation run" : "this full-auto chat";
       if (card.action === "person_only") {
-        approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: only you can decide it.`);
+        notice(`ADE said no to "${card.title}" in ${where}: only you can decide it.`);
         throw new CloudDeclined(`${card.title}: declined. Only the person can decide it (Settings › Integrations › ADE Cloud).`);
       }
+      if (card.tierChange) {
+        notice(`ADE said no to "${card.title}" in ${where}: only you can change a computer's size.`);
+        throw new CloudDeclined(`${card.title}: declined. Only the person can change a computer's size. From a chat, ask them with ade cloud resize --request --size <size> --reason "<why>".`);
+      }
+      if (card.action === "delete" && viaAdeMcp) {
+        notice(`ADE said no to "${card.title}" in ${where}: only you can delete a computer.`);
+        throw new CloudDeclined(`${card.title}: declined. A delete through ADE MCP always needs the person; ask them to delete it from its card in ADE.`);
+      }
       if (card.action === "delete" && !card.madeByThisChat) {
-        approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: nobody is here to approve deleting a machine this chat didn't make.`);
+        notice(`ADE said no to "${card.title}" in ${where}: nobody is here to approve deleting a machine this chat didn't make.`);
         throw new CloudDeclined(`${card.title}: declined. Nobody is watching ${where} to approve deleting a machine it didn't make; ask the person to delete it from its card.`);
       }
-      // What the person chose agents may do alone (Settings › Integrations › the provider).
+      // What the person chose agents may do alone (Settings › Integrations › ADE Cloud).
       const costs = card.action === "spend" || card.newMachine === true;
-      const limits = costs ? await deps.limits.read().catch(() => CLOUD_DEFAULT_AGENT_LIMITS) : null;
-      const refuse = (why: string): never => {
-        approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: ${why}`);
-        throw new CloudDeclined(`${card.title}: declined. ${why} The person can change what agents may do in Settings › Integrations › ADE Cloud.`);
+      const limits = costs ? await deps.limits.read().catch((error: unknown) => {
+        logger.warn?.("cloud.agent_limits_read_failed", { error: getErrorMessage(error) });
+        return CLOUD_DEFAULT_AGENT_LIMITS;
+      }) : null;
+      const refuse = (why: string, change = "The person can change what agents may do in Settings › Integrations › ADE Cloud."): never => {
+        notice(`ADE said no to "${card.title}" in ${where}: ${why}`);
+        throw new CloudDeclined(`${card.title}: declined. ${why} ${change}`.trim());
       };
       if (limits && !limits.unattendedSpend) refuse("your settings say unattended agents ask before anything that uses hours.");
       if (limits && card.shape && !cloudShapeWithin(card.shape, limits.maxShape)) {
@@ -260,19 +389,28 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const blocked = costs ? cloudUnattendedHoursBlock(await readAccount()) : null;
       if (blocked) {
         const why = blocked === "out_of_hours" ? CLOUD_OUT_OF_HOURS_MESSAGE : CLOUD_HOURS_UNKNOWN_MESSAGE;
-        approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: ${why}`);
+        notice(`ADE said no to "${card.title}" in ${where}: ${why}`);
         throw new CloudDeclined(`${card.title}: declined. ${why}`);
       }
       if (limits && card.newMachine) {
-        const listed = await deps.machines.agentMadeToday().catch(() => 0);
+        // A count it can't read says no: nobody is here to decide instead.
+        const listed = await deps.machines.agentMadeToday().catch((error: unknown) => {
+          logger.warn?.("cloud.agent_made_today_read_failed", { error: getErrorMessage(error) });
+          return null;
+        });
+        if (listed == null) refuse("ADE couldn't count today's new computers, so it can't check the daily limit. Try again soon.", "");
         // Makes still running are in neither count: they go on top of the larger one.
-        const made = Math.max(listed, madeHereToday()) + reservedHere;
+        const made = agentNewComputersToday(listed ?? 0);
         if (made >= limits.machinesPerDay) {
-          refuse(`agents already started ${made} new machine${made === 1 ? "" : "s"} today, your daily limit.`);
+          const perDay = limits.machinesPerDay;
+          refuse(
+            `your agents hit today's limit of ${perDay} new computer${perDay === 1 ? "" : "s"} a day.`,
+            `Change it in ${CLOUD_DAILY_LIMIT_SETTING}.`,
+          );
         }
       }
-      approvals.notice(chatSessionId, `ADE approved "${card.title}" for ${where}, within what you let agents do.`);
-      if (!card.newMachine) return { counted: () => undefined, release: () => undefined, unattended: true };
+      notice(`ADE approved "${card.title}" for ${where}, within what you let agents do.`);
+      if (!card.newMachine) return { counted: () => undefined, release: () => undefined, unattended: true, maker };
       reservedHere += 1;
       let held = true;
       const release = () => {
@@ -280,7 +418,10 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         held = false;
         reservedHere -= 1;
       };
-      return { counted: () => { release(); countMadeHere(); }, release, unattended: true };
+      return { counted: () => { release(); countMadeHere(); }, release, unattended: true, maker };
+    }
+    if (!chatSessionId || !approvals) {
+      throw noChatToAsk();
     }
     let response: Awaited<ReturnType<CloudChatApprovals["requestChatInput"]>>;
     try {
@@ -306,7 +447,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       throw new CloudDeclined(`${card.title}: ADE couldn't ask in this chat (${getErrorMessage(error)}), so nothing was done.`);
     }
     const answer = response.answers.decision?.[0] ?? "";
-    if (response.decision === "accept" && answer === "yes") return nothing;
+    // The person said yes to an agent's ask: still an agent's new machine.
+    if (response.decision === "accept" && answer === "yes") return { ...nothing, maker: "chat" };
     throw new CloudDeclined(response.timedOut
       ? `${card.title}: nobody answered in 5 minutes, so nothing was done.`
       : `${card.title}: the person said no, so nothing was done.`);
@@ -324,7 +466,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
   const make = async (approval: CloudApproval, input: CloudMakeInput, background: boolean): Promise<unknown> => {
     const desktop = deps.desktop();
     if (desktop && !background) {
-      if (input.kind === "create") return await desktop.create({ ...input.machine, madeByChat: input.madeByChat ?? null });
+      if (input.kind === "create") return await desktop.create({ ...input.machine, madeByChat: input.madeByChat ?? null, madeByAgent: input.madeByAgent ?? null });
       if (input.kind === "copy") return await desktop.copy(input);
       return await desktop.move(input);
     }
@@ -371,13 +513,36 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
   };
 
   return {
-    async list() {
+    async list(rawArgs?: unknown) {
       const all = await readMachines();
+      // The web app's Settings › ADE Cloud reads the account's own list (no key in it), like this desktop's main.
+      if (record(rawArgs).detail === "full") return all;
       return {
         machines: all.machines.map(summary),
         runningCount: all.runningCount,
         account: all.account,
       };
+    },
+
+    /**
+     * The whole account in one read, for a person or an agent: plan, hours,
+     * disk, computers, each lane on ADE Cloud, the sizes, the default size,
+     * what agents may do, and whether a new lane can start now (and why not).
+     * One list of the computers and one account read; it wakes nothing and
+     * spends nothing. Never throws for "no ADE Cloud": `canStartLane` says why.
+     */
+    async status(): Promise<CloudAccountStatus> {
+      const result = await deps.machines.list();
+      const defaultSize = readDefaultTier();
+      const limits = result.state === "ok" ? await deps.limits.read().catch((error: unknown) => {
+        logger.warn?.("cloud.agent_limits_read_failed", { error: getErrorMessage(error) });
+        return null;
+      }) : null;
+      // The list just read every computer: count agents' makes from it, with no second call.
+      const listedToday = result.state === "ok"
+        ? countAgentMadeToday(deps.machines.recentInstances(60_000) ?? [], Date.now())
+        : 0;
+      return buildCloudAccountStatus({ result, limits, defaultSize, newComputersToday: agentNewComputersToday(listedToday) });
     },
 
     async create(rawArgs?: unknown) {
@@ -387,7 +552,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const shapeId = shapeArg(args) ?? "2x4";
       const shape = cloudShapeById(shapeId);
       const name = text(args, "name") ?? "ADE Cloud computer";
-      const account = await hoursCheck();
+      const account = await newComputerCheck();
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const approval = readApproval(args);
       const yes = await approve(approval, {
@@ -399,7 +564,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         shape: shapeId,
       });
       try {
-        const made = await make(approval, { kind: "create", machine: { kind, shape: shapeId, name }, madeByChat: madeByChat(approval), selfApprove: yes.unattended }, args.background === true);
+        const made = await make(approval, { kind: "create", machine: { kind, shape: shapeId, name }, madeByChat: madeByChat(approval), madeByAgent: yes.maker, selfApprove: yes.unattended }, args.background === true);
         yes.counted();
         return made;
       } finally {
@@ -431,6 +596,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         body: `It restarts to change size: files stay, running chats, terminals and processes stop. It then uses ${describeCloudHoursUse(cloudMachineKindOf(box.type), shape.id, cloudCatalogOf(account))}.`,
         confirm: "Resize",
         shape: shapeId,
+        tierChange: true,
       });
       return await runAction(box, { instanceId: box.instanceId, action: "resize", shape: shapeId });
     },
@@ -440,7 +606,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const { box } = await resolveMachine(text(args, "machine"));
       const name = text(args, "name") ?? `${box.name ?? box.instanceId} copy`;
       const shapeId = shapeArg(args);
-      await hoursCheck();
+      await newComputerCheck();
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const rate = box.hoursRate != null ? formatCloudHoursRate(box.hoursRate) : null;
       const approval = readApproval(args);
@@ -453,7 +619,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         shape: shapeId ?? box.shapeId,
       });
       try {
-        const made = await make(approval, { kind: "copy", instanceId: box.instanceId, name, shape: shapeId, madeByChat: madeByChat(approval), selfApprove: yes.unattended }, args.background === true);
+        const made = await make(approval, { kind: "copy", instanceId: box.instanceId, name, shape: shapeId, madeByChat: madeByChat(approval), madeByAgent: yes.maker, selfApprove: yes.unattended }, args.background === true);
         yes.counted();
         return made;
       } finally {
@@ -484,10 +650,14 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         newMachine: true,
         shape: shapeId ?? box.shapeId,
         madeByThisChat: approval.by === "agent" && approval.chatSessionId != null
-          && (await deps.machines.instanceMetadata(box.instanceId).catch(() => null))?.[CLOUD_MADE_BY_CHAT_METADATA] === approval.chatSessionId,
+          && (await deps.machines.instanceMetadata(box.instanceId).catch((error: unknown) => {
+            // Unknown is "not this chat's": an unattended move is then declined.
+            logger.warn?.("cloud.instance_metadata_read_failed", { instanceId: box.instanceId, error: getErrorMessage(error) });
+            return null;
+          }))?.[CLOUD_MADE_BY_CHAT_METADATA] === approval.chatSessionId,
       });
       try {
-        const made = await make(approval, { kind: "move", instanceId: box.instanceId, machineKey: box.machineKey, to, shape: shapeId, madeByChat: madeByChat(approval), selfApprove: yes.unattended }, args.background === true);
+        const made = await make(approval, { kind: "move", instanceId: box.instanceId, machineKey: box.machineKey, to, shape: shapeId, madeByChat: madeByChat(approval), madeByAgent: yes.maker, selfApprove: yes.unattended }, args.background === true);
         yes.counted();
         return made;
       } finally {
@@ -504,12 +674,197 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       return job;
     },
 
+    /**
+     * `ade chat create --machine cloud` (kind `chat`) and `ade lanes create
+     * --machine cloud` (kind `lane`, no chat): one new computer for one new
+     * lane, the repository there, and the chat started there, if any. With no
+     * `cloud.sizeId`, the person's saved size for new lanes. Returns at once with
+     * the launch's status; read it again with `lane_launch_status`. The same
+     * launch id again answers that launch (a failed one goes on from its
+     * failed step): never a second computer.
+     */
+    async lane_launch(rawArgs?: unknown) {
+      const args = record(rawArgs);
+      const asked = record(args.launch) as unknown as ChatLaunchArgs;
+      // A CLI session needs a window to start its terminal in, which a brain
+      // doesn't have: it starts from the ADE app.
+      if (asked.kind === "cli") {
+        throw new Error("A CLI session on ADE Cloud starts from the ADE app. Here, start a chat (ade chat create --machine cloud) or the lane alone (ade lanes create --machine cloud).");
+      }
+      // No size asked for: the size the person saved for new lanes, then Small.
+      const askedSize = record(asked.cloud).sizeId;
+      const sizeId = askedSize == null || askedSize === "" ? readDefaultTier() ?? "small" : askedSize;
+      if (!isCloudTierId(sizeId)) throw new Error(`Pick a size: ${CLOUD_TIER_IDS.join(", ")}.`);
+      const launch: ChatLaunchArgs = { ...asked, cloud: { sizeId } };
+      const laneOnly = launch.kind === "lane";
+      const host = deps.laneLaunch?.() ?? null;
+      if (!host) throw new Error("This ADE can't start a lane on ADE Cloud. Use the ADE app, or the ade command where ADE runs in the background.");
+      const approval = readApproval(args);
+      const chatSessionId = approval.by === "agent" ? approval.chatSessionId : null;
+      const launchId = typeof launch.launchId === "string" ? launch.launchId.trim().toLowerCase() : "";
+      const existing = launchId ? await host.status(launchId) : null;
+      const startArgs = {
+        args: launch,
+        originUrl: text(args, "originUrl") ?? deps.projectOriginUrl?.() ?? null,
+        madeByChat: madeByChat(approval),
+        caller: { chatSessionId, permissionLevel: chatSessionId ? deps.approvals?.permissionLevel(chatSessionId) ?? null : null },
+        notice: chatSessionId && deps.approvals ? ((message: string) => deps.approvals!.notice(chatSessionId, message)) : null,
+      };
+      if (existing) {
+        // Already approved and counted when it started.
+        if (approval.by === "agent" && existing.madeByChat !== chatSessionId) {
+          throw new CloudDeclined("This ADE Cloud lane was started from another chat, so only that chat or you can follow it here.");
+        }
+        return (await host.start({ ...startArgs, selfApprove: false })).status;
+      }
+      // Refused before the question, never after a yes: the launch itself,
+      // then the account (hours, computers, disk), with the sentences
+      // `cloud.status` and the composer show.
+      const problem = cloudLaneLaunchStartRefusal({ args: launch, originUrl: startArgs.originUrl })?.message ?? null;
+      if (problem) throw new Error(problem);
+      const account = await newComputerCheck();
+      const tier = cloudTier(cloudCatalogOf(account), sizeId);
+      if (!tier) throw new Error("ADE Cloud doesn't offer that size right now. Pick another one.");
+      const kind: CloudMachineKind = tier.type === "vm" ? "vm" : "box";
+      const shape = cloudShapeFor({ cpu: tier.cpu, memoryGb: tier.memoryGb });
+      const yes = await approve(approval, {
+        action: "spend",
+        title: "Start a lane on ADE Cloud",
+        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${laneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` It uses ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}, and none while it sleeps.` : ""}`,
+        confirm: "Start it",
+        newMachine: true,
+        shape: shape?.id ?? null,
+        personPlace: CLOUD_LANE_PERSON_PLACE,
+      });
+      try {
+        const started = await host.start({ ...startArgs, madeByAgent: yes.maker, selfApprove: yes.unattended });
+        if (started.created) yes.counted();
+        return started.status;
+      } finally {
+        yes.release();
+      }
+    },
+
+    /**
+     * An agent asks the person for a tier change (Android on a Small computer
+     * needs Large): a card in its chat with the size, the rate and its
+     * reason. It changes nothing: the person confirms on the card, and the
+     * app's main process runs the change. An agent never changes a tier
+     * itself, attended or not.
+     */
+    async tier_request(rawArgs?: unknown) {
+      const args = record(rawArgs);
+      const approval = readApproval(args);
+      if (approval.by === "person") throw new Error("Change the size directly: Settings › ADE Cloud, or ade cloud resize.");
+      const chatSessionId = approval.chatSessionId;
+      if (!chatSessionId || !deps.approvals?.postCard) {
+        throw new Error("ADE has no chat to show this request in. Ask the person to change the size in Settings › ADE Cloud.");
+      }
+      const sizeId = text(args, "size")?.toLowerCase() ?? null;
+      if (!isCloudTierId(sizeId)) throw new Error(`Pick a size: ${CLOUD_TIER_IDS.join(", ")}.`);
+      const reason = text(args, "reason");
+      if (!reason) throw new Error("Say why the lane needs it (--reason).");
+      // On a cloud computer the agent asks for its own computer by default.
+      const selector = text(args, "machine") ?? process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? null;
+      const { box, all } = await resolveMachine(selector);
+      const catalog = cloudCatalogOf(all.account);
+      const tiers = cloudTiers(catalog);
+      const to = cloudTier(catalog, sizeId);
+      if (!to) throw new Error("ADE Cloud doesn't offer that size now.");
+      const from = cloudTierOfMachine(box, tiers);
+      if (from?.id === to.id) throw new Error(`It's already ${to.label}.`);
+      const requestId = randomUUID();
+      const computerName = (box as CloudLaneMachine).lane?.laneName ?? box.name ?? box.instanceId;
+      const card = buildCloudTierRequestCard(
+        { requestId, instanceId: box.instanceId, computerName, fromSizeId: from?.id ?? null, toSizeId: to.id, reason: clipReason(reason), chatSessionId },
+        { from: from?.label ?? null, to: to.label, rate: cloudTierRateLabel(to) },
+      );
+      await deps.approvals.postCard(chatSessionId, card);
+      logger.info?.("cloud.tier_requested", { instanceId: box.instanceId, toSizeId: to.id, fromSizeId: from?.id ?? null });
+      return {
+        requested: true,
+        requestId,
+        message: `Asked the person in this chat to change ${computerName} to ${to.label}. Nothing changes until they confirm; keep working or end your turn.`,
+      };
+    },
+
+    /**
+     * The person clears a lane computer's caches from the dashboard. It runs
+     * on that computer's own brain (the caller pins the lane's machine), so a
+     * call that reached any other machine is refused, never run here.
+     */
+    async clear_caches(rawArgs?: unknown): Promise<{ freedGb: number }> {
+      const args = record(rawArgs);
+      const self = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
+      const machine = text(args, "machine");
+      if (!self) throw new Error("Clear caches runs only on an ADE Cloud computer. Open it from the lane's row in Settings › ADE Cloud.");
+      if (machine !== self) throw new Error("That request reached another computer. Nothing was cleared.");
+      const { clearCloudDiskCaches, cloudDiskReporter } = await import("./cloudDiskUsage");
+      const result = await clearCloudDiskCaches();
+      logger.info?.("cloud.caches_cleared", { instanceId: self, freedGb: result.freedGb });
+      // The dashboard shows the new numbers at once: measure and send now.
+      await cloudDiskReporter()?.reportNow().catch((error: unknown) => {
+        logger.warn?.("cloud.disk_measure_failed", { error: getErrorMessage(error) });
+      });
+      return result;
+    },
+
+    /**
+     * A launch's stages and state for anyone who may read ADE Cloud; its
+     * approval link, starting chat and computer only for a person or the
+     * caller that started it (the same chat, the automation run's own
+     * chatless start, or an outside app for a launch an outside app started).
+     */
+    async lane_launch_status(rawArgs?: unknown): Promise<CloudLaneLaunchStatus | null> {
+      const args = record(rawArgs);
+      const launchId = text(args, "launchId");
+      if (!launchId) throw new Error("Pass the launch id.");
+      const status = (await deps.laneLaunch?.()?.status(launchId.toLowerCase())) ?? null;
+      if (!status) return null;
+      const approval = readApproval(args);
+      const starter = approval.by === "person"
+        || (approval.chatSessionId != null && approval.chatSessionId === status.madeByChat)
+        || (approval.automation === true && approval.chatSessionId == null && status.madeByChat == null)
+        // An outside app has no chat: the person reads the approval link there.
+        || (approval.viaAdeMcp === true && status.madeByAgent === "mcp");
+      if (starter) return status;
+      return {
+        launch: status.launch,
+        machine: { name: status.machine.name, instanceId: null, machineKey: null },
+        approvalUrl: null,
+        madeByChat: null,
+        madeByAgent: null,
+      };
+    },
+
+    /** Stops a launch before its chat starts and deletes the computer made for it. */
+    async lane_launch_cancel(rawArgs?: unknown): Promise<CloudLaneLaunchStatus | null> {
+      const args = record(rawArgs);
+      const launchId = text(args, "launchId")?.toLowerCase();
+      if (!launchId) throw new Error("Pass the launch id.");
+      const host = deps.laneLaunch?.() ?? null;
+      const existing = host ? await host.status(launchId) : null;
+      if (!host || !existing) return null;
+      const approval = readApproval(args);
+      if (approval.by === "agent" && approval.viaAdeMcp) {
+        throw new CloudDeclined("Cancelling deletes the computer made for this lane, so only the person can do it, in ADE.");
+      }
+      if (approval.by === "agent" && (!approval.chatSessionId || existing.madeByChat !== approval.chatSessionId)) {
+        throw new CloudDeclined("This ADE Cloud lane was started from another chat, so only that chat or you can cancel it.");
+      }
+      return await host.cancel(launchId);
+    },
+
     async delete(rawArgs?: unknown) {
       const args = record(rawArgs);
       const { box } = await resolveMachine(text(args, "machine"));
       const approval = readApproval(args);
       const instance = approval.by === "agent" && approval.chatSessionId
-        ? await deps.machines.instanceMetadata(box.instanceId).catch(() => null)
+        ? await deps.machines.instanceMetadata(box.instanceId).catch((error: unknown) => {
+            // Unknown is "not this chat's": an unattended delete is then declined.
+            logger.warn?.("cloud.instance_metadata_read_failed", { instanceId: box.instanceId, error: getErrorMessage(error) });
+            return null;
+          })
         : null;
       await approve(approval, {
         action: "delete",

@@ -17,6 +17,7 @@ import type {
   LaneShareUpdateRightsArgs,
   LaneShareUpdateRightsResult,
 } from "../shared/types/laneShare";
+import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -75,6 +76,8 @@ import { createAndroidEmulatorBridge } from "./androidEmulatorPreload";
 import type { AndroidEmulatorEvent } from "../shared/types/androidEmulator";
 import { createRemoteTargetGate } from "./remoteTargetGate";
 import { IPC } from "../shared/ipc";
+import type { CloudLaneLaunchCallRequest, CloudLaneLaunchCallResult, CloudLaneLaunchMethod } from "../shared/cloudLaneLaunch";
+import { normalizeGitRemoteIdentity } from "../shared/crossMachineHandoff";
 import { APP_CONTROL_FRAME_ALL_LANES } from "../shared/appControlFrameDemand";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
 import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
@@ -103,10 +106,11 @@ import type {
 } from "../shared/projectRemoval";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
+import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMethod, CloudLaneLifeResults } from "../shared/cloudLaneLife";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
-import type { CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudPassEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -266,7 +270,7 @@ import type {
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
 } from "../shared/types";
-import { adeActionAccess } from "../shared/adeActionAccess";
+import { adeActionAccess, thisDesktopOnlyRefusal, thisDesktopOnlyRefusalFor } from "../shared/adeActionAccess";
 import type {
   ClaudePluginUiActArgs,
   ClaudePluginUiActResult,
@@ -370,6 +374,8 @@ import type {
   AgentCliLoginStatus,
   AgentCliLoginSubmitCodeArgs,
   AiApiKeyVerificationResult,
+  AiProviderSignInCheck,
+  AiVerifyProviderSignInArgs,
   AiConfig,
   AiSettingsStatus,
   OpenCodeOAuthStartResult,
@@ -913,6 +919,8 @@ import type {
   LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
+  CloudStartBranchArgs,
+  CloudStartBranchCheck,
   DeletedLaneSnapshot,
   RestoreDeletedLaneArgs,
   RestoreDeletedLaneResult,
@@ -2420,6 +2428,16 @@ function callLaneShareAction<T>(
 }
 
 /**
+ * The account's provider sign-ins (P5): the pinned machine, else the tab's
+ * bound runtime, else this computer's brain with no project
+ * (`providerLogins.call`), so Settings works in a window with no project.
+ */
+function callProviderLogins<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr<T>(pin, "provider_logins", action, { args: { ...args } }, () =>
+    ipcRenderer.invoke(IPC.providerLoginsCall, { action, args: { ...args } }));
+}
+
+/**
  * The lane machine's dev servers. The runtime's list is the source; this
  * Electron process's own registry is added only when the lane is on this
  * computer, because it describes this computer's terminals. A runtime too old
@@ -2562,6 +2580,93 @@ function callChatLaunchAction<T>(
 ): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr<T>(pin, "chat", action, request, () =>
     Promise.reject(new Error("New-lane launches need a connected ADE runtime. Reconnect the machine and try again.")));
+}
+
+// ADE Cloud lane launches: this app's main process owns one until it hands
+// the launch to the new computer's brain, and keeps serving it by id after
+// (cloudLaneLaunchService.ts). An id-based call goes to main for a launch
+// known as a cloud one, straight to the runtime for one main already said it
+// doesn't own, and asks main first only for an id seen for the first time.
+const cloudOwnedLaunchIds = new Set<string>();
+/** Launch ids main answered it doesn't own: the runtime's, with no main round trip. Bounded. */
+const runtimeOwnedLaunchIds = new Set<string>();
+const RUNTIME_OWNED_LAUNCH_IDS_MAX = 500;
+/** Each source binding's origin as main read it (it can read a local checkout's git config). */
+const cloudSourceIdentities = new Map<string, string | null>();
+
+function cloudSourceKey(pin: OpenProjectBinding | null | undefined): string {
+  return (pin ?? currentProjectBinding)?.key ?? "";
+}
+
+function cloudSourceIdentity(binding: OpenProjectBinding | null | undefined): string | null {
+  if (!binding) return null;
+  return cloudSourceIdentities.has(binding.key)
+    ? cloudSourceIdentities.get(binding.key) ?? null
+    : normalizeGitRemoteIdentity(binding.gitOriginUrl ?? null);
+}
+
+/**
+ * Which project's ADE Cloud launches a subscription or list for this pin
+ * shows, or null for none. A pin to another binding of the tab's own project
+ * shows none: the tab's own subscription already shows them, and one launch
+ * must not land under two bindings.
+ */
+function cloudLaunchProjectFor(pin: OpenProjectBinding | null | undefined): string | null {
+  const tab = cloudSourceIdentity(currentProjectBinding);
+  if (!pin || pin.key === currentProjectBinding?.key) return tab;
+  const pinned = cloudSourceIdentity(pin);
+  return pinned && pinned !== tab ? pinned : null;
+}
+
+function cloudLaneLaunchSource(pin: OpenProjectBinding | null | undefined): CloudLaneLaunchCallRequest["source"] {
+  const binding = pin ?? currentProjectBinding;
+  if (!binding) return null;
+  return {
+    gitOriginUrl: binding.gitOriginUrl ?? null,
+    ...(binding.kind === "local" ? { localRootPath: binding.rootPath } : {}),
+  };
+}
+
+async function callCloudLaneLaunch(
+  method: CloudLaneLaunchMethod,
+  args: unknown,
+  source?: CloudLaneLaunchCallRequest["source"],
+): Promise<CloudLaneLaunchCallResult> {
+  const request: CloudLaneLaunchCallRequest = { method, args, ...(source !== undefined ? { source } : {}) };
+  return (await ipcRenderer.invoke(IPC.cloudLaneLaunchCall, request)) as CloudLaneLaunchCallResult;
+}
+
+function noteCloudSourceIdentity(pin: OpenProjectBinding | null | undefined, answer: CloudLaneLaunchCallResult): void {
+  const key = cloudSourceKey(pin);
+  if (key && answer.projectIdentity !== undefined) cloudSourceIdentities.set(key, answer.projectIdentity ?? null);
+}
+
+function rememberCloudLaunch(snapshot: ChatLaunchSnapshot | null | undefined): void {
+  if (snapshot?.cloud && snapshot.launchId) cloudOwnedLaunchIds.add(snapshot.launchId);
+}
+
+function rememberRuntimeLaunch(launchId: string): void {
+  if (runtimeOwnedLaunchIds.size >= RUNTIME_OWNED_LAUNCH_IDS_MAX) runtimeOwnedLaunchIds.clear();
+  runtimeOwnedLaunchIds.add(launchId);
+}
+
+/** An id-based launch call: main's answer when it owns the launch, else the runtime's. */
+async function callChatLaunchById<T>(
+  method: CloudLaneLaunchMethod,
+  action: string,
+  args: { launchId: string },
+  pin: OpenProjectBinding | null | undefined,
+): Promise<T> {
+  const launchId = typeof args?.launchId === "string" ? args.launchId : "";
+  if (!launchId || !runtimeOwnedLaunchIds.has(launchId) || cloudOwnedLaunchIds.has(launchId)) {
+    const owned = await callCloudLaneLaunch(method, args);
+    if (owned.owned) {
+      rememberCloudLaunch(owned.result as ChatLaunchSnapshot | null);
+      return owned.result as T;
+    }
+    if (launchId) rememberRuntimeLaunch(launchId);
+  }
+  return await callChatLaunchAction<T>(pin, action, { args });
 }
 
 async function readLegacySyncStatuses(
@@ -2977,6 +3082,12 @@ const remoteAccountSettingsChangedFanout = createRemoteRuntimeFanout<Record<stri
   onSubscribe: () => ensureRemoteRuntimeEventPump(),
   extract: (payload) => payload.type === "account_settings_changed" ? {} : null,
 });
+const remoteProviderLoginsChangedFanout = createRemoteRuntimeFanout<Record<string, never>>({
+  eventType: "provider_logins_changed",
+  label: "provider sign-ins",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => payload.type === "provider_logins_changed" ? {} : null,
+});
 const remoteSessionChangedFanout = createRemoteRuntimeFanout<TerminalSessionChangedEvent>({
   eventType: "terminal_session_changed",
   label: "session",
@@ -3202,6 +3313,7 @@ const remoteWorkToolShowRequestFanout = createRemoteRuntimeFanout<WorkToolShowRe
 export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteAgentChatEventFanout,
   remoteAccountSettingsChangedFanout,
+  remoteProviderLoginsChangedFanout,
   remoteSessionChangedFanout,
   remoteLaneDeleteEventFanout,
   remoteLaneLifecycleEventFanout,
@@ -4615,6 +4727,20 @@ async function clearAround<T>(
   }
 }
 
+/**
+ * The preload half of the "login changed" path. A sign-in that just
+ * succeeded changes the saved logins, so the unpinned status cache drops and
+ * the next read asks again; no caller has to pass `force` after a sign-in.
+ */
+async function clearAiStatusOnSignIn<T>(action: Promise<T>, succeeded: (result: T) => boolean): Promise<T> {
+  const result = await action;
+  if (succeeded(result)) aiStatusCache.clear();
+  return result;
+}
+
+const loginSucceeded = (status: { state: string }): boolean => status.state === "succeeded";
+const antigravitySignInSucceeded = (state: AntigravitySignInState): boolean => state.phase === "succeeded";
+
 async function runProjectRuntimeTransition<T>(
   action: () => Promise<T>,
 ): Promise<T> {
@@ -5792,16 +5918,25 @@ const adeBridge = {
     // agent; start, its status reads, a pasted return URL and cancel all go
     // to that same machine.
     antigravitySignInStatus: async (pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInStatus", {}, () =>
-        ipcRenderer.invoke(IPC.aiAntigravitySignInStatus),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AntigravitySignInState>(pin, "ai", "antigravitySignInStatus", {}, () =>
+          ipcRenderer.invoke(IPC.aiAntigravitySignInStatus),
+        ),
+        antigravitySignInSucceeded,
       ),
     antigravitySignInStart: async (args: AntigravitySignInStartArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInStart", { args }, () =>
-        ipcRenderer.invoke(IPC.aiAntigravitySignInStart, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AntigravitySignInState>(pin, "ai", "antigravitySignInStart", { args }, () =>
+          ipcRenderer.invoke(IPC.aiAntigravitySignInStart, args),
+        ),
+        antigravitySignInSucceeded,
       ),
     antigravitySignInComplete: async (args: AntigravitySignInCompleteArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInComplete", { args }, () =>
-        ipcRenderer.invoke(IPC.aiAntigravitySignInComplete, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AntigravitySignInState>(pin, "ai", "antigravitySignInComplete", { args }, () =>
+          ipcRenderer.invoke(IPC.aiAntigravitySignInComplete, args),
+        ),
+        antigravitySignInSucceeded,
       ),
     antigravitySignInCancel: async (args: AntigravitySignInCancelArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInCancel", { args }, () =>
@@ -5811,16 +5946,25 @@ const adeBridge = {
     // machine that owns it: a pin goes there, else the tab's runtime, else this
     // computer. Keep one pin for a sign-in's start, polls, code and cancel.
     cliLoginStart: async (args: AgentCliLoginStartArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginStart", { args }, () =>
-        ipcRenderer.invoke(IPC.aiCliLoginStart, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AgentCliLoginStatus>(pin, "ai", "cliLoginStart", { args }, () =>
+          ipcRenderer.invoke(IPC.aiCliLoginStart, args),
+        ),
+        loginSucceeded,
       ),
     cliLoginStatus: async (args: AgentCliLoginRefArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginStatus", { args }, () =>
-        ipcRenderer.invoke(IPC.aiCliLoginStatus, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AgentCliLoginStatus>(pin, "ai", "cliLoginStatus", { args }, () =>
+          ipcRenderer.invoke(IPC.aiCliLoginStatus, args),
+        ),
+        loginSucceeded,
       ),
     cliLoginSubmitCode: async (args: AgentCliLoginSubmitCodeArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginSubmitCode", { args }, () =>
-        ipcRenderer.invoke(IPC.aiCliLoginSubmitCode, args),
+      clearAiStatusOnSignIn(
+        callPinnedOrBoundRuntimeActionOr<AgentCliLoginStatus>(pin, "ai", "cliLoginSubmitCode", { args }, () =>
+          ipcRenderer.invoke(IPC.aiCliLoginSubmitCode, args),
+        ),
+        loginSucceeded,
       ),
     cliLoginCancel: async (args: AgentCliLoginRefArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginCancel", { args }, () =>
@@ -5894,6 +6038,22 @@ const adeBridge = {
             "verifyApiKeyConnection",
             { args: { provider } },
             () => ipcRenderer.invoke(IPC.aiVerifyApiKey, { provider }),
+          ),
+      ),
+    // Runs the provider's own sign-in check on the pinned machine (up to
+    // 20 s), so the status cache is stale on both sides of it.
+    verifyProviderSignIn: async (
+      args: AiVerifyProviderSignInArgs, pin?: OpenProjectBinding | null
+    ): Promise<AiProviderSignInCheck> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callPinnedOrBoundRuntimeActionOr(
+            pin,
+            "ai",
+            "verifyProviderSignIn",
+            { args },
+            () => ipcRenderer.invoke(IPC.aiVerifyProviderSignIn, args),
           ),
       ),
     updateConfig: async (config: Partial<AiConfig>, pin?: OpenProjectBinding | null): Promise<void> =>
@@ -7206,6 +7366,17 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "lane", "removeDeletedLane", { args }, () =>
         ipcRenderer.invoke(IPC.lanesRemoveDeleted, args),
       ),
+    /**
+     * "Push this branch?" before an ADE Cloud launch, on the machine that has
+     * the project (the pin), and its push. The project's own runtime answers
+     * both; there is no older local route for them.
+     */
+    cloudStartBranch: async (args: CloudStartBranchArgs, pin?: OpenProjectBinding | null): Promise<CloudStartBranchCheck> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "cloudStartBranch", { args }, () =>
+        Promise.reject(new Error("Open the project in ADE first."))),
+    pushCloudStartBranch: async (args: CloudStartBranchArgs, pin?: OpenProjectBinding | null): Promise<CloudStartBranchCheck> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "lane", "pushCloudStartBranch", { args }, () =>
+        Promise.reject(new Error("Open the project in ADE first."))),
     getDeleteRisk: async (
       args: { laneId: string },
       pin?: OpenProjectBinding | null,
@@ -8091,24 +8262,58 @@ const adeBridge = {
    * Always runtime-backed: there is no in-process Electron implementation.
    */
   chatLaunch: {
-    start: async (args: ChatLaunchArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> =>
-      await callChatLaunchAction<ChatLaunchSnapshot>(pin, "startLaunch", {
-        args: args.chat ? { ...args, chat: { ...args.chat, create: await withPresetSnapshot(args.chat.create) } } : args,
-      }),
+    /**
+     * A start with `cloud` makes a new ADE Cloud computer for the lane: this
+     * app owns it until the computer's brain takes over. The pin (or the tab's
+     * project) only names the repository to clone there.
+     */
+    start: async (args: ChatLaunchArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> => {
+      const withPreset = args.chat ? { ...args, chat: { ...args.chat, create: await withPresetSnapshot(args.chat.create) } } : args;
+      if (args.cloud) {
+        const started = await callCloudLaneLaunch("start", withPreset, cloudLaneLaunchSource(pin));
+        noteCloudSourceIdentity(pin, started);
+        const snapshot = started.result as ChatLaunchSnapshot;
+        rememberCloudLaunch(snapshot);
+        return snapshot;
+      }
+      const snapshot = await callChatLaunchAction<ChatLaunchSnapshot>(pin, "startLaunch", { args: withPreset });
+      // Not a cloud start: later calls by its id go straight to the runtime.
+      if (snapshot?.launchId && !snapshot.cloud) rememberRuntimeLaunch(snapshot.launchId);
+      return snapshot;
+    },
     get: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
-      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "getLaunch", { args }),
-    list: (pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot[]> =>
-      callChatLaunchAction<ChatLaunchSnapshot[]>(pin, "listLaunches", { args: {} }),
+      callChatLaunchById<ChatLaunchSnapshot | null>("get", "getLaunch", args, pin),
+    /** The runtime's launches and this project's ADE Cloud launches, one row per launch id. */
+    list: async (pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot[]> => {
+      const [runtime, cloud] = await Promise.all([
+        callChatLaunchAction<ChatLaunchSnapshot[]>(pin, "listLaunches", { args: {} }),
+        callCloudLaneLaunch("list", {}, cloudLaneLaunchSource(pin))
+          .then((answer) => {
+            noteCloudSourceIdentity(pin, answer);
+            const project = cloudLaunchProjectFor(pin);
+            const snapshots = Array.isArray(answer.result) ? answer.result as ChatLaunchSnapshot[] : [];
+            return project ? snapshots.filter((snapshot) => snapshot.cloud?.projectOrigin === project) : [];
+          })
+          .catch((error: unknown) => {
+            // The runtime's launches still show; this app's cloud ones come back with the next read.
+            console.warn("ADE Cloud lane launches could not be read", error);
+            return [] as ChatLaunchSnapshot[];
+          }),
+      ]);
+      for (const snapshot of cloud) rememberCloudLaunch(snapshot);
+      const cloudIds = new Set(cloud.map((snapshot) => snapshot.launchId));
+      return [...runtime.filter((snapshot) => !cloudIds.has(snapshot.launchId)), ...cloud];
+    },
     cancel: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
-      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "cancelLaunch", { args }),
+      callChatLaunchById<ChatLaunchSnapshot | null>("cancel", "cancelLaunch", args, pin),
     retry: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
-      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "retryLaunch", { args }),
+      callChatLaunchById<ChatLaunchSnapshot | null>("retry", "retryLaunch", args, pin),
     startNow: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
-      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "startLaunchNow", { args }),
+      callChatLaunchById<ChatLaunchSnapshot | null>("startNow", "startLaunchNow", args, pin),
     queueMessage: (args: ChatLaunchQueueMessageArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot> =>
-      callChatLaunchAction<ChatLaunchSnapshot>(pin, "queueLaunchMessage", { args }),
+      callChatLaunchById<ChatLaunchSnapshot>("queueMessage", "queueLaunchMessage", args, pin),
     completeClient: (args: ChatLaunchCompleteClientArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
-      callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "completeLaunchClient", { args }),
+      callChatLaunchById<ChatLaunchSnapshot | null>("completeClient", "completeLaunchClient", args, pin),
     /**
      * `onResync` fires when the event stream may have dropped launch events
      * (a buffer gap, a runtime restart, recovery after failed polls), so the
@@ -8119,18 +8324,46 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
       onResync?: () => void,
     ): (() => void) => {
+      // ADE Cloud launches come from main, with their `cloud` block. The
+      // computer's brain sends the same launch without it when the pin is that
+      // computer, so its raw copy is dropped here.
+      const cloudListener = (_event: Electron.IpcRendererEvent, launchEvent: ChatLaunchEvent) => {
+        if (launchEvent.type === "launch-updated") {
+          rememberCloudLaunch(launchEvent.launch);
+          // Read per event: the tab's project can change under an unpinned subscription.
+          const project = cloudLaunchProjectFor(pin);
+          if (project && launchEvent.launch.cloud?.projectOrigin === project) cb(launchEvent);
+          return;
+        }
+        // A removal names no project; one for a launch this view never held is ignored there.
+        cb(launchEvent);
+        cloudOwnedLaunchIds.delete(launchEvent.launchId);
+      };
+      ipcRenderer.on(IPC.cloudLaneLaunchEvent, cloudListener);
+      const removeCloud = () => ipcRenderer.removeListener(IPC.cloudLaneLaunchEvent, cloudListener);
+      const runtimeCb = (launchEvent: ChatLaunchEvent) => {
+        const launchId = launchEvent.type === "launch-updated" ? launchEvent.launch.launchId : launchEvent.launchId;
+        if (cloudOwnedLaunchIds.has(launchId)) return;
+        cb(launchEvent);
+      };
       const removePinned = subscribePinnedProjectRuntimeEvents(
         pin,
         (payload) => toWrappedEvent<ChatLaunchEvent>(payload, "chat_launch_event"),
-        cb,
+        runtimeCb,
         "chat launch",
         undefined,
         onResync,
       );
-      if (removePinned) return removePinned;
-      const removeEvents = remoteChatLaunchEventFanout.subscribe(cb);
+      if (removePinned) {
+        return () => {
+          removeCloud();
+          removePinned();
+        };
+      }
+      const removeEvents = remoteChatLaunchEventFanout.subscribe(runtimeCb);
       const removeResync = onResync ? subscribeActiveRuntimeEventResync(onResync) : () => {};
       return () => {
+        removeCloud();
         removeResync();
         removeEvents();
       };
@@ -11415,6 +11648,52 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.proxySetDisabled, args),
       ),
   },
+  providerLogins: {
+    status: (args: { provider?: ProviderLoginProvider | null } = {}, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("status", args, pin),
+    captureNow: (args: { provider?: ProviderLoginProvider | null } = {}, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("captureNow", args, pin),
+    /**
+     * The one Keychain read that macOS asks the person about, on the Mac in
+     * front of them. Never the tab's bound machine: a call for another
+     * computer (a remote pin or a remote binding) is refused here, since the
+     * prompt would show on that computer's screen.
+     */
+    allowKeychain: async (args: { provider: "antigravity"; slot?: "personal" | "business" | null }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> => {
+      if (pin?.kind === "remote" || (!pin && await getRemoteProjectBinding())) {
+        throw new Error(thisDesktopOnlyRefusal("provider_logins", "allowKeychain") ?? "Run this on that Mac.");
+      }
+      return await ipcRenderer.invoke(IPC.providerLoginsCall, { action: "allowKeychain", args: { ...args } }) as ProviderLoginSyncStatus;
+    },
+    /**
+     * Copilot's GitHub CLI login for ADE Cloud, on one computer. On runs `gh`
+     * there, which can ask to unlock a keychain on that screen, so on is only
+     * for the computer in front of the person (a remote pin or binding is
+     * refused here, and the brain refuses it too). Off goes to the pinned
+     * computer from any of the person's desktops.
+     */
+    allowGitHubCli: async (args: { on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> => {
+      if (args.on !== false) {
+        if (pin?.kind === "remote" || (!pin && await getRemoteProjectBinding())) {
+          throw new Error(thisDesktopOnlyRefusalFor("provider_logins", "allowGitHubCli", args) ?? "Turn this on at that computer.");
+        }
+        return await ipcRenderer.invoke(IPC.providerLoginsCall, { action: "allowGitHubCli", args: { on: true } }) as ProviderLoginSyncStatus;
+      }
+      return await callProviderLogins<ProviderLoginSyncStatus>("allowGitHubCli", { on: false }, pin);
+    },
+    use: (args: { provider: ProviderLoginProvider; key: string | null; slot?: string | null }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("use", args, pin),
+    setCloud: (args: { key: string; on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("setCloud", args, pin),
+    setCloudAll: (args: { on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("setCloudAll", args, pin),
+    setCloudBalance: (args: { provider: "claude"; on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("setCloudBalance", args, pin),
+    remove: (args: { key: string }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
+      callProviderLogins<ProviderLoginSyncStatus>("remove", args, pin),
+    onChanged: (cb: () => void): (() => void) =>
+      remoteProviderLoginsChangedFanout.subscribe(() => cb()),
+  },
   providerInstances: {
     list: async (
       args: ProviderInstanceListArgs = {},
@@ -11481,7 +11760,10 @@ const adeBridge = {
         "loginStart",
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesLoginStart, args),
-      ).then(normalizeProviderLoginStatus),
+      ).then(normalizeProviderLoginStatus).then((status) => {
+        if (loginSucceeded(status)) aiStatusCache.clear();
+        return status;
+      }),
     loginStatus: async (
       args: ProviderLoginRefArgs,
       pin?: OpenProjectBinding | null,
@@ -11492,7 +11774,10 @@ const adeBridge = {
         "loginStatus",
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesLoginStatus, args),
-      ).then(normalizeProviderLoginStatus),
+      ).then(normalizeProviderLoginStatus).then((status) => {
+        if (loginSucceeded(status)) aiStatusCache.clear();
+        return status;
+      }),
     loginSubmitCode: async (
       args: ProviderLoginSubmitCodeArgs,
       pin?: OpenProjectBinding | null,
@@ -11503,7 +11788,10 @@ const adeBridge = {
         "loginSubmitCode",
         { args: { ...args } },
         () => ipcRenderer.invoke(IPC.providerInstancesLoginSubmitCode, args),
-      ).then(normalizeProviderLoginStatus),
+      ).then(normalizeProviderLoginStatus).then((status) => {
+        if (loginSucceeded(status)) aiStatusCache.clear();
+        return status;
+      }),
     loginCancel: async (
       args: ProviderLoginRefArgs,
       pin?: OpenProjectBinding | null,
@@ -13107,7 +13395,7 @@ const adeBridge = {
   // account, so none of these take a pin.
   /** Whether ADE Cloud exists for this account (`renderer/state/cloudAccess.ts`). */
   cloudAccess: {
-    read: (): Promise<{ enabled: boolean }> => ipcRenderer.invoke(IPC.cloudGetAccess),
+    read: (): Promise<{ enabled: boolean; passEnd?: CloudPassEnd | null }> => ipcRenderer.invoke(IPC.cloudGetAccess),
     onChanged: (cb: () => void): (() => void) => {
       const listener = () => cb();
       ipcRenderer.on(IPC.cloudStatusChanged, listener);
@@ -13131,6 +13419,17 @@ const adeBridge = {
     /** Wakes a computer (free once a day at 0 hours) and pushes its lanes' work to GitHub. */
     pushAllWork: (instanceId: string): Promise<CloudMachineActionResult> =>
       ipcRenderer.invoke(IPC.cloudPushAllWork, { instanceId }),
+    /** The life of a lane's computer (`CloudLaneLifeCallRequest`): account level, so no pin. */
+    laneLife: <M extends CloudLaneLifeMethod>(request: CloudLaneLifeCallRequest<M>): Promise<CloudLaneLifeResults[M]> =>
+      ipcRenderer.invoke(IPC.cloudLaneLifeCall, request),
+    /** On the lane's own computer, through its pin: the brain there refuses a call meant for another one. */
+    clearCaches: (pin: OpenProjectBinding, instanceId: string): Promise<{ freedGb: number }> =>
+      callPinnedRuntimeAction<{ freedGb: number }>(pin, "cloud", "clear_caches", { args: { machine: instanceId } }),
+    onLaneJob: (cb: (job: CloudLaneJobSnapshot) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, job: CloudLaneJobSnapshot) => cb(job);
+      ipcRenderer.on(IPC.cloudLaneJobEvent, listener);
+      return () => ipcRenderer.removeListener(IPC.cloudLaneJobEvent, listener);
+    },
     machineAction: (args: CloudMachineActionArgs): Promise<CloudMachineActionResult | null> =>
       ipcRenderer.invoke(IPC.cloudMachineAction, args),
     getAgentLimits: (): Promise<CloudAgentLimits | null> => ipcRenderer.invoke(IPC.cloudGetAgentLimits),
@@ -13159,7 +13458,13 @@ const adeBridge = {
       delete: (args: CloudSavedChatDeleteArgs): Promise<void> => ipcRenderer.invoke(IPC.cloudSavedChatsDelete, args),
     },
     cloudSignInStatus: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInStatus),
-    cloudSignInClaudeStart: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInClaudeStart),
+    cloudSignInClaudeStart: (args?: CloudSignInClaudeStartArgs): Promise<CloudSignInStatus | null> =>
+      ipcRenderer.invoke(IPC.cloudSignInClaudeStart, {
+        forEmail: args?.forEmail ?? null,
+        renewKey: args?.renewKey ?? null,
+        labelEmail: args?.labelEmail ?? null,
+      }),
+    cloudSignInClaudeKeep: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInClaudeKeep),
     cloudSignInClaudeCode: (code: string): Promise<CloudSignInStatus | null> =>
       ipcRenderer.invoke(IPC.cloudSignInClaudeCode, { code }),
     cloudSignInClaudeCancel: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInClaudeCancel),

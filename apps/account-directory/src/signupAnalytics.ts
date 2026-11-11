@@ -26,11 +26,13 @@
  * while; a `user.deleted` still deletes the account's ADE Cloud data with no token.
  */
 
+import type { RelayAccountPurgeEnv } from "./activityRelay";
 import { deleteCloudAccount } from "./cloud/accountDeletion";
 import { closeLaneSharesForAccount } from "./laneShares/routes";
 import { reportCloudFailure } from "./cloud/store";
 
-export type SignupAnalyticsEnv = {
+/** `RelayAccountPurgeEnv`: a `user.deleted` also removes the account's vault and settings on the push relay. */
+export type SignupAnalyticsEnv = RelayAccountPurgeEnv & {
   CLERK_WEBHOOK_SIGNING_SECRET?: string;
   POSTHOG_PROJECT_TOKEN?: string;
   POSTHOG_HOST?: string;

@@ -480,6 +480,8 @@ function createRuntime() {
       addComment: vi.fn(async ({ body }: { body: string }) => ({ id: "comment-new", body })),
     },
     agentChatService: {
+      // null: no balanced account is picked, so the CLI runs on the machine's own login.
+      pickNewCliSessionAccount: vi.fn(() => null),
       listSessions: vi.fn(async () => [
         {
           sessionId: "chat-1",

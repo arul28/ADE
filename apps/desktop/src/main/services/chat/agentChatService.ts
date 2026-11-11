@@ -7,6 +7,8 @@ import { adeHostWithheldAgentSkills } from "../../../shared/agentSkillRoots";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
 import { probeClaudeKeychainLogin } from "../ai/providerCredentialSources";
+import { providerLoginGeneration } from "../ai/providerLoginChanged";
+import { providerLoginGate, type ProviderLoginRestartOptions } from "../providerLogins/providerLoginHooks";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, claudeEstimatedCompactAt, compactionIdleModeDefault, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { withClaudeSubagentCompactWindow } from "../../../shared/claudeBuiltinAgentPrompts";
@@ -150,6 +152,10 @@ import {
   writeClaudeOutputStyleSelection,
 } from "./claudeOutputStyles";
 import { createClaudeSubprocessReaper, type ClaudeSubprocessReaper } from "./claudeSubprocessReaper";
+import { claudePassForAccountless, claudePassSignedInHere, withClaudePassEnv } from "../claudePass/claudePassLaunch";
+import { noteClaudePassRateLimit } from "../claudePass/claudePassUse";
+import { claudePassKeyOfAccountId } from "../../../shared/types/providerLogins";
+import { noteClaudePassAuthFailure } from "../claudePass/claudePassEnd";
 import {
   ChatRuntimeOwnedElsewhereError,
   decideChatRuntimeOwnership,
@@ -1075,6 +1081,7 @@ import {
 } from "../../../shared/modelRegistry";
 import { piSdkToolPolicyForPermissionMode, piThinkingLevel, type PiSdkMcpPolicy } from "../../../shared/cliLaunch";
 import { codexAppServerApprovalPolicy } from "../../../shared/codexApprovalPolicy";
+import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
 import { stripHostRuntimeEnv, userProcessEnv } from "../shared/hostRuntimeEnv";
 import { isProviderDisabled } from "../../../shared/providerEnablement";
@@ -1433,6 +1440,7 @@ import {
   acpInvocationKey,
   AcpModeUnsupportedError,
   buildAcpPromptBlocks,
+  acpSessionPool,
   createAcpRuntime,
   ensureQwenAdeSkillDefaultsFile,
   openAcpSession,
@@ -5462,6 +5470,12 @@ type ManagedChatSession = {
    * brain drops it and the host re-sends its servers, as after any restart.
    */
   pendingCallerMcpReplacement?: { servers: CallerMcpServers | null } | null;
+  /**
+   * The provider's sign-in changed (P5: applied on a cloud computer) while this
+   * chat was busy. Its process ends when the turn settles
+   * (`runLoginRestartIfIdle`); a running turn is never cut.
+   */
+  pendingLoginRestart?: boolean;
   /**
    * Something was built for this chat while its custom provider or stored key
    * could not be resolved, so it carries the harness's own sign-in. The next
@@ -10638,6 +10652,53 @@ function resolveSessionCodexConfigSource(
     ?? "flags";
 }
 
+/**
+ * Codex on an ADE Cloud computer runs with full access (no approvals, no
+ * sandbox): the cloud computer is the sandbox, and nobody is there to answer
+ * an approval while the laptop is closed. Only Codex, only on a cloud
+ * computer (`isAdeCloudComputer`). These keep the mode they have, because an
+ * existing guard set it:
+ *
+ * - Plan (a read-only sandbox): a mode that changes nothing stays that way,
+ *   and a side chat is read-only for its whole life;
+ * - a chat an agent started or spawned (`launchedBySessionId`,
+ *   `orchestrationParentSessionId`), and a recovery chat
+ *   (`recoveredFromSessionId`, which copies the mode of the chat it
+ *   continues): the permission ceiling keeps it at or below the level it was
+ *   given;
+ * - a chat driven by a host permission policy, which needs approvals to run.
+ *
+ * The rule writes the session's own fields, so the mode every client shows
+ * is the mode Codex runs with.
+ */
+function codexGetsCloudFullAccess(
+  session: Pick<
+    AgentChatSession,
+    | "provider" | "codexSandbox" | "codexConfigSource" | "permissionMode" | "sideChatParentSessionId"
+    | "permissionPolicy" | "launchedBySessionId" | "orchestrationParentSessionId" | "recoveredFromSessionId"
+  >,
+): boolean {
+  if (session.provider !== "codex" || !isAdeCloudComputer()) return false;
+  if (session.sideChatParentSessionId || session.permissionPolicy) return false;
+  if (session.launchedBySessionId || session.orchestrationParentSessionId || session.recoveredFromSessionId) return false;
+  if (resolveSessionCodexConfigSource(session) === "config-toml") return true;
+  return resolveSessionCodexSandbox(session, "workspace-write") !== "read-only";
+}
+
+/** Applies {@link codexGetsCloudFullAccess} to the session's own fields. */
+function applyCodexCloudFullAccess(
+  session: Parameters<typeof codexGetsCloudFullAccess>[0] & Pick<
+    AgentChatSession,
+    "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "opencodePermissionMode" | "droidPermissionMode" | "copilotPermissionMode" | "musePermissionMode" | "cursorModeId"
+  >,
+): void {
+  if (!codexGetsCloudFullAccess(session)) return;
+  session.codexConfigSource = "flags";
+  session.codexApprovalPolicy = "never";
+  session.codexSandbox = "danger-full-access";
+  session.permissionMode = syncLegacyPermissionMode(session) ?? session.permissionMode;
+}
+
 function isSessionCodexFullAuto(
   session: Pick<
     AgentChatSession,
@@ -12721,6 +12782,30 @@ export function createAgentChatService(args: {
     } catch {
       return undefined;
     }
+  };
+
+  /**
+   * The account a new session runs on when its caller names none: smart
+   * balance's pick for Claude and Codex (which also counts the session on that
+   * account), else the provider's default. New chats and new CLI sessions both
+   * start here, so a terminal session follows the same account rules as a chat.
+   */
+  const pickNewSessionAccount = (
+    provider: string,
+    modelId: string | null | undefined,
+    logEvent: "chat.account_balance_pick" | "cli.account_balance_pick",
+  ): string | undefined => {
+    if (provider === "claude" || provider === "codex") {
+      const accountUsage = getAccountUsage();
+      if (accountUsage) {
+        const balanced = accountUsage.resolveBalancedInstance(provider, modelId);
+        if (balanced) logger.info(logEvent, { provider, ...balanced });
+        if (balanced?.instanceId) return balanced.instanceId;
+      } else {
+        logger.error("chat.account_balance_unavailable", { provider });
+      }
+    }
+    return currentDefaultInstanceId(provider);
   };
 
   /**
@@ -22605,6 +22690,7 @@ export function createAgentChatService(args: {
     // later turn. The `done` event schedules it too, for a runtime still
     // mid-turn when the idle mark lands.
     if (managed.restartAfterTurn) runRestartAfterTurn(managed);
+    if (managed.pendingLoginRestart) setTimeout(() => runLoginRestartIfIdle(managed), 0);
   };
 
   const regenStaleStatusLine = createStatusLineStaleRegen({
@@ -23996,11 +24082,13 @@ export function createAgentChatService(args: {
       await autoResume.cancelForSession(normalizedSessionId, "account_switch");
       setUsageLimitResume(managed, null);
       if (to.provider === "claude") dismissClaudeSessionQuota(managed);
+      const accountLabel = (instance: ProviderInstance): string => instance.account?.email?.trim() || instance.label || instance.id;
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
         severity: "info",
-        message: `Switched to ${to.account?.email?.trim() || to.label || to.id}.`,
+        message: `Switched to ${accountLabel(to)}.`,
+        providerLogin: { kind: "switched", place: "chat", provider: to.provider, from: { instanceId: from.id, label: accountLabel(from) }, to: { instanceId: to.id, label: accountLabel(to) } },
       });
       onAccountSwitched?.({ provider: to.provider });
       return { ok: true, instanceId: to.id };
@@ -25257,6 +25345,7 @@ export function createAgentChatService(args: {
       settleClaudeGoalOnTurnEnd(managed, event.status);
       if (event.status === "completed") maybeStartAutoTitleRefine(managed);
       if (managed.restartAfterTurn) runRestartAfterTurn(managed);
+      if (managed.pendingLoginRestart) setTimeout(() => runLoginRestartIfIdle(managed), 0);
       void refreshLinkedIssueSnapshots(managed.session.id).catch((error) => {
         warnLinkedIssueSnapshotFailure(managed.session.id, "all", error);
       });
@@ -30033,6 +30122,8 @@ export function createAgentChatService(args: {
     );
     managed.historyGeneration = normalizeHistoryGeneration(persisted?.historyGeneration);
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
+    // A Codex chat saved before the cloud rule shows full access from load.
+    applyCodexCloudFullAccess(managed.session);
     refreshReconstructionContext(managed);
     if (typeof persisted?.pendingTranscriptReplay === "string" && persisted.pendingTranscriptReplay.trim()) {
       managed.pendingTranscriptReplay = persisted.pendingTranscriptReplay;
@@ -32431,6 +32522,8 @@ export function createAgentChatService(args: {
 
     if (msg.type === "rate_limit_event") {
       const info = asRecord(record.rate_limit_info) ?? {};
+      // A Claude pass account's limits come only from its turns (claudePassUse.ts).
+      noteClaudePassRateLimit(claudePassAccountOf(managed, "use"), info);
       const classified = classifyClaudeRateLimitInfo(info);
       if (classified.kind === "rejected") {
         noteClaudeSessionQuota(managed, classified.snapshot, state.turnId);
@@ -33285,6 +33378,8 @@ export function createAgentChatService(args: {
     let assistantText = "";
     /** The turn stopped Claude's own sign-in retries; see failClaudeTurnUnauthenticated. */
     let claudeAuthStopRequested = false;
+    /** What Claude said when it refused the sign-in, for the end of a Claude pass (claudePassEnd.ts). */
+    let claudeAuthEndSignal: string | null = null;
     let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null; thinkingTokens?: number | null; cacheWrite1hTokens?: number | null } | undefined;
     let costUsd: number | null = null;
     let resultServedModelCandidate: string | undefined;
@@ -33710,8 +33805,9 @@ export function createAgentChatService(args: {
       // error event that renders the inline re-login card on every chat surface.
       // The "stopped retrying" notice waits for the failure path, which first
       // checks whether the keychain just did not answer (then it is not a sign-out).
-      const failClaudeTurnUnauthenticated = (): never => {
+      const failClaudeTurnUnauthenticated = (signal: string | null = null): never => {
         claudeAuthStopRequested = true;
+        claudeAuthEndSignal ??= signal;
         // A signed-out Claude Code is the user's to fix (the re-login card), not a fault.
         throw markExpected(new Error(CLAUDE_RUNTIME_AUTH_ERROR), "user");
       };
@@ -33985,6 +34081,8 @@ export function createAgentChatService(args: {
         if (msg.type === "rate_limit_event") {
           const rateMsg = msg as any;
           const info = rateMsg.rate_limit_info ?? {};
+          // A Claude pass account's limits come only from its turns (claudePassUse.ts).
+          noteClaudePassRateLimit(claudePassAccountOf(managed, "use"), info);
           const classified = classifyClaudeRateLimitInfo(info);
           if (classified.kind === "rejected") {
             quotaTrippedThisTurn = true;
@@ -34075,7 +34173,9 @@ export function createAgentChatService(args: {
             || error === "authentication_failed"
             || isClaudeRuntimeAuthError(error)
           ) {
-            failClaudeTurnUnauthenticated();
+            failClaudeTurnUnauthenticated(
+              retryMsg.error_status === 401 ? "status_401" : error === "authentication_failed" ? "authentication_failed" : String(error ?? ""),
+            );
           }
           emitClaudeApiRetry(managed, retryMsg, turnId);
           continue;
@@ -34831,7 +34931,7 @@ export function createAgentChatService(args: {
           // error="authentication_failed" (its text otherwise renders as a plain
           // bubble with no recovery affordance). Fast-fail into the re-login card.
           if (assistantMsg.error === "authentication_failed") {
-            failClaudeTurnUnauthenticated();
+            failClaudeTurnUnauthenticated("authentication_failed");
           }
           if (isClaudeSyntheticImageErrorMessage(assistantMsg)) continue;
           if (assistantMsg.error && onBackendDispatched) {
@@ -35347,7 +35447,7 @@ export function createAgentChatService(args: {
             // credentials" errors — route them into the re-login card rather than
             // dumping raw API error text.
             if (isClaudeRuntimeAuthError(resultErrors.userFacing.join(" "))) {
-              failClaudeTurnUnauthenticated();
+              failClaudeTurnUnauthenticated(resultErrors.userFacing.join(" "));
             }
             const quotaErrors = resultErrors.userFacing.filter((err) => isClaudeUsageLimitResultError(err));
             if (quotaErrors.length > 0) {
@@ -35798,6 +35898,12 @@ export function createAgentChatService(args: {
             ? CLAUDE_RUNTIME_AUTH_ERROR
             : (effectiveError instanceof Error ? effectiveError.message : String(effectiveError));
         if (isAuthFailure) {
+          // A Claude pass that Claude refused as no longer valid ends once, on
+          // every computer of the account (claudePassEnd.ts lists the signals).
+          noteClaudePassAuthFailure(
+            claudePassAccountOf(managed, "end"),
+            claudeAuthEndSignal ?? (claudeAuthStopRequested ? null : getErrorMessage(effectiveError)),
+          );
           if (claudeAuthStopRequested) {
             emitChatEvent(managed, {
               type: "system_notice",
@@ -35952,7 +36058,8 @@ export function createAgentChatService(args: {
     cliArgs: string[],
     timeoutMs = 45_000,
   ): Promise<ClaudeBackgroundCliResult> => {
-    const env = buildAgentRuntimeEnv(managed);
+    // A Claude pass account gets its token here, at the spawn (claudePassLaunch.ts).
+    const env = withClaudePassEnv(buildAgentRuntimeEnv(managed));
     const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
     if (claudeDownload) await claudeDownload;
     const resolved = resolveClaudeCodeExecutable({ env });
@@ -36892,6 +36999,7 @@ export function createAgentChatService(args: {
       binarySource: executable.source,
       ...(args.acpSpawnOverride ? { spawnOverride: args.acpSpawnOverride } : {}),
       ...(args.acpSessionPool ? { pool: args.acpSessionPool } : {}),
+      loginGeneration: providerLoginGeneration(managed.session.provider),
       callbacks: {
         onEvents: (runtime, events) => {
           if (!runtime || managed.runtime !== runtime) return;
@@ -46125,6 +46233,8 @@ export function createAgentChatService(args: {
           env: Object.entries(processEnv).filter(([, value]) => value != null).sort(([a], [b]) => a.localeCompare(b)),
           optOutNotificationMethods,
           agentSkillRoots,
+          // A changed sign-in never shares a process started on the older one.
+          loginGeneration: providerLoginGeneration("codex"),
         })).digest("hex")
       : null;
     const host = codexAppServerPool.acquire({
@@ -46592,6 +46702,9 @@ export function createAgentChatService(args: {
     codexPolicy: CodexPolicy;
   } => {
     const config = resolveChatConfig();
+    // Every Codex thread start, resume and turn reads its policy here, so the
+    // cloud computer's full access holds for what runs.
+    applyCodexCloudFullAccess(managed.session);
     const codexConfigSource = resolveSessionCodexConfigSource(managed.session);
     managed.session.codexConfigSource = codexConfigSource;
     const codexPolicy = codexConfigSource === "config-toml"
@@ -51357,25 +51470,12 @@ export function createAgentChatService(args: {
       return existing.session;
     }
 
-    let balancedInstance: AccountBalanceResult | null = null;
-    if (!requestedInstanceId?.trim() && (effectiveProvider === "claude" || effectiveProvider === "codex")) {
-      const accountUsage = getAccountUsage();
-      if (accountUsage) {
-        balancedInstance = accountUsage.resolveBalancedInstance(
-          effectiveProvider === "claude" ? "claude" : "codex",
-          normalizedModel,
-        );
-      } else {
-        logger.error("chat.account_balance_unavailable", { provider: effectiveProvider });
-      }
-    }
-    if (balancedInstance) logger.info("chat.account_balance_pick", { provider: effectiveProvider, ...balancedInstance });
     // Every Claude and Codex chat records its account. A chat without one
     // follows the default, and a later default switch would relaunch it on a
     // config home that does not hold its thread.
-    const selectedInstanceId = balancedInstance?.instanceId
-      || requestedAccountId(effectiveProvider, requestedInstanceId)
-      || currentDefaultInstanceId(effectiveProvider);
+    const selectedInstanceId = requestedInstanceId?.trim()
+      ? requestedAccountId(effectiveProvider, requestedInstanceId) || currentDefaultInstanceId(effectiveProvider)
+      : pickNewSessionAccount(effectiveProvider, normalizedModel, "chat.account_balance_pick");
 
     /* A Custom provider's thinking level is part of the preset, and the preset
        is what the user picked — so a chat created on one adopts that level
@@ -51519,7 +51619,7 @@ export function createAgentChatService(args: {
     effectivePermissionMode = localHarnessPermissions.requestedPermissionMode;
     requestedOpenCodePermissionMode = localHarnessPermissions.requestedOpenCodePermissionMode;
 
-      const nativePermissionFields = (() => {
+      const requestedNativePermissionFields = (() => {
       if (effectiveProvider === "claude") {
         const interactionMode = effectiveInteractionMode
           ?? (effectiveClaudePermissionMode === "plan" ? "plan" : undefined)
@@ -51620,6 +51720,22 @@ export function createAgentChatService(args: {
         ...(requestedAcpPermissionMode ? { acpPermissionMode: requestedAcpPermissionMode } : {}),
       };
       })();
+      // Codex on an ADE Cloud computer starts with full access (see
+      // `codexGetsCloudFullAccess`). Before the ceiling below, so a chat an
+      // agent starts is still held to that agent's level.
+      const codexCloudFullAccess = effectiveProvider === "codex" && !permissionsPinned && codexGetsCloudFullAccess({
+        provider: "codex",
+        ...("codexSandbox" in requestedNativePermissionFields ? { codexSandbox: requestedNativePermissionFields.codexSandbox } : {}),
+        ...("codexConfigSource" in requestedNativePermissionFields ? { codexConfigSource: requestedNativePermissionFields.codexConfigSource } : {}),
+        ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
+        ...(callerPermissionPolicy ? { permissionPolicy: callerPermissionPolicy } : {}),
+        ...(launchedBySessionId ? { launchedBySessionId } : {}),
+        ...(normalizedParentSessionId ? { orchestrationParentSessionId: normalizedParentSessionId } : {}),
+        ...(recoveredFromSessionId?.trim() ? { recoveredFromSessionId: recoveredFromSessionId.trim() } : {}),
+      });
+      const nativePermissionFields = codexCloudFullAccess
+        ? { codexApprovalPolicy: "never" as const, codexSandbox: "danger-full-access" as const, codexConfigSource: "flags" as const }
+        : requestedNativePermissionFields;
       // A spawned chat never runs with more freedom than the chat that spawned
       // it, and an agent never starts a chat with more than its own (see
       // `resolvePermissionCeiling`). Identity-pinned sessions are locked to
@@ -53876,6 +53992,15 @@ export function createAgentChatService(args: {
           blockingErrors.push(`Destination lane '${existingLane.name}' is not at the source commit.`);
         }
       } else {
+        // No lane here holds the branch, so the move makes one. An ADE Cloud
+        // computer that already holds a lane refuses it: say so before the
+        // source sends anything. The lane import checks again on arrival.
+        try {
+          // Optional: a lane service without it skips only this early answer.
+          laneService.assertRoomForNewLane?.();
+        } catch (error) {
+          blockingErrors.push(error instanceof Error ? error.message : String(error));
+        }
         const localHead = await runGit(["rev-parse", "--verify", `refs/heads/${branchRef}`], {
           cwd: projectRoot,
           timeoutMs: 8_000,
@@ -57075,6 +57200,7 @@ export function createAgentChatService(args: {
     policy.chatMode,
     policy.approvalPolicy,
     policy.fullAuto ? "full-auto" : "guarded",
+    `g${providerLoginGeneration("cursor")}`,
   ].join(":");
 
   const cursorSdkStateKeyFor = (managed: ManagedChatSession): string => [
@@ -61628,6 +61754,7 @@ export function createAgentChatService(args: {
     managed.session.id,
     managed.session.laneId,
     managed.laneWorktreePath,
+    `g${providerLoginGeneration("droid")}`,
   ].join(":");
 
   /**
@@ -61676,7 +61803,8 @@ export function createAgentChatService(args: {
     if (managed.runtime) teardownRuntime(managed, managed.runtime.kind === "copilot" ? "restart" : "handle_close");
     const copilotDownload = chatPinnedToolDownload(managed, "copilot", "the Copilot runtime");
     if (copilotDownload) await copilotDownload;
-    const baseEnv = buildAgentRuntimeEnv(managed);
+    // The pool keys on the env: a changed sign-in gets a new worker.
+    const baseEnv = { ...buildAgentRuntimeEnv(managed), ADE_PROVIDER_LOGIN_GEN: String(providerLoginGeneration("copilot")) };
     const executable = resolveCopilotSdkRuntime({ env: baseEnv });
     if (executable.source === "fallback-command") throw pinnedToolNotReadyError("copilot", "the Copilot runtime");
     const home = copilotConfigHome({ env: baseEnv });
@@ -62876,6 +63004,23 @@ export function createAgentChatService(args: {
       optimisticDroidTurnStart,
       optimisticCodexTurnStart,
     } = prepared;
+
+    // On a cloud computer, the account's sign-in for this provider is pulled
+    // and written before the provider starts or resumes (P5 §4.4). Null
+    // everywhere else: no await, no cost. While the turn waits for a fresh
+    // copy (P5 §5.3), the chat says so. One set of lines per turn: a message
+    // into a running turn adds none.
+    const loginLines = !sessionTurnRunning(managed);
+    const loginGate = providerLoginGate(managed.session.provider, {
+      firstCloudChat: loginLines,
+      onWait: (message, providerLogin) => {
+        if (loginLines) emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message, ...(providerLogin ? { providerLogin } : {}) });
+      },
+    });
+    const loginOutcome = loginGate ? await loginGate : null;
+    for (const notice of loginLines ? loginOutcome?.notices ?? [] : []) {
+      emitChatEvent(managed, { type: "system_notice", noticeKind: notice.severity, severity: notice.severity, status: notice.status, message: notice.message, providerLogin: notice.providerLogin });
+    }
 
     // Both dispatch commit points cancel the pending auto-resume: this one and
     // the accepted branch of `enqueueSteerOrDrop`. Together they cover every
@@ -66664,6 +66809,99 @@ export function createAgentChatService(args: {
         });
       });
     }, 0);
+  };
+
+  /**
+   * A chat is busy for a login restart while a turn runs, its process has work
+   * in flight (background jobs, subagents), or it waits on the person.
+   */
+  const loginRestartBusy = (managed: ManagedChatSession): boolean =>
+    sessionTurnRunning(managed) || hasRuntimeActiveWorkload(managed.runtime) || hasLivePendingInput(managed);
+
+  /** End the chat's process on the old login once it is idle; the next message resumes the thread. */
+  const runLoginRestartIfIdle = (managed: ManagedChatSession): boolean => {
+    if (!managed.pendingLoginRestart) return false;
+    if (managed.deleted || !managed.runtime || serviceDisposed) {
+      managed.pendingLoginRestart = false;
+      return false;
+    }
+    if (loginRestartBusy(managed)) return false;
+    managed.pendingLoginRestart = false;
+    teardownRuntime(managed, "restart");
+    logger.info("agent_chat.login_restart", { sessionId: managed.session.id, provider: managed.session.provider });
+    return true;
+  };
+
+  /**
+   * The provider's sign-in changed (P5 §6): end each idle chat's process now
+   * and each busy one's after its turn, keeping every conversation; and end
+   * the provider's unused pooled processes. A running turn is never cut: it
+   * ends on the login it started with.
+   */
+  /**
+   * The provider account a chat runs as, read without the side effects of
+   * `resolveSessionInstance` (no pin, no persist, no thread reset): its
+   * `instanceId`, or the account the store falls back to. Null for a provider
+   * without accounts.
+   */
+  /**
+   * The Claude pass account a chat's turn runs on (P6), or null. A chat on a
+   * pass account; for `use` also a base-account chat, which runs on the
+   * "New chats" pass (claudePassLaunch.ts). An auth failure of a base-account
+   * chat never ends a pass: its env may have carried another credential.
+   * Free off a cloud computer (no pass is signed in there).
+   */
+  const claudePassAccountOf = (managed: ManagedChatSession, purpose: "use" | "end"): string | null => {
+    if (!claudePassSignedInHere()) return null;
+    const pinned = managed.session.instanceId?.trim() || null;
+    const id = pinned && claudePassKeyOfAccountId(pinned) ? pinned : resolvedInstanceIdOf(managed);
+    if (claudePassKeyOfAccountId(id)) return id;
+    return purpose === "use" && id === "claude" ? claudePassForAccountless() : null;
+  };
+
+  const resolvedInstanceIdOf = (managed: ManagedChatSession): string | null => {
+    const provider = managed.session.provider;
+    if (!isProviderInstanceProvider(provider)) return null;
+    const requested = managed.session.instanceId?.trim() || undefined;
+    try {
+      return getMachineProviderInstanceStore().resolve(provider, requested).instance.id;
+    } catch {
+      return requested ?? null;
+    }
+  };
+
+  /**
+   * A login of `provider` changed: end its idle processes now and the busy
+   * ones after their turn. With `instanceIds` (P6: one Claude pass), only the
+   * chats whose resolved account id is in the list, and the pooled processes,
+   * which belong to no account, stay.
+   */
+  const restartProviderRuntimesWhenIdle = (
+    provider: string,
+    options?: ProviderLoginRestartOptions,
+  ): { restarted: number; deferred: number; pooledEnded: number } => {
+    const id = provider.trim().toLowerCase();
+    const onlyAccounts = options?.instanceIds ? new Set(options.instanceIds) : null;
+    let restarted = 0;
+    let deferred = 0;
+    for (const managed of managedSessions.values()) {
+      if (managed.session.provider !== id || !managed.runtime || managed.deleted) continue;
+      if (onlyAccounts) {
+        const instanceId = resolvedInstanceIdOf(managed);
+        if (!instanceId || !onlyAccounts.has(instanceId)) continue;
+      }
+      // ADE Cloud's pick changed (P5 step 3d): the chat says so one time, with the old pick for "Change back".
+      const switched = options?.switched;
+      if (switched) emitChatEvent(managed, { type: "system_notice", noticeKind: "info", severity: "info", message: `Switched to ${switched.to.label}.`, providerLogin: { kind: "switched", place: "ade_cloud", provider: id, from: switched.from, to: switched.to } });
+      managed.pendingLoginRestart = true;
+      if (runLoginRestartIfIdle(managed)) restarted += 1;
+      else if (managed.pendingLoginRestart) deferred += 1;
+    }
+    const pooledEnded = onlyAccounts ? 0 : (args.acpSessionPool ?? acpSessionPool).disposeIdle(id, "provider login changed");
+    if (restarted || deferred || pooledEnded) {
+      logger.info("agent_chat.login_restart_requested", { provider: id, restarted, deferred, pooledEnded });
+    }
+    return { restarted, deferred, pooledEnded };
   };
 
   /**
@@ -74002,6 +74240,9 @@ export function createAgentChatService(args: {
       // The same normalization the update ends with (Claude rebuilds its
       // access mode from the generic word here).
       normalizeSessionNativePermissionControls(after, resolveChatConfig());
+      // On a cloud computer a Codex mode that writes runs with full access,
+      // so the ceiling judges that, not the word the agent sent.
+      applyCodexCloudFullAccess(after);
       const clamp = ceiling ? permissionCeilingClamp(after, ceiling) : null;
       if (clamp) {
         throw new Error(
@@ -74832,6 +75073,9 @@ export function createAgentChatService(args: {
       }
     }
 
+    // A cloud computer's Codex chat keeps full access through any update (a
+    // switch to Codex, a mode pick); the agent check above already counted it.
+    applyCodexCloudFullAccess(managed.session);
     const modeFieldsTouched = hasExplicitNativeModeUpdate;
     if (modeFieldsTouched) {
       enforceManagedLocalHarnessPermissionMode(managed);
@@ -78810,6 +79054,9 @@ export function createAgentChatService(args: {
     dismissPendingInput,
     importExternalChatSession,
     launchHeadless,
+    /** The account a new CLI session starts on when none is named; see `pickNewSessionAccount`. */
+    pickNewCliSessionAccount: (provider: string, modelId?: string | null) =>
+      pickNewSessionAccount(provider, modelId, "cli.account_balance_pick"),
     suggestLaneNameFromPrompt,
     generateAutoLaneIdentity,
     handoffSession,
@@ -78998,6 +79245,7 @@ export function createAgentChatService(args: {
     messageSubagent,
     controlSubagent,
     restartSession,
+    restartProviderRuntimesWhenIdle,
     mcpRegistryChatStatus,
     waitFor: chatWaitRegistry.waitFor,
     armWait: chatWaitRegistry.arm,

@@ -71,7 +71,9 @@
     "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev",
     // Push relay origin. Removing a machine forwards the removal here so its
     // Activity is purged and it cannot publish again; a machine removal fails
-    // loudly (502) when this is unset or unreachable.
+    // loudly (502) when this is unset or unreachable. A Clerk `user.deleted`
+    // also removes the account's vault and settings there, and answers 502
+    // (so Clerk delivers again) until the relay confirms it.
     //
     // PUSH_RELAY_URL builds the request URL; the `ACTIVITY_RELAY` service
     // binding below carries it. Both are required, and so is

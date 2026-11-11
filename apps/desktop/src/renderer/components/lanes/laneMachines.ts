@@ -33,7 +33,31 @@ import type { MachinePlacementPreference, MachineStats } from "../../../shared/t
 // with two different id values is what made the divergence guard able to warn
 // that This computer diverged from itself. Re-exported here for existing callers.
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { adeCloudLaneComputerForMachine, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 export { THIS_MACHINE_ID, THIS_MACHINE_NAME };
+
+/**
+ * A lane's own ADE Cloud computer (one lane per computer). It is never a
+ * place for a NEW lane: pickers that make a lane drop it (only the single
+ * "ADE Cloud" entry, a new computer, shows there) and Auto never picks it.
+ * Pickers that open an existing lane or its chat keep it.
+ *
+ * `computers` defaults to the last read of the account's lane computers.
+ */
+export function isAdeCloudLaneComputer(
+  machine: { hostname?: string | null; machineKey?: string | null },
+  computers?: readonly AdeCloudLaneComputer[],
+): boolean {
+  return adeCloudLaneComputerForMachine(machine, computers) != null;
+}
+
+/** The machines a NEW lane may go on: every one but a lane's own ADE Cloud computer. */
+export function withoutAdeCloudLaneComputers<T extends { hostname?: string | null; machineKey?: string | null }>(
+  machines: readonly T[],
+  computers?: readonly AdeCloudLaneComputer[],
+): T[] {
+  return machines.filter((machine) => !isAdeCloudLaneComputer(machine, computers));
+}
 
 /**
  * Free-disk headroom below which a machine row reads as a warning. Matches the
@@ -448,14 +472,17 @@ function chooseLaneMachineByLoad(options: readonly LaneMachineOption[]): string 
  * can is Manual only.
  */
 export function autoLaneMachine(options: readonly LaneMachineOption[]): LaneMachineOption | null {
-  if (options.filter(canCreateLaneOnMachine).length < 2) return null;
+  if (options.filter((option) => canCreateLaneOnMachine(option) && !isAdeCloudLaneComputer(option)).length < 2) return null;
   const id = chooseLaneMachineByLoad(options);
   return id ? options.find((machine) => machine.id === id) ?? null : null;
 }
 
-/** A machine automatic placement may choose: it can host the lane and is not Manual only. */
+/**
+ * A machine automatic placement may choose: it can host the lane, is not
+ * Manual only, and is not a lane's own ADE Cloud computer.
+ */
 export function canAutoPlaceOnMachine(option: LaneMachineOption): boolean {
-  return canCreateLaneOnMachine(option) && option.preference !== "manual";
+  return canCreateLaneOnMachine(option) && option.preference !== "manual" && !isAdeCloudLaneComputer(option);
 }
 
 const PREFERENCE_WEIGHT: Record<Exclude<MachinePlacementPreference, "manual">, number> = {

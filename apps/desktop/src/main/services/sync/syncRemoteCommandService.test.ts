@@ -176,6 +176,8 @@ function createMockDiffService() {
 
 function createMockAgentChatService() {
   return {
+    // null: no balanced account is picked, so the CLI runs on the machine's own login.
+    pickNewCliSessionAccount: vi.fn().mockReturnValue(null),
     listSessions: vi.fn().mockResolvedValue([]),
     getSessionSummary: vi.fn().mockResolvedValue({
       sessionId: "chat-1",

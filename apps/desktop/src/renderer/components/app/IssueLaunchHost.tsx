@@ -5,6 +5,7 @@ import {
   defaultIssueKickoffPrompt,
   defaultKickoffIntro,
   isBatchLaunchInFlight,
+  issueAdeCloudLaunchArgs,
   launchIssueIdentity,
   runBatchLaunch,
   type BatchLaunchItemState,
@@ -29,6 +30,7 @@ import { useActiveProjectRoot, useAppStore, workViewStoreForProject } from "../.
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { BatchLaunchModal, type BatchLaunchMachine, type BatchLaunchSubmit } from "./BatchLaunchModal";
 import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
+import { startAdeCloudLaunch } from "../chat/launch/adeCloudLaunch";
 
 type PendingIssueLaunchRequest = IssueLaunchRequest & { nonce: string };
 
@@ -51,6 +53,7 @@ export function IssueLaunchHost() {
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const selectLane = useAppStore((state) => state.selectLane);
   const launchPromptClipboardEnabled = useAppStore((state) => state.launchPromptClipboardEnabled);
+  const projectBinding = useAppStore((state) => state.projectBinding);
   const [request, setRequest] = useState<PendingIssueLaunchRequest | null>(null);
   const [states, setStates] = useState<Map<string, BatchLaunchItemState>>(new Map());
   const statesRef = useRef(states);
@@ -94,6 +97,17 @@ export function IssueLaunchHost() {
 
   const launchBatch = useCallback(async (entries: BatchLaunchSubmit[], machine: BatchLaunchMachine) => {
     if (!entries.length) return;
+    // ADE Cloud: one launch per issue, each on a new computer. Their cards
+    // show in the launches slide-out (progress, retry, cancel), not here.
+    if (machine.adeCloud) {
+      const cloud = machine.adeCloud;
+      if (!projectBinding) throw new Error("Open a project to start lanes on ADE Cloud.");
+      for (const entry of entries) {
+        const args = issueAdeCloudLaunchArgs(entry, { launchId: crypto.randomUUID(), laneId: crypto.randomUUID() });
+        void startAdeCloudLaunch({ args, sizeId: cloud.sizeId, originUrl: cloud.originUrl, binding: projectBinding });
+      }
+      return;
+    }
     const pin = machine.pin;
     for (const { issue } of entries) batchMachineByIssueRef.current.set(launchIssueIdentity(issue), machine);
     batchAgentReadinessRef.current.beginBatch();
@@ -203,7 +217,7 @@ export function IssueLaunchHost() {
     if (!pin && (result.createdLaneIds.length || result.createdSessionIds.length)) {
       rememberLaunchedLanes({ laneIds: result.createdLaneIds, sessionIds: result.createdSessionIds });
     }
-  }, [launchPromptClipboardEnabled, projectRoot, refreshLanes, updateStates]);
+  }, [launchPromptClipboardEnabled, projectBinding, projectRoot, refreshLanes, updateStates]);
 
   const handleLaunch = useCallback((entries: BatchLaunchSubmit[], machine: BatchLaunchMachine) => {
     if (request) notifyIssueLaunchRequestClosed(request.nonce);

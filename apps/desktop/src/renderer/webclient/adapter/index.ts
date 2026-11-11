@@ -32,6 +32,7 @@ import { createPrsNamespace } from "./prs";
 import { createPersonalChatsNamespace } from "./personalChats";
 import { createRemoteRuntimeNamespace } from "./remoteRuntime";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
+import { createWebCloudNamespace } from "./cloud";
 import type { AdapterEvents, AdapterInfra } from "./types";
 
 export type AdeWebAdapter = {
@@ -163,6 +164,8 @@ export function createAdeWebAdapter(
     agentTools: misc.agentTools,
     cloudAgents: misc.cloudAgents,
     cloudAccess: misc.cloudAccess,
+    // Settings › ADE Cloud and the machine lists read the account through the connected machine.
+    cloud: createWebCloudNamespace(infra),
     adeCli: misc.adeCli,
     devTools: misc.devTools,
     onboarding: misc.onboarding,

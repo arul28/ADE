@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { CaretRight, ChatCircleText, Check, TerminalWindow, Warning } from "@phosphor-icons/react";
+import { CaretRight, ChatCircleText, Check, GitBranch, TerminalWindow, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { ChatLaunchSnapshot } from "../../../shared/types";
 import { chatLaunchProgress, chatLaunchStatusLine, isChatLaunchSucceeded } from "../../../shared/chatLaunch";
@@ -14,10 +14,12 @@ import {
 import { STANDARD_EASE } from "../../lib/motion";
 import { cn } from "../ui/cn";
 import { cancelChatLaunch } from "../chat/launch/chatLaunchActions";
-import { LaneSetupCard, LaunchStageGlyph } from "../chat/launch/LaneSetupCard";
+import { LaneSetupCard } from "../chat/launch/LaneSetupCard";
+import { LaunchStageGlyph } from "../chat/launch/stepCardParts";
 import { LaunchProgressRail } from "../chat/launch/LaunchProgressRail";
 import { useLaunchDurationText } from "../chat/launch/launchClock";
 import { LaneIcon } from "../ui/vcsIcons";
+import { CloudMark } from "../remoteTargets/cloudBrand";
 import { NoticeIcon } from "../ui/notice/NoticeParts";
 import { noticeTone, type NoticeTone } from "../ui/notice/noticeTones";
 import { ToastCard } from "../ui/notice/ToastCard";
@@ -121,8 +123,14 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
         navigate(`/work?${params.toString()}`);
       }
     : null;
-  const KindIcon = launch.kind === "cli" ? TerminalWindow : ChatCircleText;
+  // A lane launch (`ade lanes create --machine cloud`) starts nothing in its lane.
+  const KindIcon = launch.kind === "cli" ? TerminalWindow : launch.kind === "lane" ? GitBranch : ChatCircleText;
   const tone = launchTone(failed, succeeded);
+  const cloud = launch.cloud != null;
+  const cloudRunning = cloud && !failed && !succeeded;
+  const statusLine = chatLaunchStatusLine(launch);
+  // An ADE Cloud clone's percent in the blue, as on the step card.
+  const statusPercent = cloudRunning ? /^(.*) · (\d{1,3}%)$/.exec(statusLine) : null;
   return (
     <li
       data-testid="chat-launch-row"
@@ -137,7 +145,14 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
       >
         <span className="flex w-full min-w-0 items-start gap-2.5">
           <span className="relative shrink-0" aria-hidden>
-            <NoticeIcon tone={tone} size="sm" icon={<KindIcon size={13} weight="bold" />} />
+            {cloudRunning ? (
+              // The ADE Cloud tile while its computer is made (LaneSetupCard).
+              <span className="adec-tile grid h-[22px] w-[22px] place-items-center rounded-[6px] border">
+                <CloudMark size={13} bold />
+              </span>
+            ) : (
+              <NoticeIcon tone={tone} size="sm" icon={cloud ? <CloudMark size={13} bold /> : <KindIcon size={13} weight="bold" />} />
+            )}
             <span className="absolute -bottom-1 -right-1 grid h-3 w-3 place-items-center rounded-full bg-card">
               {failed ? (
                 <LaunchStageGlyph status="failed" size={8} />
@@ -152,7 +167,7 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
             {launch.title || launch.prompt.text}
           </span>
           <span className="shrink-0 rounded-full border border-fg/[0.09] bg-fg/[0.04] px-1.5 py-px text-[10px] text-muted-fg">
-            {launch.kind === "cli" ? "CLI" : "Chat"}
+            {launch.kind === "cli" ? "CLI" : launch.kind === "lane" ? "Lane" : "Chat"}
           </span>
           <CaretRight
             size={10}
@@ -167,7 +182,13 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
             style={{ color: failed || succeeded ? noticeTone(tone).text : "var(--color-muted-fg)" }}
             data-testid="chat-launch-row-status"
           >
-            {chatLaunchStatusLine(launch)}
+            {statusPercent ? (
+              <>
+                {statusPercent[1]}
+                {" · "}
+                <span className="adec-percent tabular-nums">{statusPercent[2]}</span>
+              </>
+            ) : statusLine}
           </span>
           <LaunchElapsed launch={launch} />
         </span>
@@ -176,7 +197,7 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
           <span className="min-w-0 truncate">{launch.laneName}</span>
         </span>
         <span className="block w-full pl-[32px]" title={`${done} of ${total} steps`}>
-          <LaunchProgressRail stages={launch.stages} />
+          <LaunchProgressRail stages={launch.stages} cloud={launch.cloud != null} />
         </span>
       </button>
       <AnimatePresence initial={false}>

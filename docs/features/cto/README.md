@@ -525,6 +525,13 @@ a partial session service, which older harnesses do.
 See [Terminals and sessions › Session lifecycle](../terminals-and-sessions/README.md#session-lifecycle)
 for the canonical derivation and the full cross-surface matrix.
 
+**Lanes on ADE Cloud.** `createLane` and `spawnChat` take `machine: "cloud"`
+(and `size`, else the person's saved size). That makes one new ADE Cloud
+computer for one new lane through the home brain's `cloud.lane_launch`, under
+this CTO chat's identity, so the approval card shows in the CTO chat. The tool
+returns with the launch id, and the CTO follows the launch with
+`cloud.lane_launch_status`. See [ADE Cloud](../ade-cloud/README.md#a-new-lane).
+
 ## Tab model
 
 The CTO tab is a single persistent thread plus a settings page — there is no Chat/Team/Workflows/Settings tab bar. The header exposes the mark, the name, and a gear that swaps the thread for `CtoSettingsPage`; **Back to the thread** returns. Model, reasoning, and Fast mode live there. A project with no model picked yet shows `ModelPickCard` across the whole surface instead of the thread.

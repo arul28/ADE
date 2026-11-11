@@ -407,7 +407,7 @@ describe("ProviderAccountsPanel", () => {
 
     const row = await screen.findByRole("group", { name: "arul@old.com account" });
     expect(within(row).getByText("arul@old.com")).toBeTruthy();
-    expect(within(row).getByText("Signed out")).toBeTruthy();
+    expect(within(row).getAllByText("Not signed in").length).toBeGreaterThan(0);
     expect(within(row).getByRole("button", { name: "Sign in" })).toBeTruthy();
 
     fireEvent.click(row);
@@ -609,7 +609,7 @@ describe("ProviderAccountsPanel", () => {
       expect(harness.providerInstances.loginStart).toHaveBeenCalledWith({ id: "claude-new" });
     });
 
-    expect(await screen.findByText("arul@acme.com is signed in")).toBeTruthy();
+    expect(await screen.findByText("Signed in as arul@acme.com.")).toBeTruthy();
     await waitFor(() => {
       expect(harness.providerInstances.refresh).toHaveBeenCalledWith({
         provider: "claude",
@@ -714,7 +714,7 @@ describe("ProviderAccountsPanel", () => {
       expect(harness.providerInstances.loginStart).toHaveBeenCalledWith({ id: "claude" });
     });
     expect(harness.providerInstances.create).not.toHaveBeenCalled();
-    expect(await screen.findByText("arul@gmail.com is signed in")).toBeTruthy();
+    expect(await screen.findByText("Signed in as arul@gmail.com.")).toBeTruthy();
   });
 
   /**

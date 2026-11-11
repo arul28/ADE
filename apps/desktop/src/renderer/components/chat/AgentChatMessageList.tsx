@@ -213,6 +213,8 @@ import { workflowRunShape } from "./SubagentWorkflowRunView";
 import { PrWatchWakeLine } from "./PrWatchWakeLine";
 import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
+import { CloudTierRequestCard } from "../cloudLane/CloudLaneChatCards";
+import { CLOUD_TIER_REQUEST_CARD_VARIANT } from "../../../shared/cloudLaneLife";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { spawnCompletionNoticeOf, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import { isQuietNoticeEvent, type QuietNoticeSibling, type SystemNoticeEvent } from "./quietNoticeLines";
@@ -4604,6 +4606,10 @@ function renderEvent(
     // while setup runs; afterwards it is a one-line summary that expands.
     if (event.variant === "lane_setup") {
       return <LaneSetupTranscriptCard card={event} />;
+    }
+    // An agent asks the person for a new ADE Cloud size: the tier-change card, then its steps.
+    if (event.variant === CLOUD_TIER_REQUEST_CARD_VARIANT) {
+      return <CloudTierRequestCard card={event} sessionId={options?.sessionId ?? null} />;
     }
     // An MCP App: the page a server ships with a tool, run in the scene
     // sandbox. Where this build cannot host one (the web client) the card

@@ -1,0 +1,531 @@
+/*
+ * Settings › ADE Cloud, the dashboard. Night sky (remoteTargets/cloudBrand.css)
+ * on ADE's surface kit. The city is plain SVG: nothing here loops. Motion
+ * plays only on an event (a block rises or sinks, a block wakes, a row
+ * opens) and stops for reduced motion.
+ */
+
+.adecd:focus { outline: none; }
+.adecd {
+  container: adecd / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.adecd-grow { flex: 1; }
+
+/* Header */
+.adecd-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+.adecd-head h3 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.adecd-plan {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--adec-pill-fg);
+  border: 1px solid var(--adec-pill-border);
+  background: var(--adec-pill-bg);
+  white-space: nowrap;
+}
+.adecd-upgrade.kit-btn {
+  border-color: color-mix(in srgb, var(--adec-400) 55%, transparent);
+  background: var(--adec-500);
+  color: #fff;
+}
+.adecd-upgrade.kit-btn:hover { background: var(--adec-400); color: #fff; }
+
+/* The three facts against the plan */
+.adecd-stats {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+.adecd-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px 14px 13px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
+}
+.adecd-stat-val {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+}
+.adecd-stat-val b {
+  font-size: 22px;
+  line-height: 1.1;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+.adecd-stat-val span { font-size: 11.5px; color: var(--kit-text-3); }
+.adecd-fore { font-size: 11px; line-height: 1.4; color: var(--kit-text-2); }
+.adecd-fore em { font-style: normal; color: var(--kit-text-3); }
+
+/* 80% of the plan's disk */
+.adecd-warn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 7px 8px 7px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--kit-warn) 26%, transparent);
+  background: color-mix(in srgb, var(--kit-warn) 7%, transparent);
+  font-size: 12px;
+}
+.adecd-warn svg { color: var(--kit-warn); flex: none; }
+.adecd-warn .kit-btn { margin-left: auto; }
+
+/*
+ * The city card: a night sky over the ground. The block colors are the
+ * owner's pick (blue glass, warm windows); the light theme gets a dusk sky
+ * with paler glass.
+ */
+.adecd-citycard {
+  --adecd-roof1: #5e8fe6;
+  --adecd-roof2: #3a68c2;
+  --adecd-fl1: #2f5aae;
+  --adecd-fl2: #1a3778;
+  --adecd-fr1: #1c3a7e;
+  --adecd-fr2: #0f2152;
+  --adecd-rim: #b9d4ff;
+  --adecd-edge: rgba(185, 212, 255, 0.55);
+  --adecd-win-off: #12244f;
+  --adecd-win-on: var(--adec-lamp);
+  --adecd-win-cool: #d4e6ff;
+  --adecd-shade: #070c1c;
+  --adecd-glow1: rgba(255, 214, 150, 0.3);
+  --adecd-glow2: rgba(111, 163, 250, 0.22);
+  --adecd-ground1: #15244a;
+  --adecd-ground2: #0b1328;
+  --adecd-grid: rgba(157, 196, 255, 0.07);
+  --adecd-pad: rgba(157, 196, 255, 0.07);
+  --adecd-pad-edge: rgba(157, 196, 255, 0.16);
+  --adecd-label: rgba(233, 242, 255, 0.82);
+  --adecd-label-dim: rgba(176, 204, 250, 0.84);
+  --adecd-label-halo: rgba(6, 10, 24, 0.85);
+  --adecd-star: #c8ddff;
+  --adecd-fg: #e9f2ff;
+  --adecd-fg-2: rgba(200, 221, 255, 0.72);
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--adec-400) 16%, transparent);
+  color: var(--adecd-fg);
+  background:
+    radial-gradient(70% 60% at 50% 18%, color-mix(in srgb, var(--adec-800) 55%, transparent), transparent 70%),
+    radial-gradient(120% 80% at 50% 110%, color-mix(in srgb, var(--adec-900) 80%, transparent), transparent 70%),
+    linear-gradient(180deg, #0a1022, #0b0b12 80%);
+}
+[data-theme="light"] .adecd-citycard {
+  --adecd-roof1: #b9d3ff;
+  --adecd-roof2: #8db4f7;
+  --adecd-fl1: #6e9bea;
+  --adecd-fl2: #4c7cd6;
+  --adecd-fr1: #3e69c2;
+  --adecd-fr2: #2d55a8;
+  --adecd-rim: #ffffff;
+  --adecd-edge: rgba(255, 255, 255, 0.8);
+  --adecd-win-off: #2d55a8;
+  --adecd-win-on: #fff6e0;
+  --adecd-win-cool: #ffffff;
+  --adecd-shade: #c9cdd8;
+  --adecd-glow1: rgba(255, 196, 110, 0.28);
+  --adecd-glow2: rgba(68, 130, 238, 0.18);
+  --adecd-ground1: #e9e6e1;
+  --adecd-ground2: #dedad3;
+  --adecd-grid: rgba(26, 26, 30, 0.06);
+  --adecd-pad: rgba(42, 98, 200, 0.06);
+  --adecd-pad-edge: rgba(42, 98, 200, 0.22);
+  --adecd-label: rgba(26, 26, 30, 0.82);
+  --adecd-label-dim: rgba(68, 70, 82, 0.94);
+  --adecd-label-halo: rgba(245, 243, 240, 0.92);
+  --adecd-star: transparent;
+  --adecd-fg: var(--color-fg);
+  --adecd-fg-2: var(--kit-text-2);
+  border-color: rgba(42, 98, 200, 0.18);
+  background:
+    radial-gradient(80% 70% at 50% 0%, rgba(157, 196, 255, 0.35), transparent 70%),
+    linear-gradient(180deg, #eef3fb, #f5f3f0 80%);
+}
+.adecd-citytop {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-height: 38px;
+  padding: 10px 12px 0;
+  font-size: 12px;
+}
+.adecd-citytop b { font-weight: 500; white-space: nowrap; }
+.adecd-citycard .kit-btn { color: var(--adecd-fg); }
+.adecd-hint { font-size: 11px; color: var(--adecd-fg-2); white-space: nowrap; }
+.adecd-cap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 2px 14px 12px;
+  font-size: 11px;
+  color: var(--adecd-fg-2);
+}
+.adecd-empty {
+  margin: 0;
+  padding: 28px 18px 26px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--kit-text-2);
+  text-align: center;
+}
+.adecd-citycard .adecd-empty { color: var(--adecd-fg-2); }
+
+.adecd-city-wrap { position: relative; }
+.adecd-city {
+  margin: 0 6px;
+  border-radius: 10px;
+  outline: none;
+}
+.adecd-city:focus-visible { box-shadow: inset 0 0 0 2px var(--adec-400); }
+.adecd-city-svg { display: block; width: 100%; height: auto; max-height: 440px; }
+.adecd-stars circle { fill: var(--adecd-star); }
+.adecd-grid line { stroke: var(--adecd-grid); }
+.adecd-pad { fill: var(--adecd-pad); stroke: var(--adecd-pad-edge); stroke-width: 1; }
+.adecd-selring {
+  fill: rgba(157, 196, 255, 0.07);
+  stroke: var(--adec-300);
+  stroke-dasharray: 4 3;
+  stroke-width: 1.2;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+.adecd-selring[data-on="1"] { opacity: 1; }
+.adecd-city:focus-visible .adecd-selring { stroke-dasharray: none; stroke-width: 2; }
+
+.adecd-blk { cursor: pointer; transition: transform 260ms cubic-bezier(0.2, 0.9, 0.3, 1.2), filter 200ms ease; }
+.adecd-blk:hover { filter: brightness(1.12); }
+.adecd-blk[data-sel="1"] { transform: translateY(-6px); filter: brightness(1.16) saturate(1.05); }
+.adecd-blk[data-old="1"] { filter: saturate(0.55) brightness(0.92); }
+.adecd-blk[data-old="1"]:hover { filter: saturate(0.65) brightness(1.04); }
+.adecd-blk[data-old="1"][data-sel="1"] { filter: saturate(0.7) brightness(1.08); }
+.adecd-hit { fill: transparent; }
+.adecd-w { fill: var(--adecd-win-off); transition: fill 260ms ease, opacity 260ms ease; }
+.adecd-blk[data-awake="1"] .adecd-w[data-c="1"] { fill: var(--adecd-win-on); }
+.adecd-blk[data-awake="1"] .adecd-w[data-c="2"] { fill: var(--adecd-win-cool); }
+.adecd-blk[data-awake="0"] .adecd-w[data-n="1"] { fill: var(--adecd-win-on); opacity: 0.45; }
+.adecd-bloom { fill: var(--adecd-win-on); opacity: 0; transition: opacity 600ms ease; }
+.adecd-blk[data-awake="1"] .adecd-bloom { opacity: 0.8; }
+.adecd-rim { fill: none; stroke: var(--adecd-rim); }
+.adecd-edge { stroke: var(--adecd-edge); stroke-opacity: 0.55; stroke-width: 0.8; }
+.adecd-shade { fill: var(--adecd-shade); opacity: 0; transition: opacity 500ms ease; }
+.adecd-blk[data-awake="0"] .adecd-shade { opacity: 0.42; }
+.adecd-ru { transition: opacity 500ms ease; }
+.adecd-blk[data-awake="0"] .adecd-ru { opacity: 0.6; }
+.adecd-ant { fill: var(--adecd-win-on); transition: fill 400ms ease; }
+.adecd-blk[data-awake="0"] .adecd-ant { fill: var(--adecd-win-off); }
+.adecd-glow { opacity: 0; transition: opacity 600ms ease; }
+.adecd-blk[data-awake="1"] .adecd-glow { opacity: 1; }
+.adecd-flag line { stroke: #fcd34d; stroke-opacity: 0.75; }
+.adecd-flag path { fill: #fbbf24; fill-opacity: 0.85; }
+.adecd-plot-empty polygon { fill: rgba(157, 196, 255, 0.05); stroke: var(--adec-300); stroke-opacity: 0.6; stroke-dasharray: 3 3; }
+.adecd-plot-empty line { stroke: var(--adec-300); stroke-opacity: 0.28; stroke-dasharray: 2 3; }
+.adecd-lbl { pointer-events: none; }
+/*
+ * Labels are sized in screen pixels: `--adecd-px` is SVG units per screen
+ * pixel, set by the city on a resize. The line under the name is at least
+ * 11 px and 4.5:1 on the sky in both themes; on a narrow city it hides (the
+ * List and the selected row carry the same facts) instead of shrinking.
+ */
+.adecd-lbl-n,
+.adecd-lbl-s {
+  paint-order: stroke;
+  stroke: var(--adecd-label-halo);
+  stroke-width: calc(3px * var(--adecd-px, 1));
+  stroke-linejoin: round;
+  font-family: var(--font-mono);
+}
+.adecd-lbl-n { font-size: calc(12px * var(--adecd-px, 1)); font-weight: 500; fill: var(--adecd-label); }
+.adecd-lbl-s { font-size: calc(11px * var(--adecd-px, 1)); fill: var(--adecd-label-dim); }
+@container adecd (max-width: 560px) {
+  .adecd-lbl-s { display: none; }
+}
+
+/* A drift of cloud around a block that rises or sinks: once, then gone. */
+.adecd-puffs ellipse {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: adecd-drift 1500ms cubic-bezier(0.22, 0.6, 0.3, 1) forwards;
+}
+@keyframes adecd-drift {
+  0% { opacity: 0; transform: translate(0, 6px) scale(0.5); }
+  30% { opacity: 0.95; }
+  100% { opacity: 0; transform: translate(var(--dx, 0px), var(--dy, -20px)) scale(1.5); }
+}
+
+.adecd-readout {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  padding: 7px 10px 8px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--adec-300) 22%, transparent);
+  background: rgba(13, 18, 36, 0.94);
+  box-shadow: 0 12px 30px -12px rgba(0, 0, 0, 0.8);
+  color: #e9f2ff;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+[data-theme="light"] .adecd-readout {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: rgba(42, 98, 200, 0.22);
+  box-shadow: 0 12px 30px -16px rgba(20, 30, 60, 0.4);
+  color: var(--color-fg);
+}
+.adecd-readout b { display: block; font-size: 12px; font-weight: 600; }
+.adecd-readout span { display: block; font-size: 11px; opacity: 0.75; }
+
+/* Look inside: the parts of the disk */
+.adecd-parts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 4px 14px 8px;
+  list-style: none;
+}
+.adecd-parts li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(60px, 1fr) 64px 92px;
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+  font-size: 12px;
+}
+.adecd-parts li > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adecd-parts .kit-num { text-align: right; font-size: 11.5px; }
+.adecd-parts .kit-meter > span { background: var(--adec-400); }
+
+/* List view */
+.adecd-list { min-width: 0; outline: none; padding: 0; overflow: hidden; }
+.adecd-list:focus-visible { box-shadow: inset 0 0 0 2px var(--adec-400); }
+.adecd-list-head,
+.adecd-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) 0.7fr 0.7fr 0.6fr 0.8fr 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+}
+.adecd-list-head {
+  height: 30px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--kit-text-3);
+}
+.adecd-list-row {
+  min-height: 40px;
+  border-top: 1px solid var(--kit-rule);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.adecd-list-row:hover { background: var(--kit-hover); }
+.adecd-list-row[aria-selected="true"] { background: color-mix(in srgb, var(--adec-600) 12%, transparent); }
+.adecd-list-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adecd-list-row .kit-num { font-size: 11.5px; color: var(--kit-text-2); }
+.adecd-list-name { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+
+.adecd-state { display: inline-flex; align-items: center; gap: 6px; color: var(--kit-text-2); white-space: nowrap; }
+.adecd-state i { width: 6px; height: 6px; border-radius: 50%; background: color-mix(in srgb, var(--color-fg) 28%, transparent); flex: none; }
+.adecd-state[data-state="awake"] i { background: var(--adec-lamp); box-shadow: 0 0 6px color-mix(in srgb, var(--adec-lamp) 70%, transparent); }
+.adecd-state[data-state="updating"] i,
+.adecd-state[data-state="starting"] i { background: var(--adec-400); }
+.adecd-state[data-state="failed"] i { background: var(--kit-crit); }
+.adecd-state[data-state="none"] i { background: transparent; border: 1px dashed var(--adec-300); }
+.adecd-old { font-family: var(--font-mono); font-size: 10px; color: #d99a12; white-space: nowrap; }
+:root:not([data-theme="light"]) .adecd-old { color: #fbbf24; }
+
+/* The selected lane */
+.adecd-lanesel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 9px 10px 9px 12px;
+}
+.adecd-lanesel-text { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; font-size: 12.5px; }
+.adecd-lanesel-text b { font-weight: 600; }
+.adecd-lanesel-text > span { white-space: nowrap; color: var(--kit-text-2); }
+.adecd-lanesel-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-left: auto; }
+.adecd-lanesel-actions .kit-btn { gap: 5px; }
+/* A tier change's steps, and a lane without a computer, take the panel's full width. */
+.adecd-lanesel > .adecl-jobpanel,
+.adecd-lanesel > .adecl-nocomp { flex: 1 1 100%; }
+.adecd-jobs { display: flex; flex-direction: column; gap: 8px; }
+
+/* Rows that open */
+.adecd-rows {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
+}
+.adecd-row + .adecd-row { border-top: 1px solid var(--kit-rule); }
+.adecd-row-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.adecd-row-btn:hover { background: var(--kit-hover); }
+.adecd-row-btn:focus-visible { outline: 2px solid var(--adec-400); outline-offset: -2px; }
+/* Every kit button on the dashboard (Clear caches, Look inside, the lane actions) takes the dashboard's ring. */
+.adecd .kit-btn:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.adecd-row-btn b { font-weight: 500; white-space: nowrap; }
+.adecd-row-ic { display: inline-flex; color: var(--kit-text-3); }
+.adecd-row-val { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; min-width: 0; font-size: 12px; color: var(--kit-text-3); white-space: nowrap; }
+.adecd-row-val svg { flex: none; transition: transform 160ms ease; }
+.adecd-row-btn[aria-expanded="true"] .adecd-row-val svg { transform: rotate(90deg); }
+.adecd-row-body { padding: 2px 14px 14px; }
+
+/* Size choices: the default size row and the size dialog */
+.adecd-sizes { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.adecd-size {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 1px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--kit-panel-edge);
+  background: color-mix(in srgb, var(--color-fg) 2%, transparent);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.adecd-size > svg { grid-row: span 3; }
+.adecd-size b { font-size: 12.5px; font-weight: 600; }
+.adecd-size span { font-size: 11px; color: var(--kit-text-3); }
+.adecd-size:hover { background: var(--kit-hover); }
+.adecd-size[aria-checked="true"] {
+  border-color: color-mix(in srgb, var(--adec-400) 45%, transparent);
+  background: color-mix(in srgb, var(--adec-600) 12%, transparent);
+}
+.adecd-size:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+
+/* Free up space */
+.adecd-free { display: flex; flex-direction: column; gap: 8px; }
+.adecd-fl { padding: 10px 12px 12px; border-radius: 11px; border: 1px solid var(--kit-panel-edge); background: var(--kit-panel-bg); }
+.adecd-fl-top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.adecd-fl-top b { font-size: 12.5px; font-weight: 600; }
+.adecd-fl-top .kit-num { font-size: 11px; color: var(--kit-text-2); }
+.adecd-fl-meta { margin-top: 3px; font-size: 11px; color: var(--kit-text-3); }
+.adecd-fl-safe { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; }
+.adecd-mark { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--kit-text-2); }
+.adecd-mark[data-state="yes"] svg { color: var(--kit-ok); }
+.adecd-mark[data-state="no"] svg { color: var(--kit-warn); }
+.adecd-mark[data-state="unknown"] { color: var(--kit-text-3); }
+.adecd-fl-choices { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.adecd-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 8%, transparent);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+}
+.adecd-choice:hover { background: var(--kit-hover); }
+.adecd-choice:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.adecd-choice[aria-checked="true"] { border-color: color-mix(in srgb, var(--adec-400) 45%, transparent); background: color-mix(in srgb, var(--adec-600) 12%, transparent); }
+.adecd-choice[data-tone="crit"][aria-checked="true"] { border-color: color-mix(in srgb, var(--kit-crit) 45%, transparent); background: color-mix(in srgb, var(--kit-crit) 8%, transparent); }
+.adecd-choice b { display: block; font-weight: 500; }
+.adecd-choice small { display: block; margin-top: 2px; font-size: 11px; line-height: 1.4; color: var(--kit-text-3); }
+.adecd-radio {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--color-fg) 30%, transparent);
+}
+.adecd-choice[aria-checked="true"] .adecd-radio { border-color: var(--adec-300); }
+.adecd-choice[aria-checked="true"] .adecd-radio::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--adec-300); }
+.adecd-choice[data-tone="crit"][aria-checked="true"] .adecd-radio { border-color: var(--kit-crit); }
+.adecd-choice[data-tone="crit"][aria-checked="true"] .adecd-radio::after { background: var(--kit-crit); }
+.adecd-sheet-total { font-size: 11.5px; color: var(--kit-text-3); }
+.adecd-error { margin: 8px 0 0; font-size: 12px; color: var(--kit-crit); }
+
+@container adecd (max-width: 620px) {
+  .adecd-stats { grid-template-columns: minmax(0, 1fr); }
+  .adecd-list-head { display: none; }
+  .adecd-list-row { grid-template-columns: minmax(0, 1fr) auto; padding: 8px 12px; row-gap: 2px; }
+  .adecd-list-row > span:nth-child(2),
+  .adecd-list-row > span:nth-child(3),
+  .adecd-list-row > span:nth-child(4) { display: none; }
+  .adecd-parts li { grid-template-columns: minmax(0, 1fr) 64px; }
+  .adecd-parts li > .kit-meter,
+  .adecd-parts li > :last-child { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .adecd-blk, .adecd-w, .adecd-bloom, .adecd-shade, .adecd-ru, .adecd-ant, .adecd-glow, .adecd-selring, .adecd-row-val svg { transition: none !important; }
+  .adecd-puffs { display: none; }
+}
+html[data-motion="reduced"] .adecd-blk,
+html[data-motion="reduced"] .adecd-w,
+html[data-motion="reduced"] .adecd-bloom,
+html[data-motion="reduced"] .adecd-shade,
+html[data-motion="reduced"] .adecd-ru,
+html[data-motion="reduced"] .adecd-ant,
+html[data-motion="reduced"] .adecd-glow,
+html[data-motion="reduced"] .adecd-selring,
+html[data-motion="reduced"] .adecd-row-val svg { transition: none !important; }
+html[data-motion="reduced"] .adecd-puffs { display: none; }
+
+/* The older cards inside the "Other computers" row, until Cloud 4's PR merges. */
+.adecd-other { display: flex; flex-direction: column; gap: 10px; }

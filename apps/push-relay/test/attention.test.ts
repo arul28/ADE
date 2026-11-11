@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attentionTestInternals,
   handleAttentionAccountRequest,
+  handleDirectoryAccountPurge,
   handleAttentionMachinePublish,
   inspectAttentionAuthConfiguration,
   machineKeyRevokedAt,
@@ -7383,6 +7384,70 @@ describe("custom notifications", () => {
       database.close();
       vi.unstubAllGlobals();
       vi.useRealTimers();
+    }
+  });
+});
+
+describe("account deletion purge", () => {
+  // The directory names the raw Clerk id; every relay row is keyed by the
+  // hash of issuer and id, one key per configured issuer. A purge that
+  // matched the raw id deleted nothing and kept a deleted account's
+  // sign-ins and settings.
+  const CLERK_USER = "user_deleted";
+  const PRIMARY = "https://clerk.primary.example";
+  const SECONDARY = "https://clerk.secondary.example";
+  const issuers: Omit<Partial<AttentionRelayEnv>, "DB"> = {
+    CLERK_JWKS_URL: `${PRIMARY}/.well-known/jwks.json`,
+    CLERK_ISSUER: PRIMARY,
+    CLERK_OAUTH_CLIENT_ID: "primary-client",
+    CLERK_SECONDARY_JWKS_URL: `${SECONDARY}/.well-known/jwks.json`,
+    CLERK_SECONDARY_ISSUER: SECONDARY,
+    CLERK_SECONDARY_OAUTH_CLIENT_ID: "secondary-client",
+  };
+
+  function seedAccountRows(database: SqliteD1Database, userId: string): void {
+    database.native.prepare(`
+      insert into account_vault_items (user_id, scope_key, item_kind, item_key, ciphertext, updated_at)
+      values (?, 'all', 'provider-login', 'grok/abc', 'sealed', '2026-11-10T00:00:00.000Z')
+    `).run(userId);
+    database.native.prepare(`
+      insert into account_settings (user_id, scope_key, setting_key, value_json, updated_at)
+      values (?, 'all', 'providerLogins.cloud', '{}', '2026-11-10T00:00:00.000Z')
+    `).run(userId);
+  }
+
+  const purge = (database: SqliteD1Database, env: Omit<Partial<AttentionRelayEnv>, "DB">, headers: Record<string, string>) => {
+    const request = new Request(`https://push.example/directory/accounts/${CLERK_USER}`, { method: "DELETE", headers });
+    return handleDirectoryAccountPurge(request, makeAttentionEnv(database, { DIRECTORY_AUTH_SECRET, ...env }), new URL(request.url));
+  };
+  const count = (database: SqliteD1Database, table: string, userId: string) =>
+    Number(row<{ n: number }>(database, `select count(*) as n from ${table} where user_id = ?`, userId)?.n ?? 0);
+
+  it("deletes the rows of every issuer's key for the account, only from the directory, and keeps other accounts", async () => {
+    const database = new SqliteD1Database();
+    try {
+      const primaryKey = await attentionAccountId(PRIMARY, CLERK_USER);
+      const secondaryKey = await attentionAccountId(SECONDARY, CLERK_USER);
+      const otherKey = await attentionAccountId(PRIMARY, "user_kept");
+      for (const key of [primaryKey, secondaryKey, otherKey]) seedAccountRows(database, key);
+
+      // Without the directory's secret, nothing is deleted.
+      expect((await purge(database, issuers, {}))?.status).toBe(403);
+      // With no issuer, no key can be matched: the directory tries again later.
+      expect((await purge(database, {}, { "x-ade-directory-auth": DIRECTORY_AUTH_SECRET }))?.status).toBe(503);
+      expect(count(database, "account_vault_items", primaryKey)).toBe(1);
+
+      const response = await purge(database, issuers, { "x-ade-directory-auth": DIRECTORY_AUTH_SECRET });
+      expect(response?.status).toBe(200);
+      expect(await response?.json()).toMatchObject({ ok: true });
+      for (const key of [primaryKey, secondaryKey]) {
+        expect(count(database, "account_vault_items", key)).toBe(0);
+        expect(count(database, "account_settings", key)).toBe(0);
+      }
+      expect(count(database, "account_vault_items", otherKey)).toBe(1);
+      expect(count(database, "account_settings", otherKey)).toBe(1);
+    } finally {
+      database.close();
     }
   });
 });

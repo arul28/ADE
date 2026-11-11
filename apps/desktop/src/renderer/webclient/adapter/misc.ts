@@ -763,6 +763,15 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     },
     listApiKeys: async () => [],
     verifyApiKey: async () => ({ ok: false, error: "unsupported" }),
+    // The host does not serve this check to the web client; the tile keeps
+    // what the status read said.
+    verifyProviderSignIn: async (args: { provider: string }) => ({
+      provider: args.provider,
+      state: "unknown" as const,
+      reason: "Checking a sign-in needs the ADE desktop app.",
+      account: null,
+      checkedAt: new Date().toISOString(),
+    }),
     updateConfig: async (config: Partial<AiConfig>) => {
       await call("ai.updateConfig", config, undefined, false);
     },

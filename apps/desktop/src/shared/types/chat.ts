@@ -695,6 +695,31 @@ export type AgentChatVoiceSession = {
   transcript: Array<{ role: "user" | "assistant"; text: string }>;
 };
 
+/**
+ * What a sign-in notice in a chat is about, for the card that reads it (P5,
+ * P7). Only names: provider ids, computer names, emails and vault key names
+ * (a key name never holds a token). A client that does not know the field
+ * ignores it, as it does `voiceSession`.
+ * - `owner_off`: on a cloud computer, the computer that renews the sign-in
+ *   did not send a fresh one in time, and the turn went ahead.
+ * - `renewing`: this cloud computer renews the sign-in for the turn.
+ * - `switched`: ADE Cloud's pick for the provider changed (`ade_cloud`), or
+ *   the person moved this chat to another account (`chat`).
+ * - `first_cloud_chat`: the first turn on this cloud computer after it took
+ *   sign-ins from the account; `origins` are the computers they came from.
+ */
+export type AgentChatProviderLoginNotice =
+  | { kind: "owner_off"; provider: string; ownerLabel: string }
+  | { kind: "renewing"; provider: string; byLabel: string }
+  | {
+    kind: "switched";
+    place: "ade_cloud" | "chat";
+    provider: string;
+    from: { key?: string | null; instanceId?: string | null; label: string } | null;
+    to: { key?: string | null; instanceId?: string | null; label: string };
+  }
+  | { kind: "first_cloud_chat"; origins: string[] };
+
 export type AgentChatNoticeDetail = {
   kind?: "continuity_recovery" | "disk_pressure";
   /** `status: "lane_share_moved"`: the lane share move that took this chat to the other person's machine. */
@@ -2314,6 +2339,8 @@ export type AgentChatEvent =
       detail?: string | AgentChatNoticeDetail;
       /** Present only on `status: "voice_session"`; see `AgentChatVoiceSession`. */
       voiceSession?: AgentChatVoiceSession;
+      /** A notice about a provider sign-in; see `AgentChatProviderLoginNotice`. */
+      providerLogin?: AgentChatProviderLoginNotice;
       steerId?: string;
       turnId?: string;
     }

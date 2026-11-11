@@ -410,7 +410,7 @@ describe("ProvidersSection", () => {
       expect(ade.ai.listApiKeys).toHaveBeenCalledTimes(2);
     }, { timeout: 2_000 });
 
-    expect(await screen.findByText("Sign in required")).toBeTruthy();
+    expect(await screen.findByText("Not signed in")).toBeTruthy();
     expect(screen.getByText("Sign in to use Claude")).toBeTruthy();
     expect(screen.getAllByText(/claude-agent-sdk-darwin-arm64\/claude/).length).toBeGreaterThan(0);
   });
@@ -429,7 +429,7 @@ describe("ProvidersSection", () => {
       expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
     });
 
-    expect((await screen.findAllByText("Connected")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Signed in")).length).toBeGreaterThan(0);
     expect(screen.getByText(/Claude Pro\/Max subscription or ANTHROPIC_API_KEY/)).toBeTruthy();
     expect(screen.getAllByText(/claude-agent-sdk-darwin-arm64\/claude/).length).toBeGreaterThan(0);
   });
@@ -648,7 +648,8 @@ describe("ProvidersSection", () => {
       });
     });
 
-    expect(await screen.findByText("https://cursor.com/loginDeepControl?uuid=abc")).toBeTruthy();
+    // The sheet shows the sign-in page as an action, not as the raw URL text.
+    expect(await screen.findByRole("button", { name: "Open sign-in page" })).toBeTruthy();
     expect(screen.getByLabelText("Cancel Cursor sign-in")).toBeTruthy();
 
     getStatusMock.mockResolvedValue(loggedIn);
@@ -691,7 +692,7 @@ describe("ProvidersSection", () => {
       expect(await screen.findByLabelText(`Open ${label} settings`), label).toBeTruthy();
     }
     // Status is a word, not a colour: every tile says which of the six it is.
-    expect(screen.getAllByText(/^(Connected|Sign in required|Needs attention|Not installed|Checking…|Disabled)$/).length)
+    expect(screen.getAllByText(/^(Signed in|Not signed in|Needs attention|Not downloaded|Unknown|Checking…|Disabled)$/).length)
       .toBeGreaterThan(0);
     // The catalogs are behind their provider, not spilled onto the grid.
     expect(screen.queryByLabelText("Search all OpenCode providers")).toBeNull();
@@ -758,7 +759,7 @@ describe("ProvidersSection", () => {
     renderProvidersSection();
 
     const tile = await screen.findByLabelText("Open Qwen Code settings");
-    expect(await within(tile).findByText("Needs attention")).toBeTruthy();
+    expect(await within(tile).findByText("Unknown")).toBeTruthy();
     expect(within(tile).queryByText("Checking…")).toBeNull();
     expect(screen.queryByText("Not installed")).toBeNull();
   });
@@ -984,7 +985,7 @@ describe("ProvidersSection", () => {
       resolveLogin?.({ ok: false, error: "Sign-in cancelled." });
     });
 
-    const cancelled = screen.getByText("Sign-in cancelled.");
+    const cancelled = screen.getByText("The sign-in was stopped.");
     expect(cancelled.closest('[role="status"]')).toBeTruthy();
     expect(cancelled.closest('[role="alert"]')).toBeNull();
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
@@ -1112,7 +1113,7 @@ describe("ProvidersSection", () => {
     await act(async () => {
       emitPiAuthStatus?.({ providerId: "xai", state: "error", error: "Sign-in cancelled." });
     });
-    expect(screen.getByText("Sign-in cancelled.")).toBeTruthy();
+    expect(screen.getByText("The sign-in was stopped.")).toBeTruthy();
 
     const restarted = await openPiProviderSignIn("xAI", "Sign in — xAI");
     await act(async () => {
@@ -1162,7 +1163,7 @@ describe("ProvidersSection", () => {
     expect(window.ade.app.openExternal).toHaveBeenCalledWith("https://x.ai/device");
     // The code and a manual escape hatch stay on screen for a blocked browser.
     expect(screen.getByText("ABCD-1234")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open sign-in page" })).toBeTruthy();
   });
 
   // A localhost model server has no credential to collect, so asking for an

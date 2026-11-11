@@ -1,5 +1,5 @@
 /**
- * The lane sharing routes this Worker serves (migration 0020). Paths, request
+ * The lane sharing routes this Worker serves (migration 0023). Paths, request
  * and response shapes only: nothing here imports the Worker, so the desktop,
  * the brain and the web client can `import type` it or mirror it.
  *
@@ -281,7 +281,7 @@ export type LaneShareHostGrant = {
   /**
    * The receiver's name from Clerk, stored when it accepted and cleaned like
    * the invite email's sender name. Null for a pending grant, a grant
-   * accepted before migration 0022, or an account with no name. The host
+   * accepted before migration 0025, or an account with no name. The host
    * uses it as the author name of the guest's messages; the guest never
    * chooses it.
    */

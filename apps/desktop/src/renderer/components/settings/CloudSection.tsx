@@ -16,15 +16,16 @@ import {
 import { BringYourOwnCloudCard } from "./integrations/BringYourOwnCloudCard";
 import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { CloudReadyMachinesCard } from "./CloudReadyMachinesCard";
 import { CloudMachinesCard } from "./CloudMachinesCard";
-import { CloudSignInsCard, useCloudSignIns } from "./CloudSignInsCard";
+import { AdeCloudSignInsRow } from "./providers/cloud/AdeCloudSignInsRow";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
-import { CloudAgentLimitsCard } from "./CloudAgentLimitsCard";
-import { CloudPlanCard } from "./CloudPlanCard";
 import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
 import { showToast } from "../app/toast/toastStore";
 import { NewCloudMachineDialog } from "../remoteTargets/NewCloudMachineDialog";
+import { CLOUD_DASHBOARD_ID, CloudDashboard, cloudOtherComputersCount, cloudSignInsValue } from "./cloudDashboard/CloudDashboard";
+import { prefersReducedMotion } from "./cloudDashboard/cloudDashboardModel";
 import "./IntegrationsSettings.css";
 
 function errorText(error: unknown, fallback: string): string {
@@ -34,7 +35,8 @@ function errorText(error: unknown, fallback: string): string {
 /**
  * Settings › Integrations › ADE Cloud. Account-wide: access comes from the
  * account, so this page asks this desktop's own main process with no
- * pin, and what it shows is true on every computer on the account.
+ * pin (in the web app, the connected machine: `webclient/adapter/cloud.ts`),
+ * and what it shows is true on every computer on the account.
  */
 export function CloudSection() {
   const bridge = window.ade.cloud;
@@ -90,8 +92,16 @@ export function CloudSection() {
     });
   }, [machines]);
 
-  // Before the early return below: a hook runs on every render.
-  const cloudSignIns = useCloudSignIns(live);
+  // The sign-ins row's count, shared with the ready card's hint (one read, in the row).
+  const [signInCount, setSignInCount] = useState<number | null>(null);
+  // The web app reads ADE Cloud through the connected machine but makes no computers.
+  const newMachine = () => {
+    if (isWebClientMode()) {
+      showToast({ tone: "info", title: "Make computers in the ADE desktop app", message: "The web app shows your ADE Cloud lanes and computers." });
+      return;
+    }
+    setCreating(true);
+  };
 
   if (!bridge) {
     return (
@@ -112,7 +122,10 @@ export function CloudSection() {
         : { tone: "neutral" as const, label: "Not available yet" };
   const account = machines.result?.state === "ok" ? machines.result.account : null;
   const accountBanner = account ? cloudAccountBanner(account) : null;
-  const facts: IntegrationFact[] = live
+  // With the dashboard below, the header says one line and links to it: the
+  // dashboard owns the hours, disk and lanes, so they are not repeated here.
+  const dashboardShown = live && account != null;
+  const facts: IntegrationFact[] = live && !dashboardShown
     ? [
         {
           label: "Computers",
@@ -130,9 +143,26 @@ export function CloudSection() {
         },
       ]
     : [];
-  const heroFoot = live && status?.instanceCount === 0
-    ? <div className="ade-ig-hero-foot-row"><b>Next</b><span>Make a computer below, or pick {ADE_CLOUD_NAME} when you start a chat.</span></div>
-    : null;
+  const heroFoot = dashboardShown
+    ? (
+      <div className="ade-ig-hero-foot-row">
+        <span>Your cloud lanes, hours and disk are on the dashboard.</span>
+        <button
+          type="button"
+          className="ade-ig-link"
+          onClick={() => {
+            const dashboard = document.getElementById(CLOUD_DASHBOARD_ID);
+            dashboard?.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+            dashboard?.focus({ preventScroll: true });
+          }}
+        >
+          Go to the dashboard
+        </button>
+      </div>
+    )
+    : live && status?.instanceCount === 0
+      ? <div className="ade-ig-hero-foot-row"><b>Next</b><span>Make a computer below, or pick {ADE_CLOUD_NAME} when you start a chat.</span></div>
+      : null;
 
   return (
     <IntegrationPage id="cloud">
@@ -162,15 +192,30 @@ export function CloudSection() {
 
       {live && accountBanner ? <Banner layout="inline" model={{ ...accountBanner, report: false }} /> : null}
 
+      {/* One dashboard tab in place of the column of cards; the older cards are its panels. */}
+      {live && account ? (
+        <CloudDashboard
+          account={account}
+          machines={machines}
+          signIns={<AdeCloudSignInsRow onCount={setSignInCount} />}
+          signInsValue={cloudSignInsValue(signInCount)}
+          otherComputers={(
+            <div className="adecd-other">
+              <CloudReadyMachinesCard signInCount={signInCount} />
+              <CloudMachinesCard status={status} machines={machines} onNewMachine={newMachine} accountChangedAt={accountChangedAt} />
+            </div>
+          )}
+          otherComputersCount={cloudOtherComputersCount(machines)}
+        />
+      ) : null}
+
       <IntegrationColumns>
         {live ? (
-          <>
-            {account ? <CloudPlanCard account={account} onChanged={machines.refresh} /> : null}
-            <CloudSignInsCard signIns={cloudSignIns} />
-            <CloudReadyMachinesCard cloudSignIns={cloudSignIns.status} />
-            <CloudMachinesCard status={status} machines={machines} onNewMachine={() => setCreating(true)} accountChangedAt={accountChangedAt} />
-            <CloudAgentLimitsCard />
-          </>
+          account ? null : (
+            <p className="ade-ig-note">
+              {machines.loadError ?? <CircleNotch size={14} className="animate-spin" />}
+            </p>
+          )
         ) : !connected ? (
           <p className="ade-ig-note">
             {loading ? <CircleNotch size={14} className="animate-spin" /> : status?.signedOut ? `Sign in to ADE to use ${ADE_CLOUD_NAME}.` : `${ADE_CLOUD_NAME} isn't available on this account yet.`}

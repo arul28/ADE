@@ -746,7 +746,15 @@ describe("account deletion", () => {
         method: "POST",
         headers: { "svix-id": `msg_${userId}`, "svix-timestamp": timestamp, "svix-signature": `v1,${signature}` },
         body,
-      }), { DB: data.DB, CLERK_WEBHOOK_SIGNING_SECRET: `whsec_${secret.toString("base64")}` });
+      }), {
+        DB: data.DB,
+        CLERK_WEBHOOK_SIGNING_SECRET: `whsec_${secret.toString("base64")}`,
+        // Account deletion also purges the account on the push relay (the
+        // process boundary); this test is about the lane shares only.
+        PUSH_RELAY_URL: "https://relay.test",
+        DIRECTORY_AUTH_SECRET: "directory-secret",
+        ACTIVITY_RELAY: { fetch: async () => new Response(JSON.stringify({ ok: true }), { status: 200 }) },
+      });
     };
     expect((await deleteAccount(GUEST)).status).toBe(200);
     expect(await stateOf(given)).toBe("left");

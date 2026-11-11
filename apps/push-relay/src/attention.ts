@@ -9,6 +9,7 @@ import { handleAccountVaultRoute } from "./accountVault";
 import {
   AttentionAuthVerificationUnavailableError,
   inspectAttentionAuthConfiguration,
+  relayAccountKeysForClerkUser,
   verifyAttentionBearerToken,
 } from "./attentionAuth";
 import {
@@ -3944,6 +3945,49 @@ async function handleAccountMachinePairingRestore(
     .bind(userId, machineKey)
     .run();
   return json({ ok: true, machineKey, restored: revokedAt !== null });
+}
+
+/**
+ * `DELETE /directory/accounts/<userId>`: the account was deleted (Clerk
+ * `user.deleted`, handled by the directory), so its vault and its settings go.
+ *
+ * Directory provenance is the only credential. There is no account token to
+ * check: the account no longer exists, and the directory names the account in
+ * the path. The secret only the directory holds is what keeps any other caller
+ * from deleting an account's data.
+ *
+ * Hard deletes, not tombstones: no machine of a deleted account syncs again,
+ * and a tombstone would keep the account's item names. Both deletes run in one
+ * batch, so they land together or not at all. Safe to repeat: a second call
+ * finds nothing and answers the same `ok`.
+ */
+export async function handleDirectoryAccountPurge(
+  request: Request,
+  env: AttentionRelayEnv,
+  url: URL,
+): Promise<Response | null> {
+  const parts = url.pathname.split("/").filter(Boolean);
+  if (parts[0] !== "directory" || parts[1] !== "accounts") return null;
+  if (parts.length !== 3 || request.method !== "DELETE") return attentionRouteNotFound();
+  const provenance = assertDirectoryProvenance(request, env);
+  if ("response" in provenance) return provenance.response;
+  const clerkUserId = requiredString(decodePathSegment(parts[2]), 256);
+  if (!clerkUserId) return json({ ok: false, error: "invalid account" }, { status: 400 });
+  // The directory names the raw Clerk id; the rows are keyed by the relay's
+  // hash of issuer and id (`verifyAttentionBearerToken`), one per issuer.
+  const accountKeys = await relayAccountKeysForClerkUser(env, clerkUserId);
+  if (accountKeys.length === 0) {
+    // No issuer configured: nothing can be matched, so the directory must try again later.
+    return json({ ok: false, error: "account sign-in is not configured" }, { status: 503 });
+  }
+  const results = await env.DB.batch(accountKeys.flatMap((accountKey) => [
+    env.DB.prepare("delete from account_vault_items where user_id = ?").bind(accountKey),
+    env.DB.prepare("delete from account_settings where user_id = ?").bind(accountKey),
+  ]));
+  const changes = (offset: number) => results
+    .filter((_, index) => index % 2 === offset)
+    .reduce((sum, result) => sum + (result?.meta?.changes ?? 0), 0);
+  return json({ ok: true, vaultItems: changes(0), settings: changes(1) });
 }
 
 async function deleteAttentionDeviceOwnership(

@@ -70,7 +70,10 @@ describe("ADE Cloud agent actions: approvals", () => {
   const shell: CloudApproval = { by: "agent", chatSessionId: null };
 
   it.each([
-    ["a full-auto agent resizes within the cap", agent, { level: "full-auto" }, "resize", { machine: "lane box", shape: "4x8" }, "resize", 0],
+    // A size change is the person's alone: nobody is watching these callers, so none may resize, and no card is raised.
+    ["a full-auto chat may not change a computer's size", agent, { level: "full-auto" }, "resize", { machine: "lane box", shape: "4x8" }, null, 0],
+    ["an automation run may not change a computer's size", { by: "agent", chatSessionId: null, automation: true }, {}, "resize", { machine: "lane box", shape: "4x8" }, null, 0],
+    ["an app on ADE MCP may not change a computer's size", { by: "agent", chatSessionId: null, viaAdeMcp: true }, {}, "resize", { machine: "lane box", shape: "4x8" }, null, 0],
     ["a full-auto agent may not delete a machine it didn't make", agent, { level: "full-auto", madeBy: "chat_other" }, "delete", { machine: "inst_1" }, null, 0],
     ["a full-auto agent deletes the machine its chat made", agent, { level: "full-auto", madeBy: "chat_1" }, "delete", { machine: "inst_1" }, "delete", 0],
     ["plan mode changes nothing", agent, { level: "plan" }, "resize", { machine: "lane box", shape: "4x8" }, null, 0],

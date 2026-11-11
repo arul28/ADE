@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { cloudMachineSettling, type CloudMachinesResult } from "../../../shared/adeCloud";
 import { extractError } from "../../lib/format";
+import { noteCloudLaneMachines } from "../../state/adeCloudLaneIndex";
 
 /** While a box is waking, sleeping or resizing, how often its state is read again. */
 const SETTLING_POLL_MS = 4_000;
@@ -24,6 +25,12 @@ const EMPTY: Snapshot = { result: null, loading: false, loadError: null };
 
 let snapshot = EMPTY;
 const listeners = new Set<() => void>();
+/**
+ * Surfaces that want the quick re-reads while a box settles (the machine
+ * cards). A surface that only needs the list in memory (the composer's Run
+ * on menu) subscribes without them, so it never starts that timer itself.
+ */
+let settlingSubscribers = 0;
 let generation = 0;
 let lastReadAt = 0;
 let settlingSince: number | null = null;
@@ -42,7 +49,7 @@ function clearSettlingTimer(): void {
 
 function scheduleSettlingRead(result: CloudMachinesResult | null): void {
   clearSettlingTimer();
-  if (!result?.machines.some((machine) => cloudMachineSettling(machine.state))) {
+  if (settlingSubscribers === 0 || !result?.machines.some((machine) => cloudMachineSettling(machine.state))) {
     settlingSince = null;
     return;
   }
@@ -60,6 +67,8 @@ function load(): void {
   void listMachines().then(
     (result) => {
       if (current !== generation) return;
+      // The lane computers outlive this read, for the composer and chat chips.
+      if (result?.state === "ok") noteCloudLaneMachines(result.machines);
       publish({ result, loadError: null });
       scheduleSettlingRead(result);
     },
@@ -81,13 +90,21 @@ function startWatching(): void {
   };
 }
 
-function subscribe(listener: () => void): () => void {
+function subscribeWith(listener: () => void, settle: boolean): () => void {
   const first = listeners.size === 0;
   listeners.add(listener);
+  if (settle) settlingSubscribers += 1;
   if (first) startWatching();
   if (first || Date.now() - lastReadAt > JOIN_LAST_READ_MS) load();
   return () => {
     listeners.delete(listener);
+    if (settle) {
+      settlingSubscribers -= 1;
+      if (settlingSubscribers === 0) {
+        clearSettlingTimer();
+        settlingSince = null;
+      }
+    }
     if (listeners.size > 0) return;
     stopWatching?.();
     clearSettlingTimer();
@@ -106,6 +123,8 @@ export function watchedCloudMachines(): CloudMachinesResult | null {
   return listeners.size > 0 ? snapshot.result : null;
 }
 
+const subscribe = (listener: () => void) => subscribeWith(listener, true);
+const subscribeQuiet = (listener: () => void) => subscribeWith(listener, false);
 const subscribeNothing = () => () => undefined;
 const readSnapshot = () => snapshot;
 const readEmpty = () => EMPTY;
@@ -119,7 +138,12 @@ const readEmpty = () => EMPTY;
  * poll; only while a box is moving between states does it read again every few
  * seconds, until the box settles.
  */
-export function useCloudMachines(enabled: boolean): CloudMachinesState {
-  const state = useSyncExternalStore(enabled ? subscribe : subscribeNothing, enabled ? readSnapshot : readEmpty, readEmpty);
+export function useCloudMachines(enabled: boolean, options?: { settle?: boolean }): CloudMachinesState {
+  const settle = options?.settle ?? true;
+  const state = useSyncExternalStore(
+    enabled ? (settle ? subscribe : subscribeQuiet) : subscribeNothing,
+    enabled ? readSnapshot : readEmpty,
+    readEmpty,
+  );
   return { ...state, refresh: load };
 }

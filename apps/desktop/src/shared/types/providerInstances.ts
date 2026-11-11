@@ -331,10 +331,11 @@ export function isProviderLoginLive(login: Pick<ProviderLoginStatus, "state"> | 
 export type ProviderLoginStartArgs = {
   id: string;
   /**
-   * Sign in with a one-time code typed into the sign-in page (Codex
-   * `--device-auth`), for a machine other than the one with the browser:
-   * Codex's normal sign-in returns to a localhost port on the account's
-   * machine, which a browser on another computer cannot reach.
+   * The browser is not on the account's machine. Codex then signs in with a
+   * one-time code typed into the sign-in page (`--device-auth`): its normal
+   * sign-in returns to a localhost port on the account's machine, which a
+   * browser on another computer cannot reach. Claude keeps its printed link
+   * (which ends in a pasted code) and does not open a page on that machine.
    */
   deviceAuth?: boolean;
 };

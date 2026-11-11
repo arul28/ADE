@@ -9,6 +9,7 @@ import { killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "../share
 import { signalProcessGroup } from "../shared/utils";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { createPrivateKeyStreamFilter, scrubOutputTail } from "../../../shared/sentry/scrub";
+import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { moveClaudeMcpConfigOffArgv, pruneStaleClaudeMcpConfigFiles, removeClaudeMcpConfigFiles } from "./claudeMcpConfigFile";
 
 /**
@@ -622,12 +623,14 @@ export function createClaudeSubprocessReaper(args: {
     // The SDK's inline MCP JSON carries secrets; the command line and the
     // registry below get a private file's path instead.
     const mcpConfig = moveClaudeMcpConfigOffArgv(options.args, claudeMcpConfigDir());
-    const invocation = resolveCliSpawnInvocation(options.command, mcpConfig.args, options.env, platform);
+    // A Claude pass account gets its token here, at the spawn, and nowhere earlier.
+    const env = withClaudePassEnv(options.env, platform);
+    const invocation = resolveCliSpawnInvocation(options.command, mcpConfig.args, env, platform);
     let child: ClaudeChildProcess;
     try {
       child = spawnProcess(invocation.command, invocation.args, {
         cwd: options.cwd,
-        env: options.env,
+        env,
         signal: options.signal,
         stdio: ["pipe", "pipe", "pipe"],
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,

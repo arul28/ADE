@@ -68,8 +68,9 @@ export function buildCliMessage(
   tool: CliTool,
   connection: AiProviderConnectionStatus | null | undefined,
 ): string {
+  // The status read sees the saved sign-in; it does not ask the provider.
   if (connection?.runtimeAvailable) {
-    return "Connection verified.";
+    return "Signed in.";
   }
   // The pinned copy's state (downloading, couldn't download, not available
   // on this machine) or the sign-in that is missing, in the host's words.

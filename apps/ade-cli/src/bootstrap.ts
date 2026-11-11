@@ -1,4 +1,5 @@
 import "./lib/packagedRuntimeFlag";
+import { registerProviderLoginRuntime } from "../../desktop/src/main/services/providerLogins/providerLoginHooks";
 import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
 import { assertProjectRootReadable } from "./services/projects/projectRootAccess";
 import {
@@ -306,6 +307,8 @@ import {
 } from "./services/projects/machineLayout";
 import { redactSecrets, sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
+import { createCloudLaneNameSync, type CloudLaneNameSync } from "../../desktop/src/main/services/adeCloud/cloudLaneNameSync";
+import { createCloudServerProvider } from "../../desktop/src/main/services/adeCloud/cloudServerProvider";
 import { isCloudMachine } from "./services/power/cloudKeepAwake";
 import { normalizeGitRemoteIdentity } from "../../desktop/src/shared/crossMachineHandoff";
 import { readGitOriginUrl } from "../../desktop/src/main/services/projects/recentProjectSummary";
@@ -1308,6 +1311,7 @@ export async function createAdeRuntime(args: {
     const releaseLaneBrowserTabsHolder: { current: ((laneId: string) => Promise<void>) | null } = { current: null };
     // Built after the chat service; a lane's delete reaches it through here.
     const cloudChatUploaderRef: { current: ReturnType<typeof createCloudChatUploader> | null } = { current: null };
+    const cloudLaneNameSyncRef: { current: CloudLaneNameSync | null } = { current: null };
     let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
     let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
     let jiraServiceRef: ReturnType<typeof createJiraService> | null = null;
@@ -1372,6 +1376,8 @@ export async function createAdeRuntime(args: {
             });
           });
         }
+        // A cloud computer's lane name lives in its metadata too (the dashboard reads it with no wake).
+        if (event.type === "lane-renamed" && event.laneId && event.laneName) cloudLaneNameSyncRef.current?.noteRenamed(event.laneId, event.laneName);
         if ((event.type === "lane-archived" || event.type === "lane-deleted") && event.laneId) {
           void releaseLaneBrowserTabsHolder.current?.(event.laneId).catch((error: unknown) => {
             logger.warn("built_in_browser.release_lane_failed", {
@@ -2912,6 +2918,18 @@ export async function createAdeRuntime(args: {
       : null;
     cloudChatUploaderRef.current = cloudChatUploader;
     teardown.push(() => cloudChatUploader?.dispose());
+    if (isCloudMachine() && process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
+      const laneNameClient = createCloudServerProvider({
+        accessToken: async () => (await getAccountAccessToken().catch(() => null)) ?? null,
+        baseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null,
+        logger,
+      });
+      cloudLaneNameSyncRef.current = createCloudLaneNameSync({
+        instanceId: process.env.ADE_CLOUD_INSTANCE_ID.trim(),
+        client: async () => laneNameClient,
+        logger,
+      });
+    }
     // Built after automations; chat events reach it through this late binding.
     let linearAgentRuntime: LinearAgentRuntime | null = null;
     if (resolvedArgs.chatRuntime === "agent") {
@@ -3164,8 +3182,24 @@ export async function createAdeRuntime(args: {
       }
     }
     agentChatServiceHolder.current = agentChatService;
+    // A new CLI session that names no account starts where a new chat would.
+    const chatServiceForCliAccounts = agentChatService;
+    if (chatServiceForCliAccounts) {
+      ptyService.setNewCliSessionAccountPicker((provider, modelId) =>
+        chatServiceForCliAccounts.pickNewCliSessionAccount(provider, modelId));
+    }
     applyFastModePolicyRef = () => agentChatService?.applyFastModePolicy();
     teardown.push(() => agentChatService?.forceDisposeAll?.());
+    // The brain's one sign-in sync (P5) reaches this runtime's chats and its
+    // clients through these: idle processes end on a changed sign-in, and
+    // Settings hears the change.
+    const chatServiceForLogins = agentChatService;
+    teardown.push(registerProviderLoginRuntime({
+      restartProviderRuntimesWhenIdle: (provider, options) => {
+        chatServiceForLogins?.restartProviderRuntimesWhenIdle(provider, options);
+      },
+      notifyChanged: () => pushEvent("runtime", { type: "provider_logins_changed" }),
+    }));
     if (resolvedArgs.chatRuntime === "agent" && agentChatService) {
       const settleNudgeSweep = createSettleNudgeSweep({
         sessionService,
@@ -3250,6 +3284,11 @@ export async function createAdeRuntime(args: {
         logger,
         laneService,
         agentChatService,
+        // An ADE Cloud lane from a PR's branch is linked to the PR here, on its own computer.
+        linkPullRequest: async ({ laneId, prUrlOrNumber }) => {
+          if (!prServiceRef) throw new Error("this project has no GitHub connection here");
+          return await prServiceRef.linkToLane({ laneId, prUrlOrNumber });
+        },
         fetchStartBranch: (fetchArgs) => fetchLaneStartBranch({ ...fetchArgs, laneService, gitService }),
         resolveCommit: (ref) => resolveGitCommit(ref, projectRoot),
         resolveChatCreate: (create) => resolveChatCreateModel(agentChatService, create),

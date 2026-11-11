@@ -5299,6 +5299,9 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
+    // A new CLI session that names no account starts where a new chat would.
+    ptyService.setNewCliSessionAccountPicker((provider, modelId) =>
+      agentChatService.pickNewCliSessionAccount(provider, modelId));
     const prShellLinkWatcher = createPrShellLinkWatcher({
       logger,
       subscribeToEvents: (callback) => agentChatService.subscribeToEvents(callback),

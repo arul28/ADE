@@ -263,6 +263,16 @@ The `ade-action` action type dispatches directly into a main-process domain serv
 
 The service sweeps due cleanup rows at startup and every 60 seconds. Completed or failed cleanup is appended as another `delete-lane` action result on the originating run, so it remains visible in existing run history; a cleanup failure also leaves that run failed. A lane that is already gone is recorded as a successful no-op. `listScheduledCleanups()` exposes all statuses, and `cancelScheduledCleanup(id)` changes only a still-scheduled row to `cancelled`.
 
+### Run on ADE Cloud
+
+A rule can run its lane on ADE Cloud (`execution.cloud`, "Run on ADE Cloud"
+under "Runs on" in the builder). The machine that runs the rule still watches
+the trigger and keeps the history; each run starts its lane on a new cloud
+computer through `cloud.lane_launch`, under the agent limits, never the
+person's. The rule needs `laneMode` "create" or "pr-branch", no bound chat, and
+no step that works in a lane on this machine (`automationCloudProblem`). See
+[ADE Cloud](../ade-cloud/README.md#a-new-lane).
+
 ## Cron scheduling
 
 `automationService` uses `node-cron` for in-process cron tasks. Each enabled `schedule` rule installs a `CronTask` that fires `triggerRun` on match. `computeNextScheduleAt` lets the UI preview the next fire time.

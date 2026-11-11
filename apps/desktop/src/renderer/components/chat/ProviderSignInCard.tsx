@@ -15,27 +15,48 @@
  * asks for the device-code (Codex) or pasted-address (Antigravity) form.
  * ADE relays what the person pastes into the CLI's own login and keeps
  * nothing.
+ *
+ * The body uses the parts of the Settings sign-in sheet (`signInSheetParts`):
+ * the account note, the three steps, the code with "Open sign-in page", the
+ * paste box, and the end states. There is no popup in a chat.
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowSquareOut, Check, Copy, SpinnerGap } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { SpinnerGap } from "@phosphor-icons/react";
 import type { KimiLoginRegion, OpenProjectBinding } from "../../../shared/types";
 import { isAntigravitySignInRunning } from "../../../shared/types/config";
 import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { settingsEntryById } from "../../../shared/settingsManifest";
-import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { checkProviderSignIn } from "../../lib/providerSignInCheck";
 import { openExternalUrl } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { ProviderLogo } from "../shared/ProviderLogos";
-import { providerBrand, providerThemeVars } from "../settings/providers/providerBrand";
-import { SolidLogo } from "../settings/providers/ProviderHero";
+import { providerBrand } from "../settings/providers/providerBrand";
 import { pinnedProviderInstances } from "../settings/providers/accounts/useProviderInstances";
+import { formatSignInFailureReport } from "../settings/providers/providerDiagnosticsReport";
 import { providerActionMessage } from "../settings/providers/providerErrorMessage";
-import { linkHost } from "../settings/providers/signInSheetParts";
+import {
+  SignInAccountNote,
+  SignInCodePanel,
+  SignInFailure,
+  SignInMismatch,
+  SignInPasteBox,
+  SignInSteps,
+  SignInSuccess,
+  linkHost,
+  signInAccountMismatch,
+  signInMachineWords,
+  useEnterOpensSignInPage,
+  type SignInStage,
+} from "../settings/providers/signInSheetParts";
 import { CHAT_AUTH_RECOVERED_EVENT } from "./AgentCliAuthCard";
-import { CardBannerButtons, CardError, CardFieldInput, CardReceipt, cardEscapeHandler } from "./composerCardParts";
+import { CardBannerButtons, CardError, CardReceipt, cardEscapeHandler } from "./composerCardParts";
+import { ProviderCardFrame } from "./providerCardFrame";
 import "./providerSignInCard.css";
 
 const POLL_MS = 1_000;
+/** How long "Signed in" stays on the card before the composer comes back. */
+const SUCCESS_HOLD_MS = 1_200;
 const SIGN_IN_ANALYTICS_INTERVAL_MS = 10 * 60_000;
 const ANALYTICS_PROVIDERS = new Set(["claude", "codex", "cursor", "droid", "opencode", "pi", "muse"]);
 
@@ -443,23 +464,15 @@ function brandMark(providerId: string, size: number) {
   return brand.logo.kind === "solid" ? brand.logo.mark(size) : <ProviderLogo family={providerId} size={size} />;
 }
 
-function BrandLogo({ providerId, size }: { providerId: string; size: number }) {
-  const brand = providerBrand(SPECS[providerId]?.brandId ?? providerId);
-  if (brand.logo.kind === "solid") return <SolidLogo spec={{ ...brand.logo, size }} straight />;
-  return (
-    <span
-      className="ade-psc-tile"
-      style={{ background: brand.logo.background, color: brand.logo.color, width: size + 9, height: size + 9 }}
-    >
-      <ProviderLogo family={providerId} size={size - 4} />
-    </span>
-  );
-}
-
 export type ProviderSignInNeed = {
   provider: string;
   /** No login on the machine yet, or a turn that just failed on its sign-in. */
   reason: "no-login" | "failed-turn";
+  /**
+   * A failed turn on ADE Cloud waited for this computer to renew the sign-in,
+   * and it did not (`system_notice.providerLogin` "owner_off").
+   */
+  ownerLabel?: string | null;
 };
 
 /**
@@ -491,28 +504,43 @@ export function ProviderSignInComposer({
   onOpenSettings: () => void;
 }) {
   const spec = providerSignInSpec(need.provider) ?? { label: need.provider, via: need.provider, kind: "settings" as const };
-  const brand = providerBrand(spec.brandId ?? need.provider);
+  // The machine inside a sentence or the chip: "this computer" for the local
+  // one (never its stored "This computer"), else its own name.
+  const where = signInMachineWords(runsHere || machineName === THIS_MACHINE_NAME, machineName);
   const { flow, submitError, start, submitCode, cancel } = useProviderSignInFlow({
     provider: need.provider,
     kind: spec.kind,
     pin,
     runsHere,
-    machineName,
+    machineName: where,
     instanceId,
   });
   const [region, setRegion] = useState<KimiLoginRegion>("global");
   const [code, setCode] = useState("");
-  const [copied, setCopied] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const signingIn = flow.phase === "starting" || flow.phase === "waiting" || flow.phase === "verifying";
+  // The account ADE knew before the sign-in, and the one the provider names
+  // after it. Only both together can say "this is the wrong account".
+  const expectedAccount = accountEmail?.trim() || null;
+  const signedInAs = flow.email?.trim() || null;
+  const wrongAccount = flow.phase === "done" && signInAccountMismatch(expectedAccount, signedInAs);
 
-  // Signed in: the machine read the login back. Tell the pane once.
+  // Signed in: the machine read the login back. Run the provider's own check
+  // there once (it also drops the model caches), then hand the composer back
+  // after a beat, unless the account is not the one the chat runs as.
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  useEffect(() => {
+    if (flow.phase !== "done") return;
+    void checkProviderSignIn(need.provider, pinRef.current);
+  }, [flow.phase, need.provider]);
   const onSignedInRef = useRef(onSignedIn);
   onSignedInRef.current = onSignedIn;
   useEffect(() => {
-    if (flow.phase !== "done") return;
-    invalidateAiDiscoveryCache();
-    onSignedInRef.current();
-  }, [flow.phase]);
+    if (flow.phase !== "done" || wrongAccount) return undefined;
+    const timer = window.setTimeout(() => onSignedInRef.current(), SUCCESS_HOLD_MS);
+    return () => window.clearTimeout(timer);
+  }, [flow.phase, wrongAccount]);
 
   const begin = useCallback(() => {
     if (spec.kind === "settings") {
@@ -520,175 +548,181 @@ export function ProviderSignInComposer({
       return;
     }
     setCode("");
-    setCopied(false);
     start(need.provider === "kimi" ? { kimiRegion: region } : undefined);
   }, [need.provider, onOpenSettings, region, spec.kind, start]);
+
+  const submit = useCallback(() => {
+    const value = code;
+    void submitCode(value).then(() => setCode((current) => (current === value ? "" : current)));
+  }, [code, submitCode]);
+
+  // Enter opens the sign-in page (and copies the code) while the card waits.
+  useEnterOpensSignInPage(rootRef, flow.phase === "waiting" ? flow.url : null, flow.deviceCode, openExternalUrl);
 
   const onKeyDown = cardEscapeHandler({ signingIn, cancelSignIn: cancel, responding: false, onDecline: onDismiss });
   const host = linkHost(flow.url);
   const heading = need.reason === "failed-turn" ? `Sign in to ${spec.label} again` : `Sign in to ${spec.label}`;
   const startLabel = spec.via ? `Continue with ${spec.via}` : `Sign in to ${spec.label}`;
   const reason = need.reason === "failed-turn"
-    ? `${spec.label} is signed out on ${machineName}. Your message sends again as soon as you're back in.`
+    ? need.ownerLabel
+      ? `${need.ownerLabel} didn't renew the ${spec.label} sign-in in time. Sign in on ${where}, or pick another model. Your message sends again as soon as you're back in.`
+      : `${spec.label} is signed out on ${where}. Your message sends again as soon as you're back in.`
     : spec.kind === "settings"
-      ? `${spec.label} has no sign-in on ${machineName} yet. Set it up there, then send.`
-      : `${spec.label} isn't signed in on ${machineName} yet.`;
+      ? `${spec.label} has no sign-in on ${where} yet. Set it up there, then send.`
+      : `${spec.label} isn't signed in on ${where} yet.`;
   const codexDeviceHint = need.provider === "codex" && !browserOnHost(runsHere) && flow.phase === "failed"
     ? " If ChatGPT refused the code, turn on device code sign-in in ChatGPT's security settings, then try again."
     : "";
-  const shownError = submitError
-    ?? (flow.phase === "failed" && flow.message ? `${flow.message}${codexDeviceHint}` : flow.message);
+  const stage: SignInStage = flow.phase === "idle"
+    ? "form"
+    : flow.phase === "done"
+      ? wrongAccount ? "mismatch" : "done"
+      : flow.phase === "starting" || (flow.phase === "waiting" && !flow.url && !flow.deviceCode && !flow.awaitingCode)
+        ? "starting"
+        : flow.phase;
+  const failureTitle = flow.message ? "Sign-in did not complete." : "The sign-in was stopped.";
+  const failureDetail = flow.message ? `${flow.message}${codexDeviceHint}` : null;
+  const report = useMemo(() => (flow.phase === "failed" && flow.message
+    ? formatSignInFailureReport({
+        provider: need.provider,
+        providerLabel: spec.label,
+        place: runsHere ? "this computer" : "another computer",
+        stage: flow.url ? "after the sign-in page opened" : "before the sign-in page opened",
+        title: failureTitle,
+        detail: failureDetail,
+        output: null,
+        secrets: [flow.deviceCode, flow.url],
+      })
+    : null), [failureDetail, failureTitle, flow.deviceCode, flow.message, flow.phase, flow.url, need.provider, runsHere, spec.label]);
+  // The sheet's words for the same box.
+  const pasteLabel = spec.kind === "antigravity"
+    ? "The address the browser ended on (it starts with http://127.0.0.1)"
+    : "Paste the code from the sign-in page";
+  const codeHint = flow.deviceCode
+    ? `On ${host ?? "the sign-in page"}, check that it shows this code, then approve.`
+    : flow.awaitingCode
+      ? spec.kind === "antigravity"
+        ? `Google sends the browser back to ${where}, so the last page will not load here. Paste its address below.`
+        : `${host ?? "The sign-in page"} shows a code once you approve. Paste it below.`
+      : `${host ?? "The sign-in page"} opens in your browser. Approve there.`;
 
   return (
-    <div
-      role="group"
-      aria-label={heading}
-      data-testid="provider-sign-in-composer"
-      data-provider={need.provider}
-      className="ade-icc"
-      data-light={brand.lightBanner ? "true" : undefined}
-      style={{ ...providerThemeVars(brand), ["--ig-accent" as string]: brand.accent }}
+    <ProviderCardFrame
+      rootRef={rootRef}
+      brandId={spec.brandId ?? need.provider}
+      heading={heading}
+      turn={stage === "done"}
+      testId="provider-sign-in-composer"
+      provider={need.provider}
+      signInCard
       onKeyDown={onKeyDown}
-      tabIndex={-1}
-    >
-      <div className="ade-icc-banner" style={brand.banner}>
-        {brand.bannerArt ? (
-          <img className="ade-icc-banner-art ade-psc-banner-art" src={brand.bannerArt.src} alt="" draggable={false} style={{ opacity: brand.bannerArt.opacity ?? 1 }} />
-        ) : null}
-        <div className="ade-icc-banner-shade" aria-hidden />
-        <span className="ade-icc-logo"><BrandLogo providerId={need.provider} size={25} /></span>
-        <span className="ade-icc-heading">
-          <span className="ade-icc-heading-text"><span className="ade-icc-title">{heading}</span></span>
-        </span>
-        <span className="ade-icc-banner-tools">
-          <span className="ade-icc-chip" title={`This chat runs on ${machineName}`}>on {machineName}</span>
+      tools={(
+        <>
+          <span className="ade-icc-chip" title={`This chat runs on ${where}`}>on {where}</span>
           {accountEmail ? <span className="ade-icc-chip" title="The account this chat runs as">{accountEmail}</span> : null}
           <CardBannerButtons
             onOpenSettings={onOpenSettings}
             onDecline={onDismiss}
-            responding={false}
             signingIn={signingIn}
             cancelSignIn={cancel}
             testIdPrefix="provider-sign-in"
           />
-        </span>
-      </div>
+        </>
+      )}
+    >
+      <div className="ade-sis" data-compact="true" data-card="true">
+        {stage === "form" || stage === "failed" ? <p className="ade-icc-reason">{reason}</p> : null}
+        {spec.kind !== "settings" && (stage === "form" || signingIn) ? (
+          <SignInAccountNote providerLabel={spec.label} expectedAccount={expectedAccount} />
+        ) : null}
 
-      <div className="ade-icc-body">
-        <div className="ade-psc-main" data-wide={flow.phase === "waiting" && (flow.awaitingCode || flow.deviceCode) ? "true" : undefined}>
-          <p className="ade-icc-reason">{reason}</p>
-          <div className="ade-icc-row">
-            {flow.phase === "waiting" && flow.awaitingCode ? (
-              <>
-                {flow.url ? (
-                  <button type="button" className="ade-icc-link" onClick={() => openExternalUrl(flow.url)}>
-                    {host ? `Open ${host}` : "Open the sign-in page"}
-                    <ArrowSquareOut size={10} weight="bold" />
-                  </button>
-                ) : null}
-                <span className="ade-icc-fields">
-                  <CardFieldInput
-                    kind="text"
-                    label={spec.kind === "antigravity" ? "The address the browser ended on" : "The code from the sign-in page"}
-                    placeholder={spec.kind === "antigravity" ? "Paste the address it ends on" : "Paste the code it shows"}
-                    value={code}
-                    onChange={setCode}
-                    onSubmit={() => void submitCode(code)}
-                    disabled={false}
-                    autoFocus
-                    testId="provider-sign-in-code"
-                  />
+        {signingIn || stage === "done" ? (
+          <SignInSteps stage={stage}>
+            <SignInCodePanel
+              url={flow.url}
+              deviceCode={flow.deviceCode}
+              open={openExternalUrl}
+              hint={codeHint}
+              focusOpen={!flow.awaitingCode}
+              codeTestId="provider-sign-in-device-code"
+            />
+            {flow.awaitingCode ? (
+              <SignInPasteBox
+                label={pasteLabel}
+                placeholder={spec.kind === "antigravity" ? "http://127.0.0.1:…/?state=…&code=…" : "Paste the code here"}
+                value={code}
+                onChange={setCode}
+                onSubmit={submit}
+                submitLabel={spec.kind === "antigravity" ? "Continue" : "Submit"}
+                autoFocus
+                testId="provider-sign-in-code"
+                submitTestId="provider-sign-in-submit-code"
+              />
+            ) : null}
+          </SignInSteps>
+        ) : null}
+
+        {stage === "done" ? <SignInSuccess account={signedInAs} providerLabel={spec.label} /> : null}
+        {stage === "mismatch" && expectedAccount && signedInAs ? (
+          <SignInMismatch
+            expected={expectedAccount}
+            actual={signedInAs}
+            onKeep={() => onSignedInRef.current()}
+            onTryAgain={begin}
+          />
+        ) : null}
+        {stage === "failed" ? (
+          <SignInFailure title={failureTitle} detail={failureDetail} report={report} tone={flow.message ? "crit" : "neutral"} />
+        ) : null}
+
+        {stage === "form" || stage === "failed" ? (
+          <div className="ade-sis-start-row">
+              {need.provider === "kimi" ? (
+                <span className="ade-icc-tabs" role="tablist" aria-label="Kimi account region">
+                  {KIMI_REGIONS.map((entry) => (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={entry.id === region}
+                      className="ade-icc-tab"
+                      onClick={() => setRegion(entry.id)}
+                    >
+                      {entry.label}
+                    </button>
+                  ))}
                 </span>
-                <button
-                  type="button"
-                  className="ade-icc-primary ade-icc-primary-brand"
-                  disabled={!code.trim()}
-                  data-testid="provider-sign-in-submit-code"
-                  onClick={() => void submitCode(code)}
-                >
-                  Finish
-                </button>
-                <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={cancel}>Cancel</button>
-              </>
-            ) : flow.phase === "waiting" && flow.deviceCode ? (
-              <span className="ade-icc-code" data-testid="provider-sign-in-device-code">
-                <button
-                  type="button"
-                  className="ade-icc-code-value"
-                  title="Copy the code"
-                  onClick={() => {
-                    void navigator.clipboard?.writeText(flow.deviceCode ?? "").then(() => setCopied(true), () => {});
-                  }}
-                >
-                  {flow.deviceCode}
-                  {copied ? <Check size={12} weight="bold" /> : <Copy size={12} />}
-                </button>
-                {flow.url ? (
-                  <button type="button" className="ade-icc-link" onClick={() => openExternalUrl(flow.url)}>
-                    {host ? `Enter it on ${host}` : "Open the sign-in page"}
-                    <ArrowSquareOut size={10} weight="bold" />
-                  </button>
-                ) : null}
-                <SpinnerGap size={13} weight="bold" className="ade-icc-wait motion-safe:animate-spin" aria-label="Waiting for the sign-in" />
-                <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={cancel}>Cancel</button>
-              </span>
-            ) : (
-              <>
-                {need.provider === "kimi" && !signingIn ? (
-                  <span className="ade-icc-tabs" role="tablist" aria-label="Kimi account region">
-                    {KIMI_REGIONS.map((entry) => (
-                      <button
-                        key={entry.id}
-                        type="button"
-                        role="tab"
-                        aria-selected={entry.id === region}
-                        className="ade-icc-tab"
-                        onClick={() => setRegion(entry.id)}
-                      >
-                        {entry.label}
-                      </button>
-                    ))}
-                  </span>
-                ) : null}
-                <button
-                  type="button"
-                  className="ade-icc-primary ade-icc-primary-brand"
-                  disabled={signingIn || flow.phase === "done"}
-                  autoFocus
-                  data-testid="provider-sign-in-start"
-                  onClick={begin}
-                >
-                  {signingIn || flow.phase === "done" ? (
-                    <SpinnerGap size={14} weight="bold" className="motion-safe:animate-spin" />
-                  ) : (
-                    <span className="ade-icc-primary-mark" aria-hidden>{brandMark(need.provider, 14)}</span>
-                  )}
-                  {flow.phase === "starting"
-                    ? "Starting…"
-                    : flow.phase === "verifying" || flow.phase === "done"
-                      ? "Checking…"
-                      : flow.phase === "waiting"
-                        ? host ? `Waiting for ${host}…` : "Waiting for the browser…"
-                        : spec.kind === "settings"
-                          ? `Set up ${spec.label} on ${machineName}`
-                          : flow.phase === "failed" ? "Try again" : startLabel}
-                </button>
-                {flow.phase === "waiting" && flow.url ? (
-                  <button type="button" className="ade-icc-link" onClick={() => openExternalUrl(flow.url)}>
-                    {host ? `Open ${host}` : "Open the sign-in page"}
-                    <ArrowSquareOut size={10} weight="bold" />
-                  </button>
-                ) : null}
-                {signingIn ? (
-                  <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={cancel}>Cancel</button>
-                ) : null}
-              </>
-            )}
+              ) : null}
+              <button
+                type="button"
+                className="ade-icc-primary ade-icc-primary-brand"
+                autoFocus
+                data-testid="provider-sign-in-start"
+                onClick={begin}
+              >
+                <span className="ade-icc-primary-mark" aria-hidden>{brandMark(need.provider, 14)}</span>
+                {spec.kind === "settings"
+                  ? `Set up ${spec.label} on ${where}`
+                  : stage === "failed" ? "Try again" : startLabel}
+              </button>
           </div>
-        </div>
-        {shownError ? <CardError id="provider-sign-in-error" message={shownError} /> : null}
+        ) : signingIn ? (
+          // The sheet's footer: what ADE waits for on the left, Cancel on the right.
+          <div className="ade-sis-status-row">
+              <span className="ade-sis-footer-status" role="status">
+                <SpinnerGap size={13} weight="bold" className="motion-safe:animate-spin" />
+                {stage === "starting"
+                  ? "Starting the sign-in…"
+                  : stage === "verifying"
+                    ? "Checking the sign-in…"
+                    : host ? `Waiting for ${host}…` : "Waiting for the browser…"}
+              </span>
+              <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={cancel}>Cancel</button>
+          </div>
+        ) : null}
       </div>
-    </div>
+      {submitError && signingIn ? <CardError id="provider-sign-in-error" message={submitError} /> : null}
+    </ProviderCardFrame>
   );
 }
 
@@ -722,6 +756,7 @@ export function ProviderSignInReceipt({
     return () => window.removeEventListener(CHAT_AUTH_RECOVERED_EVENT, handler);
   }, [sessionId]);
   const brand = providerBrand(SPECS[provider]?.brandId ?? provider);
+  const where = signInMachineWords(machineName === THIS_MACHINE_NAME, machineName);
   const logo = (
     <span className="ade-icc-receipt-logo" style={brand.banner} data-light={brand.lightBanner ? "true" : undefined} aria-hidden>
       <span style={{ color: brand.logo.kind === "solid" ? brand.logo.face : brand.logo.color }}>{brandMark(provider, 11)}</span>
@@ -733,7 +768,7 @@ export function ProviderSignInReceipt({
       logo={logo}
       state={recovered ? "done" : "not-done"}
       name={SPECS[provider]?.label ?? displayName}
-      after={recovered ? `signed in again on ${machineName}` : `was signed out on ${machineName}`}
+      after={recovered ? `signed in again on ${where}` : `was signed out on ${where}`}
       sub={details}
     />
   );

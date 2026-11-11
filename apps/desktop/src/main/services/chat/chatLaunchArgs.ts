@@ -10,7 +10,10 @@ import type {
   ChatLaunchLaneConfig,
   ChatLaunchQueueMessageArgs,
 } from "../../../shared/types";
+import { chatLaunchKindOf, normalizeChatLaunchPriorStages } from "../../../shared/chatLaunch";
 import { normalizeHarnessPreset } from "../../../shared/harnessPresets";
+import { parseLaneGitHubIssueValue } from "../../../shared/laneGitHubIssue";
+import { parseLaneJiraIssueValue } from "../../../shared/laneJiraIssue";
 import { parseLaneLinearIssueValue } from "../../../shared/laneLinearIssue";
 import { normalizeLaneStart } from "../../../shared/laneStart";
 import { parseGuestCommentSelections, type ChatThreadCommentSelection } from "../../../shared/threadComments";
@@ -252,6 +255,10 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
   // The canonical strict parser, so a malformed issue degrades to null instead
   // of reaching the lane service and throwing on a missing field.
   const linearIssue = parseLaneLinearIssueValue(value.linearIssue);
+  const githubIssue = mode === "new" ? parseLaneGitHubIssueValue(value.githubIssue) : null;
+  const jiraIssue = mode === "new" ? parseLaneJiraIssueValue(value.jiraIssue) : null;
+  // Only a pull request page (`…/owner/repo/pull/N`): the link step looks the PR up by it.
+  const pullRequestUrl = mode === "existing" ? asTrimmedString(value.pullRequestUrl) : null;
   return {
     mode,
     ...(start ? { start } : {}),
@@ -260,6 +267,9 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
     ...(templateId ? { templateId } : {}),
     ...(color ? { color } : {}),
     ...(linearIssue ? { linearIssue } : {}),
+    ...(githubIssue ? { githubIssue } : {}),
+    ...(jiraIssue ? { jiraIssue } : {}),
+    ...(pullRequestUrl && /^https:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/pull\/\d+\/?$/i.test(pullRequestUrl) ? { pullRequestUrl } : {}),
     ...(mode === "new" && value.autoName === true ? { autoName: true } : {}),
   };
 }
@@ -272,10 +282,13 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
 export function parseChatLaunchArgs(value: unknown): ChatLaunchArgs {
   const record = requireRecord(value, "chat.startLaunch");
   const launchId = requireString(record.launchId, "chat.startLaunch requires launchId.");
-  const kind = record.kind === "cli" ? "cli" : "chat";
+  const kind = chatLaunchKindOf(record.kind);
   const attachments = parseAgentChatFileRefs(record.attachments);
   const chat = kind === "chat" ? parseChatLaunchChat(record.chat) : undefined;
   const laneConfig = parseChatLaunchLaneConfig(record.laneConfig);
+  // An ADE Cloud launch's desktop stages, for any kind. A `cloud` target is
+  // the desktop's to act on, so a brain never parses one.
+  const priorStages = normalizeChatLaunchPriorStages(record.priorStages);
   return {
     kind,
     mode: record.mode === "background" ? "background" : "foreground",
@@ -291,6 +304,7 @@ export function parseChatLaunchArgs(value: unknown): ChatLaunchArgs {
     ...(asTrimmedString(record.title) ? { title: asTrimmedString(record.title) } : {}),
     ...(asTrimmedString(record.originClientId) ? { originClientId: asTrimmedString(record.originClientId) } : {}),
     ...(chat ? { chat } : {}),
+    ...(priorStages.length ? { priorStages } : {}),
   };
 }
 

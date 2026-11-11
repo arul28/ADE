@@ -1,4 +1,5 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
+import { CHAT_LAUNCH_KINDS } from "../../desktop/src/shared/types/chatLaunch";
 import { readDeletedChatOnDisk } from "../../desktop/src/main/services/chat/deletedChats";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { isInsideTempFolder } from "../../desktop/src/main/services/shared/pathCompare";
@@ -387,7 +388,7 @@ export type MultiProjectRpcHandlerOptions = {
   /** On a cloud computer: interrupts work and writes the saved chat copy before a stop (`ade cloud prepare-stop`). */
   prepareCloudStop?: ((args: { timeoutMs: number }) => Promise<unknown>) | null;
   /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
-  pushCloudWork?: (() => Promise<unknown>) | null;
+  pushCloudWork?: ((args: { check: boolean }) => Promise<unknown>) | null;
   /** On a cloud computer: keeps it awake while `run` works (a first clone), and counts the end as use. */
   holdCloudWork?: (<T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>) | null;
   keepAwakeService?: Pick<
@@ -529,14 +530,19 @@ export async function readMachineRuntimeActivitySummary(args: BootedRuntimeSourc
 /** What the cloud busy list reads, across every project this brain booted and its personal chats. */
 export async function readMachineBusyFacts(args: BootedRuntimeSources & {
   personalChatScope: Partial<Pick<PersonalChatScope, "busyFacts">>;
-}): Promise<Pick<CloudBusyFacts, "chats" | "terminals">> {
-  const parts = [
+}): Promise<Pick<CloudBusyFacts, "chats" | "terminals" | "laneSetups">> {
+  const parts: Array<Pick<CloudBusyFacts, "chats" | "terminals" | "laneSetups">> = [
     ...await mapBootedProjectRuntimes(args, (runtime) => readRuntimeBusyFacts(runtime)),
     typeof args.personalChatScope.busyFacts === "function"
       ? await args.personalChatScope.busyFacts()
       : { chats: [], terminals: [] },
   ];
-  return { chats: parts.flatMap((part) => part.chats), terminals: parts.flatMap((part) => part.terminals) };
+  const laneSetups = parts.reduce((total, part) => total + (part.laneSetups ?? 0), 0);
+  return {
+    chats: parts.flatMap((part) => part.chats),
+    terminals: parts.flatMap((part) => part.terminals),
+    ...(laneSetups > 0 ? { laneSetups } : {}),
+  };
 }
 
 /**
@@ -614,6 +620,7 @@ const RUNTIME_METHODS = new Set([
   "keepAwake.call",
   "cloud.prepareStop",
   "cloud.pushWork",
+  "cloud.workState",
   "cloud.call",
   "accountVault.call",
   "attention.call",
@@ -2618,6 +2625,9 @@ export function createMultiProjectRpcRequestHandler(
           // `chat.sendMessage` drops a repeat of a `clientSendId` it has seen.
           // A client retries a send of unknown outcome only against this.
           clientSendDedupe: true,
+          // The chat launch kinds this brain runs. An ADE Cloud hand-off of a
+          // CLI or lane launch is refused by a brain that doesn't list it.
+          chatLaunchKinds: [...CHAT_LAUNCH_KINDS],
           machineProjects: {
             browseDirectories: true,
             getDetail: true,
@@ -3122,7 +3132,7 @@ export function createMultiProjectRpcRequestHandler(
 
     // The server runs this over exec before stopping a computer at 0 hours. Not
     // a `cloud.call`: this machine may not have the account access `cloud` needs.
-    if (method === "cloud.prepareStop" || method === "cloud.pushWork") {
+    if (method === "cloud.prepareStop" || method === "cloud.pushWork" || method === "cloud.workState") {
       if (callerIdentityIsAgent(callerIdentity())) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "An agent can't run this on the computer.");
       }
@@ -3136,7 +3146,13 @@ export function createMultiProjectRpcRequestHandler(
     // "Push all work to GitHub", run over exec on a computer that may be out of hours.
     if (method === "cloud.pushWork") {
       if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't push this computer's work.");
-      return await options.pushCloudWork();
+      return await options.pushCloudWork({ check: params.check === true });
+    }
+    // Only reads. A method of its own: a brain that predates it refuses it
+    // instead of reading the check as a push.
+    if (method === "cloud.workState") {
+      if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't read this computer's work.");
+      return await options.pushCloudWork({ check: true });
     }
 
     if (method === "keepAwake.call") {

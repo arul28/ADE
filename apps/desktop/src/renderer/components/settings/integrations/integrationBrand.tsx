@@ -108,7 +108,7 @@ const BRANDS: Record<IntegrationId, IntegrationBrand> = {
   cloud: {
     id: "cloud",
     label: ADE_CLOUD_NAME,
-    tagline: "Cloud Linux machines for your lanes.",
+    tagline: "A cloud computer for each lane.",
     accent: "#E9E9E9",
     banner: {
       background: [

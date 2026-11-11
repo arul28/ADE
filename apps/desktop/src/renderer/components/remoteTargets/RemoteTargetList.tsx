@@ -85,6 +85,7 @@ import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useCloudMachineGroup, type RowExtras } from "./useCloudMachineGroup";
 import type { MachineRow } from "./remoteMachineModel";
+import { isWebClientMode } from "../../lib/webClientMode";
 
 type RemoteTargetListProps = {
   onConnected?: (result: RemoteRuntimeConnectResult) => void;
@@ -944,7 +945,8 @@ export function RemoteTargetList({
   const [cloud, setCloud] = useState<CloudPickerState>({ kind: "loading" });
   const loadCloudStatus = useCallback((): (() => void) => {
     const bridge = window.ade.cloud;
-    if (!bridge || !cloudEnabled) {
+    // The web app reads ADE Cloud but makes no computers: no "New ADE Cloud machine" there.
+    if (!bridge || !cloudEnabled || isWebClientMode()) {
       setCloud({ kind: "none", signedOut: false });
       return () => undefined;
     }
@@ -1337,7 +1339,8 @@ export function RemoteTargetList({
           updateTargetVersion={
             updatePhase && updateAttempt?.pendingVersion
               ? updateAttempt.pendingVersion
-              : row.connected
+              // A cloud computer updates itself; its card shows that line instead.
+              : row.connected && !extras.selfUpdating
                 ? machineUpdateTargetVersion({ version: row.version }, knownVersions)
                 : null
           }

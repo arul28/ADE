@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { automationCloudProblem, parseAutomationCloudTarget } from "../../../shared/automationCloud";
 import fs from "node:fs";
 import path from "node:path";
 import cron from "node-cron";
@@ -51,6 +52,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { createLaneService } from "../lanes/laneService";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
+import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { getErrorMessage, quoteIfNeeded, resolvePathWithinRoot } from "../shared/utils";
 import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
 import { customNotificationProblem } from "../../../shared/types/attention";
@@ -620,12 +622,13 @@ async function runClaudeHeadless(args: {
   const claudeExecutable = (await requirePinnedProviderExecutable("claude", () => resolveClaudeCodeExecutable())).path;
   const commandPreview = [quoteIfNeeded(claudeExecutable), ...cliArgs.map(quoteIfNeeded)].join(" ");
 
-  const env = {
+  // No account named: on a cloud computer, the "New chats" Claude pass.
+  const env = withClaudePassEnv({
     ...userProcessEnv(),
     ...providerSelfUpdateEnv("claude"),
     NO_COLOR: "1",
     TERM: "dumb"
-  };
+  });
   const invocation = resolveCliSpawnInvocation(claudeExecutable, cliArgs, env);
   const child = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,
@@ -1037,7 +1040,9 @@ function normalizeDraft(args: {
   }
   // The PR's branch can be named like a created lane; other modes reuse a name.
   const namesLane = requestedLaneMode === "create" || requestedLaneMode === "pr-branch";
+  const requestedCloud = parseAutomationCloudTarget(requestedExecution?.cloud);
   const laneExecutionFields = {
+    ...(requestedCloud ? { cloud: requestedCloud } : {}),
     ...(requestedLaneMode ? { laneMode: requestedLaneMode } : {}),
     ...(namesLane && requestedLaneNamePreset ? { laneNamePreset: requestedLaneNamePreset } : {}),
     ...(namesLane && requestedLaneNamePreset === "custom" && requestedLaneNameTemplate
@@ -1082,6 +1087,11 @@ function normalizeDraft(args: {
       path: "execution.builtIn.actions",
       message: "Built-in automations require at least one task.",
     });
+  }
+
+  const cloudProblem = automationCloudProblem(execution as AutomationRule["execution"]);
+  if (cloudProblem) {
+    issues.push({ level: "error", path: "execution.cloud", message: cloudProblem });
   }
 
   if (execution.kind !== "built-in" && !safeTrim(args.draft.prompt)) {

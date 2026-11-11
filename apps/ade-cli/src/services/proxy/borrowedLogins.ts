@@ -452,6 +452,15 @@ function renewGrokLogin(account: BorrowableAccount, env: NodeJS.ProcessEnv): Pro
   });
 }
 
+/**
+ * Make the account's own CLI renew its login once. Also the sign-in sync's
+ * renewal ahead on the owner computer (P5 step 3a), which takes the same
+ * machine lock (`withMachineRenewLock`) so the two never renew one login at once.
+ */
+export function renewProviderLogin(account: BorrowableAccount, env: NodeJS.ProcessEnv): Promise<boolean> {
+  return renewLogin(account, env);
+}
+
 function renewLogin(account: BorrowableAccount, env: NodeJS.ProcessEnv): Promise<boolean> {
   switch (account.provider) {
     case "codex": return renewCodexLogin(account, env);
@@ -557,6 +566,17 @@ async function withRenewLock<T>(authDir: string, run: () => Promise<T>): Promise
     fs.closeSync(fd);
     removeQuietly(lockPath);
   }
+}
+
+/**
+ * The same machine lock, for another renewer on this computer (the sign-in
+ * sync, P5 step 3a): `<adeHome>/proxy/auth/.ade-borrow-renew.lock`. Null when
+ * another process holds it; that process is renewing, so the caller does not
+ * wait for it.
+ */
+export async function withMachineRenewLock<T>(authDir: string, run: () => Promise<T>, security: PrivateFileSecurityOptions = {}): Promise<T | null> {
+  ensurePrivateDirectory(authDir, security);
+  return await withRenewLock(authDir, run);
 }
 
 /**

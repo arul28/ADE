@@ -334,7 +334,7 @@ export function useCloudBoxActions(args: {
   const updateBox = useCallback(async (ctx: CloudBoxContext) => {
     const ok = await confirmDialog({
       title: `Update ${ctx.name}?`,
-      message: `${ctx.name} restarts on the current ADE. Its files and repos stay; running chats, terminals and processes stop.`,
+      message: `${ctx.name} restarts on the current ADE now. Its files and repos stay; running chats, terminals and processes stop. It also updates itself when it's idle or asleep.`,
       confirmLabel: "Update",
     });
     if (ok) await run(ctx, "update");
@@ -473,6 +473,8 @@ export function useCloudBoxActions(args: {
     dismissError: (instanceId: string) => setError(instanceId, null),
     actionsFor,
     wake: (ctx: CloudBoxContext) => run(ctx, "wake"),
+    /** The person's update, with its confirm: Retry on a failed update line. */
+    update: updateBox,
     removeFromAde,
     moveBox,
     /** Opens the Resize dialog (rendered by `dialog`). */

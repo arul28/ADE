@@ -6,7 +6,7 @@ import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
 import {
   cloudKindLabel,
   cloudStillStartingMessage,
-  CLOUD_MADE_BY_CHAT_METADATA,
+  cloudMadeByMetadata,
   type CloudAccountState,
   type CloudAgentLimits,
   type CloudShapeId,
@@ -29,6 +29,8 @@ import {
 import { type CloudSignInStatus } from "../../../shared/cloudSignIns";
 import { IPC } from "../../../shared/ipc";
 import { cloudMachineEnv, type CloudSignInVaults } from "./cloudSignInStore";
+import { readClaudePassEnd, type ClaudePassEndList } from "./claudePassEndWarning";
+import type { CloudPassEnd } from "../../../shared/cloudSignIns";
 import type { AdeAccountMachinesResult } from "../../../shared/types/account";
 import { getSignedInAccountAccessToken } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import {
@@ -50,9 +52,10 @@ import {
   watchCloudAccessForSkills,
   type CloudAccessDeps,
 } from "./cloudAccess";
-import { createCloudMachine } from "./cloudMachineCreator";
+import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { openCloudApprovalWindow } from "./cloudApprovalWindow";
 import { createCloudMachines } from "./cloudMachines";
+import type { CloudProvider } from "./cloudProvider";
 import { claimCloudReadyMachine, releaseCloudReadyMachine } from "./cloudReadyClaim";
 import { createCloudReadyKeeper } from "./cloudReadyMachines";
 import { setCloudAsleepCheck, setCloudRestChanged, setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
@@ -60,6 +63,7 @@ import { startCloudSleepWatch } from "./cloudSleepWatch";
 import { setCloudDesktopActions } from "./cloudDesktopActions";
 import { copyCloudMachine, moveCloudMachine, type CloudCopyDeps } from "./cloudMachineCopy";
 import { reconnectCloudMachine } from "./cloudReconnect";
+import { sendToAllWindows } from "./broadcast";
 import {
   CLOUD_AGENT_LIMITS_VAULT_KEY,
   createCloudAgentLimitsStore,
@@ -86,17 +90,6 @@ type Logger = {
  * ADE account, never on a lane, chat or another machine. The new box's own
  * actions afterwards go through the machine list like any other computer.
  */
-/** Every open window, skipping one that is closing right now (the next send reaches the rest). */
-function sendToAllWindows(channel: string, payload?: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-    try {
-      win.webContents.send(channel, payload);
-    } catch {
-      // Closing mid-send.
-    }
-  }
-}
 
 /** Set while the app is up: re-asks ADE Cloud's access after a sign-in or sign-out. */
 let recheckCloudAccess: (() => void) | null = null;
@@ -107,7 +100,8 @@ export function cloudAccountChanged(): void {
 }
 
 export function registerCloudIpc(args: {
-  vaultBridge: Parameters<typeof cloudVaultFromBridge>[0];
+  /** `list` reads the account's pass store for the end warning (`claudePassEnd.ts`). */
+  vaultBridge: Parameters<typeof cloudVaultFromBridge>[0] & { list?: ClaudePassEndList };
   listAccountMachines: () => Promise<AdeAccountMachinesResult>;
   renameMachine: (machineKey: string, name: string) => Promise<unknown>;
   /** Takes a machine off the ADE account (what Delete box does once the box is gone). */
@@ -128,7 +122,12 @@ export function registerCloudIpc(args: {
    */
   brainAction: (action: string, actionArgs?: Record<string, unknown>) => Promise<unknown>;
   logger: Logger;
-}): void {
+}): {
+  machineCreatorDeps: CloudMachineCreatorDeps;
+  machines: ReturnType<typeof createCloudMachines>;
+  copyDeps: CloudCopyDeps;
+  client: () => Promise<CloudProvider>;
+} {
   const { logger } = args;
   const account = () => getSharedAccountAuthService();
   let machineStore: EncryptedFileCredentialStore | null = null;
@@ -138,6 +137,7 @@ export function registerCloudIpc(args: {
     account,
     directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl(),
     deviceName: () => hostname(),
+    runningVersion: () => app.getVersion(),
     logger,
     onDirectoryUnavailable: (error) => logger.warn("cloud.account_directory_unavailable", { error: getErrorMessage(error) }),
   });
@@ -147,6 +147,11 @@ export function registerCloudIpc(args: {
   // asked when a window opens or takes focus, and on a sign-in or sign-out;
   // its cache keeps that to the server at most every 10 minutes.
   let lastAccess: boolean | null = null;
+  // The end warning's fact (`claudePassEnd.ts`), from the local pass store, only
+  // while ADE Cloud is on. A window asks on open and on focus, so one answer
+  // serves a minute; a pass write here (an approve, a remove) drops it at once.
+  const PASS_END_FRESH_MS = 60_000;
+  let passEndMemo: { at: number; value: CloudPassEnd | null } | null = null;
   const readAccess = async (): Promise<boolean> => {
     const enabled = await cloudAccessEnabled(credentials).catch((error: unknown) => {
       logger.warn("cloud.access_read_failed", { error: getErrorMessage(error) });
@@ -183,13 +188,25 @@ export function registerCloudIpc(args: {
   const cloudSignIn = async (action: string, actionArgs?: Record<string, unknown>): Promise<CloudSignInStatus> => {
     const status = await args.brainAction(action, actionArgs) as CloudSignInStatus;
     // Every window shows the card; the one that acted already has the answer.
-    if (action !== "cloud_sign_in_status") sendToAllWindows(IPC.cloudSignInChanged);
+    if (action !== "cloud_sign_in_status") {
+      passEndMemo = null;
+      sendToAllWindows(IPC.cloudSignInChanged);
+    }
     return status;
   };
+  const shortString = (value: unknown): string | null =>
+    (typeof value === "string" && value.length <= 320 ? value : null);
   const cloudSignInHandlers: Array<[string, string, (arg: Record<string, unknown> | undefined) => Record<string, unknown> | undefined]> = [
     [IPC.cloudSignInStatus, "cloud_sign_in_status", () => undefined],
-    [IPC.cloudSignInClaudeStart, "cloud_sign_in_start", () => undefined],
+    // Only short strings pass; the action checks the email shape and that a
+    // Renew names a pass of this account.
+    [IPC.cloudSignInClaudeStart, "cloud_sign_in_start", (arg) => ({
+      forEmail: shortString(arg?.forEmail),
+      renewKey: shortString(arg?.renewKey),
+      labelEmail: shortString(arg?.labelEmail),
+    })],
     [IPC.cloudSignInClaudeCode, "cloud_sign_in_code", (arg) => ({ code: typeof arg?.code === "string" ? arg.code : "" })],
+    [IPC.cloudSignInClaudeKeep, "cloud_sign_in_keep", () => undefined],
     [IPC.cloudSignInClaudeCancel, "cloud_sign_in_cancel", () => undefined],
     [IPC.cloudSignInSaveKey, "cloud_sign_in_save_key", (arg) => ({ id: arg?.id, key: arg?.key })],
     [IPC.cloudSignInRemove, "cloud_sign_in_remove", (arg) => ({ id: arg?.id })],
@@ -201,7 +218,7 @@ export function registerCloudIpc(args: {
     });
   }
 
-  const machineCreatorDeps: Parameters<typeof createCloudMachine>[0] = {
+  const machineCreatorDeps: CloudMachineCreatorDeps = {
     client: () => requireCloudProvider(credentials),
     getAccountToken,
     directoryBaseUrl,
@@ -335,10 +352,26 @@ export function registerCloudIpc(args: {
     return "This computer needs updating before ADE can update it. Choose Update this computer in its menu.";
   });
 
+  const readPassEnd = async (): Promise<CloudPassEnd | null> => {
+    const list = args.vaultBridge.list?.bind(args.vaultBridge);
+    if (!list || !credentials.signedIn()) return null;
+    const now = Date.now();
+    if (passEndMemo && now - passEndMemo.at < PASS_END_FRESH_MS) return passEndMemo.value;
+    const value = await readClaudePassEnd(list, now).catch((error: unknown) => {
+      logger.warn("cloud.pass_end_read_failed", { error: getErrorMessage(error) });
+      return null;
+    });
+    passEndMemo = { at: now, value };
+    return value;
+  };
+
   // Account-level, so no pin: every computer answers the same for this account.
-  ipcMain.handle(IPC.cloudGetAccess, async (event): Promise<{ enabled: boolean }> => {
+  ipcMain.handle(IPC.cloudGetAccess, async (event): Promise<{ enabled: boolean; passEnd?: CloudPassEnd | null }> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetAccess)) return { enabled: false };
-    return { enabled: await readAccess() };
+    const enabled = await readAccess();
+    // Off: no pass read at all.
+    if (!enabled) return { enabled };
+    return { enabled, passEnd: await readPassEnd() };
   });
 
   ipcMain.handle(IPC.cloudGetStatus, async (event): Promise<CloudStatus | null> => {
@@ -521,9 +554,10 @@ export function registerCloudIpc(args: {
   // new machine signs in through its approval window), over the desktop bridge.
   setCloudDesktopActions({
     create: async (machine) => {
-      const { madeByChat, ...shape } = machine;
+      const { madeByChat, madeByAgent, ...shape } = machine;
+      const madeBy = cloudMadeByMetadata({ madeByChat, madeByAgent });
       const result = await createCloudMachine(machineCreatorDeps, randomUUID(), shape, () => undefined, {
-        ...(madeByChat ? { metadata: { [CLOUD_MADE_BY_CHAT_METADATA]: madeByChat } } : {}),
+        ...(Object.keys(madeBy).length ? { metadata: madeBy } : {}),
       });
       args.recordMachineCreate?.(result.joined ? "completed" : "partial");
       sendToAllWindows(IPC.cloudStatusChanged);
@@ -705,6 +739,9 @@ export function registerCloudIpc(args: {
       return { started: true };
     },
   );
+
+  // The ADE Cloud lane launch makes its computer with these same pieces.
+  return { machineCreatorDeps, machines, copyDeps, client: () => requireCloudProvider(credentials) };
 }
 
 /** This app's ADE release, or null for a development build (whose version may not be published). */

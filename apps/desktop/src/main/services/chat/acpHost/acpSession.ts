@@ -300,6 +300,8 @@ export type OpenAcpSessionArgs = {
   callbacks: AcpSessionCallbacks;
   logger?: Logger;
   pool?: AcpSessionPool;
+  /** The provider's login generation, part of the pool key (`AcpPoolKeyParts.loginGeneration`). */
+  loginGeneration?: number;
   /** Test seam, forwarded to the pool and then to the connection. */
   spawnOverride?: Parameters<AcpSessionPool["acquire"]>[0]["spawnOverride"];
   handshakeTimeoutMs?: number;
@@ -317,6 +319,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     spawnPlan: args.spawnPlan,
     poolEnvKeys: dialect.poolEnvKeys,
     sessionToken: args.sessionToken,
+    ...(args.loginGeneration !== undefined ? { loginGeneration: args.loginGeneration } : {}),
     ...(args.logger ? { logger: args.logger } : {}),
     ...(args.idleTtlMs !== undefined ? { idleTtlMs: args.idleTtlMs } : {}),
     ...(args.handshakeTimeoutMs !== undefined ? { handshakeTimeoutMs: args.handshakeTimeoutMs } : {}),

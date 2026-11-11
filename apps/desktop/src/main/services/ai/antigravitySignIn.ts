@@ -366,15 +366,13 @@ async function runFlow(flow: Flow): Promise<void> {
 /** A new login may be a different account: drop cached verdicts and models. */
 async function refreshAfterSignIn(): Promise<void> {
   try {
-    const probe = await import("./acpAuthProbe");
-    probe.resetAcpAuthProbeCache();
-    const discovery = await import("../chat/acpHost/acpModelDiscovery");
-    discovery.markAcpModelCatalogStale("antigravity");
+    const { noteProviderLoginChanged } = await import("./providerLoginChanged");
+    noteProviderLoginChanged("antigravity");
   } catch (error) {
     logger?.warn("antigravity.sign_in_cache_refresh_failed", {
       message: error instanceof Error ? error.message : String(error),
     });
-    // Best effort; the next status refresh probes again.
+    // Best effort; the sign-in check after it drops the same caches.
   }
 }
 
