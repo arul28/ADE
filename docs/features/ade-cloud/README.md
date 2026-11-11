@@ -231,7 +231,9 @@ highest. The step at or above the limit is left to the limit's own email.
 `cloud_settings.owner_cost_step_alert` keeps the month and the last step
 (`2026-11:150`); a new month starts again at $50. The check claims the step
 with a conditional write before it sends, so two checks at once send one
-email, and a send that fails gives the step back for the next check.
+email, and a send that fails gives the step back for the next check. The
+limit's own email does the same: a failed send is tried at the next check,
+not a day later.
 
 ## Stored data
 

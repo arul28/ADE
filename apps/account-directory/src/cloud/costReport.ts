@@ -113,11 +113,16 @@ export async function refreshCostEstimate(env: CloudEnv, awake: ComputerRow[], n
   logCloud("cloud.owner_limit_reached", { limitUsd, costMtdMicros: Math.round(micros) });
   if (now - lastAlert < OWNER_LIMIT_ALERT_REPEAT_MS) return;
   await writeSetting(env, OWNER_LIMIT_ALERT_KEY, String(now), now);
-  await sendCloudEmail(env, {
+  const result = await sendCloudEmail(env, {
     owner: true,
     subject: "ADE Cloud reached your cost limit",
     text: `This month's estimated cost is ${usd(micros)}, at your limit of $${limitUsd}. New computers and disk growth are refused until you raise it. Wakes still work.\nRaise it: update cloud_settings set value = '<dollars>' where key = '${OWNER_LIMIT_KEY}'.`,
   });
+  // A send that failed is tried again at the next check, not a day later.
+  if (result === "failed") {
+    await env.DB.prepare("update cloud_settings set value = ? where key = ? and value = ?")
+      .bind(String(lastAlert), OWNER_LIMIT_ALERT_KEY, String(now)).run();
+  }
 }
 
 /**
@@ -145,12 +150,14 @@ async function alertCostStep(env: CloudEnv, micros: number, limitUsd: number | n
 
   const monthStart = monthStartDay(now);
   // The daily report's cost per account (awake time plus peak disk), summed over the month so far.
+  // Best effort: the step is claimed now, so a failed read must not stop its email.
   const top = await env.DB.prepare(`
     select user_id, sum(cost) as cost from (
       select user_id, cost_micros as cost from cloud_computer_days where day >= ?
       union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ?
     ) group by user_id order by cost desc limit ?
-  `).bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, STEP_ALERT_TOP_ACCOUNTS).all<{ user_id: string; cost: number }>();
+  `).bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, STEP_ALERT_TOP_ACCOUNTS).all<{ user_id: string; cost: number }>()
+    .catch(() => ({ results: [] as Array<{ user_id: string; cost: number }> }));
   const limitLine = limitUsd == null
     ? "No cost limit is set."
     : `Your limit is $${limitUsd}, ${usd(limitUsd * 1_000_000 - micros)} away.`;

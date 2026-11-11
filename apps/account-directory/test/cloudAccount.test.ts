@@ -901,12 +901,22 @@ describe("ADE Cloud account", () => {
       await costChecks([[null, 2]]);
       expect(stepEmails()[1]).toContain("$50");
     }],
+    ["at the limit the limit's own email goes, not a step email", async () => {
+      harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "100", updated_at: NOW });
+      await costChecks([[120, 1]]);
+      expect(stepEmails()).toEqual(["ADE Cloud reached your cost limit"]);
+    }],
+    ["a limit email that fails is sent again by the next check", async () => {
+      harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "100", updated_at: NOW });
+      harness.net.once.push({ match: /POST https:\/\/api\.resend\.com\/emails$/, reply: harness.net.reply({ message: "busy" }, 503) });
+      await costChecks([[120, 1], [120, 2]]);
+    }],
   ])("plans and billing: %s", async (_label, run) => {
     Object.assign(harness.env, MONEY_ENV, { RESEND_API_KEY: "resend-key", CLOUD_ALERT_EMAIL: "owner@example.test" });
     await run();
   });
 
-  // The owner's step emails: every email but the daily report (the day's run is marked done, so only a new day sends one).
+  // The owner's alert emails (steps and the limit): every email but the daily report (the day's run is marked done, so only a new day sends one).
   const stepEmails = () => providerCalls(harness, /POST https:\/\/api\.resend\.com\/emails$/)
     .map((call) => String(call.body?.subject)).filter((subject) => !/daily report/i.test(subject));
   /** This month's settled cost, all on day one. */
