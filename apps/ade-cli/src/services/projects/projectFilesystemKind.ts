@@ -29,19 +29,21 @@ let realpathLookupPending = false;
  * The folder's real path, so a symlink into a network mount is classified by
  * the mount it points at. Asynchronous and bounded: a mount that stalls the
  * lookup leaves the path as the brain opened it, and the late answer is dropped.
+ * `resolved` is false when the path returned is the one opened, unchecked.
  */
-async function resolvedProjectPath(projectRoot: string): Promise<string> {
+async function resolvedProjectPath(projectRoot: string): Promise<{ path: string; resolved: boolean }> {
   const opened = path.resolve(projectRoot);
+  const unresolved = { path: opened, resolved: false };
   // One lookup at a time: a lookup a stalled mount never answers holds a
   // file-system thread until it does, and those threads are shared.
-  if (realpathLookupPending) return opened;
+  if (realpathLookupPending) return unresolved;
   realpathLookupPending = true;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const realpath = fs.promises.realpath(opened)
-    .catch(() => opened)
+    .then((real) => ({ path: real, resolved: true }), () => unresolved)
     .finally(() => { realpathLookupPending = false; });
-  const timedOut = new Promise<string>((resolve) => {
-    timer = setTimeout(() => resolve(opened), REALPATH_WAIT_MS);
+  const timedOut = new Promise<{ path: string; resolved: boolean }>((resolve) => {
+    timer = setTimeout(() => resolve(unresolved), REALPATH_WAIT_MS);
     timer.unref?.();
   });
   try {
@@ -55,13 +57,14 @@ async function resolvedProjectPath(projectRoot: string): Promise<string> {
  * What file system a project folder lives on, for the slow-open log line.
  * Linux only: one asynchronous read of `/proc/self/mountinfo` (kernel memory),
  * matched against the folder's real path (`resolvedProjectPath`). Elsewhere,
- * and on any failure, it says `unknown`.
+ * on any failure, and for a local-looking path that could not be checked, it
+ * says `unknown`.
  */
 export async function projectFilesystemKind(projectRoot: string): Promise<ProjectFilesystemKind> {
   if (process.platform !== "linux") return { kind: "unknown", fsType: null };
   try {
     const mountInfo = await fs.promises.readFile("/proc/self/mountinfo", "utf8");
-    const target = await resolvedProjectPath(projectRoot);
+    const { path: target, resolved } = await resolvedProjectPath(projectRoot);
     let best: { mountPoint: string; fsType: string } | null = null;
     for (const line of mountInfo.split("\n")) {
       const separator = line.indexOf(" - ");
@@ -77,7 +80,8 @@ export async function projectFilesystemKind(projectRoot: string): Promise<Projec
     const fsType = best.fsType.slice(0, 40);
     if (NETWORK_FS_TYPES.has(fsType)) return { kind: "network", fsType };
     if (fsType === "fuse" || fsType === "fuseblk" || fsType.startsWith("fuse.")) return { kind: "fuse", fsType };
-    return { kind: "local", fsType };
+    // An unchecked path can be a symlink into a network mount: not known to be local.
+    return { kind: resolved ? "local" : "unknown", fsType };
   } catch {
     return { kind: "unknown", fsType: null };
   }
