@@ -2700,8 +2700,9 @@ export function registerIpc({
   }
 
   /**
-   * Deny by default: every channel this module registers answers only ADE's
-   * own renderer. The built-in browser, scene frames, preview windows and any
+   * Deny by default: every invoke channel registered through `handle` answers
+   * only ADE's own renderer (the three `ipcMain.on` channels check inline).
+   * The built-in browser, scene frames, preview windows and any
    * future webview never carry the ADE preload, so refusing them here is a
    * second door behind that topology, not a capability check. Declared after
    * the scope/trace wrappers so every registration gets them too.
@@ -3919,7 +3920,7 @@ export function registerIpc({
   handle(
     IPC.appConvertImageToJpeg,
     async (
-      event,
+      _event,
       arg: { data?: string; filename?: string; mimeType?: string | null },
     ): Promise<ConvertImageToJpegResult> => {
       if (typeof arg?.data !== "string" || !arg.data.length) {
@@ -4148,7 +4149,7 @@ export function registerIpc({
    * agent drove. Cached per name in the main process; a miss is null, never an
    * error, because the row simply draws its glyph.
    */
-  handle(IPC.appGetAppIcon, async (event, arg: { name?: unknown }): Promise<string | null> => {
+  handle(IPC.appGetAppIcon, async (_event, arg: { name?: unknown }): Promise<string | null> => {
     // Only ADE's own renderer may ask: the answer says whether an app bundle exists.
     try {
       return await appIconDataUrlByName(typeof arg?.name === "string" ? arg.name : "");
@@ -10184,7 +10185,7 @@ export function registerIpc({
    * Nothing is written to disk and nothing in the URL is a path — the id is a
    * key into an in-memory map that the `ade-scene:` handler reads.
    */
-  handle(IPC.scenePrepare, async (event, arg: { html?: unknown } | string): Promise<string> => {
+  handle(IPC.scenePrepare, async (_event, arg: { html?: unknown } | string): Promise<string> => {
     const html = typeof arg === "string" ? arg : typeof arg?.html === "string" ? arg.html : "";
     if (!html.length) throw new Error("A scene document is required.");
     // The renderer checks its own ceiling before it ever gets here; this is the
@@ -10205,7 +10206,7 @@ export function registerIpc({
    * sanitizes it again. The page lives in its own store, under its own URL
    * host, so no scene URL can ever answer with it.
    */
-  handle(IPC.mcpAppPrepare, async (event, arg: { html?: unknown; csp?: unknown }): Promise<string> => {
+  handle(IPC.mcpAppPrepare, async (_event, arg: { html?: unknown; csp?: unknown }): Promise<string> => {
     const html = typeof arg?.html === "string" ? arg.html : "";
     if (!html.length) throw new Error("An app document is required.");
     if (Buffer.byteLength(html, "utf8") > MCP_APP_LIMITS.maxDocumentBytes) {
@@ -11684,7 +11685,7 @@ export function registerIpc({
     );
   });
 
-  handle(IPC.filesOpenExternalPath, async (event, arg: FilesOpenExternalPathArgs): Promise<FilesOpenExternalPathResult> => {
+  handle(IPC.filesOpenExternalPath, async (_event, arg: FilesOpenExternalPathArgs): Promise<FilesOpenExternalPathResult> => {
     const ctx = ensureFileContext();
     return await withIpcTiming(
       ctx,

@@ -1,5 +1,7 @@
 import { ipcMain } from "electron";
 import { IPC } from "../../../shared/ipc";
+import { getMachineMainLogger } from "../logging/machineLogger";
+import { createTrustedIpcHandle } from "../ipc/trustedRendererSender";
 import { aggregate } from "./aggregator";
 import {
   appendEvent,
@@ -27,8 +29,9 @@ export type PerfRecordEventArgs = {
 };
 
 export function registerPerfIpcHandlers(): void {
+  const handle = createTrustedIpcHandle(getMachineMainLogger());
   ipcMain.removeHandler(IPC.perfGetConfig);
-  ipcMain.handle(IPC.perfGetConfig, (): PerfRunConfigForRenderer => {
+  handle(IPC.perfGetConfig, (): PerfRunConfigForRenderer => {
     const run = getActiveRun();
     return {
       active: run !== null,
@@ -42,7 +45,7 @@ export function registerPerfIpcHandlers(): void {
   });
 
   ipcMain.removeHandler(IPC.perfRecordEvent);
-  ipcMain.handle(IPC.perfRecordEvent, (_event, args: PerfRecordEventArgs) => {
+  handle(IPC.perfRecordEvent, (_event, args: PerfRecordEventArgs) => {
     if (!isRunActive()) return { ok: false, reason: "no-active-run" };
     const ts = typeof args.ts === "number" ? args.ts : Date.now();
     const { kind, ts: _ignored, ...rest } = args;
@@ -52,7 +55,7 @@ export function registerPerfIpcHandlers(): void {
   });
 
   ipcMain.removeHandler(IPC.perfScenarioComplete);
-  ipcMain.handle(IPC.perfScenarioComplete, (_event, args: {
+  handle(IPC.perfScenarioComplete, (_event, args: {
     scenario: string;
     ok: boolean;
     smokeFailures?: string[];
@@ -69,7 +72,7 @@ export function registerPerfIpcHandlers(): void {
   });
 
   ipcMain.removeHandler(IPC.perfFinalize);
-  ipcMain.handle(IPC.perfFinalize, () => {
+  handle(IPC.perfFinalize, () => {
     const run = getActiveRun();
     if (!run) return { ok: false, reason: "no-active-run" };
     stopMetricsSampler();

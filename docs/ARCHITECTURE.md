@@ -1060,7 +1060,7 @@ ade.laneShareGuest.*         # lane sharing, the guest's side: listReceived / op
 
 ### 5.3 Main-process handlers
 
-`apps/desktop/src/main/services/ipc/registerIpc.ts` (~6,400 lines) is the single registration point:
+`apps/desktop/src/main/services/ipc/registerIpc.ts` (~14,400 lines) is the single registration point:
 
 - `ipcMain.handle(IPC.channelName, async (event, args) => { ... })` for invoke channels.
 - Every channel registered through `registerIpc` or `runtimeBridge` is deny-by-default through `createTrustedIpcHandle` (`services/ipc/trustedRendererSender.ts`): only ADE's own renderer in a live ADE window may call it. A closing window is an expected refusal; a live foreign frame is rejected and logged as `ipc.untrusted_sender`. The few channels `main.ts` registers directly make the same check with `isTrustedAdeRendererSender`, and the startup-recovery window keeps its own window-identity gate on its separate preload.
