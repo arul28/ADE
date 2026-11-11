@@ -394,7 +394,8 @@ const delay = (ms: number): Promise<void> => new Promise((resolve) => {
   const timer = setTimeout(resolve, Math.max(0, ms));
   timer.unref?.();
 });
-type BundleMemo = { logins: LoginMemo[]; skipped: Array<{ slot: string; state: ProviderLoginLocalState }> };
+/** `unreadable`: the last read gave no answer (a parse failure); it stays that until the file changes, never "no login". */
+type BundleMemo = { logins: LoginMemo[]; skipped: Array<{ slot: string; state: ProviderLoginLocalState }>; unreadable?: true };
 
 type BundleObservation =
   | { kind: "absent" }
@@ -473,8 +474,12 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     return await Promise.all(bundle.files.map((spec) => statFile(spec.abs, spec.rel)));
   }
 
-  /** Read every present file once, then check that nothing moved under the read. */
-  async function stableRead(bundle: CarryBundle, marks: FileMark[]): Promise<Map<string, Buffer> | null> {
+  /**
+   * Read every present file once, then check that nothing moved under the read.
+   * null: not stable yet (or a file went away under the read). "unreadable": a
+   * present file could not be read (a permission change, a lock).
+   */
+  async function stableRead(bundle: CarryBundle, marks: FileMark[]): Promise<Map<string, Buffer> | "unreadable" | null> {
     const newest = Math.max(...marks.map((mark) => ("missing" in mark ? 0 : mark.mtimeMs)));
     if (now() - newest < STABLE_AGE_MS) return null;
     const contents = new Map<string, Buffer>();
@@ -482,8 +487,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       if ("missing" in marks[index]!) continue;
       try {
         contents.set(spec.rel, await fs.promises.readFile(spec.abs));
-      } catch {
-        return null;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? null : "unreadable";
       }
     }
     const after = await statBundle(bundle);
@@ -505,6 +510,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     }
     const memo = bundleMemos.get(bundle.id);
     if (!forceRead && memo && sameMarks(state.bundles[bundle.id]?.files, marks)) {
+      // An unreadable file stays unreadable until it changes: never "parsed, no login" (that would count as signed out).
+      if (memo.unreadable) return { kind: "unreadable" };
       return { kind: "parsed", logins: memo.logins.map((login) => ({ memo: login, full: null })), skipped: memo.skipped };
     }
     if (bundle.id === GH_BUNDLE_ID && !forceRead && !memo) {
@@ -515,11 +522,13 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     const contents = await stableRead(bundle, marks);
     // Not stable yet: keep the old marks, so the next pass reads it again.
     if (!contents) return { kind: "settling" };
+    // Not readable now: the old marks stay too, so each pass tries again.
+    if (contents === "unreadable") return { kind: "unreadable" };
     if (bundle.id === GH_BUNDLE_ID) await ghTokenStep(contents, JSON.stringify(marks), state);
     const parsed = row.parse!(bundle, contents, ctx);
     state.bundles[bundle.id] = { files: marks };
     if ("unreadable" in parsed) {
-      bundleMemos.set(bundle.id, { logins: [], skipped: [{ slot: bundle.id, state: "unreadable" }] });
+      bundleMemos.set(bundle.id, { logins: [], skipped: [{ slot: bundle.id, state: "unreadable" }], unreadable: true });
       return { kind: "unreadable" };
     }
     const logins = parsed.logins.map((login) => ({
@@ -810,15 +819,15 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
           continue;
         }
         for (const skipped of observation.skipped) setLocal(row.provider, `${bundle.id}:${skipped.slot}`, skipped.state, null);
-        // gh is missing, timed out or failed: the login may still be there, so it does not leave the account.
-        if (bundle.id === GH_BUNDLE_ID && observation.skipped.some((skipped) => skipped.state === "unreadable")) uncertain.add(row.provider);
+        // A slot ADE could not read may still hold a login: only a positive "no login" counts toward the absence rule.
+        if (observation.skipped.some((skipped) => skipped.state === "unreadable")) uncertain.add(row.provider);
         // A login that must go up but came from the memo is read again, in full.
         const needsFull = observation.logins.some((login) => !login.full && decide(login.memo, vault, rows, state, machine).push);
         if (needsFull) {
           observation = await observeBundle(row, bundle, state, origin12, true);
           if (observation.kind !== "parsed") {
             uncertain.add(row.provider);
-            setLocal(row.provider, bundle.id, observation.kind === "absent" ? "not_signed_in" : "settling", null);
+            setLocal(row.provider, bundle.id, observation.kind === "absent" ? "not_signed_in" : observation.kind, null);
             continue;
           }
         }
@@ -2482,8 +2491,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     const bundle = carryRow("copilot").locate!(ctx)[0]!;
     const marks = await statBundle(bundle);
     const contents = "missing" in marks[0]! ? new Map<string, Buffer>() : await stableRead(bundle, marks);
-    // Just changed: the next pass reads it.
-    if (!contents) return;
+    // Just changed, or not readable now: the next pass reads it.
+    if (!contents || contents === "unreadable") return;
     await ghTokenStep(contents, JSON.stringify(marks), state);
     saveState(state);
   }

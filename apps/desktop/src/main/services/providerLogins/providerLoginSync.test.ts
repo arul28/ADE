@@ -620,9 +620,19 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
 
   it("never brings back a sign-in the person signed out of on the origin during a takeover", async () => {
     const { relay, origin, cloud } = await takenOver();
+    // A file that stays unreadable (the CLI half way through a rewrite) is not a sign-out: the sign-in stays.
+    origin.writeCodex("{\"tokens\": {");
+    relay.down.delete("device-origin");
+    await origin.vault.sync();
+    await origin.sync.pass();
+    await elapse(61_000);
+    await origin.sync.pass();
+    await elapse(61_000);
+    await origin.sync.pass();
+    await origin.vault.sync();
+    expect(keyOf(relay.rows).deleted).toBeFalsy();
     // The person signs out on the origin: the file goes. Two passes 60 s apart remove the sign-in from the account.
     fs.rmSync(origin.codexPath);
-    relay.down.delete("device-origin");
     await origin.vault.sync();
     await origin.sync.pass();
     await elapse(61_000);
