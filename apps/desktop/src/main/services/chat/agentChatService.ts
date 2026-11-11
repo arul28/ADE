@@ -15626,18 +15626,42 @@ export function createAgentChatService(args: {
     signal?: AbortSignal,
   ): Promise<{
     entries: AgentChatTranscriptEntry[];
+    /** File position (envelope index) of each entry, aligned with `entries`. */
+    entryPositions: Array<number | null>;
     turnFailures: AgentChatTranscriptTurnFailure[];
-    /** Timestamps of messages too large to page (see `omittedHistoryRowMayHoldMessage`). */
-    omittedMessageTimestamps: string[];
+    /** File positions of messages too large to page (see `omittedHistoryRowMayHoldMessage`). */
+    omittedMessagePositions: number[];
   }> => {
     const envelopes = await readRecentTranscriptEnvelopesForSessionIdAsync(managed.session.id, signal);
+    const positionByEnvelope = new Map(envelopes.map((envelope, index) => [envelope, index]));
+    const entryPositions: Array<number | null> = [];
     return {
-      entries: transcriptEntriesFromEnvelopes(managed.session.id, envelopes),
+      entries: transcriptEntriesFromEnvelopes(managed.session.id, envelopes, {
+        sourceOffsetForEnvelope: (envelope) => positionByEnvelope.get(envelope) ?? null,
+        onEntrySourceOffset: (position) => entryPositions.push(position),
+      }),
+      entryPositions,
       turnFailures: transcriptTurnFailuresFromEnvelopes(managed.session.id, envelopes),
-      omittedMessageTimestamps: envelopes
-        .filter(omittedHistoryRowMayHoldMessage)
-        .map((envelope) => envelope.timestamp),
+      omittedMessagePositions: envelopes.flatMap((envelope, index) =>
+        omittedHistoryRowMayHoldMessage(envelope) ? [index] : []),
     };
+  };
+
+  /**
+   * True when a message too large to page lies inside a read's window, the
+   * last `returned` of the entries at `entryPositions`: after the oldest
+   * returned entry in file order. Positions are any file-ordered measure (an
+   * envelope index, a byte offset); never timestamps, which an unparsed row
+   * may not have.
+   */
+  const omittedMessageInWindow = (
+    omittedPositions: readonly number[],
+    entryPositions: ReadonlyArray<number | null>,
+    returned: number,
+  ): boolean => {
+    if (omittedPositions.length === 0) return false;
+    const oldest = returned > 0 ? entryPositions[entryPositions.length - returned] : null;
+    return oldest == null || omittedPositions.some((position) => position > oldest);
   };
 
   /** The failed turns at or after `oldest` (every one with no oldest), newest kept within the limit. */
@@ -15831,8 +15855,9 @@ export function createAgentChatService(args: {
     flushBufferedText(managed);
     const {
       entries: transcriptEntries,
+      entryPositions,
       turnFailures: allTurnFailures,
-      omittedMessageTimestamps,
+      omittedMessagePositions,
     } = await readTranscriptEntries(managed, signal);
     const fallbackEntries = transcriptEntries.length
       ? transcriptEntries
@@ -15872,9 +15897,11 @@ export function createAgentChatService(args: {
     bounded.reverse();
     // A message too large to page, inside the returned window, is missing from
     // it: say so (a handoff brief then marks its excerpt incomplete).
-    const oldestReturned = bounded[0]?.timestamp;
-    const missingMessage = omittedMessageTimestamps.some((timestamp) =>
-      oldestReturned === undefined || timestamp >= oldestReturned);
+    const missingMessage = omittedMessageInWindow(
+      omittedMessagePositions,
+      transcriptEntries.length ? entryPositions : [],
+      bounded.length,
+    );
     const failureWindow = turnFailuresForWindow(allTurnFailures, bounded, normalizedLimit, failureReserve + remainingChars);
     const turnFailures = failureWindow.turnFailures;
     return {
@@ -16014,14 +16041,13 @@ export function createAgentChatService(args: {
         nextCursor = oldestSourceOffset > 0 ? oldestSourceOffset : null;
       }
     }
-    // A message too large to page, at or after the oldest returned entry, is
-    // missing from this page.
-    const oldestReturnedOffset = entries.length > 0
-      ? convertedEntryOffsets[converted.length - entries.length] ?? null
-      : null;
-    const missingMessage = collected.some((row) =>
-      omittedHistoryRowMayHoldMessage(row.envelope)
-      && (oldestReturnedOffset == null || row.offset >= oldestReturnedOffset));
+    // A message too large to page, inside the returned entries, is missing
+    // from this page.
+    const missingMessage = omittedMessageInWindow(
+      collected.flatMap((row) => omittedHistoryRowMayHoldMessage(row.envelope) ? [row.offset] : []),
+      convertedEntryOffsets,
+      entries.length,
+    );
     const failureWindow = turnFailuresForWindow(pageTurnFailures, entries, normalizedLimit, failureReserve + remainingChars);
     const turnFailures = failureWindow.turnFailures;
     return {
@@ -17413,6 +17439,10 @@ export function createAgentChatService(args: {
     let transcriptPath = await resolveTranscriptPathForSessionId(trimmedId, options.signal);
     if (!transcriptPath) return emptyPage(true);
 
+    // Rows this page shows the client. The pager's sequence-cursor invariant
+    // (a usable next cursor or `hasMore: false`) holds only if it judges rows
+    // by this same predicate.
+    const visibleToClient = (entry: AgentChatEventEnvelope): boolean => !isCodexSubagentTranscriptEnvelope(entry);
     const readPage = async (readPath: string): Promise<TranscriptHistoryPageRead> =>
       beforeSequence != null
         ? await readTranscriptHistoryPageBeforeSequence({
@@ -17421,8 +17451,7 @@ export function createAgentChatService(args: {
           beforeSequence,
           maxBytes: options?.maxBytes,
           signal: options.signal,
-          // The page below drops these, so they cannot be the client's next cursor.
-          isVisible: (entry) => !isCodexSubagentTranscriptEnvelope(entry),
+          isVisible: visibleToClient,
         })
         : await readTranscriptHistoryPage({
           transcriptPath: readPath,
@@ -17450,7 +17479,7 @@ export function createAgentChatService(args: {
       transcriptPath = replacementPath;
       page = await readPage(transcriptPath);
     }
-    const visible = page.envelopes.map((entry) => !isCodexSubagentTranscriptEnvelope(entry));
+    const visible = page.envelopes.map(visibleToClient);
     const offsetsAligned = page.envelopeStartOffsets.length === page.envelopes.length;
     return {
       sessionId: trimmedId,

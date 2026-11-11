@@ -25,9 +25,11 @@ export type RendererMemoryRecord = RendererMemorySnapshot & {
   reportedAtMs: number;
 };
 
-const records = new Map<number, RendererMemoryRecord>();
-/** When each window's current page loaded, so a crash knows how long it was open. */
-const pageStartedAtMs = new Map<number, number>();
+/**
+ * Per window: when its current page loaded (so a crash knows how long it was
+ * open) and that page's last snapshot.
+ */
+const windows = new Map<number, { pageStartedAtMs: number | null; record: RendererMemoryRecord | null }>();
 
 /**
  * A snapshot older than this does not describe the crash: snapshots come
@@ -44,9 +46,9 @@ export function noteRendererMemory(webContentsId: number, raw: unknown): void {
   if (!raw || typeof raw !== "object") return;
   const value = raw as Record<string, unknown>;
   const heapUsedMb = clampNumber(value.heapUsedMb, 1_000_000);
-  const previous = records.get(webContentsId);
-  const peak = Math.max(previous?.peakHeapUsedMb ?? 0, heapUsedMb ?? 0);
-  records.set(webContentsId, {
+  const entry = windows.get(webContentsId);
+  const peak = Math.max(entry?.record?.peakHeapUsedMb ?? 0, heapUsedMb ?? 0);
+  const record: RendererMemoryRecord = {
     heapUsedMb,
     heapLimitMb: clampNumber(value.heapLimitMb, 1_000_000),
     peakHeapUsedMb: peak > 0 ? peak : null,
@@ -55,13 +57,13 @@ export function noteRendererMemory(webContentsId: number, raw: unknown): void {
     largestTranscriptEvents: clampNumber(value.largestTranscriptEvents, 100_000_000) ?? 0,
     replayActive: value.replayActive === true,
     reportedAtMs: Date.now(),
-  });
+  };
+  windows.set(webContentsId, { pageStartedAtMs: entry?.pageStartedAtMs ?? null, record });
 }
 
 /** A page loaded in this window (first load, reload, recovery): it starts a fresh record and peak. */
 export function noteRendererPageStarted(webContentsId: number): void {
-  records.delete(webContentsId);
-  pageStartedAtMs.set(webContentsId, Date.now());
+  windows.set(webContentsId, { pageStartedAtMs: Date.now(), record: null });
 }
 
 /** What is known about a window's renderer at the moment it was lost. */
@@ -77,10 +79,10 @@ export type RendererCrashState = {
 /** The window's state at a crash, then forgotten: the reloaded page starts its own. */
 export function takeRendererCrashState(webContentsId: number): RendererCrashState {
   const now = Date.now();
-  const last = records.get(webContentsId) ?? null;
-  const startedAt = pageStartedAtMs.get(webContentsId) ?? null;
-  records.delete(webContentsId);
-  pageStartedAtMs.delete(webContentsId);
+  const entry = windows.get(webContentsId);
+  const last = entry?.record ?? null;
+  const startedAt = entry?.pageStartedAtMs ?? null;
+  windows.delete(webContentsId);
   const ageMs = last ? Math.max(0, now - last.reportedAtMs) : null;
   return {
     record: last && ageMs != null && ageMs <= STALE_SNAPSHOT_MS ? last : null,
@@ -92,8 +94,7 @@ export function takeRendererCrashState(webContentsId: number): RendererCrashStat
 }
 
 export function forgetRendererMemory(webContentsId: number): void {
-  records.delete(webContentsId);
-  pageStartedAtMs.delete(webContentsId);
+  windows.delete(webContentsId);
 }
 
 function bucketOf(value: number | null, table: BucketTable): string {

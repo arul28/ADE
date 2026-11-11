@@ -239,14 +239,17 @@ describe("createAgentChatService", () => {
       { omittedEventType: "text" as string | undefined, truncated: true },
       { omittedEventType: undefined, truncated: true },
       { omittedEventType: "tool_result", truncated: false },
-    ])("reports a missing message ($omittedEventType) as truncated: $truncated", async ({ omittedEventType, truncated }) => {
+      // An unparsed row whose start did not give a timestamp is dated at the
+      // epoch; it still sits between the two messages in the file.
+      { omittedEventType: undefined, at: "1970-01-01T00:00:00.000Z", truncated: true },
+    ])("reports a missing message ($omittedEventType, $at) as truncated: $truncated", async ({ omittedEventType, at, truncated }) => {
       const { service } = createService();
       const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
       vi.mocked(parseAgentChatTranscript).mockReturnValue([
         { sessionId: session.id, timestamp: "2026-08-01T00:00:01.000Z", sequence: 1, event: { type: "user_message", text: "question" } },
         {
           sessionId: session.id,
-          timestamp: "2026-08-01T00:00:02.000Z",
+          timestamp: at ?? "2026-08-01T00:00:02.000Z",
           event: {
             type: "system_notice",
             noticeKind: "info",

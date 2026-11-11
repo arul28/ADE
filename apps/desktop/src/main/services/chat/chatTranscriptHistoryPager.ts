@@ -234,7 +234,7 @@ const HISTORY_CHANGED_DURING_READ = "chat_history_changed_during_read";
  * row, so it is only a best effort, used for a row too large to parse: its
  * chat (to drop another chat's row) and its timestamp (to date the stand-in).
  */
-const LEADING_ENVELOPE_FIELDS = /^\s*\{"sessionId":"((?:[^"\\]|\\.)*)","timestamp":"([^"\\]{1,64})"/;
+const LEADING_ENVELOPE_FIELDS = /^\s*\{"sessionId":"((?:[^"\\]|\\.)*)","timestamp":"([^"\\]{1,64})"(?:,"event":\{"type":"([A-Za-z0-9_.-]{1,64})")?/;
 
 type OmittedRowFields = {
   timestamp?: string;
@@ -373,7 +373,10 @@ async function readOmittedRowPage(args: {
     const rowSessionId = leading ? decodeJsonStringBody(leading[1]!) : null;
     // A row that names another chat is dropped, as a parsed one would be.
     if (rowSessionId !== null && rowSessionId.trim() !== sessionId) return page;
-    fields = leading ? { timestamp: leading[2]! } : {};
+    // The event's type, when the row starts `"event":{"type":…` as usual, so a
+    // huge tool result is not reported as a possible missing message; else
+    // left unknown (treated as possibly a message).
+    fields = leading ? { timestamp: leading[2]!, ...(leading[3] ? { eventType: leading[3] } : {}) } : {};
   }
 
   const kindLabel = fields.eventType ? OMITTED_ROW_KIND_LABELS[fields.eventType] : undefined;
@@ -564,23 +567,12 @@ export async function readTranscriptHistoryPageBeforeSequence(args: {
     ...(args.signal ? { signal: args.signal } : {}),
   };
   let page = await readTranscriptHistoryPage({ ...pageArgs, beforeOffset });
-  // Invariant for a sequence cursor: the reply holds a row the client can use
-  // as its next cursor (sequenced, older than the cursor, and visible to the
-  // client), or `hasMore: false`. Otherwise the client, whose next request is
-  // its oldest cached sequence, asks for this same page forever. Shapes that
-  // yield no such row: an oversized row (a stand-in has no sequence; another
-  // chat's is dropped), a window of other chats' rows, a run of legacy
-  // unsequenced rows, rows the caller hides (Codex subagent rows), rows a
-  // restarted numbering puts at or above the cursor. Each takes the next
-  // older page, until a usable row or the head.
-  //
-  // Pages read this way carry only visible sequenced rows and stand-ins:
-  // every client that sends a sequence cursor already holds sequenced history
-  // and drops unsequenced rows, and hidden rows are filtered by the caller. Oversized rows stepped over are not parsed (their start
-  // is found and a 1 KB head is read). Worst case, one request scans back to
-  // the nearest usable row, or to the head, which then ends paging
-  // (`hasMore: false`), so it is paid once rather than on every request. The
-  // byte-cursor path does not take this loop.
+  // Invariant: the reply holds a row the client can use as its next cursor
+  // (sequenced, older than the cursor, visible), or `hasMore: false`; else the
+  // client asks for this page forever. Until then, older pages are read and
+  // only their visible sequenced rows and stand-ins are kept. Cost: oversized
+  // rows are stepped over unparsed; at worst one request scans back to the
+  // head, which ends paging, so it is paid once.
   const isVisible = args.isVisible ?? (() => true);
   const hasUsableRow = (read: TranscriptHistoryPageRead) => read.envelopes.some((envelope) =>
     typeof envelope.sequence === "number" && envelope.sequence < beforeSequence && isVisible(envelope));

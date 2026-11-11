@@ -10,6 +10,7 @@ import {
   CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
   clampHistoryPageBytes,
   findTranscriptOffsetForSequence,
+  omittedHistoryRowMayHoldMessage,
   readTranscriptHistoryPage,
   readTranscriptHistoryPageBeforeSequence,
 } from "./chatTranscriptHistoryPager";
@@ -36,11 +37,17 @@ function envelopeLine(args: {
   /** Pad `text` with "x" until the serialized line (incl. trailing \n) is exactly this many BYTES. */
   exactLineBytes?: number;
   targetKind?: string;
+  /** The event's `type` (default "text"). */
+  eventType?: string;
+  /** Serialize `sequence` before `event`, unlike the chat service's envelopes. */
+  sequenceFirst?: boolean;
 }): string {
+  const makeEvent = (text: string) => ({ type: args.eventType ?? "text", text }) as AgentChatEventEnvelope["event"];
   const envelope: AgentChatEventEnvelope = {
     sessionId: args.sessionId ?? SESSION_ID,
     timestamp: "2026-06-10T10:00:00.000Z",
-    event: { type: "text", text: args.text } as AgentChatEventEnvelope["event"],
+    ...(args.sequenceFirst && args.sequence != null ? { sequence: args.sequence } : {}),
+    event: makeEvent(args.text),
     ...(args.sequence != null ? { sequence: args.sequence } : {}),
     ...(args.targetKind ? { provenance: { targetKind: args.targetKind } } : {}),
   };
@@ -48,7 +55,7 @@ function envelopeLine(args: {
   if (args.exactLineBytes != null) {
     const padding = args.exactLineBytes - Buffer.byteLength(line, "utf8");
     if (padding < 0) throw new Error(`fixture line already exceeds ${args.exactLineBytes} bytes`);
-    envelope.event = { type: "text", text: args.text + "x".repeat(padding) } as AgentChatEventEnvelope["event"];
+    envelope.event = makeEvent(args.text + "x".repeat(padding));
     line = `${JSON.stringify(envelope)}\n`;
     expect(Buffer.byteLength(line, "utf8")).toBe(args.exactLineBytes);
   }
@@ -311,6 +318,26 @@ describe("readTranscriptHistoryPage", () => {
       ],
       expected: ["head", "tail"],
     },
+    {
+      // Unparsed, but its usual start names the event's type: not a message.
+      name: "past the 8 MB parse bound, a tool result",
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: 9 * 1024 * 1024, eventType: "tool_result" },
+        { text: "tail", sequence: 3 },
+      ],
+      expected: ["head", "omitted:not-a-message", "tail"],
+    },
+    {
+      // An unusual start leaves the type unknown: possibly a message.
+      name: "past the 8 MB parse bound, with an unusual start",
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: 9 * 1024 * 1024, eventType: "tool_result", sequenceFirst: true },
+        { text: "tail", sequence: 3 },
+      ],
+      expected: ["head", "omitted", "tail"],
+    },
   ])("pages past a row above the page ceiling: $name", async ({ rows, crlf, expected }) => {
     const lines = rows.map((row) => {
       const line = envelopeLine({
@@ -318,6 +345,8 @@ describe("readTranscriptHistoryPage", () => {
         sequence: row.sequence,
         ...("sessionId" in row && row.sessionId ? { sessionId: row.sessionId } : {}),
         ...("bytes" in row && row.bytes ? { exactLineBytes: row.bytes } : {}),
+        ...("eventType" in row && row.eventType ? { eventType: row.eventType } : {}),
+        ...("sequenceFirst" in row && row.sequenceFirst ? { sequenceFirst: true } : {}),
       });
       return crlf ? line.replace(/\n$/, "\r\n") : line;
     });
@@ -344,7 +373,8 @@ describe("readTranscriptHistoryPage", () => {
         expect(envelope.timestamp).toBe("2026-06-10T10:00:00.000Z");
         // Display-only: never the real row's sequence.
         expect(envelope.sequence).toBeUndefined();
-        return "omitted";
+        // "omitted" when transcript reads must report it as a possible message.
+        return omittedHistoryRowMayHoldMessage(envelope) ? "omitted" : "omitted:not-a-message";
       }));
       beforeOffset = page.startOffset;
     }

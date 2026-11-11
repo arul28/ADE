@@ -2,13 +2,14 @@ import type { RendererMemorySnapshot } from "../../shared/types/rendererMemory";
 
 /**
  * What this window holds, sent to main a second after load and then every 30
- * seconds while the window is visible, so a renderer that is killed for running out of memory leaves a
- * record of what was in it. A dead renderer cannot report; main keeps the last
- * snapshot and attaches it to the crash's log line and analytics event.
+ * seconds while the window is visible, so a renderer that is killed for
+ * running out of memory leaves a record of what was in it. A dead renderer
+ * cannot report; main keeps the last snapshot and attaches it to the crash's
+ * log line and analytics event.
  *
  * It rides the 1 s event-loop watchdog in `rendererBoot.tsx` (its first tick,
- * then every 30th), so it adds no timer. Each snapshot reads `performance.memory` and one
- * number per open chat pane: a few microseconds.
+ * then every 30th), so it adds no timer. Each snapshot reads
+ * `performance.memory` and one number per open chat pane: a few microseconds.
  */
 
 const transcriptGauges = new Set<() => number>();

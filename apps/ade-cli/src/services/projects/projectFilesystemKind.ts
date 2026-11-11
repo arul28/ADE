@@ -19,18 +19,40 @@ function unescapeMountPath(value: string): string {
   return value.replace(/\\([0-7]{3})/g, (_match, octal: string) => String.fromCharCode(Number.parseInt(octal, 8)));
 }
 
+/** How long the folder's real path may take before its path as opened is used. */
+const REALPATH_WAIT_MS = 250;
+
+/**
+ * The folder's real path, so a symlink into a network mount is classified by
+ * the mount it points at. Asynchronous and bounded: a mount that stalls the
+ * lookup leaves the path as the brain opened it, and the late answer is dropped.
+ */
+async function resolvedProjectPath(projectRoot: string): Promise<string> {
+  const opened = path.resolve(projectRoot);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const realpath = fs.promises.realpath(opened).catch(() => opened);
+  const timedOut = new Promise<string>((resolve) => {
+    timer = setTimeout(() => resolve(opened), REALPATH_WAIT_MS);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([realpath, timedOut]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * What file system a project folder lives on, for the slow-open log line.
- * Linux only: one asynchronous read of `/proc/self/mountinfo` (kernel memory,
- * never the project's own file system), matched against the folder's path as
- * the brain opened it. The folder itself is not touched, so a stalled network
- * mount cannot stall this. Elsewhere, and on any failure, it says `unknown`.
+ * Linux only: one asynchronous read of `/proc/self/mountinfo` (kernel memory),
+ * matched against the folder's real path (`resolvedProjectPath`). Elsewhere,
+ * and on any failure, it says `unknown`.
  */
 export async function projectFilesystemKind(projectRoot: string): Promise<ProjectFilesystemKind> {
   if (process.platform !== "linux") return { kind: "unknown", fsType: null };
   try {
     const mountInfo = await fs.promises.readFile("/proc/self/mountinfo", "utf8");
-    const target = path.resolve(projectRoot);
+    const target = await resolvedProjectPath(projectRoot);
     let best: { mountPoint: string; fsType: string } | null = null;
     for (const line of mountInfo.split("\n")) {
       const separator = line.indexOf(" - ");
