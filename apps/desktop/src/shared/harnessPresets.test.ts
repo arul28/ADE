@@ -7,6 +7,8 @@ import {
   HARNESS_PRESET_SUBAGENT_INHERIT,
   HarnessPresetImportError,
   exportHarnessPreset,
+  clampEffortToLadder,
+  harnessEffortTiers,
   harnessPresetAgentOverrideNote,
   harnessPresetMatchesQuery,
   importHarnessPreset,
@@ -274,5 +276,30 @@ describe("harnessPresetMatchesQuery", () => {
     expect(harnessPresetMatchesQuery(entry, "claude code")).toBe(true);
     expect(harnessPresetMatchesQuery(entry, "opus-4-5")).toBe(true);
     expect(harnessPresetMatchesQuery(entry, "droid")).toBe(false);
+  });
+});
+
+describe("source-model effort ladders", () => {
+  it("keeps the source model's own tiers and reports an empty intersection distinctly", () => {
+    // A DeepSeek preset in Claude Code shows Low/High/Max, not Claude's six.
+    expect(harnessEffortTiers("claude", ["low", "high", "max"])).toEqual(["low", "high", "max"]);
+    // A source with no sendable tier is an empty ladder, not an unknown one.
+    expect(harnessEffortTiers("claude", ["none", "ultra"])).toEqual([]);
+    // No saved ladder is unknown: the descriptor or harness decides.
+    expect(harnessEffortTiers("claude", undefined)).toBeUndefined();
+    expect(harnessEffortTiers("claude", [])).toBeUndefined();
+  });
+
+  it("keeps a model-defined Codex tier instead of filtering it through a fixed list", () => {
+    expect(harnessEffortTiers("codex", ["persistent"])).toEqual(["persistent"]);
+    expect(clampEffortToLadder("persistent", "codex", ["persistent"])).toBe("persistent");
+  });
+
+  it("clamps a launch effort to the source ladder and the harness", () => {
+    expect(clampEffortToLadder("high", "claude", ["low", "high", "max"])).toBe("high");
+    expect(clampEffortToLadder("ultra", "claude", ["none", "ultra"])).toBeUndefined();
+    expect(clampEffortToLadder("low", "claude", undefined)).toBe("low");
+    expect(clampEffortToLadder("persistent", "claude", ["persistent"])).toBeUndefined();
+    expect(clampEffortToLadder(null, "claude", ["low"])).toBeUndefined();
   });
 });

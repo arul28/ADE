@@ -27,7 +27,7 @@ provider list — and appear as the first tab of every model picker.
 | Harness | One of `claude`, `codex`, `opencode`, `droid`, `pi`, `qwen`, `kimi`, `grok`, `copilot`, `cursor`. |
 | Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), `opencode` (a provider signed in *inside OpenCode* — OpenCode Go, Zen, or anything connected there — named by OpenCode's provider id; a sign-in there that is measured as a subscription-only login routes only inside OpenCode), or `subscription` (older presets: a Claude or Codex subscription in another harness, now served by the provider's default account). An `account` in a harness that is not its own (a Codex account in Droid) runs through ADE's proxy on that account's own login. |
 | Model | A model id. The wizard reads the same live catalog the composer's picker uses, so a runtime-discovered provider (Cursor, OpenCode, Pi, the ACP providers) lists its real models. Free text survives for exactly two cases: a key pointing at a custom OpenAI-compatible endpoint that declares no models of its own, and a first-class key provider that neither the static registry nor the catalog can enumerate (OpenRouter, Google, DeepSeek, Mistral, Groq, Together). |
-| Effort | The model's thinking tier, when it offers tiers. |
+| Effort | The **source model's** thinking-tier ladder, when it offers one. The preset stores that ladder; the editor and every launch filter it to the levels the harness can send, and an older preset with no saved ladder resolves the source's from the runtime catalog. The composer starts at the preset's level and can override it for one chat. |
 | Subagents | A model id, or `Same as main`, and — where the harness takes one — its own thinking level. |
 | Subagent naming | Per-role pins for the types the harness exposes by name (Explore, Plan, general-purpose), each with its own level where the harness takes one. A role that follows the subagents takes their model and level. |
 | Name, accent, logo | The identity a preset is recognised by. The logo is the ADE mark, a provider mark, an uploaded image, or a generated one, kept as a small icon so the list fits the one setting it syncs as. |
@@ -236,10 +236,13 @@ harness — in one click, which is the entire point of saving one.
 
 Selecting a preset sets the composer's thinking level to the preset's, and the
 launch carries that level: a preset saved at High launches at High even when
-the previous pick was on Low. An ordinary model pick still reconciles the level
-against the new model, because there the old level belonged to a model the user
-just left; the composer's own control keeps working either way, so changing the
-level after the pick wins.
+the previous pick was on Low. The menu shows the **source model's** saved ladder
+— DeepSeek's Low/High/Max, not Claude Code's six levels — filtered to the levels
+the harness can send, so an unsupported `none` or `ultra` is neither offered nor
+sent. An ordinary model pick still reconciles the level against the new model,
+because there the old level belonged to a model the user just left; the
+composer's own control keeps working either way, so changing the level after the
+pick wins.
 
 **Switching an open chat.** The picker works the same on a chat that is already
 running. The pick shows on the trigger at once and applies with the next send:

@@ -74,6 +74,7 @@ function draftOf(preset: HarnessPreset): HarnessPresetDraft {
     source: preset.source,
     model: preset.model,
     ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
+    ...(preset.reasoningTiers?.length ? { reasoningTiers: [...preset.reasoningTiers] } : {}),
     subagentModel: preset.subagentModel,
     ...(preset.subagentEffort ? { subagentEffort: preset.subagentEffort } : {}),
     agentOverrides: preset.agentOverrides,
@@ -133,6 +134,7 @@ export function CustomProvidersSection({
       name: starter.name,
       source: starter.group.source,
       model: starter.model.id,
+      ...(starter.model.reasoningTiers?.length ? { reasoningTiers: [...starter.model.reasoningTiers] } : {}),
     }).then(({ preset, accountError }) => {
       if (preset) showToast({ tone: "success", title: `Created ${presetLabel(preset)}`, message: "Pick it from any model picker." });
       warnUnconfirmedAccountWrite(accountError);
@@ -227,6 +229,7 @@ export function CustomProvidersSection({
       model: preset.model,
       source: preset.source,
       ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
+      ...(preset.reasoningTiers?.length ? { reasoningTiers: preset.reasoningTiers } : {}),
     });
     if (!line) return;
     void copyTextToClipboard(line).then((ok) =>

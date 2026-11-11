@@ -15,6 +15,9 @@ import type { createPtyService } from "../pty/ptyService";
 import { providerLoginGate } from "../providerLogins/providerLoginHooks";
 import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { resolveTrackedCliPreset } from "./harnessPresetLaunch";
+import { readPresetLaunchTarget } from "./chatLaunchRoute";
+import { clampEffortToLadder, type HarnessPresetBody } from "../../../shared/harnessPresets";
+import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
 import { resolveTrackedCliUserMcp } from "../mcp/trackedCliUserMcp";
@@ -138,13 +141,29 @@ export async function launchAgentChatCli(
     ? deps.pickAccount?.(providerKey, trackedPreset?.model || arg.model || null) ?? null
     : null;
   const instance = resolveProviderInstanceForLaunch(providerKey, namedInstanceId || pickedInstanceId);
+  const presetTarget = arg.presetId
+    ? readPresetLaunchTarget(arg.presetId, resolveMachineAdeDir())
+    : null;
+  // An explicit null means "the model default" after the renderer rejected a
+  // stale level; only an omitted value takes the preset's saved level.
+  const requestedReasoningEffort = arg.reasoningEffort !== undefined
+    ? arg.reasoningEffort
+    : presetTarget?.reasoningEffort ?? null;
+  // A CLI is launched with a level the source model offers AND the harness can
+  // send. A stale preset, an old draft, or a route with no saved ladder must
+  // not put an unsupported level on the command line.
+  const reasoningEffort = clampEffortToLadder(
+    requestedReasoningEffort,
+    (presetTarget?.harness ?? providerKey) as HarnessPresetBody,
+    presetTarget?.reasoningTiers,
+  ) ?? null;
   const launch = buildTrackedCliLaunchCommand({
     provider,
     permissionMode,
     sessionActivityReportingEnabled: deps.sessionActivityReportingEnabled,
     ...(provider === "claude" ? { sessionId } : {}),
     model: trackedPreset?.model || arg.model || null,
-    reasoningEffort: arg.reasoningEffort ?? null,
+    reasoningEffort,
     ...((provider === "codex" || provider === "claude" || provider === "opencode") && (arg.fastMode ?? arg.codexFastMode) !== undefined
       ? { fastMode: arg.fastMode ?? arg.codexFastMode }
       : {}),
@@ -186,7 +205,7 @@ export async function launchAgentChatCli(
     targetId: provider === "claude" ? sessionId : null,
     permissionMode,
     model: trackedPreset?.model || arg.model || null,
-    reasoningEffort: arg.reasoningEffort ?? null,
+    reasoningEffort,
     fastMode: arg.fastMode ?? arg.codexFastMode ?? null,
     ...(provider === "codex" && arg.fastTier === "ultrafast" ? { fastTier: "ultrafast" as const } : {}),
     ...(instance ? { instanceId: instance.id } : {}),

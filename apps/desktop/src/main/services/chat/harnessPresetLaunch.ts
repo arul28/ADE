@@ -148,6 +148,8 @@ export type HarnessPresetLaunchPlan = {
   /** Always true on a preset plan: the id reaches the harness unrewritten. */
   passthroughModelId: true;
   reasoningEffort?: string;
+  /** The source model's saved thinking levels, when the preset carries them. */
+  reasoningTiers?: string[];
   /** Resolved subagent model, absent when the preset says "same as main". */
   subagentModel?: string;
   /** The subagent thinking level, where the harness accepts one. */
@@ -426,6 +428,7 @@ export function resolveHarnessPresetPlan(
     model: preset.model,
     passthroughModelId: true,
     ...(preset.reasoningEffort?.trim() ? { reasoningEffort: preset.reasoningEffort.trim() } : {}),
+    ...(preset.reasoningTiers?.length ? { reasoningTiers: [...preset.reasoningTiers] } : {}),
     ...(subagentModel && SUBAGENT_MODEL_SUPPORTED.has(harness) ? { subagentModel } : {}),
     ...(preset.subagentEffort?.trim() && SUBAGENT_EFFORT_SUPPORTED.has(harness)
       ? { subagentEffort: preset.subagentEffort.trim() }

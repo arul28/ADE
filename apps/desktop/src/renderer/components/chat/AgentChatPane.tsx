@@ -393,9 +393,9 @@ import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_A
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore, type WorkDraftCloudTarget } from "../../state/appStore";
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
 import { cancelWorkDraftLaneRequest, type WorkDraftModelRequest } from "../../lib/workDraft";
-import { resolveHarnessLaunchTarget, type HarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { reasoningModelIdForLaunchTarget, resolveHarnessLaunchTarget, type HarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import { isDefaultProviderInstanceId } from "../../../shared/types/providerInstances";
-import type { HarnessPreset } from "../../../shared/harnessPresets";
+import { clampEffortToLadder, harnessEffortTiers, type HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle, resolveChatContentWidthPx } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
@@ -7177,6 +7177,24 @@ export function AgentChatPane({
     return ids;
   }, [resolvedPendingInputsBySession, selectedSessionId]), sameSetContents);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
+  /* The exact preset the composer is showing: a running chat's own preset (or
+     the pick still waiting for Send), or the draft's. The launch must read its
+     source-model ladder, not the harness's ladder, or a picked level is lost
+     before the chat is created. */
+  const activeHarnessPresetId = useMemo(() => (!selectedSessionId
+    ? draftHarnessPresetId
+    : sessionRoutePick?.sessionId === selectedSessionId
+      ? sessionRoutePick.presetId
+      : selectedSession?.presetId ?? null), [
+    draftHarnessPresetId,
+    selectedSession?.presetId,
+    selectedSessionId,
+    sessionRoutePick,
+  ]);
+  const activeLaunchTarget = useMemo(
+    () => resolveHarnessLaunchTarget(activeHarnessPresetId, harnessPresets, modelCatalogScopeKey),
+    [activeHarnessPresetId, harnessPresets, modelCatalogScopeKey],
+  );
   const selectedModelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
   const subagentViewCacheKey = subagentView
     ? `subagent:${renderedSessionId ?? "chat-draft"}:${subagentView.taskId}`
@@ -7188,7 +7206,22 @@ export function AgentChatPane({
       reasoningEffort: subagentViewSnapshot?.reasoningEffort,
     }))
     : null;
-  const reasoningTiers = selectedModelDesc?.reasoningTiers ?? EMPTY_REASONING_TIERS;
+  const presetReasoningDescriptor = activeLaunchTarget
+    ? resolveScopedModelDescriptor(
+        reasoningModelIdForLaunchTarget(activeLaunchTarget),
+        modelCatalogScopeKey,
+      )
+    : undefined;
+  const reasoningDescriptor = presetReasoningDescriptor ?? selectedModelDesc;
+  const reasoningTiers = useMemo(
+    () => harnessEffortTiers(
+      activeLaunchTarget?.harness,
+      activeLaunchTarget?.reasoningTiers?.length
+        ? activeLaunchTarget.reasoningTiers
+        : reasoningDescriptor?.reasoningTiers ?? [],
+    ) ?? EMPTY_REASONING_TIERS,
+    [activeLaunchTarget?.harness, activeLaunchTarget?.reasoningTiers, reasoningDescriptor?.reasoningTiers],
+  );
   /**
    * What the reasoning control is DISPLAYING, which is what a launch must send.
    *
@@ -7196,16 +7229,17 @@ export function AgentChatPane({
    * nothing explicit is set, but the launch used to read the unset state — so
    * the trigger said "High" while the request went out on the model default.
    * Resolving it here, at the owner of the value, keeps the two in step without
-   * a presentational component writing its parent's state on mount.
+   * a presentational component writing its parent's state on mount. A Custom
+   * pick reads the source model's ladder; a plain chat reads its own row.
    */
   const effectiveReasoningEffort = useMemo(() => resolveDisplayedReasoningEffort({
     tiers: reasoningTiers,
     explicitEffort: reasoningEffort,
-    rememberedForFamily: selectedModelDesc?.family
-      ? getReasoningForFamily(selectedModelDesc.family) ?? null
+    rememberedForFamily: reasoningDescriptor?.family
+      ? getReasoningForFamily(reasoningDescriptor.family) ?? null
       : null,
-    modelDefault: selectedModelDesc?.defaultReasoningEffort ?? null,
-  }), [getReasoningForFamily, reasoningEffort, reasoningTiers, selectedModelDesc]);
+    modelDefault: reasoningDescriptor?.defaultReasoningEffort ?? null,
+  }), [getReasoningForFamily, reasoningEffort, reasoningDescriptor, reasoningTiers]);
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
       ? (selectedModelDesc.family as LocalProviderFamily)
@@ -13238,7 +13272,13 @@ export function AgentChatPane({
       });
       if (!cliPrompt.trim().length) throw new Error("Enter a prompt or attach context before launching a CLI session.");
       const cliSessionId = provider === "claude" ? createClaudeSessionIdForCliLaunch() : undefined;
-      const reasoningEffort = prepared.reasoningEffort ?? launchTarget.reasoningEffort ?? null;
+      // A stale draft can carry a level the source no longer offers; the CLI
+      // must receive a level the harness can send, or no level at all.
+      const reasoningEffort = clampEffortToLadder(
+        prepared.reasoningEffort !== undefined ? prepared.reasoningEffort : launchTarget.reasoningEffort,
+        launchTarget.harness,
+        launchTarget.reasoningTiers,
+      ) ?? null;
       return {
         profile: provider,
         title: workCliTitleFromPrompt(prepared.text || prepared.finalDisplayText || prepared.finalText, LAUNCH_PROFILE_TITLE[provider]),
@@ -15798,7 +15838,14 @@ export function AgentChatPane({
         const fastModeUpdate = selectedFastModeChanged
           ? { fastMode, fastTier: fastMode && fastTier === "ultrafast" ? "ultrafast" as const : null }
           : {};
-        const reasoningUpdate = selectedReasoningChanged ? { reasoningEffort } : {};
+        const reasoningUpdate = selectedReasoningChanged
+          || (
+            selectedRouteChanged
+            && reasoningEffort !== null
+            && reasoningTiers.includes(reasoningEffort)
+          )
+          ? { reasoningEffort }
+          : {};
         const pendingNativeUpdate = selectedModelChanged
           ? summarizeNativeControls(sessionProvider, nativeControlsRef.current)
           : {};
@@ -16076,6 +16123,7 @@ export function AgentChatPane({
     patchSessionSummary,
     projectTransitionBlocksChat,
     reasoningEffort,
+    reasoningTiers,
     resolvedPendingInputsBySession,
     refreshAvailableModels,
     refreshSessions,
@@ -16519,6 +16567,17 @@ export function AgentChatPane({
     setReasoningEffort(nextReasoningEffort);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
+    // A preset switch with the same model is still a pending route change: the
+    // picker is showing the NEW preset's ladder, so updating the old preset's
+    // session now can clear a level the new preset supports. Send carries the
+    // selected effort with the preset switch instead.
+    const pendingRoute = sessionRoutePickRef.current;
+    if (
+      pendingRoute?.sessionId === selectedSessionId
+      && pendingRoute.presetId !== (selectedSession?.presetId ?? null)
+    ) {
+      return;
+    }
     if (isDeferredComposerModelSelection(
       composerModelIdRef.current,
       selectedSessionModelRef.current.modelId,
@@ -16557,6 +16616,7 @@ export function AgentChatPane({
     patchSessionSummary,
     reasoningEffort,
     refreshSessions,
+    selectedSession?.presetId,
     selectedSessionId,
     sessionMutationKind,
     setFastModeState,
@@ -17388,13 +17448,7 @@ export function AgentChatPane({
     if (parallelDraftActive) return signInProvider;
     if (selectedSessionId) {
       if (!selectedSession) return null;
-      const routePick = sessionRoutePick?.sessionId === selectedSessionId ? sessionRoutePick : null;
-      const target = resolveHarnessLaunchTarget(
-        routePick ? routePick.presetId : selectedSession.presetId ?? null,
-        harnessPresets,
-        modelCatalogScopeKey,
-      );
-      if (target) return routeLoginProvider(target);
+      if (activeLaunchTarget) return routeLoginProvider(activeLaunchTarget);
       // The chat keeps its key and its account through a model change inside
       // the same provider (`launchRouteTransition` drops a key only on a
       // provider change or a new preset; the account moves only with the
@@ -17410,7 +17464,7 @@ export function AgentChatPane({
     if (draftLaunchTarget) return routeLoginProvider(draftLaunchTarget);
     if (draftCredentialId) return null;
     return signInProvider;
-  }, [draftCredentialId, draftLaunchTarget, harnessPresets, modelCatalogScopeKey, parallelDraftActive, selectedSession, selectedSessionId, sessionRoutePick, signInProvider]);
+  }, [activeLaunchTarget, draftCredentialId, draftLaunchTarget, parallelDraftActive, selectedSession, selectedSessionId, signInProvider]);
   /**
    * A draft bound for ADE Cloud, Cursor Cloud or Devin runs elsewhere, and a
    * CLI draft signs in inside the CLI itself, so this computer's login check
@@ -19253,12 +19307,6 @@ export function AgentChatPane({
   const claudeModUi = claudeModUiSessionId
     ? <ClaudeModUi sessionId={claudeModUiSessionId} pin={chatRuntimePin} />
     : null;
-  // The pick shows on the trigger before it is sent; otherwise what the chat runs on.
-  const activeHarnessPresetId = !selectedSessionId
-    ? draftHarnessPresetId
-    : sessionRoutePick?.sessionId === selectedSessionId
-      ? sessionRoutePick.presetId
-      : selectedSession?.presetId ?? null;
   // The composer's model pick, also reachable from outside for a draft
   // (`draftModelSeam.ts`, the onboarding tour's first chat).
   const handleComposerModelChange = (nextModelId: string, options?: ModelPickerSelection) => {

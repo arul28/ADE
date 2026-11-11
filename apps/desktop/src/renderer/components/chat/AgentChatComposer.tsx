@@ -268,8 +268,8 @@ import {
 } from "./chatSurfaceTheme";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
-import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
-import { harnessBodyLabel, type HarnessPresetBody } from "../../../shared/harnessPresets";
+import { reasoningModelIdForLaunchTarget, resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { harnessBodyLabel, harnessEffortTiers, type HarnessPresetBody } from "../../../shared/harnessPresets";
 import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { useVoiceModelInstalled } from "../../hooks/useVoiceModelInstalled";
 import {
@@ -3611,6 +3611,46 @@ function AgentChatComposerImpl({
     ? codexUserShellChipRange(draft)
     : null;
   const plainUserShellChipRange = useRichComposer ? null : userShellChipRange;
+  // Root store: the preset list is an account-scoped preference the project
+  // store only ever holds a stale seed copy of (see `useHarnessPresets`).
+  const harnessPresets = useRootAppStore((state) => state.harnessPresets);
+  // An ad-hoc route id (a Run-in pick) is not in the saved list; it decodes to
+  // "DeepSeek V4.1 Flash · Claude Code" with the harness's mark.
+  const activeHarnessTarget = useMemo(
+    () => resolveHarnessLaunchTarget(activeHarnessPresetId, harnessPresets, modelCatalogScopeKey),
+    [activeHarnessPresetId, harnessPresets, modelCatalogScopeKey],
+  );
+  const activeHarnessPreset = useMemo(
+    () => activeHarnessTarget
+      ? {
+        name: activeHarnessTarget.name,
+        logo: activeHarnessTarget.logo,
+        accentColor: activeHarnessTarget.accentColor,
+        harness: activeHarnessTarget.harness,
+      }
+      : null,
+    [activeHarnessTarget],
+  );
+  // A Custom pick runs another source's model (DeepSeek in Claude Code), so the
+  // effort ladder belongs to the source model, not to the harness's own rows.
+  const reasoningModelId = activeHarnessTarget
+    ? reasoningModelIdForLaunchTarget(activeHarnessTarget)
+    : modelId;
+  const reasoningTiers = activeHarnessTarget?.reasoningTiers;
+  const reasoningDescriptor = useMemo(
+    () => resolveModelDescriptorWithRuntimeCatalog(reasoningModelId, modelCatalogScopeKey)
+      ?? getModelById(reasoningModelId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the revision is the catalog's arrival
+    [modelCatalogScopeKey, reasoningModelId, runtimeCatalogTick],
+  );
+  // Ultrathink belongs to a Claude MODEL, not to the Claude Code harness: a
+  // DeepSeek model in Claude Code must not keep a switch it has no way to use.
+  // Test the source model id, not the catalog id: an OpenCode source can be
+  // named `claude` (opencode/claude/deepseek-v4) without being Claude.
+  const sourceModelIdForUltrathink = activeHarnessTarget?.model?.trim() || reasoningModelId;
+  const sourceReadsUltrathink = !activeHarnessTarget
+    || reasoningDescriptor?.family === "anthropic"
+    || /(?:^|[\/\s_-])claude(?:$|[\/\s_.-])/i.test(sourceModelIdForUltrathink);
   const plainUltrathinkExcludedRanges = useMemo(() => [
     ...plainComposerTokens.map(({ start, end }) => ({ start, end })),
     ...(plainUserShellChipRange ? [plainUserShellChipRange] : []),
@@ -3629,12 +3669,13 @@ function AgentChatComposerImpl({
       || !draft
       || draft.length > MAX_PLAIN_ULTRATHINK_OVERLAY_CHARS
       || !providerReadsUltrathink(sessionProvider)
+      || !sourceReadsUltrathink
       || parallelChatMode
     ) return [];
     return ultrathinkKeywordRanges(draft)
       .filter((range) => !plainUltrathinkExcludedRanges.some((token) => range.start < token.end && token.start < range.end))
       .map((range) => ({ ...range, kind: "ultrathink" as const }));
-  }, [draft, parallelChatMode, plainUltrathinkExcludedRanges, sessionProvider, useRichComposer]);
+  }, [draft, parallelChatMode, plainUltrathinkExcludedRanges, sessionProvider, sourceReadsUltrathink, useRichComposer]);
   const plainOverlayTokenCount = plainComposerTokens.length + plainUltrathinkTokens.length;
   const [plainOverlayScrollTop, setPlainOverlayScrollTop] = useState(0);
   useLayoutEffect(() => {
@@ -4299,7 +4340,9 @@ function AgentChatComposerImpl({
   // "ultrathink" is a word in the message, so the draft is its only state: the
   // switch adds or removes the word, typing it turns the switch on, and sending
   // clears it with the draft. It works the same on any machine.
-  const ultrathinkReadable = providerReadsUltrathink(sessionProvider) && !parallelChatMode;
+  const ultrathinkReadable = providerReadsUltrathink(sessionProvider)
+    && sourceReadsUltrathink
+    && !parallelChatMode;
   const [richUltrathinkActive, setRichUltrathinkActive] = useState(false);
   useLayoutEffect(() => {
     if (useRichComposer && ultrathinkReadable) {
@@ -5970,24 +6013,6 @@ function AgentChatComposerImpl({
     [codexDaybreak, daybreakOffered, onCodexDaybreakChange],
   );
 
-  /* The preset this chat runs on, resolved from the account-scoped list.
-
-     Resolved here rather than passed in already-shaped so a preset the user
-     renames or re-logos is reflected without the chat being reloaded. A
-     presetId that no longer names a preset falls through to the model trigger,
-     which is the same honest degradation the launch path takes. */
-  // Root store: the preset list is an account-scoped preference the project
-  // store only ever holds a stale seed copy of (see `useHarnessPresets`).
-  const harnessPresets = useRootAppStore((state) => state.harnessPresets);
-  // An ad-hoc route id (a Run-in pick) is not in the saved list; it decodes to
-  // "DeepSeek V4.1 Flash · Claude Code" with the harness's mark.
-  const activeHarnessPreset = useMemo(() => {
-    const target = resolveHarnessLaunchTarget(activeHarnessPresetId, harnessPresets, modelCatalogScopeKey);
-    return target
-      ? { name: target.name, logo: target.logo, accentColor: target.accentColor, harness: target.harness }
-      : null;
-  }, [activeHarnessPresetId, harnessPresets, modelCatalogScopeKey]);
-
   /* Where this chat executes.
 
      Running chats only. A draft has no machine yet — it has a CHOICE of one, and
@@ -6387,11 +6412,26 @@ function AgentChatComposerImpl({
   // "highlighted" outline).
   const composerGlowColor = null;
   // Parallel mode runs several models at once, so no one level owns the frame.
+  // A Custom pick's frame follows the same source ladder as its picker.
+  const effortFrameTiers = useMemo(
+    () => (parallelChatMode
+      ? null
+      : harnessEffortTiers(activeHarnessTarget?.harness, reasoningTiers)
+        ?? reasoningDescriptor?.reasoningTiers
+        ?? fastModeDescriptor?.reasoningTiers),
+    [
+      activeHarnessTarget?.harness,
+      fastModeDescriptor?.reasoningTiers,
+      parallelChatMode,
+      reasoningDescriptor?.reasoningTiers,
+      reasoningTiers,
+    ],
+  );
   const composerEffortFrame = useMemo(() => resolveComposerEffortFrame({
     ultrathink: ultrathinkActive,
     effort: parallelChatMode ? null : fastModeEffort,
-    tiers: parallelChatMode ? null : fastModeDescriptor?.reasoningTiers,
-  }), [fastModeDescriptor?.reasoningTiers, fastModeEffort, parallelChatMode, ultrathinkActive]);
+    tiers: effortFrameTiers,
+  }), [effortFrameTiers, fastModeEffort, parallelChatMode, ultrathinkActive]);
 
   const applyPromptHistoryEntry = useCallback((
     entry: AgentChatPromptHistoryEntry,
@@ -8141,7 +8181,9 @@ function AgentChatComposerImpl({
           />
           </PaneTooltip>
           <ReasoningEffortPicker
-            modelId={modelId}
+            modelId={reasoningModelId}
+            reasoningTiers={reasoningTiers}
+            harness={activeHarnessPreset?.harness}
             reasoningEffort={reasoningEffort}
             squeezed={modelHint.chip != null}
             onChange={handleReasoningEffortPickerChange}
@@ -8176,7 +8218,7 @@ function AgentChatComposerImpl({
         />
       ) : null}
     </div>
-  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, runtimeCatalogTick, turnActive, ultrathinkControl]);
+  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, turnActive, ultrathinkControl]);
   const contextUsageDial = useMemo(() => (!parallelChatMode && usageViewModel ? (
 
       <ContextUsageDial
