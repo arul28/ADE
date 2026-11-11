@@ -331,6 +331,29 @@ export function harnessEffortTiers(
 }
 
 /**
+ * The one effort-clamp decision for a launch.
+ *
+ * `tiers === undefined` means the preset did not save a source ladder: the
+ * harness allowlist is the only filter that can be applied. `tiers === []`
+ * means a ladder was saved and none of it is sendable, so no level is valid.
+ * A `null`/empty effort means the model default.
+ */
+export function clampEffortToLadder(
+  effort: string | null | undefined,
+  harness: HarnessPresetBody | null | undefined,
+  tiers: readonly string[] | null | undefined,
+): string | undefined {
+  const normalized = typeof effort === "string" ? effort.trim().toLowerCase() : "";
+  if (!normalized) return undefined;
+  const allowed = harness ? HARNESS_EFFORT_VALUES[harness] : undefined;
+  if (allowed && !allowed.includes(normalized)) return undefined;
+  if (tiers !== undefined && tiers !== null) {
+    return tiers.length && tiers.includes(normalized) ? normalized : undefined;
+  }
+  return normalized;
+}
+
+/**
  * The sentence shown when a built-in agent is pinned to a specific model.
  *
  * Pinning takes the agent off Claude Code's own prompt and onto ADE's copy of

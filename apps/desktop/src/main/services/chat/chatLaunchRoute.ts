@@ -4,7 +4,7 @@
 // rules; the chat service applies them.
 // ---------------------------------------------------------------------------
 
-import { normalizeHarnessPreset, presetLabel, presetSourceLabel, type HarnessPreset } from "../../../shared/harnessPresets";
+import { normalizeHarnessPreset, presetLabel, presetSourceLabel } from "../../../shared/harnessPresets";
 import { decodeRoutePresetId, isRoutePresetId, launchModelIdFor } from "../../../shared/harnessRoutes";
 import type { AgentChatCrossMachineRoute, AgentChatProvider } from "../../../shared/types";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
@@ -22,17 +22,17 @@ export function readPresetLaunchTarget(presetId: string, adeHome: string): {
   reasoningTiers?: string[];
 } | null {
   const route = isRoutePresetId(presetId);
-  const spec = route
-    ? decodeRoutePresetId(presetId)
+  const saved = route
+    ? null
     : readHarnessPresetsFromMachine(adeHome)?.find((preset) => preset.id === presetId) ?? null;
+  const spec = route ? decodeRoutePresetId(presetId) : saved;
   if (!spec) return null;
   const model = spec.model.trim() ? launchModelIdFor(spec.harness, spec.source, spec.model) : "";
-  const reasoningTiers = !route ? (spec as HarnessPreset).reasoningTiers : undefined;
   return {
     harness: spec.harness,
     model,
     ...(spec.reasoningEffort?.trim() ? { reasoningEffort: spec.reasoningEffort.trim() } : {}),
-    ...(reasoningTiers?.length ? { reasoningTiers: [...reasoningTiers] } : {}),
+    ...(saved?.reasoningTiers?.length ? { reasoningTiers: [...saved.reasoningTiers] } : {}),
   };
 }
 

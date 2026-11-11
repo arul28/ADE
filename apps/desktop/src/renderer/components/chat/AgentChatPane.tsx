@@ -395,7 +395,7 @@ import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
 import { cancelWorkDraftLaneRequest, type WorkDraftModelRequest } from "../../lib/workDraft";
 import { reasoningModelIdForLaunchTarget, resolveHarnessLaunchTarget, type HarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import { isDefaultProviderInstanceId } from "../../../shared/types/providerInstances";
-import { harnessEffortTiers, type HarnessPreset } from "../../../shared/harnessPresets";
+import { clampEffortToLadder, harnessEffortTiers, type HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle, resolveChatContentWidthPx } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
@@ -7181,21 +7181,20 @@ export function AgentChatPane({
      the pick still waiting for Send), or the draft's. The launch must read its
      source-model ladder, not the harness's ladder, or a picked level is lost
      before the chat is created. */
-  const activeLaunchTarget = useMemo(() => {
-    const presetId = selectedSessionId
-      ? (sessionRoutePick?.sessionId === selectedSessionId
-        ? sessionRoutePick.presetId
-        : selectedSession?.presetId ?? null)
-      : draftHarnessPresetId;
-    return resolveHarnessLaunchTarget(presetId, harnessPresets, modelCatalogScopeKey);
-  }, [
+  const activeHarnessPresetId = useMemo(() => (!selectedSessionId
+    ? draftHarnessPresetId
+    : sessionRoutePick?.sessionId === selectedSessionId
+      ? sessionRoutePick.presetId
+      : selectedSession?.presetId ?? null), [
     draftHarnessPresetId,
-    harnessPresets,
-    modelCatalogScopeKey,
     selectedSession?.presetId,
     selectedSessionId,
     sessionRoutePick,
   ]);
+  const activeLaunchTarget = useMemo(
+    () => resolveHarnessLaunchTarget(activeHarnessPresetId, harnessPresets, modelCatalogScopeKey),
+    [activeHarnessPresetId, harnessPresets, modelCatalogScopeKey],
+  );
   const selectedModelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
   const subagentViewCacheKey = subagentView
     ? `subagent:${renderedSessionId ?? "chat-draft"}:${subagentView.taskId}`
@@ -7213,15 +7212,16 @@ export function AgentChatPane({
         modelCatalogScopeKey,
       )
     : undefined;
-  const reasoningDescriptor = activeLaunchTarget
-    ? presetReasoningDescriptor ?? selectedModelDesc
-    : selectedModelDesc;
-  const reasoningTiers = harnessEffortTiers(
-    activeLaunchTarget?.harness,
-    activeLaunchTarget?.reasoningTiers?.length
-      ? activeLaunchTarget.reasoningTiers
-      : reasoningDescriptor?.reasoningTiers ?? [],
-  ) ?? EMPTY_REASONING_TIERS;
+  const reasoningDescriptor = presetReasoningDescriptor ?? selectedModelDesc;
+  const reasoningTiers = useMemo(
+    () => harnessEffortTiers(
+      activeLaunchTarget?.harness,
+      activeLaunchTarget?.reasoningTiers?.length
+        ? activeLaunchTarget.reasoningTiers
+        : reasoningDescriptor?.reasoningTiers ?? [],
+    ) ?? EMPTY_REASONING_TIERS,
+    [activeLaunchTarget?.harness, activeLaunchTarget?.reasoningTiers, reasoningDescriptor?.reasoningTiers],
+  );
   /**
    * What the reasoning control is DISPLAYING, which is what a launch must send.
    *
@@ -13272,17 +13272,13 @@ export function AgentChatPane({
       });
       if (!cliPrompt.trim().length) throw new Error("Enter a prompt or attach context before launching a CLI session.");
       const cliSessionId = provider === "claude" ? createClaudeSessionIdForCliLaunch() : undefined;
-      const requestedEffort = prepared.reasoningEffort ?? launchTarget.reasoningEffort ?? null;
-      const allowedTiers = harnessEffortTiers(launchTarget.harness, launchTarget.reasoningTiers);
       // A stale draft can carry a level the source no longer offers; the CLI
       // must receive a level the harness can send, or no level at all.
-      const reasoningEffort = allowedTiers?.length
-        ? (requestedEffort && allowedTiers.includes(requestedEffort)
-          ? requestedEffort
-          : launchTarget.reasoningEffort && allowedTiers.includes(launchTarget.reasoningEffort)
-            ? launchTarget.reasoningEffort
-            : null)
-        : requestedEffort;
+      const reasoningEffort = clampEffortToLadder(
+        prepared.reasoningEffort ?? launchTarget.reasoningEffort,
+        launchTarget.harness,
+        launchTarget.reasoningTiers,
+      ) ?? null;
       return {
         profile: provider,
         title: workCliTitleFromPrompt(prepared.text || prepared.finalDisplayText || prepared.finalText, LAUNCH_PROFILE_TITLE[provider]),
@@ -17432,13 +17428,7 @@ export function AgentChatPane({
     if (parallelDraftActive) return signInProvider;
     if (selectedSessionId) {
       if (!selectedSession) return null;
-      const routePick = sessionRoutePick?.sessionId === selectedSessionId ? sessionRoutePick : null;
-      const target = resolveHarnessLaunchTarget(
-        routePick ? routePick.presetId : selectedSession.presetId ?? null,
-        harnessPresets,
-        modelCatalogScopeKey,
-      );
-      if (target) return routeLoginProvider(target);
+      if (activeLaunchTarget) return routeLoginProvider(activeLaunchTarget);
       // The chat keeps its key and its account through a model change inside
       // the same provider (`launchRouteTransition` drops a key only on a
       // provider change or a new preset; the account moves only with the
@@ -17454,7 +17444,7 @@ export function AgentChatPane({
     if (draftLaunchTarget) return routeLoginProvider(draftLaunchTarget);
     if (draftCredentialId) return null;
     return signInProvider;
-  }, [draftCredentialId, draftLaunchTarget, harnessPresets, modelCatalogScopeKey, parallelDraftActive, selectedSession, selectedSessionId, sessionRoutePick, signInProvider]);
+  }, [activeLaunchTarget, draftCredentialId, draftLaunchTarget, parallelDraftActive, selectedSession, selectedSessionId, signInProvider]);
   /**
    * A draft bound for ADE Cloud, Cursor Cloud or Devin runs elsewhere, and a
    * CLI draft signs in inside the CLI itself, so this computer's login check
@@ -19297,12 +19287,6 @@ export function AgentChatPane({
   const claudeModUi = claudeModUiSessionId
     ? <ClaudeModUi sessionId={claudeModUiSessionId} pin={chatRuntimePin} />
     : null;
-  // The pick shows on the trigger before it is sent; otherwise what the chat runs on.
-  const activeHarnessPresetId = !selectedSessionId
-    ? draftHarnessPresetId
-    : sessionRoutePick?.sessionId === selectedSessionId
-      ? sessionRoutePick.presetId
-      : selectedSession?.presetId ?? null;
   // The composer's model pick, also reachable from outside for a draft
   // (`draftModelSeam.ts`, the onboarding tour's first chat).
   const handleComposerModelChange = (nextModelId: string, options?: ModelPickerSelection) => {

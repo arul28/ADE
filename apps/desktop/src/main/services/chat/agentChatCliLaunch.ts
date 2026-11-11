@@ -16,7 +16,7 @@ import { providerLoginGate } from "../providerLogins/providerLoginHooks";
 import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { resolveTrackedCliPreset } from "./harnessPresetLaunch";
 import { readPresetLaunchTarget } from "./chatLaunchRoute";
-import { harnessEffortTiers, type HarnessPresetBody } from "../../../shared/harnessPresets";
+import { clampEffortToLadder, type HarnessPresetBody } from "../../../shared/harnessPresets";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
@@ -145,18 +145,14 @@ export async function launchAgentChatCli(
     ? readPresetLaunchTarget(arg.presetId, resolveMachineAdeDir())
     : null;
   const requestedReasoningEffort = arg.reasoningEffort ?? presetTarget?.reasoningEffort ?? null;
-  const allowedEffortTiers = harnessEffortTiers(
+  // A CLI is launched with a level the source model offers AND the harness can
+  // send. A stale preset, an old draft, or a route with no saved ladder must
+  // not put an unsupported level on the command line.
+  const reasoningEffort = clampEffortToLadder(
+    requestedReasoningEffort,
     (presetTarget?.harness ?? providerKey) as HarnessPresetBody,
     presetTarget?.reasoningTiers,
-  );
-  // A CLI is launched with a level the source model offers AND the harness can
-  // send. A stale preset or an old draft must not put an unsupported level on
-  // the command line.
-  const reasoningEffort = allowedEffortTiers?.length
-    ? (requestedReasoningEffort && allowedEffortTiers.includes(requestedReasoningEffort)
-      ? requestedReasoningEffort
-      : null)
-    : requestedReasoningEffort;
+  ) ?? null;
   const launch = buildTrackedCliLaunchCommand({
     provider,
     permissionMode,

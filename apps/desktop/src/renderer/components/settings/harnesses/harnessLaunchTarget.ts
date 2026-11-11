@@ -117,8 +117,15 @@ export function resolveHarnessLaunchTarget(
  * id the runtime catalog uses; every other source keeps the launch's own id.
  */
 export function reasoningModelIdForLaunchTarget(
-  target: Pick<HarnessLaunchTarget, "source" | "model">,
+  target: Pick<HarnessLaunchTarget, "harness" | "source" | "model">,
 ): string {
+  // A key-backed row is filed under `<harness>:<credentialId>:<model>` in the
+  // runtime catalog; an OpenCode model keeps its registry id. Saved presets
+  // carry their own ladder, so this lookup matters most for older presets and
+  // ad-hoc key routes.
+  if (target.source.kind === "key") {
+    return `${target.harness}:${target.source.credentialId}:${target.model.trim()}`;
+  }
   return catalogModelIdFor(target.source, target.model);
 }
 

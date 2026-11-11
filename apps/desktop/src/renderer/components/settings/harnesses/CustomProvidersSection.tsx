@@ -229,6 +229,7 @@ export function CustomProvidersSection({
       model: preset.model,
       source: preset.source,
       ...(preset.reasoningEffort ? { reasoningEffort: preset.reasoningEffort } : {}),
+      ...(preset.reasoningTiers?.length ? { reasoningTiers: preset.reasoningTiers } : {}),
     });
     if (!line) return;
     void copyTextToClipboard(line).then((ok) =>

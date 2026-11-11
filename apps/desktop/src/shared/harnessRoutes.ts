@@ -662,11 +662,7 @@ export function sourceModelIdFor(source: HarnessPresetSource, model: string): st
  * pairing passes the source's own id unchanged.
  */
 export function launchModelIdFor(harness: HarnessPresetBody, source: HarnessPresetSource, model: string): string {
-  const id = model.trim();
-  if (harness === "opencode" && source.kind === "opencode" && !id.startsWith("opencode/")) {
-    return encodeOpenCodeRegistryId(source.providerId, id);
-  }
-  return id;
+  return harness === "opencode" ? catalogModelIdFor(source, model) : model.trim();
 }
 
 /**

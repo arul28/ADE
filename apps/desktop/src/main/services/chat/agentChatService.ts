@@ -7509,6 +7509,22 @@ function validateReasoningEffortForTiers(
   return tiers?.length && tiers.includes(normalized) ? normalized : null;
 }
 
+/** The saved level and source ladder a preset contributes to a chat. */
+type PresetReasoningSettings = { effort?: string; tiers?: string[] };
+
+/** Providers whose adapter takes a free-form reasoning level from the runtime. */
+const RUNTIME_EFFORT_PROVIDERS = new Set(["opencode", "cursor", "droid", "pi", "muse"]);
+
+function reasoningSettingsFromTarget(
+  target: { reasoningEffort?: string; reasoningTiers?: string[] } | null,
+): PresetReasoningSettings {
+  if (!target) return {};
+  return {
+    ...(target.reasoningEffort ? { effort: target.reasoningEffort } : {}),
+    ...(target.reasoningTiers?.length ? { tiers: [...target.reasoningTiers] } : {}),
+  };
+}
+
 /**
  * The one effort-validation decision for every session path: the preset's
  * source ladder when there is one, else the harness/descriptor's own ladder.
@@ -7523,11 +7539,18 @@ function validateSessionReasoningEffort(args: {
   if (args.tiers?.length) {
     return validateReasoningEffortForTiers(normalized, args.tiers, args.provider);
   }
-  return args.provider === "codex"
-    ? validateReasoningEffortForDescriptor("codex", normalized, args.descriptor)
-    : args.provider === "claude"
-      ? validateReasoningEffortForDescriptor("claude", normalized, args.descriptor)
-      : validateRuntimeReasoningEffortForDescriptor(normalized, args.descriptor);
+  if (args.provider === "codex") {
+    return validateReasoningEffortForDescriptor("codex", normalized, args.descriptor);
+  }
+  if (args.provider === "claude") {
+    return validateReasoningEffortForDescriptor("claude", normalized, args.descriptor);
+  }
+  if (RUNTIME_EFFORT_PROVIDERS.has(args.provider)) {
+    return validateRuntimeReasoningEffortForDescriptor(normalized, args.descriptor);
+  }
+  // The remaining providers historically followed the Codex descriptor rule;
+  // keep that classification instead of silently widening them.
+  return validateReasoningEffortForDescriptor("codex", normalized, args.descriptor);
 }
 
 function validateRuntimeReasoningEffortForDescriptor(
@@ -13086,27 +13109,17 @@ export function createAgentChatService(args: {
    * The thinking settings a saved preset carries, without building its
    * environment.
    *
-   * A dry resolve (`writeConfig: false`) so nothing is written for a question
-   * about two fields, and a failure is simply "no settings": the caller keeps
-   * the runtime default, which is where a missing preset lands anyway. The
-   * saved tiers travel with the preset, so a stale or missing runtime catalog
-   * cannot change which levels its chats may use.
+   * Read from the saved row, not the launch plan: the level and its ladder do
+   * not need a proxy, a refreshed token, or a written config, and a
+   * temporarily unsupported route must not lose them.
    */
-  const presetReasoningSettings = (
-    presetId: string,
-  ): { effort?: string; tiers?: string[] } => {
-    // Read the saved row, not the resolved launch plan: the level and its
-    // ladder do not need a proxy, a refreshed token, or a written config, and
-    // a temporarily unsupported route must not lose them.
+  const presetReasoningSettings = (presetId: string): PresetReasoningSettings => {
     const target = presetId ? readPresetLaunchTarget(presetId, resolveMachineAdeDir()) : null;
     if (!target) {
       if (presetId) logger.debug("agent_chat.harness_preset_reasoning_missing", { presetId });
       return {};
     }
-    return {
-      ...(target.reasoningEffort ? { effort: target.reasoningEffort } : {}),
-      ...(target.reasoningTiers?.length ? { tiers: [...target.reasoningTiers] } : {}),
-    };
+    return reasoningSettingsFromTarget(target);
   };
 
   const resolveSessionLaunchPlan = (managed: ManagedChatSession): HarnessPresetLaunchPlan | null => {
@@ -13160,6 +13173,15 @@ export function createAgentChatService(args: {
     sessionLaunchPlanCache.set(managed.session.id, { key: cacheKey, plan });
     return plan;
   };
+
+  /**
+   * The preset tiers for a live session. Prefer the cached plan (no file read
+   * on every send); a plan that is null because its route is temporarily
+   * unsupported falls back to the saved preset row, which needs no proxy.
+   */
+  const sessionPresetReasoningTiers = (managed: ManagedChatSession): string[] | undefined =>
+    resolveSessionLaunchPlan(managed)?.reasoningTiers
+    ?? presetReasoningSettings(managed.session.presetId?.trim() ?? "").tiers;
 
   /**
    * Why this chat's turn must not run, or null when it may.
@@ -51595,9 +51617,7 @@ export function createAgentChatService(args: {
        The preset's saved source-model tiers are authoritative: a level the
        source does not advertise is dropped to the model default rather than
        refused or sent. */
-    const presetLaunch: { effort?: string; tiers?: string[] } = requestedPresetId?.trim()
-      ? presetReasoningSettings(requestedPresetId.trim())
-      : {};
+    const presetLaunch: PresetReasoningSettings = reasoningSettingsFromTarget(presetSpec);
     const presetLaunchEffort = !normalizeReasoningEffort(reasoningEffort)
       ? presetLaunch.effort
       : undefined;
@@ -63182,6 +63202,21 @@ export function createAgentChatService(args: {
       Object.assign(managed.deliveredDirectiveKeys, epochDirectiveKeys);
     };
 
+    const sessionPresetTiers = sessionPresetReasoningTiers(managed);
+    const applySessionPresetReasoningEffort = (
+      provider: string,
+      requested: string | null | undefined,
+    ): string | null => {
+      const current = managed.session.reasoningEffort ?? null;
+      if (requested === undefined && !sessionPresetTiers?.length) return current;
+      return validateSessionReasoningEffort({
+        provider,
+        effort: requested ?? current,
+        descriptor: resolveSessionModelDescriptor(managed.session),
+        tiers: sessionPresetTiers,
+      });
+    };
+
     // OpenCode runtime dispatch
     if (managed.session.provider === "opencode") {
       if (!managed.runtime || managed.runtime.kind !== "opencode") {
@@ -63190,8 +63225,8 @@ export function createAgentChatService(args: {
           throw new Error(`OpenCode runtime is not available for session '${managed.session.id}'.`);
         }
       }
-      if (reasoningEffort) {
-        managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
+      if (reasoningEffort !== undefined || sessionPresetTiers?.length) {
+        managed.session.reasoningEffort = applySessionPresetReasoningEffort("opencode", reasoningEffort);
       }
       // Re-sync permission mode so mid-session changes take effect on this turn.
       if (managed.runtime?.kind === "opencode") {
@@ -63225,11 +63260,8 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "cursor") {
       const chatConfig = resolveChatConfig();
-      if (reasoningEffort !== undefined) {
-        managed.session.reasoningEffort = validateRuntimeReasoningEffortForDescriptor(
-          normalizeReasoningEffort(reasoningEffort),
-          resolveSessionModelDescriptor(managed.session),
-        );
+      if (reasoningEffort !== undefined || sessionPresetTiers?.length) {
+        managed.session.reasoningEffort = applySessionPresetReasoningEffort("cursor", reasoningEffort);
       }
       managed.session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(
         managed.session,
@@ -63317,8 +63349,8 @@ export function createAgentChatService(args: {
     }
 
     if (managed.session.provider === "muse") {
-      if (reasoningEffort !== undefined) {
-        managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
+      if (reasoningEffort !== undefined || sessionPresetTiers?.length) {
+        managed.session.reasoningEffort = applySessionPresetReasoningEffort("muse", reasoningEffort);
       }
       if (await runMuseControlCommand(managed, submittedText, { onDispatched, onBackendDispatched })) {
         return;
@@ -63340,8 +63372,11 @@ export function createAgentChatService(args: {
     }
 
     if (isAcpChatProvider(managed.session.provider)) {
-      if (reasoningEffort !== undefined) {
-        managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
+      if (reasoningEffort !== undefined || sessionPresetTiers?.length) {
+        managed.session.reasoningEffort = applySessionPresetReasoningEffort(
+          managed.session.provider,
+          reasoningEffort,
+        );
       }
       assertDevinCloudChatHasRelay(managed.session);
       // A slash command is ordinary prompt text for every ACP dialect: the
@@ -63365,8 +63400,8 @@ export function createAgentChatService(args: {
     }
 
     if (managed.session.provider === "pi") {
-      if (reasoningEffort !== undefined) {
-        managed.session.reasoningEffort = normalizeReasoningEffort(reasoningEffort);
+      if (reasoningEffort !== undefined || sessionPresetTiers?.length) {
+        managed.session.reasoningEffort = applySessionPresetReasoningEffort("pi", reasoningEffort);
       }
       const compactMatch = submittedText.match(/^\/compact(?:\s+([\s\S]*))?$/i);
       if (compactMatch) {
@@ -63411,13 +63446,8 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
-      const nextReasoningEffort = validateReasoningEffortForDescriptor(
-        "codex",
-        normalizeReasoningEffort(reasoningEffort),
-        resolveSessionModelDescriptor(managed.session),
-      );
-      if (nextReasoningEffort) {
-        managed.session.reasoningEffort = nextReasoningEffort;
+      if (reasoningEffort !== undefined || sessionPresetTiers?.length) {
+        managed.session.reasoningEffort = applySessionPresetReasoningEffort("codex", reasoningEffort);
       } else if (!managed.session.reasoningEffort) {
         managed.session.reasoningEffort = resolveCodexReasoningEffortForRuntime(
           null,
@@ -63676,7 +63706,7 @@ export function createAgentChatService(args: {
     reasoningEffort: string | null | undefined,
   ): Promise<void> | null => {
     const prev = managed.session.reasoningEffort ?? null;
-    const presetTiers = presetReasoningSettings(managed.session.presetId?.trim() ?? "").tiers;
+    const presetTiers = sessionPresetReasoningTiers(managed);
     // A send with no level keeps the chat's effort, as before — but still
     // re-check the carried value against a ladder that may have changed under
     // the preset, and clear it instead of sending a level the model dropped.
@@ -74732,11 +74762,11 @@ export function createAgentChatService(args: {
       // level and its source model's tiers, which a chat moving onto it takes
       // unless the update names a level of its own.
       const joinsTargetPreset = joinsPreset && Boolean(nextPresetId);
-      const currentPreset: { effort?: string; tiers?: string[] } = !joinsTargetPreset && managed.session.presetId?.trim()
+      const currentPreset: PresetReasoningSettings = !joinsTargetPreset && managed.session.presetId?.trim()
         ? presetReasoningSettings(managed.session.presetId.trim())
         : {};
-      const nextPreset: { effort?: string; tiers?: string[] } = joinsPreset && nextPresetId
-        ? presetReasoningSettings(nextPresetId)
+      const nextPreset: PresetReasoningSettings = joinsPreset && nextPresetId
+        ? reasoningSettingsFromTarget(requestedPreset)
         : !modelChanged
           ? currentPreset
           : {};
@@ -74898,7 +74928,7 @@ export function createAgentChatService(args: {
     } else if (reasoningEffort !== undefined) {
       const prev = managed.session.reasoningEffort ?? null;
       const requested = normalizeReasoningEffort(reasoningEffort);
-      const presetTiers = presetReasoningSettings(managed.session.presetId?.trim() ?? "").tiers;
+      const presetTiers = sessionPresetReasoningTiers(managed);
       const descriptor = resolveSessionModelDescriptor(managed.session);
       managed.session.reasoningEffort = validateSessionReasoningEffort({
         provider: managed.session.provider,

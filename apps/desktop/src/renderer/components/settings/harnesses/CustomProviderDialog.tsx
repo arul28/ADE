@@ -277,7 +277,7 @@ export function CustomProviderDialog({
         // save it with the preset instead of asking a catalog later.
         ...(pickedTiers?.length ? { reasoningTiers: pickedTiers } : { reasoningTiers: undefined }),
         // An effort the new model does not offer would be rejected at launch.
-        ...(prev.reasoningEffort && !(model.reasoningTiers ?? []).includes(prev.reasoningEffort)
+        ...(prev.reasoningEffort && !(pickedTiers ?? []).includes(prev.reasoningEffort)
           ? { reasoningEffort: undefined }
           : {}),
         // Subagents run on the same endpoint as main, so a pick from another
@@ -298,7 +298,7 @@ export function CustomProviderDialog({
         // because the source changed) follows the main model's tiers.
         ...(prev.subagentEffort
           && (sameGroup || prev.subagentModel === HARNESS_PRESET_SUBAGENT_INHERIT)
-          && !(model.reasoningTiers ?? []).includes(prev.subagentEffort)
+          && !(pickedTiers ?? []).includes(prev.subagentEffort)
           ? { subagentEffort: undefined }
           : {}),
       };
@@ -367,25 +367,7 @@ export function CustomProviderDialog({
       ? savedTiers
       : registryTiers;
   // The source ladder is filtered to what this harness can actually send.
-  const mainTiers = useMemo(
-    () => harnessEffortTiers(draft.harness, sourceTiers) ?? [],
-    [draft.harness, sourceTiers],
-  );
-  const finalDraft: HarnessPresetDraft = {
-    ...draft,
-    name: draft.name.trim() || fallbackName,
-    // Save the source model's ladder with the preset. A preselected or
-    // orphaned model keeps the tiers already on the draft; a reachable model
-    // always contributes its current list.
-    ...(mainTiers.length
-      ? { reasoningTiers: [...mainTiers] }
-      : draft.reasoningTiers?.length
-        ? { reasoningTiers: [...draft.reasoningTiers] }
-        : {}),
-  };
-  const errors = validateHarnessPreset(finalDraft);
-  const canSave = Object.keys(errors).length === 0 && !compactingLogo;
-
+  const mainTiers = harnessEffortTiers(draft.harness, sourceTiers) ?? [];
   // The launcher starts the SAVED preset (the CLI resolves it by id), so it is
   // built from what is saved, not from unsaved edits in this dialog.
   const launcher = editingPresetId
@@ -395,6 +377,7 @@ export function CustomProviderDialog({
       model: initialDraft.model,
       source: initialDraft.source,
       ...(initialDraft.reasoningEffort ? { reasoningEffort: initialDraft.reasoningEffort } : {}),
+      ...(initialDraft.reasoningTiers?.length ? { reasoningTiers: initialDraft.reasoningTiers } : {}),
     })
     : null;
 
@@ -407,18 +390,34 @@ export function CustomProviderDialog({
     return harnessEffortTiers(draft.harness, listed?.reasoningTiers ?? getModelById(model)?.reasoningTiers ?? []) ?? [];
   }, [draft.harness, subagentChoices]);
   // "Same as main" means the level menu belongs to the main model.
-  const subagentEffortTiers = useMemo(
-    () => (draft.subagentModel === HARNESS_PRESET_SUBAGENT_INHERIT
-      ? mainTiers
-      : subagentTiersFor(draft.subagentModel)),
-    [draft.subagentModel, mainTiers, subagentTiersFor],
+  const subagentEffortTiers = draft.subagentModel === HARNESS_PRESET_SUBAGENT_INHERIT
+    ? mainTiers
+    : subagentTiersFor(draft.subagentModel);
+  const agentEffortTiers = (value: string): readonly string[] => (
+    value === ADVANCED_FOLLOWS ? subagentEffortTiers : subagentTiersFor(value)
   );
-  const agentEffortTiers = useCallback(
-    (value: string): readonly string[] => (
-      value === ADVANCED_FOLLOWS ? subagentEffortTiers : subagentTiersFor(value)
-    ),
-    [subagentEffortTiers, subagentTiersFor],
-  );
+  const reconcileEffort = (effort: string | undefined, tiers: readonly string[]): string | undefined =>
+    effort && tiers.includes(effort) ? effort : undefined;
+  const finalReasoningEffort = reconcileEffort(draft.reasoningEffort, mainTiers);
+  const finalSubagentEffort = reconcileEffort(draft.subagentEffort, subagentEffortTiers);
+  const finalAgentEfforts: HarnessPresetDraft["agentEfforts"] = {};
+  for (const [key, effort] of Object.entries(draft.agentEfforts) as Array<[HarnessPresetAgentKey, string]>) {
+    if (!effort) continue;
+    const tiers = agentEffortTiers(draft.agentOverrides[key] ?? ADVANCED_FOLLOWS);
+    if (tiers.includes(effort)) finalAgentEfforts[key] = effort;
+  }
+  const finalDraft: HarnessPresetDraft = {
+    ...draft,
+    name: draft.name.trim() || fallbackName,
+    // Save the filtered source ladder with the preset. No second fallback to
+    // the unfiltered draft: a harness that cannot send a tier must not keep it.
+    ...(mainTiers.length ? { reasoningTiers: mainTiers } : { reasoningTiers: undefined }),
+    ...(finalReasoningEffort ? { reasoningEffort: finalReasoningEffort } : { reasoningEffort: undefined }),
+    ...(finalSubagentEffort ? { subagentEffort: finalSubagentEffort } : { subagentEffort: undefined }),
+    agentEfforts: finalAgentEfforts,
+  };
+  const errors = validateHarnessPreset(finalDraft);
+  const canSave = Object.keys(errors).length === 0 && !compactingLogo;
   // A model that is not in the list anymore (an import, a key removed since)
   // is still named, so the reader knows what the preset points at.
   const orphaned = Boolean(draft.model) && !selected && !reach.loading;

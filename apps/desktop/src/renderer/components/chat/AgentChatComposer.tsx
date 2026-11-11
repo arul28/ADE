@@ -3611,6 +3611,50 @@ function AgentChatComposerImpl({
     ? codexUserShellChipRange(draft)
     : null;
   const plainUserShellChipRange = useRichComposer ? null : userShellChipRange;
+  // Root store: the preset list is an account-scoped preference the project
+  // store only ever holds a stale seed copy of (see `useHarnessPresets`).
+  const harnessPresets = useRootAppStore((state) => state.harnessPresets);
+  // An ad-hoc route id (a Run-in pick) is not in the saved list; it decodes to
+  // "DeepSeek V4.1 Flash · Claude Code" with the harness's mark.
+  const activeHarnessTarget = useMemo(
+    () => resolveHarnessLaunchTarget(activeHarnessPresetId, harnessPresets, modelCatalogScopeKey),
+    [activeHarnessPresetId, harnessPresets, modelCatalogScopeKey],
+  );
+  const activeHarnessPreset = useMemo(
+    () => activeHarnessTarget
+      ? {
+        name: activeHarnessTarget.name,
+        logo: activeHarnessTarget.logo,
+        accentColor: activeHarnessTarget.accentColor,
+        harness: activeHarnessTarget.harness,
+      }
+      : null,
+    [activeHarnessTarget],
+  );
+  // A Custom pick runs another source's model (DeepSeek in Claude Code), so the
+  // effort ladder belongs to the source model, not to the harness's own rows.
+  const reasoningModelId = activeHarnessTarget
+    ? reasoningModelIdForLaunchTarget(activeHarnessTarget)
+    : modelId;
+  const reasoningTiers = activeHarnessTarget?.reasoningTiers;
+  const reasoningDescriptor = useMemo(
+    () => resolveModelDescriptorWithRuntimeCatalog(reasoningModelId, modelCatalogScopeKey)
+      ?? getModelById(reasoningModelId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the revision is the catalog's arrival
+    [modelCatalogScopeKey, reasoningModelId, runtimeCatalogTick],
+  );
+  // Ultrathink belongs to a Claude MODEL, not to the Claude Code harness: a
+  // DeepSeek model in Claude Code must not keep a switch it has no way to use.
+  const decodedReasoningModelId = (() => {
+    try {
+      return decodeURIComponent(reasoningModelId);
+    } catch {
+      return reasoningModelId;
+    }
+  })();
+  const sourceReadsUltrathink = !activeHarnessTarget
+    || reasoningDescriptor?.family === "anthropic"
+    || /(?:^|[\/\s_-])claude(?:$|[\/\s_.-])/i.test(decodedReasoningModelId);
   const plainUltrathinkExcludedRanges = useMemo(() => [
     ...plainComposerTokens.map(({ start, end }) => ({ start, end })),
     ...(plainUserShellChipRange ? [plainUserShellChipRange] : []),
@@ -3629,12 +3673,13 @@ function AgentChatComposerImpl({
       || !draft
       || draft.length > MAX_PLAIN_ULTRATHINK_OVERLAY_CHARS
       || !providerReadsUltrathink(sessionProvider)
+      || !sourceReadsUltrathink
       || parallelChatMode
     ) return [];
     return ultrathinkKeywordRanges(draft)
       .filter((range) => !plainUltrathinkExcludedRanges.some((token) => range.start < token.end && token.start < range.end))
       .map((range) => ({ ...range, kind: "ultrathink" as const }));
-  }, [draft, parallelChatMode, plainUltrathinkExcludedRanges, sessionProvider, useRichComposer]);
+  }, [draft, parallelChatMode, plainUltrathinkExcludedRanges, sessionProvider, sourceReadsUltrathink, useRichComposer]);
   const plainOverlayTokenCount = plainComposerTokens.length + plainUltrathinkTokens.length;
   const [plainOverlayScrollTop, setPlainOverlayScrollTop] = useState(0);
   useLayoutEffect(() => {
@@ -4296,43 +4341,6 @@ function AgentChatComposerImpl({
     captureRichSelection();
   }, [captureRichSelection, onDraftChange, serializeRichEditor, useRichComposer]);
 
-  // Root store: the preset list is an account-scoped preference the project
-  // store only ever holds a stale seed copy of (see `useHarnessPresets`).
-  const harnessPresets = useRootAppStore((state) => state.harnessPresets);
-  // An ad-hoc route id (a Run-in pick) is not in the saved list; it decodes to
-  // "DeepSeek V4.1 Flash · Claude Code" with the harness's mark.
-  const activeHarnessTarget = useMemo(
-    () => resolveHarnessLaunchTarget(activeHarnessPresetId, harnessPresets, modelCatalogScopeKey),
-    [activeHarnessPresetId, harnessPresets, modelCatalogScopeKey],
-  );
-  const activeHarnessPreset = useMemo(
-    () => activeHarnessTarget
-      ? {
-        name: activeHarnessTarget.name,
-        logo: activeHarnessTarget.logo,
-        accentColor: activeHarnessTarget.accentColor,
-        harness: activeHarnessTarget.harness,
-      }
-      : null,
-    [activeHarnessTarget],
-  );
-  // A Custom pick runs another source's model (DeepSeek in Claude Code), so the
-  // effort ladder belongs to the source model, not to the harness's own rows.
-  const reasoningModelId = activeHarnessTarget
-    ? reasoningModelIdForLaunchTarget(activeHarnessTarget)
-    : modelId;
-  const reasoningTiers = activeHarnessTarget?.reasoningTiers;
-  const reasoningDescriptor = useMemo(
-    () => resolveModelDescriptorWithRuntimeCatalog(reasoningModelId, modelCatalogScopeKey)
-      ?? getModelById(reasoningModelId),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the revision is the catalog's arrival
-    [modelCatalogScopeKey, reasoningModelId, runtimeCatalogTick],
-  );
-  // Ultrathink belongs to a Claude MODEL, not to the Claude Code harness: a
-  // DeepSeek model in Claude Code must not keep a switch it has no way to use.
-  const sourceReadsUltrathink = !activeHarnessTarget
-    || reasoningDescriptor?.family === "anthropic"
-    || /(?:^|[\/\s_-])claude(?:$|[\/\s_.-])/i.test(reasoningModelId);
   // "ultrathink" is a word in the message, so the draft is its only state: the
   // switch adds or removes the word, typing it turns the switch on, and sending
   // clears it with the draft. It works the same on any machine.
@@ -6413,8 +6421,15 @@ function AgentChatComposerImpl({
     () => (parallelChatMode
       ? null
       : harnessEffortTiers(activeHarnessTarget?.harness, reasoningTiers)
+        ?? reasoningDescriptor?.reasoningTiers
         ?? fastModeDescriptor?.reasoningTiers),
-    [activeHarnessTarget?.harness, fastModeDescriptor?.reasoningTiers, parallelChatMode, reasoningTiers],
+    [
+      activeHarnessTarget?.harness,
+      fastModeDescriptor?.reasoningTiers,
+      parallelChatMode,
+      reasoningDescriptor?.reasoningTiers,
+      reasoningTiers,
+    ],
   );
   const composerEffortFrame = useMemo(() => resolveComposerEffortFrame({
     ultrathink: ultrathinkActive,
