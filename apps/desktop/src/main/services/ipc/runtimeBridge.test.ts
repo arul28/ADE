@@ -2340,6 +2340,16 @@ describe("registerIpc usage bridge", () => {
     })).rejects.toThrow(/only available to the ADE window/);
   });
 
+  it("treats a closing window as an expected refusal, not an untrusted page", async () => {
+    registerUsageIpc({ openRoots: ["/repo-one"] });
+    const handler = ipcHandlers.get(IPC.appPing)!;
+    const closing = { ...sender(), isDestroyed: () => true };
+    await expect(handler({
+      sender: closing,
+      senderFrame: { url: "file:///tmp/ade/renderer/index.html" },
+    })).rejects.toMatchObject({ adeExpected: "user" });
+  });
+
   it("reads the brain's shared tracker for a window with no project binding", async () => {
     const { pool, dormantTracker } = registerUsageIpc({
       openRoots: ["/repo-one", "/repo-two"],

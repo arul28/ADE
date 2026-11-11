@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AppInfo } from "../../../../shared/types";
 import type { DiskPressureSnapshot } from "../../../../shared/types/storage";
+import { captureError } from "../../../../shared/sentry/capture";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 /**
@@ -31,8 +32,11 @@ export function useThisComputerFacts(): {
       .then((next) => {
         if (!cancelled) setInfo(next);
       })
-      .catch(() => {
-        if (!cancelled) setInfoError(true);
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setInfoError(true);
+          captureError(error, { fingerprint: ["machine-facts", "info"], handled: true });
+        }
       });
     if (isAdeAvailable(ade.storage?.getPressure)) {
       void Promise.resolve()
@@ -40,8 +44,11 @@ export function useThisComputerFacts(): {
         .then((next) => {
           if (!cancelled) setPressure(next);
         })
-        .catch(() => {
-          if (!cancelled) setPressureError(true);
+        .catch((error: unknown) => {
+          if (!cancelled) {
+            setPressureError(true);
+            captureError(error, { fingerprint: ["machine-facts", "pressure"], handled: true });
+          }
         });
     }
     return () => {

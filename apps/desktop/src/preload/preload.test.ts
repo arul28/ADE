@@ -7520,6 +7520,24 @@ describe("per-chat runtime routing", () => {
     )).toHaveLength(2);
   });
 
+  it("forwards skipRecommendation on a batch sync-status read", async () => {
+    const status = { hasUpstream: true, upstreamState: "tracking", ahead: 1, behind: 1, diverged: true, recommendedAction: "pull" };
+    const requests: Array<{ domain?: string; action?: string; args?: unknown }> = [];
+    const { bridge } = await mountBridge(machineB, async (request) => {
+      requests.push(request);
+      if (request.domain === "git" && request.action === "getSyncStatuses") return { "lane-1": status };
+      throw new Error(`unexpected git action: ${request.domain}.${request.action}`);
+    });
+
+    await expect(bridge.git.getSyncStatuses({ laneIds: ["lane-1"], skipRecommendation: true })).resolves.toEqual({
+      "lane-1": status,
+    });
+    expect(requests.find((request) => request.action === "getSyncStatuses")?.args).toMatchObject({
+      laneIds: ["lane-1"],
+      skipRecommendation: true,
+    });
+  });
+
   it("surfaces sync-status runtime outages instead of treating them as missing actions", async () => {
     const { bridge, invoke } = await mountBridge(machineB, async (request) => {
       if (request.action === "getSyncStatuses") {
