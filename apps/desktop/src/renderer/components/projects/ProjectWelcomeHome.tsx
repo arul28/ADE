@@ -566,6 +566,10 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
     window.addEventListener("focus", soon);
     return () => {
       if (timer != null) window.clearTimeout(timer);
+      // A project/binding switch or a new retry invalidates the read in
+      // flight, so its answer cannot land under the new scope.
+      requestRef.current += 1;
+      forcedInFlightRef.current = false;
       unsubscribe?.();
       window.removeEventListener("focus", soon);
     };

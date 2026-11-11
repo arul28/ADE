@@ -212,10 +212,12 @@ async function listUnmergedFiles(worktreePath: string, timeoutMs: number): Promi
 }
 
 /**
- * The safe recommendation for a diverged branch. `pull` is the default; a
- * force-push lease is only suggested when the upstream is already an ancestor
- * of HEAD or a rebase is visibly recent. Two extra git probes, so counts-only
- * callers skip this whole function.
+ * The recommendation for a diverged branch. `pull` is the default. A diverged
+ * branch is by definition one where upstream is not an ancestor (it is behind
+ * and ahead), so the reflog is what distinguishes a lane that rewrote its own
+ * pushed history (a recent rebase) from one that must merge upstream work.
+ * The paste action is a confirm-gated lease push. Counts-only callers skip this
+ * whole function.
  */
 async function recommendDivergedAction(
   worktreePath: string,
@@ -225,10 +227,14 @@ async function recommendDivergedAction(
     cwd: worktreePath,
     timeoutMs: 5_000
   });
-  // A force push is only safe when upstream is already an ancestor of HEAD.
-  // A reflog that happens to mention a rebase is not proof: upstream may hold
-  // commits HEAD does not, and a lease push would replace them.
-  return mergeBaseRes.exitCode === 0 ? "force_push_lease" : "pull";
+  if (mergeBaseRes.exitCode === 0) return "force_push_lease";
+  const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
+    cwd: worktreePath,
+    timeoutMs: 5_000
+  });
+  const hasRecentRebase = reflogRes.exitCode === 0 &&
+    reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
+  return hasRecentRebase ? "force_push_lease" : "pull";
 }
 
 export function createGitOperationsService({
