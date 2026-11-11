@@ -318,7 +318,8 @@ export const HARNESS_EFFORT_VALUES: Partial<Record<HarnessPresetBody, readonly s
   codex: ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
 };
 
-/** The source tiers a harness can send, or undefined when it has no such tiers. */
+/** The source tiers a harness can send. `undefined` means no source ladder was
+ * provided; an empty array means a ladder exists but none of it is sendable. */
 export function harnessEffortTiers(
   harness: HarnessPresetBody | null | undefined,
   tiers: readonly string[] | null | undefined,
@@ -326,8 +327,7 @@ export function harnessEffortTiers(
   if (!tiers?.length) return undefined;
   const allowed = harness ? HARNESS_EFFORT_VALUES[harness] : undefined;
   if (!allowed) return [...tiers];
-  const out = tiers.filter((tier) => allowed.includes(tier));
-  return out.length ? out : undefined;
+  return tiers.filter((tier) => allowed.includes(tier));
 }
 
 /**

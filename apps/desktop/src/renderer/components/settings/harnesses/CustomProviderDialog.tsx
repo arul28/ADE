@@ -356,14 +356,14 @@ export function CustomProviderDialog({
   const registryTiers = draft.model ? getModelById(draft.model)?.reasoningTiers ?? [] : [];
   // The SOURCE row is the model this preset will actually call. Its ladder wins
   // over the static registry's, which can describe a different provider's
-  // version of the same id (DeepSeek in Claude Code is the usual case). An
-  // orphaned edit keeps the ladder already saved on the preset rather than
-  // replacing it with a same-id row from another provider.
+  // version of the same id (DeepSeek in Claude Code is the usual case). A row
+  // with no ladder of its own — an orphaned edit or a stale/empty catalog —
+  // must not erase the snapshot saved on the preset.
   const listedTiers = selected?.model.reasoningTiers ?? [];
   const savedTiers = draft.reasoningTiers ?? [];
   const sourceTiers = listedTiers.length > 0
     ? listedTiers
-    : !selected && savedTiers.length > 0
+    : savedTiers.length > 0
       ? savedTiers
       : registryTiers;
   // The source ladder is filtered to what this harness can actually send.

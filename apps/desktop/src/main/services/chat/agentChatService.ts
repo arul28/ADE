@@ -7569,11 +7569,19 @@ function resolveCodexReasoningEffortForRuntime(
   primary: string | null | undefined,
   fallback?: string | null,
   descriptor?: ModelDescriptor | null,
-  options?: { allowDefault?: boolean },
+  options?: { allowDefault?: boolean; tiers?: readonly string[] | null },
 ): string | null {
-  const explicit =
-    validateReasoningEffortForDescriptor("codex", normalizeReasoningEffort(primary), descriptor)
-    ?? validateReasoningEffortForDescriptor("codex", normalizeReasoningEffort(fallback), descriptor);
+  const check = (value: string | null | undefined): string | null => {
+    const normalized = normalizeReasoningEffort(value);
+    if (!normalized) return null;
+    // A saved preset ladder is a snapshot of the source model and survives a
+    // stale catalog. It is authoritative for its chats; the descriptor is the
+    // fallback for a chat with no preset.
+    return options?.tiers?.length
+      ? validateReasoningEffortForTiers(normalized, options.tiers, "codex")
+      : validateReasoningEffortForDescriptor("codex", normalized, descriptor);
+  };
+  const explicit = check(primary) ?? check(fallback);
   if (explicit) return explicit;
   // A preset owns this session's ladder. When its source tiers dropped the
   // picked level, leave the request field unset so the model default applies
@@ -46892,11 +46900,12 @@ export function createAgentChatService(args: {
       );
     }
     const descriptor = resolveSessionModelDescriptor(managed.session);
+    const presetTiers = sessionPresetReasoningTiers(managed);
     const reasoningEffort = resolveCodexReasoningEffortForRuntime(
       managed.session.reasoningEffort,
       null,
       descriptor,
-      { allowDefault: !sessionPresetReasoningTiers(managed)?.length },
+      { allowDefault: !presetTiers?.length, tiers: presetTiers },
     );
     managed.session.reasoningEffort = reasoningEffort;
     const dynamicTools = refreshCodexDynamicTools(managed, runtime);
@@ -63489,11 +63498,12 @@ export function createAgentChatService(args: {
             // `thread/resume` has no dynamicTools field; refresh ADE's local
             // handler map while leaving tool registration to the original thread.
             refreshCodexDynamicTools(managed, runtime);
+            const presetTiers = sessionPresetReasoningTiers(managed);
             const resumeReasoningEffort = resolveCodexReasoningEffortForRuntime(
               managed.session.reasoningEffort,
               readPersistedState(sessionId)?.reasoningEffort,
               resolveSessionModelDescriptor(managed.session),
-              { allowDefault: !sessionPresetReasoningTiers(managed)?.length },
+              { allowDefault: !presetTiers?.length, tiers: presetTiers },
             );
             managed.session.reasoningEffort = resumeReasoningEffort;
             const resumeResponse = await resumeCodexThread<CodexThreadLifecycleResponse>(runtime, {
@@ -67860,11 +67870,12 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
+      const presetTiers = sessionPresetReasoningTiers(managed);
       managed.session.reasoningEffort = resolveCodexReasoningEffortForRuntime(
         managed.session.reasoningEffort,
         persisted?.reasoningEffort,
         resolveSessionModelDescriptor(managed.session),
-        { allowDefault: !sessionPresetReasoningTiers(managed)?.length },
+        { allowDefault: !presetTiers?.length, tiers: presetTiers },
       );
       const threadId = persisted?.threadId ?? managed.session.threadId;
       if (threadId) {
@@ -78081,11 +78092,12 @@ export function createAgentChatService(args: {
         // `thread/resume` has no dynamicTools field; refresh ADE's local
         // handler map while leaving tool registration to the original thread.
         refreshCodexDynamicTools(managed, runtime);
+        const presetTiers = sessionPresetReasoningTiers(managed);
         const resumeReasoningEffort = resolveCodexReasoningEffortForRuntime(
           managed.session.reasoningEffort,
           readPersistedState(managed.session.id)?.reasoningEffort,
           resolveSessionModelDescriptor(managed.session),
-          { allowDefault: !sessionPresetReasoningTiers(managed)?.length },
+          { allowDefault: !presetTiers?.length, tiers: presetTiers },
         );
         managed.session.reasoningEffort = resumeReasoningEffort;
         const resumeResponse = await resumeCodexThread<CodexThreadLifecycleResponse>(runtime, {

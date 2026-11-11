@@ -279,7 +279,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   );
 
   const tiers = useMemo(() => {
-    const source = reasoningTiers?.length
+    const source = reasoningTiers !== undefined
       ? reasoningTiers
       : descriptor?.reasoningTiers ?? [];
     return harnessEffortTiers(harness, source) ?? [];
