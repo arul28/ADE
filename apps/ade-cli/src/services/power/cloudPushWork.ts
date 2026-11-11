@@ -71,17 +71,17 @@ export async function pushCloudComputerWork(args: {
       const lanes = await runtime.laneService.list({ includeArchived: true, includeStatus: false });
       // One fetch of every remote per project before the read (every lane
       // shares its refs), in a push and in a check alike: a branch
-      // force-pushed on GitHub must not leave a stale tracking ref that makes
-      // unpushed commits read as saved. No pruning: a branch merged and
-      // deleted on GitHub keeps its ref, so its squashed commits read as saved
-      // and are never pushed back. A fetch that fails marks every lane of the
-      // project `failed`, so the computer is kept and delete says ADE couldn't
-      // read the work.
+      // force-pushed or deleted on GitHub must not leave a stale tracking ref
+      // that makes unpushed commits read as saved. A branch merged and
+      // deleted on GitHub reads as saved because its changes are in the base
+      // (`readUnsavedWork`), so it is not pushed back. A fetch that fails
+      // marks every lane of the project `failed`, so the computer is kept and
+      // delete says ADE couldn't read the work.
       let fetchFailed = false;
       const anchor = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0];
       if (anchor) {
         try {
-          await runtime.gitService.fetch({ laneId: anchor.id, keepDeleted: true, signal: AbortSignal.timeout(FETCH_STEP_TIMEOUT_MS) });
+          await runtime.gitService.fetch({ laneId: anchor.id, allRemotes: true, signal: AbortSignal.timeout(FETCH_STEP_TIMEOUT_MS) });
         } catch (error) {
           fetchFailed = true;
           args.logger?.warn("cloud.push_work_fetch_failed", { error: error instanceof Error ? error.message : String(error) });

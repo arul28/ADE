@@ -582,11 +582,12 @@ Each call is account level: it names a computer of the account, never a pin.
   measured against the remotes, not its own base). A lane whose state can't be
   read reports `failed`, never `clean`. It changes nothing and uses the free
   `push_work` wake. Both the check and a push first run one
-  `git fetch --all --no-prune` per project (60 s), so a branch force-pushed on
-  GitHub doesn't leave a stale tracking ref that hides unpushed commits. No
-  pruning: a branch merged and deleted on GitHub keeps its ref, so its squashed
-  commits read as saved and are never pushed back (a branch deleted on GitHub
-  without being merged reads as saved too). A fetch that fails marks that
+  `git fetch --all --prune` per project (60 s), so a branch force-pushed or
+  deleted on GitHub doesn't leave a stale tracking ref that hides unpushed
+  commits. Commits whose changes are all in the remote's base branch already
+  (`git merge-tree` of the lane into it changes nothing) count as saved, so a
+  branch squash-merged and deleted on GitHub is not pushed back; one deleted
+  without being merged reads as unsaved and is pushed again. A fetch that fails marks that
   project's lanes `failed`: the computer is kept, and delete says ADE couldn't
   read the work.
 - **Delete lane.** The computer goes, and the lane with it. ADE never refuses

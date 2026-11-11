@@ -1920,7 +1920,7 @@ Android Emulator
     ANDROID_NOT_RUNNING              ade android start first
     ANDROID_LOW_MEMORY               free memory, or ask the user, then start --force
     ANDROID_LOW_DISK                 the disk can't hold a new device's data; tell the user
-                                     (on ADE Cloud the Android pane offers Grow the disk)
+                                     (where the Android pane offers Grow the disk, they use it)
     ANDROID_ELEMENT_NOT_FOUND        ade android snapshot, then aim again
     ANDROID_BUILD_FAILED             read the Gradle output, fix the build
     ANDROID_SYSTEM_IMAGE_IN_USE      an AVD uses that image; stop its emulator first

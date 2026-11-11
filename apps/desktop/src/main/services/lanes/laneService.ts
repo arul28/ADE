@@ -9356,8 +9356,11 @@ export function createLaneService({
      * uncommitted or untracked file. `unpushedCommits` counts commits on the
      * branch, and on what the folder has checked out, that no remote-tracking
      * branch has: a lane whose branch is its base (the primary lane) is
-     * measured against GitHub, not against itself. Throws when either can't
-     * be read, so "unreadable" is never taken for "nothing to save".
+     * measured against GitHub, not against itself. Commits whose changes are
+     * already all in the remote's base branch count as saved: a branch that
+     * was squash-merged and then deleted on GitHub has no tracking ref left,
+     * but nothing on it would be lost. Throws when either count can't be
+     * read, so "unreadable" is never taken for "nothing to save".
      */
     async readUnsavedWork(laneId: string): Promise<{ dirty: boolean; unpushedCommits: number }> {
       const row = getLaneRow(laneId);
@@ -9377,11 +9380,37 @@ export function createLaneService({
         const reason = result.timedOut ? "timed out" : result.stderr.trim().split(/\r?\n/, 1)[0] || `exit ${result.exitCode}`;
         throw new Error(`ADE couldn't count the commits on ${ref} that GitHub doesn't have (${reason}).`);
       };
+      // The remote's base branch, where a merged lane's changes landed.
+      const baseOnRemote = async (cwd: string): Promise<string | null> => {
+        const baseName = row.base_ref ? branchNameForDelete(row.base_ref, "origin") : "";
+        for (const candidate of ["refs/remotes/origin/HEAD", ...(baseName ? [`refs/remotes/origin/${baseName}`] : [])]) {
+          const found = await runGit(["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`], { cwd, timeoutMs: 8_000 });
+          if (found.exitCode === 0 && found.stdout.trim()) return found.stdout.trim();
+        }
+        return null;
+      };
+      // Merging `ref` into the base changes nothing: every change on it is already on GitHub.
+      // Any failure (no base, a conflict, a git without `merge-tree --write-tree`) keeps the count.
+      const changesAlreadyInBase = async (ref: string, cwd: string): Promise<boolean> => {
+        const base = await baseOnRemote(cwd);
+        if (!base) return false;
+        const [merged, baseTree] = await Promise.all([
+          runGit(["merge-tree", "--write-tree", base, ref], { cwd, timeoutMs: 8_000 }),
+          runGit(["rev-parse", `${base}^{tree}`], { cwd, timeoutMs: 8_000 }),
+        ]);
+        if (merged.exitCode !== 0 || baseTree.exitCode !== 0) return false;
+        const tree = merged.stdout.trim().split(/\r?\n/, 1)[0] ?? "";
+        return tree.length > 0 && tree === baseTree.stdout.trim();
+      };
+      const unsavedCommits = async (ref: string, cwd: string): Promise<number> => {
+        const count = await notOnRemotes(ref, cwd);
+        return count > 0 && (await changesAlreadyInBase(ref, cwd)) ? 0 : count;
+      };
       const branch = row.branch_ref ? branchNameForDelete(row.branch_ref, "origin") : "";
       const [dirty, branchCommits, folderCommits] = await Promise.all([
         hasFolder ? readWorktreeDirty(row.worktree_path) : false,
-        branch ? notOnRemotes(`refs/heads/${branch}`, projectRoot) : 0,
-        hasFolder ? notOnRemotes("HEAD", row.worktree_path) : 0,
+        branch ? unsavedCommits(`refs/heads/${branch}`, projectRoot) : 0,
+        hasFolder ? unsavedCommits("HEAD", row.worktree_path) : 0,
       ]);
       return { dirty, unpushedCommits: Math.max(branchCommits, folderCommits) };
     },

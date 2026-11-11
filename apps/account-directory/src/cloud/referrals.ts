@@ -210,12 +210,19 @@ async function redeem(request: Request, env: CloudEnv, userId: string, ctx: Ctx)
     return refused(env, userId, "mutual", ctx);
   }
   if (ctx.now >= (await accountCreatedAt(env, account, ctx.now)) + ENTER_WINDOW_MS) return refused(env, userId, "too_late", ctx);
-  // The primary key keeps one referrer however many redeems race here.
+  // The primary key keeps one referrer however many redeems race here, and
+  // the reverse-pair check runs inside the same statement, so two accounts
+  // entering each other's codes at once can't both be saved.
   const inserted = await env.DB.prepare(`
-    insert into cloud_referrals (friend_user_id, referrer_user_id, entered_at, state) values (?, ?, ?, 'pending')
+    insert into cloud_referrals (friend_user_id, referrer_user_id, entered_at, state)
+    select ?, ?, ?, 'pending'
+    where not exists (select 1 from cloud_referrals where friend_user_id = ? and referrer_user_id = ?)
     on conflict (friend_user_id) do nothing
-  `).bind(userId, owner.user_id, ctx.now).run();
-  if ((inserted.meta.changes ?? 0) !== 1) return refused(env, userId, "already_referred", ctx);
+  `).bind(userId, owner.user_id, ctx.now, owner.user_id, userId).run();
+  if ((inserted.meta.changes ?? 0) !== 1) {
+    const mutual = await env.DB.prepare("select 1 as mutual from cloud_referrals where friend_user_id = ? and referrer_user_id = ?").bind(owner.user_id, userId).first();
+    return refused(env, userId, mutual ? "mutual" : "already_referred", ctx);
+  }
   logCloud("cloud.referral.code_accepted", { userId, referrerUserId: owner.user_id });
   captureCloudReferral(env, ctx.waitUntil, userId, { step: "code_entered", result: "accepted" }, "accepted", ctx.now);
   await reportManyFriendsOnOneComputer(env, userId);
