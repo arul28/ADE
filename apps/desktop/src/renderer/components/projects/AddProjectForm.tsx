@@ -331,12 +331,6 @@ export function AddProjectForm({
 
   const localNeedsFolder = cloneableTicked.some((machine) => machine.isLocal && !parentByMachine[machine.machineId]);
   const canAdd = Boolean(repoKey) && folderName.length > 0 && cloneableTicked.length > 0 && !localNeedsFolder;
-  const openOnlyExisting =
-    Boolean(repoKey)
-    && cloneableTicked.length === 0
-    && openOn != null
-    && rowState(openOn).kind === "existing";
-
   const openTarget = useCallback(
     async (target: CopyOpenTarget) => {
       try {
@@ -367,12 +361,26 @@ export function AddProjectForm({
     };
   };
 
+  /**
+   * The copy a row can open now: one that was there, or one this form
+   * finished cloning (a failed open of it can be tried again).
+   */
+  const openableTarget = (machine: CopyMachine, state: RowState): CopyOpenTarget | null => {
+    if (state.kind === "existing") return existingTarget(machine, state.copy);
+    if (state.kind === "job" && state.job.status === "ready") return state.job.result;
+    return null;
+  };
+  const openOnlyCopy =
+    Boolean(repoKey)
+    && cloneableTicked.length === 0
+    && openOn != null
+    && openableTarget(openOn, rowState(openOn)) != null;
+
   const handleAdd = () => {
     if (!repoKey) return;
     setOpenError(null);
-    if (openOnlyExisting && openOn) {
-      const state = rowState(openOn);
-      const target = state.kind === "existing" ? existingTarget(openOn, state.copy) : null;
+    if (openOnlyCopy && openOn) {
+      const target = openableTarget(openOn, rowState(openOn));
       if (target) void openTarget(target);
       return;
     }
@@ -494,7 +502,7 @@ export function AddProjectForm({
             </>
           )}
         </div>
-        {repoKey && !submitted && cloneableTicked.length === 0 && !openOnlyExisting ? (
+        {repoKey && !submitted && cloneableTicked.length === 0 && !openOnlyCopy ? (
           <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
             Pick at least one machine.
           </span>
@@ -543,14 +551,14 @@ export function AddProjectForm({
         <button
           type="button"
           style={primaryButton({
-            opacity: canAdd || openOnlyExisting ? 1 : 0.55,
-            cursor: canAdd || openOnlyExisting ? "pointer" : "not-allowed",
+            opacity: canAdd || openOnlyCopy ? 1 : 0.55,
+            cursor: canAdd || openOnlyCopy ? "pointer" : "not-allowed",
             minWidth: 120,
           })}
-          disabled={!canAdd && !openOnlyExisting}
+          disabled={!canAdd && !openOnlyCopy}
           onClick={handleAdd}
         >
-          {openOnlyExisting ? "Open" : "Add project"}
+          {openOnlyCopy ? "Open" : "Add project"}
         </button>
       </div>
     </div>

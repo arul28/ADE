@@ -36,6 +36,7 @@ import {
   laneShareEventBeforeCutoff,
   laneShareHideMachines,
   laneShareHideModels,
+  laneShareScrubEmbeddedHistory,
   laneShareScrubFileResponse,
   laneShareScrubOwnerOnlyCards,
 } from "./laneShareGuestScrub";
@@ -130,7 +131,11 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     };
     const cutoff = laneShareHistoryCutoffFor(role);
     if (cutoff == null) return out(payload);
-    if (type === "chat_event") return laneShareEventBeforeCutoff(payload, cutoff) ? blocked() : out(payload);
+    if (type === "chat_event") {
+      if (laneShareEventBeforeCutoff(payload, cutoff)) return blocked();
+      // A fresh event can carry a whole stored list: each item by its own time.
+      return out(laneShareScrubEmbeddedHistory(payload, cutoff) as TPayload);
+    }
     // A tool result can belong to a turn from before the share; it carries no time.
     if (type === "chat_tool_result") return blocked();
     if (type === "chat_subscribe" || type === "chat_history") {
@@ -311,7 +316,7 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
         result: filterLaneShareActionHistory(
           action,
           filterLaneShareHistory(
-            filterLaneShareGuestOwnItems(action, filterLaneShareGuestCommandResult(action, created, role), role),
+            filterLaneShareGuestOwnItems(action, filterLaneShareGuestCommandResult(action, created, role, resolveLaneShareSession), role),
             cutoff,
           ),
           cutoff,

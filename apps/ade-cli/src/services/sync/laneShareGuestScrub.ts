@@ -275,6 +275,51 @@ function mapRows(value: unknown, keys: readonly string[], map: (rows: unknown[])
   return value;
 }
 
+/** Rows whose own creation time is at or after the cutoff; a row with no time goes. */
+function createdSince(rows: unknown[], cutoffMs: number): unknown[] {
+  return rows.filter((row) => {
+    const at = timestampMs(rowField(row, "createdAt"));
+    return at != null && at >= cutoffMs;
+  });
+}
+
+/**
+ * Lists that a live chat event or a session summary carries whole, from
+ * storage, under a fresh time of its own: each item is checked by its own
+ * creation time, and an item with no time of its own loses its text
+ * (default refuse). The envelope's time says only when the list changed.
+ * - `session_meta_updated.threadComments`: comments written before the cutoff go
+ *   (their excerpts quote the history).
+ * - `queue_recovery.restoredSteers`: queued messages carry no time, so their
+ *   text goes; the count stays.
+ * - `scheduled_work_update`: the event carries no creation time, so its prompt
+ *   and summary go.
+ * - a summary's `scheduledWork`: items made before the cutoff go.
+ */
+export function laneShareScrubEmbeddedHistory(value: unknown, cutoffMs: number | null): unknown {
+  if (cutoffMs == null || !value || typeof value !== "object" || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  const event = record.event;
+  if (event && typeof event === "object" && !Array.isArray(event)) {
+    const body = event as Record<string, unknown>;
+    let scrubbed: Record<string, unknown> | null = null;
+    if (body.type === "session_meta_updated" && Array.isArray(body.threadComments)) {
+      scrubbed = { ...body, threadComments: createdSince(body.threadComments, cutoffMs) };
+    } else if (body.type === "queue_recovery" && "restoredSteers" in body) {
+      const { restoredSteers: _steers, ...rest } = body;
+      scrubbed = rest;
+    } else if (body.type === "scheduled_work_update" && ("prompt" in body || "summary" in body)) {
+      const { prompt: _prompt, summary: _summary, ...rest } = body;
+      scrubbed = rest;
+    }
+    return scrubbed ? { ...record, event: scrubbed } : value;
+  }
+  if (Array.isArray(record.scheduledWork)) {
+    return { ...record, scheduledWork: createdSince(record.scheduledWork, cutoffMs) };
+  }
+  return value;
+}
+
 /**
  * The history filter for answers that are not event lists: thread comments
  * written before the cutoff go (their excerpts quote the history);
@@ -297,7 +342,7 @@ export function filterLaneShareActionHistory(action: string, value: unknown, cut
       return mapRows(value, ["sessions", "items"], (rows) => rows.map((row) => withoutHistoryText(row, cutoffMs)));
     case "work.getSession":
     case "chat.getSummary":
-      return withoutHistoryText(value, cutoffMs);
+      return laneShareScrubEmbeddedHistory(withoutHistoryText(value, cutoffMs), cutoffMs);
     default:
       return value;
   }

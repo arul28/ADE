@@ -51,6 +51,8 @@ export type LaneShareGuestSessionInfo = {
   kind: LaneShareSessionKind;
   /** When the session started (host clock). Null when unknown. */
   startedAtMs: number | null;
+  /** Spawned by another chat (a subagent or a peer): it needs `see.subagentChats` too. */
+  child?: boolean;
 };
 
 export type LaneShareSessionResolver = (sessionId: string) => LaneShareGuestSessionInfo | null;
@@ -397,6 +399,7 @@ function laneShareGuestVisibleSession(
   const info = laneShareGuestSessionInfo(role, sessionId.trim(), resolveSession);
   if (!info || !laneShareGuestHasLane(role, info.laneId)) return null;
   if (!laneShareRightsSeeKind(role.rights, info.kind)) return null;
+  if (info.child && !role.rights.see.subagentChats) return null;
   if (kinds && !kinds.includes(info.kind)) return null;
   return info;
 }
@@ -696,6 +699,7 @@ export function filterLaneShareGuestCommandResult(
   action: string,
   result: unknown,
   role: LaneShareGuestRole,
+  resolveSession: LaneShareSessionResolver,
 ): unknown {
   const rule = LANE_SHARE_GUEST_COMMANDS[action];
   if (rule?.scope !== "lane" || !(action === "work.listSessions" || action === "chat.listSessions")) return result;
@@ -705,7 +709,13 @@ export function filterLaneShareGuestCommandResult(
     const toolType = rowField(row, "toolType");
     // A chat list row has no tool type; it is a chat.
     const kind = action === "chat.listSessions" && toolType == null ? "chat" : laneShareSessionKind(typeof toolType === "string" ? toolType : null);
-    return laneShareRightsSeeKind(role.rights, kind);
+    if (!laneShareRightsSeeKind(role.rights, kind)) return false;
+    if (role.rights.see.subagentChats) return true;
+    // A child of another chat: by the row's own lineage, else by this host's records.
+    const parent = rowField(row, "orchestrationParentSessionId");
+    if (typeof parent === "string" && parent.trim()) return false;
+    const id = rowField(row, "sessionId") ?? rowField(row, "id");
+    return typeof id !== "string" || laneShareGuestSessionInfo(role, id, resolveSession)?.child !== true;
   };
   const keep = (rows: unknown[]) => rows.filter(visible);
   if (Array.isArray(result)) return keep(result);

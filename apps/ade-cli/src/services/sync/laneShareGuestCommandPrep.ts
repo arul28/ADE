@@ -221,6 +221,22 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
    * the turn), ownership of the draft, comment or queued message it names,
    * and the kind of the card it answers. Sets the verified author.
    */
+  /**
+   * What a new chat or CLI session of a guest starts with: each value the
+   * guest named (already checked against the locks), else the first value the
+   * owner allowed, so nothing starts on a host default the locks do not hold.
+   * An empty mode lock starts in `default`; an empty reasoning lock leaves the
+   * provider's level. Only call it with a non-empty model lock.
+   */
+  function laneShareNewSessionChoices(rights: LaneShareGuestRole["rights"], gateArgs: Record<string, unknown>) {
+    const reasoningEffort = toOptionalString(gateArgs.reasoningEffort) ?? rights.run.reasoningLevels[0] ?? null;
+    return {
+      modelId: toOptionalString(gateArgs.modelId) ?? rights.run.models[0]!,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      permissionMode: toOptionalString(gateArgs.permissionMode) ?? rights.run.permissionModes[0] ?? "default",
+    };
+  }
+
   async function prepareLaneShareGuestCommand(
     action: string,
     gateArgs: Record<string, unknown>,
@@ -319,12 +335,11 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
         }
         const locked = laneShareCheckLocks(rights, gateArgs, null);
         if (locked) return { ok: false, refusal: locked };
-        const modelId = toOptionalString(gateArgs.modelId) ?? rights.run.models[0]!;
-        if (!(await modelExists(provider, modelId))) {
+        const choices = laneShareNewSessionChoices(rights, gateArgs);
+        if (!(await modelExists(provider, choices.modelId))) {
           return laneShareRefuse("The model the owner allowed is not available on this computer now.", "lane_share_model_unavailable");
         }
-        const permissionMode = toOptionalString(gateArgs.permissionMode) ?? rights.run.permissionModes[0] ?? "default";
-        return { ok: true, args: { ...gateArgs, modelId, permissionMode }, claim: null };
+        return { ok: true, args: { ...gateArgs, ...choices }, claim: null };
       }
       case "work.startCliSession": {
         const provider = toOptionalString(gateArgs.provider)?.toLowerCase() ?? null;
@@ -338,6 +353,8 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
         }
         const locked = laneShareCheckLocks(rights, gateArgs, null);
         if (locked) return { ok: false, refusal: locked };
+        // A missing model or mode would start the CLI on its own default.
+        const started: Record<string, unknown> = { ...gateArgs, ...laneShareNewSessionChoices(rights, gateArgs) };
         if (typeof gateArgs.initialInput === "string" && gateArgs.initialInput.trim()) {
           // First: a host that takes no typed line says so under any rights.
           const unavailable = laneShareCliTypingRefusal();
@@ -350,9 +367,9 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
           }
           const claimed = claimLaneShareMessage(role);
           if ("refusal" in claimed) return { ok: false, refusal: claimed.refusal };
-          return { ok: true, args: gateArgs, claim: claimed.claim };
+          return { ok: true, args: started, claim: claimed.claim };
         }
-        const { initialInput: _initialInput, ...rest } = gateArgs;
+        const { initialInput: _initialInput, ...rest } = started;
         return { ok: true, args: rest, claim: null };
       }
       case "chat.approve":

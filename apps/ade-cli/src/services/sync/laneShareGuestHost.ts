@@ -126,13 +126,23 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
 
   /** A session's lane, kind and start, from THIS host's database. Never from the client. */
   function resolveLaneShareSession(sessionId: string): LaneShareGuestSessionInfo | null {
-    const row = args.sessionService.get(sessionId) as { laneId?: unknown; toolType?: unknown; startedAt?: unknown } | null | undefined;
+    const row = args.sessionService.get(sessionId) as {
+      laneId?: unknown;
+      toolType?: unknown;
+      startedAt?: unknown;
+      orchestrationParentSessionId?: unknown;
+    } | null | undefined;
     if (!row) return null;
     const startedAtMs = typeof row.startedAt === "string" ? Date.parse(row.startedAt) : Number.NaN;
+    const kind = laneShareSessionKind(typeof row.toolType === "string" ? row.toolType : null);
+    // A tracked CLI child keeps its parent on the row; a chat keeps it in its own record.
+    const child = Boolean(toOptionalString(row.orchestrationParentSessionId))
+      || (kind === "chat" && Boolean(args.agentChatService?.getSessionOrchestrationParentId?.(sessionId)));
     return {
       laneId: toOptionalString(row.laneId) ?? null,
-      kind: laneShareSessionKind(typeof row.toolType === "string" ? row.toolType : null),
+      kind,
       startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : null,
+      child,
     };
   }
 

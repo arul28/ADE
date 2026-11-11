@@ -265,6 +265,9 @@ grant at the same time.
   (the granted lane, or a session the host resolves to that lane from its
   own database), the only arguments the call keeps, and the right it needs.
   A lane id the client sends next to a session id is never trusted.
+  A chat that another chat spawned (a subagent or a peer, from the host's
+  row or the chat's own record) needs `subagentChats` as well as `chats`:
+  in a list, a read, a subscribe, a command and a live event.
   `laneShare.getGuestState` and `laneShare.move` are answered by the host
   itself (`LANE_SHARE_GUEST_HOST_COMMANDS`).
 - **Outbound envelopes**: replies to the guest's own requests, session
@@ -275,7 +278,10 @@ grant at the same time.
 - **Rate limit**: 200 envelopes per 10 seconds per connection.
 
 `laneShareGuestCommandPrep.ts` runs the checks that need the host's
-services: the model, reasoning and mode locks against the chat as it is now,
+services: the model, reasoning and mode locks against the chat as it is now
+(a new chat or CLI session starts with each value the guest named, else the
+first value the owner allowed, never a host or CLI default; an empty mode
+lock starts in `default`),
 the message limits (counted before the turn), ownership of the draft,
 comment or queued message a command names, and the right for the card a
 guest answers. It sets the verified author. `laneShareGuestQueue.ts` checks
@@ -284,7 +290,11 @@ a guest's queued message again when it starts.
 `laneShareGuestScrub.ts` removes from each payload, before a guest gets it:
 the text of cards only the owner may answer (a guest sees "Waiting for the
 owner"), model and machine names the privacy switches hide, history from
-before the share, and ADE's own files. File and diff reads carry
+before the share, and ADE's own files. The history cut checks each item of a
+list that a fresh event or a summary carries by the item's own time (the
+comment list in `session_meta_updated`, a summary's scheduled work); an item
+with no time of its own loses its text (restored queued messages, the prompt
+of a scheduled work update). File and diff reads carry
 `refuseIgnored` (no ignored file, nothing under `.ade/`, also through a
 link), and git reads carry `onlyLaneHistory`.
 

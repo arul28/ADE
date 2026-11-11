@@ -69335,6 +69335,18 @@ export function createAgentChatService(args: {
     return liveSession?.sideChatParentSessionId || readPersistedState(trimmed)?.sideChatParentSessionId || null;
   };
 
+  /**
+   * The chat that spawned this chat (a subagent or a peer), from the live
+   * session or its saved state; null for a top-level chat. Synchronous, for
+   * the lane share guest gate.
+   */
+  const getSessionOrchestrationParentId = (sessionId: string): string | null => {
+    const trimmed = sessionId.trim();
+    if (!trimmed.length) return null;
+    const lineage = managedSessions.get(trimmed)?.session ?? readPersistedState(trimmed);
+    return lineage?.orchestrationParentSessionId?.trim() || null;
+  };
+
   const getTurnStatus = async (sessionId: string): Promise<ChatTurnStatusSnapshot | null> => {
     const summary = await getSessionSummary(sessionId);
     // Not a chat: a tracked CLI terminal (e.g. a `--mode cli` child) still
@@ -79071,6 +79083,7 @@ export function createAgentChatService(args: {
     },
     getSessionIdentityKey,
     getSessionSideChatParentId,
+    getSessionOrchestrationParentId,
     /** The current turn's start, or the latest one's. Null when none ran in this process. */
     getTurnStartedAt: (sessionId: string): string | null => {
       const live = managedSessions.get(sessionId)?.session;

@@ -4705,8 +4705,11 @@ describe("sync host account authentication", () => {
       "session-private": privateLane,
       "session-shell": sharedLane,
       "session-cli": sharedLane,
+      "session-child": sharedLane,
     };
     const toolTypeBySession: Record<string, string> = { "session-shell": "shell", "session-cli": "claude" };
+    /** A subagent chat of the shared chat: the host's row names its parent. */
+    const parentBySession: Record<string, string> = { "session-child": "session-shared" };
     // The share started an hour ago; the lane's sessions half an hour ago.
     const sharedAgo = 3_600_000;
     const grantId = (digit: string) => `ls_${digit.repeat(32)}`;
@@ -4951,6 +4954,7 @@ describe("sync host account authentication", () => {
               laneId: laneBySession[id],
               toolType: toolTypeBySession[id] ?? "claude-chat",
               startedAt: new Date(Date.now() - sharedAgo / 2).toISOString(),
+              ...(parentBySession[id] ? { orchestrationParentSessionId: parentBySession[id] } : {}),
             }
             : null),
           readTranscriptTail: async () => "",
@@ -5411,9 +5415,16 @@ describe("sync host account authentication", () => {
       }
     });
 
-    it("keeps only rows of the shared lane in a list result", async () => {
+    // A subagent chat of a shared chat needs `see.subagentChats` as well as
+    // `see.chats`: in a list, a read, a subscribe and a live event.
+    it.each<[string, boolean]>([
+      ["with the subagent chat right", true],
+      ["without it", false],
+    ])("keeps only rows of the shared lane in a list result, and a subagent chat %s", async (_label, subagents) => {
+      const rights = laneSharePresetRights("watch");
+      rights.see.subagentChats = subagents;
       const directory = fakeDirectory(grantsBody([grant()]));
-      const env = await startGuestHost(directory);
+      const env = await startGuestHost(directory, { rights });
       let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
       try {
         guest = await connectGuest(env.port, env.proof, directory);
@@ -5423,6 +5434,21 @@ describe("sync host account authentication", () => {
           ok: true,
           result: [{ id: "session-shared", laneId: sharedLane }],
         });
+        env.execute.mockImplementationOnce((async () => [
+          { id: "session-shared", laneId: sharedLane },
+          { id: "session-child", laneId: sharedLane },
+        ]) as never);
+        const rows = (await runCommand(guest.client, "with-child", "work.listSessions", { laneId: sharedLane })).result as Array<{ id: string }>;
+        expect(rows.map((row) => row.id)).toEqual(subagents ? ["session-shared", "session-child"] : ["session-shared"]);
+        expect((await runCommand(guest.client, "child", "chat.getSummary", { sessionId: "session-child" })).ok).toBe(subagents);
+        guest.client.ws.send(encodeSyncEnvelope({ type: "chat_subscribe", requestId: "sub-child", projectId: "project-1", payload: { sessionId: "session-child" } }));
+        guest.client.ws.send(encodeSyncEnvelope({ type: "chat_subscribe", requestId: "sub-shared", projectId: "project-1", payload: { sessionId: "session-shared" } }));
+        await waitForValue(() => guest!.client.envelopes.find((entry) => entry.type === "chat_subscribe" && (entry.payload as { sessionId?: string }).sessionId === "session-shared"), "shared subscribe");
+        env.emitChatEvent("session-child", { type: "system_notice", message: "child" });
+        env.emitChatEvent("session-shared", { type: "system_notice", message: "parent" });
+        await waitForValue(() => guest!.client.envelopes.find((entry) => entry.type === "chat_event" && (entry.payload as { sessionId?: string }).sessionId === "session-shared"), "parent event");
+        const childSeen = guest.client.envelopes.some((entry) => (entry.payload as { sessionId?: string } | null)?.sessionId === "session-child");
+        expect(childSeen).toBe(subagents);
       } finally {
         await env.close([guest?.client ?? null]);
       }
@@ -5652,20 +5678,31 @@ describe("sync host account authentication", () => {
         }
       });
 
-      // An empty model lock means "no model" for something new, never "any model".
-      it.each<[string, Record<string, unknown>]>([
-        ["chat.create", { laneId: sharedLane, provider: "claude" }],
-        ["work.startCliSession", { laneId: sharedLane, provider: "claude" }],
-      ])("refuses %s when the owner allowed no model", async (action, commandArgs) => {
+      // An empty model lock means "no model" for something new, never "any
+      // model". A value the guest leaves out is the first one the owner
+      // allowed, never the host's or the CLI's own default.
+      it.each<[string, string, Record<string, unknown>, Partial<LaneShareRights["run"]>, Record<string, unknown> | null]>([
+        ["no model allowed", "chat.create", { laneId: sharedLane, provider: "claude" }, { models: [] }, null],
+        ["no model allowed", "work.startCliSession", { laneId: sharedLane, provider: "claude" }, { models: [] }, null],
+        ["nothing named, plan and one model allowed", "work.startCliSession", { laneId: sharedLane, provider: "claude" }, { models: ["claude-sonnet"], permissionModes: ["plan"], reasoningLevels: ["low"] }, { modelId: "claude-sonnet", permissionMode: "plan", reasoningEffort: "low" }],
+        ["nothing named, plan and one model allowed", "chat.create", { laneId: sharedLane, provider: "claude" }, { models: ["claude-sonnet"], permissionModes: ["plan"], reasoningLevels: ["low"] }, { modelId: "claude-sonnet", permissionMode: "plan", reasoningEffort: "low" }],
+      ])("a new session with %s: %s", async (_label, action, commandArgs, run, started) => {
         const rights = allOnRights();
-        rights.run.models = [];
+        Object.assign(rights.run, run);
         const directory = fakeDirectory(grantsBody([grant()]));
         const env = await startGuestHost(directory, { rights });
         let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
         try {
           guest = await connectGuest(env.port, env.proof, directory);
-          expect(await runCommand(guest.client, "new", action, commandArgs)).toMatchObject({ ok: false, error: { code: "lane_share_model_locked" } });
-          expect(env.execute.mock.calls.some(([payload]) => payload.action === action)).toBe(false);
+          const result = await runCommand(guest.client, "new", action, commandArgs);
+          const ran = env.execute.mock.calls.find(([payload]) => payload.action === action);
+          if (started) {
+            expect(result.ok).toBe(true);
+            expect(ran?.[0].args).toMatchObject(started);
+          } else {
+            expect(result).toMatchObject({ ok: false, error: { code: "lane_share_model_locked" } });
+            expect(ran).toBeUndefined();
+          }
         } finally {
           await env.close([guest?.client ?? null]);
         }
@@ -6550,17 +6587,34 @@ describe("sync host account authentication", () => {
           expect(transcript.entries.map((entry) => entry.text)).toEqual(texts);
           expect(transcript.hasMore).toBe(history);
           // A chat that began before the share: its summary repeats that history.
+          const beforeAt = new Date(Date.now() - 2 * sharedAgo).toISOString();
           env.execute.mockImplementationOnce((async () => ({
             sessionId: "session-shared",
-            startedAt: new Date(Date.now() - 2 * sharedAgo).toISOString(),
+            startedAt: beforeAt,
             status: "idle",
             lastOutputPreview: "before",
             statusNote: "before",
             attentionMessage: "before",
+            scheduledWork: [{ id: "work-1", title: "nightly", prompt: "before", createdAt: beforeAt }],
           })) as never);
           const summary = (await runCommand(guest.client, "summary", "chat.getSummary", { sessionId: "session-shared" })).result as Record<string, unknown>;
           expect(summary).toMatchObject({ sessionId: "session-shared", status: "idle" });
           expect(JSON.stringify(summary).includes("before")).toBe(history);
+          // A fresh event that carries the whole comment list: each comment by its own time.
+          guest.client.ws.send(encodeSyncEnvelope({ type: "chat_subscribe", requestId: "sub", projectId: "project-1", payload: { sessionId: "session-shared" } }));
+          await waitForValue(() => guest!.client.envelopes.find((entry) => entry.type === "chat_subscribe"), "guest chat subscribe");
+          env.emitChatEvent("session-shared", {
+            type: "session_meta_updated",
+            threadComments: [
+              { id: "c-old", body: "before", messageExcerpt: "before", createdAt: beforeAt },
+              { id: "c-new", body: "after", createdAt: new Date().toISOString() },
+            ],
+          });
+          const meta = await waitForValue(
+            () => (guest!.client.envelopes.find((entry) => entry.type === "chat_event")?.payload as { event: { threadComments: Array<{ id: string }> } } | undefined)?.event,
+            "guest meta event",
+          );
+          expect(meta.threadComments.map((comment) => comment.id)).toEqual(history ? ["c-old", "c-new"] : ["c-new"]);
         } finally {
           await env.close([guest?.client ?? null]);
         }
