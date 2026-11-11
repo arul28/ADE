@@ -182,27 +182,31 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
    * Why the host refuses a guest's terminal input, or null to write it. Only
    * into a CLI session of the granted lane, with the typing right, never a
    * shell; one plain line each time (`laneShareTypedLineRefusal`), and each
-   * line counts as one message.
+   * line counts as one message: the claim comes back, for a refund when the
+   * line is dropped before it is written.
    */
-  function laneShareGuestTypingRefusal(role: LaneShareGuestRole, payload: Record<string, unknown> | null): LaneShareGuestRefusal | null {
+  function laneShareGuestTypingRefusal(
+    role: LaneShareGuestRole,
+    payload: Record<string, unknown> | null,
+  ): { refusal: LaneShareGuestRefusal } | { claim: LaneShareMessageClaim } {
+    const refuse = (refusal: LaneShareGuestRefusal) => ({ refusal });
     const sessionId = payload?.sessionId;
-    if (typeof sessionId !== "string") return { code: "forbidden_command", message: "That session is not part of this shared lane." };
+    if (typeof sessionId !== "string") return refuse({ code: "forbidden_command", message: "That session is not part of this shared lane." });
     const unavailable = laneShareCliTypingRefusal();
-    if (unavailable) return unavailable;
-    if (laneShareRightsEnded(role.rights, Date.now())) return { code: "lane_share_ended", message: "This share has ended." };
-    if (!laneShareGuestTakeRate(role)) return { code: "lane_share_rate_limited", message: "Too many requests at once. Wait a moment, then try again." };
+    if (unavailable) return refuse(unavailable);
+    if (laneShareRightsEnded(role.rights, Date.now())) return refuse({ code: "lane_share_ended", message: "This share has ended." });
+    if (!laneShareGuestTakeRate(role)) return refuse({ code: "lane_share_rate_limited", message: "Too many requests at once. Wait a moment, then try again." });
     if (!laneShareGuestMayTypeInto(role, sessionId, resolveLaneShareSession)) {
-      return { code: "lane_share_right_missing", message: "Your access to this shared lane does not include typing in this session." };
+      return refuse({ code: "lane_share_right_missing", message: "Your access to this shared lane does not include typing in this session." });
     }
     // Cached by the check above: no second session read per line.
     if (laneShareLaneState(laneShareGuestSessionInfo(role, sessionId, resolveLaneShareSession)?.laneId) !== "active") {
-      return { code: "lane_share_paused", message: "The owner paused this shared lane." };
+      return refuse({ code: "lane_share_paused", message: "The owner paused this shared lane." });
     }
     const line = laneShareTypedLineRefusal(payload?.data);
-    if (line) return line;
+    if (line) return refuse(line);
     // Last: the line counts against the limits.
-    const claimed = claimLaneShareMessage(role);
-    return "refusal" in claimed ? claimed.refusal : null;
+    return claimLaneShareMessage(role);
   }
 
   /** Counts one guest message, before its turn. A refusal carries the daily reset. */

@@ -121,6 +121,9 @@ export function projectCopyStateToken(state: ProjectCopyState): string {
   const facts = {
     folder: state.folder,
     git: state.isGitRepo,
+    // The work itself: a second edit of a file that was already changed, or
+    // an amended commit, keeps every count but changes these.
+    repository: state.fingerprint,
     stashes: state.stashes,
     branches: state.unpushedOnBranches,
     sessions: [state.sessions.chats, state.sessions.terminals],
@@ -133,6 +136,7 @@ export function projectCopyStateToken(state: ProjectCopyState): string {
         checkout.unpushedCommits,
         checkout.hasSubmodules,
         [...checkout.ignoredEnvFiles].sort(),
+        checkout.fingerprint,
       ])
       .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
   };

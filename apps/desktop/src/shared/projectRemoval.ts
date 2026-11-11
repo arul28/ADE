@@ -24,6 +24,13 @@ export type ProjectCopyCheckoutState = {
   /** Ignored `.env` style files, by relative name only (never their contents). At most 20. */
   ignoredEnvFiles: string[];
   hasSubmodules: boolean;
+  /**
+   * Opaque: a hash of the work itself, not its counts (HEAD, git's status
+   * output, and the size and time of each changed, untracked and ignored
+   * secret file). `unknown:` plus a random id when it could not be read in
+   * full: then no two reads match, and a delete of accepted work needs a new check.
+   */
+  fingerprint: string;
 };
 
 export type ProjectCopySessions = {
@@ -46,6 +53,8 @@ export type ProjectCopyState = {
   sessions: ProjectCopySessions;
   /** What the host could not read. Unknown state counts as work. */
   unreadable: string[];
+  /** Opaque: a hash of every local branch tip and stash, as {@link ProjectCopyCheckoutState.fingerprint}. */
+  fingerprint: string;
 };
 
 /** How a host deletes a folder: this computer moves it to the Trash; another machine deletes it for good. */

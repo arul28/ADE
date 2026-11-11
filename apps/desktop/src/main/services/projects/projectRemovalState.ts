@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -7,7 +8,7 @@ import type {
   ProjectCopyState,
 } from "../../../shared/projectRemoval";
 import { adeScaffoldFileContents } from "../../../shared/adeLayout";
-import { runGit } from "../git/git";
+import { runGit, type GitRunResult } from "../git/git";
 import { isPathInside, pathKey } from "../shared/pathCompare";
 import { listLaneWorktreeRoots } from "./projectDetailService";
 
@@ -19,8 +20,8 @@ import { listLaneWorktreeRoots } from "./projectDetailService";
  * repository's stashes and unpushed branches.
  *
  * It runs when the remove dialog asks and again right before a delete, never
- * on a timer. Each checkout costs four short git reads and a bounded walk of
- * its ignored folders; at most {@link CHECKOUT_CONCURRENCY} checkouts are read
+ * on a timer. Each checkout costs six short git reads, a bounded walk of
+ * its ignored folders and a bounded stat of its changed files; at most {@link CHECKOUT_CONCURRENCY} checkouts are read
  * at once, under the git read cap every git read shares.
  */
 
@@ -34,6 +35,12 @@ const MAX_ENV_FILES = 20;
 const ENV_FILE = /(^|\/)(\.env(rc|\..+)?|[^/]+\.(pem|key|p12|pfx|jks|keystore)|id_(rsa|dsa|ecdsa|ed25519)|credentials(\.json)?|secrets?\.(json|ya?ml|toml))$/i;
 /** Entries one checkout's walk of its ignored folders reads, at most. */
 const MAX_IGNORED_WALK_ENTRIES = 5_000;
+/**
+ * Changed and untracked paths whose size and time one checkout's fingerprint
+ * reads, at most. Over it the fingerprint is unknown.
+ */
+const MAX_FINGERPRINT_PATHS = 5_000;
+const FINGERPRINT_STAT_CONCURRENCY = 32;
 /**
  * Ignored folders the walk does not open: dependencies, build output and
  * caches, which are large and hold no secrets of the person. `.ade` holds the
@@ -130,6 +137,75 @@ async function countChangedFiles(checkoutPath: string, statusStdout: string): Pr
   return others.length + scaffold.filter((isScaffold) => !isScaffold).length;
 }
 
+function digest(facts: unknown): string {
+  return createHash("sha256").update(JSON.stringify(facts)).digest("hex").slice(0, 32);
+}
+
+/** A fingerprint no other read matches: what it covers could not be read in full. */
+function unknownFingerprint(): string {
+  return `unknown:${randomUUID()}`;
+}
+
+function completeOutput(result: GitRunResult): string | null {
+  return result.exitCode === 0 && !result.stdoutTruncated ? result.stdout : null;
+}
+
+/** The paths in `git status --porcelain=v2 -z` output, or null for a line it cannot read. */
+function porcelainV2Paths(raw: string): string[] | null {
+  const tokens = raw.split("\0");
+  const paths: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (!token) continue;
+    const kind = token[0];
+    const match = kind === "1" ? /^1 (?:\S+ ){7}(.+)$/s.exec(token)
+      : kind === "2" ? /^2 (?:\S+ ){8}(.+)$/s.exec(token)
+      : kind === "u" ? /^u (?:\S+ ){9}(.+)$/s.exec(token)
+      : kind === "?" || kind === "!" ? /^. (.+)$/s.exec(token)
+      : null;
+    if (!match) return null;
+    paths.push(match[1]!);
+    // A rename or copy names its original path in the next field.
+    if (kind === "2") index += 1;
+  }
+  return paths;
+}
+
+/** The size and modification time of a file, or "gone". Links are not followed. */
+async function fileFingerprint(checkoutPath: string, relative: string): Promise<string> {
+  try {
+    const stat = await fs.lstat(path.join(checkoutPath, ...relative.split("/")), { bigint: true });
+    return `${stat.size}:${stat.mtimeNs}`;
+  } catch {
+    return "gone";
+  }
+}
+
+/**
+ * A hash of a checkout's work, which its counts do not show: HEAD (an amended
+ * commit), git's status (the staged content of each file), and the size and
+ * time of each changed, untracked and ignored secret file (a second edit of a
+ * file that was already changed). Content is not read: the inspect and the
+ * recheck run in one process with the same calls, so paths and time
+ * precision (Windows included) are the same both times.
+ */
+async function checkoutFingerprint(args: {
+  checkoutPath: string;
+  head: GitRunResult;
+  noCommits: boolean;
+  status: GitRunResult;
+  ignoredEnvFiles: string[];
+}): Promise<string> {
+  const headOutput = completeOutput(args.head);
+  const statusOutput = completeOutput(args.status);
+  if ((headOutput === null && !args.noCommits) || statusOutput === null) return unknownFingerprint();
+  const paths = porcelainV2Paths(statusOutput);
+  if (!paths || paths.length > MAX_FINGERPRINT_PATHS) return unknownFingerprint();
+  const files = [...paths, ...args.ignoredEnvFiles];
+  const stats = await mapLimited(files, FINGERPRINT_STAT_CONCURRENCY, (file) => fileFingerprint(args.checkoutPath, file));
+  return digest([headOutput?.trim() ?? null, statusOutput, files.map((file, index) => [file, stats[index]])]);
+}
+
 function parseCount(raw: string): number | null {
   const value = Number.parseInt(raw.trim(), 10);
   return Number.isFinite(value) && value >= 0 ? value : null;
@@ -143,7 +219,7 @@ async function readCheckout(args: {
   const cwd = args.checkoutPath;
   const opts = { cwd, timeoutMs: GIT_READ_TIMEOUT_MS };
   const insideProject = args.isMain || isPathInside(cwd, args.projectRoot);
-  const [branchRes, statusRes, unpushedRes, ignoredRes, hasSubmodules] = await Promise.all([
+  const [branchRes, statusRes, unpushedRes, ignoredRes, hasSubmodules, headRes, workStatusRes] = await Promise.all([
     runGit(["rev-parse", "--abbrev-ref", "HEAD"], opts),
     runGit(["status", "--porcelain=v1", "--untracked-files=normal"], opts),
     // Commits on HEAD that no remote-tracking branch has. With no upstream, or
@@ -156,6 +232,9 @@ async function readCheckout(args: {
       ? runGit(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory"], opts)
       : Promise.resolve(null),
     exists(path.join(cwd, ".gitmodules")),
+    // For the fingerprint: every untracked file, not one line per folder.
+    runGit(["rev-parse", "HEAD"], opts),
+    runGit(["status", "--porcelain=v2", "-z", "--untracked-files=all"], opts),
   ]);
   const branch = branchRes.exitCode === 0 ? branchRes.stdout.trim() : "";
   const ignoredEnvFiles = ignoredRes && ignoredRes.exitCode === 0
@@ -172,6 +251,7 @@ async function readCheckout(args: {
     unpushedCommits: unpushedRes.exitCode === 0 ? parseCount(unpushedRes.stdout) : noCommits ? 0 : null,
     ignoredEnvFiles,
     hasSubmodules,
+    fingerprint: await checkoutFingerprint({ checkoutPath: cwd, head: headRes, noCommits, status: workStatusRes, ignoredEnvFiles }),
   };
 }
 
@@ -242,6 +322,7 @@ export async function readProjectCopyState(rootPath: string, sessions: ProjectCo
     unpushedOnBranches: null,
     sessions,
     unreadable: [],
+    fingerprint: "",
   };
   if (folder === "missing") return { ...base, stashes: 0, unpushedOnBranches: 0 };
   if (!(await exists(path.join(rootPath, ".git")))) return base;
@@ -265,12 +346,16 @@ export async function readProjectCopyState(rootPath: string, sessions: ProjectCo
     if (!byKey.has(pathKey(real)) && await exists(path.join(real, ".git"))) byKey.set(pathKey(real), real);
   }
   const checkoutPaths = [...byKey.entries()];
-  const [checkouts, stashRes, branchesRes] = await Promise.all([
+  const [checkouts, stashRes, branchesRes, tipsRes] = await Promise.all([
     mapLimited(checkoutPaths, CHECKOUT_CONCURRENCY, ([key, checkoutPath]) =>
       readCheckout({ checkoutPath, projectRoot: realRoot, isMain: key === mainKey })),
     runGit(["stash", "list", "--format=%H"], { cwd: rootPath, timeoutMs: GIT_READ_TIMEOUT_MS }),
     runGit(["rev-list", "--count", "--branches", "--not", "--remotes"], { cwd: rootPath, timeoutMs: GIT_READ_TIMEOUT_MS }),
+    // Every local branch tip: a commit amended on a branch no checkout has out.
+    runGit(["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads"], { cwd: rootPath, timeoutMs: GIT_READ_TIMEOUT_MS }),
   ]);
+  const stashOutput = completeOutput(stashRes);
+  const tipsOutput = completeOutput(tipsRes);
   const noBranches = branchesRes.exitCode !== 0 && countLines(branchesRes.stdout) === 0
     && checkouts.every((checkout) => checkout.unpushedCommits === 0);
   return {
@@ -280,6 +365,7 @@ export async function readProjectCopyState(rootPath: string, sessions: ProjectCo
     stashes: stashRes.exitCode === 0 ? countLines(stashRes.stdout) : null,
     unpushedOnBranches: branchesRes.exitCode === 0 ? parseCount(branchesRes.stdout) : noBranches ? 0 : null,
     unreadable,
+    fingerprint: stashOutput !== null && tipsOutput !== null ? digest([stashOutput, tipsOutput]) : unknownFingerprint(),
   };
 }
 

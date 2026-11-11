@@ -211,6 +211,15 @@ in `LOCAL_ONLY_CRR_EXCLUDED_TABLES` (`kvDb.ts`), so no other replica can
 change them. Every call is synchronous, which makes `claimMessage` an atomic
 increment: two requests at once cannot both take the last message.
 
+A guest command checks the rights, then awaits its preparation (a model
+list, a chat summary). An owner's edit gives the connected guest a new
+rights object. Right before the command runs, with no await in between, the
+host refuses it when the rights object is no longer the one it started with
+("Your access to this shared lane changed. Try again."), and it gives back
+the counted message and any held draft or comment. A typed CLI line follows
+the same rule after it waits in the input queue. A move reads the current
+rights at each check.
+
 The items table records what a guest wrote or queued on this host: its
 drafts and thread comments (the only ones it may edit or remove), its queued
 messages (removed on revoke) and the chats it sent turns into.

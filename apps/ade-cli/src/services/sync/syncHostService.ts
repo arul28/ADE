@@ -2972,6 +2972,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     handleLaneShareGuestHello,
     admitLaneShareGuestEnvelope,
     admitLaneShareGuestImmediateEnvelope,
+    laneShareGuestTypedLineStillAllowed,
     handleLaneShareGuestCommand,
     laneShareGuestOutboundPayload,
     notifyLaneShareGuests,
@@ -7450,6 +7451,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         : Promise.resolve();
       const work = Promise.all([priorInput, ownershipBarrier]).then(async () => {
         if (disposed || !peers.has(peer) || !peer.authenticated) return;
+        // A guest's line waited above: dropped when the guest or its rights changed meanwhile.
+        if (!laneShareGuestTypedLineStillAllowed(peer, envelope)) return;
         const projectScope = resolveSyncHostInboundProjectScope(
           envelope.type,
           envelope.projectId,

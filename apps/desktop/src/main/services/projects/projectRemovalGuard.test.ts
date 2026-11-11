@@ -78,6 +78,7 @@ describe("decideRemovalRecheck", () => {
     unpushedCommits: 0,
     ignoredEnvFiles: [],
     hasSubmodules: false,
+    fingerprint: "work",
     ...overrides,
   });
   const state = (overrides: Partial<ProjectCopyState> = {}): ProjectCopyState => ({
@@ -89,6 +90,7 @@ describe("decideRemovalRecheck", () => {
     unpushedOnBranches: 0,
     sessions: { chats: 0, terminals: 0 },
     unreadable: [],
+    fingerprint: "branches",
     ...overrides,
   });
   const clean = state();
@@ -106,6 +108,7 @@ describe("decideRemovalRecheck", () => {
     { name: "a copy with work, not accepted", shown: dirty, current: dirty, accept: false, expected: "unsaved_work" },
     { name: "a copy with work, accepted as shown", shown: dirty, current: dirty, accept: true, expected: "ok" },
     { name: "work that changed after it was accepted", shown: dirty, current: dirtier, accept: true, expected: "changed" },
+    { name: "work that changed with the same counts", shown: dirty, current: state({ checkouts: [checkout({ changedFiles: 3, fingerprint: "edited again" })] }), accept: true, expected: "changed" },
     { name: "work that appeared after a clean report", shown: clean, current: dirty, accept: false, expected: "unsaved_work" },
     { name: "work that appeared, with acceptance sent", shown: clean, current: dirty, accept: true, expected: "changed" },
     { name: "a session that started", shown: clean, current: state({ sessions: { chats: 0, terminals: 1 } }), accept: true, expected: "work_running" },
@@ -165,10 +168,21 @@ describe("removing a project copy with its folder", () => {
   // The brain's `projects.removeCopy`: the copy is read again and checked
   // against the report the person accepted BEFORE the project stops and the
   // folder goes. A copy that changed since keeps its folder and its entry.
-  it.each<[string, boolean, string]>([
-    ["keeps the folder and the entry when the copy changed after the report", true, "refused:changed"],
-    ["deletes the folder, then drops the entry, when the copy is as reported", false, "removed:deleted"],
-  ])("%s", async (_label, changeAfterReport, outcome) => {
+  type Git = (...args: string[]) => void;
+  type Step = ((folder: string, git: Git) => void) | null;
+  const commit = (git: Git, ...args: string[]) => git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", ...args);
+  const write = (folder: string, text: string, seconds: number) => {
+    fs.writeFileSync(path.join(folder, "a.txt"), text, "utf8");
+    fs.utimesSync(path.join(folder, "a.txt"), seconds, seconds);
+  };
+  it.each<[string, Step, Step, string]>([
+    ["keeps the folder and the entry when the copy changed after the report", null, (folder) => write(folder, "edited after the report\n", 1_700_000_100), "refused:changed"],
+    ["deletes the folder, then drops the entry, when the copy is as reported", null, null, "removed:deleted"],
+    // The counts stay the same: one changed file, one commit no remote has.
+    ["keeps the folder when a file that was already changed changes again", (folder) => write(folder, "first edit\n", 1_700_000_000), (folder) => write(folder, "other edit\n", 1_700_000_100), "refused:changed"],
+    ["keeps the folder when a commit no remote has is amended", (_folder, git) => commit(git, "--allow-empty", "-m", "local"), (_folder, git) => commit(git, "--amend", "--allow-empty", "-m", "local, amended"), "refused:changed"],
+    ["deletes a copy with work when the work is as reported", (folder) => write(folder, "first edit\n", 1_700_000_000), null, "removed:deleted"],
+  ])("%s", async (_label, beforeReport, afterReport, outcome) => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ade-removal-copy-")));
     const folder = path.join(root, "app");
     fs.mkdirSync(folder);
@@ -177,7 +191,8 @@ describe("removing a project copy with its folder", () => {
       git("init");
       fs.writeFileSync(path.join(folder, "a.txt"), "a\n", "utf8");
       git("add", "a.txt");
-      git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-m", "init");
+      commit(git, "-m", "init");
+      beforeReport?.(folder, git);
       const record = {
         projectId: "project-1", rootPath: folder, displayName: "app", addedAt: 0, lastOpenedAt: 0,
         gitOriginUrl: null, catalogVisibility: "visible", registrationSource: "user",
@@ -199,13 +214,13 @@ describe("removing a project copy with its folder", () => {
         adeHome: null,
       });
       const report = await removal.inspect("project-1" as never);
-      if (changeAfterReport) fs.writeFileSync(path.join(folder, "a.txt"), "edited after the report\n", "utf8");
+      afterReport?.(folder, git);
 
       const result = await removal.remove("project-1" as never, { deleteFolder: true, stateToken: report.stateToken, acceptWork: true }, "delete");
 
       expect(result.status === "refused" ? `refused:${result.code}` : `${result.status}:${"folder" in result ? result.folder : ""}`).toBe(outcome);
-      if (changeAfterReport) {
-        expect(fs.readFileSync(path.join(folder, "a.txt"), "utf8")).toBe("edited after the report\n");
+      if (outcome.startsWith("refused")) {
+        expect(fs.existsSync(path.join(folder, "a.txt"))).toBe(true);
         expect(entries).toEqual([record]);
         expect(steps).toEqual([]);
       } else {

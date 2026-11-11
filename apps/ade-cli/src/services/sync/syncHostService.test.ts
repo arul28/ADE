@@ -5681,12 +5681,14 @@ describe("sync host account authentication", () => {
       // An empty model lock means "no model" for something new, never "any
       // model". A value the guest leaves out is the first one the owner
       // allowed, never the host's or the CLI's own default.
-      it.each<[string, string, Record<string, unknown>, Partial<LaneShareRights["run"]>, Record<string, unknown> | null]>([
-        ["no model allowed", "chat.create", { laneId: sharedLane, provider: "claude" }, { models: [] }, null],
-        ["no model allowed", "work.startCliSession", { laneId: sharedLane, provider: "claude" }, { models: [] }, null],
+      it.each<[string, string, Record<string, unknown>, Partial<LaneShareRights["run"]>, Record<string, unknown> | string, boolean?]>([
+        ["no model allowed", "chat.create", { laneId: sharedLane, provider: "claude" }, { models: [] }, "lane_share_model_locked"],
+        ["no model allowed", "work.startCliSession", { laneId: sharedLane, provider: "claude" }, { models: [] }, "lane_share_model_locked"],
         ["nothing named, plan and one model allowed", "work.startCliSession", { laneId: sharedLane, provider: "claude" }, { models: ["claude-sonnet"], permissionModes: ["plan"], reasoningLevels: ["low"] }, { modelId: "claude-sonnet", permissionMode: "plan", reasoningEffort: "low" }],
+        // The owner narrows the model lock while the host reads its models: the old pick never runs.
+        ["the locks changed during the checks", "chat.create", { laneId: sharedLane, provider: "claude" }, { models: ["claude-sonnet"] }, "lane_share_rights_changed", true],
         ["nothing named, plan and one model allowed", "chat.create", { laneId: sharedLane, provider: "claude" }, { models: ["claude-sonnet"], permissionModes: ["plan"], reasoningLevels: ["low"] }, { modelId: "claude-sonnet", permissionMode: "plan", reasoningEffort: "low" }],
-      ])("a new session with %s: %s", async (_label, action, commandArgs, run, started) => {
+      ])("a new session with %s: %s", async (_label, action, commandArgs, run, started, tightenDuringChecks = false) => {
         const rights = allOnRights();
         Object.assign(rights.run, run);
         const directory = fakeDirectory(grantsBody([grant()]));
@@ -5694,14 +5696,23 @@ describe("sync host account authentication", () => {
         let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
         try {
           guest = await connectGuest(env.port, env.proof, directory);
+          if (tightenDuringChecks) {
+            env.agentChatService.getAvailableModels.mockImplementationOnce(async () => {
+              const narrowed = allOnRights();
+              narrowed.run.models = ["claude-opus"];
+              env.store.updateRights(grantId("a"), narrowed);
+              env.host.applyLaneShareRights(grantId("a"));
+              return [{ id: "claude-sonnet" }, { id: "claude-opus" }];
+            });
+          }
           const result = await runCommand(guest.client, "new", action, commandArgs);
           const ran = env.execute.mock.calls.find(([payload]) => payload.action === action);
-          if (started) {
+          if (typeof started === "string") {
+            expect(result).toMatchObject({ ok: false, error: { code: started } });
+            expect(ran).toBeUndefined();
+          } else {
             expect(result.ok).toBe(true);
             expect(ran?.[0].args).toMatchObject(started);
-          } else {
-            expect(result).toMatchObject({ ok: false, error: { code: "lane_share_model_locked" } });
-            expect(ran).toBeUndefined();
           }
         } finally {
           await env.close([guest?.client ?? null]);

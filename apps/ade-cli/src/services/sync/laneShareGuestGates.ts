@@ -8,7 +8,7 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
-import type { LaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
+import type { LaneShareMessageClaim, LaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
 import { toOptionalString } from "../../../../desktop/src/main/services/shared/utils";
 import {
   laneShareCliTypingFor,
@@ -27,6 +27,7 @@ import {
   laneShareGuestMaySeeSession,
   laneShareGuestSessionInfo,
   laneShareGuestTakeRate,
+  type LaneShareGuestRefusal,
   type LaneShareGuestRole,
   type LaneShareGuestSessionInfo,
 } from "./laneShareGuestPolicy";
@@ -121,6 +122,9 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
       return null;
     };
     if (!laneShareGuestMayReceive(role, type, payload, resolveLaneShareSession)) return blocked();
+    // A file read runs after its admission: an owner who turned the file
+    // switch off meanwhile gets no answer sent.
+    if (type === "file_response" && !role.rights.tools.file) return blocked();
     const out = (value: TPayload) => {
       const scrubbed = laneShareHideModels(
         laneShareScrubOwnerOnlyCards(type === "file_response" ? laneShareScrubFileResponse(value) : value),
@@ -256,6 +260,10 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
       reject(policyRejection.message, policyRejection.code);
       return;
     }
+    // The rights the gate and the preparation check: an owner's edit puts a
+    // new object on the role (`applyLaneShareRights`), so a change during the
+    // preparation's awaits is seen below, whatever the command chose.
+    const rightsAtStart = role.rights;
     const gate = evaluateLaneShareGuestCommand({ action, args: rawArgs, role, resolveSession: resolveLaneShareSession });
     if (!gate.ok) {
       reject(gate.refusal.message, gate.refusal.code);
@@ -286,9 +294,11 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     };
     // The checks above awaited: the guest may have been closed, or its rights
     // changed, meanwhile. Checked again right before the action, with no
-    // await in between.
+    // await in between. Rights that changed at all refuse: the prepared
+    // model, mode, reasoning level and limits were checked against the old ones.
     const stillAllowed = peer.authenticated
       && peer.laneShareGuest === role
+      && role.rights === rightsAtStart
       && !laneShareRightsEnded(role.rights, Date.now())
       && evaluateLaneShareGuestCommand({ action, args: rawArgs, role, resolveSession: resolveLaneShareSession }).ok;
     if (!stillAllowed) {
@@ -355,7 +365,14 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     }
     try {
       const result = await moves.guestCommand(
-        { grantId: role.grantId, laneId: grant.laneId, userId: role.userId, name: role.name, rights: role.rights },
+        {
+          grantId: role.grantId,
+          laneId: grant.laneId,
+          userId: role.userId,
+          name: role.name,
+          // Read on each check: an owner's change during the move's awaits counts at once.
+          get rights() { return role.rights; },
+        },
         rawArgs,
       );
       // The guest may have been closed while the step awaited.
@@ -431,6 +448,60 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
    * immediate envelope (the queued path and its guest gate take it); null:
    * not a guest's, or a typing line the gate allows: the host goes on.
    */
+  /**
+   * Typed lines admitted below that wait in the peer's input queue: the
+   * guest, the rights they were admitted with, and the message they counted.
+   */
+  const admittedLaneShareTypedLines = new WeakMap<ParsedSyncEnvelope, {
+    role: LaneShareGuestRole;
+    rights: LaneShareGuestRole["rights"];
+    claim: LaneShareMessageClaim;
+  }>();
+
+  /** A refused typed line gets its reason, through the outbound gate (only for a session the guest sees). */
+  function sendLaneShareTypingRefusal(peer: LaneShareGuestPeer, envelope: ParsedSyncEnvelope, refusal: LaneShareGuestRefusal): void {
+    const typingPayload = safeObjectValue(envelope.payload);
+    const sessionId = toOptionalString(typingPayload?.sessionId);
+    const inputId = normalizeTerminalInputId(typingPayload?.inputId);
+    if (!sessionId || !inputId) return;
+    sendRequired(peer, "terminal_input_ack", {
+      sessionId,
+      inputId,
+      ok: false,
+      duplicate: false,
+      error: { code: laneShareTerminalRefusalCode(refusal.code), message: refusal.message, retryable: false },
+    } satisfies SyncTerminalInputAckPayload, envelope.requestId);
+  }
+
+  /**
+   * Right before an admitted guest line is written, after the input queue's
+   * waits, with no await in between: the same guest with the same rights,
+   * or the line is dropped, its message given back, with its reason.
+   */
+  function laneShareGuestTypedLineStillAllowed(peer: LaneShareGuestPeer, envelope: ParsedSyncEnvelope): boolean {
+    const admitted = admittedLaneShareTypedLines.get(envelope);
+    admittedLaneShareTypedLines.delete(envelope);
+    if (!peer.laneShareGuest && !admitted) return true;
+    if (
+      admitted
+      && peer.laneShareGuest === admitted.role
+      && admitted.role.rights === admitted.rights
+      && !laneShareRightsEnded(admitted.rights, Date.now())
+    ) {
+      return true;
+    }
+    if (admitted) laneShareRights?.refundMessage(admitted.claim);
+    args.logger.warn("sync_host.lane_share_guest_refused_envelope", {
+      type: envelope.type,
+      guestUserId: peer.laneShareGuest?.userId ?? admitted?.role.userId ?? null,
+      code: "lane_share_rights_changed",
+    });
+    if (peer.laneShareGuest) {
+      sendLaneShareTypingRefusal(peer, envelope, { code: "lane_share_rights_changed", message: "Your access to this shared lane changed. Try again." });
+    }
+    return false;
+  }
+
   function admitLaneShareGuestImmediateEnvelope(peer: LaneShareGuestPeer, envelope: ParsedSyncEnvelope): boolean | null {
     if (!peer.laneShareGuest || envelope.type === "relay_reauthorize") return null;
     // Changeset acks never come from a guest. Terminal input does only into
@@ -445,24 +516,13 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
       return true;
     }
     if (envelope.type !== "terminal_input") return false;
-    const typingPayload = safeObjectValue(envelope.payload);
-    const refusal = laneShareGuestTypingRefusal(role, typingPayload);
-    if (refusal) {
-      refuseEnvelope(refusal.code);
-      // A refused line gets its reason, through the outbound gate (only for a session the guest sees).
-      const sessionId = toOptionalString(typingPayload?.sessionId);
-      const inputId = normalizeTerminalInputId(typingPayload?.inputId);
-      if (sessionId && inputId) {
-        sendRequired(peer, "terminal_input_ack", {
-          sessionId,
-          inputId,
-          ok: false,
-          duplicate: false,
-          error: { code: laneShareTerminalRefusalCode(refusal.code), message: refusal.message, retryable: false },
-        } satisfies SyncTerminalInputAckPayload, envelope.requestId);
-      }
+    const typed = laneShareGuestTypingRefusal(role, safeObjectValue(envelope.payload));
+    if ("refusal" in typed) {
+      refuseEnvelope(typed.refusal.code);
+      sendLaneShareTypingRefusal(peer, envelope, typed.refusal);
       return true;
     }
+    admittedLaneShareTypedLines.set(envelope, { role, rights: role.rights, claim: typed.claim });
     return null;
   }
 
@@ -470,6 +530,7 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     laneShareGuestOutboundPayload,
     admitLaneShareGuestEnvelope,
     admitLaneShareGuestImmediateEnvelope,
+    laneShareGuestTypedLineStillAllowed,
     handleLaneShareGuestCommand,
   };
 }

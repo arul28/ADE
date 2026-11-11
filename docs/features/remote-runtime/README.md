@@ -1073,7 +1073,11 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `runtimeHostGranted`) removes the entry and, with `deleteFolder`, the
   folder: it reads the state again, refuses when it no longer matches the
   `stateToken` the person saw (or shows work the person did not accept, or
-  something runs), checks that the folder is exactly a registered root that
+  something runs). The token covers the work itself, not only its counts:
+  each checkout's HEAD and git status, every branch tip and stash, and the
+  size and time of each changed, untracked and ignored secret file. Over
+  5,000 changed paths in one checkout the token never matches, so a delete
+  of accepted work there is refused. It then checks that the folder is exactly a registered root that
   holds no home folder, ADE home, other project or running ADE, stops the
   project, moves the folder aside in one rename and deletes it for good, then
   drops the entry. Lane worktrees outside the project folder stay. The
