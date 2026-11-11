@@ -887,6 +887,15 @@ function computeReviewStatus(args: {
   if (args.verdictUnavailable) {
     const stillApproved = Array.from(args.reviewStatesByUser.values()).includes("APPROVED");
     if (args.verdictUnavailable.previousStatus === "approved" && stillApproved) return "approved";
+    // GitHub could not be asked, so a missing verdict is not evidence of a
+    // change. Keep the last real status instead of inventing `none`: a branch
+    // that requires a review but names no reviewer flipped to `none` on every
+    // failed read (the REST payload has an empty `requested_reviewers`) and
+    // back to `requested` on the next good one, re-announcing the same review
+    // request each time. A row with no prior status still guesses from the
+    // requested reviewers, because a first read has nothing to keep.
+    const previous = args.verdictUnavailable.previousStatus;
+    if (previous === "requested" || previous === "changes_requested" || previous === "none") return previous;
     return args.requestedReviewers.length > 0 || (args.requestedTeams?.length ?? 0) > 0 ? "requested" : "none";
   }
   for (const state of args.reviewStatesByUser.values()) {
@@ -3426,6 +3435,8 @@ export function createPrService({
       lane: LaneSummary;
       state: PrSummary["state"];
       isOpen: boolean;
+      /** The live row this PR already has, if any (it is not a new row). */
+      existingRow: ReturnType<typeof getLiveRowForRepoPr>;
     };
     const bestByLane = new Map<string, BackfillCandidate>();
     for (const rawPr of rawPulls) {
@@ -3451,10 +3462,27 @@ export function createPrService({
         !prev
         || (isOpen && !prev.isOpen)
         || (isOpen === prev.isOpen && prNumber > prev.prNumber);
-      if (better) bestByLane.set(lane.id, { rawPr, prNumber, headBranch, lane, state, isOpen });
+      if (better) {
+        bestByLane.set(lane.id, {
+          rawPr,
+          prNumber,
+          headBranch,
+          lane,
+          state,
+          isOpen,
+          existingRow: existingRepoRow,
+        });
+      }
     }
 
-    for (const { rawPr, prNumber, headBranch, lane, state } of bestByLane.values()) {
+    const createdIds: string[] = [];
+    for (const { rawPr, prNumber, headBranch, lane, state, existingRow } of bestByLane.values()) {
+      // This is a lane-mapping backfill, not a status read. A row that is
+      // already tracked keeps its live verdicts: the pull list this walks only
+      // carries state and branch, so writing its defaults here reset a checked,
+      // reviewed PR to `none`. The poller then saw the PR move back to
+      // `requested` and announced the same review request again on every sweep
+      // — the notice a person could not keep dismissed.
       const summary: PrSummary = {
         id: randomUUID(),
         laneId: lane.id,
@@ -3468,13 +3496,13 @@ export function createPrService({
         state,
         baseBranch: asString(rawPr?.base?.ref) || branchNameFromRef(lane.baseRef),
         headBranch,
-        checksStatus: "none",
-        checksReason: null,
-        checksMissingRequired: [],
-        reviewStatus: "none",
+        checksStatus: (existingRow?.checks_status as PrChecksStatus | null) ?? "none",
+        checksReason: existingRow?.checks_reason ?? null,
+        checksMissingRequired: parseMissingRequired(existingRow?.checks_missing_required),
+        reviewStatus: (existingRow?.review_status as PrReviewStatus | null) ?? "none",
         additions: Number(rawPr?.additions ?? 0),
         deletions: Number(rawPr?.deletions ?? 0),
-        lastSyncedAt: nowIso(),
+        lastSyncedAt: existingRow?.last_synced_at ?? nowIso(),
         createdAt: asString(rawPr?.created_at) || nowIso(),
         updatedAt: asString(rawPr?.updated_at) || nowIso(),
         mergedAt: asString(rawPr?.merged_at) || null,
@@ -3488,10 +3516,14 @@ export function createPrService({
         laneId: lane.id,
       });
       backfilledIds.push(prId);
+      // Only a row this sweep actually created needs a hot-refresh window. An
+      // already-tracked row is on its normal staleness schedule; marking it hot
+      // on every snapshot re-armed the poller (and another live fetch) forever.
+      if (!existingRow) createdIds.push(prId);
     }
 
-    if (backfilledIds.length > 0) {
-      markHotRefresh(backfilledIds, { invalidateGithubSnapshot: false });
+    if (createdIds.length > 0) {
+      markHotRefresh(createdIds, { invalidateGithubSnapshot: false });
     }
     return backfilledIds.length;
   };
