@@ -15839,7 +15839,11 @@ export function AgentChatPane({
           ? { fastMode, fastTier: fastMode && fastTier === "ultrafast" ? "ultrafast" as const : null }
           : {};
         const reasoningUpdate = selectedReasoningChanged
-          || (selectedRouteChanged && Boolean(reasoningEffort))
+          || (
+            selectedRouteChanged
+            && reasoningEffort !== null
+            && reasoningTiers.includes(reasoningEffort)
+          )
           ? { reasoningEffort }
           : {};
         const pendingNativeUpdate = selectedModelChanged
@@ -16119,6 +16123,7 @@ export function AgentChatPane({
     patchSessionSummary,
     projectTransitionBlocksChat,
     reasoningEffort,
+    reasoningTiers,
     resolvedPendingInputsBySession,
     refreshAvailableModels,
     refreshSessions,
