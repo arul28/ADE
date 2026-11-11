@@ -141,22 +141,30 @@ export function usePrActionsMenu(context: PrActionsContext) {
   const chatsError = providedChats ? (providedChats.error ?? null) : fetchedChatsError;
   const [busy, setBusy] = React.useState<string | null>(null);
 
+  const chatsRequestRef = React.useRef(0);
   const ensureChats = React.useCallback(() => {
     if (!pr.laneId || laneChats !== null) return;
+    const request = ++chatsRequestRef.current;
     void window.ade.agentChat
       .list({ laneId: pr.laneId, includeArchived: false }, ...onPin)
       .then((sessions) => {
+        if (chatsRequestRef.current !== request) return;
         setFetchedChats(sessions);
         setFetchedChatsError(null);
       })
       // Do not cache a failed read as an empty list: that would silently offer
       // "Starts a chat in this lane" to a PR that already has chats and never
       // retry. Keep `fetchedChats` null so the next open reads again.
-      .catch((error) => setFetchedChatsError(extractError(error)));
+      .catch((error) => {
+        if (chatsRequestRef.current !== request) return;
+        setFetchedChatsError(extractError(error));
+      });
   }, [laneChats, onPin, pr.laneId]);
 
-  // A different PR (or lane) invalidates the cached chat list.
+  // A different PR (or lane) invalidates the cached chat list and any read in
+  // flight, so a superseded answer cannot land after the switch.
   React.useEffect(() => {
+    chatsRequestRef.current += 1;
     setFetchedChats(null);
     setFetchedChatsError(null);
   }, [pr.id, pr.laneId]);

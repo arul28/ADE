@@ -1797,7 +1797,9 @@ export function FilesWorkbench({
               // a permission); they are not ADE defects to report.
               report: false,
               actions: [{
-                label: "Retry",
+                // A file operation (rename, create, delete) cannot be replayed
+                // safely from here; refreshing the tree is the honest action.
+                label: "Refresh",
                 onClick: () => {
                   setError(null);
                   void refreshRoot();

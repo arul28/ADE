@@ -202,10 +202,13 @@ function sender(id = 42) {
 
 function eventForSender(nextSender = sender()) {
   // A registered channel now refuses anything but ADE's own renderer; these
-  // fake events stand for the main window's frame.
+  // fake events stand for the main window's frame. Follow the renderer URL the
+  // trust helper will accept in this environment (tests set the dev URL).
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+  const url = devServerUrl ? `${new URL(devServerUrl).origin}/` : "file:///tmp/ade/renderer/index.html";
   return {
     sender: nextSender,
-    senderFrame: { url: "file:///tmp/ade/renderer/index.html" },
+    senderFrame: { url },
   } as any;
 }
 

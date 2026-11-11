@@ -526,10 +526,16 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
         // lastSyncedAt moves on every sync and the home page never shows it.
         tracked.map((pr) => ({ ...pr, lastSyncedAt: null })),
       ]);
-      if (signature === lastSignatureRef.current) return;
+      const nextError = failed ? "ADE couldn't read this project's pull requests." : null;
+      // The error is not part of the data signature: a failure and a recovery
+      // can carry identical data, and the error must still update.
+      if (signature === lastSignatureRef.current) {
+        setLoadError(nextError);
+        return;
+      }
       lastSignatureRef.current = signature;
       setData({ snapshot, tracked });
-      setLoadError(failed ? "ADE couldn't read this project's pull requests." : null);
+      setLoadError(nextError);
     };
     const soon = () => {
       if (timer != null) window.clearTimeout(timer);
@@ -698,6 +704,14 @@ export function PullRequestsCard({
               <div data-tone={counts.ready > 0 ? "ok" : undefined}><dd className="kit-num">{counts.ready}</dd><dt>ready</dt></div>
               <div><dd className="kit-num">{recent.length}</dd><dt>merged · 7d</dt></div>
             </dl>
+            {prLoadError && open.length + recent.length > 0 ? (
+              <div className="ade-home-empty">
+                <span>{prLoadError}</span>
+                <button type="button" className="ade-home-line-link" onClick={retryPullRequests}>
+                  Retry
+                </button>
+              </div>
+            ) : null}
             {open.length === 0 && recent.length === 0 ? (
               <div className="ade-home-empty">
                 <GitPullRequest size={18} aria-hidden />
