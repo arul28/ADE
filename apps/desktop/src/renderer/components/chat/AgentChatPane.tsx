@@ -16925,7 +16925,7 @@ export function AgentChatPane({
    * The provider whose local login a send needs, or null when the composer's
    * route brings its own credentials. A saved preset or Run-in route decides
    * it (`routeLoginProvider`); so does a stored key picked for a draft, and an
-   * open chat's own key or provider account while its model is unchanged
+   * open chat's own key or provider account while its provider is unchanged
    * (the status reads only the provider's default account). A parallel set
    * carries no routes, so it checks its models' providers.
    */
@@ -16940,7 +16940,11 @@ export function AgentChatPane({
         modelCatalogScopeKey,
       );
       if (target) return routeLoginProvider(target);
-      if (!routePick && !modelSelectionDiffersFromSession && (selectedSession.credentialId || selectedSession.instanceId)) {
+      // The chat keeps its key and its account through a model change inside
+      // the same provider (`launchRouteTransition` drops a key only on a
+      // provider change or a new preset; the account moves only with the
+      // provider), so only a move to another provider checks the login.
+      if ((selectedSession.credentialId || selectedSession.instanceId) && signInProvider === selectedSession.provider) {
         return null;
       }
       return signInProvider;
@@ -16948,7 +16952,7 @@ export function AgentChatPane({
     if (draftLaunchTarget) return routeLoginProvider(draftLaunchTarget);
     if (draftCredentialId) return null;
     return signInProvider;
-  }, [draftCredentialId, draftLaunchTarget, harnessPresets, modelCatalogScopeKey, modelSelectionDiffersFromSession, parallelDraftActive, selectedSession, selectedSessionId, sessionRoutePick, signInProvider]);
+  }, [draftCredentialId, draftLaunchTarget, harnessPresets, modelCatalogScopeKey, parallelDraftActive, selectedSession, selectedSessionId, sessionRoutePick, signInProvider]);
   /**
    * A draft bound for Cursor Cloud or Devin runs elsewhere, and a CLI draft
    * signs in inside the CLI itself, so this computer's login check does not
