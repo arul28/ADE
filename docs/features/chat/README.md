@@ -2106,8 +2106,12 @@ still-live button invites a second spend.
   (`ModelPickerContent`'s `modelNeedsSignIn`). Its row has one sign-in
   control: the **Sign in** button, or a "Not signed in" tag where the
   surface offers no sign-in. Only other reasons (the model needs
-  configuration, the Cursor mode excludes it, the caller's own list does not
-  offer it) still dim a row. The switch **Only models I can use**
+  configuration, the Cursor mode excludes it, the provider's runtime is not
+  installed and not downloading, the caller's own list does not offer it)
+  still dim a row. The runtime check reads `familiesWithoutRuntime` from the
+  same status (`runtimeDetected`, `runtimeDownloadPending`); a host that
+  passes its own `providerAuthStatus` passes `providerRuntimeMissing` with
+  it, or its not-ready families read as a missing sign-in. The switch **Only models I can use**
   (`useAuthOnlyFilter`, off by default, stored under
   `ade.modelPicker.onlyUsable.v1`) hides signed-out providers. The row has
   fixed columns after the name (Sign in, capabilities, speed, star), and one
@@ -2125,7 +2129,20 @@ still-live button invites a second spend.
   press brings back the one-line strip, never the card, so focus stays in
   the prompt box. A turn that failed on its sign-in keeps its own flow and
   does not turn Send off. A draft bound for Cursor Cloud or Devin does not
-  use this computer's login: no strip, no card, Send stays on. The status
+  use this computer's login, and a CLI draft signs in inside the CLI: no
+  strip, no card, Send stays on (`draftSkipsLocalSignIn`). An open Cursor
+  Cloud or Devin chat is not held off either. In an open chat the check
+  follows the picked model's provider, not the chat's first one. A parallel draft
+  checks its set of models: the first one whose provider has no login shows
+  the strip and holds Send. A command that needs no login of the provider,
+  or that is the login, still runs while Send is off, and Send looks on for
+  it (`sendBlockExempt`): `/login` opens the sign-in card; `/usage` and
+  `/context` of a Claude chat; a Codex chat's `/memory`, `/memory-reset`,
+  `/shell`, `!command`, and `/goal` shown or cleared (app-server requests
+  with no turn). Any other command is a provider turn and waits like a
+  message. "Launch in background" and "Scheduled send" stay off and show
+  the same reason. A hidden status region in the composer, always mounted,
+  tells a screen reader that Send is off and why. The status
   refreshes by three paths, none a timer:
   1. The card's sign-in: Send turns on in the same commit as the card's
      success (`signedInNeedKey`), then a forced re-read on the composer's
@@ -2133,8 +2150,12 @@ still-live button invites a second spend.
   2. Settings in the same window: its cache invalidation reaches the pane,
      which reads the status again (one existing 250 ms settle).
   3. Another window or a terminal outside ADE: a `focus` listener, added
-     only while Send is off for the login, reads the status again, forced.
-     A sign-in in an ADE terminal is seen on the next press of Send.
+     only while Send is off for the login, reads the status again without
+     force (`revalidate`: the brain reads the credential files again but runs
+     no CLI, so it can trail by its own 30 s status cache). It runs at most
+     once each 15 s for each machine, so blocked panes share one read; the
+     others take it from the status cache event. A press of Send reads
+     forced, so it sees a sign-in at once.
 - **Claude logged-out (401) fast-fail and recovery.** A 401 is not a
   transient error, so the Claude adapter does **not** let the SDK grind
   through its retry budget ("retry 1/10 … 10/10"). On the first

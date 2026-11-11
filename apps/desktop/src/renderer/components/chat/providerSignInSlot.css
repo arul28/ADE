@@ -66,7 +66,7 @@
 /* Above the prompt box the strip is a tab on the box: inset from its sides,
    touching the box (the slot's 6px gap plus the box's edge). */
 [data-composer-above-slot] .ade-psi-strip {
-  margin: 0 var(--composer-tab-inset, 26px) -7px;
+  margin: 0 26px -7px;
   border-bottom: 0;
   border-radius: 12px 12px 0 0;
 }
@@ -82,8 +82,16 @@
   flex: none;
 }
 
+/* The kit's 1px focus ring is faint on the tinted strip: a clear 2px ring in
+   the provider tint, inside the strip so the box edge does not cut it. */
+.ade-psi-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--psi-accent) 70%, var(--color-fg));
+  outline-offset: 1px;
+}
+
 /* The card sits above the prompt box now, not inside it: drop the inset it
-   kept from the box. */
+   kept from the box. `.ade-icc` is the root class of ProviderSignInCard
+   (integrationConnectCard.css): a rebuilt card keeps it, or updates this file. */
 .ade-psi-holder > .ade-icc {
   margin: 0;
 }
@@ -91,7 +99,7 @@
 /* Above the prompt box the card is a tab on the box, like the strip it grows
    from: the same inset, touching the box, square at the bottom. */
 [data-composer-above-slot] .ade-psi-holder > .ade-icc {
-  margin: 0 var(--composer-tab-inset, 26px) -7px;
+  margin: 0 26px -7px;
   border-radius: 12px 12px 0 0;
 }
 
