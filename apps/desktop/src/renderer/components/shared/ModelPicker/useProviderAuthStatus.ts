@@ -15,7 +15,12 @@ import type { AuthStatus } from "./ModelPickerRail";
 
 type AuthStatusMap = Partial<Record<ProviderFamily, AuthStatus>>;
 
-type ProviderConnectionFlags = { authAvailable?: boolean; runtimeAvailable?: boolean };
+type ProviderConnectionFlags = {
+  authAvailable?: boolean;
+  runtimeAvailable?: boolean;
+  runtimeDetected?: boolean;
+  runtimeDownloadPending?: boolean;
+};
 
 type ProviderStatusSnapshot = {
   availableProviders?: {
@@ -32,6 +37,10 @@ type ProviderStatusSnapshot = {
     antigravity?: unknown;
   };
   providerConnections?: {
+    claude?: ProviderConnectionFlags;
+    codex?: ProviderConnectionFlags;
+    cursor?: ProviderConnectionFlags;
+    droid?: ProviderConnectionFlags;
     pi?: ProviderConnectionFlags;
     muse?: ProviderConnectionFlags;
     qwen?: ProviderConnectionFlags;
@@ -64,7 +73,21 @@ const ACP_PICKER_FAMILIES = [
   { provider: "antigravity", family: "antigravity" },
 ] as const satisfies readonly { provider: string; family: ProviderFamily }[];
 
+/** Every provider whose connection names its runtime -> picker rail family. */
+const RUNTIME_PICKER_FAMILIES = [
+  { provider: "claude", family: "anthropic" },
+  { provider: "codex", family: "openai" },
+  { provider: "cursor", family: "cursor" },
+  { provider: "droid", family: "factory" },
+  { provider: "muse", family: "muse" },
+  { provider: "pi", family: "pi" },
+  ...ACP_PICKER_FAMILIES,
+] as const satisfies readonly { provider: keyof NonNullable<ProviderStatusSnapshot["providerConnections"]>; family: ProviderFamily }[];
+
+type RuntimeMissingMap = Partial<Record<ProviderFamily, true>>;
+
 const EMPTY_AUTH_STATUS: AuthStatusMap = {};
+const EMPTY_RUNTIME_MISSING: RuntimeMissingMap = {};
 const UNKNOWN_BINARY: ProviderBinarySnapshot = {
   opencodeBinaryInstalled: false,
   binaryProbed: false,
@@ -80,6 +103,12 @@ function authStatusMapsEqual(left: AuthStatusMap, right: AuthStatusMap): boolean
     if (left[key] !== right[key]) return false;
   }
   return true;
+}
+
+function runtimeMissingMapsEqual(left: RuntimeMissingMap, right: RuntimeMissingMap): boolean {
+  const leftKeys = Object.keys(left);
+  return leftKeys.length === Object.keys(right).length
+    && leftKeys.every((key) => right[key as ProviderFamily] === true);
 }
 
 export function resetProviderAuthStatusForTests(): void {
@@ -153,6 +182,23 @@ export function familiesFromStatus(
   return out;
 }
 
+/**
+ * Families whose runtime is not on the machine and is not on its way (ADE
+ * downloads some runtimes itself; `runtimeDownloadPending` marks that wait).
+ * A sign-in alone cannot make these usable, so the picker keeps them dimmed.
+ * A family with no connection data is absent: it reads as a missing sign-in.
+ */
+export function familiesWithoutRuntime(status: ProviderStatusSnapshot): RuntimeMissingMap {
+  const out: RuntimeMissingMap = {};
+  for (const entry of RUNTIME_PICKER_FAMILIES) {
+    const connection = status.providerConnections?.[entry.provider];
+    if (connection?.runtimeDetected === false && connection.runtimeDownloadPending !== true) {
+      out[entry.family] = true;
+    }
+  }
+  return out;
+}
+
 export function opencodeBinaryInstalledFromStatus(status: { opencodeBinaryInstalled?: unknown }): boolean {
   return status.opencodeBinaryInstalled === true;
 }
@@ -187,6 +233,8 @@ export function useProviderAuthStatus(options?: {
   runtimePin?: OpenProjectBinding | null;
 }): {
   status: AuthStatusMap;
+  /** Families whose runtime is not installed (see `familiesWithoutRuntime`). */
+  runtimeMissing: RuntimeMissingMap;
   opencodeBinaryInstalled: boolean;
   /** True once we have a definitive answer for opencodeBinaryInstalled (cheap probe done). */
   binaryProbed: boolean;
@@ -210,6 +258,9 @@ export function useProviderAuthStatus(options?: {
   const cachedStatus = peekAiStatusCached(projectRoot, authPin);
   const [status, setStatus] = useState<AuthStatusMap>(() => (
     cachedStatus ? familiesFromStatus(cachedStatus, options) : EMPTY_AUTH_STATUS
+  ));
+  const [runtimeMissing, setRuntimeMissing] = useState<RuntimeMissingMap>(() => (
+    cachedStatus ? familiesWithoutRuntime(cachedStatus) : EMPTY_RUNTIME_MISSING
   ));
   const [loaded, setLoaded] = useState(cachedStatus != null);
   const [binary, setBinary] = useState<ProviderBinarySnapshot>(() => (
@@ -250,6 +301,8 @@ export function useProviderAuthStatus(options?: {
       if (!active) return;
       const nextAuthStatus = familiesFromStatus(nextStatus, options);
       setStatus((current) => authStatusMapsEqual(current, nextAuthStatus) ? current : nextAuthStatus);
+      const nextRuntimeMissing = familiesWithoutRuntime(nextStatus);
+      setRuntimeMissing((current) => runtimeMissingMapsEqual(current, nextRuntimeMissing) ? current : nextRuntimeMissing);
       setLoaded(true);
       if (typeof nextStatus.opencodeBinaryInstalled === "boolean") {
         setBinary({
@@ -277,6 +330,7 @@ export function useProviderAuthStatus(options?: {
       applyStatus(cached);
     } else {
       setStatus(EMPTY_AUTH_STATUS);
+      setRuntimeMissing(EMPTY_RUNTIME_MISSING);
       setLoaded(false);
     }
 
@@ -299,6 +353,7 @@ export function useProviderAuthStatus(options?: {
         return;
       }
       setStatus(EMPTY_AUTH_STATUS);
+      setRuntimeMissing(EMPTY_RUNTIME_MISSING);
       setLoaded(false);
     };
     window.addEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
@@ -322,6 +377,7 @@ export function useProviderAuthStatus(options?: {
 
   return {
     status,
+    runtimeMissing,
     loaded,
     ...binary,
   };

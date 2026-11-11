@@ -223,7 +223,7 @@ import { runtimeCatalogModelIds, useCursorCloudModelEligibility } from "./useCur
 import { reconcileDraftModelControls } from "./draftModelControls";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { useLaneGitRemote } from "./useLaneGitRemote";
-import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
+import { familiesFromStatus, familiesWithoutRuntime } from "../shared/ModelPicker/useProviderAuthStatus";
 import {
   AgentChatMessageList,
   ChatInfoHostContext,
@@ -349,7 +349,12 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { DevinLogo } from "../shared/ProviderLogos";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
+import {
+  isCodexMemoryResetDraft,
+  parseCodexMemorySlashCommand,
+  parseCodexShellSlashCommand,
+  parseCodexUserShellDraft,
+} from "../../../shared/codexComposerCommands";
 import { ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
 import { ChatAccountNote } from "./ChatAccountNote";
 import { ChatHandoffDialogs } from "./ChatHandoffDialogs";
@@ -376,12 +381,14 @@ import {
 } from "./chatSessionRetention";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { cardShowsOwnError, readNativeInputCard } from "../../../shared/nativeInputCards";
-import { ProviderSignInComposer, providerSettingsEntryId, providerSignInKnownBeforeSend, type ProviderSignInNeed } from "./ProviderSignInCard";
+import { ProviderSignInComposer, providerSettingsEntryId, providerSignInKnownBeforeSend, providerSignInSpec, type ProviderSignInNeed } from "./ProviderSignInCard";
+import { ProviderSignInCardHolder, ProviderSignInStrip } from "./ProviderSignInSlot";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
 import { cancelWorkDraftLaneRequest, type WorkDraftModelRequest } from "../../lib/workDraft";
-import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { resolveHarnessLaunchTarget, type HarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { isDefaultProviderInstanceId } from "../../../shared/types/providerInstances";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle, resolveChatContentWidthPx } from "./chatAppearance";
@@ -631,6 +638,64 @@ const chatToolbarActionBase =
   "relative inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 font-sans text-[10px] font-medium transition-colors";
 const chatToolbarActionIdle =
   "border-fg/[0.06] bg-fg/[0.02] text-muted-fg/40 hover:border-fg/[0.10] hover:text-fg/65";
+
+/** A command this window answers itself: nothing is sent to the provider. */
+type PaneLocalChatCommand = "claude-usage" | "claude-context" | "codex-memory-reset";
+
+/**
+ * The one rule for which drafts `submit` answers in this window. The sign-in
+ * exemption (`sendRunsWithoutSignIn`) calls it too, so a local command added
+ * here also runs while Send is off for a sign-in.
+ */
+function paneLocalChatCommand(args: {
+  text: string;
+  sessionId: string | null;
+  provider: string | null;
+  claudeUsageAvailable: boolean;
+  /** Attachments, context items or visual context ride the draft. */
+  hasExtras: boolean;
+}): PaneLocalChatCommand | null {
+  if (!args.sessionId || args.hasExtras) return null;
+  if (args.text === "/usage" && args.claudeUsageAvailable) return "claude-usage";
+  if (args.text === "/context" && args.provider === "claude") return "claude-context";
+  if (args.provider === "codex" && isCodexMemoryResetDraft(args.text)) return "codex-memory-reset";
+  return null;
+}
+
+/** The least time between two sign-in reads on window focus, for one machine. */
+const SIGN_IN_FOCUS_READ_MIN_INTERVAL_MS = 15_000;
+/** When the last focus read for each machine started, shared by every pane. */
+const signInFocusReadAtByScope = new Map<string, number>();
+
+/**
+ * Whose local login a run through a harness route needs: a stored key or a
+ * picked provider account brings its own credentials (null: no local login to
+ * check); a subscription run in another harness uses that subscription's
+ * provider login; OpenCode signs in its own providers.
+ */
+function routeLoginProvider(target: Pick<HarnessLaunchTarget, "harness" | "source">): string | null {
+  switch (target.source.kind) {
+    case "key":
+    case "account":
+      return null;
+    case "subscription":
+      return target.source.provider;
+    default:
+      return target.harness;
+  }
+}
+
+/**
+ * The provider is installed on the machine and only its login is missing.
+ * A login ADE cannot see but the machine still runs with (Muse keeps its own
+ * in the macOS Keychain) is not a missing one.
+ */
+function providerLoginMissing(provider: string, connection: AiProviderConnectionStatus | null | undefined): boolean {
+  return providerSignInKnownBeforeSend(provider)
+    && connection?.runtimeDetected === true
+    && connection.authAvailable === false
+    && connection.runtimeAvailable === false;
+}
 
 function handoffProviderDisplayName(provider: string | null | undefined): string {
   return providerDisplayLabel(provider, "this provider");
@@ -4598,6 +4663,10 @@ export function AgentChatPane({
      before the chat exists. Only read while there is no selected session; a
      running chat is named by its own `presetId`. */
   const [draftHarnessPresetId, setDraftHarnessPresetId] = useState<string | null>(restoredDraftPresetId);
+  /* A draft's pick of a stored API key (a provider card's key row), held as
+     state beside the launch ref so the sign-in check sees it: that run
+     authenticates with the key, not the provider's local login. */
+  const [draftCredentialId, setDraftCredentialId] = useState<string | null>(null);
   /* A running chat's model pick, held until Send applies it. It names the
      preset the pick came from, or none for a plain model. The trigger reads it
      so a pick shows at once instead of the chat's old preset, and Send reads
@@ -4764,6 +4833,11 @@ export function AgentChatPane({
   const submittedDraftTextEditRef = useRef<SubmittedDraftTextEdit | null>(null);
   const [mentionLabels, setMentionLabels] = useState<Record<string, string>>({});
   const draftsPerSessionRef = useRef<Map<string, string>>(new Map());
+  /**
+   * Opens the provider sign-in card for a typed `/login` while the chat needs
+   * one, and says whether it did. Set where that need is known (further down).
+   */
+  const openSignInForLoginCommandRef = useRef<(() => boolean) | null>(null);
   const composerDraftWriteTimerRef = useRef<number | null>(null);
   const pendingComposerDraftWriteRef = useRef<{
     storageKey: string;
@@ -7828,6 +7902,10 @@ export function AgentChatPane({
       : undefined),
     [aiStatus, workDraftKind],
   );
+  const modelPickerProviderRuntimeMissing = useMemo(
+    () => (aiStatus ? familiesWithoutRuntime(aiStatus) : undefined),
+    [aiStatus],
+  );
   const draftCursorModelSelectionError = useMemo(() => {
     if (!forceDraft || selectedSessionId || lockSessionId || initialSessionId || !modelId) return null;
     const descriptor = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
@@ -8260,8 +8338,8 @@ export function AgentChatPane({
   }, [isPersonalPane, projectBinding, projectRoot]);
 
   // The picker's "Sign in" opens that provider's Settings page on the machine
-  // the composer runs on, which is the machine the picker greyed it out for.
-  // A chat already signed out shows its sign-in card in the composer.
+  // the composer runs on, which is the machine the picker marked "Not signed in" for.
+  // A chat already signed out shows its sign-in card above the prompt box.
   const openProviderSignIn = useCallback((
     family?: ProviderFamily,
     signInTarget?: readonly unknown[] | OpenProjectBinding | null,
@@ -8290,8 +8368,16 @@ export function AgentChatPane({
       );
   }, [modelId, selectedSession?.provider, sessionProvider]);
 
-  const refreshAvailableModels = useCallback(async (options?: { force?: boolean }) => {
-    ++availableModelsRefreshSeqRef.current;
+  /**
+   * `force` makes the brain re-probe every CLI and the login shell's PATH.
+   * `revalidate` skips only this window's cache: the brain answers from its
+   * own short caches, but rebuilds the logins from the credential files.
+   */
+  const refreshAvailableModels = useCallback(async (options?: { force?: boolean; revalidate?: boolean }) => {
+    // A newer refresh's answer wins: an older one that resolves later (a
+    // sign-in recheck after the card's own re-read) must not overwrite it.
+    const refreshSeq = ++availableModelsRefreshSeqRef.current;
+    const isStale = () => refreshSeq !== availableModelsRefreshSeqRef.current;
     const shouldRefreshOpenCodeInventory = shouldRefreshOpenCodeInventoryForStatus();
     const scope = resolveAiStatusRuntimeScope();
     if (!scope) {
@@ -8304,7 +8390,7 @@ export function AgentChatPane({
     if (options?.force === true) {
       invalidateAiDiscoveryCache(runtimeProjectRoot);
     }
-    let revalidateStatus = false;
+    let revalidateStatus = options?.revalidate === true;
     // Unpinned IPC follows the bound tab. Two runtimes can share one project
     // root, so a tab switch must bypass the TTL instead of reusing the other
     // machine's Settings cache. Leave pin-scoped buckets alone. Bypassing the
@@ -8325,8 +8411,10 @@ export function AgentChatPane({
         revalidate: revalidateStatus,
         ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
       });
+      if (isStale()) return orderAvailableModelIds(deriveConfiguredModelIds(status, { includeDroid: true }));
       return applyAiStatusSnapshot(status);
     } catch {
+      if (isStale()) return [];
       setAiStatus(null);
       setProviderConnections(null);
       // Fall back to direct model discovery probes below.
@@ -8378,9 +8466,11 @@ export function AgentChatPane({
       }
 
       const allAvailable = orderAvailableModelIds(available);
+      if (isStale()) return allAvailable;
       setAvailableModelIds((prev) => reuseStructurallyEqualArray(allAvailable, prev));
       return allAvailable;
     } catch {
+      if (isStale()) return [];
       setAvailableModelIds(keepEmptyArray);
       return [];
     }
@@ -9957,6 +10047,13 @@ export function AgentChatPane({
     handoffModelAutoseedRef.current = false;
     setHandoffModelId(modelId);
   }, []);
+  // The cross-machine target was picked in its modal, so a catalog update must
+  // not swap it back to the source model or the first listed one.
+  const remoteHandoffModelPickedRef = useRef(false);
+  const chooseRemoteHandoffModel = useCallback((modelId: string) => {
+    remoteHandoffModelPickedRef.current = true;
+    setRemoteHandoffModelId(modelId);
+  }, []);
   useEffect(() => {
     if (!handoffFormActive) {
       handoffModelAutoseedRef.current = true;
@@ -9970,13 +10067,19 @@ export function AgentChatPane({
       : null;
     const preferredTargetId = sourceModelId ?? handoffAvailableModelIds[0] ?? "";
     setHandoffModelId((current) => {
-      if (!autoseed && current && handoffAvailableModelIds.includes(current)) return current;
+      // A model the person picked stays, also one whose provider is signed
+      // out (the picker offers it, but this machine's list does not hold it).
+      if (
+        !autoseed
+        && current
+        && (handoffAvailableModelIds.includes(current) || resolveScopedModelDescriptor(current, modelCatalogScopeKey))
+      ) return current;
       return preferredTargetId;
     });
     // Until the source model is in the catalog, a later catalog update may
     // still replace the fallback with it.
     if (sourceModelId) handoffModelAutoseedRef.current = false;
-  }, [handoffFormActive, handoffAvailableModelIds, selectedSessionModelId]);
+  }, [handoffFormActive, handoffAvailableModelIds, modelCatalogScopeKey, selectedSessionModelId]);
 
   const prevHandoffOpenRef = useRef(false);
   useEffect(() => {
@@ -10028,6 +10131,7 @@ export function AgentChatPane({
       // model.
       setHandoffLocalMode("fork");
       setHandoffTargetLaneId(selectedSession?.laneId ?? laneId ?? "");
+      remoteHandoffModelPickedRef.current = false;
       setRemoteHandoffModelId(
         selectedSessionModelId
           || handoffAvailableModelIds[0]
@@ -10045,7 +10149,8 @@ export function AgentChatPane({
   useEffect(() => {
     if (!handoffFormActive || handoffAvailableModelIds.length === 0) return;
     setRemoteHandoffModelId((current) => {
-      if (current && handoffAvailableModelIds.includes(current)) return current;
+      // A picked model stays, also one whose provider is signed out.
+      if (current && (remoteHandoffModelPickedRef.current || handoffAvailableModelIds.includes(current))) return current;
       if (selectedSessionModelId && handoffAvailableModelIds.includes(selectedSessionModelId)) {
         return selectedSessionModelId;
       }
@@ -10061,6 +10166,9 @@ export function AgentChatPane({
     if (!localHandoffOpen || handoffLocalMode !== "fork" || !handoffForkSupported) return;
     if (handoffForkAvailableModelIds.length === 0) return;
     if (handoffForkAvailableModelIds.includes(handoffModelId)) return;
+    // A model the picker offers but this machine's list lacks is a pick whose
+    // provider is signed out. It stays.
+    if (resolveScopedModelDescriptor(handoffModelId, modelCatalogScopeKey)) return;
     const next = selectedSessionModelId && handoffForkAvailableModelIds.includes(selectedSessionModelId)
       ? selectedSessionModelId
       : handoffForkAvailableModelIds[0];
@@ -10072,6 +10180,7 @@ export function AgentChatPane({
     handoffLocalMode,
     handoffModelId,
     localHandoffOpen,
+    modelCatalogScopeKey,
     selectedSessionModelId,
   ]);
 
@@ -14637,6 +14746,13 @@ export function AgentChatPane({
       }
       return;
     }
+    // `/login` while the chat needs a sign-in is that sign-in: the card opens,
+    // and nothing is sent (Claude's SDK refuses `/login` as a turn).
+    if (draft.trim() === "/login" && openSignInForLoginCommandRef.current?.()) {
+      setDraft("");
+      if (selectedSessionId) draftsPerSessionRef.current.delete(selectedSessionId);
+      return;
+    }
     // In a subagent's transcript view, a runtime that can message its
     // subagents (Muse) sends the draft to that subagent, on the chat's own
     // machine (the chat's runtime pin), not as a new turn of the parent.
@@ -15098,14 +15214,14 @@ export function AgentChatPane({
       }
     }
     void copyPromptForLaunch(text);
-    if (
-      text === "/usage"
-      && selectedSessionId
-      && claudeUsageAvailable
-      && !attachments.length
-      && !contextAttachmentsSnapshot.length
-      && !visualContextPrefix.length
-    ) {
+    const localCommand = paneLocalChatCommand({
+      text,
+      sessionId: selectedSessionId,
+      provider: sessionProvider,
+      claudeUsageAvailable,
+      hasExtras: attachments.length > 0 || contextAttachmentsSnapshot.length > 0 || visualContextPrefix.length > 0,
+    });
+    if (localCommand === "claude-usage" && selectedSessionId) {
       // Claude Code's usage report as a sheet; nothing reaches the transcript.
       setError(null);
       setDraft("");
@@ -15113,14 +15229,7 @@ export function AgentChatPane({
       setClaudeUsageSheetOpen(true);
       return;
     }
-    if (
-      text === "/context"
-      && selectedSessionId
-      && sessionProvider === "claude"
-      && !attachments.length
-      && !contextAttachmentsSnapshot.length
-      && !visualContextPrefix.length
-    ) {
+    if (localCommand === "claude-context" && selectedSessionId) {
       setBusy(true);
       setError(null);
       setDraft("");
@@ -15164,14 +15273,7 @@ export function AgentChatPane({
       }
       return;
     }
-    if (
-      selectedSessionId
-      && sessionProvider === "codex"
-      && isCodexMemoryResetDraft(text)
-      && !attachments.length
-      && !contextAttachmentsSnapshot.length
-      && !visualContextPrefix.length
-    ) {
+    if (localCommand === "codex-memory-reset" && selectedSessionId) {
       const ok = await confirmDialog({
         title: "Reset Codex memory?",
         message: "Deletes every memory file under this Codex home, not just this chat.",
@@ -16801,47 +16903,207 @@ export function AgentChatPane({
   // machine. Before a send, from the status the picker already reads for that
   // machine (no extra probe per send); after a turn stopped on its sign-in,
   // from that turn's error. It runs the sign-in on that machine
-  // (`composerRuntimePin`, null for the tab's own) and takes the composer's place.
-  const signInProvider = selectedSessionId ? (selectedSession?.provider ?? null) : sessionProvider;
-  const signInConnection = signInProvider
-    ? (aiStatus?.providerConnections as Record<string, AiProviderConnectionStatus | undefined> | undefined)?.[signInProvider] ?? null
-    : null;
+  // (`composerRuntimePin`, null for the tab's own) and shows above the prompt box.
+  const signInConnections = aiStatus?.providerConnections as Record<string, AiProviderConnectionStatus | undefined> | undefined;
+  // A parallel draft starts one chat for each model in its set, so the check
+  // follows the set: the first model whose provider has no login here, else
+  // the first model. The composer's own model may not be in the set.
+  const parallelDraftActive = parallelChatMode && !selectedSessionId;
+  // In an open chat it is the provider of the picked model (`sessionProvider`
+  // follows a pick that differs from the chat's own); a turn that failed on
+  // its sign-in matches only while that is still the chat's provider.
+  const signInProvider = useMemo<string | null>(() => {
+    if (selectedSessionId) return selectedSession ? sessionProvider : null;
+    if (!parallelDraftActive) return sessionProvider;
+    const providers = parallelModelSlots
+      .map((slot) => (slot.modelId?.trim()
+        ? resolveChatRuntimeProvider(resolveScopedModelDescriptor(slot.modelId, modelCatalogScopeKey))
+        : null))
+      .filter((provider): provider is NonNullable<typeof provider> => Boolean(provider));
+    return providers.find((provider) => providerLoginMissing(provider, signInConnections?.[provider])) ?? providers[0] ?? null;
+  }, [modelCatalogScopeKey, parallelDraftActive, parallelModelSlots, selectedSession, selectedSessionId, sessionProvider, signInConnections]);
+  /**
+   * The provider whose local login a send needs, or null when the composer's
+   * route brings its own credentials. A saved preset or Run-in route decides
+   * it (`routeLoginProvider`); so does a stored key picked for a draft, and an
+   * open chat's own key or provider account while its provider is unchanged
+   * (the status reads only the provider's default account). A parallel set
+   * carries no routes, so it checks its models' providers.
+   */
+  const signInLoginProvider = useMemo<string | null>(() => {
+    if (parallelDraftActive) return signInProvider;
+    if (selectedSessionId) {
+      if (!selectedSession) return null;
+      const routePick = sessionRoutePick?.sessionId === selectedSessionId ? sessionRoutePick : null;
+      const target = resolveHarnessLaunchTarget(
+        routePick ? routePick.presetId : selectedSession.presetId ?? null,
+        harnessPresets,
+        modelCatalogScopeKey,
+      );
+      if (target) return routeLoginProvider(target);
+      // The chat keeps its key and its account through a model change inside
+      // the same provider (`launchRouteTransition` drops a key only on a
+      // provider change or a new preset; the account moves only with the
+      // provider), so only a move to another provider checks the login. The
+      // machine's own default account is the login the status reads, so a
+      // chat on it is still checked.
+      const ownAccount = selectedSession.instanceId && !isDefaultProviderInstanceId(selectedSession.instanceId);
+      if ((selectedSession.credentialId || ownAccount) && signInProvider === selectedSession.provider) {
+        return null;
+      }
+      return signInProvider;
+    }
+    if (draftLaunchTarget) return routeLoginProvider(draftLaunchTarget);
+    if (draftCredentialId) return null;
+    return signInProvider;
+  }, [draftCredentialId, draftLaunchTarget, harnessPresets, modelCatalogScopeKey, parallelDraftActive, selectedSession, selectedSessionId, sessionRoutePick, signInProvider]);
+  /**
+   * A draft bound for Cursor Cloud or Devin runs elsewhere, and a CLI draft
+   * signs in inside the CLI itself, so this computer's login check does not
+   * apply: no local sign-in strip or card, and Send is not held off for it.
+   */
+  const draftSkipsLocalSignIn = !selectedSessionId && (cursorCloudMode || devinCloudMode || isWorkCliLaunchDraft);
+  // An open Cursor Cloud or Devin chat runs in its cloud too: this computer's
+  // missing login does not hold it off (a failed turn still shows its card).
+  const sessionRunsInACloud = Boolean(selectedSessionId) && composerCloudRuntime === "cloud";
   const providerSignInNeed = useMemo<(ProviderSignInNeed & { key: string }) | null>(() => {
-    if (!signInProvider || turnActive || subagentView || personalScope) return null;
+    if (!signInProvider || turnActive || subagentView || personalScope || draftSkipsLocalSignIn) return null;
     const machineKey = activeComposerRuntimeBinding?.key ?? "tab";
     if (chatSignInFailure && chatSignInFailure.provider === signInProvider) {
       return { provider: signInProvider, reason: "failed-turn", key: `${machineKey}:${chatSignInFailure.eventKey}` };
     }
     if (
-      providerSignInKnownBeforeSend(signInProvider)
-      && signInConnection?.runtimeDetected === true
-      && signInConnection.authAvailable === false
-      // A login ADE cannot see but the machine still runs with (Muse keeps its
-      // own in the macOS Keychain) is not a missing one.
-      && signInConnection.runtimeAvailable === false
+      !sessionRunsInACloud
+      && signInLoginProvider
+      && providerLoginMissing(signInLoginProvider, signInConnections?.[signInLoginProvider])
     ) {
-      return { provider: signInProvider, reason: "no-login", key: `${machineKey}:${signInProvider}:no-login` };
+      return { provider: signInLoginProvider, reason: "no-login", key: `${machineKey}:${signInLoginProvider}:no-login` };
     }
     return null;
-  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, personalScope, signInConnection, signInProvider, subagentView, turnActive]);
+  }, [activeComposerRuntimeBinding?.key, chatSignInFailure, draftSkipsLocalSignIn, personalScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
+  // The connection of the provider the card signs in to.
+  const signInConnection = providerSignInNeed ? signInConnections?.[providerSignInNeed.provider] ?? null : null;
   // Not now hides this card until a different reason (another failed turn,
   // another machine) brings one back.
   const [dismissedSignInKey, setDismissedSignInKey] = useState<string | null>(null);
+  // The need whose card the person opened from the strip. A failed turn opens
+  // its card at once; a missing login shows the one-line strip first.
+  const [signInCardKey, setSignInCardKey] = useState<string | null>(null);
   const providerSignInShown = providerSignInNeed && providerSignInNeed.key !== dismissedSignInKey
     ? providerSignInNeed
     : null;
+  /**
+   * The need the card just reported signed in. Send turns on with that report
+   * (same commit as the card's success), before the forced status re-read
+   * below answers; the re-read then decides, and clears this mark.
+   */
+  const [signedInNeedKey, setSignedInNeedKey] = useState<string | null>(null);
+  /**
+   * Send stays off while the picked model's provider has no login on the
+   * chat's computer: the same "no-login" need that shows the strip or card.
+   * A turn that failed on its sign-in keeps its own flow (card, resend after
+   * sign-in) and does not turn Send off. A cloud or CLI draft has no need at
+   * all (`draftSkipsLocalSignIn`).
+   */
+  const signInSendBlockReason = providerSignInNeed?.reason === "no-login"
+    && providerSignInNeed.key !== signedInNeedKey
+    ? `Sign in to ${providerSignInSpec(providerSignInNeed.provider)?.label ?? providerSignInNeed.provider} first`
+    : null;
+  const signInSendBlocked = signInSendBlockReason != null;
+  // One status read at a time for the sign-in checks below.
+  const signInRecheckInFlightRef = useRef(false);
+  /**
+   * Reads the composer machine's sign-in status again: the login may have
+   * changed outside ADE (another window, a terminal). Only runs while Send is
+   * off for a missing login. A press of Send forces a full re-probe. A window
+   * focus asks the brain without force (it reads the credential files again,
+   * but runs no CLI), at most once per interval for each machine, so several
+   * blocked panes share one read; the others take it from the status cache
+   * event.
+   */
+  const recheckProviderSignIn = useCallback((trigger: "press" | "focus") => {
+    if (signInRecheckInFlightRef.current) return;
+    if (trigger === "focus") {
+      const scope = resolveAiStatusRuntimeScope();
+      if (!scope) return;
+      const scopeKey = `${scope.runtimeProjectRoot ?? ""}::${scope.runtimePin?.key ?? ""}`;
+      const now = Date.now();
+      if (now - (signInFocusReadAtByScope.get(scopeKey) ?? 0) < SIGN_IN_FOCUS_READ_MIN_INTERVAL_MS) return;
+      signInFocusReadAtByScope.set(scopeKey, now);
+    }
+    signInRecheckInFlightRef.current = true;
+    void refreshAvailableModels(trigger === "press" ? { force: true } : { revalidate: true })
+      .catch(() => undefined)
+      .finally(() => { signInRecheckInFlightRef.current = false; });
+  }, [refreshAvailableModels, resolveAiStatusRuntimeScope]);
+  /** Send or Enter while the login is missing: bring back the strip (Not now hid it) and check again. */
+  const handleSendBlocked = useCallback(() => {
+    if (!signInSendBlocked) return;
+    // Back as the one-line strip, never the card: the card takes focus, and a
+    // second Enter would then start a provider sign-in. Focus stays in the box.
+    setSignInCardKey(null);
+    setDismissedSignInKey(null);
+    recheckProviderSignIn("press");
+  }, [recheckProviderSignIn, signInSendBlocked]);
+  /**
+   * Commands that need no login of the provider, or that are the login, still
+   * run while Send is off for the sign-in. Each one is answered without a
+   * provider turn: `/login` opens the sign-in card (`submit`); the commands
+   * `submit` answers in this window (`paneLocalChatCommand`); a Codex chat's
+   * `/memory`, `/memory-reset`, `/shell`, `!command`, and `/goal` shown or
+   * cleared are app-server requests with no `turn/start` (the brain's inline
+   * Codex commands). Everything else is sent to the provider as a turn
+   * and waits for the sign-in like a message.
+   */
+  const sendRunsWithoutSignIn = useCallback((text: string) => {
+    if (text === "/login") return providerSignInNeed != null;
+    const hasExtras = attachments.length > 0 || contextAttachments.length > 0
+      || iosElementContextItems.length > 0 || appControlContextItems.length > 0 || builtInBrowserContextItems.length > 0;
+    if (paneLocalChatCommand({ text, sessionId: selectedSessionId, provider: sessionProvider, claudeUsageAvailable, hasExtras })) return true;
+    if (!selectedSessionId || hasExtras) return false;
+    if (sessionProvider === "codex") {
+      return parseCodexMemorySlashCommand(text) != null
+        || parseCodexShellSlashCommand(text) != null
+        || parseCodexUserShellDraft(text) != null
+        // The brain's "show" and "clear" goal forms; a status change or an
+        // objective can start a turn.
+        || /^\/goal(?:\s+(?:show|status|clear|reset|none))?$/i.test(text);
+    }
+    return false;
+  }, [appControlContextItems.length, attachments.length, builtInBrowserContextItems.length, claudeUsageAvailable, contextAttachments.length, iosElementContextItems.length, providerSignInNeed, selectedSessionId, sessionProvider]);
+  useEffect(() => {
+    openSignInForLoginCommandRef.current = () => {
+      if (!providerSignInNeed) return false;
+      setDismissedSignInKey(null);
+      setSignInCardKey(providerSignInNeed.key);
+      return true;
+    };
+  }, [providerSignInNeed]);
+  // A sign-in done elsewhere (another window, an outside terminal, Settings on
+  // another computer) shows when the person comes back to this window. A
+  // listener, not a timer, and only while Send is off for it.
+  useEffect(() => {
+    if (!signInSendBlocked) return undefined;
+    const onFocus = () => recheckProviderSignIn("focus");
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [recheckProviderSignIn, signInSendBlocked]);
   const signInMachineName = selectedSessionId ? chatMachineName : draftMachineDisplayName;
   const signInRunsHere = !isWebClientMode()
     && machineIdForBinding(activeComposerRuntimeBinding ?? projectBinding ?? null) === THIS_MACHINE_ID;
   const handleProviderSignedIn = useCallback(() => {
     const need = providerSignInShown;
     if (!need) return;
-    // Hide at once; the status re-read below confirms it.
+    // Hide at once, and turn Send on at once; the status re-read below confirms it.
     setDismissedSignInKey(need.key);
+    setSignedInNeedKey(need.key);
     void (async () => {
       // The forced re-read also clears the machine's signed-out mark, so the
       // turn that stopped on the sign-in sends again only after it.
       await refreshAvailableModels({ force: true }).catch(() => undefined);
+      // From here the status itself decides. A machine that still reads
+      // signed out turns Send off again; a press brings the strip back.
+      setSignedInNeedKey((current) => (current === need.key ? null : current));
       if (need.reason !== "failed-turn" || !selectedSessionId) return;
       const failure = await resendLastUserMessage(selectedSessionId, null, { afterSignIn: true });
       if (typeof failure === "string") setError({ message: `Signed in, but the message did not send again: ${failure}`, kind: "status" });
@@ -16855,30 +17117,58 @@ export function AgentChatPane({
       machineId: machineIdForBinding(activeComposerRuntimeBinding ?? projectBinding ?? null),
     });
   }, [activeComposerRuntimeBinding, projectBinding, providerSignInShown]);
+  // The need is gone (signed in, another model): forget its Not now and its
+  // open card, so a later sign-out starts again from the strip.
   useEffect(() => {
-    if (!providerSignInNeed) setDismissedSignInKey(null);
+    if (providerSignInNeed) return;
+    setDismissedSignInKey(null);
+    setSignInCardKey(null);
   }, [providerSignInNeed]);
   const signInAccountEmail = signInConnection?.accountEmail?.trim() || null;
-  const providerSignInCard = useMemo(() => (providerSignInShown ? (
-    <ProviderSignInComposer
-      key={providerSignInShown.key}
-      need={providerSignInShown}
-      pin={composerRuntimePin}
-      runsHere={signInRunsHere}
-      machineName={signInMachineName}
-      instanceId={selectedSession?.instanceId ?? null}
-      accountEmail={signInAccountEmail}
-      onSignedIn={handleProviderSignedIn}
-      onDismiss={() => setDismissedSignInKey(providerSignInShown.key)}
-      onOpenSettings={openSignInSettings}
-    />
-  ) : null), [
+  const returnFocusToComposer = useCallback(() => setComposerFocusRequest((current) => current + 1), []);
+  // Sits above the prompt box, which stays mounted: typed text never hides.
+  const providerSignInSlot = useMemo(() => {
+    if (!providerSignInShown) return null;
+    const openedFromStrip = providerSignInShown.key === signInCardKey;
+    if (providerSignInShown.reason === "no-login" && !openedFromStrip) {
+      return (
+        <ProviderSignInStrip
+          key={providerSignInShown.key}
+          provider={providerSignInShown.provider}
+          machineName={signInMachineName}
+          runsHere={signInRunsHere}
+          onSignIn={() => setSignInCardKey(providerSignInShown.key)}
+        />
+      );
+    }
+    return (
+      <ProviderSignInCardHolder
+        key={providerSignInShown.key}
+        openedFromStrip={openedFromStrip}
+        onReturnFocus={returnFocusToComposer}
+      >
+        <ProviderSignInComposer
+          need={providerSignInShown}
+          pin={composerRuntimePin}
+          runsHere={signInRunsHere}
+          machineName={signInMachineName}
+          instanceId={selectedSession?.instanceId ?? null}
+          accountEmail={signInAccountEmail}
+          onSignedIn={handleProviderSignedIn}
+          onDismiss={() => setDismissedSignInKey(providerSignInShown.key)}
+          onOpenSettings={openSignInSettings}
+        />
+      </ProviderSignInCardHolder>
+    );
+  }, [
     composerRuntimePin,
     handleProviderSignedIn,
     openSignInSettings,
     providerSignInShown,
+    returnFocusToComposer,
     selectedSession?.instanceId,
     signInAccountEmail,
+    signInCardKey,
     signInMachineName,
     signInRunsHere,
   ]);
@@ -18461,6 +18751,7 @@ export function AgentChatPane({
     // back to the model's own provider in the trigger — naming a
     // provider the preset does not even run on.
     setDraftHarnessPresetId(options?.presetId ?? null);
+    setDraftCredentialId(options?.presetId ? null : options?.credentialId ?? null);
     // A new model starts on its default context tier unless the pick
     // came from its context chip.
     setCopilotContextTier(options?.copilotContextTier ?? "default");
@@ -18605,6 +18896,7 @@ export function AgentChatPane({
             constrainModelSelection={composerConstrainModelSelection}
             modelUnavailableMessage={cursorCloudSessionActive ? undefined : constrainedModelSelectionError ?? undefined}
             providerAuthStatus={modelPickerProviderAuthStatus}
+            {...(modelPickerProviderRuntimeMissing ? { providerRuntimeMissing: modelPickerProviderRuntimeMissing } : {})}
             onRuntimeCatalogRefreshed={() => {
               setRuntimeCatalogVersion((version) => version + 1);
             }}
@@ -18716,7 +19008,10 @@ export function AgentChatPane({
             onRemoveAppControlContext={removeAppControlContext}
             onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
             onOpenAiSettings={openProviderSignIn}
-            replacementCard={providerSignInCard}
+            aboveComposerSlot={providerSignInSlot}
+            sendBlockedReason={signInSendBlockReason}
+            onSendBlocked={handleSendBlocked}
+            sendBlockExempt={sendRunsWithoutSignIn}
             onOpenLinearSettings={openLinearSettings}
             launchPromptClipboardEnabled={launchPromptClipboardEnabled}
             launchPromptClipboardNoticeEnabled={launchPromptClipboardNoticeEnabled}
@@ -20018,7 +20313,7 @@ export function AgentChatPane({
           sourceProvider={selectedSession?.provider}
           target={crossMachineHandoffTarget}
           modelId={remoteHandoffModelId}
-          onModelChange={setRemoteHandoffModelId}
+          onModelChange={chooseRemoteHandoffModel}
           availableModelIds={handoffAvailableModelIds}
           forkAvailableModelIds={handoffForkAvailableModelIds}
           reasoningEffort={handoffReasoningEffort}
