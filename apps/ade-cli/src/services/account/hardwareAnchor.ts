@@ -224,19 +224,37 @@ function probeAnchorUuid(deps: HardwareAnchorDeps): string | null {
   return null;
 }
 
-function runProbeAsync(command: string, args: readonly string[]): Promise<string | null> {
+/**
+ * The probe's stdout, or why there is none. `failed`: it never answered (a
+ * timeout, a spawn error such as ENOENT), which says nothing about the host.
+ * `exited`: the command ran and refused (a non-zero exit, `reg query` with no
+ * `MachineGuid`), which is the host's real answer.
+ */
+type AsyncProbe = { stdout: string } | { failed: true } | { exited: true };
+
+function runProbeAsync(command: string, args: readonly string[]): Promise<AsyncProbe> {
   return new Promise((resolve) => {
     try {
       execFile(
         command,
         [...args],
         { encoding: "utf8", timeout: PROBE_TIMEOUT_MS, windowsHide: true, maxBuffer: PROBE_MAX_OUTPUT_BYTES },
-        (error, stdout) => resolve(error || typeof stdout !== "string" ? null : stdout),
+        (error, stdout) => {
+          if (!error) return resolve(typeof stdout === "string" ? { stdout } : { exited: true });
+          // A killed child (the timeout) or a string code (ENOENT, EACCES) never ran to an answer;
+          // a numeric code is the command's own exit status.
+          resolve(error.killed || typeof error.code !== "number" ? { failed: true } : { exited: true });
+        },
       );
     } catch {
-      resolve(null);
+      resolve({ failed: true });
     }
   });
+}
+
+/** The cache as it is now: a getter, so a read after an await isn't narrowed by one before it. */
+function cachedAnchor(): { value: string | null } | null {
+  return cachedAnchorUuid;
 }
 
 /**
@@ -248,25 +266,26 @@ function runProbeAsync(command: string, args: readonly string[]): Promise<string
 export async function readHardwareAnchorUuidAsync(): Promise<string | null> {
   if (cachedAnchorUuid) return cachedAnchorUuid.value;
   let value: string | null = null;
-  // A probe that failed (a timeout, a spawn error) is not "this host has no
-  // id": it isn't cached, so the next async read asks again. Callers keep
-  // their own result (`loadMachineTelemetryId`, `cloudFreePlanComputer`).
+  // A probe that never answered (a timeout, a spawn error) is not "this host
+  // has no id": it isn't cached, so the next async read asks again. A command
+  // that ran and refused is the host's answer and is cached like any other.
+  // Callers keep their own result (`loadMachineTelemetryId`, `cloudFreePlanComputer`).
   let probeFailed = false;
   try {
     const platform = process.platform;
     if (platform === "darwin") {
-      const output = await runProbeAsync("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]);
-      probeFailed = output === null;
-      value = output ? parseIoregPlatformUuid(output) : null;
+      const probe = await runProbeAsync("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]);
+      probeFailed = "failed" in probe;
+      value = "stdout" in probe ? parseIoregPlatformUuid(probe.stdout) : null;
     } else if (platform === "win32") {
-      const output = await runProbeAsync(resolveTrustedWindowsTool("reg"), [
+      const probe = await runProbeAsync(resolveTrustedWindowsTool("reg"), [
         "query",
         String.raw`HKLM\SOFTWARE\Microsoft\Cryptography`,
         "/v",
         "MachineGuid",
       ]);
-      probeFailed = output === null;
-      value = output ? parseWindowsMachineGuid(output) : null;
+      probeFailed = "failed" in probe;
+      value = "stdout" in probe ? parseWindowsMachineGuid(probe.stdout) : null;
     } else {
       value = probeAnchorUuid({ platform });
     }
@@ -274,11 +293,9 @@ export async function readHardwareAnchorUuidAsync(): Promise<string | null> {
     value = null;
     probeFailed = true;
   }
-  // A synchronous read may have filled the cache meanwhile (TS can't see the await).
-  if (probeFailed) return (cachedAnchorUuid as { value: string | null } | null)?.value ?? null;
   // A synchronous read that finished first wins; both read the same machine.
-  if (!cachedAnchorUuid) cachedAnchorUuid = { value };
-  return cachedAnchorUuid.value;
+  if (!probeFailed && !cachedAnchor()) cachedAnchorUuid = { value };
+  return cachedAnchor()?.value ?? null;
 }
 
 /**

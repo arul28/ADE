@@ -168,7 +168,7 @@ export function StarRepoPill() {
           ),
           dismiss: {
             onDismiss: dismiss,
-            title: showing === "prompt_first" ? `Hide for ${STAR_PILL_SNOOZE_MESSAGES} messages` : "Don't show again",
+            title: STAR_PILL_SCHEDULE.finalDismissal(prefs) ? "Don't show again" : `Hide for ${STAR_PILL_SNOOZE_MESSAGES} messages`,
             label: "Hide the GitHub star prompt",
           },
         }}

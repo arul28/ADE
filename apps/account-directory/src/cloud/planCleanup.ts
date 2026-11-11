@@ -264,10 +264,13 @@ async function warnPlanCleanupDue(
   });
 }
 
-/** The email after a run: `planCleanupDoneSentence` (what ADE shows too), then one line per computer. */
+/**
+ * The email after a run: `planCleanupDoneSentence` (what ADE shows too, which
+ * already names each freed computer and its branch), then why each kept
+ * computer was kept, which the sentence doesn't say.
+ */
 async function tellPlanCleanupDone(env: CloudEnv, account: AccountRow, done: CloudPlanCleanupDone): Promise<void> {
   const lines = [planCleanupDoneSentence(done)];
-  for (const entry of done.freed) lines.push(`${entry.name}: work on ${entry.branch ? `the branch ${entry.branch}` : "its branches"}.`);
   for (const entry of done.kept) lines.push(`${entry.name}: ${entry.reason}`);
   await sendCloudEmail(env, {
     userId: account.user_id,

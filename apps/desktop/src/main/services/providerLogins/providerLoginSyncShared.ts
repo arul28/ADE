@@ -31,7 +31,7 @@ import {
 } from "../../../shared/providerLoginsCloudSetting";
 import { isRecord } from "../shared/utils";
 import type { RotatingCredentialVault } from "../account/rotatingCredentialOwner";
-import type { CarryBundle, CarryContext, ParsedLogin } from "./providerLoginCarry";
+import { carryRow, type CarryBundle, type CarryContext, type ParsedLogin } from "./providerLoginCarry";
 import type { ProviderLoginRenewer } from "./providerLoginRenew";
 import type { GhTokenRead, GhTokenRunner } from "./providerLoginGhCli";
 import type { AppliedEntry, AppliedStateFile } from "./providerLoginApply";
@@ -126,29 +126,56 @@ export function savedKeyVaultKey(id: string): string {
   return `cloud-key-${id}`;
 }
 
+/** One carried sign-in that is on for ADE Cloud, as the pick rule sees it. */
+export type CloudPlaceCandidate<R> = { row: R; meta: NonNullable<LoginMeta>; provider: ProviderLoginProvider; slot: string };
+/** A place's pick: the saved key, or one of its sign-ins. */
+export type CloudPlacePick<R> = { provider: ProviderLoginProvider } & ({ savedKey: { id: string; token: string } } | { signIn: CloudPlaceCandidate<R> });
+
 /**
- * Which sign-in ADE Cloud uses for one place (P5 §4.2). The apply pass and the
- * end warning both ask, so the warning names only what ADE Cloud carries.
- * `list` is the place's carried sign-ins that are on for ADE Cloud (never
- * empty). The saved key wins when the person picked it, or for Copilot with
- * no pick (a saved key goes before a carried GitHub CLI login, G1 Q2), if one
- * is saved. Otherwise the picked sign-in, else the newest.
+ * What ADE Cloud uses for each place (P5 §4.2), the one rule the apply pass
+ * and the end warning both read, so the warning names only what ADE Cloud
+ * carries. Each caller reads its rows its own way (`usable`, `meta`).
+ *
+ * A place's candidates are its carried `provider_login` sign-ins that are
+ * usable, not deleted, not switched off and have readable meta; none while
+ * ADE Cloud's sign-ins are off. The saved key wins when the person picked it,
+ * or for Copilot with no pick (a saved key goes before a carried GitHub CLI
+ * login, G1 Q2), if one is saved. Otherwise the picked sign-in, else the
+ * newest (`renewedAt`, else `capturedAt`).
  */
-export function pickCloudPlaceSignIn<T>(args: {
-  list: readonly T[];
-  provider: ProviderLoginProvider;
-  chosen: string | undefined;
-  savedKeyToken: (id: string) => string | null;
-  keyOf: (entry: T) => string;
-  stampOf: (entry: T) => number;
-}): { savedKey: { id: string; token: string } } | { signIn: T } {
-  const saved = args.provider === "pi" ? null : SAVED_KEYS.find((spec) => spec.provider === args.provider) ?? null;
-  const keyFirst = args.chosen === "key" || (args.chosen === undefined && args.provider === "copilot");
-  const token = saved && keyFirst ? args.savedKeyToken(saved.id) : null;
-  if (saved && token) return { savedKey: { id: saved.id, token } };
-  const signIn = args.list.find((entry) => args.keyOf(entry) === args.chosen)
-    ?? [...args.list].sort((left, right) => args.stampOf(right) - args.stampOf(left))[0]!;
-  return { signIn };
+export function cloudPlacePicks<R extends { kind: string; key: string; deleted?: boolean }>(
+  rows: Iterable<R>,
+  setting: CloudSetting,
+  deps: { usable(row: R): boolean; meta(row: R): LoginMeta; savedKeyToken(id: string): string | null },
+): Map<string, CloudPlacePick<R>> {
+  const places = new Map<string, Array<CloudPlaceCandidate<R>>>();
+  if (setting.enabled) {
+    for (const row of rows) {
+      if (row.kind !== PROVIDER_LOGIN_VAULT_KIND || row.deleted || !deps.usable(row) || setting.off.includes(row.key)) continue;
+      const parsedKey = parseProviderLoginKey(row.key);
+      if (!parsedKey || carryRow(parsedKey.provider).carry !== "carried") continue;
+      const meta = deps.meta(row);
+      if (!meta) continue;
+      const place = cloudChoiceKey(parsedKey.provider, parsedKey.slot);
+      places.set(place, [...(places.get(place) ?? []), { row, meta, provider: parsedKey.provider, slot: parsedKey.slot }]);
+    }
+  }
+  const picks = new Map<string, CloudPlacePick<R>>();
+  for (const [place, list] of places) {
+    const provider = list[0]!.provider;
+    const chosen = setting.inUse[place];
+    const saved = provider === "pi" ? null : SAVED_KEYS.find((spec) => spec.provider === provider) ?? null;
+    const keyFirst = chosen === "key" || (chosen === undefined && provider === "copilot");
+    const token = saved && keyFirst ? deps.savedKeyToken(saved.id) : null;
+    if (saved && token) {
+      picks.set(place, { provider, savedKey: { id: saved.id, token } });
+      continue;
+    }
+    const signIn = list.find((entry) => entry.row.key === chosen)
+      ?? [...list].sort((left, right) => (right.meta.renewedAt ?? right.meta.capturedAt) - (left.meta.renewedAt ?? left.meta.capturedAt))[0]!;
+    picks.set(place, { provider, signIn });
+  }
+  return picks;
 }
 
 /** Local states under which apply may replace the file here: the login is safe in the account, or is the account's. */

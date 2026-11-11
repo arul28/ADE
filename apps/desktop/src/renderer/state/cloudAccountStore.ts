@@ -10,10 +10,14 @@ import { useAdeCloudEnabled } from "./cloudAccess";
  * - every read of the shared computer list (`useCloudMachines`, the dashboard
  *   and the composer) publishes its account here, so a plan change or a Free
  *   up space on the dashboard reaches the header at once;
- * - while nothing watches that list, this store reads it itself: once when the
- *   first surface subscribes, every 5 minutes, and when ADE Cloud says
- *   something changed. Never on focus or on a fast timer: the header is
- *   always on screen.
+ * - this store reads the list itself once when the first surface subscribes
+ *   (unless the shared list already gave an account), whenever the last answer
+ *   from either writer is 5 minutes old, and on ADE Cloud's change events
+ *   while nothing watches the shared list (which reads on them itself). At
+ *   most one read per 5 minutes from the timer; never on focus.
+ *
+ * Losing access (`not_connected`, `access_refused`) drops the account; a blip
+ * (`unreachable`, an answer without plan and hours) keeps the last one.
  *
  * Account level, so no pin. Only an account ADE Cloud lets in sees it; when
  * access turns off the account is dropped at once, and a read that was already
@@ -21,8 +25,12 @@ import { useAdeCloudEnabled } from "./cloudAccess";
  */
 
 const REFRESH_MS = 5 * 60_000;
+/** How often the timer looks at the age of the last answer (a comparison, not a read). */
+const CHECK_MS = 60_000;
 
 let account: CloudAccountState | null = null;
+/** When a list read last answered, from either writer: the timer reads only once this is 5 minutes old. */
+let lastAccountAt = 0;
 let generation = 0;
 let reading = false;
 let readAgain = false;
@@ -38,13 +46,22 @@ function publish(next: CloudAccountState | null): void {
   for (const listener of listeners) listener();
 }
 
-function accountOf(result: CloudMachinesResult | null | undefined): CloudAccountState | null {
-  return result?.state === "ok" ? result.account ?? null : null;
+/**
+ * Take one answer of the list. No access (`not_connected`, `access_refused`)
+ * drops the account; a blip (`unreachable`, or `ok` without plan and hours)
+ * keeps the last one, as the shared list keeps its last answer while a
+ * refresh runs.
+ */
+function take(result: CloudMachinesResult | null | undefined): void {
+  lastAccountAt = Date.now();
+  if (!result) return;
+  if (result.state === "not_connected" || result.state === "access_refused") publish(null);
+  else if (result.state === "ok" && result.account) publish(result.account);
 }
 
 /** A read of the computer list answered (from `useCloudMachines`): its account is the newest. */
 export function noteCloudAccountRead(result: CloudMachinesResult | null | undefined): void {
-  publish(accountOf(result));
+  take(result);
 }
 
 /** Whether the shared computer list is watched; while it is, this store does not read on its own. */
@@ -63,9 +80,12 @@ function read(): void {
   const current = generation;
   void list().then(
     (result) => {
-      if (current === generation) publish(accountOf(result));
+      if (current === generation) take(result);
     },
-    () => undefined,
+    () => {
+      // A failed call still counts as this period's read: the next try is in 5 minutes.
+      lastAccountAt = Date.now();
+    },
   ).finally(() => {
     reading = false;
     // Something changed while this read ran: read once more for it.
@@ -75,16 +95,21 @@ function read(): void {
   });
 }
 
-/** The timer and cloud events read only while the shared list isn't already doing it. */
+/** Cloud events read only while the shared list isn't already reading on them. */
 function readUnlessFed(): void {
   if (!fed) read();
+}
+
+/** At most one list read per 5 minutes, from either writer, fed or not. */
+function readIfOld(): void {
+  if (Date.now() - lastAccountAt >= REFRESH_MS) read();
 }
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   if (listeners.size === 1) {
     if (!fed || account == null) read();
-    timer = window.setInterval(readUnlessFed, REFRESH_MS);
+    timer = window.setInterval(readIfOld, CHECK_MS);
     offStatus = window.ade?.cloud?.onStatusChanged?.(readUnlessFed) ?? null;
   }
   return () => {

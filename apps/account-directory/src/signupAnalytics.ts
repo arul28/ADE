@@ -30,6 +30,7 @@ import type { RelayAccountPurgeEnv } from "./activityRelay";
 import { deleteCloudAccount } from "./cloud/accountDeletion";
 import { closeLaneSharesForAccount } from "./laneShares/routes";
 import { reportCloudFailure } from "./cloud/store";
+import { accountDistinctId, uuidFromSeed } from "./sinkUtils";
 
 /** `RelayAccountPurgeEnv`: a `user.deleted` also removes the account's vault and settings on the push relay. */
 export type SignupAnalyticsEnv = RelayAccountPurgeEnv & {
@@ -102,25 +103,6 @@ export async function verifySvixSignature(args: {
     .split(" ")
     .map((part) => part.split(",", 2))
     .some(([version, signature]) => version === "v1" && typeof signature === "string" && constantTimeEqual(signature, expected));
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", textEncoder.encode(value));
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-/** The id every ADE client identifies an account with. Keep in step with `identifyAccount`. */
-export async function accountDistinctId(userId: string): Promise<string> {
-  return `ade_user_${(await sha256Hex(`ade-product-analytics-account-v1:${userId}`)).slice(0, 32)}`;
-}
-
-/** A stable v4-shaped uuid from a seed string. */
-export async function uuidFromSeed(seed: string): Promise<string> {
-  const chars = (await sha256Hex(seed)).slice(0, 32).split("");
-  chars[12] = "4";
-  chars[16] = "8";
-  const value = chars.join("");
-  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
 
 /**

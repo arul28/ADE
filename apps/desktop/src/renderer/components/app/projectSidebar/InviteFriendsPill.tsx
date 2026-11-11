@@ -4,7 +4,6 @@ import { Banner } from "../../ui/notice";
 import { useRootAppStore } from "../../../state/appStore";
 import { isStarPillVisible } from "../../../lib/starPill";
 import {
-  INVITE_PILL_MAX_DISMISSALS,
   INVITE_PILL_SCHEDULE,
   INVITE_PILL_SNOOZE_MESSAGES,
   captureInviteAnalytics,
@@ -47,7 +46,7 @@ export function InviteFriendsPill() {
   }, [showing]);
 
   if (!visible) return null;
-  const last = prefs.dismissCount >= INVITE_PILL_MAX_DISMISSALS - 1;
+  const last = INVITE_PILL_SCHEDULE.finalDismissal(prefs);
   return (
     <div className="ade-star-pill">
       <Banner

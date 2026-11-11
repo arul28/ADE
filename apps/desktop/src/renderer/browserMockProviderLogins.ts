@@ -930,7 +930,7 @@ export function applyBrowserMockProviderLogins(ade: any): void {
     },
   };
   /** As desktop main computes it (cloudSignInEndWarning.ts): the soonest due pass, ended first; nothing while off. */
-  const passEnd = (): CloudSignInEnd | null => {
+  const signInEnd = (): CloudSignInEnd | null => {
     if (!state.enabled) return null;
     const now = Date.now();
     const due: CloudSignInEnd[] = [];
@@ -948,7 +948,7 @@ export function applyBrowserMockProviderLogins(ade: any): void {
     return { ...due[0]!, more: due.length - 1, fingerprint: due.map((entry) => `${entry.key}:${entry.state}`).sort().join("|") };
   };
   ade.cloudAccess = {
-    read: async () => ({ enabled: true, passEnd: passEnd() }),
+    read: async () => ({ enabled: true, signInEnd: signInEnd() }),
     onChanged: () => () => undefined,
   };
 

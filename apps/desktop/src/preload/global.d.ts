@@ -4789,8 +4789,8 @@ declare global {
        * reads as no. Account-wide, so no pin.
        */
       cloudAccess?: {
-        /** `passEnd`: the end warning's Claude pass, only while ADE Cloud is on (desktop only). */
-        read: () => Promise<{ enabled: boolean; passEnd?: CloudSignInEnd | null }>;
+        /** `signInEnd`: the sign-in the end warning names (a Claude pass or a key), only while ADE Cloud is on (desktop only). */
+        read: () => Promise<{ enabled: boolean; signInEnd?: CloudSignInEnd | null }>;
         onChanged: (cb: () => void) => () => void;
       };
       /**

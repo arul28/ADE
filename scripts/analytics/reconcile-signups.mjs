@@ -108,8 +108,8 @@ export function parseArgs(argv) {
 
 const sha256Hex = (value) => createHash("sha256").update(value).digest("hex");
 
-// Copies of `accountDistinctId` and `signupEventUuid` in
-// apps/account-directory/src/signupAnalytics.ts, the source of truth. The
+// Copies of `accountDistinctId` (apps/account-directory/src/sinkUtils.ts) and
+// `signupEventUuid` (apps/account-directory/src/signupAnalytics.ts), the source of truth. The
 // Worker is TypeScript bundled for Cloudflare, so the two short hashes are
 // repeated here rather than imported; change both together.
 export function accountDistinctId(userId) {

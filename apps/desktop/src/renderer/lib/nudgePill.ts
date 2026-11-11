@@ -24,14 +24,14 @@ export type NudgeShowing = "prompt_first" | "prompt_second" | "prompt_third";
 const SHOWINGS: readonly NudgeShowing[] = ["prompt_first", "prompt_second", "prompt_third"];
 
 export type NudgeSchedule = {
-  snoozeMessages: number;
-  maxDismissals: number;
   /** Shown by the schedule alone (each pill adds its own conditions). */
   visible(prefs: NudgeCounts): boolean;
   /** Whether one more sent message can still change the pill; past that the counter stays put. */
   countsMessages(prefs: NudgeCounts): boolean;
   /** Which showing this is, for analytics. */
   showing(prefs: NudgeCounts): NudgeShowing;
+  /** The next dismissal is the last one: the pill never comes back after it. */
+  finalDismissal(prefs: NudgeCounts): boolean;
   /** This showing hasn't been reported as shown yet. */
   shownDue(prefs: NudgeCounts): boolean;
   /** The prefs after this showing was reported. */
@@ -58,14 +58,13 @@ export function createNudgeSchedule(config: {
     return prefs.messagesSent < prefs.snoozedUntilMessageCount;
   };
   return {
-    snoozeMessages,
-    maxDismissals,
     visible: (prefs) => {
       if (done(prefs) || prefs.messagesSent < firstAfterMessages) return false;
       return prefs.snoozedUntilMessageCount == null || prefs.messagesSent >= prefs.snoozedUntilMessageCount;
     },
     countsMessages,
     showing: (prefs) => SHOWINGS[Math.max(0, Math.min(prefs.dismissCount, maxDismissals - 1, SHOWINGS.length - 1))]!,
+    finalDismissal: (prefs) => prefs.dismissCount >= maxDismissals - 1,
     shownDue: (prefs) => prefs.shownReported <= prefs.dismissCount,
     markShown: (prefs) => ({ ...prefs, shownReported: prefs.dismissCount + 1 }),
     dismissed: (prefs) => ({

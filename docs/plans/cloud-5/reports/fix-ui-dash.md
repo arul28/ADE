@@ -213,3 +213,38 @@ computers.", off = "Off: you sign in on each cloud computer yourself." (`CloudSi
   a `fed` store never reads on its own until the shared list stops watching; Stay on
   Pro must never show while cancelling or past due; the shared schedule must keep the
   star pill's exact counts (`starPill.test.ts` passes unchanged).
+
+## Round 2 (qd-a, qd-b)
+
+- **qd-a M1 (cloudAccountStore): fixed.** `state/cloudAccountStore.ts`: one `take(result)`
+  for both writers records `lastAccountAt` on every answer (`noteCloudAccountRead` and the
+  store's own read; a failed own call also stamps it, so a dead network retries in 5
+  minutes, not every minute). The timer is now a 60 s age check (`readIfOld`): it reads
+  only when the last answer from either writer is 5 minutes old, fed or not, so at most
+  one list read per 5 minutes. Change events still read only while unfed (the shared list
+  reads on them itself). `take` publishes null only for `not_connected` /
+  `access_refused`; `unreachable` and `ok` with `account: null` keep the last account.
+  Sign-out still hides it at once through `useAdeCloudEnabled` + `forget()`. Doc comment
+  rewritten to match.
+- **qd-a L4 (Stay on Pro): fixed.** `CloudPlans.tsx` `stayOnPro` toasts "You stay on
+  Pro." only on `result?.change === "now"`; anything else throws inside `run`, which sets
+  the plan error Banner ("ADE Cloud didn't keep you on Pro. Try again in a moment, or use
+  Manage billing."). The server's undo answers `change: "now"` (`billing.ts:344`). The
+  browser mock's `openCheckout` now answers like the server for a paid account
+  (`{ opened: false, change }`, Pro to Plus = `next_period`), so the mock flow still works.
+- **qd-b B5 (nudge schedule): fixed.** `lib/nudgePill.ts`: `snoozeMessages` /
+  `maxDismissals` members dropped from `NudgeSchedule`; new `finalDismissal(prefs)`
+  (`dismissCount >= maxDismissals - 1`), used by `InviteFriendsPill.tsx` (`last`) and
+  `StarRepoPill.tsx` (the × title; same result as `showing === "prompt_first"` for 2
+  dismissals). `nudgePillActivity.ts` uses `STAR_PILL_SCHEDULE.messageSent`. The invite
+  path keeps its `countsMessages` guard, with a comment: it skips a localStorage write and
+  a notify on every send. Star outcome: kept `NudgeShowing` and fixed the comment
+  (`starPillActivity.ts`): only `prompt_first` / `prompt_second` are ever sent.
+- **qd-b B7 (orphan CSS): fixed.** Each class confirmed with no TS/TSX user (word match
+  across `apps/desktop/src`, and no `ade-ig-${…}` template): deleted `.ade-ig-field`,
+  `-field-label`, `-field-controls` (and their `@container integrationpage` block),
+  `.ade-ig-code-input`, `.ade-ig-state`, `.ade-ig-card-foot`, `.ade-ig-hero-foot-row`,
+  `.ade-ig-ready-steps`, `.ade-ig-chip-btn` from `integrationPage.css`. `.ade-ig-hero-foot`
+  stays (`IntegrationChrome.tsx:180`); its comment no longer says ADE Cloud.
+- **Checks:** desktop typecheck pass; tests starPill, usage, SettingsPage,
+  accountSettingsSync: 4 files, 128 passed; eslint on the touched files: clean.

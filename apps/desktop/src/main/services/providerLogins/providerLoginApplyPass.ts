@@ -28,7 +28,7 @@ import {
   type AppliedStateFile,
 } from "./providerLoginApply";
 import { takeCloudSignInEnv } from "./providerLoginBoot";
-import { carryRow, type CarryBundle, type ParsedLogin } from "./providerLoginCarry";
+import type { CarryBundle, ParsedLogin } from "./providerLoginCarry";
 import { copilotCarriedHash, setCopilotCarriedToken } from "./providerLoginCopilotEnv";
 import { notifyProviderLoginsChanged, restartProviderRuntimesWhenIdle, type ProviderLoginRestartOptions } from "./providerLoginHooks";
 import { PROVIDER_LOGIN_VAULT_KIND, parseProviderLoginKey, readProviderLoginPayload, shortHash } from "./providerLoginPayload";
@@ -36,15 +36,13 @@ import {
   OVERWRITE_SAFE,
   SAVED_KEYS,
   accountHash,
-  pickCloudPlaceSignIn,
+  cloudPlacePicks,
   savedKeyTokenOf,
   savedKeyVaultKey,
   type CloudSetting,
   type LoginMemo,
-  type LoginMeta,
   type ProviderLoginVault,
   type SyncShared,
-  type VaultRow,
 } from "./providerLoginSyncShared";
 
 export function createApplyPass(s: SyncShared) {
@@ -163,32 +161,17 @@ export function createApplyPass(s: SyncShared) {
 
   /** What ADE Cloud uses for each place now (P5 §4.2), from the vault and the setting. */
   function desiredPlaces(vault: ProviderLoginVault, setting: CloudSetting, origin12: string, deviceId: string): Map<string, Want> {
-    const candidates = new Map<string, Array<{ row: VaultRow; meta: NonNullable<LoginMeta>; provider: ProviderLoginProvider; slot: string }>>();
-    if (setting.enabled) {
-      for (const row of vault.list(ACCOUNT_SCOPE_ALL)) {
-        if (row.kind !== PROVIDER_LOGIN_VAULT_KIND || row.deleted || !row.readable || setting.off.includes(row.key)) continue;
-        const parsedKey = parseProviderLoginKey(row.key);
-        if (!parsedKey || carryRow(parsedKey.provider).carry !== "carried") continue;
-        const meta = metaFor(vault, row);
-        if (!meta) continue;
-        const place = cloudChoiceKey(parsedKey.provider, parsedKey.slot);
-        candidates.set(place, [...(candidates.get(place) ?? []), { row, meta, provider: parsedKey.provider, slot: parsedKey.slot }]);
-      }
-    }
+    const picks = cloudPlacePicks(vault.list(ACCOUNT_SCOPE_ALL), setting, {
+      usable: (row) => row.readable,
+      meta: (row) => metaFor(vault, row),
+      savedKeyToken: (id) => savedKeyToken(id, vault),
+    });
     const wants = new Map<string, Want>();
     const keyWant = (place: string, provider: ProviderLoginProvider, id: string, token: string): Want =>
       ({ kind: "key", place, provider, id, token, contentHash: shortHash(token) });
-    for (const [place, list] of candidates) {
-      const picked = pickCloudPlaceSignIn({
-        list,
-        provider: list[0]!.provider,
-        chosen: setting.inUse[place],
-        savedKeyToken: (id) => savedKeyToken(id, vault),
-        keyOf: (entry) => entry.row.key,
-        stampOf: (entry) => entry.meta.renewedAt ?? entry.meta.capturedAt,
-      });
+    for (const [place, picked] of picks) {
       if ("savedKey" in picked) {
-        wants.set(place, keyWant(place, list[0]!.provider, picked.savedKey.id, picked.savedKey.token));
+        wants.set(place, keyWant(place, picked.provider, picked.savedKey.id, picked.savedKey.token));
         continue;
       }
       const pick = picked.signIn;

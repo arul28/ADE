@@ -112,3 +112,21 @@ Caveats on the cli run:
 - No test was added or bent.
 
 Re-checked on the lead's second request. `readsRemotes: true` is already in the code (`cloudPushWork.ts:34,57`), and every lane carries `primary: boolean` (`:67`). That matches the server's `TallyLane`/`Tally` parser (`planCleanup.ts:539-561`). Both `cloud.pushWork` and `cloud.workState` print that one tally. cli `power.test.ts`: 54 tests passed.
+
+## Round 2 (qd-a, qd-b)
+
+| Id | What changed |
+|---|---|
+| qd-b B2 | **One rule for the whole pick.** `cloudPlacePicks(rows, setting, { usable, meta, savedKeyToken })` in `providerLoginSyncShared.ts` holds both the candidate filter and the pick: kind, not deleted, usable, not off, carried, readable meta, `cloudChoiceKey`, the newest by `renewedAt ?? capturedAt`, and saved key first. `pickCloudPlaceSignIn` is folded into it. `desiredPlaces` passes `row.readable` and `metaFor`. The end warning's `signInsInUse` passes `!!row.value` and `readProviderLoginMeta`. |
+| qd-b B3 | **Rename finished.** The field `passEnd` is now `signInEnd` in preload, `global.d.ts`, `registerCloudIpc`, `renderer/state/cloudAccess.ts`, both browser mocks and the doc comments. The hook `useAdeCloudPassEnd` is now `useCloudSignInEnd`. The registerCloudIpc helpers `readPassEnd`, `passEndMemo` and `PASS_END_FRESH_MS` are now `readSignInEnd`, `signInEndMemo` and `SIGN_IN_END_FRESH_MS`. The two stale comments now say "a Claude pass or a key". The `cloud.pass_end_*` log events are unchanged. |
+| qd-b B8 | **Cast and placeholder removed.** The `hardwareAnchor.ts` cast is replaced by a `cachedAnchor()` getter. `cloudAccess.ts` keeps a plain `Promise | null` plus a module-level `freePlanRetryAt`, so the placeholder promise is gone. |
+| qd-a L5 | **Probe failures told apart.** `runProbeAsync` now returns `{ stdout }`, `{ failed }` (a killed child, meaning the timeout, or a string error code such as ENOENT) or `{ exited }` (a numeric exit code). Only `failed` skips the cache. A host that answers "no id" is cached as before. I checked Node's `execFile` error shapes by hand: a timeout gives `killed: true`, ENOENT gives a string code, and `exit 1` gives the number 1. |
+| qd-a L2 | **Fetch before push.** In push mode only, `pushCloudComputerWork` runs `gitService.fetch` (`fetch --prune` with GitHub auth fallback) once per project, on the primary lane or else the first lane, with a 60 s `AbortSignal.timeout`. On failure it logs `cloud.push_work_fetch_failed` and marks every lane of that project `failed`, so the computer is kept. Check mode (`work-state`) does not fetch. The README work-check bullet says so. |
+| qd-a L3 | **Wording for an unread lane.** In `deleteCloudLane.tsx`, a `failed` lane that is neither dirty nor ahead now reads "ADE couldn't read this lane's work". |
+
+**Remote scoping:** nothing new crosses machines. The fetch runs on the cloud computer's own brain, inside push-work.
+
+**Checks:**
+- Typecheck is clean in apps/desktop and in apps/ade-cli.
+- Desktop: `providerLoginSync` and `adeCloud/*` passed, 62 tests.
+- CLI: `hardwareAnchor` and `power` passed, 78 tests.

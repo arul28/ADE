@@ -1,9 +1,12 @@
 import { captureCloudReferral, type CloudWaitUntil } from "./analytics";
 import {
+  CLOUD_DELETED_ACCOUNT_PREFIX,
   CLOUD_INVITE_ALPHABET,
   CLOUD_INVITE_CODE_LENGTH,
   CLOUD_PATHS,
   CLOUD_REFERRAL_ENTER_DAYS,
+  CLOUD_REFERRAL_FRIEND_REASON,
+  CLOUD_REFERRAL_REFERRER_REASON,
   CLOUD_REFERRAL_REWARD_LIMIT,
   CLOUD_REFERRAL_REWARD_MILLI,
   cloudInviteLink,
@@ -45,14 +48,6 @@ import { loadAccount, logCloud, reportCloudFailure, type AccountRow, type CloudE
  *   once pay once and the cap holds.
  */
 
-export const REFERRER_REASON = "referral_referrer";
-export const FRIEND_REASON = "referral_friend";
-/**
- * A deleted account's kept rows (referrals, earned hours, its free-plan
- * claim) carry `deleted:<sha256 of the Clerk id>` instead of the id
- * (`accountDeletion.ts`), so nothing kept names the person.
- */
-export const DELETED_ACCOUNT_PREFIX = "deleted:";
 const DAY_MS = 24 * 60 * 60_000;
 const ENTER_WINDOW_MS = CLOUD_REFERRAL_ENTER_DAYS * DAY_MS;
 /** A referrer who reaches the cap this soon after their first reward is reported. */
@@ -132,7 +127,7 @@ export async function readSummaryRow(env: CloudEnv, userId: string): Promise<Sum
       (select count(*) from cloud_referrals where referrer_user_id = ?) as joined,
       (select coalesce(sum(referrer_rewarded), 0) from cloud_referrals where referrer_user_id = ?) as rewarded,
       (select state from cloud_referrals where friend_user_id = ?) as referred_state,
-      (select coalesce(sum(milli), 0) from cloud_earned_hours where user_id = ? and reason in ('${REFERRER_REASON}', '${FRIEND_REASON}')) as referral_milli,
+      (select coalesce(sum(milli), 0) from cloud_earned_hours where user_id = ? and reason in ('${CLOUD_REFERRAL_REFERRER_REASON}', '${CLOUD_REFERRAL_FRIEND_REASON}')) as referral_milli,
       (select 1 from cloud_free_plan_claims where user_id = ?) as has_claim
   `).bind(userId, userId, userId, userId, userId).first<SummaryRow>();
   return row ?? { joined: 0, rewarded: 0, referred_state: null, referral_milli: 0, has_claim: null };
@@ -270,7 +265,7 @@ export async function rewardReferralIfDue(env: CloudEnv, friendId: string, ctx: 
   if (!referral) return "none";
   const referrerId = referral.referrer_user_id;
   // A deleted referrer's rows are re-keyed (`accountDeletion.ts`): the friend is still paid, the referrer isn't.
-  const referrerGone = referrerId.startsWith(DELETED_ACCOUNT_PREFIX);
+  const referrerGone = referrerId.startsWith(CLOUD_DELETED_ACCOUNT_PREFIX);
   const [friend] = await Promise.all([loadAccount(env, friendId, ctx.now), referrerGone ? null : loadAccount(env, referrerId, ctx.now)]);
   const shared = await env.DB.prepare(`
     select 1 as shared from cloud_account_computers f
@@ -295,19 +290,19 @@ export async function rewardReferralIfDue(env: CloudEnv, friendId: string, ctx: 
       .bind(ctx.now, ctx.now, token, friendId),
     env.DB.prepare(`
       insert into cloud_earned_hours (user_id, milli, reason, reference, created_at)
-      select ?, ?, '${FRIEND_REASON}', ?, ? where ${mine}
+      select ?, ?, '${CLOUD_REFERRAL_FRIEND_REASON}', ?, ? where ${mine}
       on conflict (user_id, reason, reference) do nothing
     `).bind(friendId, CLOUD_REFERRAL_REWARD_MILLI, friendId, ctx.now, friendId, token),
     // The cap is counted inside this statement, in this transaction: two rewards at once can't both be the 10th.
     env.DB.prepare(`
       insert into cloud_earned_hours (user_id, milli, reason, reference, created_at)
-      select ?, ?, '${REFERRER_REASON}', ?, ? where ${mine} and ? = 0
-        and (select count(*) from cloud_earned_hours where user_id = ? and reason = '${REFERRER_REASON}') < ?
+      select ?, ?, '${CLOUD_REFERRAL_REFERRER_REASON}', ?, ? where ${mine} and ? = 0
+        and (select count(*) from cloud_earned_hours where user_id = ? and reason = '${CLOUD_REFERRAL_REFERRER_REASON}') < ?
       on conflict (user_id, reason, reference) do nothing
     `).bind(referrerId, CLOUD_REFERRAL_REWARD_MILLI, friendId, ctx.now, friendId, token, referrerGone ? 1 : 0, referrerId, CLOUD_REFERRAL_REWARD_LIMIT),
     env.DB.prepare(`
       update cloud_referrals set referrer_rewarded = exists (
-        select 1 from cloud_earned_hours where user_id = ? and reason = '${REFERRER_REASON}' and reference = ?
+        select 1 from cloud_earned_hours where user_id = ? and reason = '${CLOUD_REFERRAL_REFERRER_REASON}' and reference = ?
       ) where friend_user_id = ? and reward_token = ?
     `).bind(referrerId, friendId, friendId, token),
     // Balances from the grants themselves, so a retry or a race can't count one twice.
@@ -316,7 +311,7 @@ export async function rewardReferralIfDue(env: CloudEnv, friendId: string, ctx: 
     // The referrer only when its grant landed: past the cap nothing came back, so its out-of-hours warning and clock stay.
     env.DB.prepare(`
       ${GRANT_LANDED_SQL} where user_id = ? and ${mine}
-        and exists (select 1 from cloud_earned_hours where user_id = ? and reason = '${REFERRER_REASON}' and reference = ?)
+        and exists (select 1 from cloud_earned_hours where user_id = ? and reason = '${CLOUD_REFERRAL_REFERRER_REASON}' and reference = ?)
     `).bind(ctx.now, ctx.now, referrerId, friendId, token, referrerId, friendId),
   ]);
   const after = await env.DB.prepare("select reward_token, referrer_rewarded from cloud_referrals where friend_user_id = ?")
@@ -333,7 +328,7 @@ export async function rewardReferralIfDue(env: CloudEnv, friendId: string, ctx: 
 /** The referrer's 10th reward: counted, and reported when it came fast. */
 async function noteCap(env: CloudEnv, referrerId: string, ctx: Ctx): Promise<void> {
   const row = await env.DB.prepare(`
-    select count(*) as rewards, min(created_at) as first_at from cloud_earned_hours where user_id = ? and reason = '${REFERRER_REASON}'
+    select count(*) as rewards, min(created_at) as first_at from cloud_earned_hours where user_id = ? and reason = '${CLOUD_REFERRAL_REFERRER_REASON}'
   `).bind(referrerId).first<{ rewards: number; first_at: number | null }>();
   if ((row?.rewards ?? 0) < CLOUD_REFERRAL_REWARD_LIMIT) return;
   logCloud("cloud.referral.cap_reached", { userId: referrerId });

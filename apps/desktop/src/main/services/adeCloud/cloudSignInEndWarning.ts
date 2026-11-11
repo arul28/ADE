@@ -1,5 +1,5 @@
 /**
- * The end warning's one fact (`cloudAccess.read().passEnd`), computed here in
+ * The end warning's one fact (`cloudAccess.read().signInEnd`), computed here in
  * desktop main from the account's vault: one `list` of the account vault over
  * the brain bridge, then the same parse and state as the pass card
  * (`summarizeClaudePass`). No network, no token leaves this file.
@@ -14,21 +14,20 @@
  *   a sign-in that renews itself is not a key. Only the key ADE Cloud uses for
  *   its place counts: on for ADE Cloud (the account setting, read only when
  *   one is due), and the place's pick by the apply pass's own rule
- *   (`pickCloudPlaceSignIn`), so an older copy or a key the saved key beats
+ *   (`cloudPlacePicks`), so an older copy or a key the saved key beats
  *   is never named.
  *
  * The soonest wins; an ended one first.
  */
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { SIGN_IN_END_NOTICE_MS, type CloudSignInEnd } from "../../../shared/cloudSignIns";
-import { cloudChoiceKey, readCloudSetting, type ProviderLoginsCloudSetting } from "../../../shared/providerLoginsCloudSetting";
+import { readCloudSetting, type ProviderLoginsCloudSetting } from "../../../shared/providerLoginsCloudSetting";
 import type { AccountVaultItem, AccountVaultResult } from "../../../shared/types/accountVault";
-import { isClaudePassKey, type ProviderLoginProvider } from "../../../shared/types/providerLogins";
+import { isClaudePassKey } from "../../../shared/types/providerLogins";
 import { getErrorMessage } from "../shared/utils";
 import { CLAUDE_PASS_VAULT_KIND, parseClaudePass, summarizeClaudePass } from "./claudePassStore";
-import { carryRow } from "../providerLogins/providerLoginCarry";
 import { PROVIDER_LOGIN_VAULT_KIND, parseProviderLoginKey, readProviderLoginMeta } from "../providerLogins/providerLoginPayload";
-import { pickCloudPlaceSignIn, savedKeyTokenOf, savedKeyVaultKey } from "../providerLogins/providerLoginSyncShared";
+import { cloudPlacePicks, savedKeyTokenOf, savedKeyVaultKey } from "../providerLogins/providerLoginSyncShared";
 
 export type CloudSignInEndList = (scope: string) => Promise<AccountVaultResult<AccountVaultItem[]>>;
 /** The account setting `providerLogins.cloud`, raw; throws when it can't be read. */
@@ -58,33 +57,18 @@ function keyEnd(row: AccountVaultItem, now: number): CloudSignInEnd | null {
   };
 }
 
-/** The vault keys of the sign-ins ADE Cloud uses, one per place, as the apply pass picks them. */
+/** The vault keys of the sign-ins ADE Cloud uses, one per place, by the apply pass's own rule. */
 function signInsInUse(rows: readonly AccountVaultItem[], setting: ProviderLoginsCloudSetting): Set<string> {
-  type Candidate = { key: string; provider: ProviderLoginProvider; stampMs: number };
-  const places = new Map<string, Candidate[]>();
-  for (const row of rows) {
-    if (row.kind !== PROVIDER_LOGIN_VAULT_KIND || row.deleted || !row.value || setting.off.includes(row.key)) continue;
-    const parsedKey = parseProviderLoginKey(row.key);
-    if (!parsedKey || carryRow(parsedKey.provider).carry !== "carried") continue;
-    const meta = readProviderLoginMeta(row.value);
-    if (!meta) continue;
-    const place = cloudChoiceKey(parsedKey.provider, parsedKey.slot);
-    places.set(place, [...(places.get(place) ?? []), { key: row.key, provider: parsedKey.provider, stampMs: meta.renewedAt ?? meta.capturedAt }]);
-  }
-  const savedKeyToken = (id: string) => savedKeyTokenOf(
-    rows.find((row) => row.kind === "integration" && row.key === savedKeyVaultKey(id) && !row.deleted)?.value,
-  );
+  const picks = cloudPlacePicks(rows, setting, {
+    usable: (row) => Boolean(row.value),
+    meta: (row) => readProviderLoginMeta(row.value),
+    savedKeyToken: (id) => savedKeyTokenOf(
+      rows.find((row) => row.kind === "integration" && row.key === savedKeyVaultKey(id) && !row.deleted)?.value,
+    ),
+  });
   const inUse = new Set<string>();
-  for (const [place, list] of places) {
-    const picked = pickCloudPlaceSignIn({
-      list,
-      provider: list[0]!.provider,
-      chosen: setting.inUse[place],
-      savedKeyToken,
-      keyOf: (entry) => entry.key,
-      stampOf: (entry) => entry.stampMs,
-    });
-    if ("signIn" in picked) inUse.add(picked.signIn.key);
+  for (const picked of picks.values()) {
+    if ("signIn" in picked) inUse.add(picked.signIn.row.key);
   }
   return inUse;
 }

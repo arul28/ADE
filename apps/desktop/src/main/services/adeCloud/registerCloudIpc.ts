@@ -137,8 +137,8 @@ export function registerCloudIpc(args: {
   // The end warning's fact (`cloudSignInEndWarning.ts`), from the local pass store, only
   // while ADE Cloud is on. A window asks on open and on focus, so one answer
   // serves a minute; a pass write here (an approve, a remove) drops it at once.
-  const PASS_END_FRESH_MS = 60_000;
-  let passEndMemo: { at: number; value: CloudSignInEnd | null } | null = null;
+  const SIGN_IN_END_FRESH_MS = 60_000;
+  let signInEndMemo: { at: number; value: CloudSignInEnd | null } | null = null;
   const readAccess = async (): Promise<boolean> => {
     const enabled = await cloudAccessEnabled(credentials).catch((error: unknown) => {
       logger.warn("cloud.access_read_failed", { error: getErrorMessage(error) });
@@ -174,7 +174,7 @@ export function registerCloudIpc(args: {
     const status = await args.brainAction(action, actionArgs) as CloudSignInStatus;
     // Every window shows the card; the one that acted already has the answer.
     if (action !== "cloud_sign_in_status") {
-      passEndMemo = null;
+      signInEndMemo = null;
       sendToAllWindows(IPC.cloudSignInChanged);
     }
     return status;
@@ -310,26 +310,26 @@ export function registerCloudIpc(args: {
     return "This computer needs updating before ADE can update it. Choose Update this computer in its menu.";
   });
 
-  const readPassEnd = async (): Promise<CloudSignInEnd | null> => {
+  const readSignInEnd = async (): Promise<CloudSignInEnd | null> => {
     const list = args.vaultBridge.list?.bind(args.vaultBridge);
     if (!list || !credentials.signedIn()) return null;
     const now = Date.now();
-    if (passEndMemo && now - passEndMemo.at < PASS_END_FRESH_MS) return passEndMemo.value;
+    if (signInEndMemo && now - signInEndMemo.at < SIGN_IN_END_FRESH_MS) return signInEndMemo.value;
     const value = await readCloudSignInEnd(list, { now, readSetting: args.readCloudSignInSetting, logger }).catch((error: unknown) => {
       logger.warn("cloud.pass_end_read_failed", { error: getErrorMessage(error) });
       return null;
     });
-    passEndMemo = { at: now, value };
+    signInEndMemo = { at: now, value };
     return value;
   };
 
   // Account-level, so no pin: every computer answers the same for this account.
-  ipcMain.handle(IPC.cloudGetAccess, async (event): Promise<{ enabled: boolean; passEnd?: CloudSignInEnd | null }> => {
+  ipcMain.handle(IPC.cloudGetAccess, async (event): Promise<{ enabled: boolean; signInEnd?: CloudSignInEnd | null }> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGetAccess)) return { enabled: false };
     const enabled = await readAccess();
     // Off: no pass read at all.
     if (!enabled) return { enabled };
-    return { enabled, passEnd: await readPassEnd() };
+    return { enabled, signInEnd: await readSignInEnd() };
   });
 
   ipcMain.handle(IPC.cloudGetStatus, async (event): Promise<CloudStatus | null> => {

@@ -95,6 +95,7 @@ export function isInvitePillVisible(prefs: InvitePillPrefs, account: CloudAccoun
 
 /** A chat message was sent from this desktop (`nudgePillActivity.ts`): counts only while it can still bring the pill back. */
 export function recordInvitePillMessageSent(): void {
+  // Checked first so ordinary chatting doesn't rewrite localStorage and notify on every send.
   if (!INVITE_PILL_SCHEDULE.countsMessages(current())) return;
   updateInvitePill(INVITE_PILL_SCHEDULE.messageSent);
 }

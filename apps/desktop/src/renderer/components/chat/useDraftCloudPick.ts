@@ -2,6 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CloudTierId } from "../../../shared/cloudTiers";
 import { useAppStore, useAppStoreApi, type WorkDraftCloudTarget } from "../../state/appStore";
 
+function draftCloudTargetOf(picked: {
+  ade: boolean;
+  adeLaneId: string | null;
+  adeSizeId: CloudTierId | null;
+  cursor: boolean;
+  devin: boolean;
+}): WorkDraftCloudTarget | null {
+  if (picked.ade) return { provider: "ade", laneId: picked.adeLaneId, sizeId: picked.adeSizeId };
+  if (picked.cursor) return { provider: "cursor" };
+  if (picked.devin) return { provider: "devin" };
+  return null;
+}
+
 function sameDraftCloudTarget(a: WorkDraftCloudTarget | null, b: WorkDraftCloudTarget | null): boolean {
   if (!a || !b) return a === b;
   if (a.provider === "ade" && b.provider === "ade") return a.laneId === b.laneId && a.sizeId === b.sizeId;
@@ -58,6 +71,12 @@ export function useDraftCloudPick({
   const restoredKeyRef = useRef<string | null>(null);
   /** The next save follows a pick by the person, not a gate dropping Cursor or Devin. */
   const personPickedRef = useRef(false);
+  /**
+   * The restore ran in this pass: the save effect after it still sees the
+   * old `current` (none, or the previous project's pick), so it skips once and
+   * the restored pick is saved when it lands.
+   */
+  const justRestoredRef = useRef(false);
   // A pick that changes no state here (This computer while the draft already
   // shows no cloud) still has to reach the save.
   const [chosenSeq, setChosenSeq] = useState(0);
@@ -67,15 +86,15 @@ export function useDraftCloudPick({
     setChosenSeq((seq) => seq + 1);
   }, [projectKey]);
 
-  const current = useMemo<WorkDraftCloudTarget | null>(() => (
-    adePicked
-      ? { provider: "ade", laneId: adeLaneId, sizeId: adeSizeId }
-      : cursorPicked
-        ? { provider: "cursor" }
-        : devinPicked
-          ? { provider: "devin" }
-          : null
-  ), [adeLaneId, adePicked, adeSizeId, cursorPicked, devinPicked]);
+  const current = useMemo(
+    () => draftCloudTargetOf({ ade: adePicked, adeLaneId, adeSizeId, cursor: cursorPicked, devin: devinPicked }),
+    [adeLaneId, adePicked, adeSizeId, cursorPicked, devinPicked],
+  );
+  /** Cursor or Devin Cloud can't be picked here right now (sign-in, a chat that already started). */
+  const gateClosed = useCallback((target: WorkDraftCloudTarget | null) => (
+    (target?.provider === "cursor" && !cursorCanLaunch)
+    || (target?.provider === "devin" && !devinCanLaunch)
+  ), [cursorCanLaunch, devinCanLaunch]);
 
   useEffect(() => {
     if (!keeps || !projectKey) return;
@@ -84,15 +103,18 @@ export function useDraftCloudPick({
     // ADE Cloud's pick is put back at once: it takes effect only while access
     // says so. Cursor and Devin Cloud are put back once they can be picked
     // here (sign-in read); until then the saved pick waits, untouched.
-    if (saved?.provider === "cursor" && !cursorCanLaunch) return;
-    if (saved?.provider === "devin" && !devinCanLaunch) return;
+    if (gateClosed(saved)) return;
     if (saved) apply(saved);
     restoredKeyRef.current = projectKey;
-  }, [appStoreApi, apply, cursorCanLaunch, devinCanLaunch, keeps, projectKey]);
+    justRestoredRef.current = true;
+  }, [appStoreApi, apply, gateClosed, keeps, projectKey]);
 
   useEffect(() => {
     const byPerson = personPickedRef.current;
     personPickedRef.current = false;
+    const justRestored = justRestoredRef.current;
+    justRestoredRef.current = false;
+    if (justRestored) return;
     if (!keeps || !projectKey) return;
     if (restoredKeyRef.current !== projectKey) return;
     const saved = appStoreApi.getState().getWorkViewState(projectKey).draftCloudTarget;
@@ -100,12 +122,9 @@ export function useDraftCloudPick({
     // A Cursor or Devin pick dropped because that cloud can't be picked here
     // right now (sign-in, a chat that already started) was dropped by its
     // gate, not by the person: the saved pick stays for when it can.
-    if (!byPerson && !current && (
-      (saved?.provider === "cursor" && !cursorCanLaunch)
-      || (saved?.provider === "devin" && !devinCanLaunch)
-    )) return;
+    if (!byPerson && !current && gateClosed(saved)) return;
     setWorkViewState(projectKey, { draftCloudTarget: current });
-  }, [appStoreApi, chosenSeq, current, cursorCanLaunch, devinCanLaunch, keeps, projectKey, setWorkViewState]);
+  }, [appStoreApi, chosenSeq, current, gateClosed, keeps, projectKey, setWorkViewState]);
 
   return { markChosen };
 }

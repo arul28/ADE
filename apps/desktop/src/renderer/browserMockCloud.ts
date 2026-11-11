@@ -338,7 +338,9 @@ export function applyBrowserMockCloud(ade: any): void {
     },
     openCheckout: async (plan?: string) => {
       console.info(`[browser mock] cloud.openCheckout ${plan ?? "plus"}`);
-      return { opened: true };
+      // A paid account changes plan without a checkout page, as the server does: Pro to Plus waits for the period's end.
+      if (fix.planId === "free" || !plan) return { opened: true };
+      return { opened: false, change: plan === "plus" && fix.planId === "pro" ? "next_period" : "now" };
     },
     openBillingPortal: async () => {
       console.info("[browser mock] cloud.openBillingPortal");
@@ -360,7 +362,7 @@ export function applyBrowserMockCloud(ade: any): void {
     },
   };
   ade.cloudAccess = {
-    read: async () => ({ enabled: accessOn, passEnd: null }),
+    read: async () => ({ enabled: accessOn, signInEnd: null }),
     onChanged: () => () => undefined,
   };
 }

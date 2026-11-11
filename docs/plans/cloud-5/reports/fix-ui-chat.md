@@ -60,3 +60,16 @@ pick back. This was there before, and the final value is the same.
   3. Cursor Cloud is saved and its gate is still closed. You pick This computer, then the draft remounts. Cursor should not come back.
   4. Cursor Cloud is picked, then its gate closes (lane cleared or sign-in lost). The saved Cursor pick should stay.
   5. A saved size that this build doesn't know should read as the default.
+
+## Round 2 (re-review qd-a / qd-b)
+
+| Id | What changed |
+|---|---|
+| qd-b B4 | `state/appStore.ts`: the `setCloudDefaultTier` type comment now reads "Sync calls this too; a person's pick is counted in `lib/cloudDefaultTier.ts`." The stale `synced` option text is gone. |
+| qd-b B6 | `components/chat/useDraftCloudPick.ts`: `current` now comes from a small `draftCloudTargetOf(...)` if-chain instead of the nested ternary. One `gateClosed(target)` callback (deps `cursorCanLaunch`, `devinCanLaunch`) is used by both the restore effect and the save effect's gate guard. |
+| qd-a note (same-pass save) | `justRestoredRef`: the restore effect sets it whenever it settles a project key. That covers both "a saved pick was applied" and "nothing saved". The save effect consumes it first and skips that one pass. It no longer writes the old `current` (null, or the previous project's pick) before the restored value lands. The restored pick is saved by the next pass only if it differs from what is stored, and normally it doesn't. Both effects share their trigger deps (`gateClosed`, `keeps`, `projectKey`), so the flag is always consumed in the same commit that set it. |
+
+Checks: `npm run typecheck` (apps/desktop) shows no errors in my files. The only errors are in
+`main/services/adeCloud/cloudSignInEndWarning.ts:31,84,85`: `pickCloudPlaceSignIn` is not exported from
+`providerLoginSyncShared`. That file is another helper's work in progress. vitest `AgentChatPane.test.tsx`,
+`state/appStore.test.ts` and `lib/workDraft.test.ts` pass (475/475). eslint on `useDraftCloudPick.ts` is clean.

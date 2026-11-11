@@ -4,7 +4,7 @@
  * on the date its provider set (Cloud 5 decision 2; never a guessed date). Mounted once in the app shell; it
  * renders nothing itself and registers its banner with the host.
  *
- * Cost: no read of its own. Desktop main adds `passEnd` to the answer of
+ * Cost: no read of its own. Desktop main adds `signInEnd` to the answer of
  * `cloudAccess.read()`, the read every window already makes on open and on
  * focus, and computes it from the local pass store only while ADE Cloud is on
  * (`main/services/adeCloud/cloudSignInEndWarning.ts`). Off: nothing is read.
@@ -16,7 +16,7 @@
  */
 import type { NavigateFunction } from "react-router-dom";
 import type { CloudSignInEnd } from "../../../../../shared/cloudSignIns";
-import { useAdeCloudEnabled, useAdeCloudPassEnd } from "../../../../state/cloudAccess";
+import { useAdeCloudEnabled, useCloudSignInEnd } from "../../../../state/cloudAccess";
 import { ProviderLogo } from "../../../shared/ProviderLogos";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../../../ui/notice";
 import { adeCloudSettingsSearch } from "../../SettingsMachineScope";
@@ -30,7 +30,7 @@ function actionRoute(end: CloudSignInEnd): string {
 
 export function CloudSignInEndNotice({ navigate }: { navigate: NavigateFunction }): null {
   const cloudOn = useAdeCloudEnabled();
-  const end = useAdeCloudPassEnd();
+  const end = useCloudSignInEnd();
   const words = cloudOn && end ? adeCloudEndNoticeWords(end, Date.now()) : null;
   useAppBanner(
     words && end

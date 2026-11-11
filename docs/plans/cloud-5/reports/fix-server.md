@@ -205,3 +205,44 @@ These are rows in existing tables in `test/cloudAccount.test.ts`.
 - **No test for the retry.** It is a one-line change to an unconditional call, and I checked it by reading the code.
 - **Checks.** `npx tsc -p tsconfig.json --noEmit` in `apps/account-directory` passes. `npx vitest run
   test/cloudAccount.test.ts test/directory.test.ts`: 2 files, 177 tests, all pass.
+
+## Re-review round 2 (on top of a64c518ae)
+
+### qd-b B1: the server import cycle
+
+- **Analytics helpers.** `accountDistinctId` and `uuidFromSeed` moved from `src/signupAnalytics.ts` into the leaf
+  `src/sinkUtils.ts`. They now use its `sha256Hex`, and signupAnalytics's private copy is deleted.
+  - Both `src/cloud/analytics.ts` and `src/signupAnalytics.ts` import them from `sinkUtils`.
+  - The comment in `scripts/analytics/reconcile-signups.mjs` that names where they live now points at `sinkUtils.ts`.
+    That is a one-line comment, outside my folders.
+- **Referral constants.** The three constants `accountDeletion.ts` used moved into `src/cloud/contract.ts` as
+  `CLOUD_REFERRAL_REFERRER_REASON`, `CLOUD_REFERRAL_FRIEND_REASON` and `CLOUD_DELETED_ACCOUNT_PREFIX`.
+  - `accountDeletion.ts` and `referrals.ts` read them from the contract.
+  - `accountDeletion` no longer imports the referrals feature.
+- **Cycle check.** I computed strongly connected components over every relative import in `apps/account-directory/src`.
+  - Runtime imports: **no cycle**.
+  - Counting `import type` too: one 2-file loop is left, `store.ts ↔ lanesWithoutComputer.ts`. The
+    `lanesWithoutComputer → store` edge is type-only (`CloudDb` and `ComputerRow`), so it is erased at runtime. It
+    predates this branch, so I left it.
+
+### qd-a L1: the "done" email copy
+
+- **The sentence.** `planCleanupDoneSentence` (`src/cloud/contract.ts`) now says the lane stays only when a freed entry
+  has `laneKept`:
+  - "Its lane and chats stay" when the one freed computer held a lane.
+  - "Their lanes and chats stay" when every freed computer held one.
+  - "The lane(s) among them … stay" when only some did.
+  - Nothing about lanes when none did.
+
+  The dashboard shows the same sentence, so its copy changes the same way.
+- **The email.** `tellPlanCleanupDone` (`src/cloud/planCleanup.ts`) no longer lists freed computers again, because the
+  sentence already names each one with its branch. It still adds one line per kept computer with the reason it was
+  kept, which the sentence doesn't give.
+- **Checked by hand.** I printed the sentence for three cases: no lane, a mix, and one lane.
+
+### Checks
+
+- `npx tsc -p tsconfig.json --noEmit` in `apps/account-directory` passes.
+- `npx vitest run test/cloudAccount.test.ts test/signupAnalytics.test.ts test/laneShares.test.ts`: 3 files, 209 tests,
+  all pass.
+- No desktop or CLI test asserts the sentence.

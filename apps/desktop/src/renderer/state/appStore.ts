@@ -1884,7 +1884,7 @@ export type AppState = {
   setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
   setCtoAttention: (snapshot: CtoAttentionState) => void;
   setSmartTooltipsEnabled: (enabled: boolean) => void;
-  /** `synced`: the account settings sync brought it from another computer (not the person's pick here). */
+  /** Sync calls this too; a person's pick is counted in `lib/cloudDefaultTier.ts`. */
   setCloudDefaultTier: (tier: CloudTierId) => void;
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;

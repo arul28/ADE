@@ -92,20 +92,20 @@ const COMPUTER_ID_RETRY_MS = 10 * 60_000;
  * is not kept for the process's life: a probe that timed out once (a slow
  * `reg query`) is read again after a while, so the computer can still claim.
  */
-type FreePlanComputerRead = { read: Promise<CloudComputerSignal>; retryAt: number | null };
-let freePlanComputer: FreePlanComputerRead | null = null;
+let freePlanComputer: Promise<CloudComputerSignal> | null = null;
+/** When an `unreadable` answer may be read again; null while the read is pending or found an id. */
+let freePlanRetryAt: number | null = null;
 export function cloudFreePlanComputer(): Promise<CloudComputerSignal | null> {
   if (isAdeCloudComputer()) return Promise.resolve(null);
-  if (freePlanComputer && (freePlanComputer.retryAt === null || Date.now() < freePlanComputer.retryAt)) return freePlanComputer.read;
-  const entry: FreePlanComputerRead = { read: Promise.resolve({ id: CLOUD_COMPUTER_UNREADABLE, platform: process.platform }), retryAt: null };
-  entry.read = readCloudComputerIdAsync()
+  if (freePlanComputer && (freePlanRetryAt === null || Date.now() < freePlanRetryAt)) return freePlanComputer;
+  freePlanRetryAt = null;
+  freePlanComputer = readCloudComputerIdAsync()
     .catch(() => CLOUD_COMPUTER_UNREADABLE)
     .then((id) => {
-      if (id === CLOUD_COMPUTER_UNREADABLE) entry.retryAt = Date.now() + COMPUTER_ID_RETRY_MS;
+      if (id === CLOUD_COMPUTER_UNREADABLE) freePlanRetryAt = Date.now() + COMPUTER_ID_RETRY_MS;
       return { id, platform: process.platform };
     });
-  freePlanComputer = entry;
-  return entry.read;
+  return freePlanComputer;
 }
 
 type CloudVaultBridge = {

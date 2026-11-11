@@ -19,7 +19,11 @@ const DAY_MS = 24 * 60 * 60_000;
  */
 export type StarPromptAnalyticsFact = {
   action: "star_prompt_shown" | "star_prompt_clicked" | "star_prompt_dismissed" | "repo_starred";
-  /** The star pill has two showings: `prompt_first` or `prompt_second`. */
+  /**
+   * Which showing (`starPillShowing`). The shared type has three; the star
+   * pill's schedule ends at its second dismissal, so only `prompt_first` and
+   * `prompt_second` are ever sent (the analytics allowlist takes all three).
+   */
   outcome: NudgeShowing;
 };
 

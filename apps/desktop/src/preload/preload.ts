@@ -13404,7 +13404,7 @@ const adeBridge = {
   // account, so none of these take a pin.
   /** Whether ADE Cloud exists for this account (`renderer/state/cloudAccess.ts`). */
   cloudAccess: {
-    read: (): Promise<{ enabled: boolean; passEnd?: CloudSignInEnd | null }> => ipcRenderer.invoke(IPC.cloudGetAccess),
+    read: (): Promise<{ enabled: boolean; signInEnd?: CloudSignInEnd | null }> => ipcRenderer.invoke(IPC.cloudGetAccess),
     onChanged: (cb: () => void): (() => void) => {
       const listener = () => cb();
       ipcRenderer.on(IPC.cloudStatusChanged, listener);

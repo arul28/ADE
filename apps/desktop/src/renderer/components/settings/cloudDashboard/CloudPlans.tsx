@@ -80,8 +80,10 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
     else showToast({ title: `You move to ${label} on ${formatCloudDate(billing.periodEnd)}. ${cloudPlanLabelOf(account, catalog)} stays until then.` });
   });
 
+  // Only an answer that the plan changed now says it worked; anything else shows the plan error.
   const stayOnPro = () => run(async () => {
-    await bridge?.openCheckout?.("pro");
+    const result = await bridge?.openCheckout?.("pro");
+    if (result?.change !== "now") throw new Error("ADE Cloud didn't keep you on Pro. Try again in a moment, or use Manage billing.");
     showToast({ title: "You stay on Pro.", tone: "success" });
   });
 

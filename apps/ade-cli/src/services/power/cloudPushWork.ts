@@ -7,6 +7,8 @@
 import type { AdeRuntime } from "../../bootstrap";
 
 const COMMIT_MESSAGE = "Work saved from ADE Cloud";
+/** The one fetch per project before a push: short, so a computer GitHub can't reach is kept quickly. */
+const FETCH_TIMEOUT_MS = 60_000;
 
 /**
  * One lane as push-work left it. `unpushed`: work only on the computer (a
@@ -62,10 +64,31 @@ export async function pushCloudComputerWork(args: {
       // "Everything is on GitHub" has to be true now, so each lane is read
       // uncached, against the remotes (the list's `ahead` counts past the base,
       // which is 0 for the primary lane), and a read that fails is not "clean".
-      for (const lane of await runtime.laneService.list({ includeArchived: true, includeStatus: false })) {
+      const lanes = await runtime.laneService.list({ includeArchived: true, includeStatus: false });
+      // Before a push, one `fetch --prune` per project (every lane shares its
+      // refs): a branch deleted or force-pushed on GitHub must not leave a
+      // stale `origin/<branch>` that makes unpushed commits read as saved. A
+      // fetch that fails marks every lane of the project `failed`, so the
+      // computer is kept. The check (`work-state`) reads what it has.
+      let fetchFailed = false;
+      const anchor = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0];
+      if (!args.check && anchor) {
+        try {
+          await runtime.gitService.fetch({ laneId: anchor.id, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        } catch (error) {
+          fetchFailed = true;
+          args.logger?.warn("cloud.push_work_fetch_failed", { error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+      for (const lane of lanes) {
         const primary = lane.laneType === "primary";
         const entry: CloudPushWorkLane = { laneId: lane.id, laneName: lane.name, branchRef: lane.branchRef, primary, dirty: false, ahead: 0, state: "clean" };
         tally.lanes.push(entry);
+        if (fetchFailed) {
+          entry.state = "failed";
+          tally.failed += 1;
+          continue;
+        }
         let unsaved: { dirty: boolean; unpushedCommits: number };
         try {
           unsaved = await runtime.laneService.readUnsavedWork(lane.id);

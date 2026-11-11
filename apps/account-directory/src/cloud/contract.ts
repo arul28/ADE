@@ -431,6 +431,15 @@ export const CLOUD_REFERRAL_REWARD_MILLI = 20_000;
 export const CLOUD_REFERRAL_REWARD_LIMIT = 10;
 /** Days after an ADE account is created that it may still enter an invite code. */
 export const CLOUD_REFERRAL_ENTER_DAYS = 30;
+/** `cloud_earned_hours.reason` of a referral's two grants; each one's `reference` is the friend's account. */
+export const CLOUD_REFERRAL_REFERRER_REASON = "referral_referrer";
+export const CLOUD_REFERRAL_FRIEND_REASON = "referral_friend";
+/**
+ * A deleted account's kept rows (referrals, earned hours, its free-plan
+ * claim) carry `deleted:<sha256 of the Clerk id>` instead of the id
+ * (`accountDeletion.ts`), so nothing kept names the person.
+ */
+export const CLOUD_DELETED_ACCOUNT_PREFIX = "deleted:";
 /** Invite codes: this many characters of `CLOUD_INVITE_ALPHABET` (no 0/O/1/I/L). */
 export const CLOUD_INVITE_CODE_LENGTH = 8;
 export const CLOUD_INVITE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
@@ -596,7 +605,11 @@ export function planCleanupDoneSentence(done: CloudPlanCleanupDone): string {
   const parts: string[] = [];
   if (done.freed.length) {
     const list = done.freed.map((entry) => (entry.branch ? `${entry.name} (work on ${entry.branch})` : entry.name)).join(", ");
-    parts.push(`To fit ${CLOUD_PLAN_SENTENCE_NAMES[done.planId]}, ADE pushed each lane's work to GitHub and removed ${done.freed.length === 1 ? "this computer" : "these computers"}: ${list}. Their lanes and chats stay; the next message to a lane makes a new computer.`);
+    const lanesKept = done.freed.filter((entry) => entry.laneKept).length;
+    // Only a computer that held a lane keeps one: a computer made for no lane is simply gone.
+    const kept = lanesKept === 0 ? ""
+      : ` ${lanesKept === done.freed.length ? (lanesKept === 1 ? "Its lane and chats stay" : "Their lanes and chats stay") : (lanesKept === 1 ? "The lane among them and its chats stay" : "The lanes among them and their chats stay")}; the next message to a lane makes a new computer.`;
+    parts.push(`To fit ${CLOUD_PLAN_SENTENCE_NAMES[done.planId]}, ADE pushed each lane's work to GitHub and removed ${done.freed.length === 1 ? "this computer" : "these computers"}: ${list}.${kept}`);
   }
   if (done.kept.length) {
     parts.push(`ADE kept ${done.kept.map((entry) => entry.name).join(", ")}, because its work couldn't all be pushed to GitHub. Push its work or delete it yourself; ADE tries again tomorrow.`);

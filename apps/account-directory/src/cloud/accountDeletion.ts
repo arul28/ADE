@@ -2,7 +2,7 @@ import { purgeRelayAccountData, type RelayAccountPurgeEnv } from "../activityRel
 import { cancelAccountSubscription } from "./billing";
 import { deleteAllAccountChats } from "./chats";
 import { createCloudProvider } from "./provider";
-import { DELETED_ACCOUNT_PREFIX, FRIEND_REASON, REFERRER_REASON } from "./referrals";
+import { CLOUD_DELETED_ACCOUNT_PREFIX, CLOUD_REFERRAL_FRIEND_REASON, CLOUD_REFERRAL_REFERRER_REASON } from "./contract";
 import { sha256Hex } from "../sinkUtils";
 import {
   deleteComputer,
@@ -50,7 +50,7 @@ export async function deleteCloudAccount(
   // claim stays (re-making the account must not give the computer's free hours again),
   // and so do referral rows and earned-hour grants (the referral cap and the friends'
   // rewards are counted from them), each re-keyed to a hash so none names the person.
-  const gone = `${DELETED_ACCOUNT_PREFIX}${await sha256Hex(userId)}`;
+  const gone = `${CLOUD_DELETED_ACCOUNT_PREFIX}${await sha256Hex(userId)}`;
   await env.DB.batch([
     env.DB.prepare("delete from cloud_invite_codes where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_account_computers where user_id = ?").bind(userId),
@@ -59,7 +59,7 @@ export async function deleteCloudAccount(
     env.DB.prepare("update cloud_referrals set referrer_user_id = ? where referrer_user_id = ?").bind(gone, userId),
     env.DB.prepare("update cloud_earned_hours set user_id = ? where user_id = ?").bind(gone, userId),
     // A referral grant's reference is the friend's account.
-    env.DB.prepare(`update cloud_earned_hours set reference = ? where reference = ? and reason in ('${REFERRER_REASON}', '${FRIEND_REASON}')`).bind(gone, userId),
+    env.DB.prepare(`update cloud_earned_hours set reference = ? where reference = ? and reason in ('${CLOUD_REFERRAL_REFERRER_REASON}', '${CLOUD_REFERRAL_FRIEND_REASON}')`).bind(gone, userId),
   ]);
 
   // Last, after the computers: a cloud computer still running holds the

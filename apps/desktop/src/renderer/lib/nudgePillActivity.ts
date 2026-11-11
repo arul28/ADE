@@ -1,6 +1,6 @@
 import { rootAppStoreApi } from "../state/appStore";
 import { recordInvitePillMessageSent } from "./invitePill";
-import { starPillCountsMessages } from "./starPill";
+import { STAR_PILL_SCHEDULE, starPillCountsMessages } from "./starPill";
 import { isWebClientMode } from "./webClientMode";
 
 /**
@@ -13,7 +13,7 @@ export function recordNudgeMessageSent(): void {
   if (typeof window === "undefined" || isWebClientMode()) return;
   const state = rootAppStoreApi.getState();
   if (starPillCountsMessages(state.starPill)) {
-    state.updateStarPill((prev) => ({ ...prev, messagesSent: prev.messagesSent + 1 }));
+    state.updateStarPill(STAR_PILL_SCHEDULE.messageSent);
   }
   recordInvitePillMessageSent();
 }

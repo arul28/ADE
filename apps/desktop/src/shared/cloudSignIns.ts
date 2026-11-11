@@ -215,7 +215,7 @@ export type ClaudePassState = "active" | "ending_soon" | "estimate_passed" | "en
 export const SIGN_IN_END_NOTICE_MS = 7 * 24 * 60 * 60_000;
 
 /**
- * The sign-in the end warning names (`cloudAccess.read().passEnd`): the
+ * The sign-in the end warning names (`cloudAccess.read().signInEnd`): the
  * soonest one whose notice is due (7 days before its end), whose expected end
  * has passed, or that ended. A Claude pass, or a key ADE Cloud carries whose
  * provider wrote its end date (Cursor's key from the Cursor sign-in); a key

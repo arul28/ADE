@@ -1,6 +1,6 @@
 /**
  * The words of the end warning (design §4.5) for the one sign-in that desktop
- * main names in `cloudAccess.read().passEnd`: a Claude pass, or a key whose
+ * main names in `cloudAccess.read().signInEnd`: a Claude pass, or a key whose
  * provider gave its end date. Pure: no reads, no React.
  */
 import type { CloudKeyEnd, CloudSignInEnd } from "../../../../../shared/cloudSignIns";

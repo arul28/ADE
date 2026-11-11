@@ -1,4 +1,4 @@
-import { accountDistinctId, uuidFromSeed } from "../signupAnalytics";
+import { accountDistinctId, uuidFromSeed } from "../sinkUtils";
 import type { CloudPlanId, CloudTierId } from "./contract";
 import { logCloud, type CloudEnv } from "./store";
 
