@@ -5,13 +5,14 @@ import SwiftUI
 ///
 /// - `-adePreviewScreen duo-cloud`: the ADE Cloud page (the dashboard);
 /// - `duo-cloud-plans`: the same page scrolled to the plans and sizes;
+/// - `duo-cloud-invite`: the invite card (link, Copy, Share, counts, the code box);
 /// - `duo-cloud-limits`: what agents may do alone;
 /// - `duo-cloud-machine`: one computer (what uses its disk);
 /// - `duo-providers-cloud`: Settings › Providers with ADE Cloud as the place;
 /// - `duo-provider-signin`: the sign-in sheet at its approve step.
 enum CloudPreviews {
   static let names: Set<String> = [
-    "duo-cloud", "duo-cloud-plans", "duo-cloud-limits", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
+    "duo-cloud", "duo-cloud-plans", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
   ]
 
   @MainActor static func view(_ name: String) -> AnyView? {
@@ -40,6 +41,17 @@ enum CloudPreviews {
       return AnyView(NavigationStack { CloudLimitsScreen(store: store) })
     case "duo-cloud-machine":
       return AnyView(NavigationStack { CloudMachineScreen(store: store, instanceId: "k2p8a1b2c3") })
+    case "duo-cloud-invite":
+      return AnyView(NavigationStack {
+        ScrollView {
+          if let referral = store.account?.referral {
+            CloudInviteCard(referral: referral, syncService: sync, onChanged: {}).padding(16)
+          }
+        }
+        .background(ADEColor.pageBackground.ignoresSafeArea())
+        .navigationTitle("ADE Cloud")
+        .navigationBarTitleDisplayMode(.inline)
+      })
     case "duo-cloud-plans":
       return AnyView(NavigationStack {
         ScrollView {
@@ -102,6 +114,9 @@ enum CloudPreviews {
       "billing":{"periodStart":1793491200000,"periodEnd":1796083200000,"cancelAtPeriodEnd":false,"nextPlanId":null,"notice":null},
       "earnedHours":{"leftMilli":40000,"usedThisPeriodMilli":0,"grantedMilli":40000},
       "freePlan":{"state":"claimed","sentence":null},
+      "referral":{"code":"K7Q2M9XD","link":"https://ade-app.dev/invite/K7Q2M9XD","friendsJoined":3,"rewardsPaid":2,"rewardsLeft":8,
+        "rewardLimit":10,"rewardMilli":20000,"hoursEarnedMilli":40000,"canEnterCode":true,"enterCodeUntil":1795651200000,
+        "hasReferrer":false,"referredState":null},
       "dueForDeletion":[],"deletedInstanceIds":[],
       "catalog":{
         "plans":{

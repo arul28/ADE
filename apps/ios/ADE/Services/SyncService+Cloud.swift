@@ -233,10 +233,11 @@ struct CloudPhoneAccount: Decodable, Equatable {
   let freePlan: FreePlan?
   let planCleanup: Sentence?
   let timedWakesCancelled: Sentence?
+  let referral: CloudPhoneReferral?
 
   private enum CodingKeys: String, CodingKey {
     case plan, planId, hours, extraHours, disk, computers, recentUse, billing, catalog
-    case earnedHours, freePlan, planCleanup, timedWakesCancelled
+    case earnedHours, freePlan, planCleanup, timedWakesCancelled, referral
   }
 
   init(from decoder: Decoder) throws {
@@ -254,6 +255,7 @@ struct CloudPhoneAccount: Decodable, Equatable {
     freePlan = try? c.decodeIfPresent(FreePlan.self, forKey: .freePlan)
     planCleanup = try? c.decodeIfPresent(Sentence.self, forKey: .planCleanup)
     timedWakesCancelled = try? c.decodeIfPresent(Sentence.self, forKey: .timedWakesCancelled)
+    referral = try? c.decodeIfPresent(CloudPhoneReferral.self, forKey: .referral)
   }
 
   /// Out of hours for this period, as the server counts it.
@@ -263,6 +265,39 @@ struct CloudPhoneAccount: Decodable, Equatable {
   var currentPlanId: String {
     plan == "free" ? "free" : (planId == "pro" ? "pro" : "plus")
   }
+}
+
+/// The account's invite link and what it earned (`CloudReferralSummary`).
+/// The code and link are the person's own, shown to them to share; they never
+/// go to analytics.
+struct CloudPhoneReferral: Decodable, Equatable {
+  let code: String
+  let link: String
+  let friendsJoined: Int
+  let rewardsPaid: Int
+  let rewardsLeft: Int
+  let rewardLimit: Int
+  let rewardMilli: Int
+  let hoursEarnedMilli: Int
+  /// May still enter someone's code (no referrer yet, inside the window).
+  let canEnterCode: Bool
+  let enterCodeUntil: Double?
+  let hasReferrer: Bool
+  /// `pending`, `rewarded` or `refused` once this account entered a code.
+  let referredState: String?
+
+  /// "Were you invited?" shows only while the account may still enter a code.
+  var offersCodeBox: Bool { canEnterCode && !hasReferrer }
+}
+
+/// `invite_redeem`'s answer: accepted (and whether both got their hours at
+/// once), or refused with the server's reason and its sentence to show.
+struct CloudPhoneInviteOutcome: Decodable {
+  let ok: Bool
+  let rewarded: Bool?
+  let referral: CloudPhoneReferral?
+  let reason: String?
+  let message: String?
 }
 
 struct CloudPhoneList: Decodable {
@@ -327,6 +362,26 @@ extension SyncService {
       timeoutNanoseconds: 120 * 1_000_000_000,
       as: type
     )
+  }
+
+  /// The account's invite summary (`cloud.read referral`); nil without ADE
+  /// Cloud, on an older machine, or when it can't be read.
+  func readCloudReferral() async -> CloudPhoneReferral? {
+    guard cloudAvailable, cloudSupported else { return nil }
+    return try? await cloudRead("referral", as: CloudPhoneReferral.self)
+  }
+
+  /// Enters someone's invite (a pasted link, an `ade://` link or the bare
+  /// code) for this account. Logs the funnel with no code in it.
+  func redeemCloudInvite(_ code: String) async -> CloudPhoneInviteOutcome {
+    do {
+      let outcome = try await cloudWrite("invite_redeem", args: ["code": code], as: CloudPhoneInviteOutcome.self)
+      ProductAnalytics.shared.captureInvite(.codeEntered, outcome: outcome.ok ? "accepted" : "refused_\(outcome.reason ?? "unavailable")")
+      return outcome
+    } catch {
+      ProductAnalytics.shared.captureInvite(.codeEntered, outcome: "refused_unavailable")
+      return CloudPhoneInviteOutcome(ok: false, rewarded: nil, referral: nil, reason: "unavailable", message: "ADE couldn't check that code. Try again in a moment.")
+    }
   }
 
   /// Whether ADE Cloud exists for this account: the connected machine's answer

@@ -6715,9 +6715,10 @@ function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegis
 }
 
 /** What the phone's ADE Cloud page may run (`cloud.read` / `cloud.write`). */
-const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set(["access", "status", "list", "hours", "limits", "make_status", "cloud_sign_in_status"]);
+const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set(["access", "status", "list", "hours", "limits", "make_status", "cloud_sign_in_status", "referral"]);
+/** `invite_redeem`: the person enters someone's invite from their own phone (a controlling device only). */
 const CLOUD_REMOTE_WRITES: ReadonlySet<string> = new Set([
-  "create", "copy", "move", "sleep", "wake", "resize", "delete", "update", "set_limits",
+  "create", "copy", "move", "sleep", "wake", "resize", "delete", "update", "set_limits", "invite_redeem",
 ]);
 
 /**

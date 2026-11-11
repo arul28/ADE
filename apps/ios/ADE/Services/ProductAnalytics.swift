@@ -78,6 +78,20 @@ enum ADEAnalyticsFeature: String, CaseIterable {
   case appClipHandoff = "app_clip_handoff"
   /// A person took Control of a Mac's simulator from the phone.
   case simulatorControl = "simulator_control"
+  /// The ADE Cloud invite funnel (the desktop's `lib/invitePill.ts` names).
+  case cloudInvite = "cloud_invite"
+}
+
+/// What the person did in the invite funnel, in the desktop's action names.
+enum ADEAnalyticsInviteAction: String, CaseIterable {
+  case linkCopied = "invite_link_copied"
+  case codeEntered = "invite_code_entered"
+}
+
+/// The invite funnel's outcomes. Never a code, a link, an email or the friend.
+enum ADEAnalyticsInviteOutcome {
+  static let refusalReasons = ["invalid_code", "unknown_code", "own_code", "already_referred", "too_late", "rate_limited", "unavailable"]
+  static let allowed: Set<String> = Set(["from_dashboard", "shared_from_dashboard", "accepted"] + refusalReasons.map { "refused_\($0)" })
 }
 
 enum ADEAnalyticsOutcome: String, CaseIterable {
@@ -493,6 +507,15 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       return ["screen": screen]
 
     case .featureUsed:
+      // The invite funnel: its own action and outcome words, from closed lists.
+      if properties["feature"] as? String == ADEAnalyticsFeature.cloudInvite.rawValue {
+        guard let action = enumString("action", as: ADEAnalyticsInviteAction.self),
+              let outcome = properties["outcome"] as? String,
+              ADEAnalyticsInviteOutcome.allowed.contains(outcome) else {
+          return nil
+        }
+        return ["feature": ADEAnalyticsFeature.cloudInvite.rawValue, "action": action, "outcome": outcome]
+      }
       guard let feature = enumString("feature", as: ADEAnalyticsFeature.self),
             let outcome = enumString("outcome", as: ADEAnalyticsOutcome.self) else {
         return nil
@@ -846,6 +869,17 @@ final class ProductAnalytics {
       .featureUsed,
       properties: properties,
       foregroundDeduplicationKey: "feature:\(deduplicationKey)"
+    )
+  }
+
+  /// One step of the invite funnel (`feature: cloud_invite`). An outcome
+  /// outside the closed list is dropped by the sanitizer.
+  func captureInvite(_ action: ADEAnalyticsInviteAction, outcome: String) {
+    capture(
+      .featureUsed,
+      properties: ["feature": ADEAnalyticsFeature.cloudInvite.rawValue, "action": action.rawValue, "outcome": outcome],
+      // Every entered code counts; a copy counts once a session.
+      foregroundDeduplicationKey: action == .codeEntered ? nil : "invite:\(action.rawValue):\(outcome)"
     )
   }
 

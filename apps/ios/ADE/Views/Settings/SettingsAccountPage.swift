@@ -26,6 +26,24 @@ struct SettingsAccountPage: View {
   @State private var confirmSignOut = false
   @State private var signingOut = false
   @State private var copiedAccountId = false
+  /// The account's invite summary, read only with ADE Cloud (`cloud.read referral`).
+  @State private var referral: CloudPhoneReferral?
+
+  /// "Were you invited?" (desktop `AccountInviteFact`): for 30 days after the
+  /// account was made, while it has no referrer, and only with ADE Cloud.
+  @ViewBuilder
+  private var inviteSection: some View {
+    if let referral, referral.offersCodeBox, syncService.cloudAvailable, syncService.cloudSupported {
+      ADESettingsSection(
+        "Invite",
+        hint: "Were you invited? You both get \(cloudHours(referral.rewardMilli)) free cloud hours.\(referral.enterCodeUntil.map { " Add it by \(cloudDate($0))." } ?? "")"
+      ) {
+        // The box keeps its "Invite added" line; the section is gone on the next visit.
+        CloudInviteCodeBox(syncService: syncService, onDone: { _ in })
+        .adeKitCard()
+      }
+    }
+  }
 
   var body: some View {
     ADESettingsPage(route: .account) {
@@ -38,12 +56,17 @@ struct SettingsAccountPage: View {
         heroSection(identity)
         computersSection
         detailsSection(identity)
+        inviteSection
       } else {
         signedOutPanel
       }
     }
     .navigationDestination(isPresented: $showIntegrations) { integrationsPage() }
     .task(id: githubCheckKey) { await loadGitHub() }
+    // The invite box is part of ADE Cloud: no read, and no box, without access.
+    .task(id: syncService.cloudAvailable && syncService.cloudSupported) {
+      referral = await syncService.readCloudReferral()
+    }
     .confirmationDialog("Sign out of ADE?", isPresented: $confirmSignOut, titleVisibility: .visible) {
       Button("Sign out", role: .destructive) {
         Task {

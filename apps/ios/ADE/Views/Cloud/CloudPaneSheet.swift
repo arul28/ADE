@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The phone's ADE Cloud page: the mirror of the desktop's Settings › ADE
 /// Cloud dashboard (`settings/cloudDashboard/CloudDashboard.tsx`), in the
@@ -315,6 +316,9 @@ struct CloudDashboardScreen: View {
           if let account = store.account, account.catalog != nil {
             CloudPlansCard(account: account)
             CloudSizesCard(account: account, tiers: store.tiers)
+          }
+          if let referral = store.account?.referral {
+            CloudInviteCard(referral: referral, syncService: store.syncService, onChanged: { Task { await store.reload() } })
           }
           CloudSignInsCard(store: store)
           CloudAgentsCard(store: store)
@@ -835,6 +839,174 @@ struct CloudSizesCard: View {
     .padding(.vertical, 11)
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
+  }
+}
+
+// MARK: Invite friends
+
+/// "Invite friends, get free cloud hours" (`CloudInvite.tsx`): the person's
+/// own link with Copy and Share, friends joined, hours earned, rewards left,
+/// and, while they may, a box for someone else's invite. Sharing a link is
+/// not a purchase; nothing here sells hours.
+struct CloudInviteCard: View {
+  let referral: CloudPhoneReferral
+  let syncService: SyncService
+  let onChanged: () -> Void
+  @State private var copied = false
+
+  private var reward: String { cloudHours(referral.rewardMilli) }
+
+  var body: some View {
+    ADEKitCard(title: "Invite friends, get free cloud hours", symbol: "gift") {
+      VStack(alignment: .leading, spacing: 12) {
+        Text("When a friend you invite runs their first chat on ADE Cloud, you both get \(reward) free hours. They never expire, and they're used after your plan's hours.")
+          .font(.system(size: 13))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+        Text(referral.link)
+          .font(.adeMono(12.5))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .textSelection(.enabled)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .adeKitField(padding: 10)
+        HStack(spacing: 8) {
+          Button {
+            UIPasteboard.general.string = referral.link
+            ADEHaptics.light()
+            copied = true
+            ProductAnalytics.shared.captureInvite(.linkCopied, outcome: "from_dashboard")
+          } label: {
+            Label(copied ? "Copied" : "Copy link", systemImage: copied ? "checkmark" : "doc.on.doc")
+          }
+          .buttonStyle(ADEKitButtonStyle(prominent: true))
+          if let url = URL(string: referral.link) {
+            ShareLink(item: url, subject: Text("ADE"), message: Text("You both get \(reward) free cloud hours.")) {
+              Label("Share", systemImage: "square.and.arrow.up")
+            }
+            .buttonStyle(ADEKitButtonStyle())
+            .simultaneousGesture(TapGesture().onEnded {
+              ProductAnalytics.shared.captureInvite(.linkCopied, outcome: "shared_from_dashboard")
+            })
+          }
+        }
+        HStack(spacing: 8) {
+          stat("Friends joined", "\(referral.friendsJoined)")
+          stat("Hours earned", cloudHours(referral.hoursEarnedMilli))
+          stat("Rewards left", "\(referral.rewardsLeft) of \(referral.rewardLimit)")
+        }
+        if referral.offersCodeBox {
+          VStack(alignment: .leading, spacing: 6) {
+            Text("Were you invited?")
+              .font(.system(size: 13.5, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+            Text(referral.enterCodeUntil.map { "Paste the link or code by \(cloudDate($0))." } ?? "Paste the link or code.")
+              .font(.system(size: 12.5))
+              .foregroundStyle(ADEColor.textSecondary)
+            CloudInviteCodeBox(syncService: syncService, onDone: { _ in onChanged() })
+          }
+          .padding(.top, 2)
+        } else if referral.hasReferrer {
+          Text(referral.referredState == "rewarded"
+            ? "You were invited, and you both got \(reward) hours."
+            : referral.referredState == "refused"
+              ? "You were invited, but that invite can't give hours on this account."
+              : "You were invited. You both get \(reward) hours when your first chat runs on ADE Cloud.")
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+    }
+  }
+
+  private func stat(_ label: String, _ value: String) -> some View {
+    VStack(alignment: .leading, spacing: 3) {
+      Text(label)
+        .font(.system(size: 11.5))
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(2)
+        .fixedSize(horizontal: false, vertical: true)
+      Text(value)
+        .font(.system(size: 16, weight: .medium, design: .monospaced))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)
+    }
+    .padding(10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(ADEKit.track.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .accessibilityElement(children: .combine)
+  }
+}
+
+/// "Paste an invite link or code": the friend's side of an invite, on the
+/// ADE Cloud page and in Settings › Account. A full link, an `ade://` link or
+/// the bare code; the server checks every rule and says why it refuses.
+struct CloudInviteCodeBox: View {
+  let syncService: SyncService
+  let onDone: (CloudPhoneReferral?) -> Void
+  @State private var code = ""
+  @State private var busy = false
+  @State private var error: String?
+  @State private var accepted: String?
+
+  private var canWrite: Bool { syncService.canInvokeRemoteAction("cloud.write") }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      if let accepted {
+        Label(accepted, systemImage: "checkmark.circle.fill")
+          .font(.system(size: 13, weight: .medium))
+          .foregroundStyle(ADEColor.success)
+          .fixedSize(horizontal: false, vertical: true)
+      } else {
+        HStack(spacing: 8) {
+          TextField("Paste an invite link or code", text: $code)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .font(.adeMono(13))
+            .submitLabel(.go)
+            .onSubmit { Task { await submit() } }
+            .adeKitField(padding: 10)
+            .accessibilityLabel("Invite link or code")
+          Button(busy ? "Checking…" : "Add invite") { Task { await submit() } }
+            .buttonStyle(ADEKitButtonStyle(prominent: true))
+            .disabled(busy || code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !canWrite)
+        }
+        if let error {
+          Text(error)
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.danger)
+            .fixedSize(horizontal: false, vertical: true)
+        } else if !canWrite {
+          Text("Add it from a phone that controls \(syncService.machineDisplayName).")
+            .font(.system(size: 12))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+    }
+  }
+
+  private func submit() async {
+    let value = code.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !value.isEmpty, !busy else { return }
+    busy = true
+    defer { busy = false }
+    error = nil
+    let outcome = await syncService.redeemCloudInvite(value)
+    if outcome.ok {
+      ADEHaptics.success()
+      let reward = outcome.referral.map { cloudHours($0.rewardMilli) } ?? "20"
+      accepted = outcome.rewarded == true
+        ? "You both got \(reward) free cloud hours. They never expire."
+        : "Invite added. You both get \(reward) free cloud hours when your first chat runs on ADE Cloud."
+      onDone(outcome.referral)
+    } else {
+      ADEHaptics.error()
+      error = outcome.message ?? "That invite didn't work."
+    }
   }
 }
 
