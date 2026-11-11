@@ -188,6 +188,7 @@ import type {
   AppNavigationRequest,
   AppNavigationTarget,
   OpenProjectBinding,
+  ProjectFindForRepoResult,
   ProjectInfo,
 } from "../../../shared/types";
 
@@ -1316,10 +1317,7 @@ function AppNavigationBridge() {
     }
 
     const projectApi = window.ade?.project as typeof window.ade.project & {
-      findForRepo?: (args: { repoOwner: string; repoName: string }) => Promise<{
-        rootPath: string;
-        displayName: string;
-      } | null>;
+      findForRepo?: (args: { repoOwner: string; repoName: string }) => Promise<ProjectFindForRepoResult>;
     };
     const match = await projectApi?.findForRepo?.({
       repoOwner: envelope.repoOwner,

@@ -865,6 +865,7 @@ import type {
   ListMyGitHubReposResult,
   PublishProjectInput,
   PublishProjectResult,
+  ProjectFindForRepoResult,
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
@@ -2623,7 +2624,9 @@ function cloudLaneLaunchSource(pin: OpenProjectBinding | null | undefined): Clou
   if (!binding) return null;
   return {
     gitOriginUrl: binding.gitOriginUrl ?? null,
-    ...(binding.kind === "local" ? { localRootPath: binding.rootPath } : {}),
+    ...(binding.kind === "local"
+      ? { localRootPath: binding.rootPath }
+      : { remote: { targetId: binding.targetId, projectId: binding.projectId } }),
   };
 }
 
@@ -5346,7 +5349,7 @@ const adeBridge = {
     findForRepo: async (args: {
       repoOwner: string;
       repoName: string;
-    }): Promise<{ rootPath: string; displayName: string } | null> =>
+    }): Promise<ProjectFindForRepoResult> =>
       ipcRenderer.invoke(IPC.projectFindForRepo, args),
     closeCurrent: async (): Promise<void> =>
       clearAround(

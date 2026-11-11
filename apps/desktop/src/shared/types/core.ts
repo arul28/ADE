@@ -905,6 +905,12 @@ export type ProjectFindForRepoArgs = {
 export type ProjectFindForRepoResult = {
   rootPath: string;
   displayName: string;
+  /**
+   * Set when the only copy is on another machine of the account: the link
+   * opens the project there. A project is the repository, so a copy on any
+   * connected machine answers.
+   */
+  remote?: { targetId: string; projectId: string; machineName: string };
 } | null;
 
 export type CreateProjectInput = {

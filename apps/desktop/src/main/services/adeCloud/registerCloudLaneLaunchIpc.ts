@@ -11,7 +11,7 @@ import type {
   ChatLaunchQueueMessageArgs,
 } from "../../../shared/types";
 import type { RuntimeBridgeRegistration } from "../ipc/runtimeBridge";
-import { readGitOriginUrlWithoutGit } from "../projects/recentProjectSummary";
+import { resolveProjectRepoOrigin } from "../projects/projectRepoOrigin";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
@@ -80,10 +80,22 @@ export function registerCloudLaneLaunchIpc(args: {
     }
     const request = (isRecord(raw) ? raw : {}) as Partial<CloudLaneLaunchCallRequest>;
     const source = isRecord(request.source) ? request.source : null;
-    const localRootPath = typeof source?.localRootPath === "string" ? source.localRootPath.trim() : "";
-    const originUrl = (typeof source?.gitOriginUrl === "string" && source.gitOriginUrl.trim())
-      // Read from the checkout's git config, without starting git.
-      || (localRootPath ? readGitOriginUrlWithoutGit(localRootPath) ?? null : null);
+    const remoteSource = isRecord(source?.remote)
+      && typeof source.remote.targetId === "string"
+      && typeof source.remote.projectId === "string"
+      ? { targetId: source.remote.targetId, projectId: source.remote.projectId }
+      : null;
+    // The project is the repository: the origin the tab holds, else this
+    // computer's copy, else the machine that holds the copy. Only `start` and
+    // `list` need it; an id-based call skips the lookup.
+    const needsOrigin = request.method === "start" || request.method === "list";
+    const originUrl = needsOrigin
+      ? await resolveProjectRepoOrigin({
+        gitOriginUrl: typeof source?.gitOriginUrl === "string" ? source.gitOriginUrl : null,
+        localRootPath: typeof source?.localRootPath === "string" ? source.localRootPath : null,
+        remote: remoteSource,
+      }, { remoteProjects: (targetId) => remote.projects(targetId), logger })
+      : null;
     switch (request.method) {
       case "start":
         return {

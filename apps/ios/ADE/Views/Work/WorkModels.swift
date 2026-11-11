@@ -187,6 +187,8 @@ struct WorkChatMessage: Identifiable, Equatable {
   var writtenByAde = false
   /// True for a message the chat's side chat sent here; the bubble says so.
   var fromSideChat = false
+  /// Set for a message another person wrote on a shared lane: "From <name>".
+  var guestAuthorName: String? = nil
   var attachments: [AgentChatFileRef]? = nil
   var unprocessedResolution: WorkUserMessageResolution? = nil
   /// Monotonic content revision for the incremental streaming path. The
@@ -2342,6 +2344,8 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   var userMessageWrittenByAde = false
   /// True for a user message a side chat sent to this chat (`metadata.sideChat`).
   var userMessageFromSideChat = false
+  /// The other person on a shared lane who wrote this user message (`metadata.author`).
+  var userMessageGuestAuthorName: String? = nil
   var userMessageIsRecoveryHandOff = false
   /// Set on a `system_notice` whose `detail.kind` is `continuity_recovery`. The
   /// event keeps `detail` as text; this is the part the self-healed-failure fold

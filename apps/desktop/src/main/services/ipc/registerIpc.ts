@@ -102,7 +102,11 @@ import { areAutomationsEnabledForPackagedState } from "../../../shared/automatio
 import { normalizeAppPackageChannel, resolveReleaseChannel } from "../../../shared/packageChannel";
 import { loadMachineTelemetryId } from "../analytics/machineTelemetryId";
 import { reportsAsPackagedRelease } from "../../sentry/releaseBuild";
-import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
+import {
+  findProjectCopyOnMachineForRepo,
+  findRecentProjectForRepo,
+  type RepoProjectCopyOnMachine,
+} from "../projects/repoProjectResolver";
 import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
 import { isAgentChatStopMode } from "../../../shared/chatStopModes";
 import {
@@ -4748,7 +4752,37 @@ export function registerIpc({
       // from .git/config (no git subprocess), cached by config mtime. An SSH
       // origin on a host that is not GitHub or a known forge runs `ssh -G`,
       // once for each host; the cache answers after that.
-      return await findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
+      const local = await findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
+      if (local) return local;
+      // A project is the repository: with no copy here, a copy on another
+      // machine of the account opens there. Connected machines' project lists
+      // first (their brains read the origin), then the recents this app kept.
+      const copies: RepoProjectCopyOnMachine[] = [];
+      for (const connection of runtimeBridge.snapshot().connections) {
+        if (connection.state !== "connected") continue;
+        for (const project of connection.projects ?? []) {
+          copies.push({
+            targetId: connection.target.id,
+            machineName: connection.target.name,
+            projectId: project.projectId,
+            rootPath: project.rootPath,
+            displayName: project.displayName || path.basename(project.rootPath),
+            gitOriginUrl: project.gitOriginUrl,
+          });
+        }
+      }
+      for (const recent of listRecentProjectSummaries()) {
+        if (recent.kind !== "remote" || !recent.remote) continue;
+        copies.push({
+          targetId: recent.remote.targetId,
+          machineName: recent.remote.runtimeName,
+          projectId: recent.remote.projectId,
+          rootPath: recent.rootPath,
+          displayName: recent.displayName,
+          gitOriginUrl: recent.remote.gitOriginUrl ?? recent.gitOriginUrl,
+        });
+      }
+      return await findProjectCopyOnMachineForRepo(copies, { repoOwner, repoName });
     },
   );
 
@@ -4757,8 +4791,22 @@ export function registerIpc({
     appVersion: app.getVersion(),
     authorizeLocalRuntimeRoot: (session, requestedRootPath) => {
       const binding = session?.binding;
+      // A tab bound to another machine may hold no origin (restored from older
+      // saved state). That machine's project list, already in the connection
+      // snapshot, still names it: no network call, so this stays synchronous.
+      const peerOrigin = (): string | null => {
+        if (binding?.kind !== "remote") return null;
+        try {
+          const connection = runtimeBridge.snapshot().connections.find((entry) => entry.target.id === binding.targetId);
+          const origin = connection?.projects?.find((project) => project.projectId === binding.projectId)?.gitOriginUrl;
+          return typeof origin === "string" && origin.trim() ? origin.trim() : null;
+        } catch {
+          // The bridge is still being built (a check during its own setup): no snapshot yet.
+          return null;
+        }
+      };
       const activeOrigin = binding?.gitOriginUrl
-        ?? (binding?.kind === "local" ? readGitOriginUrl(binding.rootPath) : null)
+        ?? (binding?.kind === "local" ? readGitOriginUrl(binding.rootPath) : peerOrigin())
         ?? (session?.project?.rootPath
           ? readGitOriginUrl(session.project.rootPath)
           : null);

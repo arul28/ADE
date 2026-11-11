@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readGitOriginUrlFromConfigOrGit } from "../../../../desktop/src/main/services/projects/recentProjectSummary";
+import {
+  readGitOriginUrl as readGitConfigOriginForIdentity,
+  readGitOriginUrlFromConfigOrGit,
+} from "../../../../desktop/src/main/services/projects/recentProjectSummary";
 import {
   resolveMachineAdeLayout,
   type MachineAdeLayout,
@@ -207,7 +210,12 @@ function coerceRecord(
  * see, never inside the registry lock: the ssh lookup can take a moment.
  */
 function withCanonicalOrigin(record: ProjectRecord): ProjectRecord {
-  const gitOriginUrl = canonicalGitOriginUrl(record.gitOriginUrl);
+  // A project added before it had an origin (or while git could not answer)
+  // was saved with none. Every other machine learns the repository from this
+  // list, so read the config file again: no process, cached by its mtime.
+  const gitOriginUrl = record.gitOriginUrl
+    ? canonicalGitOriginUrl(record.gitOriginUrl)
+    : readGitConfigOriginForIdentity(record.rootPath);
   return gitOriginUrl === record.gitOriginUrl ? record : { ...record, gitOriginUrl };
 }
 

@@ -826,6 +826,7 @@ import type {
   ListMyGitHubReposResult,
   PublishProjectInput,
   PublishProjectResult,
+  ProjectFindForRepoResult,
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
@@ -1474,7 +1475,7 @@ declare global {
         findForRepo: (args: {
           repoOwner: string;
           repoName: string;
-        }) => Promise<{ rootPath: string; displayName: string } | null>;
+        }) => Promise<ProjectFindForRepoResult>;
         closeCurrent: () => Promise<void>;
         switchToPath: (rootPath: string) => Promise<ProjectInfo>;
         /** The state of this computer's copy, for the remove dialog. */
