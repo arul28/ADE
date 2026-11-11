@@ -11,7 +11,7 @@ Three parts work together:
 
 | Part | Where | What it holds |
 |------|-------|---------------|
-| Account directory | `apps/account-directory/src/laneShares/` (Worker + D1, migrations 0019–0021) | The index of grants (giver, receiver, lane, machine, preset label, risk label, end date, state), invites, one-use tickets and revocation. No detailed rights. A grant here never opens a machine. |
+| Account directory | `apps/account-directory/src/laneShares/` (Worker + D1, migrations 0020–0022) | The index of grants (giver, receiver, lane, machine, preset label, risk label, end date, state), invites, one-use tickets and revocation. No detailed rights. A grant here never opens a machine. |
 | Host | `apps/ade-cli/src/services/sync/laneShare*.ts` (brain) | The rights of each grant (`laneShareRightsStore.ts`, local only), the guest connection gates, the message counters and the move service. The host is the only authority over what a guest may do. |
 | Clients | `apps/desktop/src/renderer/components/laneShare/**` (desktop and hosted web) | The owner's share sheet and marks, Settings › Sharing, the guest's shelf, page and connection. |
 

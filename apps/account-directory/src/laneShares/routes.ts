@@ -56,7 +56,7 @@ export type { LaneShareEnv } from "./shareRows";
 
 /**
  * Lane sharing: the account-level record of grants (README, "Lane sharing";
- * table in migration 0019; shapes in `contract.ts`).
+ * table in migration 0020; shapes in `contract.ts`).
  *
  * Default refuse. Every route reads the row and compares the caller's user id
  * with it; a pending invite is matched against the addresses Clerk has

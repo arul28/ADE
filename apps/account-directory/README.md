@@ -883,8 +883,8 @@ here (`src/cloud/chats.ts`, routes in `contract.ts`).
 
 One account (the giver) gives another account (the receiver) limited access
 to one lane on one of the giver's machines (`src/laneShares/routes.ts`, table
-in migration 0019, tickets in migration 0020, the receiver's name in
-migration 0021, routes and shapes in
+in migration 0020, tickets in migration 0021, the receiver's name in
+migration 0022, routes and shapes in
 `src/laneShares/contract.ts`). This Worker is only the index and the
 revocation list. It holds no detailed rights and a grant here never opens a
 machine: the host machine keeps the rights and redeems the guest's ticket on
@@ -973,7 +973,7 @@ these rules apply under any rights:
   grant that is not in the list, so a revoke counts at the next connection.
   Each grant carries `createdAt` (the host hides chat history from before it)
   and, once active, `acceptedAt` and `receiverName`: the receiver's Clerk name,
-  stored at accept (`receiver_label`, migration 0021) and cleaned like the
+  stored at accept (`receiver_label`, migration 0022) and cleaned like the
   invite email's sender name. The host shows only this name as the author of
   the guest's messages and in a guest turn's commit trailer; the guest never
   chooses it. `closed` lists the machine's final grants, so the host can
