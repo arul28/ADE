@@ -49,6 +49,19 @@ export type ProviderLoginStateFile = {
    * the account while the person is still signed out here is removed again.
    */
   signedOut?: Record<string, number>;
+  /**
+   * The person turned on the copy of this computer's GitHub CLI login for
+   * Copilot (P5 G1): when, and the last `gh` read (the marker file's stat, the
+   * result, the gh user), so a failed read waits for the file to change and a
+   * restart of the brain reads nothing. Never the token. Per account: a sign-out
+   * of ADE removes this file, and another account starts with it off.
+   */
+  ghCli?: GhCliChoice;
+};
+
+export type GhCliChoice = {
+  allowedAt: number;
+  read?: { mark: string; at: number; result: "ok" | "classic_token" | "no_token" | "not_installed" | "timeout" | "failed"; user: string | null };
 };
 
 /**
@@ -81,6 +94,7 @@ export function readProviderLoginState(adeDir: string, accountUserId: string | n
     ...(isRecord(parsed.keychain) ? { keychain: parsed.keychain as NonNullable<ProviderLoginStateFile["keychain"]> } : {}),
     ...(isRecord(parsed.writtenBack) ? { writtenBack: parsed.writtenBack as Record<string, WrittenBack> } : {}),
     ...(isRecord(parsed.signedOut) ? { signedOut: parsed.signedOut as Record<string, number> } : {}),
+    ...(isRecord(parsed.ghCli) && typeof parsed.ghCli.allowedAt === "number" ? { ghCli: parsed.ghCli as GhCliChoice } : {}),
   };
 }
 

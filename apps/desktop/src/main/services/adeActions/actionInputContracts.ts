@@ -1722,6 +1722,15 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { provider: \"antigravity\", slot?: \"personal\" | \"business\" }",
       example: "(desktop only) provider_logins.allowKeychain {\"provider\":\"antigravity\"}",
     },
+    allowGitHubCli: {
+      description:
+        "Turn on or off the copy of this computer's GitHub CLI login (github.com) for Copilot on ADE Cloud. Off at the "
+        + "start. On runs one `gh auth token` at once (it can ask to unlock the keychain), so only the ADE desktop app "
+        + "on that computer turns it on; off removes this computer's copy from the account, from any of the person's "
+        + "desktops. Refused on a cloud computer.",
+      input: "object { on: boolean }",
+      example: "(desktop only) provider_logins.allowGitHubCli {\"on\":true}",
+    },
     use: {
       description:
         "Pick the sign-in ADE Cloud uses for a provider: a sign-in's key from status, \"key\" for the saved ADE Cloud key, "

@@ -41,6 +41,7 @@ import {
   type ProviderLoginApplyState,
   type ProviderLoginCaptureOffReason,
   type ProviderLoginChatNotice,
+  type ProviderLoginGhCliStatus,
   type ProviderLoginGateOptions,
   type ProviderLoginGateOutcome,
   type ProviderLoginLocalState,
@@ -61,6 +62,9 @@ import { noteProviderLoginChanged, onProviderLoginChanged } from "../ai/provider
 import { isRecord } from "../shared/utils";
 import {
   ANTIGRAVITY_SETTINGS_REL,
+  GH_BUNDLE_ID,
+  GH_READ_PART,
+  GH_TOKEN_PART,
   PROVIDER_LOGIN_CARRY,
   antigravityBundle,
   carryRow,
@@ -77,6 +81,16 @@ import {
   type AntigravityKeychainSlot,
 } from "./providerLoginKeychain";
 import { createOwnerRenewal, type OwnerRenewTarget, type ProviderLoginRenewer } from "./providerLoginRenew";
+import { copilotCarriedHash, setCopilotCarriedToken } from "./providerLoginCopilotEnv";
+import {
+  GH_READ_MESSAGES,
+  ghReadEnv,
+  isClassicGitHubToken,
+  readGhHostsGithubCom,
+  runGhAuthToken,
+  type GhTokenRead,
+  type GhTokenRunner,
+} from "./providerLoginGhCli";
 import {
   adoptOldCodexKeyFile,
   applyCodexKey,
@@ -120,6 +134,7 @@ import {
   sameMarks,
   writeProviderLoginState,
   type FileMark,
+  type GhCliChoice,
   type ProviderLoginStateFile,
 } from "./providerLoginState";
 
@@ -273,6 +288,12 @@ export type ProviderLoginSyncDeps = {
   /** The `security` command for the person's Keychain read. The scratch checks pass a fake one. */
   keychainCommand?: string;
   /**
+   * The one `gh auth token --hostname github.com` read for Copilot's GitHub
+   * CLI login (G1). Default: the real, reaped process. The scratch checks pass
+   * a fake one and count its calls.
+   */
+  ghTokenRunner?: GhTokenRunner;
+  /**
    * The account vault as `decideRotatingRenewal` reads it (the brain passes
    * `createHeadlessAccountVaultBridge` over the same store). Absent: no
    * takeover on a cloud computer and no claim back on the origin (step 3b).
@@ -291,6 +312,15 @@ const OFF_MESSAGES: Record<ProviderLoginCaptureOffReason, string> = {
   all_off: "Sign-ins for ADE Cloud are switched off for this account.",
   vault_unavailable: "ADE hasn't synced with your account yet, so it waits before it copies sign-ins.",
 };
+
+/**
+ * Capture off for these reasons still takes the GitHub CLI choice (G1): the
+ * one read runs at once, and nothing leaves the computer until capture is on.
+ */
+const GH_ALLOW_WHILE_OFF: ReadonlySet<ProviderLoginCaptureOffReason> = new Set(["all_off", "vault_unavailable"]);
+/** The read on the person's click waits for a keychain or keyring prompt; a read after a file change does not wait as long. */
+const GH_READ_ON_CLICK_MS = 120_000;
+const GH_READ_MS = 20_000;
 
 const LOCAL_MESSAGES: Record<ProviderLoginLocalState, string> = {
   captured: "In your account.",
@@ -394,6 +424,12 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   let rerun: { providers: Set<ProviderLoginProvider> | null } | null = null;
   const releases: Array<() => void> = [];
   const settleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Copilot's GitHub CLI login (G1): the last read by the marks of hosts.yml
+  // (memory only; it holds the token so a forced re-read never runs gh again),
+  // and the person's click that forces the next read.
+  const ghRunner = deps.ghTokenRunner ?? runGhAuthToken;
+  let ghMemo: { mark: string; read: GhTokenRead } | null = null;
+  let ghForce = false;
 
   const cloudSetting = (): CloudSetting => readCloudSetting(deps.settings()?.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING));
 
@@ -471,9 +507,15 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     if (!forceRead && memo && sameMarks(state.bundles[bundle.id]?.files, marks)) {
       return { kind: "parsed", logins: memo.logins.map((login) => ({ memo: login, full: null })), skipped: memo.skipped };
     }
+    if (bundle.id === GH_BUNDLE_ID && !forceRead && !memo) {
+      // After a restart of the brain: the gh login read before, unchanged since, and in the account. No gh process.
+      const restored = restoreGhMemo(bundle, marks, state, origin12);
+      if (restored) return restored;
+    }
     const contents = await stableRead(bundle, marks);
     // Not stable yet: keep the old marks, so the next pass reads it again.
     if (!contents) return { kind: "settling" };
+    if (bundle.id === GH_BUNDLE_ID) await ghTokenStep(contents, JSON.stringify(marks), state);
     const parsed = row.parse!(bundle, contents, ctx);
     state.bundles[bundle.id] = { files: marks };
     if ("unreadable" in parsed) {
@@ -494,6 +536,69 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     }));
     bundleMemos.set(bundle.id, { logins: logins.map((login) => login.memo), skipped: parsed.skipped });
     return { kind: "parsed", logins, skipped: parsed.skipped };
+  }
+
+  /**
+   * Copilot's GitHub CLI login (G1): give the parse the token. The file's own
+   * token (gh's plain-text storage) needs no process. Otherwise one `gh auth
+   * token` runs, only after the person turned it on, and only when hosts.yml
+   * changed since the last read or the person pressed again. A read that gave
+   * no token waits for the file to change (no retry on the tick).
+   */
+  async function ghTokenStep(contents: Map<string, Buffer>, mark: string, state: ProviderLoginStateFile): Promise<void> {
+    const choice = state.ghCli;
+    if (!choice) return;
+    const host = readGhHostsGithubCom(contents.get("hosts.yml")?.toString("utf8") ?? null);
+    const record = (result: NonNullable<GhCliChoice["read"]>["result"]) => {
+      choice.read = { mark, at: now(), result, user: host.user };
+    };
+    if (!host.user && !host.token) {
+      if (choice.read?.mark !== mark) record("no_token");
+      return;
+    }
+    if (host.token) {
+      if (choice.read?.mark !== mark) record(isClassicGitHubToken(host.token) ? "classic_token" : "ok");
+      return;
+    }
+    let read: GhTokenRead | null = null;
+    if (!ghForce && ghMemo?.mark === mark) {
+      read = ghMemo.read;
+    } else if (!ghForce && choice.read?.mark === mark && choice.read.result !== "ok") {
+      // The last read gave no token and the file has not changed: wait for a change or the person's click.
+      contents.set(GH_READ_PART, Buffer.from(choice.read.result));
+      return;
+    }
+    if (!read) {
+      const timeoutMs = ghForce ? GH_READ_ON_CLICK_MS : GH_READ_MS;
+      ghForce = false;
+      read = await ghRunner({ env: ghReadEnv(env, platform), timeoutMs }).catch((): GhTokenRead => ({ ok: false, reason: "failed" }));
+      ghMemo = { mark, read };
+      record(read.ok ? (isClassicGitHubToken(read.token) ? "classic_token" : "ok") : read.reason);
+      deps.logger.info("provider_login.gh_read", { result: choice.read!.result });
+    }
+    if (read.ok && !isClassicGitHubToken(read.token)) contents.set(GH_TOKEN_PART, Buffer.from(read.token));
+    else contents.set(GH_READ_PART, Buffer.from(read.ok ? "classic_token" : read.reason));
+  }
+
+  /** The gh login's memo from the marks file, when the last read was a token, hosts.yml is unchanged, and this computer pushed it. */
+  function restoreGhMemo(bundle: CarryBundle, marks: FileMark[], state: ProviderLoginStateFile, origin12: string): BundleObservation | null {
+    const read = state.ghCli?.read;
+    if (!read || read.result !== "ok" || read.mark !== JSON.stringify(marks)) return null;
+    const key = providerLoginKey("copilot", origin12, "gh");
+    const pushed = state.pushed[key];
+    if (!pushed) return null;
+    const login: LoginMemo = {
+      slot: "gh",
+      key,
+      contentHash: pushed.pushedHash,
+      familyHash: pushed.familyHash,
+      class: "fixed",
+      expiresAt: null,
+      account: read.user ? { email: null, id: read.user } : null,
+    };
+    state.bundles[bundle.id] = { files: marks };
+    bundleMemos.set(bundle.id, { logins: [login], skipped: [] });
+    return { kind: "parsed", logins: [{ memo: login, full: null }], skipped: [] };
   }
 
   type PushDecision = { push: false; state: ProviderLoginLocalState; writeBack?: true } | { push: true };
@@ -676,6 +781,13 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       if (row.carry !== "carried" || !row.locate || !row.parse) continue;
       if (providers && !providers.has(row.provider)) continue;
       localStates.set(row.provider, new Map());
+      if (row.provider === "copilot" && (deps.cloudComputer || !state.ghCli)) {
+        // The GitHub CLI login is read only after the person turns it on here
+        // (G1); never on a cloud computer. Not looked at, so not "signed in":
+        // a copy pushed before the person turned it off leaves by the absence rule.
+        if (deps.cloudComputer) uncertain.add(row.provider);
+        continue;
+      }
       const bundles = row.locate(ctx);
       // Not looked at here (Antigravity on a Mac, read only on the person's
       // Allow): its sign-in is not "gone from this computer".
@@ -698,6 +810,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
           continue;
         }
         for (const skipped of observation.skipped) setLocal(row.provider, `${bundle.id}:${skipped.slot}`, skipped.state, null);
+        // gh is missing, timed out or failed: the login may still be there, so it does not leave the account.
+        if (bundle.id === GH_BUNDLE_ID && observation.skipped.some((skipped) => skipped.state === "unreadable")) uncertain.add(row.provider);
         // A login that must go up but came from the memo is read again, in full.
         const needsFull = observation.logins.some((login) => !login.full && decide(login.memo, vault, rows, state, machine).push);
         if (needsFull) {
@@ -881,6 +995,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       });
     }
     // In use on ADE Cloud: the person's choice, else the newest switched-on sign-in.
+    // Copilot with no pick and a saved key uses the key (G1 Q2), as apply does.
+    const savedCopilotKey = vault.list(ACCOUNT_SCOPE_ALL).some((row) => row.kind === "integration" && row.key === "cloud-key-copilot" && !row.deleted);
     const byProvider = new Map<string, ProviderLoginSignIn[]>();
     for (const signIn of signIns) {
       const place = cloudChoiceKey(signIn.provider, signIn.slot);
@@ -889,6 +1005,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     for (const [place, list] of byProvider) {
       const chosen = setting.inUse[place];
       if (chosen === "key") continue;
+      if (place === "copilot" && chosen === undefined && savedCopilotKey) continue;
       const on = list.filter((signIn) => signIn.onForCloud);
       const pick = on.find((signIn) => signIn.key === chosen)
         ?? [...on].sort((left, right) => (right.renewedAt ?? right.capturedAt ?? "").localeCompare(left.renewedAt ?? left.capturedAt ?? ""))[0];
@@ -925,6 +1042,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       .filter((signIn) => !provider || signIn.provider === provider);
     const accountUserId = deps.staticOff ? null : deps.accountUserId();
     const writtenBack = accountUserId ? loadState(accountUserId).writtenBack ?? {} : {};
+    const ghCli = !provider || provider === "copilot" ? await ghCliStatus(off) : null;
     const providers = PROVIDER_LOGIN_CARRY
       .filter((row) => !provider || row.provider === provider)
       .map((row) => {
@@ -943,6 +1061,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
           best = { state: "captured", key: keychain.key };
           message = keychain.part.message;
         }
+        if (row.provider === "copilot" && ghCli) message = ghCliMessage(ghCli, off, message);
         return {
           provider: row.provider,
           carry: row.carry,
@@ -953,6 +1072,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
             ...(back ? { writtenBack: { at: new Date(back.at).toISOString(), renewedBy: back.renewedBy } } : {}),
           },
           ...(keychain ? { keychain: keychain.part } : {}),
+          ...(row.provider === "copilot" && ghCli ? { ghCli } : {}),
         };
       });
     return {
@@ -971,6 +1091,48 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       // Fields other packages add (P6: `claudePasses`), never the sync's own.
       ...(deps.staticOff ? {} : await readProviderLoginStatusParts(provider ?? null)),
     };
+  }
+
+  /**
+   * This computer's GitHub CLI login for Copilot (G1), on a person's own
+   * computer only. `present` and `user` are from hosts.yml (a file read, no
+   * process, no keychain); the rest is the person's choice and the last read.
+   */
+  async function ghCliStatus(off: ProviderLoginCaptureOffReason | null): Promise<ProviderLoginGhCliStatus | null> {
+    if (deps.cloudComputer || deps.staticOff) return null;
+    const accountUserId = deps.accountUserId();
+    const choice = accountUserId ? loadState(accountUserId).ghCli ?? null : null;
+    const hostsPath = carryRow("copilot").locate!(ctx)[0]!.files[0]!.abs;
+    let raw: string | null = null;
+    try {
+      raw = await fs.promises.readFile(hostsPath, "utf8");
+    } catch {
+      // No hosts.yml: gh is not signed in here.
+    }
+    const host = readGhHostsGithubCom(raw);
+    const read = choice?.read ?? null;
+    const failed = read && (read.result === "not_installed" || read.result === "timeout" || read.result === "failed") ? read.result : null;
+    return {
+      present: Boolean(host.user || host.token),
+      user: host.user,
+      allowed: Boolean(choice),
+      canAllow: Boolean(accountUserId) && (!off || GH_ALLOW_WHILE_OFF.has(off)),
+      ...(choice && read?.result === "classic_token" ? { unsupported: "classic_token" as const } : {}),
+      ...(choice && failed ? { lastError: GH_READ_MESSAGES[failed] } : {}),
+      ...(choice && read ? { lastReadAt: new Date(read.at).toISOString() } : {}),
+    };
+  }
+
+  function ghCliMessage(gh: ProviderLoginGhCliStatus, off: ProviderLoginCaptureOffReason | null, fallback: string): string {
+    if (!gh.allowed) {
+      return gh.present
+        ? "Off on this computer. Turn it on to copy this computer's GitHub CLI login for Copilot on ADE Cloud."
+        : "The GitHub CLI on this computer is not signed in to github.com. Run `gh auth login`, then turn this on.";
+    }
+    if (gh.unsupported === "classic_token") return "This GitHub CLI login uses a classic token (ghp_). Copilot does not take it, so ADE does not copy it.";
+    if (gh.lastError) return gh.lastError;
+    if (off === "all_off") return "On for this computer. Nothing leaves this computer while sign-ins for ADE Cloud are switched off.";
+    return fallback;
   }
 
   function appliedStatus(provider: ProviderLoginProvider | null): ProviderLoginApplied[] {
@@ -1163,6 +1325,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     }
     state.applied = {};
     state.env = {};
+    // Copilot's token lives only in the launch helper (G1).
+    setCopilotCarriedToken(null);
     for (const provider of providers) afterApplyChange(provider);
   }
 
@@ -1260,7 +1424,9 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     for (const [place, list] of candidates) {
       const chosen = setting.inUse[place];
       const saved = list[0]!.provider === "pi" ? null : SAVED_KEYS.find((spec) => spec.provider === list[0]!.provider) ?? null;
-      const savedToken = saved && chosen === "key" ? savedKeyToken(saved.id, vault) : null;
+      // Copilot with no pick: a saved key goes before a carried GitHub CLI login (G1 Q2).
+      const keyFirst = chosen === "key" || (chosen === undefined && list[0]!.provider === "copilot");
+      const savedToken = saved && keyFirst ? savedKeyToken(saved.id, vault) : null;
       if (saved && savedToken) {
         wants.set(place, keyWant(place, list[0]!.provider, saved.id, savedToken));
         continue;
@@ -1386,6 +1552,54 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     return readBackLoginHashes(provider, provider === "pi" ? place.slice("pi:".length) : null, ctx).length === 0;
   }
 
+  /**
+   * Copilot's place on a cloud computer (G1): no file and no env variable.
+   * The token in use (a carried GitHub CLI login, or the saved key) goes into
+   * the launch helper, which gives it only to Copilot processes at start.
+   * The applied entry keeps the source and hash only. True when the token in
+   * use here changed (Copilot restarts when idle).
+   */
+  function applyCopilot(
+    vault: ProviderLoginVault,
+    state: AppliedStateFile,
+    place: string,
+    want: Want | null,
+    have: AppliedEntry | null,
+    pickedBefore: string | null,
+    noteSwitch: (provider: string, before: string | null, after: string) => void,
+  ): boolean {
+    const token = want?.kind === "key" ? want.token : want ? copilotTokenOf(vault, want.key) : null;
+    if (!want || !token) {
+      applyStates.set(place, { state: want ? "failed" : "none", key: want ? (want.kind === "key" ? "key" : want.key) : null });
+      if (want) deps.logger.warn("provider_login.apply_failed", { provider: "copilot", place, reason: "nothing_to_write", code: null });
+      const hadToken = copilotCarriedHash() != null;
+      setCopilotCarriedToken(null);
+      if (have) {
+        delete state.applied[place];
+        deps.logger.info("provider_login.removed", { provider: "copilot", place, reason: "not_in_use" });
+      }
+      return hadToken || Boolean(have);
+    }
+    const pick = want.kind === "key" ? "key" : want.key;
+    const source = want.kind === "key" ? `key:${want.id}` : want.key;
+    applyStates.set(place, { state: want.kind === "key" ? "key" : "applied", key: pick });
+    const fresh = copilotCarriedHash() !== want.contentHash;
+    if (!fresh && have?.source === source && have.contentHash === want.contentHash) return false;
+    setCopilotCarriedToken({ token, hash: want.contentHash });
+    state.applied[place] = { provider: "copilot", source, contentHash: want.contentHash, accessOnly: false, renewalSafe: true, files: [], loginHashes: [], appliedAt: now() };
+    ownerOff.delete(place);
+    noteSwitch("copilot", pickedBefore, pick);
+    deps.logger.info("provider_login.applied", { provider: "copilot", place, key: pick, accessOnly: false, renewalSafe: true });
+    return fresh;
+  }
+
+  /** The GitHub token a carried Copilot sign-in holds (`parts.githubToken`), or null. Never logged. */
+  function copilotTokenOf(vault: ProviderLoginVault, key: string): string | null {
+    const payload = readProviderLoginPayload(vault.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, key));
+    const token = payload?.provider === "copilot" ? payload.parts?.githubToken : null;
+    return typeof token === "string" && token ? token : null;
+  }
+
   async function runApply(
     vault: ProviderLoginVault,
     accountUserId: string,
@@ -1432,6 +1646,10 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       const want = wants.get(place) ?? null;
       const have = state.applied[place] ?? null;
       const pickedBefore = applyStates.get(place)?.key ?? (have ? (have.source.startsWith("key:") ? "key" : have.source) : null);
+      if (provider === "copilot") {
+        if (applyCopilot(vault, state, place, want, have, pickedBefore, noteSwitch)) changed.add(provider);
+        continue;
+      }
       const fileLess = want?.kind === "key" && want.provider !== "codex";
       if (!want || fileLess) {
         applyStates.set(place, { state: want ? "key" : "none", key: want ? "key" : null });
@@ -1510,9 +1728,12 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       for (const spec of SAVED_KEYS) {
         if (envProviders && (!spec.provider || !envProviders.has(spec.provider))) continue;
         const want = spec.provider ? wants.get(spec.provider) : null;
-        const token = spec.provider
-          ? (want?.kind === "key" && want.id === spec.id ? want.token : null)
-          : savedKeyToken(spec.id, vault);
+        // Copilot's key never goes into the brain's env: the launch helper gives it to Copilot processes only (G1 Q3).
+        // An old value apply set here leaves.
+        const token = spec.id === "copilot" ? null
+          : spec.provider
+            ? (want?.kind === "key" && want.id === spec.id ? want.token : null)
+            : savedKeyToken(spec.id, vault);
         const setHash = state.env[spec.env];
         if (token) {
           if (env[spec.env] !== token) env[spec.env] = token;
@@ -2174,6 +2395,99 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     return await status("antigravity");
   }
 
+  function saveState(state: ProviderLoginStateFile): void {
+    try {
+      writeProviderLoginState(deps.adeDir, state);
+    } catch (error) {
+      deps.logger.warn("provider_login.state_write_failed", { code: (error as NodeJS.ErrnoException)?.code ?? null });
+    }
+  }
+
+  /**
+   * The person's switch for Copilot's GitHub CLI login on this computer (G1).
+   * Off at the start, and again after a sign-out of ADE (the choice is in the
+   * per-account marks file).
+   *
+   * - ON: the choice is kept, and the one read runs at once (it can show a
+   *   keychain or keyring prompt on this computer). With capture on, it is a
+   *   pass for Copilot, so the login goes into the account now. With the off
+   *   switch for all (or a vault that has not synced yet), only the read runs;
+   *   nothing leaves this computer until capture is on. ON again reads again.
+   * - OFF: no read from now on, and this computer's copy leaves the account
+   *   (each cloud computer drops it at its next pass). If the vault cannot
+   *   take the removal now, the absence rule removes it at a later pass.
+   *
+   * Never on a cloud computer. The status says what happened.
+   */
+  async function allowGitHubCli(args: { on: boolean }): Promise<ProviderLoginStatus> {
+    if (typeof args?.on !== "boolean") throw new Error("Say whether to turn it on or off.");
+    if (deps.cloudComputer) throw new Error("A cloud computer does not copy a GitHub CLI login. Turn this on on your own computer.");
+    if (deps.staticOff) throw new Error(OFF_MESSAGES[deps.staticOff]);
+    const accountUserId = deps.accountUserId();
+    if (!accountUserId) throw new Error(OFF_MESSAGES.signed_out);
+    const off = args.on ? await captureOffReason() : null;
+    if (off && !GH_ALLOW_WHILE_OFF.has(off)) throw new Error(OFF_MESSAGES[off]);
+    // Behind the pass in flight, so the marks file has one writer.
+    while (inFlight) await inFlight.catch(() => undefined);
+    const state = loadState(accountUserId);
+    // Either way the next read starts over: ON reads again, OFF reads nothing.
+    ghMemo = null;
+    bundleMemos.delete(GH_BUNDLE_ID);
+    if (args.on) {
+      state.ghCli = { allowedAt: state.ghCli?.allowedAt ?? now() };
+      saveState(state);
+      deps.logger.info("provider_login.gh_allowed", { on: true });
+      ghForce = true;
+      try {
+        if (!off) await pass(["copilot"]);
+        else await readGhWithoutCapture(state);
+      } finally {
+        ghForce = false;
+      }
+      notifyProviderLoginsChanged();
+      return await status("copilot");
+    }
+    delete state.ghCli;
+    delete state.bundles[GH_BUNDLE_ID];
+    localStates.delete("copilot");
+    deps.logger.info("provider_login.gh_allowed", { on: false });
+    const machine = deps.machine();
+    const vault = deps.vault();
+    let removed: string | null = null;
+    if (machine) {
+      const key = providerLoginKey("copilot", originId(machine.machineKey), "gh");
+      if (vault && liveSignInKeys(vault).has(key) && vault.remove(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, key)) {
+        removed = key;
+        deps.logger.info("provider_login.removed", { provider: "copilot", slot: "gh", reason: "gh_cli_off" });
+      }
+      // Removed now, or never pushed: forget it. Otherwise the absence rule takes it at a later pass.
+      if (removed || !vault || !liveSignInKeys(vault).has(key)) delete state.pushed[key];
+      if (state.writtenBack?.[key]) delete state.writtenBack[key];
+    }
+    saveState(state);
+    if (removed) {
+      try {
+        // The normal remove path: the setting drops its entries for that key.
+        return await saveSetting(cloudSetting(), removed);
+      } catch {
+        // Capture is off for a reason that keeps the setting; the item is gone anyway.
+      }
+    }
+    notifyProviderLoginsChanged();
+    return await status("copilot");
+  }
+
+  /** ON while capture is off for all (or the vault is not ready): the one read, so the status says what it found; no push. */
+  async function readGhWithoutCapture(state: ProviderLoginStateFile): Promise<void> {
+    const bundle = carryRow("copilot").locate!(ctx)[0]!;
+    const marks = await statBundle(bundle);
+    const contents = "missing" in marks[0]! ? new Map<string, Buffer>() : await stableRead(bundle, marks);
+    // Just changed: the next pass reads it.
+    if (!contents) return;
+    await ghTokenStep(contents, JSON.stringify(marks), state);
+    saveState(state);
+  }
+
   /** The Keychain part of a provider's status, on a Mac only, and the key the last Allow wrote while it is in the account. */
   function keychainStatus(
     provider: ProviderLoginProvider,
@@ -2315,6 +2629,7 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     refreshAccess,
     ...writes,
     allowKeychain,
+    allowGitHubCli,
     pass,
     status,
     /** The person's "look now": one pass (still behind every gate), then the status. */
@@ -2344,6 +2659,10 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       localStates.clear();
       metaMemo.clear();
       stateCache = null;
+      // The GitHub CLI choice leaves with the marks file: another account starts with it off.
+      ghMemo = null;
+      ghForce = false;
+      setCopilotCarriedToken(null);
       try {
         removeProviderLoginState(deps.adeDir);
       } catch {

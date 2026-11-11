@@ -30,6 +30,7 @@ import type {
   CopilotSdkWorkerResponse,
 } from "./copilotSdkProtocol";
 import { COPILOT_SDK_WAITERS, type CopilotSdkWaiterType } from "./copilotSdkProtocol";
+import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 
 type Waiter = { resolve: (value: unknown) => void; reject: (error: Error) => void; type: string };
 export type CopilotSdkBridge = {
@@ -277,8 +278,10 @@ export async function acquireCopilotSdkConnection(args: {
   /** Dispose a new worker whose runtime has not answered `init` by then. */
   initLimitMs?: number;
 }): Promise<{ pooled: CopilotSdkPooled; generation: number; poolKey: string }> {
-  // The runtime gets this env; ADE's pinned copy must not update itself.
-  const init = { cliPath: args.cliPath, baseDirectory: args.baseDirectory, baseEnv: { ...args.baseEnv, ...pinnedToolSelfUpdateEnv("copilot") } };
+  // The runtime gets this env; ADE's pinned copy must not update itself. On a
+  // cloud computer the account's Copilot token joins it here, and only here
+  // (before the pool key, so a new token gets a new worker).
+  const init = { cliPath: args.cliPath, baseDirectory: args.baseDirectory, baseEnv: { ...withCopilotCarriedEnv(args.baseEnv), ...pinnedToolSelfUpdateEnv("copilot") } };
   const key = poolKey(init);
   for (let staleInitRetries = 0; ; staleInitRetries += 1) {
     const active = pools.get(key);

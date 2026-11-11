@@ -4181,6 +4181,13 @@ declare global {
          * Refused off macOS and for another computer's pin or binding ("Run this on that Mac").
          */
         allowKeychain: (args: { provider: "antigravity"; slot?: "personal" | "business" | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
+        /**
+         * Copilot's GitHub CLI login (github.com) for ADE Cloud on one computer, off at the start.
+         * `on: true` runs one `gh auth token` there at once and returns what it found in
+         * `providers[copilot].ghCli`; refused for another computer's pin or binding.
+         * `on: false` removes that computer's copy from the account; pass the computer's pin.
+         */
+        allowGitHubCli: (args: { on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         use: (args: { provider: ProviderLoginProvider; key: string | null; slot?: string | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         setCloud: (args: { key: string; on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         setCloudAll: (args: { on: boolean }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;

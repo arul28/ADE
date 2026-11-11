@@ -244,7 +244,7 @@ import type {
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
 } from "../shared/types";
-import { adeActionAccess, thisDesktopOnlyRefusal } from "../shared/adeActionAccess";
+import { adeActionAccess, thisDesktopOnlyRefusal, thisDesktopOnlyRefusalFor } from "../shared/adeActionAccess";
 import type {
   ClaudePluginUiActArgs,
   ClaudePluginUiActResult,
@@ -11436,6 +11436,22 @@ const adeBridge = {
         throw new Error(thisDesktopOnlyRefusal("provider_logins", "allowKeychain") ?? "Run this on that Mac.");
       }
       return await ipcRenderer.invoke(IPC.providerLoginsCall, { action: "allowKeychain", args: { ...args } }) as ProviderLoginSyncStatus;
+    },
+    /**
+     * Copilot's GitHub CLI login for ADE Cloud, on one computer. On runs `gh`
+     * there, which can ask to unlock a keychain on that screen, so on is only
+     * for the computer in front of the person (a remote pin or binding is
+     * refused here, and the brain refuses it too). Off goes to the pinned
+     * computer from any of the person's desktops.
+     */
+    allowGitHubCli: async (args: { on: boolean }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> => {
+      if (args.on !== false) {
+        if (pin?.kind === "remote" || (!pin && await getRemoteProjectBinding())) {
+          throw new Error(thisDesktopOnlyRefusalFor("provider_logins", "allowGitHubCli", args) ?? "Turn this on at that computer.");
+        }
+        return await ipcRenderer.invoke(IPC.providerLoginsCall, { action: "allowGitHubCli", args: { on: true } }) as ProviderLoginSyncStatus;
+      }
+      return await callProviderLogins<ProviderLoginSyncStatus>("allowGitHubCli", { on: false }, pin);
     },
     use: (args: { provider: ProviderLoginProvider; key: string | null; slot?: string | null }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
       callProviderLogins<ProviderLoginSyncStatus>("use", args, pin),

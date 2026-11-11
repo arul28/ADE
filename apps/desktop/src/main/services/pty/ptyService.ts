@@ -197,6 +197,7 @@ import {
 } from "./pinnedProviderCli";
 import { museCredentialEnv } from "../ai/museAuth";
 import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
+import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
   buildTrackedCliResumeCommand,
@@ -7329,8 +7330,11 @@ export function createPtyService({
         }
         const ptyLib = loadPty();
         // A Claude CLI on a Claude pass account gets the pass here, at the
-        // spawn: never in `launchEnv`, which a tracked command can carry.
-        const spawnEnv = isClaudeTrackedCliToolType(toolTypeHint) ? withClaudePassEnv(launchEnv) : launchEnv;
+        // spawn: never in `launchEnv`, which a tracked command can carry. The
+        // Copilot CLI on a cloud computer gets the account's Copilot token the same way.
+        const spawnEnv = isClaudeTrackedCliToolType(toolTypeHint)
+          ? withClaudePassEnv(launchEnv)
+          : toolTypeHint === "copilot" ? withCopilotCarriedEnv(launchEnv) : launchEnv;
         const opts: IWindowsPtyForkOptions = {
           name: "xterm-256color",
           cols,

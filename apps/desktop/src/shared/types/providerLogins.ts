@@ -156,6 +156,37 @@ export type ProviderLoginProviderStatus = {
     /** Plain words for the tile, such as "Copied from this Mac on Nov 10, 2026. Allow again to update." */
     message: string;
   };
+  /** Copilot only, on a person's own computer: this computer's GitHub CLI login (P5 G1). Absent elsewhere. */
+  ghCli?: ProviderLoginGhCliStatus;
+};
+
+/**
+ * This computer's GitHub CLI login for github.com, which ADE copies for
+ * Copilot on ADE Cloud only after the person turns it on here
+ * (`providerLogins.allowGitHubCli`). Off at the start. `present` and `user`
+ * come from gh's `hosts.yml` only (a file read, never a process or the
+ * Keychain). No token, no hash.
+ */
+export type ProviderLoginGhCliStatus = {
+  /** gh has a github.com login on this computer. */
+  present: boolean;
+  /** Its active user, from `hosts.yml`. */
+  user: string | null;
+  /** The person turned it on for this computer (it lasts until they turn it off or sign out of ADE). */
+  allowed: boolean;
+  /**
+   * True when turning it on can work now: this computer copies sign-ins, or
+   * only the one off switch for all is off (then the choice is kept and
+   * nothing leaves this computer until that switch is on again:
+   * `thisComputer.reason === "all_off"`). False on a cloud computer.
+   */
+  canAllow: boolean;
+  /** The login is a classic personal token (`ghp_`), which Copilot does not accept: not copied. */
+  unsupported?: "classic_token";
+  /** Why the last read gave no token, in plain words (gh missing, a timeout, an error). */
+  lastError?: string;
+  /** When ADE last read the login with gh (ISO), after the person turned it on. */
+  lastReadAt?: string;
 };
 
 /**

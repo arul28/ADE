@@ -32,14 +32,21 @@ import {
   qwenConfigHome,
 } from "../shared/providerConfigHomes";
 import { kimiCodeLoginInKeyring, parseKimiConfigToml, resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
+import { isClassicGitHubToken, readGhHostsGithubCom } from "./providerLoginGhCli";
 import { parseQwenUserSettings } from "../ai/qwenUserSettings";
 import { isRecord } from "../shared/utils";
 
 /**
- * Whether the gh login (`hosts.yml`) also counts as a Copilot sign-in to carry.
- * Off: the owner decides (P5 open question 5). A yes is this one line.
+ * Copilot's carried sign-in is this computer's GitHub CLI login for
+ * github.com (P5 G1), and only after the person allows it on this computer
+ * (the sync skips the row until then). `hosts.yml` is the marker and gives the
+ * user; the token comes from the file (gh's plain-text storage) or from the
+ * sync's one `gh auth token` read, which it passes in under `GH_TOKEN_PART`.
+ * A failed read comes in under `GH_READ_PART`.
  */
-export const CARRY_GH_HOSTS_FOR_COPILOT = false;
+export const GH_BUNDLE_ID = "copilot/gh";
+export const GH_TOKEN_PART = "\u0000gh:token";
+export const GH_READ_PART = "\u0000gh:read";
 
 /** Symbolic roots. Apply resolves each one with the same locator on the target computer. */
 export type CarryRoot =
@@ -390,30 +397,43 @@ const ROWS: CarryRow[] = [
   },
   {
     provider: "copilot",
-    // Where `copilot login` keeps its token in config.json is not known yet (P5 §14).
-    carry: CARRY_GH_HOSTS_FOR_COPILOT ? "carried" : "fallback",
-    message: CARRY_GH_HOSTS_FOR_COPILOT
-      ? "ADE copies the GitHub CLI login that Copilot uses."
-      : "Sign in to Copilot on the cloud computer, or add a token. ADE does not copy Copilot sign-ins yet.",
-    ...(CARRY_GH_HOSTS_FOR_COPILOT
-      ? {
-        locate: (ctx: CarryContext): CarryBundle[] => {
-          const hosts = ghHostsFiles({ env: ctx.env, homeDir: ctx.homeDir, platform: ctx.platform }).find(exists);
-          return hosts ? [{ id: "copilot/gh", files: [file("ghConfig", path.dirname(hosts), "hosts.yml")] }] : [];
-        },
-        parse: (bundle: CarryBundle, contents: ReadonlyMap<string, Buffer>): CarryParseResult => {
-          const raw = text(contents, "hosts.yml") ?? "";
-          // A plain-text token only; gh's default keeps it in the OS keyring.
-          const token = /^\s*oauth_token:\s*(\S+)/m.exec(raw)?.[1] ?? null;
-          const user = /^\s*user:\s*(\S+)/m.exec(raw)?.[1] ?? null;
-          if (!token) return { logins: [], skipped: [{ slot: "gh", state: "os_store" }] };
-          return {
-            logins: [{ slot: "gh", class: "fixed", familySecret: token, account: user ? { email: null, id: user } : null, expiresAt: null, files: carriedFiles(bundle, contents) }],
-            skipped: [],
-          };
-        },
+    carry: "carried",
+    message: "ADE copies this computer's GitHub CLI login for Copilot only when you turn it on here. The login also gives access to your GitHub repos. "
+      + "A Copilot sign-in made with `copilot login` is not copied.",
+    locate: (ctx) => {
+      // The file gh reads, or where it would be: a logout that deletes it is "not signed in", so the item leaves.
+      const candidates = ghHostsFiles({ env: ctx.env, homeDir: ctx.homeDir, platform: ctx.platform });
+      const hosts = candidates.find(exists) ?? candidates[0]!;
+      return [{ id: GH_BUNDLE_ID, files: [file("ghConfig", path.dirname(hosts), "hosts.yml", { carry: false })] }];
+    },
+    parse: (_bundle, contents) => {
+      const host = readGhHostsGithubCom(text(contents, "hosts.yml"));
+      // No github.com login (another host's only, or none): not signed in here.
+      if (!host.user && !host.token) return { logins: [], skipped: [{ slot: "gh", state: "not_signed_in" }] };
+      const token = host.token ?? text(contents, GH_TOKEN_PART)?.trim() ?? null;
+      if (!token) {
+        const reason = text(contents, GH_READ_PART);
+        if (reason === "no_token") return { logins: [], skipped: [{ slot: "gh", state: "not_signed_in" }] };
+        // The last read gave a classic token and the file has not changed since: still not carried.
+        if (reason === "classic_token") return { logins: [], skipped: [{ slot: "gh", state: "not_checked" }] };
+        // gh is missing, timed out or failed: the login may still be there, so nothing leaves the account.
+        return { unreadable: true };
       }
-      : {}),
+      // A classic token: Copilot refuses it, so it is never carried (the status says why).
+      if (isClassicGitHubToken(token)) return { logins: [], skipped: [{ slot: "gh", state: "not_checked" }] };
+      return {
+        logins: [{
+          slot: "gh",
+          class: "fixed",
+          familySecret: token,
+          account: host.user ? { email: null, id: host.user } : null,
+          expiresAt: null,
+          files: [],
+          parts: { githubToken: token },
+        }],
+        skipped: [],
+      };
+    },
   },
   {
     provider: "grok",

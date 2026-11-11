@@ -98,7 +98,7 @@ import { runGit } from "../../desktop/src/main/services/git/git";
 import { parseDiffNameOnly, resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
-import { thisDesktopOnlyRefusal } from "../../desktop/src/shared/adeActionAccess";
+import { thisDesktopOnlyRefusal, thisDesktopOnlyRefusalFor } from "../../desktop/src/shared/adeActionAccess";
 import { isSceneParseFailure, parseSceneFence } from "../../desktop/src/shared/chatScene";
 import {
   SCENE_PREVIEW_MAX_SOURCE_BYTES,
@@ -6592,7 +6592,7 @@ async function runTool(args: {
         `run_ade_action:${domain}.${action}`,
       );
     }
-    const thisDesktopOnly = thisDesktopOnlyRefusal(domain, action);
+    const thisDesktopOnly = thisDesktopOnlyRefusalFor(domain, action, argsList ? argsList[0] : hasScalarArg ? toolArgs.arg : toolArgs.args);
     if (thisDesktopOnly && !mayUseThisDesktopOnlyActions(session)) {
       // It acts on this computer's screen (a macOS prompt): never for a desktop on another computer.
       throw new JsonRpcError(JsonRpcErrorCode.policyDenied, thisDesktopOnly);

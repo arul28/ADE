@@ -747,7 +747,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   provider_logins: {
     read: ["status"],
-    write: ["captureNow", "allowKeychain", "use", "setCloud", "setCloudAll", "setCloudBalance", "remove"],
+    write: ["captureNow", "allowKeychain", "allowGitHubCli", "use", "setCloud", "setCloudAll", "setCloudBalance", "remove"],
   },
 };
 
@@ -783,6 +783,33 @@ export const ADE_ACTION_THIS_DESKTOP_ONLY: Readonly<Record<string, Readonly<Reco
 /** The refusal for a caller that is not this computer's own desktop app, or null when any user client may call it. */
 export function thisDesktopOnlyRefusal(domain: string, action: string): string | null {
   return ADE_ACTION_THIS_DESKTOP_ONLY[domain]?.[action] ?? null;
+}
+
+/**
+ * Actions that are this-desktop-only for some inputs: turning Copilot's GitHub
+ * CLI copy on runs `gh`, which can show a keychain or keyring prompt on the
+ * computer that runs it, so only that computer's desktop may turn it on.
+ * Turning it off shows nothing, so any of the person's desktops may (pinned
+ * to that computer). Every input that is not plainly "off" is refused.
+ */
+const ADE_ACTION_THIS_DESKTOP_ONLY_FOR_INPUT: Readonly<Record<string, Readonly<Record<string, { refusal: string; allows: (input: unknown) => boolean }>>>> = {
+  provider_logins: {
+    allowGitHubCli: {
+      refusal: "Turn this on at that computer. The GitHub CLI can ask there to unlock its keychain, so ADE reads it only on the computer you are using.",
+      allows: (input) => Boolean(input) && typeof input === "object" && (input as { on?: unknown }).on === false,
+    },
+  },
+};
+
+/**
+ * `thisDesktopOnlyRefusal` for one call, with its input: also refuses the
+ * inputs `ADE_ACTION_THIS_DESKTOP_ONLY_FOR_INPUT` keeps for this desktop.
+ */
+export function thisDesktopOnlyRefusalFor(domain: string, action: string, input: unknown): string | null {
+  const fixed = thisDesktopOnlyRefusal(domain, action);
+  if (fixed) return fixed;
+  const rule = ADE_ACTION_THIS_DESKTOP_ONLY_FOR_INPUT[domain]?.[action];
+  return rule && !rule.allows(input) ? rule.refusal : null;
 }
 
 /**

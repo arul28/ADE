@@ -31,6 +31,7 @@ import {
   type AcpProviderId,
 } from "../../../shared/acpProviderMetadata";
 import { claudeConfigHome, codexConfigHome, COPILOT_TOKEN_ENV_KEYS } from "../shared/providerConfigHomes";
+import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 import { pinnedToolForProvider, pinnedToolState } from "./pinnedProviderTools";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
@@ -708,7 +709,8 @@ export async function buildProviderConnections(
     cliStatuses.find((status) => status.cli === "copilot") ?? null,
     options?.copilot,
     checkedAt,
-    process.env,
+    // The account's Copilot token on a cloud computer is in the launch helper, not in process.env.
+    withCopilotCarriedEnv(process.env),
   );
   applyRuntimeHealth(copilot, getProviderRuntimeHealth("copilot"));
 

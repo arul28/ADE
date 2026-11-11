@@ -73,7 +73,7 @@ const USER_SETTING_WRITES = {
   // Copying this computer's sign-ins into the account, and which ones ADE
   // Cloud uses, are the person's calls (P5). The five account writes are also
   // user-only below: outside apps and agents read the status, never change it.
-  provider_logins: { actions: ["captureNow", "allowKeychain", ...PROVIDER_LOGIN_ACCOUNT_WRITES], entryId: "agents.providers" },
+  provider_logins: { actions: ["captureNow", "allowKeychain", "allowGitHubCli", ...PROVIDER_LOGIN_ACCOUNT_WRITES], entryId: "agents.providers" },
   keybindings: { actions: ["set"], entryId: null },
   project_config: { actions: ["setPrTranscriptGists"], entryId: "lanes-git.pr-chat-transcripts" },
   keep_awake: { actions: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"], entryId: "general.keep-awake" },
@@ -389,7 +389,7 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // Another machine's chat owns each copy; only a person deletes one for it.
   remote_work: ["list", "delete"],
   // Which sign-ins ADE Cloud uses, removing one from the account, and the one Keychain read on a Mac (P5).
-  provider_logins: [...PROVIDER_LOGIN_ACCOUNT_WRITES, "allowKeychain"],
+  provider_logins: [...PROVIDER_LOGIN_ACCOUNT_WRITES, "allowKeychain", "allowGitHubCli"],
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
@@ -439,7 +439,7 @@ export const ADE_ACTION_MACHINE_SCOPED = {
   cloud: ["access", "list", "hours", "limits", "sleep", "wake", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
   account_vault: ["get", "set", "remove"],
   // The account's sign-ins, from a window with no project here (`providerLogins.call`).
-  provider_logins: ["status", "captureNow", "allowKeychain", ...PROVIDER_LOGIN_ACCOUNT_WRITES],
+  provider_logins: ["status", "captureNow", "allowKeychain", "allowGitHubCli", ...PROVIDER_LOGIN_ACCOUNT_WRITES],
 } as const satisfies Partial<Record<AdeActionDomain, readonly string[]>>;
 
 export type AdeMachineScopedDomain = keyof typeof ADE_ACTION_MACHINE_SCOPED;
@@ -1577,9 +1577,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   /*
    * The sign-ins the account keeps for ADE Cloud (P5). `status` returns no
    * token, key, file content or hash, so agents and other machines may read
-   * it. `captureNow` and `allowKeychain` are the person's.
+   * it. `captureNow`, `allowKeychain` and `allowGitHubCli` are the person's.
    */
-  provider_logins: ["status", "captureNow", "allowKeychain", ...PROVIDER_LOGIN_ACCOUNT_WRITES],
+  provider_logins: ["status", "captureNow", "allowKeychain", "allowGitHubCli", ...PROVIDER_LOGIN_ACCOUNT_WRITES],
 };
 
 /* ──────────────────────────────────────────────────────────────────────────

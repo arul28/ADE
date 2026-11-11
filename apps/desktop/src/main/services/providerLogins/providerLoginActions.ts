@@ -1,7 +1,9 @@
 /**
  * The `provider_logins` actions: `status` (a read for anyone), `captureNow`
  * (the person's "look now"), `allowKeychain` (the person's one Keychain read
- * on a Mac, user-only and machine-scoped), and the person's five writes `use`, `setCloud`,
+ * on a Mac, user-only and machine-scoped), `allowGitHubCli` (the person's
+ * switch for Copilot's GitHub CLI login on one computer, user-only and
+ * machine-scoped; on is for that computer's desktop only), and the person's five writes `use`, `setCloud`,
  * `setCloudAll`, `setCloudBalance` and `remove` (user-only: the desktop app, never the CLI, an
  * agent or an outside app; `actionPolicy.ts`). Each one runs on the brain the
  * call reaches; the writes are account-wide, so any brain of the person's
@@ -89,6 +91,14 @@ export function buildProviderLoginsDomainService() {
         throw new Error("provider_logins.allowKeychain takes slot \"personal\" or \"business\".");
       }
       return await requireSync().allowKeychain({ provider, slot: raw ?? null });
+    },
+    /**
+     * `{on}`: Copilot's GitHub CLI login for ADE Cloud on this computer (G1).
+     * On is only for this computer's desktop (`thisDesktopOnlyRefusalFor`), off
+     * for any of the person's desktops. Refused on a cloud computer.
+     */
+    async allowGitHubCli(args?: unknown): Promise<ProviderLoginStatus> {
+      return await requireSync().allowGitHubCli({ on: readOn(args) });
     },
     /** `{provider, key}`: a vault key, "key" for the saved key, or null for the newest. Pi takes `slot` with null. */
     async use(args?: unknown): Promise<ProviderLoginStatus> {

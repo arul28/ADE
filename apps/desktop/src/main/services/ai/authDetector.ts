@@ -25,6 +25,7 @@ import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services
 import type { PinnedToolState } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import { loadQwenUserSettings } from "./qwenUserSettings";
 import { COPILOT_TOKEN_ENV_KEYS, copilotConfigHome, devinCredentialFiles, factoryConfigHome, ghHostsFiles, grokConfigHome } from "../shared/providerConfigHomes";
+import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 import { kimiCodeLoginInKeyring, resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
 import type { AgentCliLoginProvider, AgentCliSavedLogin } from "../../../shared/types/agentCliLogin";
 import {
@@ -228,7 +229,8 @@ async function inspectAcpCliCredentials(
  * `gh auth login`. Keychain-only logins are invisible here; the SDK sees them.
  */
 async function inspectCopilotCliCredentials(): Promise<{ authenticated: boolean; verified: false }> {
-  const env = process.env;
+  // On a cloud computer the account's Copilot token is not in process.env; the launch helper gives it to Copilot.
+  const env = withCopilotCarriedEnv(process.env);
   if (COPILOT_TOKEN_ENV_KEYS.some((key) => env[key]?.trim())) {
     return { authenticated: true, verified: false };
   }
