@@ -388,6 +388,7 @@ import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, 
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
 import { cancelWorkDraftLaneRequest, type WorkDraftModelRequest } from "../../lib/workDraft";
 import { resolveHarnessLaunchTarget, type HarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
+import { isDefaultProviderInstanceId } from "../../../shared/types/providerInstances";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle, resolveChatContentWidthPx } from "./chatAppearance";
@@ -16943,8 +16944,11 @@ export function AgentChatPane({
       // The chat keeps its key and its account through a model change inside
       // the same provider (`launchRouteTransition` drops a key only on a
       // provider change or a new preset; the account moves only with the
-      // provider), so only a move to another provider checks the login.
-      if ((selectedSession.credentialId || selectedSession.instanceId) && signInProvider === selectedSession.provider) {
+      // provider), so only a move to another provider checks the login. The
+      // machine's own default account is the login the status reads, so a
+      // chat on it is still checked.
+      const ownAccount = selectedSession.instanceId && !isDefaultProviderInstanceId(selectedSession.instanceId);
+      if ((selectedSession.credentialId || ownAccount) && signInProvider === selectedSession.provider) {
         return null;
       }
       return signInProvider;
