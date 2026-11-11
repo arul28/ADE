@@ -99,10 +99,14 @@ describe("usePrActionsMenu", () => {
   it("uses lane chats the caller passes and does not fetch them again", () => {
     const list = vi.fn(async () => []);
     (window as unknown as { ade: unknown }).ade = { agentChat: { list } };
-    const laneChats = [
-      { sessionId: "a", laneId: "lane-1", title: "First", lastActivityAt: "2026-01-02T00:00:00Z", archivedAt: null },
-      { sessionId: "b", laneId: "lane-1", title: "Second", lastActivityAt: "2026-01-03T00:00:00Z", archivedAt: null },
-    ] as unknown as NonNullable<Parameters<typeof usePrActionsMenu>[0]["laneChats"]>;
+    const laneChats = {
+      sessions: [
+        { sessionId: "a", laneId: "lane-1", title: "First", lastActivityAt: "2026-01-02T00:00:00Z", archivedAt: null },
+        { sessionId: "b", laneId: "lane-1", title: "Second", lastActivityAt: "2026-01-03T00:00:00Z", archivedAt: null },
+      ],
+      error: null,
+      retry: vi.fn(),
+    } as unknown as NonNullable<Parameters<typeof usePrActionsMenu>[0]["laneChats"]>;
     const hook = renderHook(() => usePrActionsMenu({ pr: { ...target, chatSessionIds: ["a", "b"] }, laneChats }));
     hook.result.current.ensureChats();
     expect(list).not.toHaveBeenCalled();

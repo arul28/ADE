@@ -201,7 +201,15 @@ function sender(id = 42) {
 }
 
 function eventForSender(nextSender = sender()) {
-  return { sender: nextSender } as any;
+  // A registered channel now refuses anything but ADE's own renderer; these
+  // fake events stand for the main window's frame. Follow the renderer URL the
+  // trust helper will accept in this environment (tests set the dev URL).
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+  const url = devServerUrl ? `${new URL(devServerUrl).origin}/` : "file:///tmp/ade/renderer/index.html";
+  return {
+    sender: nextSender,
+    senderFrame: { url },
+  } as any;
 }
 
 function localBinding(rootPath = "/repo"): OpenProjectBinding {
@@ -2262,7 +2270,7 @@ describe("registerRuntimeBridge", () => {
 describe("registerIpc usage bridge", () => {
   beforeEach(() => {
     ipcHandlers.clear();
-    browserWindowFromWebContents.mockReset();
+    browserWindowFromWebContents.mockReset().mockReturnValue({ id: 7, isDestroyed: () => false });
   });
 
   const brainSnapshot = {
@@ -2322,6 +2330,22 @@ describe("registerIpc usage bridge", () => {
     });
     return { pool, dormantTracker };
   }
+
+  it("refuses a channel call from a page that is not ADE's renderer", async () => {
+    registerUsageIpc({ openRoots: ["/repo-one"] });
+    const handler = ipcHandlers.get(IPC.appPing)!;
+    await expect(handler({
+      sender: sender(),
+      senderFrame: { url: "https://example.com/" },
+    })).rejects.toThrow(/only available to the ADE window/);
+  });
+
+  it("treats a closing window as an expected refusal, not an untrusted page", async () => {
+    registerUsageIpc({ openRoots: ["/repo-one"] });
+    const handler = ipcHandlers.get(IPC.appPing)!;
+    const closing = { ...sender(), isDestroyed: () => true };
+    await expect(handler(eventForSender(closing))).rejects.toMatchObject({ adeExpected: "user" });
+  });
 
   it("reads the brain's shared tracker for a window with no project binding", async () => {
     const { pool, dormantTracker } = registerUsageIpc({

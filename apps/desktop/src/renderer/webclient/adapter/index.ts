@@ -190,6 +190,10 @@ export function createAdeWebAdapter(
     // Live, read-only Mac Desktop view. The Electron namespace carries the
     // desktop-only members; this surface implements the live-view cut.
     macDesktop: createMacDesktopNamespace(infra),
+    // Music belongs to a physical desktop. Declared absent on purpose: the
+    // fallback proxy otherwise hands back a truthy stand-in, so
+    // `window.ade.music` checks would pass on web and offer a dead control.
+    music: undefined,
     builtInBrowser: misc.builtInBrowser,
     usage: misc.usage,
     providerInstances: misc.providerInstances,

@@ -12714,13 +12714,14 @@ const adeBridge = {
     ): Promise<GitSyncStatuses> => {
       const laneIds = normalizeSyncStatusLaneIds(args);
       if (laneIds.length === 0) return {};
+      const request = { laneIds, skipRecommendation: args.skipRecommendation === true };
       try {
         return await callPinnedOrBoundRuntimeActionOr<GitSyncStatuses>(
           pin,
           "git",
           "getSyncStatuses",
-          { args: { laneIds } },
-          () => ipcRenderer.invoke(IPC.gitGetSyncStatuses, { laneIds }),
+          { args: request },
+          () => ipcRenderer.invoke(IPC.gitGetSyncStatuses, request),
         );
       } catch (error) {
         if (!isUnsupportedAdeActionError(error)) throw error;

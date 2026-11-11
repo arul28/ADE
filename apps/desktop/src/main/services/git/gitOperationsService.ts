@@ -39,6 +39,7 @@ import type {
   GitStashSummary,
   GitSyncArgs,
   GitSyncMode,
+  GitGetSyncStatusArgs,
   GitSyncStatusesArgs,
   GitSyncStatuses,
   GitUpstreamSyncStatus,
@@ -208,6 +209,32 @@ async function getAbsoluteGitDir(worktreePath: string): Promise<string | null> {
 async function listUnmergedFiles(worktreePath: string, timeoutMs: number): Promise<string[]> {
   const res = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], { cwd: worktreePath, timeoutMs });
   return res.exitCode === 0 ? parseDiffNameOnlySorted(res.stdout) : [];
+}
+
+/**
+ * The recommendation for a diverged branch. `pull` is the default. A diverged
+ * branch is by definition one where upstream is not an ancestor (it is behind
+ * and ahead), so the reflog is what distinguishes a lane that rewrote its own
+ * pushed history (a recent rebase) from one that must merge upstream work.
+ * The paste action is a confirm-gated lease push. Counts-only callers skip this
+ * whole function.
+ */
+async function recommendDivergedAction(
+  worktreePath: string,
+  upstreamRef: string,
+): Promise<GitRecommendedAction> {
+  const mergeBaseRes = await runGit(["merge-base", "--is-ancestor", upstreamRef, "HEAD"], {
+    cwd: worktreePath,
+    timeoutMs: 5_000
+  });
+  if (mergeBaseRes.exitCode === 0) return "force_push_lease";
+  const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
+    cwd: worktreePath,
+    timeoutMs: 5_000
+  });
+  const hasRecentRebase = reflogRes.exitCode === 0 &&
+    reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
+  return hasRecentRebase ? "force_push_lease" : "pull";
 }
 
 export function createGitOperationsService({
@@ -1093,9 +1120,10 @@ export function createGitOperationsService({
       });
     },
 
-    async getSyncStatus(args: { laneId: string }): Promise<GitUpstreamSyncStatus> {
+    async getSyncStatus(args: GitGetSyncStatusArgs): Promise<GitUpstreamSyncStatus> {
       const laneId = args.laneId.trim();
-      return readLaneCached(`sync-status:${laneId}:default`, 2_000, async () => {
+      const skipRecommendation = args.skipRecommendation === true;
+      return readLaneCached(`sync-status:${laneId}:${skipRecommendation ? "counts" : "default"}`, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
         await assertLaneWorktreeRoot(lane);
         const readConfiguredUpstream = async (): Promise<string | null> => {
@@ -1175,21 +1203,9 @@ export function createGitOperationsService({
         } else if (normalizedBehind > 0 && normalizedAhead === 0) {
           recommendedAction = "pull";
         } else if (diverged) {
-          const mergeBaseRes = await runGit(["merge-base", "--is-ancestor", upstreamRef, "HEAD"], {
-            cwd: lane.worktreePath,
-            timeoutMs: 5_000
-          });
-          if (mergeBaseRes.exitCode === 0) {
-            recommendedAction = "force_push_lease";
-          } else {
-            const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
-              cwd: lane.worktreePath,
-              timeoutMs: 5_000
-            });
-            const hasRecentRebase = reflogRes.exitCode === 0 &&
-              reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
-            recommendedAction = hasRecentRebase ? "force_push_lease" : "pull";
-          }
+          recommendedAction = skipRecommendation
+            ? "pull"
+            : await recommendDivergedAction(lane.worktreePath, upstreamRef);
         }
 
         return {
@@ -1206,7 +1222,9 @@ export function createGitOperationsService({
 
     async getSyncStatuses(args: GitSyncStatusesArgs): Promise<GitSyncStatuses> {
       const laneIds = normalizeSyncStatusLaneIds(args);
-      return settleLaneSyncStatuses(laneIds, async (laneId) => service.getSyncStatus({ laneId }));
+      const skipRecommendation = args.skipRecommendation === true;
+      return settleLaneSyncStatuses(laneIds, async (laneId) =>
+        service.getSyncStatus(skipRecommendation ? { laneId, skipRecommendation: true } : { laneId }));
     },
 
     async listCommitFiles(args: GitListCommitFilesArgs): Promise<string[]> {

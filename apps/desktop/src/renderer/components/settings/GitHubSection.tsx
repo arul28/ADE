@@ -1,6 +1,6 @@
 import { githubReminderKey, resetGithubReminders, migrateGithubReminder, useBannerDismissals } from "../../lib/bannerDismiss";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { issueWriteSourceLabel } from "../../../shared/githubOperationCredential";
 import type { GitHubCredentialState, GitHubStatus } from "../../../shared/types";
 import {
@@ -196,6 +196,9 @@ export function GitHubSection() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  // A failed status read left every row on "…" and the credential ladder
+  // offering sign-in to a person who is already signed in. Say it failed.
+  const [statusError, setStatusError] = useState<string | null>(null);
   const [githubTokenDraft, setGithubTokenDraft] = useState("");
   const [githubBusy, setGithubBusy] = useState(false);
   const [showPatSetup, setShowPatSetup] = useState(false);
@@ -208,15 +211,30 @@ export function GitHubSection() {
   // with the install panel on this same page, which is where it is disconnected.
   const { appAuth } = useGithubAppUserAuth(pin);
 
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const statusRequestRef = useRef(0);
+  const readStatus = useCallback((force = false): Promise<void> => {
+    // Switching machines while a read is in flight must not land the old
+    // machine's answer (or clear the new machine's real error). A person's
+    // retry forces past the credential/status caches.
+    const request = ++statusRequestRef.current;
+    return window.ade.github
+      .getStatus(force ? { forceRefresh: true } : undefined, pinRef.current)
+      .then((status) => {
+        if (statusRequestRef.current !== request) return;
+        setGithubStatus(status);
+        setStatusError(null);
+      })
+      .catch((error: unknown) => {
+        if (statusRequestRef.current !== request) return;
+        setStatusError(error instanceof Error ? error.message : String(error));
+      });
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-
-    window.ade.github
-      .getStatus(undefined, pin)
-      .then((status) => {
-        if (!cancelled) setGithubStatus(status);
-      })
-      .catch(() => {});
+    readStatus();
     window.ade.projectConfig
       .get(pin)
       .then((snapshot) => {
@@ -228,24 +246,14 @@ export function GitHubSection() {
     return () => {
       cancelled = true;
     };
-  }, [pin]);
+  }, [pin, readStatus]);
 
   // A credential can change while this page stays open (gh logs out, a token
   // is saved elsewhere), so read the status again when ADE comes back to the
   // front and when any surface reports a change. The reads are cached in the
   // main process for 30 seconds, so this costs little.
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
   useEffect(() => {
-    let cancelled = false;
-    const reload = () => {
-      window.ade.github
-        .getStatus(undefined, pinRef.current)
-        .then((status) => {
-          if (!cancelled) setGithubStatus(status);
-        })
-        .catch(() => {});
-    };
+    const reload = () => { void readStatus(); };
     const onVisibility = () => {
       if (document.visibilityState === "visible") reload();
     };
@@ -253,12 +261,11 @@ export function GitHubSection() {
     document.addEventListener("visibilitychange", onVisibility);
     const offStatus = window.ade.github.onStatusChanged?.(() => reload()) ?? (() => {});
     return () => {
-      cancelled = true;
       window.removeEventListener("focus", reload);
       document.removeEventListener("visibilitychange", onVisibility);
       offStatus();
     };
-  }, [pin?.key]);
+  }, [pin?.key, readStatus]);
 
   const handleSaveToken = () => {
     const token = githubTokenDraft.trim();
@@ -303,12 +310,7 @@ export function GitHubSection() {
 
   const handleRefreshStatus = () => {
     setGithubBusy(true);
-    setActionError(null);
-    window.ade.github
-      .getStatus({ forceRefresh: true }, pin)
-      .then((status) => setGithubStatus(status))
-      .catch((err) => setActionError(extractError(err)))
-      .finally(() => setGithubBusy(false));
+    void readStatus(true).finally(() => setGithubBusy(false));
   };
 
   const tokenAuthenticated = Boolean(githubStatus?.tokenStored && githubStatus?.userLogin);
@@ -573,6 +575,24 @@ export function GitHubSection() {
       <div className="ade-ig-alerts">
         {saveNotice ? (
           <Banner layout="inline" model={{ id: "github-save-notice", tone: "success", title: saveNotice }} />
+        ) : null}
+        {statusError ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "github-status-error",
+              tone: "warning",
+              title: "ADE couldn't read GitHub's status on this computer",
+              detail: statusError,
+              actions: [{
+                label: "Retry",
+                onClick: () => {
+                  setStatusError(null);
+                  void readStatus(true);
+                },
+              }],
+            }}
+          />
         ) : null}
         {actionError ? (
           <Banner layout="inline" model={{ id: "github-action-error", tone: "error", title: actionError }} />

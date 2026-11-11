@@ -87,6 +87,7 @@ import {
   selectWindowForProjectNavigation,
 } from "./services/deeplinks/projectNavigationWindowSelection";
 import { registerIpc } from "./services/ipc/registerIpc";
+import { isTrustedAdeRendererSender } from "./services/ipc/trustedRendererSender";
 import { connectBrowserToNowPlaying, registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
 import { registerAppBundleOwnershipIpc } from "./services/updates/registerAppBundleOwnershipIpc";
 import { createDesktopStartupRecovery } from "./services/startupRecovery/desktopStartupRecovery";
@@ -1843,7 +1844,10 @@ app.whenReady().then(async () => {
     warn: (message, details) => logMachineEvent("warn", "computer_use.artifact_media_failed", { message, ...details }),
     onRefused: logArtifactServeRefusal,
   });
-  ipcMain.handle(IPC.computerUseMediaBaseUrl, () => artifactMediaServer.baseUrl());
+  ipcMain.handle(IPC.computerUseMediaBaseUrl, (event) => {
+    if (!isTrustedAdeRendererSender(event)) throw new Error("Computer-use media is only available to the ADE window.");
+    return artifactMediaServer.baseUrl();
+  });
   // Saves a proof video that plays from the media server. The renderer cannot
   // read that server (a different origin with no CORS) and the whole-file
   // preview read stops at 10 MB, so main asks where to save and streams the
@@ -1851,6 +1855,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(
     IPC.computerUseSaveMediaAs,
     async (event, arg: { url?: unknown; fileName?: unknown }): Promise<{ saved: boolean; path?: string }> => {
+      if (!isTrustedAdeRendererSender(event)) throw new Error("Saving proof media is only available to the ADE window.");
       const url = typeof arg?.url === "string" ? arg.url : "";
       const base = await artifactMediaServer.baseUrl();
       if (!url || !url.startsWith(base.replace(/\/+$/, "") + "/")) {
@@ -2133,6 +2138,7 @@ app.whenReady().then(async () => {
       arg: { theme?: WindowsTitleBarOverlayTheme; zoomFactor?: number } = {},
     ): { applied: boolean } => {
       if (process.platform !== "win32") return { applied: false };
+      if (!isTrustedAdeRendererSender(event)) return { applied: false };
       const win = BrowserWindow.fromWebContents(event.sender);
       if (!win || win.isDestroyed()) return { applied: false };
       try {
@@ -2147,6 +2153,7 @@ app.whenReady().then(async () => {
   );
 
   ipcMain.handle(IPC.ptyDataSubscriptions, (event, arg: { ptyIds?: unknown } | undefined) => {
+    if (!isTrustedAdeRendererSender(event)) throw new Error("Terminal output is only available to the ADE window.");
     setPtyDataSubscriptionsForSender(
       event.sender,
       normalizePtyDataSubscriptions(arg?.ptyIds),
@@ -2154,6 +2161,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle(IPC.appControlFrameSubscriptions, (event, arg: { laneIds?: unknown } | undefined) => {
+    if (!isTrustedAdeRendererSender(event)) throw new Error("App Control frames are only available to the ADE window.");
     setAppControlFrameLanesForSender(
       event.sender,
       normalizeAppControlFrameLaneIds(arg?.laneIds),
@@ -2348,10 +2356,14 @@ app.whenReady().then(async () => {
   let remoteUpdateInstaller: RemoteUpdateInstaller | null = null;
   /** Windows: this desktop runs elevated, so the background service cannot reach it. */
   let elevatedDesktop = false;
-  ipcMain.handle(IPC.appGetElevatedDesktop, () => elevatedDesktop);
+  ipcMain.handle(IPC.appGetElevatedDesktop, (event) => {
+    if (!isTrustedAdeRendererSender(event)) return false;
+    return elevatedDesktop;
+  });
   // A link clicked inside ADE that names its computer and project goes through
   // the same owner routing as one from outside, so it opens on that computer.
-  ipcMain.handle(IPC.appOpenOwnedDeeplink, (_event, url: unknown) => {
+  ipcMain.handle(IPC.appOpenOwnedDeeplink, (event, url: unknown) => {
+    if (!isTrustedAdeRendererSender(event)) return false;
     if (typeof url !== "string" || url.length > 8_192) return false;
     handleDeeplinkUrl(url, "in-app", dispatchOrQueueAppNavigationRequest, (event, fields) =>
       logMachineEvent("info", event, fields));
@@ -2432,6 +2444,7 @@ app.whenReady().then(async () => {
     });
   };
   ipcMain.on(IPC.appCommandsReady, (event) => {
+    if (!isTrustedAdeRendererSender(event)) return;
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return;
     windowCommandSubscribers.add(win.id);
@@ -2988,9 +3001,15 @@ app.whenReady().then(async () => {
     options: { persistRecent?: boolean } = {},
   ): void => {
     activeProjectRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
-    void reconcileSyncHostContexts().then(() => {
-      notifyMobileSyncProjectCatalogChanged();
-    });
+    void reconcileSyncHostContexts()
+      .then(() => {
+        notifyMobileSyncProjectCatalogChanged();
+      })
+      .catch((error: unknown) => {
+        getActiveContext().logger.warn("sync.host_reconcile_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     if (activeProjectRoot) {
       projectLastActivatedAt.set(activeProjectRoot, Date.now());
       const activeCtx = projectContexts.get(activeProjectRoot);
@@ -8898,7 +8917,7 @@ app.whenReady().then(async () => {
     // them under it and crashed (ADE-DESKTOP-9H). That read takes well under a
     // second, so the exit waits for it, bounded.
     if (systemCertificateReadInFlight()) {
-      void whenSystemCertificateReadSettles(SYSTEM_CA_READ_EXIT_WAIT_MS).then(exitNow);
+      void whenSystemCertificateReadSettles(SYSTEM_CA_READ_EXIT_WAIT_MS).then(exitNow).catch(() => {});
       return;
     }
     exitNow();
@@ -10952,9 +10971,13 @@ app.whenReady().then(async () => {
         getActiveContext().logger.warn("startup.project_open_wait_exceeded", { waitMs: STARTUP_PROJECT_WINDOW_WAIT_MS });
         // The window answered without the project; give it the project once
         // the open lands, unless the user picked something meanwhile.
-        void startupProjectOpenTask.then(() => {
+        void startupProjectOpenTask?.then(() => {
           if (initialWindow.isDestroyed() || windowProjectRoots.get(initialWindow.id) || !activeProjectRoot) return;
           bindWindowToProject(initialWindow.id, activeProjectRoot, { emit: true, foreground: false });
+        }).catch((error: unknown) => {
+          getActiveContext().logger.warn("startup.project_open_late_bind_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
       }
       bindLaunchWindow();

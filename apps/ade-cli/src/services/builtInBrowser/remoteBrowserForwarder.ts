@@ -708,7 +708,11 @@ export function createRemoteBrowserForwarder(args: {
     if (showToUser && !forwarded && !isolated && !here && (remoteTargetId || !ctx.userKnown)) {
       // Also put it on the other screen: the one the user is talking from,
       // or every connected one when nobody can tell.
-      void forwardToUser(requestInput, remoteTargetId).catch(() => {});
+      void forwardToUser(requestInput, remoteTargetId).catch((err) => {
+        args.logger.warn("built_in_browser.forward_to_user_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
     }
     return finish(ctx, HERE, result);
   }

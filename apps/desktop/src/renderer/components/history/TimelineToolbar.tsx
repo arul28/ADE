@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useAutoDismiss } from "../../lib/useAutoDismiss";
 import { useNavigate } from "react-router-dom";
 import * as Popover from "@radix-ui/react-popover";
 import {
@@ -114,7 +115,7 @@ export function TimelineToolbar({
 } = {}) {
   const lanes = useAppStore((s) => s.lanes ?? []);
   const laneStatusStale = useAppStore((s) => s.laneStatusStale);
-  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [exportNotice, setExportNotice] = useAutoDismiss<string | null>(null, 5000);
   /* ── Store ─────────────────────────────────────────────────── */
   const surface = useTimelineStore((s) => s.surface);
   const setSurface = useTimelineStore((s) => s.setSurface);
@@ -183,7 +184,6 @@ export function TimelineToolbar({
     const exportFn = window.ade?.history?.exportOperations;
     if (typeof exportFn !== "function") {
       setExportNotice("Export unavailable (headless)");
-      window.setTimeout(() => setExportNotice(null), 4000);
       return;
     }
     let chosenLimit = 500;
@@ -199,7 +199,6 @@ export function TimelineToolbar({
       const parsed = Number.parseInt(trimmed, 10);
       if (!Number.isFinite(parsed) || parsed <= 0) {
         setExportNotice("Invalid export limit; must be a positive integer");
-        window.setTimeout(() => setExportNotice(null), 4000);
         return;
       }
       chosenLimit = Math.min(10000, Math.max(1, parsed));
@@ -214,19 +213,16 @@ export function TimelineToolbar({
       });
       if (!isHistoryExportResult(result)) {
         setExportNotice("Export unavailable (headless)");
-        window.setTimeout(() => setExportNotice(null), 4000);
         return;
       }
       if (result.cancelled) return;
       setExportNotice(`Exported ${result.rowCount} rows to ${result.savedPath}`);
-      window.setTimeout(() => setExportNotice(null), 5000);
     } catch (err) {
       setExportNotice(
         `Export failed: ${extractError(err)}`,
       );
-      window.setTimeout(() => setExportNotice(null), 5000);
     }
-  }, [focusLaneId, focusLaneMachineId, filters.statuses]);
+  }, [focusLaneId, focusLaneMachineId, filters.statuses, setExportNotice]);
 
   /* ── Render ────────────────────────────────────────────────── */
   const showActivityControls = surface === "activity";
@@ -614,8 +610,8 @@ function LaneGitActionsMenu({
   const navigate = useNavigate();
   const [runningAction, setRunningAction] = useState<HistoryLaneActionId | null>(null);
   const [conflictState, setConflictState] = useState<GitConflictState | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useAutoDismiss<string | null>(null, 3500);
+  const [error, setError] = useAutoDismiss<string | null>(null, 5000);
   const actions = buildHistoryLaneActions({ hasLane: Boolean(laneId) && laneHasWorktree, conflictState });
 
   const refreshConflictState = useCallback(async () => {
@@ -651,11 +647,9 @@ function LaneGitActionsMenu({
           laneName,
           onNotice: (message) => {
             setNotice(message);
-            window.setTimeout(() => setNotice(null), 3500);
           },
           onError: (message) => {
             setError(message);
-            window.setTimeout(() => setError(null), 5000);
           },
           onComplete: handleComplete,
           navigate: (path) => navigate(path),
@@ -663,12 +657,11 @@ function LaneGitActionsMenu({
       } catch (err) {
         const message = extractError(err);
         setError(message);
-        window.setTimeout(() => setError(null), 5000);
       } finally {
         setRunningAction(null);
       }
     },
-    [handleComplete, laneId, laneName, navigate],
+    [handleComplete, laneId, laneName, navigate, setError, setNotice],
   );
   const actionGroups = groupHistoryLaneActions(actions);
 

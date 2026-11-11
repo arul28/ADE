@@ -111,8 +111,20 @@ export type GitUpstreamSyncStatus = {
   recommendedAction: GitRecommendedAction;
 };
 
+export type GitGetSyncStatusArgs = {
+  laneId: string;
+  /**
+   * Callers that only show ahead/behind counts can skip the extra
+   * merge-base/reflog probes used to choose a safe recommendation on a
+   * diverged branch. A diverged lane then reports `pull`.
+   */
+  skipRecommendation?: boolean;
+};
+
 export type GitSyncStatusesArgs = {
   laneIds: string[];
+  /** See `GitGetSyncStatusArgs.skipRecommendation`. */
+  skipRecommendation?: boolean;
 };
 
 /** Sync status keyed by the lane id requested by the caller. */
