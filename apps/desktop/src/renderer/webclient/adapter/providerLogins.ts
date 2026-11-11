@@ -27,9 +27,9 @@ const DESKTOP_ONLY = "Do this in the ADE desktop app on that computer: only that
 export function createWebProviderLoginsNamespace(infra: Pick<AdapterInfra, "client" | "commands" | "state">): ProviderLoginsBridge {
   const { client, commands } = infra;
 
-  const read = async (method: "status", args: unknown, pin: RuntimePinArg): Promise<ProviderLoginStatus> => {
+  const read = async (method: "status", args: object | undefined, pin: RuntimePinArg): Promise<ProviderLoginStatus> => {
     assertWebRuntimePinRoutable(`providerLogins.${method}`, pin, infra);
-    return await commands.call<ProviderLoginStatus>(`providerLogins.${method}`, args ?? {}, {
+    return await commands.call<ProviderLoginStatus>(`providerLogins.${method}`, (args ?? {}) as Record<string, unknown>, {
       fallback: () => {
         throw new Error("Update ADE on that computer to see your sign-ins here.");
       },
@@ -38,9 +38,9 @@ export function createWebProviderLoginsNamespace(infra: Pick<AdapterInfra, "clie
     });
   };
 
-  const write = async (method: string, args: unknown, pin: RuntimePinArg): Promise<ProviderLoginStatus> => {
+  const write = async (method: string, args: object | undefined, pin: RuntimePinArg): Promise<ProviderLoginStatus> => {
     assertWebRuntimePinRoutable(`providerLogins.${method}`, pin, infra);
-    return await commands.call<ProviderLoginStatus>(`providerLogins.${method}`, args ?? {}, { idempotent: false });
+    return await commands.call<ProviderLoginStatus>(`providerLogins.${method}`, (args ?? {}) as Record<string, unknown>, { idempotent: false });
   };
 
   const refused = async (): Promise<ProviderLoginStatus> => {

@@ -613,11 +613,19 @@ struct CloudMachineRow: View {
       if busy {
         ProgressView()
       } else {
-        HStack(spacing: 5) {
-          ADEKitDot(tone: cloudStateTone(machine))
-          Text(machine.stateLabel)
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.textSecondary)
+        VStack(alignment: .trailing, spacing: 3) {
+          HStack(spacing: 5) {
+            ADEKitDot(tone: cloudStateTone(machine))
+            Text(machine.stateLabel)
+              .font(.system(size: 12.5))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          let lastRun = cloudLastRun(machine, now: now)
+          if !lastRun.isEmpty && !machine.isAwake {
+            Text(lastRun)
+              .font(.system(size: 11.5))
+              .foregroundStyle(ADEColor.textMuted)
+          }
         }
         .fixedSize()
       }
@@ -647,11 +655,11 @@ func cloudMachineOld(_ machine: CloudPhoneMachine, now: Date) -> Bool {
   return false
 }
 
-/// "Small · 1× hours · 3.4 GB · Ran 3 h ago".
+/// "Small · 1× hours · 3.4 GB" (the last run sits under the state).
 func cloudMachineLine(_ machine: CloudPhoneMachine, tier: CloudPhoneTier?, now: Date) -> String {
   let size = tier.map { "\($0.label) · \(cloudHoursRate($0.rate))" } ?? machine.size ?? machine.hoursRate.map(cloudHoursRate)
   let disk = machine.resources.map { cloudGb($0.diskGb) }
-  return [size, disk, cloudLastRun(machine, now: now)].compactMap { $0 }.joined(separator: " · ")
+  return [size, disk].compactMap { $0 }.joined(separator: " · ")
 }
 
 func cloudLastRun(_ machine: CloudPhoneMachine, now: Date) -> String {
@@ -1258,7 +1266,7 @@ struct CloudPhoneTier: Identifiable, Equatable {
   func hoursLeftLabel(_ leftMilli: Int) -> String {
     let hours = Double(max(0, leftMilli)) / Double(max(1, multiplierMilli))
     let shown = hours >= 100 ? hours.rounded(.down) : (hours * 10).rounded(.down) / 10
-    return "\(shown.formatted(.number.precision(.fractionLength(0...1)).grouping(.never))) h"
+    return "\(shown.formatted(.number.precision(.fractionLength(0...1)).grouping(.never)))\u{00A0}h"
   }
 }
 
