@@ -19,6 +19,7 @@
 
 import {
   ADE_DEEPLINK_HTTPS_BASE_URL,
+  INVITE_SETTINGS_ENTRY_ID,
   parseDeeplink,
   type DeeplinkTarget,
 } from "../../../shared/deeplinks";
@@ -100,6 +101,11 @@ export function targetToWebPath(target: DeeplinkTarget): string {
     case "open": {
       const place = openPlaceById(target.place);
       return place?.target.kind === "route" ? place.target.route : "/work";
+    }
+    case "invite": {
+      // Settings › Account, with the code for its box (`?invite=`), as on the desktop.
+      const [path, anchor] = settingsRouteFor(INVITE_SETTINGS_ENTRY_ID).split("#");
+      return `${path}${path!.includes("?") ? "&" : "?"}invite=${encodeURIComponent(target.code)}${anchor ? `#${anchor}` : ""}`;
     }
   }
 }

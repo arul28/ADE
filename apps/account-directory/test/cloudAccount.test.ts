@@ -1068,7 +1068,7 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
         run: async () => { await hit(); return statement.run(); },
         first: async (...args: []) => { await hit(); return statement.first(...args); },
         all: async () => { await hit(); return statement.all(); },
-      } as D1PreparedStatement;
+      } as unknown as D1PreparedStatement;
     };
     harness.env.DB = {
       prepare: (sql: string) => wrap(db.prepare(sql), sql),

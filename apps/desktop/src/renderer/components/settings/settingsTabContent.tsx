@@ -73,7 +73,6 @@ import {
 import { isWebClientMode } from "../../lib/webClientMode";
 import { decodeSettingsHash } from "./settingsHash";
 import { CloudMark, ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
-import { useAdeCloudEnabled } from "../../state/cloudAccess";
 
 /**
  * What each Settings tab renders: its sections as data (`TAB_SECTIONS`), the
@@ -222,9 +221,8 @@ function IntegrationsTabContent({ machine, standalone }: { machine: SettingsMach
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { pin } = useSettingsMachineScope();
-  const cloudEnabled = useAdeCloudEnabled();
   const requested = openIntegrationFromUrl(searchParams, location.hash);
-  const sections = (TAB_SECTIONS.integrations ?? []).filter((section) => section.group !== "cloud" || cloudEnabled).filter((section) => standalone
+  const sections = (TAB_SECTIONS.integrations ?? []).filter((section) => standalone
     // No project: only the account's pages (the provider, MCP servers) can load.
     ? standaloneSection(section)
     : !machine || !section.machine || machineSectionAvailable(section.machine, machine));

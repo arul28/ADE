@@ -198,7 +198,7 @@ export function checkRemoteAdeCommand(
   if (args.some((word) => MACHINE_TARGET_FLAG.test(word)) && !isCloudLaneMachineUse(command, args)) {
     return {
       ok: false,
-      reason: "Use the tool's `machine` input to run on another computer (machines_list names them), not --machine.",
+      reason: "Use the tool's `machine` input to run on another computer (machines_list names them), not --machine. Only a new ADE Cloud lane takes it: exactly `--machine cloud` on `chat create`, `lanes create` or `chat launch-status`.",
     };
   }
   const words = positionalWords(args);

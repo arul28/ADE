@@ -26,7 +26,6 @@ import { INTEGRATION_IDS, integrationBrand, integrationThemeVars, type Integrati
 import type { IntegrationTone } from "./IntegrationChrome";
 import { SolidLogo } from "../providers/ProviderHero";
 import { useMcpRegistry } from "../mcp/useMcpRegistry";
-import { useAdeCloudEnabled } from "../../../state/cloudAccess";
 import { MCP_ACCENT, mcpCatalogueBrand } from "../mcp/mcpCatalogueBrand";
 import { McpCatalogueAddDialog } from "../mcp/McpCatalogueAddDialog";
 import { McpServerDialog } from "../mcp/McpServerDialog";
@@ -57,19 +56,12 @@ const DESCRIPTIONS: Record<IntegrationId, string> = {
 
 /** Where the credential lives: what the status says, else where a new one is saved. */
 function savedIn(id: IntegrationId, summary?: Summary): string {
-  return summary?.savedIn ?? (id === "cloud" || connectProviderSpec(id).savedScope === "account" ? "Your account" : "This project");
+  return summary?.savedIn ?? (id !== "cloud" && connectProviderSpec(id).savedScope === "account" ? "Your account" : "This project");
 }
 
 async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): Promise<Summary> {
-  if (id === "cloud") {
-    // Account-wide: access is the account's, so this computer answers for every machine.
-    const status = await window.ade.cloud?.getStatus();
-    if (!status) return UNKNOWN;
-    if (status.signedOut) return { tone: "neutral", label: "Sign in to ADE" };
-    if (status.error) return { tone: "warn", label: status.connected ? "Couldn't reach ADE Cloud" : "Not available" };
-    if (status.connected) return { tone: "ok", label: "Ready", savedIn: "Your account" };
-    return { tone: "neutral", label: "Not available yet" };
-  }
+  // ADE Cloud has its own Settings tab; it is never on this grid.
+  if (id === "cloud") return UNKNOWN;
   if (id === "github") {
     const status = await window.ade.github.getStatus(undefined, pin);
     if (status.connected) {
@@ -188,11 +180,8 @@ export function IntegrationsHome({
   /** Opens a page; `server` focuses one MCP server on it. */
   onOpen: (page: IntegrationsPageId, server?: string) => void;
 }) {
-  const cloudEnabled = useAdeCloudEnabled();
-  const integrations = useMemo(
-    () => integrationsProp.filter((id) => id !== "cloud" || cloudEnabled),
-    [cloudEnabled, integrationsProp],
-  );
+  // ADE Cloud has its own Settings tab; it is never a tile here.
+  const integrations = useMemo(() => integrationsProp.filter((id) => id !== "cloud"), [integrationsProp]);
   const summaries = useIntegrationSummaries(pin, machineOnline, integrations);
   const registry = useMcpRegistry();
   const [query, setQuery] = useState("");

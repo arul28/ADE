@@ -706,7 +706,7 @@ export function percentUsed(account: AccountRow, liveUsed: number): number {
  * warnings read, so earned hours push them back.
  */
 export function allowancePercentUsed(account: AccountRow, liveUsed: number): number {
-  const allowance = account.included_milli + earnedBalanceMilli(account) + billedExtraMilli(account);
+  const allowance = account.included_milli + earnedBalanceMilli(account);
   if (allowance <= 0) return 100;
   return Math.floor((liveUsed * 100) / allowance);
 }

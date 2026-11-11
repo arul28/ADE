@@ -78,7 +78,7 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Rules on a cloud computer (one lane, Codex full access) | `cloudComputerRules.ts`, `cloudComputerLaneHold.ts` |
 | Desktop IPC | `registerCloudIpc.ts` |
 | Reaching ADE's server, access | `cloudServerProvider.ts`, `cloudAccess.ts`, `cloudVaultItems.ts` |
-| Server (account directory, `apps/account-directory/src/cloud/`) | `routes.ts`, `store.ts`, `billing.ts`, `cron.ts`, `chats.ts`, `provider.ts`, `accountDeletion.ts` |
+| Server (account directory, `apps/account-directory/src/cloud/`) | `routes.ts`, `store.ts`, `billing.ts`, `cron.ts`, `chats.ts`, `provider.ts`, `accountDeletion.ts`, `referrals.ts`, `freePlan.ts` |
 | Lane launch: the launch's steps and stage cards, the account status a launch checks first | `cloudLaneLaunchSteps.ts`, `cloudLaneComputerStages.ts`, `cloudAccountStatus.ts` |
 | Lane life: delete, keep the lane and free its computer, tier change, work check; the job events to every window | `cloudLaneLife.ts`, `registerCloudLaneLifeIpc.ts`, `broadcast.ts` |
 | Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
@@ -240,6 +240,110 @@ past the size's `diskMaxGb`, or past the free plan's disk at one time; on a
 paid plan it gives the extra disk and its monthly cost, sends a person whose
 extra disk is turned down to the plans card, and opens the plans card when
 the server answers `needs_approval`.
+
+## Referrals and the free plan
+
+The owner's rules are decisions 4 and 5 of `docs/plans/cloud-5/PLAN.md`. The
+server enforces all of it (`referrals.ts`, `freePlan.ts`, migration `0026`);
+clients only show it. Every route is behind the `/cloud` access gate except
+the website's invite lookup.
+
+**Earned hours.** `cloud_earned_hours` is append-only: one grant per
+(account, reason, reference), never removed, never expiring. The account row
+keeps `earned_granted_milli` (recomputed from the grants in the batch that
+adds one) and `earned_used_milli` (what ended periods drew). Order of use in a
+period: the plan's hours, then earned hours, then paid extra hours. A period
+draws from earned hours only what it used past the plan's hours and past the
+extra hours already billed or owed in it (`earnedDrawMilli` in `store.ts`),
+so earned hours are never billed and nothing is both billed and drawn. The
+draw is live while the period runs and settles into `earned_used_milli` in
+the batch that ends the period (`startFreshPeriod`). `isOutOfHours` is true
+only once the plan's hours and earned hours are both gone, so a free account
+with earned hours keeps running, and the 0-hours stop, the wake refusal and
+the 80/95% warnings (`allowancePercentUsed`) all follow. The extra-hours
+meter bills `extraUsedMilli`. A failed payment's cut keeps what it drew
+(`past_due_earned_milli`) and a paid invoice in the same period gives it back
+with the hours it restores. The account read carries `earnedHours`
+(`leftMilli`, `usedThisPeriodMilli`, `grantedMilli`); `hours` stays the
+plan's own hours.
+
+**One free plan per computer.** The desktop and a machine's brain send
+`x-ade-computer` on every `/cloud` call: SHA-256 of
+`ade-cloud-free-plan-computer-v1:` plus the OS machine id (`IOPlatformUUID`,
+`MachineGuid`, `/etc/machine-id`, read by `hardwareAnchor.ts`), the same for
+every account on the computer, or `unreadable`. An ADE Cloud computer sends
+nothing (`isAdeCloudComputer`). The server keys it with an HMAC derived from
+`CLOUD_CHAT_MASTER_KEY` (HKDF label `ade-cloud-free-plan-computer-hmac-v1`; a
+logged dev constant without it) and keeps only that.
+- A create or move, a copy or a wake on the free plan's rules claims the
+  computer for the account (`cloud_free_plan_claims`, both keys unique). A
+  read never claims, so opening the dashboard on a shared computer doesn't
+  take its free plan.
+- An account with no claim seen on a computer another account claimed is
+  refused (`free_refused_at`): its free plan has 0 hours everywhere (CLI,
+  phone, MCP) until it claims a computer of its own, which gives the hours
+  back at once. Paid plans, earned hours and extra hours are untouched.
+- An account holds one claim; once it has one, any other computer (a family
+  one) changes nothing for it. A reinstall is the same OS id, so the same claim.
+- An account used only from the phone or MCP sends no header, keeps the free
+  plan unclaimed and is counted (`unclaimed_use`). A computer that can't read
+  its id claims nothing and is counted (`id_unreadable`). A VM is its own
+  computer. Paid accounts claim nothing.
+- The account read carries `freePlan: { state: unclaimed | claimed | refused,
+  sentence }`; the sentence is set only while refused on the free plan's rules.
+- Account deletion keeps the claim (re-making an account must not give the
+  computer's free hours again) and deletes the computers seen and the invite code.
+
+**Referrals.** One invite code per account (`cloud_invite_codes`, 8 characters
+without 0/O/1/I/L), link `https://ade-app.dev/invite/<CODE>`, made at the
+first summary. `POST /cloud/referrals/redeem { code }` takes the link, the
+`ade://` link or the bare code, within 30 days of the friend's ADE account
+(Clerk's `created_at`, kept as `account_created_at`), once and never changed
+(`cloud_referrals` is keyed by the friend), never the account's own code, and
+never a code whose owner lacks ADE Cloud access. Refusals answer
+`invite_refused` with a `reason` (`CloudInviteRefusalReason`) and the sentence.
+The reward, 20 hours to both, is paid when the friend's first chat runs on an
+ADE Cloud computer: the server sees that as the first saved part of a chat
+(`chats.ts`, written only by a computer the account owns), or at the redeem
+when the friend already had one. It is one batch that moves the referral out
+of `pending` under a fresh token, so two first chats at once pay once; the
+referrer's grant counts its earlier grants in the same statement, so the cap
+of 10 holds (the friend still gets 20). No reward, and `refused` with the
+reason, when the two accounts were seen on one computer (`same_computer`) or
+the friend was refused the free plan (`friend_computer_used`). The account
+read carries `referral` (`CloudReferralSummary`); `GET /cloud/referrals` is the
+same summary alone.
+
+**Website.** `/invite/<CODE>` (`apps/web/src/app/pages/InvitePage.tsx`) asks
+the public `GET /invites/<CODE>` (30 a minute per address, CORS open) for the
+inviter's first name, answered only for an inviter with ADE Cloud access (else
+404, the same as an unknown code). It shows every download option and
+"Open in ADE" (`ade://invite/<CODE>`). The code never reaches analytics (the
+screen is `invite`, the address `/invite`), replay masks the page's text, and
+the ad pixel doesn't load there. Not linked from any page while ADE Cloud is hidden.
+
+**Desktop, CLI, phone.** `window.ade.cloud.getReferral()` and
+`window.ade.cloud.redeemInvite(code)` (account-level, no pin;
+`CloudInviteRedeemOutcome`). `ade://invite/<CODE>` opens Settings › Account
+(`account.profile`) with `?invite=<CODE>` for the code box. The `cloud` actions
+`referral` and `invite_redeem` (machine-scoped; `invite_redeem` is CTO-only, so
+an agent is refused and the person's desktop, phone and terminal reach it).
+`ade cloud invite` prints the link and the summary; `ade cloud invite redeem
+<link-or-code>` enters one. Hidden with the rest of `ade cloud` when access is off.
+
+**Analytics and alerts.** Server PostHog events `ade_cloud_referral` (step
+`code_entered` with result and reason, `reward_paid` with role and
+`referrer_rewarded`, `reward_refused` with reason, `cap_reached`) and
+`ade_cloud_free_plan` (step `claimed`, `restored`, `refused`, `id_unreadable`,
+`unclaimed_use`, with platform). Never a code, a link, an email or another
+account's id. Sentry issues tagged `area: cloud-referrals` or `cloud-free-plan`:
+`cloud.free_plan.many_accounts_one_computer` (a refusal on a computer seen
+with 4+ accounts), `cloud.referral.cap_reached_fast` (10 rewards within 7
+days of the first), `cloud.referral.many_friends_one_computer` (3+ friends
+seen on one computer), and the failures `cloud.free_plan.settle_failed`,
+`cloud.referral.reward_failed`, `cloud.referral.summary_failed`,
+`cloud.referral.clerk_read_failed`. The desktop's names (feature
+`cloud_invite`) are in `productAnalyticsPolicy.ts`.
 
 ## Owner cost protection
 

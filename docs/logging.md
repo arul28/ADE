@@ -719,9 +719,36 @@ client version and for work nobody watches
   by the daily run for the day before: `wakes`, `sleeps`, `stops`, `starts`
   (from `cloud_power_log`) and `computers`, each capped at 1,000. The uuid
   comes from the account and the day.
+- **`ade_cloud_referral`** (`referrals.ts`): `step` is `code_entered` (with
+  `result` `accepted` or `refused` and, refused, `reason`: `invalid_code`,
+  `unknown_code`, `own_code`, `already_referred`, `too_late`,
+  `rate_limited`), `reward_paid` (with `role` `friend` or `referrer`, one each,
+  and `referrer_rewarded`), `reward_refused` (with `reason` `same_computer` or
+  `friend_computer_used`) or `cap_reached` (the referrer's 10th reward). One
+  per account, step, reason and hour.
+- **`ade_cloud_free_plan`** (`freePlan.ts`): `step` is `claimed`, `restored`
+  (a refused account claimed a computer of its own), `refused` (the computer
+  already gave another account its free hours), `id_unreadable` or
+  `unclaimed_use` (free hours used with no computer seen: phone or MCP only),
+  with `platform` (`darwin`, `win32`, `linux`) when known. One per account,
+  step and day.
 
 Never an instance id, a name, a size in numbers, a price, an amount, a
-message or a Stripe id. Volume: a few events per account per active day.
+message, a Stripe id, an invite code or link, an email, a computer id, or the
+other account in a referral. Volume: a few events per account per active day.
+
+Server log lines for referrals and the free plan: `cloud.referral.code_accepted`,
+`cloud.referral.code_refused` (reason), `cloud.referral.reward_paid`,
+`cloud.referral.reward_refused` (reason), `cloud.referral.cap_reached`,
+`cloud.referral.created_at_fallback` (Clerk had no creation date: the ADE Cloud
+account's is used), `cloud.free_plan.claimed`, `cloud.free_plan.refused`,
+`cloud.free_plan.restored`, `cloud.free_plan.id_unreadable`,
+`cloud.free_plan.dev_key` (no `CLOUD_CHAT_MASTER_KEY`). Sentry, tagged
+`area: cloud-free-plan` or `cloud-referrals`, one issue per name:
+`cloud.free_plan.many_accounts_one_computer`, `cloud.referral.cap_reached_fast`,
+`cloud.referral.many_friends_one_computer`, and the failures
+`cloud.free_plan.settle_failed`, `cloud.referral.reward_failed`,
+`cloud.referral.summary_failed`, `cloud.referral.clerk_read_failed`.
 
 Server log lines (Worker logs only, `logCloud`) for plans and cost:
 `cloud.plan_changed` (from, to),
