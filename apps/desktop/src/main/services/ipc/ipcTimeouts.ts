@@ -253,9 +253,7 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // An event poll answers with a batch, or once its subscription is
     // acknowledged; it never stays open for the stream. Its own ceiling
     // (REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS) names the step that hung, and
-    // this sits just above it, like the local twin's poll budget. On the
-    // 10 minute bootstrap budget a hung handshake was reported only as this
-    // channel timing out after 600000ms.
+    // this sits just above it, like the local twin's poll budget.
     case IPC.remoteRuntimeStreamEvents:
       return REMOTE_RUNTIME_EVENT_SETUP_IPC_TIMEOUT_MS;
     case IPC.lanesArchive:

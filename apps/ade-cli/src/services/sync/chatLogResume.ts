@@ -2,6 +2,7 @@ import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/type
 import {
   isOmittedHistoryRowNotice,
   readTranscriptHistoryPage,
+  SEQUENCE_PROBE_MAX_ROW_BYTES,
 } from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
 import { readHistoryFileSize } from "../../../../desktop/src/main/services/storage/historyCompression";
 import { turnAlignedSnapshotStart } from "../../../../desktop/src/shared/chatSnapshotBoundary";
@@ -97,8 +98,18 @@ export async function readChatEventsAfterSequence(args: {
   let beforeOffset = size;
   let bytesScanned = 0;
   let anchored = false;
-  /** An omitted-row stand-in was read and no older sequenced row yet. */
-  let omittedRowAbove = false;
+  /**
+   * An omitted-row stand-in was crossed before the anchor. Its row's sequence
+   * is unknown (the stand-in is display-only), so the reply is complete only
+   * if the sequences read prove it: see the check after the loop.
+   */
+  let crossedOmittedRow = false;
+  /** That stand-in was newer than every sequenced row: the newest is unknown. */
+  let newestRowOmitted = false;
+  /** Sequenced rows read with `sequence > sinceSequence` (delivered or not). */
+  let sequencesAfterSince = 0;
+  /** The first omitted-row page is free of the byte budget. */
+  let omittedRowSeen = false;
 
   while (!anchored) {
     args.signal?.throwIfAborted();
@@ -111,26 +122,28 @@ export async function readChatEventsAfterSequence(args: {
       maxBytes: Math.min(RESUME_PAGE_BYTES, remaining),
       ...(args.signal ? { signal: args.signal } : {}),
     });
-    // An omitted-row page is exactly that one row, and none of its bytes are
-    // delivered, so it does not use up the resume budget.
-    if (!page.envelopes.some(isOmittedHistoryRowNotice)) bytesScanned += beforeOffset - page.startOffset;
+    // An omitted-row page is exactly that one row, none of it delivered. The
+    // first one is free, so a client whose last row sits just below one big
+    // row still resumes (proving that needs the row past it); each later one
+    // counts up to the 8 MB parse bound, so a run of them stays in budget.
+    const pageBytes = beforeOffset - page.startOffset;
+    if (!page.envelopes.some(isOmittedHistoryRowNotice)) {
+      bytesScanned += pageBytes;
+    } else if (omittedRowSeen) {
+      // At most the pager's parse bound.
+      bytesScanned += Math.min(pageBytes, SEQUENCE_PROBE_MAX_ROW_BYTES);
+    } else {
+      omittedRowSeen = true;
+    }
     for (let index = page.envelopes.length - 1; index >= 0; index -= 1) {
       const envelope = page.envelopes[index]!;
       if (isOmittedHistoryRowNotice(envelope)) {
-        // Its stand-in carries no sequence; the next older row decides.
-        omittedRowAbove = true;
+        crossedOmittedRow = true;
+        if (maxSequence === 0) newestRowOmitted = true;
         continue;
       }
       const sequence = envelopeSequence(envelope);
       if (sequence == null) continue;
-      if (omittedRowAbove) {
-        // Sequences are dense, so the omitted row is `sequence + 1`: the client
-        // lacks it exactly when this row is not older than the client's last.
-        if (sequence >= sinceSequence) return { status: "gap", reason: "row_too_large" };
-        // The omitted row is the newest persisted one.
-        if (maxSequence === 0) maxSequence = sequence + 1;
-        omittedRowAbove = false;
-      }
       if (sequence >= olderSequence) return { status: "gap", reason: "non_monotonic" };
       olderSequence = sequence;
       if (maxSequence === 0) maxSequence = sequence;
@@ -138,14 +151,13 @@ export async function readChatEventsAfterSequence(args: {
         anchored = true;
         break;
       }
+      sequencesAfterSince += 1;
       if (isParentVisible(envelope)) collectedNewestFirst.push(envelope);
     }
     if (anchored) break;
     if (page.startOffset <= 0 || !page.hasMore) {
       // Head of the log. A fresh client (0) takes everything; otherwise the log
       // must continue exactly where the client's stopped.
-      // An omitted first row is one a fresh client cannot get.
-      if (omittedRowAbove && sinceSequence === 0) return { status: "gap", reason: "row_too_large" };
       const earliest = Number.isFinite(olderSequence) ? olderSequence : null;
       if (sinceSequence === 0 || earliest === sinceSequence + 1) {
         anchored = true;
@@ -157,6 +169,19 @@ export async function readChatEventsAfterSequence(args: {
     beforeOffset = page.startOffset;
   }
 
+  // Across an omitted row, answer "ok" only when every sequence in
+  // (since, newest] was read: the newest is known (not itself omitted) and the
+  // distinct, strictly decreasing sequences read above the anchor fill the
+  // range exactly. Then the omitted row's sequence lies at or below `since`,
+  // which the client already holds. Anything else (including a legacy log
+  // with holes in its numbering) cannot be proven complete: gap, so the client
+  // takes a snapshot instead of keeping a silent hole.
+  if (
+    crossedOmittedRow
+    && (newestRowOmitted || sequencesAfterSince !== maxSequence - sinceSequence)
+  ) {
+    return { status: "gap", reason: "row_too_large" };
+  }
   if (sinceSequence > maxSequence) return { status: "gap", reason: "ahead_of_log" };
   return { status: "ok", events: collectedNewestFirst.reverse(), maxSequence };
 }

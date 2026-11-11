@@ -77,7 +77,7 @@ import {
   resolveRemoteAttachmentUploadRoute,
   type RemoteAttachmentUploadRoute,
 } from "./attachmentUploadRoute";
-import { classifyPairedRuntimeEndpoint } from "./pairedRuntimeRoutes";
+import { classifyPairedRuntimeEndpoint, REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS } from "./pairedRuntimeRoutes";
 import { getSshHostKeyTrustForTarget } from "./sshTransport";
 import { callerReportsFailureParam } from "../../sentry/ipcCallScope";
 import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
@@ -85,6 +85,7 @@ import { runtimeActionReplyError } from "../../../shared/runtimeActionReplyError
 import { compareUpdateVersions } from "../../../shared/updateVersions";
 import { isPeerVersionGapMessage } from "../../../shared/sentry/expectedFailure";
 import type { RemoteEventSetupPhase } from "./remoteEventSetup";
+import { isBrainStartableByUserError, type RemoteConnectInitiator, type RemoteConnectIntent } from "./remoteBrainStart";
 
 type PoolEntryBase = {
   client: RuntimeRpcClient;
@@ -158,6 +159,12 @@ type ConnectFailureBackoff = { error: Error; failureCount: number } & (
 
 type RemoteConnectionPoolConnectOptions = {
   bypassFailureBackoff?: boolean;
+  /**
+   * Who asked for this dial: a person's connect (Add machine, Test, Connect,
+   * Try again) or a background reconnect. Only the first may start the
+   * machine's brain (`remoteBrainStart.ts`).
+   */
+  initiatedBy: RemoteConnectInitiator;
 };
 
 function assertRequiredActionRoute(
@@ -208,16 +215,7 @@ function isRemoteRuntimeStreamFailure(error: unknown): boolean {
 }
 
 const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
-/** Event reads and subscription acknowledgements should fail fast enough to
- * notice a peer that disappeared during sleep, while still allowing a cold
- * remote runtime a reasonable response window. */
-export const REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS = 30_000;
-/**
- * A project list read on a live connection. It is a registry read on the other
- * machine, as cheap as an event read, so it gets the same window. On the RPC
- * client's 10 minute default, an event poll that first had to learn the
- * machine's projects waited ten minutes on a host that never answered.
- */
+/** A project list read: a registry read on the other machine, as cheap as an event read. */
 const REMOTE_RUNTIME_PROJECT_LIST_TIMEOUT_MS = REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS;
 const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["file.deletePath", FILE_DELETE_TIMEOUT_MS],
@@ -552,6 +550,8 @@ export class RemoteConnectionPool {
   private readonly conditionalResults = new ConditionalActionCache();
   private readonly pendingDisconnects = new Set<string>();
   private readonly resolvedEntryPromises = new Set<Promise<PoolEntry>>();
+  /** Who started each dial, so a person who joins a background one can be served as theirs. */
+  private readonly entryInitiators = new WeakMap<Promise<PoolEntry>, RemoteConnectInitiator>();
   private readonly connectFailureBackoffByTargetId = new Map<
     string,
     ConnectFailureBackoff
@@ -596,7 +596,7 @@ export class RemoteConnectionPool {
 
   async connect(
     target: RemoteRuntimeTarget,
-    options: RemoteConnectionPoolConnectOptions = {},
+    options: RemoteConnectionPoolConnectOptions,
   ): Promise<RemoteRuntimeConnectResult> {
     return (await this.connectEntry(target, options)).result;
   }
@@ -671,19 +671,37 @@ export class RemoteConnectionPool {
 
   private async connectEntry(
     target: RemoteRuntimeTarget,
-    options: RemoteConnectionPoolConnectOptions = {},
+    options: RemoteConnectionPoolConnectOptions,
   ): Promise<PoolEntry> {
     const existing = this.entries.get(target.id);
     if (existing) {
       this.pendingDisconnects.delete(target.id);
-      return await existing;
+      if (options.initiatedBy !== "user" || this.entryInitiators.get(existing) !== "background") {
+        return await existing;
+      }
+      // A person's connect that joined a background dial: that dial could not
+      // start the brain. If that is why it failed, dial once more as theirs.
+      const joinedAbandoned = this.dialAbandonedCheck(target.id);
+      try {
+        return await existing;
+      } catch (error) {
+        if (joinedAbandoned() || !isBrainStartableByUserError(error)) throw error;
+        // Another person's connect may already have started that dial: join it.
+        return await this.connectEntry(this.registry.get(target.id) ?? target, {
+          ...options,
+          bypassFailureBackoff: true,
+        });
+      }
     }
     if (options.bypassFailureBackoff) {
       this.connectFailureBackoffByTargetId.delete(target.id);
     } else {
       this.assertConnectNotBackingOff(target.id);
     }
-    const pending = this.bootstrapTarget(target);
+    const pending = this.bootstrapTarget(target, {
+      initiatedBy: options.initiatedBy,
+      isAbandoned: this.dialAbandonedCheck(target.id),
+    });
     let entryPromise: Promise<PoolEntry>;
     entryPromise = pending.then(async (entry) => {
       if (entry.result.route && entry.result.route.latencyMs == null) {
@@ -733,6 +751,7 @@ export class RemoteConnectionPool {
       return entry;
     });
     this.entries.set(target.id, entryPromise);
+    this.entryInitiators.set(entryPromise, options.initiatedBy);
     try {
       return await entryPromise;
     } catch (error) {
@@ -753,7 +772,21 @@ export class RemoteConnectionPool {
     }
   }
 
-  private async bootstrapTarget(target: RemoteRuntimeTarget): Promise<PoolEntry> {
+  /**
+   * Whether a dial started now has since been given up: the target was
+   * disconnected (its disconnect generation moved on) or removed.
+   */
+  private dialAbandonedCheck(targetId: string): () => boolean {
+    const disconnectGeneration = this.disconnectGenerationByTargetId.get(targetId) ?? 0;
+    return () =>
+      (this.disconnectGenerationByTargetId.get(targetId) ?? 0) !== disconnectGeneration
+      || this.registry.get(targetId) == null;
+  }
+
+  private async bootstrapTarget(
+    target: RemoteRuntimeTarget,
+    connect: RemoteConnectIntent,
+  ): Promise<PoolEntry> {
     let sshTarget = target;
     let pairedDiagnostic: PairedRuntimeRouteDiagnostic | undefined;
     if (target.transport === "paired") {
@@ -813,6 +846,7 @@ export class RemoteConnectionPool {
       resourcesPath: process.resourcesPath ?? app.getAppPath(),
       appVersion: this.appVersion,
       pairedStore: this.pairedStore,
+      connect,
     }).catch((sshError: unknown) => {
       // The failed dial's report still lists the routes tried before SSH.
       if (pairedDiagnostic && sshError instanceof Error) Object.assign(sshError, { diagnostic: pairedDiagnostic });
@@ -838,7 +872,7 @@ export class RemoteConnectionPool {
     return await this.withEntryForTarget(
       target,
       (entry) => entry.client.call("projects.list", {}, { timeoutMs: REMOTE_RUNTIME_PROJECT_LIST_TIMEOUT_MS }),
-      { retryOnConnectionError: true, onPhase: options.onPhase, operationPhase: "list_projects" },
+      { retryOnConnectionError: true, phases: { onPhase: options.onPhase, operation: "list_projects" } },
     );
   }
 
@@ -872,7 +906,7 @@ export class RemoteConnectionPool {
     target: RemoteRuntimeTarget,
     rootPath: string,
   ): Promise<RemoteRuntimeProjectRecord> {
-    const entry = await this.connectEntry(target);
+    const entry = await this.connectEntry(target, { initiatedBy: "background" });
     return await this.addProjectWithEntry(entry, rootPath);
   }
 
@@ -1369,8 +1403,7 @@ export class RemoteConnectionPool {
       {
         retryOnConnectionError: true,
         isRetryableError: isRemoteRuntimeStreamFailure,
-        onPhase: options.onPhase,
-        operationPhase: "read",
+        phases: { onPhase: options.onPhase, operation: "read" },
       },
     );
   }
@@ -1417,8 +1450,7 @@ export class RemoteConnectionPool {
       {
         retryOnConnectionError: true,
         isRetryableError: isRemoteRuntimeStreamFailure,
-        onPhase: options.onPhase,
-        operationPhase: "subscribe",
+        phases: { onPhase: options.onPhase, operation: "subscribe" },
       },
     );
   }
@@ -1548,15 +1580,17 @@ export class RemoteConnectionPool {
       retryOnConnectionError: boolean;
       isRetryableError?: (error: unknown) => boolean;
       /** Told which step the call is waiting on, so a caller's own deadline can name it. */
-      onPhase?: (phase: RemoteEventSetupPhase) => void;
-      /** The step `operation` is, for `onPhase`. */
-      operationPhase?: RemoteEventSetupPhase;
+      phases?: {
+        onPhase: ((phase: RemoteEventSetupPhase) => void) | undefined;
+        /** The step `operation` is. */
+        operation: RemoteEventSetupPhase;
+      };
     },
   ): Promise<T> {
-    const notePhase = (phase: RemoteEventSetupPhase) => options.onPhase?.(phase);
+    const notePhase = (phase: RemoteEventSetupPhase) => options.phases?.onPhase?.(phase);
     notePhase("connect");
-    const entry = await this.connectEntry(target);
-    notePhase(options.operationPhase ?? "read");
+    const entry = await this.connectEntry(target, { initiatedBy: "background" });
+    if (options.phases) notePhase(options.phases.operation);
     const disconnectGeneration =
       this.disconnectGenerationByTargetId.get(target.id) ?? 0;
     const droppedElsewhere = () =>
@@ -1586,13 +1620,13 @@ export class RemoteConnectionPool {
       let nextEntry: PoolEntry;
       notePhase("reconnect");
       try {
-        nextEntry = await this.connectEntry(reconnectTarget);
+        nextEntry = await this.connectEntry(reconnectTarget, { initiatedBy: "background" });
       } catch (reconnectError) {
         if (options.retryOnConnectionError) throw reconnectError;
         throw new RemoteActionOutcomeUnknownError(false);
       }
       if (options.retryOnConnectionError) {
-        notePhase(options.operationPhase ?? "read");
+        if (options.phases) notePhase(options.phases.operation);
         return await operation(nextEntry);
       }
       throw new RemoteActionOutcomeUnknownError(true);

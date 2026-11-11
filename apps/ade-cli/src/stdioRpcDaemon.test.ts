@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { BRAIN_CONNECTION_LOST_CODE } from "../../desktop/src/shared/brainConnectionLoss";
 
 type JsonRpcResponse = {
   id?: number;
@@ -689,11 +690,9 @@ describe("ade rpc --stdio daemon bridge", () => {
 
   /**
    * A remote desktop reaches a machine's brain only through this proxy
-   * (`ade --socket … rpc --stdio` over SSH). The brain's typed answers must
-   * cross it whole, and a brain that drops the socket under pending calls must
-   * read as a lost connection. Before, the proxy flattened the first into a
-   * bare message and filed the second, for every pending call at once, as
-   * "Internal error (ref …)" whose cause only reached the proxy's own stderr.
+   * (`ade --socket … rpc --stdio` over SSH). The brain's typed answers cross
+   * it whole, and a brain that drops the socket under pending calls reads as
+   * a lost connection, with structured facts about why and no free text.
    */
   it.skipIf(process.platform === "win32")("passes the brain's typed errors through, and names a dropped brain socket", async () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -706,7 +705,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const brainSockets = new Set<net.Socket>();
     const heldIds: unknown[] = [];
     // The brain the relay talks to "dies": its pid is one that has exited, and
-    // its log's last lines say why (with a path that must not cross).
+    // its log's last lines say why. Their message text (with a path) must not cross.
     const exited = spawn(process.execPath, ["-e", ""]);
     await new Promise((resolve) => exited.once("exit", resolve));
     const deadBrainPid = exited.pid!;
@@ -714,7 +713,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     fs.mkdirSync(runtimeDir, { recursive: true });
     fs.writeFileSync(path.join(runtimeDir, "brain.jsonl"), [
       JSON.stringify({ ts: "2026-11-11T10:00:00.000Z", level: "info", event: "brain.started" }),
-      JSON.stringify({ ts: "2026-11-11T10:09:59.000Z", level: "error", event: "process.uncaught_exception", err: { message: "ENOSPC: no space left on device, write '/home/tiger/.ade/ade.db-wal'" } }),
+      JSON.stringify({ ts: "2026-11-11T10:09:59.000Z", level: "error", event: "process.uncaught_exception", err: { message: "ENOSPC: no space left on device, write '/home/tiger/.ade/ade.db-wal'", code: "ENOSPC" } }),
       "",
     ].join("\n"));
     const brain = net.createServer((socket) => {
@@ -791,16 +790,17 @@ describe("ade rpc --stdio daemon bridge", () => {
       await Promise.all([replied(3), replied(4), replied(5)]);
       for (const id of [3, 4, 5]) {
         const error = replies.get(id)?.error;
-        expect(error?.message).toMatch(/^brain_connection_lost: ADE brain connection lost: the brain on this machine closed its socket \(ECONNRESET\) before it answered\.$/);
-        expect(error?.data).toMatchObject({
-          code: "brain_connection_lost",
+        expect(error?.data).toEqual({
+          code: BRAIN_CONNECTION_LOST_CODE,
           socketError: "ECONNRESET",
           brainState: "exited",
+          heartbeatAgeSec: null,
           brainLogTail: [
-            "2026-11-11T10:00:00.000Z info brain.started",
-            expect.stringMatching(/^2026-11-11T10:09:59\.000Z error process\.uncaught_exception ENOSPC: no space left on device, write '\[path\]'$/),
+            { level: "info", event: "brain.started" },
+            { level: "error", event: "process.uncaught_exception", code: "ENOSPC" },
           ],
         });
+        expect(JSON.stringify(error)).not.toContain("/home/tiger");
       }
     } finally {
       child.kill();

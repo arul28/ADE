@@ -1,3 +1,5 @@
+import type { RendererMemorySnapshot } from "../../shared/types/rendererMemory";
+
 /**
  * What this window holds, sent to main every 30 seconds while the window is
  * visible, so a renderer that is killed for running out of memory leaves a
@@ -8,16 +10,6 @@
  * tick), so it adds no timer. Each snapshot reads `performance.memory` and one
  * number per open chat pane: a few microseconds.
  */
-export type RendererMemorySnapshot = {
-  heapUsedMb: number | null;
-  heapLimitMb: number | null;
-  openForSec: number;
-  /** Chat panes mounted in this window. */
-  openChatPanes: number;
-  /** Events in the largest transcript any open pane holds. */
-  largestTranscriptEvents: number;
-  replayActive: boolean;
-};
 
 const transcriptGauges = new Set<() => number>();
 let sessionReplayActive = false;
@@ -60,10 +52,7 @@ export function readRendererMemorySnapshot(): RendererMemorySnapshot {
 /** Sends one snapshot to main. Fire and forget; never throws. */
 export function reportRendererMemorySnapshot(): void {
   try {
-    const report = (window as Window & {
-      ade?: { app?: { reportRendererMemory?: (snapshot: RendererMemorySnapshot) => void } };
-    }).ade?.app?.reportRendererMemory;
-    if (typeof report === "function") report(readRendererMemorySnapshot());
+    window.ade?.app?.reportRendererMemory?.(readRendererMemorySnapshot());
   } catch {
     // Diagnostics must never affect the window.
   }

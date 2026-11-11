@@ -12,7 +12,8 @@ import type {
   MyGitHubRepoSummary,
 } from "../../../shared/types/core";
 import { codedError } from "../../../shared/codedError";
-import { markExpected } from "../../../shared/expectedError";
+import { AdeExpectedError } from "../../../shared/expectedError";
+import { isFsAccessRefusal } from "../../../shared/fsAccessRefusal";
 import { gitCommandError, runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { createGithubService } from "../github/githubService";
@@ -60,20 +61,14 @@ function validateProjectName(name: string): string {
   return trimmed;
 }
 
-/** This account may not list or write the folder: its answer, not a bug. */
-function isAccessRefusal(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException | null)?.code;
-  return code === "EPERM" || code === "EACCES" || code === "EROFS";
-}
-
 function isDirectoryNonEmpty(dirPath: string): boolean {
   try {
     const entries = fs.readdirSync(dirPath);
     return entries.length > 0;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    if (isAccessRefusal(error)) {
-      throw markExpected(new Error(`ADE can't read the folder ${dirPath}. Choose a folder you can open.`, { cause: error }), "user");
+    if (isFsAccessRefusal(error)) {
+      throw new AdeExpectedError(`ADE can't read the folder ${dirPath}. Choose a folder you can open.`, "user", { cause: error });
     }
     throw error;
   }
@@ -100,14 +95,14 @@ function ensureDirectory(dirPath: string): void {
   } catch (error) {
     // Made meanwhile by someone else, or a root Node refused to make: it is there.
     if (isExistingDirectory(dirPath)) return;
-    if (isAccessRefusal(error)) throw markExpected(new Error(folderRefusalMessage(dirPath, error), { cause: error }), "user");
+    if (isFsAccessRefusal(error)) throw new AdeExpectedError(folderRefusalMessage(dirPath, error), "user", { cause: error });
     throw error;
   }
 }
 
 /**
  * Name the folder the refusal was about: the deepest one that is there, where
- * the new folder would have gone. A drive that is not there (`D:\Spicci` with
+ * the new folder would have gone. A drive that is not there (`D:\projects` with
  * no `D:`) is named as missing.
  */
 function folderRefusalMessage(dirPath: string, error: unknown): string {

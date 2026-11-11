@@ -290,12 +290,24 @@ describe("readTranscriptHistoryPage", () => {
       expected: ["head", "tail"],
     },
     {
-      name: "past the 8 MB field scan",
+      // Not parsed: still stood in for (the file is this chat's) and dated
+      // from the row's leading timestamp.
+      name: "past the 8 MB parse bound",
       rows: [
         { text: "head", sequence: 1 },
         { text: "giant", sequence: 2, bytes: 9 * 1024 * 1024 },
+        { text: "tail", sequence: 3 },
       ],
-      expected: ["head", "omitted"],
+      expected: ["head", "omitted", "tail"],
+    },
+    {
+      name: "past the 8 MB parse bound, of another chat",
+      rows: [
+        { text: "head", sequence: 1 },
+        { text: "giant", sequence: 2, bytes: 9 * 1024 * 1024, sessionId: "someone-else" },
+        { text: "tail", sequence: 3 },
+      ],
+      expected: ["head", "tail"],
     },
   ])("pages past a row above the page ceiling: $name", async ({ rows, crlf, expected }) => {
     const lines = rows.map((row) => {
@@ -477,19 +489,66 @@ describe("readTranscriptHistoryPageBeforeSequence", () => {
     expect(page.envelopes.map(sequenceOf)).toEqual([2, 4, 6, 8]);
   });
 
-  it("moves a sequence cursor past a row too large to page", async () => {
+  // A row too large to page yields no sequenced row (a stand-in, or nothing
+  // when it is another chat's), and the client's next request is its oldest
+  // sequence, so the reply must reach a sequenced row (or the head): else the
+  // client asks for the same page forever.
+  const MB9 = 9 * 1024 * 1024;
+  it.each([
+    { name: "one big row", bigRows: [{ bytes: 3_000_000 }] },
+    { name: "a run of big rows past the parse bound", bigRows: [{ bytes: MB9 }, { bytes: MB9 }, { bytes: MB9 }] },
+    { name: "another chat's big row", bigRows: [{ bytes: MB9, sessionId: "someone-else" }] },
+    {
+      name: "two of another chat's big rows",
+      bigRows: [{ bytes: MB9, sessionId: "someone-else" }, { bytes: MB9, sessionId: "someone-else" }],
+    },
+    // Windows of only other chats' rows read as empty pages.
+    { name: "a big row over windows of another chat's rows", bigRows: [{ bytes: 3_000_000 }], foreignRows: 200 },
+    { name: "windows of another chat's rows", bigRows: [], foreignRows: 200 },
+  ])("moves a sequence cursor past $name", async ({ bigRows, foreignRows = 0 }) => {
+    const top = 3 + bigRows.length;
     writeTranscript([
       envelopeLine({ text: "r1", sequence: 1 }),
       envelopeLine({ text: "r2", sequence: 2 }),
-      envelopeLine({ text: "big", sequence: 3, exactLineBytes: 3_000_000 }),
-      envelopeLine({ text: "r4", sequence: 4 }),
+      ...Array.from({ length: foreignRows }, (_, index) =>
+        envelopeLine({ text: `other-${index}`, sessionId: "someone-else", sequence: 900 + index, exactLineBytes: 1_024 })),
+      ...bigRows.map((row, index) => envelopeLine({
+        text: "big",
+        sequence: 3 + index,
+        exactLineBytes: row.bytes,
+        ...("sessionId" in row ? { sessionId: row.sessionId } : {}),
+      })),
+      envelopeLine({ text: "top", sequence: top }),
     ]);
-    // The stand-in has no sequence, so the page also carries the rows older
-    // than it: the client's next cursor is then 1, not 4 again.
-    const page = await readTranscriptHistoryPageBeforeSequence({ transcriptPath, sessionId: SESSION_ID, beforeSequence: 4 });
-    expect(page.envelopes.map((envelope) => envelope.sequence ?? envelope.event.type)).toEqual([1, 2, "system_notice"]);
-    expect(page.envelopeStartOffsets).toHaveLength(3);
+    const page = await readTranscriptHistoryPageBeforeSequence({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      beforeSequence: top,
+      maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
+    });
+    const ownBigRows = bigRows.filter((row) => !("sessionId" in row)).length;
+    expect(page.envelopes.map((envelope) => envelope.sequence ?? envelope.event.type))
+      .toEqual([1, 2, ...Array.from({ length: ownBigRows }, () => "system_notice")]);
+    expect(page.envelopeStartOffsets).toHaveLength(2 + ownBigRows);
     expect(page.hasMore).toBe(false);
+  });
+
+  it("serves a legacy run of unsequenced rows as read", async () => {
+
+    // No stand-in: one byte window, no extra pages.
+    writeTranscript([
+      envelopeLine({ text: "r1", sequence: 1 }),
+      ...Array.from({ length: 200 }, (_, index) => envelopeLine({ text: `legacy-${index}`, exactLineBytes: 1_024 })),
+      envelopeLine({ text: "r2", sequence: 2 }),
+    ]);
+    const legacy = await readTranscriptHistoryPageBeforeSequence({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      beforeSequence: 2,
+      maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
+    });
+    expect(legacy.envelopes).toHaveLength(64);
+    expect(legacy.hasMore).toBe(true);
   });
 
   it("never returns a row at or above the cursor from a file whose numbering restarted", async () => {

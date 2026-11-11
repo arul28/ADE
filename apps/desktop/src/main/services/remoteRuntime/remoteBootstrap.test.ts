@@ -428,6 +428,7 @@ describe("validateRemoteRuntimeInitializeResult", () => {
 });
 
 const APP_VERSION = "2.0.0";
+const USER_CONNECT = { initiatedBy: "user" as const, isAbandoned: () => false };
 
 const uploadTarget: RemoteRuntimeTarget = {
   id: "target-1",
@@ -807,6 +808,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     });
 
     expect(connected.result).toMatchObject({ arch: "win32-x64", version: APP_VERSION });
@@ -875,6 +877,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry: createRegistry(),
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     })).rejects.toThrow(/checksum mismatch/i);
     expect(fakeSsh.end).toHaveBeenCalled();
   });
@@ -931,6 +934,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     });
 
     expect(connectSshWithRouteMock).toHaveBeenCalledWith(targetFromSshConfig);
@@ -1012,6 +1016,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     })).rejects.toMatchObject({
       info: {
         kind: "disk_full",
@@ -1064,6 +1069,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     })).resolves.toMatchObject({ result: { version: APP_VERSION } });
 
     expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
@@ -1135,6 +1141,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
         registry,
         resourcesPath: resources.resourcesPath,
         appVersion: APP_VERSION,
+        connect: USER_CONNECT,
       });
     } catch (error) {
       caught = error;
@@ -1215,6 +1222,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     });
 
     expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
@@ -1294,6 +1302,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
         registry,
         resourcesPath: resources.resourcesPath,
         appVersion: APP_VERSION,
+        connect: USER_CONNECT,
       });
       return { resources, fakeSsh, commands, connected };
     }
@@ -1379,6 +1388,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     });
 
     expect(fakeSsh.sftpWrapper.fastPut).not.toHaveBeenCalled();
@@ -1437,12 +1447,14 @@ describe("bootstrapRemoteRuntime upload flow", () => {
         registry,
         resourcesPath: resources.resourcesPath,
         appVersion: APP_VERSION,
+        connect: USER_CONNECT,
       });
       await bootstrapRemoteRuntime({
         target: uploadTarget,
         registry,
         resourcesPath: resources.resourcesPath,
         appVersion: APP_VERSION,
+        connect: USER_CONNECT,
       });
       binaryReadCount = readFileSyncSpy.mock.calls.filter(
         ([filePath]) => filePath === resources.binaryPath,
@@ -1511,6 +1523,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     });
 
     expect(spawnMock).not.toHaveBeenCalled();
@@ -1580,6 +1593,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     });
 
     expect(commands).toContain("mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin");
@@ -1650,6 +1664,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     });
 
     expect(fakeSsh.sftp).toHaveBeenCalledTimes(2);
@@ -1708,6 +1723,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     })).rejects.toThrow(/uploaded ade service version mismatch/i);
 
     expect(fakeSsh.sftp).toHaveBeenCalledTimes(1);
@@ -1766,6 +1782,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     })).rejects.toThrow(/sftp denied.*SSH stream fallback failed.*channel denied.*OpenSSH fallback failed.*pipe broke/i);
 
     expect(fakeSsh.sftp).toHaveBeenCalledTimes(1);
@@ -1849,6 +1866,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     });
 
     const nativeDepsPath = path.join(resources.resourcesPath, "runtime", "ade-darwin-arm64.native.tar.gz");
@@ -1922,6 +1940,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     });
 
     expect(fakeSsh.exec).not.toHaveBeenCalled();
@@ -1984,6 +2003,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     });
 
     expect(openSshRuntimeTransportMock).toHaveBeenNthCalledWith(
@@ -2048,6 +2068,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     });
 
     expect(openSshRuntimeTransportMock).toHaveBeenCalledTimes(2);
@@ -2111,6 +2132,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     });
 
     expect(openSshRuntimeTransportMock).toHaveBeenNthCalledWith(
@@ -2197,6 +2219,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
       pairedStore,
     });
 
@@ -2257,6 +2280,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry,
       resourcesPath: resources.resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     })).resolves.toMatchObject({
       result: {
         arch: "linux-x64",
@@ -2301,6 +2325,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       registry: createRegistry(),
       resourcesPath,
       appVersion: APP_VERSION,
+      connect: USER_CONNECT,
     })).rejects.toMatchObject({
       info: {
         kind: "generic",

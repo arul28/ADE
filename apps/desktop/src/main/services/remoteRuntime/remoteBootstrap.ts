@@ -23,9 +23,19 @@ import {
   runtimeNativeArchiveAssetName,
 } from "../../../../../ade-cli/src/lib/releaseAssets";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
+import {
+  isRemoteBrainNotRunningError,
+  isSshCommandRefusedError,
+  openRuntimeStartingBrain,
+  posixBrainStartCommand,
+  remoteBrainNotRunningConnectError,
+  windowsBrainStartCommand,
+  type RemoteBrainStartOutcome,
+  type RemoteConnectIntent,
+} from "./remoteBrainStart";
 import { markExpected } from "../../../shared/expectedError";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
-import { connectSshWithRoute, execSsh, execSshWithInput, openSshRuntimeTransport, type ConnectedSshRoute, type OpenSshResolvedConfig, type SshExecResult } from "./sshTransport";
+import { connectSshWithRoute, execSsh, execSshWithInput, openSshRuntimeTransport, type ConnectedSshRoute, type OpenSshResolvedConfig } from "./sshTransport";
 import { routeKey } from "./routeUtils";
 import { syncEndpointForHost } from "./pairedRuntimeRoutes";
 import { generateDesktopDpopKeyPair, type DesktopPairedMachineStore } from "./syncPairedMachineStore";
@@ -397,6 +407,11 @@ export function resolveRemoteRuntimeLayoutCandidates(env: NodeJS.ProcessEnv = pr
   });
 }
 
+/** Whether the runtime's environment forbids installing a login service (`ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1`). */
+function remoteRuntimeServiceInstallDisabled(layout: RemoteRuntimeLayout, disableRuntimeServiceInstall: boolean | undefined): boolean {
+  return Boolean(layout.channel || disableRuntimeServiceInstall);
+}
+
 export function buildRemoteRuntimeEnvironmentPrefix(args: {
   archLabel: string;
   nativeDepsReady: boolean;
@@ -415,7 +430,7 @@ export function buildRemoteRuntimeEnvironmentPrefix(args: {
   if (layout.channel) {
     parts.push(`ADE_PACKAGE_CHANNEL="${layout.channel}"`);
   }
-  if (layout.channel || args.disableRuntimeServiceInstall) {
+  if (remoteRuntimeServiceInstallDisabled(layout, args.disableRuntimeServiceInstall)) {
     parts.push("ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1");
   }
   if (args.nativeDepsReady) {
@@ -995,25 +1010,6 @@ function isDiskFullError(error: unknown): boolean {
 }
 
 /**
- * What the SSH server says when it opened the connection but would not run a
- * command on it: it refused the exec (or subsystem) request, or closed the
- * channel before answering. ssh2 reports these as bare sentences ("Unable to
- * exec", from a CHANNEL_FAILURE or CHANNEL_CLOSE reply), which used to reach
- * the Machines dialog as its whole headline.
- */
-const SSH_COMMAND_REFUSED_PATTERN = /\bUnable to (?:exec|start subsystem)\b|\(SSH\) Channel open failure|\bChannel open failure\b/i;
-
-function isSshCommandRefusedError(error: unknown): boolean {
-  let current = error;
-  for (let depth = 0; current != null && depth < 5; depth += 1) {
-    const message = current instanceof Error ? current.message : String(current);
-    if (SSH_COMMAND_REFUSED_PATTERN.test(message)) return true;
-    current = current instanceof Error ? (current as Error & { cause?: unknown }).cause : null;
-  }
-  return false;
-}
-
-/**
  * The SSH server's refusal, in words a person can act on. Expected: it is the
  * server's configuration or limits, not a defect in ADE.
  */
@@ -1033,7 +1029,7 @@ function sshCommandRefusedConnectError(error: unknown, step: string): RemoteRunt
 function normalizeBootstrapConnectError(
   error: unknown,
   diskSpace: RemoteInstallDiskSpace | null,
-  step = "setting up this machine",
+  step: string,
 ): unknown {
   if (error instanceof RemoteRuntimeConnectError) return error;
   if (isSshCommandRefusedError(error)) return sshCommandRefusedConnectError(error, step);
@@ -1043,72 +1039,6 @@ function normalizeBootstrapConnectError(
     diskSpace,
     cause: error,
   });
-}
-
-/**
- * The remote CLI could not reach the machine's ADE brain socket: nothing is
- * listening because the brain is not running. `ade --socket … rpc --stdio`
- * never starts one: `--socket` sets the CLI's `requireSocket`, which turns off
- * its spawn and its service repair (`connectMachineRuntimeDaemon` in the CLI).
- * That flag has been on the command since the remote bootstrap stopped
- * recycling a desktop-owned brain, so a machine with no ADE app open (a
- * headless Linux box) has no brain until something runs `ade brain start`.
- */
-function isRemoteBrainNotRunningError(error: unknown): boolean {
-  const message = runtimeErrorMessage(error);
-  return /\b(?:ENOENT|ECONNREFUSED)\b[^\n]*\.sock\b/i.test(message);
-}
-
-/**
- * `ade brain start` over SSH. It installs the login service (launchd, or a
- * systemd user unit, falling back to ADE's own supervised background process
- * where no systemd user manager answers, as on a container or a box with no
- * user bus) and waits for the brain's handover itself, up to
- * RUNTIME_SERVICE_START_WAIT_MS, so the budget here is that plus room for the
- * install.
- */
-const REMOTE_BRAIN_START_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS + 30_000;
-/** How long the brain may take to accept connections after a start that reported success. */
-const REMOTE_BRAIN_SOCKET_WAIT_MS = RUNTIME_SERVICE_START_WAIT_MS;
-const REMOTE_BRAIN_SOCKET_RETRY_MS = 2_000;
-
-type RemoteBrainStartOutcome = { started: boolean; output: string };
-
-function shortCommandOutput(result: SshExecResult): string {
-  const text = [result.stderr, result.stdout]
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .join("\n");
-  const firstLines = text.split(/\r?\n/).filter((line) => line.trim()).slice(0, 3).join(" ");
-  return firstLines.length > 400 ? `${firstLines.slice(0, 400)}…` : firstLines;
-}
-
-function remoteBrainStartCommand(layout: RemoteRuntimeLayout): string {
-  const binary = layout.binaryExpr.replace(/^\$HOME\//, "~/").replace(/"/g, "");
-  const home = layout.homeDirExpr.replace(/^\$HOME\//, "~/").replace(/"/g, "");
-  return layout.channel ? `ADE_HOME=${home} ${binary} brain start` : `${binary} brain start`;
-}
-
-function remoteBrainNotRunningConnectError(
-  layout: RemoteRuntimeLayout,
-  detail: string,
-  cause: unknown,
-  start: RemoteBrainStartOutcome | null,
-): RemoteRuntimeConnectError {
-  const command = remoteBrainStartCommand(layout);
-  const message = start?.started
-    ? "ADE started its background service (the ADE brain) on this machine, but the brain did not accept "
-      + `connections within ${Math.round(REMOTE_BRAIN_SOCKET_WAIT_MS / 1000)}s. Check \`${command.replace(/ start$/, " status")}\` there, then press Try again.`
-    : start
-      ? "ADE could not start its background service (the ADE brain) on this machine"
-        + `${start.output ? `: ${start.output}` : "."} Start it there with \`${command}\`, then press Try again.`
-      : "ADE is installed on this machine, but its background service (the ADE brain) is not running. "
-        + `Start it there with \`${command}\` (or open the ADE app on that machine), then press Try again.`;
-  return markExpected(new RemoteRuntimeConnectError({
-    kind: "generic",
-    message,
-    detail: start?.output ? `${detail}\nbrain start: ${start.output}` : detail,
-  }, cause), "environment");
 }
 
 function parseAvailableDiskKilobytes(stdout: string): number | null {
@@ -1949,9 +1879,7 @@ async function upgradeSshTargetToPairedCredentials(args: {
  * How long a runtime started over SSH gets to answer `ade/initialize` and the
  * first `projects.list`. The process starts cold on the other machine, so this
  * is the wait any caller gives a brain endpoint to come up
- * (RUNTIME_SERVICE_START_WAIT_MS). Without it both calls fell to the RPC
- * client's 10 minute default, and a runtime that launched but never answered
- * held its caller for ten minutes.
+ * (RUNTIME_SERVICE_START_WAIT_MS).
  */
 const SSH_RUNTIME_HANDSHAKE_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
 
@@ -2513,13 +2441,27 @@ async function bootstrapWindowsRemoteRuntime(args: {
   }
 
   const runtimeCommand = windowsRuntimeRpcCommand({ layout, nativeDepsReady, ptyHostWorkerReady });
-  const opened = await openValidatedRuntimeClient({
-    ssh,
-    command: runtimeCommand,
-    appVersion: request.appVersion,
-    expectedVersion: localBinary ? request.appVersion : null,
-    expectedLayout: layout.channelLayout,
-  });
+  let opened: Awaited<ReturnType<typeof openValidatedRuntimeClient>>;
+  try {
+    opened = await openValidatedRuntimeClient({
+      ssh,
+      command: runtimeCommand,
+      appVersion: request.appVersion,
+      expectedVersion: localBinary ? request.appVersion : null,
+      expectedLayout: layout.channelLayout,
+    });
+  } catch (error) {
+    // `ade rpc --stdio` here has no `--socket`, so the relay starts a brain
+    // itself; this is a brain it could not start or reach.
+    if (!isRemoteBrainNotRunningError(error)) throw error;
+    throw remoteBrainNotRunningConnectError(
+      windowsBrainStartCommand({ adeHome: layout.adeHome, channel: layout.channelLayout.channel, binary: layout.binary }),
+      runtimeErrorMessage(error),
+      error,
+      null,
+      false,
+    );
+  }
   const projects = coerceProjects(await opened.client.call("projects.list", {}, { timeoutMs: SSH_RUNTIME_HANDSHAKE_TIMEOUT_MS }));
   const connectedAt = Date.now();
   let pairedCredentials: DesktopPairedMachineCredentials | null = null;
@@ -2580,6 +2522,11 @@ export async function bootstrapRemoteRuntime(args: {
   pairedStore?: DesktopPairedMachineStore;
   /** Test seam for the release-asset sidecar fetch (transport + cache root). */
   sidecarDeps?: RemoteSidecarDeps;
+  /**
+   * Who asked for this connect, and whether it was given up (the target was
+   * disconnected or removed). Only a person's connect may start the brain.
+   */
+  connect: RemoteConnectIntent;
 }): Promise<{ client: RuntimeRpcClient; result: RemoteRuntimeConnectResult; ssh: Client }> {
   const {
     client: ssh,
@@ -2822,11 +2769,17 @@ export async function bootstrapRemoteRuntime(args: {
       }
     }
 
+    // A layout other than the preferred one is another install: never ours to
+    // install a service for. The channel's own rule is in the helper.
+    const serviceInstallDisabled = remoteRuntimeServiceInstallDisabled(
+      layout,
+      layout.homeDirName !== preferredLayout.homeDirName,
+    );
     let runtimeEnvPrefix = buildRemoteRuntimeEnvironmentPrefix({
       archLabel: arch.label,
       nativeDepsReady,
       layout,
-      disableRuntimeServiceInstall: layout.homeDirName !== preferredLayout.homeDirName,
+      disableRuntimeServiceInstall: serviceInstallDisabled,
       ptyHostWorkerReady,
       ptyHostWorkerNodePath,
       ptyHostWorkerCommandExpr,
@@ -2888,41 +2841,32 @@ export async function bootstrapRemoteRuntime(args: {
       expectedVersion,
       expectedLayout: layout,
     });
-    // Set when this connect had to start the brain, for the error that names it.
+    const brainStartCommand = posixBrainStartCommand({
+      homeDirExpr: layout.homeDirExpr,
+      channel: layout.channel,
+      binaryExpr: localBinary || runtimeUploaded ? layout.binaryExpr : "ade",
+      runtimeEnvPrefix,
+    });
+    // A brain is started only on a connect the person asked for, for the
+    // install this app targets, where the environment allows a service install.
+    const mayStartBrain = args.connect.initiatedBy === "user"
+      && !runtimeLayoutFallbackReason
+      && !serviceInstallDisabled;
     let brainStart: RemoteBrainStartOutcome | null = null;
     try {
-      try {
-        openedRuntime = await openRuntime();
-      } catch (firstError) {
-        // No brain on this machine: start it the way a person would, then
-        // wait for its socket within the start budget. Only for the install
-        // this app targets; another channel's install is not ours to start.
-        if (!isRemoteBrainNotRunningError(firstError) || runtimeLayoutFallbackReason) throw firstError;
-        step = "starting the ADE brain";
-        const binaryExpr = localBinary || runtimeUploaded ? layout.binaryExpr : "ade";
-        try {
-          const started = await execSsh(ssh, `${runtimeEnvPrefix}${binaryExpr} brain start --text`, {
-            timeoutMs: REMOTE_BRAIN_START_TIMEOUT_MS,
-          });
-          brainStart = { started: started.code === 0, output: shortCommandOutput(started) };
-        } catch (startError) {
-          // A refused or timed-out start: the connect error names it below.
-          if (isSshCommandRefusedError(startError)) throw startError;
-          brainStart = { started: false, output: runtimeErrorMessage(startError).slice(0, 400) };
-        }
-        if (!brainStart.started) throw firstError;
-        step = "starting ADE";
-        const deadline = Date.now() + REMOTE_BRAIN_SOCKET_WAIT_MS;
-        for (;;) {
-          try {
-            openedRuntime = await openRuntime();
-            break;
-          } catch (retryError) {
-            if (!isRemoteBrainNotRunningError(retryError) || Date.now() >= deadline) throw retryError;
-            await new Promise((resolve) => setTimeout(resolve, REMOTE_BRAIN_SOCKET_RETRY_MS));
-          }
-        }
-      }
+      openedRuntime = await openRuntimeStartingBrain({
+        openRuntime,
+        startBrain: mayStartBrain
+          ? (timeoutMs) => execSsh(ssh, brainStartCommand.exec, { timeoutMs })
+          : null,
+        isAbandoned: args.connect.isAbandoned,
+        onStart: (outcome) => {
+          // While the start runs, a failure is the start's; after it, the
+          // connect is back to starting ADE.
+          brainStart = outcome;
+          step = outcome ? "starting ADE" : "starting the ADE brain";
+        },
+      });
     } catch (error) {
       const attempted = [{
         layout: layout.homeDirName,
@@ -2984,10 +2928,16 @@ export async function bootstrapRemoteRuntime(args: {
           return index === 0 ? line : `Also tried ${line}`;
         }).join("\n");
         if (isSshCommandRefusedError(attempted[0]?.error)) {
-          throw sshCommandRefusedConnectError(attempted[0]!.error, "starting ADE");
+          throw sshCommandRefusedConnectError(attempted[0]!.error, step);
         }
         if (isRemoteBrainNotRunningError(attempted[0]?.error)) {
-          throw remoteBrainNotRunningConnectError(layout, detail, error, brainStart);
+          throw remoteBrainNotRunningConnectError(
+            brainStartCommand.display,
+            detail,
+            error,
+            brainStart,
+            !runtimeLayoutFallbackReason && !serviceInstallDisabled,
+          );
         }
         throw new RemoteRuntimeConnectError({
           kind: "generic",

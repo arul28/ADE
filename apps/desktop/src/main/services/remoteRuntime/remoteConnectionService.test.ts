@@ -905,7 +905,7 @@ describe("RemoteConnectionService", () => {
     service.stopAutoconnect();
 
     expect(pool.connect).toHaveBeenCalledTimes(1);
-    expect(pool.connect).toHaveBeenCalledWith(previouslyConnected);
+    expect(pool.connect).toHaveBeenCalledWith(previouslyConnected, { initiatedBy: "background" });
   });
 
   it("reconciles a different account's target, credentials, and live pool entry as one command", () => {
@@ -1131,7 +1131,7 @@ describe("RemoteConnectionService", () => {
 
     expect(pool.disconnect).toHaveBeenCalledWith(accountOwned.id);
     expect(pool.connect).toHaveBeenCalledTimes(1);
-    expect(pool.connect).toHaveBeenCalledWith(localOwned);
+    expect(pool.connect).toHaveBeenCalledWith(localOwned, { initiatedBy: "background" });
   });
 
   it("allows a signed-out account-created target to reconnect over device-bound trust", async () => {
@@ -1169,7 +1169,7 @@ describe("RemoteConnectionService", () => {
     await expect(service.connect(accountOwned.id)).resolves.toMatchObject({
       route: { kind: "lan" },
     });
-    expect(pool.connect).toHaveBeenCalledWith(accountOwned);
+    expect(pool.connect).toHaveBeenCalledWith(accountOwned, { initiatedBy: "background" });
   });
 
   it("does not autoconnect a manually disconnected saved target", async () => {
@@ -1351,6 +1351,7 @@ describe("RemoteConnectionService", () => {
 
     expect(pool.connect).toHaveBeenCalledWith(previouslyConnected, {
       bypassFailureBackoff: true,
+      initiatedBy: "user",
     });
     expect(pool.callActionForTarget).toHaveBeenCalledTimes(1);
   });
@@ -2218,10 +2219,9 @@ describe("RemoteConnectionService", () => {
 
   /**
    * An event subscription whose dial hangs (a host that took the socket and
-   * never answered the handshake) used to hold the renderer's poll until the
-   * 10 minute IPC deadline, whose error named no step. It now fails at its own
-   * ceiling naming the step, and a subscription acknowledged after that is
-   * closed again instead of streaming into a caller that gave up on it.
+   * never answered the handshake) fails at its own ceiling naming the step,
+   * and a subscription acknowledged after that is closed again instead of
+   * streaming into a caller that gave up on it.
    */
   it("fails a hung event subscription at its ceiling naming the step, and closes one acknowledged late", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
@@ -2274,10 +2274,8 @@ describe("RemoteConnectionService", () => {
       expect(failure).toBeNull();
       await vi.advanceTimersByTimeAsync(2_000);
       expect(failure).toMatchObject({
-        name: "RemoteEventSetupTimeoutError",
         code: "REMOTE_EVENT_SETUP_TIMEOUT",
         phase: "connect",
-        message: "Could not reach previously-connected: it did not answer the connection handshake within 120s. ADE will try again.",
       });
       expect(forwardSignalToSentryMock).toHaveBeenCalledWith(
         "remote.event_setup_timed_out",

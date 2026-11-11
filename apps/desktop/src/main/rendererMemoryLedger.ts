@@ -1,3 +1,14 @@
+import {
+  HEAP_MB_BUCKETS,
+  HEAP_PCT_BUCKETS,
+  NO_TRANSCRIPT_BUCKET,
+  OPEN_FOR_SEC_BUCKETS,
+  TRANSCRIPT_EVENT_BUCKETS,
+  UNKNOWN_BUCKET,
+  type BucketTable,
+  type RendererMemorySnapshot,
+} from "../shared/types/rendererMemory";
+
 /**
  * The last thing each window's renderer said about its memory
  * (`renderer/lib/rendererMemorySnapshot.ts`, every 30 s while visible), kept
@@ -6,16 +17,10 @@
  * before. One small record per window; no timer here.
  */
 
-export type RendererMemoryRecord = {
-  heapUsedMb: number | null;
-  heapLimitMb: number | null;
+export type RendererMemoryRecord = RendererMemorySnapshot & {
   /** The highest heap this renderer process reported. */
   peakHeapUsedMb: number | null;
-  openForSec: number;
-  openChatPanes: number;
-  largestTranscriptEvents: number;
-  replayActive: boolean;
-  /** How long before the crash the snapshot was taken. */
+  /** When the last snapshot arrived (epoch ms). */
   reportedAtMs: number;
 };
 
@@ -26,7 +31,7 @@ function clampNumber(value: unknown, max: number): number | null {
 }
 
 /** Store one snapshot from a renderer. Anything malformed is dropped. */
-export function noteRendererMemory(webContentsId: number, raw: unknown, nowMs = Date.now()): void {
+export function noteRendererMemory(webContentsId: number, raw: unknown): void {
   if (!raw || typeof raw !== "object") return;
   const value = raw as Record<string, unknown>;
   const heapUsedMb = clampNumber(value.heapUsedMb, 1_000_000);
@@ -40,7 +45,7 @@ export function noteRendererMemory(webContentsId: number, raw: unknown, nowMs = 
     openChatPanes: clampNumber(value.openChatPanes, 10_000) ?? 0,
     largestTranscriptEvents: clampNumber(value.largestTranscriptEvents, 100_000_000) ?? 0,
     replayActive: value.replayActive === true,
-    reportedAtMs: nowMs,
+    reportedAtMs: Date.now(),
   });
 }
 
@@ -58,37 +63,38 @@ export function forgetRendererMemory(webContentsId: number): void {
   records.delete(webContentsId);
 }
 
-/** Closed buckets for `ade_renderer_recovered`; never the exact numbers. */
-export function rendererMemoryAnalytics(record: RendererMemoryRecord | null): {
+function bucketOf(value: number | null, table: BucketTable): string {
+  if (value == null) return UNKNOWN_BUCKET;
+  return table.find(([, below]) => value < below)?.[0] ?? UNKNOWN_BUCKET;
+}
+
+export type RendererMemoryAnalytics = {
   heap_mb_bucket: string;
   heap_pct_bucket: string;
   duration_bucket?: string;
   chat_session_count?: number;
   transcript_bucket: string;
   replay_active?: boolean;
-} {
-  if (!record) return { heap_mb_bucket: "unknown", heap_pct_bucket: "unknown", transcript_bucket: "unknown" };
+};
+
+/** What `ade_renderer_recovered` carries. */
+export type RendererRecoveryOutcome = { crash_reason: string; recovered: boolean } & RendererMemoryAnalytics;
+
+/** Closed buckets for `ade_renderer_recovered`; never the exact numbers. */
+export function rendererMemoryAnalytics(record: RendererMemoryRecord | null): RendererMemoryAnalytics {
+  if (!record) {
+    return { heap_mb_bucket: UNKNOWN_BUCKET, heap_pct_bucket: UNKNOWN_BUCKET, transcript_bucket: UNKNOWN_BUCKET };
+  }
   const heap = record.peakHeapUsedMb ?? record.heapUsedMb;
-  const heapMbBucket = heap == null
-    ? "unknown"
-    : heap < 512 ? "under_512" : heap < 1024 ? "512_1024" : heap < 2048 ? "1024_2048" : heap < 3072 ? "2048_3072" : "3072_plus";
   const pct = heap != null && record.heapLimitMb ? (heap / record.heapLimitMb) * 100 : null;
-  const heapPctBucket = pct == null
-    ? "unknown"
-    : pct < 50 ? "under_50" : pct < 75 ? "50_75" : pct < 90 ? "75_90" : "90_plus";
-  const sec = record.openForSec;
-  const durationBucket = sec < 10 ? "under_10s" : sec < 60 ? "under_1m" : sec < 300 ? "under_5m"
-    : sec < 1800 ? "under_30m" : sec < 7200 ? "under_2h" : "over_2h";
-  const events = record.largestTranscriptEvents;
-  const transcriptBucket = record.openChatPanes === 0
-    ? "none"
-    : events < 1000 ? "under_1k" : events < 5000 ? "1k_5k" : events < 20000 ? "5k_20k" : "20k_plus";
   return {
-    heap_mb_bucket: heapMbBucket,
-    heap_pct_bucket: heapPctBucket,
-    duration_bucket: durationBucket,
+    heap_mb_bucket: bucketOf(heap, HEAP_MB_BUCKETS),
+    heap_pct_bucket: bucketOf(pct, HEAP_PCT_BUCKETS),
+    duration_bucket: bucketOf(record.openForSec, OPEN_FOR_SEC_BUCKETS),
     chat_session_count: Math.min(record.openChatPanes, 50),
-    transcript_bucket: transcriptBucket,
+    transcript_bucket: record.openChatPanes === 0
+      ? NO_TRANSCRIPT_BUCKET
+      : bucketOf(record.largestTranscriptEvents, TRANSCRIPT_EVENT_BUCKETS),
     replay_active: record.replayActive,
   };
 }

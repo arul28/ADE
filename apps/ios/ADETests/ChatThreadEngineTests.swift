@@ -664,6 +664,40 @@ final class ChatThreadEngineTests: XCTestCase {
     XCTAssertNil(fields["chatLogV2"])
   }
 
+  // MARK: - 22b. Stand-in for a row too large to page
+
+  func testOlderPageShowsOmittedRowNoticeInPlaceWithoutPersistingIt() async {
+    let store = makeStore()
+    let engine = makeEngine(store: store)
+    await engine.ingest(snapshot([user(10, "newer question")], hasOlder: true))
+    _ = await engine.flush()
+
+    let notice = event(nil, [
+      "type": "system_notice",
+      "noticeKind": "info",
+      "status": "history_row_omitted",
+      "message": "fixture-omitted-row",
+    ], at: 8)
+    await engine.ingest(.olderPage(ChatThreadOlderPageInput(
+      sessionId: sessionId,
+      events: [user(7, "older question"), notice],
+      hasMore: true
+    )))
+    let frame = await engine.flush()
+    let order = (frame?.transcript ?? []).map { entry -> String in
+      if case .systemNotice(_, let message, _, _, _) = entry.event { return "notice:\(message)" }
+      return "seq:\(entry.sequence ?? -1)"
+    }
+    XCTAssertEqual(order, ["seq:7", "notice:fixture-omitted-row", "seq:10"])
+
+    // Display-only: not in the durable log, and not the next cursor.
+    await engine.flushPersistence()
+    let sequences = await storedSequences(store)
+    XCTAssertEqual(sequences, [7, 10])
+    let request = await engine.beginOlderHostRequest()
+    XCTAssertEqual(request, .beforeSequence(7))
+  }
+
   // MARK: - 23. Local echo and optimistic steer
 
   func testLocalEchoAndOptimisticSteerAreInTheOverlayFrame() async {

@@ -69,7 +69,6 @@ import { RemoteDialTelemetry, type RemoteDialOutcome } from "./remoteDialTelemet
 import {
   REMOTE_RUNTIME_EVENT_SETUP_SLOW_MS,
   runWithEventSetupDeadline,
-  summarizeEventSetupPhases,
   type RemoteEventSetupPhase,
 } from "./remoteEventSetup";
 import { HostReturnWatches } from "./remoteHostReturnWatch";
@@ -1059,11 +1058,15 @@ export class RemoteConnectionService {
       // Asked even with a pool entry: a sleeping box's relay tunnel can look
       // open until a call times out. Only cloud boxes cost a lookup.
       const woke = explicit && this.options.wakeForUse ? await this.options.wakeForUse(target) : false;
+      // An explicit connect counts as the person asking for this machine
+      // (Connect, Test, Try again, and opening or switching to one of its
+      // projects), so it may start the machine's brain. Unattended
+      // reconnects, the event pump and autoconnect dial as "background".
       const result = woke
         ? await this.connectWokenMachine(target)
         : explicit
-          ? await this.pool.connect(target, { bypassFailureBackoff: true })
-          : await this.pool.connect(target);
+          ? await this.pool.connect(target, { bypassFailureBackoff: true, initiatedBy: "user" })
+          : await this.pool.connect(target, { initiatedBy: "background" });
       if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
         if (this.manuallyDisconnectedTargetIds.has(target.id)) {
           this.pool.disconnect(target.id);
@@ -1705,16 +1708,13 @@ export class RemoteConnectionService {
    * has its own bound, but a dial can try several routes or join a long SSH
    * install, and a renderer poll must not sit on that: past
    * REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS it fails naming the step it was on,
-   * and the pump polls again (joining the dial, which keeps going). Before
-   * this, a hung step held the poll until the IPC deadline, ten minutes, whose
-   * error named no step.
+   * and the pump polls again (joining the dial, which keeps going).
    */
   private withEventSetupDeadline<T>(
     targetId: string,
     kind: "read" | "subscribe",
-    run: (notePhase: (phase: RemoteEventSetupPhase) => void) => Promise<T>,
+    run: (notePhase: (phase: RemoteEventSetupPhase) => void, isAbandoned: () => boolean) => Promise<T>,
     onLateResult?: (value: T) => void,
-    onTimedOut?: () => void,
   ): Promise<T> {
     const known = this.registry.get(targetId);
     const machineName = known?.name?.trim() || known?.hostname?.trim() || "that computer";
@@ -1722,19 +1722,18 @@ export class RemoteConnectionService {
       machineName,
       run,
       onLateResult,
-      onSettled: ({ timedOut, totalMs, phases, error }) => {
-        if (timedOut) onTimedOut?.();
+      onSettled: ({ timedOut, clock }) => {
+        const totalMs = clock.totalMs();
         if (!timedOut && totalMs < REMOTE_RUNTIME_EVENT_SETUP_SLOW_MS) return;
         const meta = {
           kind,
           transport: known?.transport ?? "ssh",
-          phase: error?.phase ?? phases[phases.length - 1]?.phase ?? null,
+          phase: clock.current(),
           totalMs,
-          phases: summarizeEventSetupPhases(phases),
+          phases: clock.summary(),
         };
         if (timedOut) {
-          // Breadcrumb plus a budgeted Sentry Log, keyed by the step, so the
-          // next report says which step hung instead of a bare IPC timeout.
+          // Breadcrumb plus a budgeted Sentry Log, keyed by the step that hung.
           forwardSignalToSentry("remote.event_setup_timed_out", meta, `remote.event_setup_timed_out:${meta.phase}`);
           this.options.logger?.info("remote.event_setup_timed_out", { targetId, ...meta });
         } else {
@@ -1753,13 +1752,12 @@ export class RemoteConnectionService {
     onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
     options?: { projectRootPath?: string | null },
   ): Promise<() => void> {
-    // A subscription acknowledged after the deadline is closed again: the
-    // caller already gave up on it and holds no handle to it.
-    let gaveUp = false;
+    // A subscription acknowledged after the deadline is closed again
+    // (`onLateResult`): the caller gave up on it and holds no handle to it.
     return await this.withEventSetupDeadline(
       targetId,
       "subscribe",
-      async (notePhase) => {
+      async (notePhase, gaveUp) => {
         const target = await this.requireTargetForImplicitUse(targetId);
         try {
           const cleanup = await this.pool.subscribeEventsForTarget(
@@ -1767,17 +1765,17 @@ export class RemoteConnectionService {
             await this.routedProjectId(target, projectId, options?.projectRootPath, null, notePhase),
             request,
             (event, eventEpoch) => {
-              if (!gaveUp) onEvent(event, eventEpoch);
+              if (!gaveUp()) onEvent(event, eventEpoch);
             },
             () => {
-              if (!gaveUp) onEnded?.();
+              if (!gaveUp()) onEnded?.();
             },
             (result) => {
-              if (!gaveUp) onSubscribed?.(result);
+              if (!gaveUp()) onSubscribed?.(result);
             },
             { onPhase: notePhase },
           );
-          if (gaveUp) return cleanup;
+          if (gaveUp()) return cleanup;
           this.mergeStatus(targetId, {
             state: "connected",
             lastError: null,
@@ -1786,14 +1784,11 @@ export class RemoteConnectionService {
           this.clearAutomaticReconnectState(targetId);
           return cleanup;
         } catch (error) {
-          if (!gaveUp) this.markCallFailure(targetId, error);
+          if (!gaveUp()) this.markCallFailure(targetId, error);
           throw error;
         }
       },
       (lateCleanup) => lateCleanup(),
-      () => {
-        gaveUp = true;
-      },
     );
   }
 
@@ -2145,7 +2140,7 @@ export class RemoteConnectionService {
     const deadline = Date.now() + WOKEN_MACHINE_CONNECT_WAIT_MS;
     for (;;) {
       try {
-        return await this.pool.connect(target, { bypassFailureBackoff: true });
+        return await this.pool.connect(target, { bypassFailureBackoff: true, initiatedBy: "user" });
       } catch (error) {
         // Waiting fixes a relay that isn't up yet, not a sign-in or a pairing.
         if (error instanceof PairedRuntimeRelayAuthRequiredError || this.pool.needsUserAction(target.id)) throw error;

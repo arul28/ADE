@@ -1,4 +1,5 @@
 import { armDeadline } from "../../../shared/deadlineTimer";
+import { createPhaseClock, type PhaseClock } from "../../../shared/phaseClock";
 
 /**
  * The steps an event read or subscription on another machine waits on, in the
@@ -28,7 +29,7 @@ export type RemoteEventSetupPhase =
  * dial itself is not cancelled: it keeps going for the next poll to join.
  *
  * Event pumps poll again two seconds after a failure, so failing here means
- * "try again shortly", where waiting meant ten minutes of silence.
+ * "try again shortly".
  */
 export const REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS = 2 * 60_000;
 
@@ -53,8 +54,6 @@ const PHASE_WORDS: Record<RemoteEventSetupPhase, string> = {
   reconnect: "it did not answer the connection handshake after the connection dropped",
 };
 
-export type RemoteEventSetupPhaseTiming = { phase: RemoteEventSetupPhase; ms: number };
-
 /** An event read or subscription that waited past its ceiling, naming the step it was on. */
 export class RemoteEventSetupTimeoutError extends Error {
   readonly code = "REMOTE_EVENT_SETUP_TIMEOUT" as const;
@@ -63,7 +62,6 @@ export class RemoteEventSetupTimeoutError extends Error {
     readonly machineName: string,
     readonly phase: RemoteEventSetupPhase,
     readonly timeoutMs: number,
-    readonly phases: readonly RemoteEventSetupPhaseTiming[],
   ) {
     super(
       `Could not reach ${machineName}: ${PHASE_WORDS[phase]} within ${Math.round(timeoutMs / 1000)}s. ADE will try again.`,
@@ -72,50 +70,22 @@ export class RemoteEventSetupTimeoutError extends Error {
   }
 }
 
-/** "connect:118000 read:2000", for logs. */
-export function summarizeEventSetupPhases(phases: readonly RemoteEventSetupPhaseTiming[]): string {
-  return phases.map(({ phase, ms }) => `${phase}:${ms}`).join(" ");
-}
-
 /**
- * Run one event setup under a ceiling. `run` reports each step it enters;
- * past `timeoutMs` the returned promise rejects with the step it was in. A
- * result that arrives later goes to `onLateResult` (a subscription it must
- * close), and a late failure is dropped: the caller already has its answer.
- * The one timer is cleared when `run` settles in time.
+ * Run one event setup under REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS. `run`
+ * reports each step it enters, and can ask whether the caller already gave up
+ * (`isAbandoned`), to drop what a late result would deliver. Past the ceiling
+ * the returned promise rejects with the step it was in; a result that arrives
+ * later goes to `onLateResult` (a subscription it must close), and a late
+ * failure is dropped. The one timer is cleared when `run` settles in time.
  */
 export function runWithEventSetupDeadline<T>(args: {
   machineName: string;
-  timeoutMs?: number;
-  run: (notePhase: (phase: RemoteEventSetupPhase) => void) => Promise<T>;
+  run: (notePhase: (phase: RemoteEventSetupPhase) => void, isAbandoned: () => boolean) => Promise<T>;
   onLateResult?: (value: T) => void;
-  onSettled?: (outcome: {
-    timedOut: boolean;
-    totalMs: number;
-    phases: readonly RemoteEventSetupPhaseTiming[];
-    error?: RemoteEventSetupTimeoutError;
-  }) => void;
+  onSettled?: (outcome: { timedOut: boolean; clock: PhaseClock<RemoteEventSetupPhase> }) => void;
 }): Promise<T> {
-  const timeoutMs = args.timeoutMs ?? REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS;
-  const startedAt = Date.now();
-  const phases: RemoteEventSetupPhaseTiming[] = [];
-  let current: RemoteEventSetupPhase = "authorize";
-  let currentStartedAt = startedAt;
-  const closeCurrent = (now: number) => {
-    phases.push({ phase: current, ms: Math.max(0, now - currentStartedAt) });
-  };
-  const notePhase = (phase: RemoteEventSetupPhase) => {
-    if (phase === current) return;
-    const now = Date.now();
-    closeCurrent(now);
-    current = phase;
-    currentStartedAt = now;
-  };
-  const snapshot = (): RemoteEventSetupPhaseTiming[] => [
-    ...phases,
-    { phase: current, ms: Math.max(0, Date.now() - currentStartedAt) },
-  ];
-
+  const timeoutMs = REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS;
+  const clock = createPhaseClock<RemoteEventSetupPhase>("authorize");
   let settled = false;
   let timedOut = false;
   return new Promise<T>((resolve, reject) => {
@@ -123,14 +93,13 @@ export function runWithEventSetupDeadline<T>(args: {
       if (settled) return;
       settled = true;
       timedOut = true;
-      const timings = snapshot();
-      const error = new RemoteEventSetupTimeoutError(args.machineName, current, timeoutMs, timings);
-      args.onSettled?.({ timedOut: true, totalMs: Date.now() - startedAt, phases: timings, error });
+      const error = new RemoteEventSetupTimeoutError(args.machineName, clock.current(), timeoutMs);
+      args.onSettled?.({ timedOut: true, clock });
       reject(error);
     });
     let running: Promise<T>;
     try {
-      running = args.run(notePhase);
+      running = args.run((phase) => clock.enter(phase), () => timedOut);
     } catch (error) {
       running = Promise.reject(error);
     }
@@ -147,14 +116,14 @@ export function runWithEventSetupDeadline<T>(args: {
         if (settled) return;
         settled = true;
         deadline.cancel();
-        args.onSettled?.({ timedOut: false, totalMs: Date.now() - startedAt, phases: snapshot() });
+        args.onSettled?.({ timedOut: false, clock });
         resolve(value);
       },
       (error: unknown) => {
         if (settled) return;
         settled = true;
         deadline.cancel();
-        args.onSettled?.({ timedOut: false, totalMs: Date.now() - startedAt, phases: snapshot() });
+        args.onSettled?.({ timedOut: false, clock });
         reject(error);
       },
     );

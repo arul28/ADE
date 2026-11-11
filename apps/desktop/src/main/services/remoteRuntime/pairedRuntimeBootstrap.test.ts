@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import type { RemoteRuntimeTarget } from "../../../shared/types/remoteRuntime";
 import type { SyncRuntimeTransport } from "./syncRuntimeTransport";
+import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
+import type { DesktopPairedMachineStore } from "./syncPairedMachineStore";
 
 const initializeMock = vi.hoisted(() => vi.fn());
 const callMock = vi.hoisted(() => vi.fn());
@@ -584,15 +586,10 @@ describe("bootstrapPairedRuntime", () => {
 
   it("gives up on a host that opens the socket and says hello but never answers the handshake, and closes it", async () => {
     // The real client, over a transport whose peer reads every request and
-    // answers none: the shape of a host whose brain is wedged behind a
-    // working sync socket. It used to wait on the client's 10 minute default,
-    // which is the IPC deadline too, so the poll that dialed failed after
-    // 600000ms naming no step.
+    // answers none: a host whose brain is wedged behind a working sync socket.
     const { RuntimeRpcClient: RealRuntimeRpcClient } = await vi.importActual<typeof import("./runtimeRpcClient")>("./runtimeRpcClient");
     const { RuntimeRpcClient: MockedRuntimeRpcClient } = await import("./runtimeRpcClient");
-    vi.mocked(MockedRuntimeRpcClient).mockImplementationOnce(
-      ((peer: SyncRuntimeTransport) => new RealRuntimeRpcClient(peer)) as any,
-    );
+    vi.mocked(MockedRuntimeRpcClient).mockImplementationOnce((peer) => new RealRuntimeRpcClient(peer));
     const silent = transport();
     const closeListeners: Array<() => void> = [];
     vi.mocked(silent.onClose!).mockImplementation((listener) => {
@@ -605,17 +602,22 @@ describe("bootstrapPairedRuntime", () => {
     vi.useFakeTimers();
     try {
       let settled = null as { error?: unknown; value?: unknown } | null;
+      const registry: Pick<RemoteTargetRegistry, "update"> = { update: vi.fn(() => target) };
+      const pairedStore: Pick<
+        DesktopPairedMachineStore,
+        "getForReference" | "get" | "save" | "markEndpointFailed" | "forgetEndpoint" | "markEndpointSucceeded"
+      > = {
+        getForReference: vi.fn(() => credentials),
+        get: vi.fn(() => credentials),
+        save: vi.fn(() => credentials),
+        markEndpointFailed,
+        forgetEndpoint: vi.fn(),
+        markEndpointSucceeded: vi.fn(() => credentials),
+      };
       void bootstrapPairedRuntime({
         target,
-        registry: { update: vi.fn(() => target) } as any,
-        pairedStore: {
-          getForReference: vi.fn(() => credentials),
-          get: vi.fn(() => credentials),
-          save: vi.fn(),
-          markEndpointFailed,
-          forgetEndpoint: vi.fn(),
-          markEndpointSucceeded: vi.fn(),
-        } as any,
+        registry: registry as RemoteTargetRegistry,
+        pairedStore: pairedStore as DesktopPairedMachineStore,
         appVersion: "1.0.0",
         options: { openTransport: vi.fn(async () => silent) },
       }).then(
@@ -635,9 +637,7 @@ describe("bootstrapPairedRuntime", () => {
       expect(settled).not.toBeNull();
       const error = settled!.error;
       expect(error).toBeInstanceOf(PairedRuntimeTransportUnavailableError);
-      expect((error as Error).message).toBe(
-        "Could not reach Studio: it did not answer the connection handshake. ADE there may be busy or stuck — try again, or restart ADE on that computer.",
-      );
+      expect(error).toMatchObject({ code: "PAIRED_RUNTIME_TRANSPORT_UNAVAILABLE", diagnostic: { failure: "timeout" } });
       expect((error as PairedRuntimeTransportUnavailableError).diagnostic?.attempts).toMatchObject([
         { kind: "lan", outcome: "failed", failure: "timeout", errorCode: "handshake_timeout" },
       ]);

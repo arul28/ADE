@@ -1,3 +1,4 @@
+import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateMachineArgs, CloudCreateProgress, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudReadyClaim, CloudReadyProjectSettings, CloudReadyStatus } from "../shared/cloudReady";
@@ -1394,7 +1395,7 @@ declare global {
           payload?: Record<string, unknown>,
         ) => void;
         /** This window's memory snapshot (`renderer/lib/rendererMemorySnapshot.ts`). */
-        reportRendererMemory?: (snapshot: Record<string, unknown>) => void;
+        reportRendererMemory?: (snapshot: RendererMemorySnapshot) => void;
       };
       storage: {
         getPressure: () => Promise<DiskPressureSnapshot>;

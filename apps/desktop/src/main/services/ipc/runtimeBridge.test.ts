@@ -1428,7 +1428,7 @@ describe("registerRuntimeBridge", () => {
       localUrl: "http://127.0.0.1:49152",
     });
 
-    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteConnectMock).toHaveBeenCalledWith(target, { initiatedBy: "background" });
     expect(remoteEnsureLocalPortForwardMock).toHaveBeenCalledWith(
       target.id,
       {
@@ -1809,6 +1809,7 @@ describe("registerRuntimeBridge", () => {
 
     expect(remoteConnectMock).toHaveBeenCalledWith(target, {
       bypassFailureBackoff: true,
+      initiatedBy: "user",
     });
     expect(remoteProjectsForTargetMock).toHaveBeenCalledWith(target);
     expect(bindRemoteProject).toHaveBeenCalledWith(7, {

@@ -94,6 +94,17 @@ struct ChatThreadLiveEvent: @unchecked Sendable {
   }
 }
 
+/// A host stand-in for a transcript row too large to page: a `system_notice`
+/// with `status: "history_row_omitted"` and no `sequence`.
+func chatThreadIsOmittedHistoryRowNotice(_ event: ChatThreadLiveEvent) -> Bool {
+  guard event.envelope.sequence == nil,
+        event.envelope.event.typeName == "system_notice",
+        let object = try? JSONSerialization.jsonObject(with: event.raw) as? [String: Any],
+        let body = object["event"] as? [String: Any]
+  else { return false }
+  return body["status"] as? String == "history_row_omitted"
+}
+
 /// A `chat_subscribe` ack, decoded off the main actor.
 struct ChatThreadSnapshotInput: @unchecked Sendable {
   var sessionId: String

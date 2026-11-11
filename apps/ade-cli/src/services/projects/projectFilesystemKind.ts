@@ -25,14 +25,11 @@ function unescapeMountPath(value: string): string {
  * folder's real path. Elsewhere, and on any failure, it says `unknown`. Read
  * only when an open was already slow, never on the normal path.
  */
-export function projectFilesystemKind(
-  projectRoot: string,
-  deps: { platform?: NodeJS.Platform; readMountInfo?: () => string; realpath?: (target: string) => string } = {},
-): ProjectFilesystemKind {
-  if ((deps.platform ?? process.platform) !== "linux") return { kind: "unknown", fsType: null };
+export function projectFilesystemKind(projectRoot: string): ProjectFilesystemKind {
+  if (process.platform !== "linux") return { kind: "unknown", fsType: null };
   try {
-    const mountInfo = (deps.readMountInfo ?? (() => fs.readFileSync("/proc/self/mountinfo", "utf8")))();
-    const target = (deps.realpath ?? ((value: string) => fs.realpathSync.native(value)))(projectRoot);
+    const mountInfo = fs.readFileSync("/proc/self/mountinfo", "utf8");
+    const target = fs.realpathSync.native(projectRoot);
     let best: { mountPoint: string; fsType: string } | null = null;
     for (const line of mountInfo.split("\n")) {
       const separator = line.indexOf(" - ");

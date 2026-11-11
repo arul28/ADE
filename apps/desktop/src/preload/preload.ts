@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
 import type { MachineStats } from "../shared/types/machineStats";
+import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
 import type { NewLaneDefaults } from "../shared/laneStart";
 import { resolveUpdateTrackFromArgv, type UpdateTrack } from "../shared/updateTrack";
@@ -5134,7 +5135,7 @@ const adeBridge = {
       payload: Record<string, unknown> = {},
     ): void => ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),
     // This window's own memory, for a crash report; no pin (it is about this window).
-    reportRendererMemory: (snapshot: Record<string, unknown>): void =>
+    reportRendererMemory: (snapshot: RendererMemorySnapshot): void =>
       ipcRenderer.send(IPC.appReportRendererMemory, snapshot),
   },
   storage: {

@@ -472,7 +472,7 @@ import {
   createRendererCrashRecoveryBudget,
   isRecoverableRenderProcessGone,
 } from "./rendererCrashRecovery";
-import { forgetRendererMemory, rendererMemoryAnalytics, takeRendererMemory } from "./rendererMemoryLedger";
+import { forgetRendererMemory, rendererMemoryAnalytics, takeRendererMemory, type RendererRecoveryOutcome } from "./rendererMemoryLedger";
 import { isWindowLoadTargetGone } from "./windowLoadTarget";
 import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
@@ -1029,7 +1029,7 @@ async function createWindow(args: {
    * Reports a lost renderer as a product fact. Optional so window creation
    * stays usable before the analytics service exists.
    */
-  onRendererRecovery?: (outcome: { crash_reason: string; recovered: boolean } & ReturnType<typeof rendererMemoryAnalytics>) => void;
+  onRendererRecovery?: (outcome: RendererRecoveryOutcome) => void;
   /**
    * The renderer is gone for good: it kept crashing until the recovery budget
    * ran out, or it never loaded. The "ADE could not start" window takes over.
@@ -2521,9 +2521,7 @@ app.whenReady().then(async () => {
    * One reporter for every window: a third `createWindow` site that forgets to
    * wire this would silently stop reporting lost renderers.
    */
-  const reportRendererRecovery = (
-    outcome: { crash_reason: string; recovered: boolean } & ReturnType<typeof rendererMemoryAnalytics>,
-  ): void => {
+  const reportRendererRecovery = (outcome: RendererRecoveryOutcome): void => {
     productAnalyticsService.captureInternal({
       event: "ade_renderer_recovered",
       surface: "desktop",

@@ -1,3 +1,16 @@
+import {
+  HEAP_MB_BUCKETS,
+  HEAP_PCT_BUCKETS,
+  NO_TRANSCRIPT_BUCKET,
+  TRANSCRIPT_EVENT_BUCKETS,
+  UNKNOWN_BUCKET,
+  type BucketTable,
+} from "../../../shared/types/rendererMemory";
+
+/** Every label a bucket table can produce, plus the extra ones. */
+function bucketLabels(table: BucketTable, ...extra: string[]): Set<string> {
+  return new Set([...table.map(([label]) => label), ...extra]);
+}
 import { isMeaningfulUsageAction } from "../usage/usageStatsStore";
 import { ACCOUNT_MACHINE_REFUSAL_CODES } from "../../../shared/accountMachineRefusal";
 import { ACCOUNT_PUBLISH_FAILURE_CAUSES, AUTO_UPDATE_INSTALL_ABORT_REASONS } from "../../../shared/types";
@@ -765,9 +778,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   // Bucketed, never a raw count: a fleet that fails to stop must not become a
   // high-cardinality dimension.
   count_bucket: new Set(["1", "2_5", "6_plus"]),
-  heap_mb_bucket: new Set(["under_512", "512_1024", "1024_2048", "2048_3072", "3072_plus", "unknown"]),
-  heap_pct_bucket: new Set(["under_50", "50_75", "75_90", "90_plus", "unknown"]),
-  transcript_bucket: new Set(["none", "under_1k", "1k_5k", "5k_20k", "20k_plus", "unknown"]),
+  heap_mb_bucket: bucketLabels(HEAP_MB_BUCKETS, UNKNOWN_BUCKET),
+  heap_pct_bucket: bucketLabels(HEAP_PCT_BUCKETS, UNKNOWN_BUCKET),
+  transcript_bucket: bucketLabels(TRANSCRIPT_EVENT_BUCKETS, NO_TRANSCRIPT_BUCKET, UNKNOWN_BUCKET),
   route_kind: new Set(["desktop", "web"]),
   connection_state: new Set(["connected", "disconnected", "pairing", "direct", "relay", "error"]),
   drop_reason: new Set([
