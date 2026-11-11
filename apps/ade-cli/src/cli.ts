@@ -1696,6 +1696,13 @@ const CHAT_CLOUD_READY_HELP = `    $ ade chat create --machine cloud:ready --pro
                                                     --machine cloud checks it or stops it.
 `;
 
+const LANES_CLOUD_HELP = `  ade lanes create --machine cloud [--size small|medium|large|xlarge] [--launch-id <id>] --name <name> [...]
+                   (the lane alone, with no chat, on its own new ADE Cloud computer; asks you first.
+                   No --size: the size you saved for new lanes. The same --launch-id again follows it or
+                   goes on from a failed step. A Linear issue needs its whole JSON. No --description
+                   or --no-template yet.)
+`;
+
 /**
  * The `cloud` commands exist only for an account on the access list, so its
  * help does too. Off the list `ade cloud` and its topic are simply absent.
@@ -1703,7 +1710,7 @@ const CHAT_CLOUD_READY_HELP = `    $ ade chat create --machine cloud:ready --pro
 function withoutHiddenCloudHelp(text: string): string;
 function withoutHiddenCloudHelp(text: string | undefined): string | undefined;
 function withoutHiddenCloudHelp(text: string | undefined): string | undefined {
-  return text && !cliCloudEnabled ? text.replace(CHAT_CLOUD_READY_HELP, "") : text;
+  return text && !cliCloudEnabled ? text.replace(CHAT_CLOUD_READY_HELP, "").replace(LANES_CLOUD_HELP, "") : text;
 }
 
 function helpPagesWithoutCloud(): Record<string, string> {
@@ -2487,12 +2494,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                    [--template <id>|--no-template]
                    [--linear-issue-json '{...}' [--start-chat --type subagent|peer --provider <p> --model <m>]]
                    [--linear-issues-json '[{...},{...}]'] [--text|--json]
-  ade lanes create --machine cloud [--size small|medium|large|xlarge] [--launch-id <id>] --name <name> [...]
-                   (the lane alone, with no chat, on its own new ADE Cloud computer; asks you first.
-                   No --size: the size you saved for new lanes. The same --launch-id again follows it or
-                   goes on from a failed step. A Linear issue needs its whole JSON. No --description
-                   or --no-template yet.)
-  ade lanes defaults [--text|--json]
+${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
                          [--branch-pattern <pattern>]   (e.g. "ade/{slug}", "{user}/{slug}", "{slug}")
   ade lanes list | show | archive | unarchive | delete | deleted | appearance | templates | actions

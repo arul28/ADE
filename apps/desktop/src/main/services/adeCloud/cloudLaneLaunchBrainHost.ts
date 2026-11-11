@@ -303,6 +303,7 @@ export function createCloudLaneLaunchBrainHost(deps: {
       },
       approvalUrl: joinWaiting && !isChatLaunchTerminal(launch.phase) ? approvalLinks.get(launchId) ?? null : null,
       madeByChat: facts?.madeByChat ?? null,
+      madeByAgent: facts?.madeByAgent ?? null,
     };
   };
 

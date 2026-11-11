@@ -382,11 +382,6 @@ Lanes
                    [--template <id>|--no-template]
                    [--linear-issue-json '{...}' [--start-chat --type subagent|peer --provider <p> --model <m>]]
                    [--linear-issues-json '[{...},{...}]'] [--text|--json]
-  ade lanes create --machine cloud [--size small|medium|large|xlarge] [--launch-id <id>] --name <name> [...]
-                   (the lane alone, with no chat, on its own new ADE Cloud computer; asks you first.
-                   No --size: the size you saved for new lanes. The same --launch-id again follows it or
-                   goes on from a failed step. A Linear issue needs its whole JSON. No --description
-                   or --no-template yet.)
   ade lanes defaults [--text|--json]
   ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
                          [--branch-pattern <pattern>]   (e.g. "ade/{slug}", "{user}/{slug}", "{slug}")
@@ -714,18 +709,6 @@ Work chats
                                                     Without --lane it starts in the project's primary lane there.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
-    $ ade chat create --machine cloud:ready --prompt "…"
-                                                    Start on this project's ready ADE Cloud machine (prepared and
-                                                    asleep): ADE wakes it, waits until it is online, then sends.
-                                                    No --lane needed; --json adds readyMachine. See ade cloud ready.
-    $ ade chat create --machine cloud --size medium --prompt "…"
-                                                    A new lane on its own new ADE Cloud computer: ADE makes the
-                                                    computer, gets the repository there (the pushed branch) and
-                                                    starts the chat there. --size small, medium, large, xlarge
-                                                    (default: the size you saved for new lanes). Asks you first. Ctrl-C stops only the waiting; the
-                                                    same --launch-id <id> again follows it or goes on from a
-                                                    failed step. ade chat launch-status|launch-cancel <id>
-                                                    --machine cloud checks it or stops it.
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text

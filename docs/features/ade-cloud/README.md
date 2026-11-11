@@ -77,6 +77,15 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Desktop IPC | `registerCloudIpc.ts` |
 | Reaching ADE's server, access | `cloudServerProvider.ts`, `cloudAccess.ts`, `cloudVaultItems.ts` |
 | Server (account directory, `apps/account-directory/src/cloud/`) | `routes.ts`, `store.ts`, `billing.ts`, `cron.ts`, `chats.ts`, `provider.ts`, `accountDeletion.ts` |
+| Lane launch: the launch's steps and stage cards, the account status a launch checks first | `cloudLaneLaunchSteps.ts`, `cloudLaneComputerStages.ts`, `cloudAccountStatus.ts` |
+| Lane life: delete, keep the lane and free its computer, tier change, work check; the job events to every window | `cloudLaneLife.ts`, `registerCloudLaneLifeIpc.ts`, `broadcast.ts` |
+| Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
+| The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
+| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts` |
+| CLI status read (`ade cloud status`) | `apps/ade-cli/src/cliCloudStatus.ts` |
+| The launch card in chat (its step rows share one parts module with the lane job card) | `apps/desktop/src/renderer/components/chat/launch/adeCloudLaunch.ts`, `apps/desktop/src/renderer/components/chat/launch/stepCardParts.tsx` |
+| The dashboard in Settings › ADE Cloud, and the lane pieces (cities, job card, tier change, lanes without a computer) | `apps/desktop/src/renderer/components/settings/cloudDashboard/*`, `apps/desktop/src/renderer/components/cloudLane/*` |
+| Server: automatic updates, lanes without a computer, the disk usage report (migrations `0020`, `0021`, `0022` in `apps/account-directory/migrations/`) | `apps/account-directory/src/cloud/updates.ts`, `lanesWithoutComputer.ts`, `diskUsage.ts` |
 
 Shared contracts are in `apps/desktop/src/shared/adeCloud.ts`, `cloudReady.ts`,
 `cloudSignIns.ts`, `cloudTiers.ts` (the four lane sizes, read from the catalog)
@@ -105,6 +114,15 @@ that stops (see Sleep and busy rules).
   at first. A label above the box turns Send off when the account is out of
   hours, uses all its computers, or has a full disk. See
   [Run on ADE Cloud in the composer](../chat/README.md#run-on-ade-cloud-in-the-composer).
+- **Dashboard:** Settings › ADE Cloud is one tab (`settings/cloudDashboard/CloudDashboard.tsx`):
+  hours, disk and lanes against the plan, every cloud lane as a city or a list,
+  and "Free up space" at 80% of the plan's disk (`CloudFreeUpSpace.tsx`: the
+  biggest lanes first, then the longest unused; each one is kept with its
+  computer freed, or deleted). The disk measure is each computer's own
+  (`cloudDiskUsage.ts`): its repository, dependencies, Docker, Android and
+  caches, measured at its idle step at most every 6 hours and sent with its
+  last work. The dashboard reads it with the computer list, so it wakes nothing.
+  Clear caches runs on that lane's own computer, through its brain.
 - **Look:** the Night sky tokens, the cloud mark, the size icon and the skyline
   live in `remoteTargets/cloudBrand.tsx` and `cloudBrand.css`. A light theme
   changes the tokens there once.
@@ -408,7 +426,10 @@ Each call is account level: it names a computer of the account, never a pin.
   it. The work check runs first unless the person was already warned, and the
   answer says whether work was only on the computer. Saved chats stay.
 - **Keep the lane on a fresh computer.** ADE pushes the work first. A push
-  that can't save everything keeps the computer. Then the server deletes the
+  that can't save everything keeps the computer, and freeing is refused while
+  the agent works ("Stop it or wait, then free the computer"). `ade cloud
+  work-state` lists the lanes with uncommitted or unpushed work, the same check
+  as `ade cloud push-work --check`, and pushes nothing. Then the server deletes the
   computer with `keepLane` and keeps a lane without a computer
   (`cloud_lanes_without_computer`, migration 0021). The 30-day rule keeps the
   lane the same way. A new computer made for the same lane id ends the row.
@@ -420,7 +441,9 @@ Each call is account level: it names a computer of the account, never a pin.
   lane's project. A moved computer gets the lane's name and lane metadata.
 - **An agent asks.** `ade cloud resize --request --size large --reason "…"`
   (`cloud.tier_request`) posts a `cloud_tier_request` card in the agent's
-  chat. It changes nothing; the person confirms on the card.
+  chat. It changes nothing; the person confirms on the card. An agent with
+  nobody there (a full-auto chat, an automation, an ADE MCP app) cannot change
+  a size at all: `cloud.resize` is declined for it.
 - **Push this branch?** `lane.cloudStartBranch` and `lane.pushCloudStartBranch`
   run on the machine that has the project (pinned), before a cloud launch.
 - **Files on the first message** go to the clone on the new computer at the

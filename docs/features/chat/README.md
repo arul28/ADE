@@ -3204,6 +3204,11 @@ closed.
   fails with "too old, update it, then retry". A list that can't be read is
   not refused.
 
+The lane setup card (`LaneSetupCard.tsx`) and the ADE Cloud job card
+(`CloudLaneJobCard.tsx`) draw their step rows from one parts module,
+`components/chat/launch/stepCardParts.tsx`: the status tones, the stage line and
+the error callout. A failed step is amber on both, never red.
+
 #### Run on ADE Cloud in the composer
 
 The draft's launch shelf has three controls for ADE Cloud

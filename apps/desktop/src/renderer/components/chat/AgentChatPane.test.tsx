@@ -14453,7 +14453,8 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     const cloudRow = await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ });
     expect((cloudRow as HTMLButtonElement).disabled).toBe(true);
     await revealRowTooltip(cloudRow);
-    expect(await screen.findByText("Parallel models runs locally.")).toBeTruthy();
+    // The reason says parallel models stay on this computer; match that meaning, not the sentence.
+    expect(await screen.findByText(/Parallel models .*this computer/)).toBeTruthy();
   });
 
   it("disables the cloud row while repos load and surfaces the real API-key error with retry", async () => {

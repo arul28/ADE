@@ -22,7 +22,7 @@ manages lanes, not computers.
 
 `ade chat create --machine cloud --launch-id <a new UUID> --prompt "<task>"` starts a lane with a chat.
 `ade lanes create --machine cloud --launch-id <a new UUID> --name "<name>"` makes the lane alone, with no chat.
-Over ADE MCP (write access): the same words to the `ade` tool, with `timeout_seconds: 600`.
+Over ADE MCP: the `ade` tool refuses `--machine`, so an outside app cannot start a lane yet. Ask the person to start it in ADE.
 
 - Size: leave out `--size` to use the person's saved size (`defaultSize`). Medium when Small is too slow. Large or X-Large (full computers) only for Android or Docker.
 - Push the branch first. The lane starts from the pushed copy; uncommitted changes stay here.
@@ -78,6 +78,8 @@ Delete nothing without their yes. Deleting a lane deletes its computer.
 `update`, `copy`, `move`, `delete` and `ready`. Each asks the person like a new
 lane when it uses hours or deletes. A computer sleeps 3 minutes after its last
 activity and wakes on use, so you rarely need `sleep` or `wake`.
+`ade cloud work-state` lists the lanes with work not pushed yet. Freeing a computer (keeping its lane) is refused while the agent works: stop it or wait.
+With nobody there you cannot change a size: ask with `ade cloud resize --request`, as in Never.
 
 Cloud computers update themselves when idle or asleep, never while work runs.
 `ade cloud status` shows each one's `update` (image, channel, target, state).

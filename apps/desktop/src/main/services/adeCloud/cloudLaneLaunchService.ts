@@ -9,6 +9,7 @@ import {
   isChatLaunchTerminal,
   toQueuedMessage,
 } from "../../../shared/chatLaunch";
+import type { CloudAgentMaker } from "../../../shared/adeCloud";
 import { CLOUD_LANE_BRANCH_METADATA, cloudLaneLaunchStartRefusal } from "../../../shared/cloudLaneLaunch";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { deriveDeterministicLaneNameFromPrompt, deriveDeterministicLaneTitleFromPrompt } from "../../../shared/laneNameFallback";
@@ -111,6 +112,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     unsubscribe: (() => void) | null;
     subscribing: boolean;
     resubscribeAttempts: number;
+    /** A read of the brain failed and none worked since: repeats log at info. */
+    readFailing: boolean;
     timer: ReturnType<typeof setTimeout> | null;
     expiry: ReturnType<typeof setTimeout> | null;
   };
@@ -120,7 +123,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   const runtimeFor = (launchId: string): Runtime => {
     let runtime = runtimes.get(launchId);
     if (!runtime) {
-      runtime = { abort: new AbortController(), pipeline: null, delivering: null, unsubscribe: null, subscribing: false, resubscribeAttempts: 0, timer: null, expiry: null };
+      runtime = { abort: new AbortController(), pipeline: null, delivering: null, unsubscribe: null, subscribing: false, resubscribeAttempts: 0, readFailing: false, timer: null, expiry: null };
       if (disposed) runtime.abort.abort();
       else runtimes.set(launchId, runtime);
     }
@@ -377,6 +380,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     const launchId = record.snapshot.launchId;
     try {
       const brain = await deps.callChatAction(binding, "getLaunch", { args: { launchId } }) as ChatLaunchSnapshot | null;
+      const reading = runtimes.get(launchId);
+      if (reading) reading.readFailing = false;
       if (records.get(launchId) !== record) return;
       if (!brain) {
         markRemoved(launchId);
@@ -386,7 +391,11 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       recordBranch(record);
       publish(record);
     } catch (error) {
-      logger.warn("cloud_lane_launch.brain_read_failed", { launchId, error: getErrorMessage(error) });
+      // The follow loop reads each few seconds: one warn for each outage.
+      const reading = runtimes.get(launchId);
+      const repeat = reading?.readFailing === true;
+      if (reading) reading.readFailing = true;
+      logger[repeat ? "info" : "warn"]("cloud_lane_launch.brain_read_failed", { launchId, error: getErrorMessage(error) });
     }
   };
 
@@ -730,9 +739,9 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   const owns = (launchId: unknown): boolean => typeof launchId === "string" && records.has(launchId.trim().toLowerCase());
 
   /** What the record knows beyond the snapshot: the computer's name and the agent's chat that started it. */
-  const facts = (launchId: string): { computerName: string; madeByChat: string | null } | null => {
+  const facts = (launchId: string): { computerName: string; madeByChat: string | null; madeByAgent: CloudAgentMaker | null } | null => {
     const record = records.get(launchId.trim().toLowerCase());
-    return record ? { computerName: record.computerName, madeByChat: record.madeByChat ?? null } : null;
+    return record ? { computerName: record.computerName, madeByChat: record.madeByChat ?? null, madeByAgent: record.madeByAgent ?? null } : null;
   };
 
   const recordFor = (args: ChatLaunchIdArgs | ChatLaunchQueueMessageArgs): CloudLaneLaunchRecord | null =>
@@ -830,6 +839,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       adoptBrainSnapshot(record, brain);
       publish(record);
     }
+    // A failed environment step stopped the follow loop: the launch runs again.
+    void follow(record);
     return served(record);
   };
 

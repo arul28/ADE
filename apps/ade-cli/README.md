@@ -563,6 +563,7 @@ ade lane drift --lane lane-id --text              # did someone `git checkout` i
 ade lane drift resolve --lane lane-id --switch-back        # put the worktree back on the lane's branch (refuses on a dirty tree)
 ade lane drift resolve --lane lane-id --keep-head          # re-point the lane (and its name) at the live HEAD branch
 ade lane drift resolve --lane lane-id --keep-head --expected-head hotfix-auth --force   # --expected-head guards a stale read; --force acknowledges active work
+ade lanes create --machine cloud --size medium --name fix-login   # the lane alone, on its own new ADE Cloud computer (small, medium, large, xlarge); asks first; prints the launch id on stderr
 ade lanes rename lane-id --name "OAuth refactor"            # rename the lane; its branch keeps its name
 ade lanes reclaim-preview lane-id --text                   # show reclaimable space and anything that needs review
 ade lanes archive lane-id                                  # archive, and bring down the Docker services the lane's env init started (best-effort; a failed teardown still archives)
@@ -900,6 +901,9 @@ ade chat create --machine cloud --size medium --prompt "…"  # a new lane on it
 ade chat create --machine cloud --launch-id <id> --prompt "…"  # the same id again: follows that launch, or goes on from its failed step, never a second computer
 ade chat launch-status <id> --machine cloud        # an ADE Cloud lane launch: stages, the computer, the approval link while the join waits
 ade chat launch-cancel <id> --machine cloud        # stop it before the chat starts and delete its computer
+ade cloud work-state --json                       # ADE Cloud: the lanes of this cloud computer with uncommitted or unpushed work; pushes nothing
+ade cloud push-work --check --json                # the same check; without --check it commits and pushes every lane (ADE's server runs it before a free)
+ade cloud resize --request --size large --reason "…"  # ask the person to change this computer's size: a card in the chat, nothing changes; an agent with nobody there cannot resize
 ade usage snapshot --text                          # live quota headroom per window, the account it belongs to, and the provider limits link
 ade usage stats --preset 7d --text                 # tokens, cost, and activity for a range
 ade usage stats --scope account --text             # merged across every machine on the account

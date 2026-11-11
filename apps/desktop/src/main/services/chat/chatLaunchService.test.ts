@@ -14,7 +14,7 @@ import type {
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import type { LaneCreateRuntimeOptions } from "../lanes/laneService";
 import { createChatLaunchService, type ChatLaunchServiceDeps } from "./chatLaunchService";
-import { buildLaneSetupCard } from "../../../shared/chatLaunch";
+import { buildLaneSetupCard, chatLaunchAlreadyStartedMessage } from "../../../shared/chatLaunch";
 
 const LAUNCH_ID = "6f1c2a4e-1b2c-4d5e-8f90-123456789abc";
 const LANE_ID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
@@ -766,9 +766,10 @@ describe("chatLaunchService", () => {
     h.laneCreate.resolve(laneSummary());
     await h.waitFor((snapshot) => snapshot.phase === "completed");
     await expect(h.service.cancel({ launchId: LAUNCH_ID }))
-      .rejects.toThrow("This chat already started — delete its lane from the lane menu instead.");
+      .rejects.toThrow(chatLaunchAlreadyStartedMessage("chat"));
     expect(h.calls).not.toContain("lane.delete");
     expect(h.calls).not.toContain("chat.delete");
+    expect(h.service.get({ launchId: LAUNCH_ID })?.phase).toBe("completed");
 
     const h2 = harness();
     await h2.service.start(chatArgs());

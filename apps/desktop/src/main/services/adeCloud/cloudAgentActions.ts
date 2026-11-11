@@ -812,8 +812,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     /**
      * A launch's stages and state for anyone who may read ADE Cloud; its
      * approval link, starting chat and computer only for a person or the
-     * caller that started it (the same chat, or the automation run's own
-     * chatless start).
+     * caller that started it (the same chat, the automation run's own
+     * chatless start, or an outside app for a launch an outside app started).
      */
     async lane_launch_status(rawArgs?: unknown): Promise<CloudLaneLaunchStatus | null> {
       const args = record(rawArgs);
@@ -824,13 +824,16 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const approval = readApproval(args);
       const starter = approval.by === "person"
         || (approval.chatSessionId != null && approval.chatSessionId === status.madeByChat)
-        || (approval.automation === true && approval.chatSessionId == null && status.madeByChat == null);
+        || (approval.automation === true && approval.chatSessionId == null && status.madeByChat == null)
+        // An outside app has no chat: the person reads the approval link there.
+        || (approval.viaAdeMcp === true && status.madeByAgent === "mcp");
       if (starter) return status;
       return {
         launch: status.launch,
         machine: { name: status.machine.name, instanceId: null, machineKey: null },
         approvalUrl: null,
         madeByChat: null,
+        madeByAgent: null,
       };
     },
 

@@ -899,6 +899,41 @@ describe("ADE Cloud account", () => {
     expect(computer(harness).disk_gb).toBe(4);
   });
 
+  it.each<[string, Error | null, number, string]>([
+    // The row names no lane and the provider's metadata names none either: nothing to keep.
+    ["the provider's metadata names no lane", null, 409, "no_lane"],
+    // The provider couldn't be read and the row names no lane: the delete is refused, not guessed.
+    ["the provider can't be read", new Error("upstream down"), 502, "lane_read_failed"],
+  ])("a keep-the-lane delete with no lane facts deletes nothing (%s)", async (_label, readFailure, status, code) => {
+    seedComputer(harness);
+    provide(harness);
+    if (readFailure) {
+      harness.net.once.push({ match: new RegExp(`GET .*/instances/${INSTANCE}$`), reply: new Error(readFailure.message) });
+    }
+
+    const response = await harness.send(OWNER, "DELETE", instancePath, { keepLane: { branchRef: "feature/lost" } });
+
+    expect(response.status).toBe(status);
+    expect((await errorOf(response))?.code).toBe(code);
+    expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toEqual([]);
+    expect(computer(harness)).toEqual(expect.objectContaining({ deleted_at: null, lane_keep_reason: null }));
+  });
+
+  it("a repeated create by the same account gets its first computer back, and makes no second one", async () => {
+    seedAccount(harness, OWNER, plusAccount);
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    const body = { type: "default", resources: { cpu: 2, memory: 4 }, metadata: { ade_request_id: "req-again" } };
+    const first = await harness.send(OWNER, "POST", "/cloud/instances", body);
+    expect(first.status).toBe(201);
+
+    const again = await harness.send(OWNER, "POST", "/cloud/instances", body);
+
+    expect(again.status).toBe(200);
+    expect((await again.json() as { id: string }).id).toBe("madenew12345");
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(1);
+    expect(harness.rows("select instance_id from cloud_computers where deleted_at is null")).toEqual([{ instance_id: "madenew12345" }]);
+  });
+
   function deleteAccountOverClerk(): Promise<Response> {
     const secret = Buffer.from("clerk-webhook-secret-for-this-test");
     const body = JSON.stringify({ type: "user.deleted", timestamp: NOW, data: { id: OWNER, deleted: true } });

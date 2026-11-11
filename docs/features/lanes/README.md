@@ -103,6 +103,12 @@ lane, counted across every project on the computer. An archived lane counts:
 it keeps its computer for a one-click restore. The primary lane of a project
 never counts. A normal computer is not affected.
 
+A lane can also start on ADE Cloud, where its launch makes one new computer for
+that lane (see [ADE Cloud lanes](../chat/README.md#ade-cloud-lanes)). Deleting
+the lane deletes its computer. Keeping the lane frees the computer instead, and
+the lane stays without one (`cloud_lanes_without_computer`, see
+[ADE Cloud](../ade-cloud/README.md#the-life-of-a-lanes-computer)).
+
 - **Where it is checked.** In `laneService.ts`, at every place a lane row
   comes to exist: `create`, `importBranch`, and the adoption of a worktree
   found on disk (`recoverManagedWorktreeRows`). `create` and `importBranch`

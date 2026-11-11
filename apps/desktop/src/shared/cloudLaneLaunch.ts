@@ -6,7 +6,7 @@
  * `ade_request_id`, which is the launch id.
  */
 
-import { CLOUD_OUT_OF_HOURS_MESSAGE, cloudOutOfHours, type CloudAccountState, type CloudMachine } from "./adeCloud";
+import { CLOUD_OUT_OF_HOURS_MESSAGE, cloudOutOfHours, type CloudAccountState, type CloudAgentMaker, type CloudMachine } from "./adeCloud";
 import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
 import type { ChatLaunchArgs, ChatLaunchSnapshot } from "./types/chatLaunch";
 import { isChatLaunchSucceeded } from "./chatLaunch";
@@ -198,6 +198,8 @@ export type CloudLaneLaunchStatus = {
   approvalUrl: string | null;
   /** The agent's chat that started it, or null for a person's launch. */
   madeByChat: string | null;
+  /** The kind of agent that started it, when one did. */
+  madeByAgent?: CloudAgentMaker | null;
 };
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -217,6 +219,7 @@ export function parseCloudLaneLaunchStatus(value: unknown): CloudLaneLaunchStatu
     machine: { name: text(machine.name) ?? "", instanceId: text(machine.instanceId), machineKey: text(machine.machineKey) },
     approvalUrl: text(value.approvalUrl),
     madeByChat: text(value.madeByChat),
+    madeByAgent: value.madeByAgent === "chat" || value.madeByAgent === "automation" || value.madeByAgent === "mcp" ? value.madeByAgent : null,
   };
 }
 
