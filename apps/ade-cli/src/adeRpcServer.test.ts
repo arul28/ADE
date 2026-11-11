@@ -6287,20 +6287,28 @@ describe("adeRpcServer", () => {
     expect(deviceDeleteInstalled).toHaveBeenCalledTimes(1);
   });
 
-  it("user-only verbs go to the desktop's own client names and to no other caller", async () => {
+  // Lane sharing: changing a share, sending its invite again and moving a
+  // chat are the owner's, at the desktop of this machine or a paired one,
+  // never an agent's or a brain's.
+  it.each<[string, string, string]>([
+    ["deleting a simulator", "ios_simulator", "deviceDeleteInstalled"],
+    ["changing a lane share's rights", "lane_share", "updateRights"],
+    ["sending a lane share invite again", "lane_share", "resendInvite"],
+    ["moving a chat to the other person of a share", "lane_share", "moveStart"],
+  ])("user-only verbs (%s) go to the desktop's own client names and to no other caller", async (_label, domain, action) => {
     const fixture = createRuntime();
-    const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
-    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled };
+    const verb = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled: verb };
+    fixture.runtime.syncService = {
+      getLaneShareService: () => ({ updateRights: verb, resendInvite: verb }),
+      getLaneShareMoveService: () => ({ start: verb }),
+    };
     const tryDelete = async (identity: Record<string, unknown> | undefined, params: Record<string, unknown>) => {
       const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
       await initialize(handler, identity, params);
-      deviceDeleteInstalled.mockClear();
-      const result = await callTool(handler, "run_ade_action", {
-        domain: "ios_simulator",
-        action: "deviceDeleteInstalled",
-        args: { udid: "SIM-1" },
-      });
-      return result?.isError !== true && deviceDeleteInstalled.mock.calls.length === 1;
+      verb.mockClear();
+      const result = await callTool(handler, "run_ade_action", { domain, action, args: { udid: "SIM-1" } });
+      return result?.isError !== true && verb.mock.calls.length === 1;
     };
 
     // The local picker and a paired or SSH remote runtime's picker.
@@ -6320,6 +6328,85 @@ describe("adeRpcServer", () => {
       { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" },
       { clientInfo: { name: "ade-desktop-local" } },
     )).toBe(false);
+    // Another machine's CTO or agent, over the paired channel.
+    for (const name of ["ade-cto-remote", "ade-agent-remote"]) {
+      expect(await tryDelete({ callerId: `${name}:1`, role: "cto" }, { clientInfo: { name } })).toBe(false);
+    }
+  });
+
+  // An agent may list lane shares, make a Watch share and stop one; the host
+  // service holds it to that. Who is an agent comes from the session.
+  it("stamps who calls a lane share action from the session, never from its arguments", async () => {
+    const fixture = createRuntime();
+    const calls: Array<[string, unknown]> = [];
+    const record = (name: string) => vi.fn(async (_args: unknown, caller?: unknown) => {
+      calls.push([name, caller]);
+      return { ok: true };
+    });
+    const set = vi.fn(() => true);
+    fixture.runtime.syncService = {
+      getLaneShareService: () => ({ create: record("create"), list: record("list"), revoke: record("revoke"), updateRights: record("updateRights") }),
+      getLaneShareMoveService: () => ({ start: record("moveStart") }),
+    };
+    fixture.runtime.accountSettingsStore = { set, remove: vi.fn(() => true), get: vi.fn(), list: vi.fn(() => []), deletedKeys: vi.fn(() => []), sync: vi.fn() };
+    const connect = async (identity: Record<string, unknown>, params: Record<string, unknown>) => {
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, identity, params);
+      return handler;
+    };
+    const forged = { laneId: "lane-a", receiverEmail: "guest@example.com", callerClass: "person", createdBy: "person", confirmHighRisk: true };
+    const callerOf = async (handler: Awaited<ReturnType<typeof connect>>, action: string, extra: Record<string, unknown> = {}) => {
+      calls.length = 0;
+      const result = await callTool(handler, "run_ade_action", { domain: "lane_share", action, args: forged, ...extra });
+      return result?.isError === true ? "refused" : calls[0]?.[1];
+    };
+
+    // The `ade` CLI (a person's terminal, an agent's shell, ADE MCP), with or without the operator role.
+    for (const role of ["cto", "agent"]) {
+      const cli = await connect({ callerId: "ade-cli:4242", role }, { clientInfo: { name: "ade-cli" } });
+      for (const action of ["create", "revoke"]) expect(await callerOf(cli, action)).toBe("agent");
+      expect(await callerOf(cli, "list")).not.toBe("refused");
+      expect(await callerOf(cli, "updateRights")).toBe("refused");
+      expect(await callerOf(cli, "moveStart")).toBe("refused");
+      // Positional arguments would skip the stamp.
+      expect(await callerOf(cli, "create", { argsList: [forged] })).toBe("refused");
+      const listed = await callTool(cli, "list_ade_actions", { domain: "lane_share" });
+      const names = (listed.structuredContent?.actions ?? listed.actions ?? []).map((entry: any) => entry.action);
+      expect(names.sort()).toEqual(["create", "list", "revoke"]);
+      // A person's default rights for a new share stay the person's.
+      const defaults = await callTool(cli, "run_ade_action", {
+        domain: "account_settings",
+        action: "set",
+        argsList: ["all", "laneShare.defaultRights", { preset: "collaborate" }],
+      });
+      expect(defaults.isError).toBe(true);
+    }
+    expect(set).not.toHaveBeenCalled();
+    // ADE MCP runs the CLI as role agent for a read-only connection and as cto
+    // for full access: the read-only one lists and is refused the rest.
+    const readOnlyMcp = await connect({ callerId: "ade-cli:4243", role: "agent", remoteMcpConnectionId: "conn-read" }, { clientInfo: { name: "ade-cli" } });
+    for (const action of ["create", "revoke"]) expect(await callerOf(readOnlyMcp, action)).toBe("refused");
+    expect(await callerOf(readOnlyMcp, "list")).not.toBe("refused");
+    const fullMcp = await connect({ callerId: "ade-cli:4244", role: "cto", remoteMcpConnectionId: "conn-full" }, { clientInfo: { name: "ade-cli" } });
+    expect(await callerOf(fullMcp, "create")).toBe("agent");
+    // An agent in a chat, and another machine's brain.
+    const chatAgent = await connect({ callerId: "agent-a", role: "agent", chatSessionId: "chat-a" }, { clientInfo: { name: "ade-desktop-local" } });
+    expect(await callerOf(chatAgent, "create")).toBe("agent");
+    const remoteBrain = await connect({ callerId: "ade-agent-remote:1", role: "cto" }, { clientInfo: { name: "ade-agent-remote" } });
+    expect(await callerOf(remoteBrain, "create")).toBe("agent");
+
+    // The desktop of this machine, and a paired desktop that calls with a pin.
+    for (const name of ["ade-desktop-local", "ade-desktop-remote"]) {
+      const desktop = await connect({ callerId: `${name}:77`, role: "cto" }, { clientInfo: { name } });
+      expect(await callerOf(desktop, "create")).toBe("person");
+      expect(await callerOf(desktop, "updateRights")).toBe("person");
+      const defaults = await callTool(desktop, "run_ade_action", {
+        domain: "account_settings",
+        action: "set",
+        argsList: ["all", "laneShare.defaultRights", { preset: "collaborate" }],
+      });
+      expect(defaults?.isError).toBeUndefined();
+    }
   });
 
   it("denies work_tools reads to an agent-shaped caller with no resolvable lane", async () => {

@@ -4,6 +4,7 @@ import { useAppStore } from "../../../state/appStore";
 import { LaneMenuGroups } from "../LaneContextMenu";
 import { buildLaneMenuGroups, type LaneMenuArgs } from "../laneContextMenuItems";
 import { PointMenu } from "./PointMenu";
+import { useLaneShareMenu } from "../../laneShare/useLaneShareMenu";
 
 const noop = () => {};
 
@@ -44,6 +45,8 @@ export function LaneSidebarContextMenu({
   const isRemoteProject = runtimePin ? true : boundIsRemote;
   const lane = lanesById.get(menu.laneId) ?? null;
   const openIn = resolveOpenInTarget({ worktreePath: lane?.worktreePath, binding: runtimePin ?? projectBinding });
+  // Sharing is asked of the lane's own machine (the pin), like every write here.
+  const share = useLaneShareMenu({ laneId: lane?.id ?? null, laneName: lane?.name ?? null, pin: runtimePin });
   const args: LaneMenuArgs = {
     laneId: menu.laneId,
     lane,
@@ -63,6 +66,7 @@ export function LaneSidebarContextMenu({
     ...(onOpenHistory ? { onOpenHistory } : {}),
     omitTabActions: true,
     ...(openIn ? { openIn } : {}),
+    share,
   };
 
   return (

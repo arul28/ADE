@@ -619,6 +619,7 @@ struct CloudMachineRow: View {
             .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textSecondary)
         }
+        .fixedSize()
       }
     }
     .padding(.horizontal, ADEKit.inset)
@@ -1256,8 +1257,8 @@ struct CloudPhoneTier: Identifiable, Equatable {
   /// How long `leftMilli` hours last at this size, rounded down to a tenth: "57.4 h".
   func hoursLeftLabel(_ leftMilli: Int) -> String {
     let hours = Double(max(0, leftMilli)) / Double(max(1, multiplierMilli))
-    let shown = hours >= 100 ? String(Int(hours)) : String(Double(Int(hours * 10)) / 10)
-    return "\(shown) h"
+    let shown = hours >= 100 ? hours.rounded(.down) : (hours * 10).rounded(.down) / 10
+    return "\(shown.formatted(.number.precision(.fractionLength(0...1)).grouping(.never))) h"
   }
 }
 
@@ -1332,7 +1333,8 @@ func cloudPlanName(_ account: CloudPhoneAccount) -> String {
 /// Hours from thousandths, as the desktop writes them: "118", "42.5".
 func cloudHours(_ milli: Int) -> String {
   let hours = Double(max(0, milli)) / 1000
-  return hours >= 100 ? String(Int(hours)) : String(Double(Int(hours * 10)) / 10)
+  let shown = hours >= 100 ? hours.rounded(.down) : (hours * 10).rounded(.down) / 10
+  return shown.formatted(.number.precision(.fractionLength(0...1)).grouping(.never))
 }
 
 /// "2.5× hours", as the desktop writes it.

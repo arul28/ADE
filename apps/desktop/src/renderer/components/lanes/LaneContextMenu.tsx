@@ -14,6 +14,7 @@ import {
 } from "./laneContextMenuItems";
 import { OpenInSubmenu } from "../ui/OpenInSubmenu";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
+import { useLaneShareMenu } from "../laneShare/useLaneShareMenu";
 
 export const menuItemStyle: React.CSSProperties = {
   display: "flex",
@@ -216,6 +217,8 @@ export function LaneContextMenu({
   }, []);
 
   const openIn = resolveOpenInTarget({ worktreePath: ctxLane?.worktreePath, binding: projectBinding });
+  // This menu acts on the tab's own machine (no pin), as its other writes do.
+  const share = useLaneShareMenu({ laneId: ctxLane?.id ?? null, laneName: ctxLane?.name ?? null, pin: null });
   const args: LaneMenuArgs = {
     laneId: laneContextMenu.laneId,
     lane: ctxLane,
@@ -235,6 +238,7 @@ export function LaneContextMenu({
     ...(onOpenHistory ? { onOpenHistory } : {}),
     ...(workPinnedLaneIds ? { workPinnedLaneIds } : {}),
     ...(openIn ? { openIn } : {}),
+    share,
   };
 
   return (

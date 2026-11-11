@@ -11,13 +11,13 @@ import type {
   ChatLaunchQueueMessageArgs,
 } from "../../../shared/types";
 import type { RuntimeBridgeRegistration } from "../ipc/runtimeBridge";
+import { resolveProjectRepoOrigin } from "../projects/projectRepoOrigin";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import type { Logger } from "../logging/logger";
 import { isRecord } from "../shared/utils";
 import { sendToAllWindows } from "./broadcast";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { createCloudLaneLaunchService, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
-import { createCloudLaneLaunchOriginReader } from "./cloudLaneLaunchOrigin";
 import { cloudLaneLaunchOutcomes } from "./cloudLaneLaunchAnalytics";
 
 /** The launch id of an id-based call, or null when the args carry none. */
@@ -81,8 +81,26 @@ export function registerCloudLaneLaunchIpc(args: {
     ),
   });
 
-  // One origin read for `start` and `list` (see `cloudLaneLaunchOrigin.ts`).
-  const readOrigin = createCloudLaneLaunchOriginReader({ listProjects: (targetId) => remote.projects(targetId), logger });
+  // One origin read for `start` and `list`. The project is the repository:
+  // the origin the launch carries (what the composer checked before Send),
+  // else the tab's stamped origin, this computer's copy (the file, then git
+  // itself), or the machine that holds the copy (`resolveProjectRepoOrigin`).
+  const readOrigin = async (request: Partial<CloudLaneLaunchCallRequest>): Promise<string | null> => {
+    const source = isRecord(request.source) ? request.source : null;
+    const carried = isRecord(request.args) && isRecord(request.args.cloud) && typeof request.args.cloud.originUrl === "string"
+      ? request.args.cloud.originUrl.trim() || null
+      : null;
+    const remoteSource = isRecord(source?.remote)
+      && typeof source.remote.targetId === "string"
+      && typeof source.remote.projectId === "string"
+      ? { targetId: source.remote.targetId, projectId: source.remote.projectId }
+      : null;
+    return await resolveProjectRepoOrigin({
+      gitOriginUrl: carried ?? (typeof source?.gitOriginUrl === "string" ? source.gitOriginUrl : null),
+      localRootPath: typeof source?.localRootPath === "string" ? source.localRootPath : null,
+      remote: remoteSource,
+    }, { remoteProjects: (targetId) => remote.projects(targetId), logger });
+  };
 
   ipcMain.handle(IPC.cloudLaneLaunchCall, async (event, raw: unknown): Promise<CloudLaneLaunchCallResult> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneLaunchCall)) {

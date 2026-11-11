@@ -1070,6 +1070,28 @@ describe("gitOperationsService commitSha option-injection guard", () => {
     }
   };
 
+  // A lane share guest's read (`onlyLaneHistory`): lanes share one object
+  // store, so a commit HEAD of the lane does not reach is refused before any read.
+  it.each<[string, number, boolean]>([
+    ["listCommitFiles", 1, false],
+    ["getCommitMessage", 1, false],
+    ["listCommitFiles", 0, true],
+    ["getCommitMessage", 0, true],
+  ])("%s with onlyLaneHistory: merge-base exit %d reads the commit: %s", async (method, exitCode, reads) => {
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[2] === "--show-toplevel") return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor" && args[3] === "HEAD") return { exitCode, stdout: "", stderr: "" };
+      return { exitCode: 1, stdout: "", stderr: `unexpected git command: ${args.join(" ")}` };
+    });
+    const { service } = createTestGitOperationsService();
+    const call = method === "listCommitFiles"
+      ? service.listCommitFiles({ laneId: "lane-1", commitSha: VALID_SHA, onlyLaneHistory: true })
+      : service.getCommitMessage({ laneId: "lane-1", commitSha: VALID_SHA, onlyLaneHistory: true });
+    if (reads) await expect(call).resolves.toBeDefined();
+    else await expect(call).rejects.toThrow("not in this lane's history");
+    expect(mockGit.runGitOrThrow.mock.calls.length > 0).toBe(reads);
+  });
+
   for (const method of [
     "listCommitFiles",
     "getCommitMessage",

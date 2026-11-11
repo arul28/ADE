@@ -647,6 +647,15 @@ export function createGitOperationsService({
     return gitStdoutOrThrow(await runGitRepoCached(args, opts, { key: `commit-${kind}:${sha.toLowerCase()}`, cacheClass: "stable" }), args, opts);
   }
 
+  /**
+   * Lanes share one object store, so a hash can name another lane's commit.
+   * A lane share guest's read names only a commit HEAD of its lane reaches.
+   */
+  async function assertCommitInLaneHistory(worktreePath: string, sha: string): Promise<void> {
+    const res = await runGit(["merge-base", "--is-ancestor", `${sha}^{commit}`, "HEAD"], { cwd: worktreePath, timeoutMs: 12_000 });
+    if (res.exitCode !== 0) throw new AdeExpectedError("That commit is not in this lane's history.", "user");
+  }
+
   function normalizeCommitShaArg(commitSha: string): string {
     const normalized = commitSha.trim();
     if (!normalized.length) throw new Error("Commit SHA is required");
@@ -1204,6 +1213,7 @@ export function createGitOperationsService({
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
       const sha = normalizeCommitShaArg(args.commitSha);
+      if (args.onlyLaneHistory) await assertCommitInLaneHistory(lane.worktreePath, sha);
       const res = await readCommitObject(lane.worktreePath, sha, "files", ["show", "--pretty=format:", "--name-only", "-z", sha, "--"]);
       return parseDiffNameOnly(res);
     },
@@ -1212,6 +1222,7 @@ export function createGitOperationsService({
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
       const sha = normalizeCommitShaArg(args.commitSha);
+      if (args.onlyLaneHistory) await assertCommitInLaneHistory(lane.worktreePath, sha);
       const res = await readCommitObject(lane.worktreePath, sha, "message", ["show", "-s", "--format=%B", sha, "--"]);
       const message = res.trimEnd();
       const MAX = 8000;

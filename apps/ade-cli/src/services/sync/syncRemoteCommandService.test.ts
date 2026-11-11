@@ -12,8 +12,10 @@ import {
 } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import {
   createSyncRemoteCommandService,
+  evaluateRemoteCommandPolicy,
   SyncRemoteCommandResultTooLargeError,
 } from "./syncRemoteCommandService";
+import { isLaneShareGuestCommand, LANE_SHARE_GUEST_COMMANDS } from "./laneShareGuestPolicy";
 import {
   ATTACHMENT_UPLOAD_PATH,
   createAttachmentUploadRegistry,
@@ -3028,6 +3030,75 @@ describe("mobile lifecycle command contract", () => {
       override: "clear",
     }))).resolves.toEqual({ ok: true, sessionId: "session-1", settleOverride: null });
     expect(setSettleOverride).toHaveBeenCalledWith("session-1", null);
+  });
+});
+
+describe("lane share guest command policy", () => {
+  // Default refuse: a guest may run only the listed reads, whatever a
+  // command's descriptor allows a paired device, and every listed read must
+  // be one this registry serves to a viewer with no approval.
+  it("refuses every registered command a guest is not listed for", () => {
+    const { service } = createService();
+    const guest = { pairingRecord: null, laneShareGuest: { guest: true } };
+    const actions = service.getSupportedActions();
+    expect(actions.length).toBeGreaterThan(50);
+    for (const action of actions) {
+      const rejection = evaluateRemoteCommandPolicy({
+        action,
+        descriptor: service.getDescriptor(action),
+        peer: guest,
+        requestedProjectId: "project-1",
+        hostProjectId: "project-1",
+      });
+      if (isLaneShareGuestCommand(action)) expect([action, rejection]).toEqual([action, null]);
+      else expect([action, rejection?.code]).toEqual([action, "forbidden_command"]);
+    }
+    for (const action of Object.keys(LANE_SHARE_GUEST_COMMANDS)) {
+      const policy = service.getDescriptor(action as never)?.policy;
+      // A guest command is one a viewer or a paired controller may run; the
+      // host's rights gate decides it for the guest.
+      expect([action, Boolean(policy?.viewerAllowed || policy?.controllerAllowed)]).toEqual([action, true]);
+      expect(policy).not.toMatchObject({ requiresApproval: true });
+      expect(policy).not.toMatchObject({ localOnly: true });
+    }
+  });
+
+  // The host sets the author of a guest's message and the commit note the
+  // agent reads; the chat shows the guest's own text. An author in the args
+  // is never the one that counts (the chat service strips it).
+  it.each<[string, string, Record<string, unknown>, string]>([
+    ["a sent message", "chat.send", { sessionId: "chat-1", text: "Fix the test." }, "sendMessage"],
+    ["a steer", "chat.steer", { sessionId: "chat-1", text: "Fix the test." }, "steerUserMessage"],
+  ])("gives %s the host's guest author and note", async (_label, action, args, method) => {
+    const call = vi.fn().mockResolvedValue({ steerId: "steer-1", queued: true });
+    const { service } = createService({ agentChatService: { [method]: call } });
+    const author = { kind: "guest" as const, userId: "user_guest", name: "Guest Person" };
+    await service.execute(makePayload(action, args), { author, agentNote: "\n\nCo-authored-by: Guest Person <guest-1@users.noreply.ade-app.dev>" });
+    expect(call).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Fix the test.\n\nCo-authored-by: Guest Person <guest-1@users.noreply.ade-app.dev>",
+        displayText: "Fix the test.",
+      }),
+      expect.objectContaining({ author }),
+    );
+    // The owner's own message: no author, no note.
+    call.mockClear();
+    await service.execute(makePayload(action, args));
+    expect(call.mock.calls[0]![0]).toMatchObject({ text: "Fix the test." });
+    expect(call.mock.calls[0]![0]).not.toHaveProperty("displayText");
+    expect(call.mock.calls[0]![1]?.author).toBeUndefined();
+  });
+
+  // A guest's read must not write on the host: `work.getSession` hydrates a
+  // closed CLI row's resume target (a session row write) only for the owner.
+  it.each<[string, { readOnly?: boolean }, number]>([
+    ["an owner's read", {}, 1],
+    ["a read-only (guest) read", { readOnly: true }, 0],
+  ])("writes resume targets on %s of work.getSession only when it may write", async (_label, context, writes) => {
+    const session = { id: "session-1", tracked: true, status: "exited", toolType: "claude", resumeMetadata: null };
+    const { service, ptyService } = createService({ sessionService: { get: vi.fn().mockReturnValue(session) } });
+    await service.execute(makePayload("work.getSession", { sessionId: "session-1" }), context);
+    expect(ptyService.ensureResumeTargets).toHaveBeenCalledTimes(writes);
   });
 });
 

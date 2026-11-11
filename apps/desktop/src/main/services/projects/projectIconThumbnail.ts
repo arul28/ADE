@@ -113,12 +113,13 @@ function sipsPngDataUrl(
   sourcePath: string,
   rasterizeWithSips: SipsRasterizer,
   tmpRoot: string,
+  edge = MOBILE_PROJECT_ICON_EDGE,
 ): string | null {
   let dir: string | null = null;
   try {
     dir = fs.mkdtempSync(path.join(tmpRoot, "ade-project-icon-"));
     const outputPath = path.join(dir, "icon.png");
-    rasterizeWithSips(sourcePath, outputPath, MOBILE_PROJECT_ICON_EDGE);
+    rasterizeWithSips(sourcePath, outputPath, edge);
     const data = fs.readFileSync(outputPath);
     return data.length > 0
       ? `data:image/png;base64,${data.toString("base64")}`
@@ -132,6 +133,15 @@ function sipsPngDataUrl(
       // Best-effort cleanup.
     }
   }
+}
+
+/**
+ * A PNG of the image at most `edge` pixels on its long side, through macOS
+ * `sips` (it keeps the aspect ratio). Null on any other platform or failure.
+ */
+export function rasterizeProjectIconPngWithSips(sourcePath: string, edge: number): string | null {
+  if (process.platform !== "darwin") return null;
+  return sipsPngDataUrl(sourcePath, defaultSipsRasterizer, os.tmpdir(), edge);
 }
 
 export function resolveMobileProjectIconDataUrl(

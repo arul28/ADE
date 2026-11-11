@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { LaneDiffMode } from "../../../shared/types";
+import type { LaneDiffMode, OpenProjectBinding } from "../../../shared/types";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   selectActiveProjectRoot,
@@ -574,6 +574,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [selectedLaneId, lanesById, deletingLaneIds, effectiveMachineFilter, filteredLanes, laneFilter, selectableFilteredLaneIds, sortedSelectableLaneIds]);
   const detailLane = detailLaneId ? lanesById.get(detailLaneId) ?? null : null;
   const detailForeignRow = detailLaneId ? foreignRowByKey.get(detailLaneId) ?? null : null;
+  // A foreign row's share mark reads its own machine's share list, by its real lane id.
+  const shareTargetByLaneId = useMemo(() => {
+    const map = new Map<string, { laneId: string; pin: OpenProjectBinding | null }>();
+    for (const [key, row] of foreignRowByKey) {
+      if (row.pin) map.set(key, { laneId: row.lane.id, pin: row.pin });
+    }
+    return map;
+  }, [foreignRowByKey]);
   // Presence and PR refreshes talk to the tab's machine; a foreign detail lane
   // has no id there, so it contributes nothing to them.
   const detailLaneIds = useMemo(
@@ -2209,6 +2217,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       onOpenAgent={handleOpenAgent}
       onClearMultiSelection={clearMultiSelection}
       machineChipByLaneId={machineChipByLaneId}
+      shareTargetByLaneId={shareTargetByLaneId}
       disabledReasonByLaneId={disabledReasonByLaneId}
       foreignLaneIds={foreignLaneIdSet}
       toolbar={machineFilterToolbar}

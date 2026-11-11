@@ -37,6 +37,10 @@ import { describe, expect, it, test, vi } from "vitest";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { crossMachineMoveLock } from "../../../shared/crossMachineMoveLock";
 import { landHandoffGitBundle } from "./handoffGitBundle";
+import { openKvDb } from "../state/kvDb";
+import { listDrafts } from "./draftService";
+import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
+import { sessionPermissionLevel } from "../../../shared/permissionLadder";
 
 const HANDOFF_TEST_SHA = "1234567890abcdef1234567890abcdef12345678";
 
@@ -4688,5 +4692,71 @@ describe("createAgentChatService", () => {
         capsuleFingerprint: "0".repeat(64),
       })).rejects.toThrow("changed in transit");
     });
+  });
+});
+
+describe("lane share move: the moved chat on the receiving machine", () => {
+  const MOVE_SHA = "abcdef0123456789abcdef0123456789abcdef01";
+  const ORIGIN = "git@github.com:example/ade.git";
+
+  /** Git at the process boundary: the branch is free and origin has the commit. */
+  function installMoveGitFixture(): void {
+    vi.mocked(runGit).mockImplementation(async (args) => {
+      const command = args.join(" ");
+      if (command === "remote get-url origin") return { stdout: `${ORIGIN}\n`, stderr: "", exitCode: 0 };
+      if (args[0] === "show-ref") return { stdout: "", stderr: "", exitCode: 1 };
+      if (command === "config --get core.hooksPath") return { stdout: "", stderr: "", exitCode: 1 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+  }
+
+  // Each provider group the receiver may run the chat on: the chat is read
+  // only (plan) in that provider's own fields, and no turn starts. The brief
+  // waits in Drafts with the other person as its author.
+  it.each<[string, string, Record<string, unknown>]>([
+    ["claude", "anthropic/claude-opus-5-5", { interactionMode: "plan" }],
+    ["codex", "openai/gpt-6.1-sol", { codexSandbox: "read-only", codexApprovalPolicy: "untrusted" }],
+    ["droid", "droid/custom:claude-sonnet-5-thinking-32000", { interactionMode: "plan", droidPermissionMode: "read-only" }],
+    ["copilot", "github-copilot/auto", { copilotPermissionMode: "plan" }],
+    ["muse", "muse/muse-spark-1.3", { interactionMode: "plan" }],
+    ["grok", "xai/grok-4-6", { opencodePermissionMode: "plan" }],
+    ["kimi", "moonshot/k3", { opencodePermissionMode: "plan" }],
+    ["qwen", "qwen/qwen3-coder-plus", { opencodePermissionMode: "plan" }],
+  ])("lands a %s chat read only, with no turn and the brief in Drafts", async (provider, modelHint, nativeFields) => {
+    installMoveGitFixture();
+    const root = fs.mkdtempSync(path.join(tmpRoot, "move-db-"));
+    const db = await openKvDb(path.join(root, "ade.db"), { debug() {}, info() {}, warn() {}, error() {} } as never);
+    try {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({ db, onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      mockState.codexRequestPayloads = [];
+      const moveId = `lsm_${"7".repeat(32)}`;
+      const landed = await service.acceptLaneShareMove({
+        payload: {
+          version: 1, moveId, title: "Fix login", laneName: "login", branchName: "fix/login", headSha: MOVE_SHA,
+          repoKey: accountRepoScopeKey(ORIGIN), modelHint, brief: "Fix the login bug.", continuationPrompt: "Run the tests next.",
+          artifacts: { fileChanges: [], commands: [], errors: [] }, linearIssues: [], bundle: null,
+        },
+        bundle: null,
+        fromName: "Owner",
+        fromUserId: "user_owner",
+      });
+      expect(landed.sessionId).toBeTruthy();
+      const summary = await service.getSessionSummary(landed.sessionId!);
+      expect(summary).toMatchObject({ provider, permissionMode: "plan", ...nativeFields });
+      expect(sessionPermissionLevel(summary!, "full-auto")).toBe("plan");
+      // No turn: no message, no started status, nothing sent to a provider.
+      const own = events.filter((event) => event.sessionId === landed.sessionId);
+      expect(own.some((event) => event.event.type === "user_message")).toBe(false);
+      expect(own.some((event) => event.event.type === "status" && event.event.turnStatus === "started")).toBe(false);
+      expect(mockState.codexRequestPayloads.map((payload) => payload.method)).not.toContain("turn/start");
+      expect(own.some((event) => event.event.type === "system_notice" && /plan mode \(read only\)/.test(event.event.message))).toBe(true);
+      expect(listDrafts(db)).toEqual([
+        expect.objectContaining({ originSessionId: landed.sessionId, author: expect.objectContaining({ kind: "guest", name: "Owner" }) }),
+      ]);
+      expect(listDrafts(db)[0]?.text).toContain("Fix the login bug.");
+    } finally {
+      db.close();
+    }
   });
 });

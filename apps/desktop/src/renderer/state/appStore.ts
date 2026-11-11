@@ -1770,7 +1770,12 @@ export type AppState = {
    */
   cloudWakingSinceBySessionId: Readonly<Record<string, string>>;
 
-  setProject: (project: ProjectInfo | null) => void;
+  /**
+   * `replaceBinding`: the project is this computer's folder, opened on
+   * purpose, so a remote binding with the same root path does not carry over
+   * (the same path can exist on two machines).
+   */
+  setProject: (project: ProjectInfo | null, opts?: { replaceBinding?: boolean }) => void;
   setOpenRemoteProjectTabs: (
     next:
       | Extract<OpenProjectBinding, { kind: "remote" }>[]
@@ -2224,7 +2229,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       set({ projectTransition: null, lanesLoading: false });
       return null;
     }
-    get().setProject(project);
+    get().setProject(project, { replaceBinding: true });
     set((prev) => {
       const restoredSelection =
         prev.laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
@@ -2268,10 +2273,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     extras: { trustGitOwnership?: boolean },
   ): Promise<ProjectInfo | null> => {
     ++laneRefreshVersion;
+    // The binding stays on the open project until the new one replaces it
+    // (see openPickedRepo): a failed open leaves the window where it was, and
+    // a project on another machine never reads as this computer's meanwhile.
     set({
       projectTransition: { kind: "opening", rootPath, startedAtMs: Date.now() },
       projectTransitionError: null,
-      projectBinding: null,
     });
     try {
       return await openPickedRepo(rootPath, extras);
@@ -2366,7 +2373,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   crossMachineLanesByMachineId: {},
   cloudWakingSinceBySessionId: {},
 
-  setProject: (incomingProject) =>
+  setProject: (incomingProject, opts) =>
     set((prev) => {
       // A warm switch sets the cached project and then the one the host
       // reports, which is a new object that reads the same. The stored object
@@ -2379,6 +2386,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const nextProjectRoot = project?.rootPath ?? null;
       const matchingRemoteBinding =
         project &&
+        !opts?.replaceBinding &&
         prev.projectBinding?.kind === "remote" &&
         prev.projectBinding.rootPath === project.rootPath
           ? prev.projectBinding
@@ -3448,7 +3456,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         startedAtMs: Date.now(),
       },
       projectTransitionError: null,
-      projectBinding: null,
+      // The binding stays on the open project: a cancelled pick, the worktree
+      // prompt or a failed open leave it as it was, and openPickedRepo
+      // replaces it together with the project.
     });
     let picked: string | null = null;
     try {
@@ -3533,7 +3543,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     const isWarmTabSwitch =
       cachedProject != null && get().openProjectTabRoots.includes(rootPath);
     if (isWarmTabSwitch && cachedProject) {
-      get().setProject(cachedProject);
+      get().setProject(cachedProject, { replaceBinding: true });
     }
     const cachedWarmLanes =
       cachedProject != null ? get().laneCacheByProject[cachedProject.rootPath] : undefined;
@@ -3550,9 +3560,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             startedAtMs: Date.now(),
           },
       projectTransitionError: null,
-      projectBinding: isWarmTabSwitch && cachedProject
-        ? createLocalProjectBinding(cachedProject)
-        : null,
+      // A cold switch keeps the open project's binding until the new project
+      // replaces both together: nulling it here left the old project (perhaps
+      // one on another machine) reading as local, and a failure kept it so.
       ...(isWarmTabSwitch
         ? {
             projectHydrated: true,
@@ -3587,7 +3597,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     });
     try {
       const project = await window.ade.project.switchToPath(rootPath);
-      get().setProject(project);
+      get().setProject(project, { replaceBinding: true });
       const restoredSelection =
         get().laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
       // Stale-while-revalidate: if we have cached lanes for the destination

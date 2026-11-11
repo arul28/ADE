@@ -275,6 +275,16 @@ as unknown, never gone, so `prune` keeps it. `projects clone` without `--path`
 clones beside the other projects; a `--path` sent to another computer must be
 absolute there (a leading `~` means that computer's home).
 
+`ade projects remove` removes only the registry entry; the folder stays.
+Deleting a project's folder is the person's act: the desktop's **Remove
+project** dialog calls `projects.inspectRemoval` (a fresh read of changed
+files, unpushed commits, stashes and what runs) and then `projects.removeCopy`
+with `deleteFolder` and the `stateToken` it saw. `projects.removeCopy` refuses
+an agent caller and any caller below the cto role, so no `ade` command wraps
+it. A project with a git origin shows the account's shared name and icon
+(`project.name` / `project.icon` rows under `repo:<origin>` in the account
+settings store, or `.ade/project-record.json` with sync off) on every machine.
+
 …or call the same JSON-RPC methods directly:
 
 ```text
@@ -300,6 +310,7 @@ runtime/info     machineInfo.get   machine.updateAndRestart
 runtime.activitySummary            runtime.updateImpact
 account.call     attention.call
 projects.list    projects.add      projects.remove   projects.touch
+projects.inspectRemoval            projects.removeCopy
 projects.browseDirectories         projects.getDetail
 projects.getWorkSummary            projects.getDefaultParentDir
 projects.getHandoffStoragePreflight
@@ -573,6 +584,9 @@ ade lanes action initEnv --arg laneId=lane-id              # re-run the full env
 ade lanes delete lane-id --force --delete-branch
 ade lanes deleted list --text                              # lanes whose unsaved work a delete kept, for 30 days
 ade lanes deleted restore <id>                             # bring one back with its uncommitted files; never pushes
+ade lanes share --lane lane-id --text                      # the lane's shares: person, state, preset, risk, end, made by
+ade lanes share --lane lane-id --add guest@example.com --ends 1w   # a Watch share (see, never act); the only kind the CLI, an agent or ADE MCP can make, at most 5 an hour
+ade lanes share --lane lane-id --remove guest@example.com  # stop a share of this lane (or pass its grant id)
 ade chat update [<session>] --title "Fix login" --tag review-ready   # also --model, --effort, --permissions, --fast/--ultrafast; defaults to $ADE_CHAT_SESSION_ID
 ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431
@@ -1113,7 +1127,7 @@ renderer publishing what it has open for phones and the hosted web client to
 mirror; an agent that wants a pane open should open the tool it needs
 (`ade browser panel`) rather than claim one is open.
 
-Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. For stored project credentials, prefer `ade secrets`; account-linked projects default to account storage, `--storage account|device` chooses the scope explicitly, `list` is metadata-only and includes each secret's location, and `get --text` prints the secret value. Agents should read only the named secret the user asked for and avoid logging it.
+Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. User-only domains, such as `lane_share` (sharing a lane with another account), are left out of `ade actions list` and refused by `ade actions run`: only the ADE desktop app, with no agent identity, reaches them. For stored project credentials, prefer `ade secrets`; account-linked projects default to account storage, `--storage account|device` chooses the scope explicitly, `list` is metadata-only and includes each secret's location, and `get --text` prints the secret value. Agents should read only the named secret the user asked for and avoid logging it.
 
 Output modes are explicit: `--text` for human-readable summaries, `--json` (default for piped output) for stable JSON, and `--pretty` for pretty-printed JSON.
 

@@ -331,6 +331,7 @@ import { proofDrawerFocus, type ProofDrawerFocus } from "../../../shared/proofDr
 import { useChatComposerOverlayInset } from "./chatComposerOverlayInset";
 import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { parseMessageAuthor } from "../../../shared/messageAuthor";
 
 /**
  * A line that opens a scene fence, as `chatScene.ts`'s scanner reads one: up to
@@ -3227,6 +3228,10 @@ function renderEvent(
       : event.metadata?.sideChat
         ? "your side chat"
         : "";
+    // Lane sharing: a guest's message names its author (set by the host).
+    // The owner's own messages stay unlabelled, as before.
+    const guestAuthor = parseMessageAuthor(event.metadata?.author);
+    const guestAuthorLabel = guestAuthor?.kind === "guest" ? (guestAuthor.name?.trim() || "A guest") : null;
     // A brief handoff's first message is the hidden brief. The thread marks it
     // with a line, like the fork line, not with a label inside the bubble.
     const handoffBriefLabel = metadataKind === "handoff"
@@ -3365,6 +3370,16 @@ function renderEvent(
               className="mt-2 text-right font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45"
             >
               via {remoteMcpLabel}
+            </div>
+          ) : null}
+          {guestAuthorLabel ? (
+            <div
+              data-ade-find-skip=""
+              data-testid="chat-user-message-author"
+              className="mt-2 truncate text-right font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/55"
+              title={guestAuthorLabel}
+            >
+              From {guestAuthorLabel}
             </div>
           ) : null}
         </div>

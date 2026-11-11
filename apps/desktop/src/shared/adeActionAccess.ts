@@ -59,6 +59,13 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: ["getStatus", "listActivity"],
     write: ["setEnabled", "setMachineIncluded", "createToken", "updateConnection", "removeConnection"],
   },
+  lane_share: {
+    read: ["list", "listReceived", "moveList", "moveReceiveStatus", "movePackStatus"],
+    write: [
+      "create", "updateRights", "revoke", "resendInvite", "leave",
+      "moveStart", "moveRespond", "moveCancel", "moveReceivePrepare", "moveReceiveBegin", "moveReceiveChunk", "moveReceiveLand", "moveReceiveCancel", "movePackStart", "movePackChunk", "movePackRelease",
+    ],
+  },
   lane: {
     live: [
       "proxyAddRoute", "proxyRemoveRoute", "proxyStart", "proxyStop",

@@ -370,6 +370,22 @@ struct WorkSideChatFromLabel: View {
   }
 }
 
+/// Over a user message that another person wrote on a shared lane, so it
+/// never reads as the owner's own (desktop: "From <name>" on the bubble).
+struct WorkGuestAuthorLabel: View {
+  let name: String
+
+  var body: some View {
+    HStack(spacing: 4) {
+      Image(systemName: "person.crop.circle")
+      Text(name.isEmpty ? "From another person" : "From \(name)")
+    }
+    .font(.caption2.weight(.semibold))
+    .foregroundStyle(.secondary)
+    .accessibilityElement(children: .combine)
+  }
+}
+
 // MARK: - Panel
 
 /// What the side-chat panel shows.

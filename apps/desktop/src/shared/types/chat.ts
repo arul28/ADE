@@ -22,7 +22,7 @@ import type { ModelManifest } from "../modelManifest";
 import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
 import type { ChatErrorPresentation } from "../chatErrorPresentation";
-import type { ChatThreadComment } from "../threadComments";
+import type { ChatThreadComment, ChatThreadCommentSelection } from "../threadComments";
 import type { ClaudePromptCache } from "../claudePromptCache";
 import type { ClaudePluginUiSnapshot } from "../claudePluginUi";
 import type { SessionActivePrWatch } from "../prWatch";
@@ -722,6 +722,8 @@ export type AgentChatProviderLoginNotice =
 
 export type AgentChatNoticeDetail = {
   kind?: "continuity_recovery" | "disk_pressure";
+  /** `status: "lane_share_moved"`: the lane share move that took this chat to the other person's machine. */
+  laneShareMoveId?: string;
   /**
    * The usage-snapshot account id a notice is about (`<provider>:<instanceId>`).
    *
@@ -1387,7 +1389,29 @@ export type AgentChatBoardMoveMetadata = {
   moveId: string;
 };
 
+/**
+ * Who wrote a person-side message, draft or thread comment (lane sharing).
+ * The host sets it from what it verified; a client value is always stripped
+ * (`messageAuthor.ts`). Absent means the host's own user: every row written
+ * before lane sharing reads that way. `name` is null when the host cannot
+ * know it without trusting the client.
+ */
+export type AdeMessageAuthor = {
+  kind: "host" | "guest";
+  userId: string;
+  name: string | null;
+};
+
 export type AgentChatEventMetadata = Record<string, unknown> & {
+  /** Set only by the host; see `AdeMessageAuthor`. Absent: the host's own user. */
+  author?: AdeMessageAuthor;
+  /**
+   * Set only by the host: a guest sent this over its share. A queued message
+   * with it passes the share check again as it starts.
+   */
+  laneShareGuestSend?: true;
+  /** A plain prompt with no guest author (`isPlainPromptMessage`). */
+  plainPrompt?: true;
   /** Identifies the outside app that sent this person-side message through ADE MCP. */
   remoteMcp?: { connectionId: string; label: string };
   /** Marks a synthetic unattended turn started by ADE's durable scheduler. */
@@ -3443,6 +3467,8 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
+  /** The access mode a Claude chat in plan mode returns to when its plan is approved. */
+  claudePrePlanAccessMode?: Exclude<AgentChatClaudePermissionMode, "plan"> | null;
   claudeOutputStyle?: string | null;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
@@ -5608,6 +5634,14 @@ export type AgentChatSendArgs = {
   /** Compact as a separate turn before this message; false overrides Always for this send. */
   compactFirst?: boolean;
   sessionId: string;
+  /**
+   * The turn this message may go into: a turn id (that turn must be the one
+   * running), or null (no turn may be running; the message starts one). The
+   * service checks it right before it routes the message, so a turn that
+   * starts or ends after the caller looked cannot take the message. It only
+   * refuses more. The lane-sharing host sets it for a guest.
+   */
+  expectedTurnId?: string | null;
   text: string;
   displayText?: string;
   attachments?: AgentChatFileRef[];
@@ -5628,6 +5662,13 @@ export type AgentChatSendArgs = {
    * review the user has not sent.
    */
   includeThreadComments?: boolean;
+  /**
+   * Comments a lane-sharing guest wrote that go with this send too. A guest's
+   * comment never goes on its own: the owner names each one here, with the
+   * body revision the owner saw, and the agent reads it as written by another
+   * person. A comment whose body changed since then stays out.
+   */
+  includeGuestComments?: ChatThreadCommentSelection[];
   /**
    * Set once per send attempt by a client talking to another machine. A brain
    * that froze or restarted mid-send may have already taken this message, so
@@ -5856,6 +5897,14 @@ export function providerSupportsLiveRedirect(provider: string): boolean {
 
 export type AgentChatSteerArgs = {
   sessionId: string;
+  /**
+   * The turn this message may go into: a turn id (that turn must be the one
+   * running), or null (no turn may be running; the message starts one). The
+   * service checks it right before it routes the message, so a turn that
+   * starts or ends after the caller looked cannot take the message. It only
+   * refuses more. The lane-sharing host sets it for a guest.
+   */
+  expectedTurnId?: string | null;
   text: string;
   displayText?: string;
   attachments?: AgentChatFileRef[];
@@ -5885,6 +5934,8 @@ export type AgentChatSteerArgs = {
   sentByUser?: boolean;
   /** See `AgentChatSendArgs.includeThreadComments`. */
   includeThreadComments?: boolean;
+  /** See `AgentChatSendArgs.includeGuestComments`. */
+  includeGuestComments?: ChatThreadCommentSelection[];
 };
 
 export type AgentChatSteerResult = {
@@ -6223,6 +6274,14 @@ export type AgentChatStopMode = CanonicalAgentChatStopMode;
 
 export type AgentChatInterruptArgs = {
   sessionId: string;
+  /**
+   * The turn this message may go into: a turn id (that turn must be the one
+   * running), or null (no turn may be running; the message starts one). The
+   * service checks it right before it routes the message, so a turn that
+   * starts or ends after the caller looked cannot take the message. It only
+   * refuses more. The lane-sharing host sets it for a guest.
+   */
+  expectedTurnId?: string | null;
   /** Defaults to stop_and_clear for backward-compatible Stop-means-stop behavior. */
   mode?: AgentChatStopMode;
 };
@@ -6757,6 +6816,8 @@ export type DraftScheduledBy = "user" | "agent";
 export type DraftEntry = {
   id: string;
   text: string;
+  /** Set only by the host (lane sharing). Absent or null: the host's own user. */
+  author?: AdeMessageAuthor | null;
   /** Absent when talking to a pre-attachment ADE runtime. */
   attachments?: AgentChatFileRef[];
   /** Includes images that exist only on the originating ADE runtime. */

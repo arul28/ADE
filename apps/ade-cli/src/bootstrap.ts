@@ -1362,6 +1362,20 @@ export async function createAdeRuntime(args: {
         // Its chats are gone, so nothing would ever let go of its tabs: free
         // them in every browser, and close none.
         if (event.type === "lane-deleted" && event.laneId) cloudChatUploaderRef.current?.noteLaneDeleted(event.laneId);
+        // Lane sharing: an archived lane pauses its shares (guests are closed
+        // and refused until it is unarchived); a deleted lane ends them. A
+        // rename or a branch change needs nothing: shares key on the lane id.
+        if ((event.type === "lane-archived" || event.type === "lane-reclaimed") && event.laneId) {
+          syncService?.getLaneShareService().pauseLane(event.laneId);
+        }
+        if (event.type === "lane-deleted" && event.laneId) {
+          void syncService?.getLaneShareService().endLane(event.laneId).catch((error: unknown) => {
+            logger.warn("lane_share.end_lane_failed", {
+              laneId: event.laneId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        }
         // A cloud computer's lane name lives in its metadata too (the dashboard reads it with no wake).
         if (event.type === "lane-renamed" && event.laneId && event.laneName) cloudLaneNameSyncRef.current?.noteRenamed(event.laneId, event.laneName);
         if ((event.type === "lane-archived" || event.type === "lane-deleted") && event.laneId) {
@@ -4235,6 +4249,7 @@ export async function createAdeRuntime(args: {
         forceHostRole: syncRuntimeOptions.forceHostRole ?? false,
         projectCatalogProvider: syncRuntimeOptions.projectCatalogProvider,
         onRemoteFileWrite: syncRuntimeOptions.onRemoteFileWrite,
+        onLaneShareEvent: (event) => pushEvent("runtime", { type: "lane_share_event", event }),
         rosterProvider: syncRuntimeOptions.rosterProvider,
         foreignChatProvider: syncRuntimeOptions.foreignChatProvider,
         personalChatScope: syncRuntimeOptions.personalChatScope,

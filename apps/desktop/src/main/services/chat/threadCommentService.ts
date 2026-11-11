@@ -3,6 +3,8 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import { writeFileAtomic } from "../state/durableFile";
+import { parseMessageAuthor } from "../../../shared/messageAuthor";
+import type { AdeMessageAuthor } from "../../../shared/types/chat";
 import {
   MAX_THREAD_COMMENTS_PER_SESSION,
   MAX_THREAD_COMMENT_BODY_CHARS,
@@ -10,6 +12,8 @@ import {
   collapseWhitespace,
   formatThreadReviewBlock,
   normalizeThreadCommentAnchor,
+  parseGuestCommentSelections,
+  threadCommentRevision,
   type ChatThreadComment,
   type ChatThreadCommentCreateArgs,
   type ChatThreadCommentDeleteArgs,
@@ -54,7 +58,20 @@ function normalizeStoredComment(entry: unknown, sessionId: string): ChatThreadCo
     includeInNextSend: value.includeInNextSend !== false,
     createdAt: at,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : at,
+    ...(threadCommentRevision(value) > 0 ? { revision: threadCommentRevision(value) } : {}),
+    ...withStoredAuthor(value.author),
   };
+}
+
+/**
+ * Old comments have no author and read as the host's own user. The stored
+ * author is display data written by the host, not proof of authorship: the
+ * chat's files sit in the owner's project, which the owner's own machines
+ * can change, so nothing may grant or refuse a right because of it.
+ */
+function withStoredAuthor(value: unknown): { author?: AdeMessageAuthor } {
+  const author = parseMessageAuthor(value);
+  return author ? { author } : {};
 }
 
 export function createThreadCommentService({
@@ -77,6 +94,21 @@ export function createThreadCommentService({
    * read or write, so a transient disk failure cannot lose them.
    */
   const pendingPersist = new Set<string>();
+
+  /**
+   * Whether a comment goes with the next send. A lane-sharing guest's
+   * comment goes only when the owner names it (`guestIds`): its text would
+   * otherwise reach the agent in the owner's turn, under the owner's
+   * permission mode.
+   */
+  /**
+   * A guest's comment goes only when the owner picked it at the body revision
+   * it still has: an edit after the pick keeps it out (and `update` unticks it).
+   */
+  const goesWithSend = (comment: ChatThreadComment, guestPicks: ReadonlyMap<string, number>): boolean => {
+    if (comment.author?.kind === "guest") return guestPicks.get(comment.id) === threadCommentRevision(comment);
+    return comment.includeInNextSend;
+  };
 
   const fileFor = (sessionId: string): string => {
     if (!isThreadCommentSessionId(sessionId)) {
@@ -161,7 +193,14 @@ export function createThreadCommentService({
 
   const list = ({ sessionId }: { sessionId: string }): ChatThreadComment[] => read(sessionId);
 
-  const create = (args: ChatThreadCommentCreateArgs): ChatThreadComment => {
+  /**
+   * `args` comes from a caller and its `author` is never read. The host
+   * passes the author it verified in `options` (lane sharing).
+   */
+  const create = (
+    args: ChatThreadCommentCreateArgs,
+    options: { author?: AdeMessageAuthor | null } = {},
+  ): ChatThreadComment => {
     const anchor = normalizeThreadCommentAnchor(args.anchor);
     if (!anchor) throw new Error("A comment needs the text, table row, image or video it is about.");
     const messageKey = typeof args.messageKey === "string" ? args.messageKey.trim() : "";
@@ -180,9 +219,11 @@ export function createThreadCommentService({
       messageExcerpt: collapseWhitespace(typeof args.messageExcerpt === "string" ? args.messageExcerpt : "").slice(0, MAX_THREAD_COMMENT_EXCERPT_CHARS),
       anchor,
       body,
-      includeInNextSend: true,
+      // A guest's comment waits until the owner ticks it (`goesWithSend`).
+      includeInNextSend: options.author?.kind !== "guest",
       createdAt: at,
       updatedAt: at,
+      ...withStoredAuthor(options.author),
     };
     write(args.sessionId, [...current, comment]);
     return comment;
@@ -195,10 +236,16 @@ export function createThreadCommentService({
     const previous = current[index]!;
     const body = args.body === undefined ? previous.body : cleanBody(args.body);
     if (!body) throw new Error("A comment cannot be empty. Delete it instead.");
+    // The owner ticked a guest's comment for the text it had: new text waits for a new tick.
+    const bodyChanged = body !== previous.body;
+    const guestTextChanged = previous.author?.kind === "guest" && bodyChanged;
     const next: ChatThreadComment = {
       ...previous,
       body,
-      includeInNextSend: typeof args.includeInNextSend === "boolean" ? args.includeInNextSend : previous.includeInNextSend,
+      ...(bodyChanged ? { revision: threadCommentRevision(previous) + 1 } : {}),
+      includeInNextSend: typeof args.includeInNextSend === "boolean"
+        ? args.includeInNextSend
+        : guestTextChanged ? false : previous.includeInNextSend,
       updatedAt: now(),
     };
     const comments = [...current];
@@ -218,14 +265,21 @@ export function createThreadCommentService({
   /**
    * Removes the comments marked for the next send and returns the block they
    * make. `restore` puts them back, for a send that fails before it delivers.
-   * Held comments stay where they are.
+   * Held comments stay where they are. Every send route reaches here, so the
+   * guest picks are parsed here: a malformed value picks nothing.
    */
-  const takeForSend = (sessionId: string): { block: string | null; count: number; restore: () => void } => {
+  const takeForSend = (
+    sessionId: string,
+    options: { guestComments?: unknown } = {},
+  ): { block: string | null; count: number; restore: () => void } => {
     const current = read(sessionId);
-    const taken = current.filter((comment) => comment.includeInNextSend);
+    const picks = parseGuestCommentSelections(options.guestComments) ?? [];
+    const guestPicks = new Map(picks.map((pick) => [pick.id, pick.revision] as const));
+    const goes = (comment: ChatThreadComment) => goesWithSend(comment, guestPicks);
+    const taken = current.filter(goes);
     if (!taken.length) return { block: null, count: 0, restore: () => {} };
     const block = formatThreadReviewBlock(taken);
-    write(sessionId, current.filter((comment) => !comment.includeInNextSend));
+    write(sessionId, current.filter((comment) => !goes(comment)));
     let restored = false;
     return {
       block,
@@ -261,7 +315,7 @@ export function createThreadCommentService({
 
   /** True when a send with `includeThreadComments` would carry at least one comment. */
   const hasCommentsForSend = (sessionId: string): boolean =>
-    isThreadCommentSessionId(sessionId) && read(sessionId).some((comment) => comment.includeInNextSend);
+    isThreadCommentSessionId(sessionId) && read(sessionId).some((comment) => goesWithSend(comment, new Map()));
 
   /** Drops a deleted chat's comments without telling clients (the chat is gone). */
   const forgetSession = (sessionId: string): void => {

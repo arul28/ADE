@@ -32,6 +32,7 @@ import {
 } from "./musicDeveloperToken";
 import { cleanupJevBonusDays, handleJevBonusRequest, isJevBonusRequest, type JevBonusEnv } from "./jevBonus";
 import { handleSignupAnalyticsRequest, isSignupAnalyticsRequest, type SignupAnalyticsEnv } from "./signupAnalytics";
+import { cleanupLaneShares, handleLaneShareRequest, isLaneShareRequest, type LaneShareEnv } from "./laneShares/routes";
 import {
   cleanupUsageResearch,
   handleUsageResearchRequest,
@@ -40,7 +41,7 @@ import {
 } from "./usageResearch";
 
 type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv
-  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv;
+  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv & LaneShareEnv;
 
 const WORKER_NAME = "ade-account-directory";
 
@@ -89,6 +90,9 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // The website's invite page: public and rate-limited, it answers only the
   // inviter's first name, and only for an inviter with ADE Cloud access.
   if (isInviteLookupRequest(url)) return handleInviteLookup(request, env);
+  // Lane sharing (src/laneShares): account bearer, the directory's exact-origin
+  // CORS for the web client, none for the host read (machines only).
+  if (isLaneShareRequest(url)) return handleLaneShareRequest(request, env);
   return handleRequest(request, env);
 }
 
@@ -161,6 +165,9 @@ export default Sentry.withSentry(sentryOptions, {
         settle("model_registry", () => runModelRegistryCron(env)),
         // Jev bonus: per-account day counts past a week.
         settle("jev_bonus_days", () => cleanupJevBonusDays(env)),
+        // Lane shares: clock-derived states written, rows closed 90 days ago
+        // deleted, invite budget rows past a week. Bounded per tick.
+        settle("lane_shares", () => cleanupLaneShares(env)),
         // the provider timed wakes: requests each due machine's wake URL.
         settle("cloud_wakes", () => runCloudWakes(env)),
         // ADE Cloud: reads the provider list once, meters hours, stops computers

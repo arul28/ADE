@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { LaneShareGuestView } from "../laneShare/guest/LaneShareGuestView";
+import { clearLaneShareWorkSelection, selectLaneShareInWork, useLaneShareGuestStore } from "../laneShare/guest/laneShareGuestStore";
 import { Trash } from "@phosphor-icons/react";
 import { useLatestCallback } from "../../lib/stableIdentity";
 import { AnimatePresence, motion } from "motion/react";
@@ -2058,13 +2060,21 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   // Stable handles for the session list: these callbacks are rebuilt whenever
   // the sessions, selection or filters change (several times a second while
   // agents run), and each new identity re-rendered every lane header and card.
-  const listSelectSession = useLatestCallback(handleSelectSession);
+  // Picking a session of this project closes a shared lane in the view area.
+  const listSelectSession = useLatestCallback((...args: Parameters<typeof handleSelectSession>) => {
+    clearLaneShareWorkSelection();
+    return handleSelectSession(...args);
+  });
   // A new draft draws in the normal view, so starting one leaves the grid.
   const listShowDraftKind = useLatestCallback((...args: Parameters<typeof work.showDraftKind>) => {
+    clearLaneShareWorkSelection();
     if (work.workFocusGrid) work.setWorkFocusGrid(false);
     return work.showDraftKind(...args);
   });
-  const listSelectForeignRuntimeSession = useLatestCallback(handleSelectForeignRuntimeSession);
+  const listSelectForeignRuntimeSession = useLatestCallback((...args: Parameters<typeof handleSelectForeignRuntimeSession>) => {
+    clearLaneShareWorkSelection();
+    return handleSelectForeignRuntimeSession(...args);
+  });
   const listClearSelection = useLatestCallback(() => {
     setSelectedSessionIds(new Set());
     setSelectionAnchorId(null);
@@ -2105,6 +2115,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
    * List/Board toggle, filters, new chat — must be the same control in every
    * mode, and the pane's cross-machine subscription must not run twice.
    */
+  // A lane shared with this account, opened from the "Shared with me" group.
+  // It takes the view area until a session of this project is picked.
+  const guestSelection = useLaneShareGuestStore((state) => state.workSelection);
+  const guestReceived = useLaneShareGuestStore((state) => state.received);
+  const guestSelectionEntry = guestSelection
+    ? (guestReceived ?? []).find((entry) => entry.grantId === guestSelection.grantId && entry.state === "active") ?? null
+    : null;
+
   const sessionListPane = useMemo(
     () => (
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col" data-tour="work.sessionsPane">
@@ -2205,7 +2223,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   // the chat header on the same rail height as the tools pane header.
   const viewArea = (
     <div className="ade-work-surface min-h-0 min-w-0 flex-1 overflow-hidden" data-tour="work.viewArea">
-      {workViewWithSidebar}
+      {guestSelectionEntry && guestSelection ? (
+        <LaneShareGuestView
+          entry={guestSelectionEntry}
+          sessionId={guestSelection.sessionId}
+          onSelectSession={(sessionId) => selectLaneShareInWork(guestSelectionEntry.grantId, sessionId)}
+          onClose={clearLaneShareWorkSelection}
+        />
+      ) : workViewWithSidebar}
     </div>
   );
 

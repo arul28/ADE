@@ -182,6 +182,13 @@ columns (`kind`, `status`, `scheduled_at`, `delivery_policy`, `grace_seconds`,
 nullable and added in place, so an older peer's rows stay valid and a newer
 peer's values still sync into this build.
 
+`author_json` holds the draft's author as `AdeMessageAuthor` JSON
+(`shared/messageAuthor.ts`). Only the host sets it: a lane share guest's
+draft names the guest, and every other row is null, which reads as the
+host's own user. A guest's draft is plain text for an existing chat, with no
+schedule and no attachments. Only the owner sends it, and the send then
+counts for the owner. See [lane sharing](../lanes/lane-sharing.md#message-author).
+
 ## Agent access boundary
 
 Drafts are open to session-bound agents; the `chat` CTO-only block in

@@ -1,5 +1,22 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
+import type {
+  LaneShareAcceptResult,
+  LaneShareConnectTicket,
+  LaneShareOpenResult,
+  LaneShareCreateArgs,
+  LaneShareCreateResult,
+  LaneShareEvent,
+  LaneShareLeaveResult,
+  LaneShareMoveAction,
+  LaneShareListArgs,
+  LaneShareListResult,
+  LaneShareReceivedResult,
+  LaneShareResendResult,
+  LaneShareRevokeResult,
+  LaneShareUpdateRightsArgs,
+  LaneShareUpdateRightsResult,
+} from "../shared/types/laneShare";
 import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
@@ -81,6 +98,12 @@ import type { InstalledBrowser } from "../shared/browserTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
+import type {
+  ProjectRemovalOutcome,
+  ProjectRemovalReport,
+  ProjectRemovalRequest,
+  RemoteProjectRemovalInspection,
+} from "../shared/projectRemoval";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
 import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMethod, CloudLaneLifeResults } from "../shared/cloudLaneLife";
@@ -553,7 +576,7 @@ import type {
   GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
-  GitHubRepoRef,
+  GitHubRemoteStatus,
   GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubSetTokenResult,
@@ -841,6 +864,7 @@ import type {
   ListMyGitHubReposResult,
   PublishProjectInput,
   PublishProjectResult,
+  ProjectFindForRepoResult,
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
@@ -1506,10 +1530,14 @@ const githubStatusCache = createShortIpcCache<GitHubStatus>(
   () => ipcRenderer.invoke(IPC.githubGetStatus, {}),
   30_000,
 );
-const githubRemoteStatusCache = createShortIpcCache<{
-  repo: GitHubRepoRef | null;
-  hasOrigin: boolean;
-}>(() => ipcRenderer.invoke(IPC.githubGetRemoteStatus), 30_000);
+// Not keyed by project: only the unbound path reads it (a bound window asks
+// its runtime), and every binding change and project event clears it
+// (clearProjectScopedReadCaches). Each answer names its project, so a reader
+// can still drop one that describes another project.
+const githubRemoteStatusCache = createShortIpcCache<GitHubRemoteStatus>(
+  () => ipcRenderer.invoke(IPC.githubGetRemoteStatus),
+  30_000,
+);
 const githubAppInstallationStatusCache = createKeyedShortIpcCache<GitHubAppInstallationStatus>(
   (key) => ipcRenderer.invoke(
     IPC.githubGetAppInstallationStatus,
@@ -2385,6 +2413,21 @@ function callPinnedOrBoundRuntimeActionOr<T>(
 }
 
 /**
+ * A lane share action on the lane's own machine: the pin, else the tab's
+ * bound runtime. The shares live in that machine's brain; this Electron
+ * process holds none, so with no runtime the call fails with a reason.
+ */
+function callLaneShareAction<T>(
+  action: string,
+  args: Record<string, unknown>,
+  pin: OpenProjectBinding | null | undefined,
+): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr<T>(pin, "lane_share", action, { args }, async () => {
+    throw new Error("lane_share_no_runtime: Lane sharing needs the project's ADE brain. Open the project and try again.");
+  });
+}
+
+/**
  * The account's provider sign-ins (P5): the pinned machine, else the tab's
  * bound runtime, else this computer's brain with no project
  * (`providerLogins.call`), so Settings works in a window with no project.
@@ -2580,11 +2623,9 @@ function cloudLaneLaunchSource(pin: OpenProjectBinding | null | undefined): Clou
   if (!binding) return null;
   return {
     gitOriginUrl: binding.gitOriginUrl ?? null,
-    // With no stamped origin, main reads it from the checkout here, or asks
-    // the project's own machine for a project that lives on another one.
     ...(binding.kind === "local"
       ? { localRootPath: binding.rootPath }
-      : { remoteProject: { targetId: binding.targetId, projectId: binding.projectId } }),
+      : { remote: { targetId: binding.targetId, projectId: binding.projectId } }),
   };
 }
 
@@ -3256,6 +3297,11 @@ const remoteDevServerEventFanout = createRemoteRuntimeFanout<DevServerEvent>({
   label: "dev server",
   onSubscribe: () => ensureRemoteRuntimeEventPump(),
 });
+const remoteLaneShareEventFanout = createRemoteRuntimeFanout<LaneShareEvent>({
+  eventType: "lane_share_event",
+  label: "lane share",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
 const remoteWorkToolShowRequestFanout = createRemoteRuntimeFanout<WorkToolShowRequest>({
   eventType: WORK_TOOL_SHOW_REQUEST_EVENT,
   label: "work tool show request",
@@ -3303,6 +3349,7 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteBuiltInBrowserRemoteCallFanout,
   remoteWorkToolShowRequestFanout,
   remoteDevServerEventFanout,
+  remoteLaneShareEventFanout,
 ];
 
 function createLocalIpcEventSubscription<T>(
@@ -5301,7 +5348,7 @@ const adeBridge = {
     findForRepo: async (args: {
       repoOwner: string;
       repoName: string;
-    }): Promise<{ rootPath: string; displayName: string } | null> =>
+    }): Promise<ProjectFindForRepoResult> =>
       ipcRenderer.invoke(IPC.projectFindForRepo, args),
     closeCurrent: async (): Promise<void> =>
       clearAround(
@@ -5344,6 +5391,10 @@ const adeBridge = {
         }
       });
     },
+    inspectRemoval: async (rootPath: string): Promise<ProjectRemovalReport> =>
+      ipcRenderer.invoke(IPC.projectInspectRemoval, { rootPath }),
+    removeCopy: async (rootPath: string, request: ProjectRemovalRequest): Promise<ProjectRemovalOutcome> =>
+      ipcRenderer.invoke(IPC.projectRemoveCopy, { rootPath, request }),
     forgetRecent: async (keyOrRootPath: string): Promise<RecentProjectSummary[]> =>
       // For local recents the key equals the root path; for remote recents the
       // caller passes the remote key. Send both so the handler can match either.
@@ -5594,6 +5645,17 @@ const adeBridge = {
       rootPath: string,
     ): Promise<ProjectIcon | null> =>
       ipcRenderer.invoke(IPC.remoteRuntimeRemoveProjectIcon, { id, rootPath }),
+    inspectProjectRemoval: async (
+      id: string,
+      projectId: string,
+    ): Promise<RemoteProjectRemovalInspection> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeInspectProjectRemoval, { id, projectId }),
+    removeProjectCopy: async (
+      id: string,
+      projectId: string,
+      request: ProjectRemovalRequest,
+    ): Promise<ProjectRemovalOutcome> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeRemoveProjectCopy, { id, projectId, request }),
     getDefaultParentDir: async (id: string): Promise<string> =>
       ipcRenderer.invoke(IPC.remoteRuntimeGetDefaultParentDir, { id }),
     getHandoffStoragePreflight: async (
@@ -12929,7 +12991,7 @@ const adeBridge = {
       ),
     getRemoteStatus: async (opts?: {
       forceRefresh?: boolean;
-    }): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {
+    }): Promise<GitHubRemoteStatus> => {
       return callProjectRuntimeActionOr(
         "github",
         "getRemoteStatus",
@@ -13440,6 +13502,10 @@ const adeBridge = {
       args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
     ): Promise<AccountSettingsResult<null>> =>
       ipcRenderer.invoke(IPC.accountSettingsSet, args),
+    remove: (
+      args: { scope: string; key: string } & AccountSettingsWriteOptions,
+    ): Promise<AccountSettingsResult<null>> =>
+      ipcRenderer.invoke(IPC.accountSettingsRemove, args),
     sync: (): Promise<AccountSettingsResult<null>> =>
       ipcRenderer.invoke(IPC.accountSettingsSync),
     onChanged: (cb: () => void): (() => void) =>
@@ -14708,6 +14774,48 @@ const adeBridge = {
     pin
       ? Promise.resolve({ ok: false, error: "Open Settings on the selected Mac to change lid-closed mode." })
       : ipcRenderer.invoke(IPC.keepAwakeApplyLidClosed, disabled),
+  laneShare: {
+    list: (args?: LaneShareListArgs, pin?: OpenProjectBinding | null): Promise<LaneShareListResult> =>
+      callLaneShareAction<LaneShareListResult>("list", { ...(args ?? {}) }, pin),
+    create: (args: LaneShareCreateArgs, pin?: OpenProjectBinding | null): Promise<LaneShareCreateResult> =>
+      callLaneShareAction<LaneShareCreateResult>("create", { ...args }, pin),
+    updateRights: (args: LaneShareUpdateRightsArgs, pin?: OpenProjectBinding | null): Promise<LaneShareUpdateRightsResult> =>
+      callLaneShareAction<LaneShareUpdateRightsResult>("updateRights", { ...args }, pin),
+    revoke: (args: { grantId: string }, pin?: OpenProjectBinding | null): Promise<LaneShareRevokeResult> =>
+      callLaneShareAction<LaneShareRevokeResult>("revoke", { grantId: args.grantId }, pin),
+    resendInvite: (args: { grantId: string }, pin?: OpenProjectBinding | null): Promise<LaneShareResendResult> =>
+      callLaneShareAction<LaneShareResendResult>("resendInvite", { grantId: args.grantId }, pin),
+    listReceived: (pin?: OpenProjectBinding | null): Promise<LaneShareReceivedResult> =>
+      callLaneShareAction<LaneShareReceivedResult>("listReceived", {}, pin),
+    leave: (args: { grantId: string }, pin?: OpenProjectBinding | null): Promise<LaneShareLeaveResult> =>
+      callLaneShareAction<LaneShareLeaveResult>("leave", { grantId: args.grantId }, pin),
+    move: <T = unknown>(action: LaneShareMoveAction, args: Record<string, unknown>, pin?: OpenProjectBinding | null): Promise<T> =>
+      callLaneShareAction<T>(action, { ...args }, pin),
+    onEvent: (cb: (event: LaneShareEvent) => void, pin?: OpenProjectBinding | null): (() => void) => {
+      const removePinned = subscribePinnedProjectRuntimeEvents(
+        pin,
+        (payload) => toWrappedEvent<LaneShareEvent>(payload, "lane_share_event"),
+        cb,
+        "lane share",
+      );
+      return removePinned ?? remoteLaneShareEventFanout.subscribe(cb);
+    },
+  },
+  // Lane sharing, the guest's side: account calls of THIS computer's account
+  // (main asks the directory with its own token). No pin: no machine is
+  // asked; the shared lane's machine is reached only by the renderer's guest
+  // connection with the one-use ticket `connect` answers.
+  laneShareGuest: {
+    listReceived: (): Promise<LaneShareReceivedResult> => ipcRenderer.invoke(IPC.laneShareGuestListReceived),
+    open: (args: { grantId: string }): Promise<LaneShareOpenResult> =>
+      ipcRenderer.invoke(IPC.laneShareGuestOpen, { grantId: args.grantId }),
+    accept: (args: { grantId: string }): Promise<LaneShareAcceptResult> =>
+      ipcRenderer.invoke(IPC.laneShareGuestAccept, { grantId: args.grantId }),
+    leave: (args: { grantId: string }): Promise<LaneShareLeaveResult> =>
+      ipcRenderer.invoke(IPC.laneShareGuestLeave, { grantId: args.grantId }),
+    connect: (args: { grantId: string; dpopThumbprint: string }): Promise<LaneShareConnectTicket> =>
+      ipcRenderer.invoke(IPC.laneShareGuestConnect, { grantId: args.grantId, dpopThumbprint: args.dpopThumbprint }),
+  },
   // ADE MCP is a "This computer" section like keep-awake: no pin means
   // this machine's own brain (through main), a pin means that machine's brain.
   remoteMcpCall: async <T = unknown>(

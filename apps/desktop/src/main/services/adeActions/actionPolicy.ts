@@ -147,6 +147,11 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // ADE MCP grants an outside app this machine. Every action is also user-only
   // (below), so only the desktop reaches it through the action bus.
   remote_mcp: { allExcept: [] },
+  // Lane sharing gives another person's account a lane on this computer:
+  // only the owner decides, from their own client (also user-only, below).
+  // An agent may list, make a Watch share and stop a share: the host service
+  // holds it to that (`laneShareHostService.ts`, docs/features/lanes/lane-sharing.md).
+  lane_share: { allExcept: ["list", "create", "revoke"] },
   linear_credentials: {
     only: [
       "setToken",
@@ -416,6 +421,16 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
     "updateConnection",
     "removeConnection",
   ],
+  // Sharing a lane with another account, and what that person may do in it,
+  // is the owner's call. An agent may only list shares, make a Watch share
+  // and stop a share of this machine (`list`, `create`, `revoke`; the host
+  // service checks the caller the RPC server stamps). No agent widens a
+  // share, sends an invite again, reads or leaves shares given to the
+  // account, or moves a chat to or from the other person (`move*`).
+  lane_share: [
+    "updateRights", "resendInvite", "listReceived", "leave",
+    "moveStart", "moveRespond", "moveCancel", "moveList", "moveReceivePrepare", "moveReceiveBegin", "moveReceiveChunk", "moveReceiveLand", "moveReceiveStatus", "moveReceiveCancel", "movePackStart", "movePackStatus", "movePackChunk", "movePackRelease",
+  ],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -562,6 +577,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "sendNotification",
   ],
   keep_awake: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"],
+  lane_share: [
+    "create", "list", "updateRights", "revoke", "resendInvite", "listReceived", "leave",
+    "moveStart", "moveRespond", "moveCancel", "moveList", "moveReceivePrepare", "moveReceiveBegin", "moveReceiveChunk", "moveReceiveLand", "moveReceiveStatus", "moveReceiveCancel", "movePackStart", "movePackStatus", "movePackChunk", "movePackRelease",
+  ],
   remote_mcp: [
     "getStatus",
     "listActivity",
@@ -1672,6 +1691,10 @@ export function isAutomationAllowedAdeAction(
   return isAllowedAdeAction(domain, action)
     && !isCtoOnlyAdeAction(domain, action)
     && !isUserOnlyAdeAction(domain, action)
+    // A lane share gives another account a lane on this computer. An
+    // automation step passes no caller the host can trust, so it makes,
+    // lists and stops none.
+    && domain !== "lane_share"
     // A config save writes the whole file, owner-only keys included. The RPC
     // server checks an agent's save key by key; an automation step skips that
     // check, so it may not save the config at all.

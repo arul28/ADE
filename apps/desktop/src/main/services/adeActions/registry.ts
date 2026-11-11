@@ -6,7 +6,9 @@ import {
   writeSavedContinueAfterRestart,
 } from "../../../../../ade-cli/src/services/runtime/continueAfterRestartStore";
 import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
-import { encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
+import { codedError, encodeCodedErrorMessage, isErrnoLikeCode } from "../../../shared/codedError";
+import { LaneShareError } from "../../../../../ade-cli/src/services/sync/laneShareError";
+import type { LaneShareCaller } from "../../../shared/laneShareRights";
 import { stampedAdeVersion } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpAccount";
 import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import fs from "node:fs";
@@ -725,6 +727,119 @@ function buildRemoteMcpDomainService(runtime: AdeRuntime): OpaqueService | null 
   return Object.fromEntries(
     Object.entries(handlers).map(([action, handler]) => [action, (args?: Record<string, unknown>) => handler(args ?? {})]),
   );
+}
+
+/**
+ * Lane sharing, the owner's side (lanes on THIS machine). A renderer call for
+ * a lane on another machine passes that machine's pin, so it runs there.
+ */
+/**
+ * The lane share services throw `LaneShareError` with a `code`. Error fields
+ * do not cross IPC, so the code goes in the message (`code: sentence`), where
+ * `parseCodedErrorMessage` reads it.
+ */
+async function withLaneShareErrorCode<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (error instanceof LaneShareError) {
+      throw codedError(encodeCodedErrorMessage(error.wireCode, error.message), error.wireCode);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Who calls a `lane_share` action. `callerClass` is set by the host's RPC
+ * server from its own session (`run_ade_action` drops any value the caller
+ * sent, and refuses positional arguments for this domain), so here it is
+ * the host's word. Anything but exactly "person" is an agent: a route that
+ * does not set it can never act as the person. Automations never reach this
+ * domain (`isAutomationAllowedAdeAction`).
+ */
+export function laneShareCallerOf(args: Record<string, unknown> | undefined): LaneShareCaller {
+  return args?.callerClass === "person" ? "person" : "agent";
+}
+
+function buildLaneShareDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const sync = runtime.syncService;
+  const service = typeof sync?.getLaneShareService === "function" ? sync.getLaneShareService() : null;
+  if (!service) return null;
+  return {
+    create: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.create({
+      laneId: args?.laneId,
+      receiverEmail: args?.receiverEmail,
+      rights: args?.rights,
+      endsAt: args?.endsAt,
+      confirmHighRisk: args?.confirmHighRisk,
+    }, laneShareCallerOf(args))),
+    list: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.list({ scope: args?.scope })),
+    updateRights: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.updateRights({
+      grantId: args?.grantId,
+      rights: args?.rights,
+      endsAt: args?.endsAt,
+      confirmHighRisk: args?.confirmHighRisk,
+    }, laneShareCallerOf(args))),
+    revoke: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.revoke({
+      grantId: args?.grantId,
+      laneId: args?.laneId,
+      receiverEmail: args?.receiverEmail,
+    }, laneShareCallerOf(args))),
+    resendInvite: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.resendInvite({ grantId: args?.grantId }, laneShareCallerOf(args))),
+    listReceived: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.listReceived(laneShareCallerOf(args))),
+    leave: (args?: Record<string, unknown>) => withLaneShareErrorCode(() => service.leave({ grantId: args?.grantId }, laneShareCallerOf(args))),
+    ...buildLaneShareMoveActions(sync),
+  };
+}
+
+/**
+ * Moving a chat to or from the other person of a share (`laneShareMoveService.ts`).
+ * The host part (`moveStart`, `moveRespond`, `moveCancel`, `moveList`) runs on
+ * the machine of the shared lane. The `moveReceive*` and `movePack*` parts run
+ * on the guest's own machine, through its pin. All are user-only.
+ */
+function buildLaneShareMoveActions(sync: AdeRuntime["syncService"]): Record<string, (args?: Record<string, unknown>) => Promise<unknown>> {
+  const moves = typeof sync?.getLaneShareMoveService === "function" ? sync.getLaneShareMoveService() : null;
+  if (!moves) return {};
+  const run = <T>(call: () => T | Promise<T>) => withLaneShareErrorCode(async () => await call());
+  return {
+    moveStart: (args) => run(() => moves.start({ grantId: args?.grantId, sessionId: args?.sessionId })),
+    moveRespond: (args) => run(() => moves.respond({
+      moveId: args?.moveId,
+      accept: args?.accept,
+      rights: args?.rights,
+      endsAt: args?.endsAt,
+      confirmHighRisk: args?.confirmHighRisk,
+    })),
+    moveCancel: (args) => run(() => moves.cancel({ moveId: args?.moveId })),
+    moveList: () => run(() => moves.list()),
+    moveReceivePrepare: (args) => run(() => moves.receivePrepare({
+      moveId: args?.moveId,
+      grantId: args?.grantId,
+      repoKey: args?.repoKey,
+      modelHint: args?.modelHint,
+      expiresAt: args?.expiresAt,
+    })),
+    moveReceiveBegin: (args) => run(() => moves.receiveBegin({ moveId: args?.moveId, grantId: args?.grantId, payload: args?.payload })),
+    moveReceiveChunk: (args) => run(() => moves.receiveChunk({
+      moveId: args?.moveId,
+      grantId: args?.grantId,
+      index: args?.index,
+      data: args?.data,
+    })),
+    moveReceiveLand: (args) => run(() => moves.receiveLand({
+      moveId: args?.moveId,
+      grantId: args?.grantId,
+      fromName: args?.fromName,
+      shareBack: args?.shareBack,
+    })),
+    moveReceiveStatus: (args) => run(() => moves.receiveStatus({ moveId: args?.moveId, grantId: args?.grantId })),
+    moveReceiveCancel: (args) => run(() => moves.receiveCancel({ moveId: args?.moveId, grantId: args?.grantId })),
+    movePackStart: (args) => run(() => moves.packStart({ moveId: args?.moveId, grantId: args?.grantId, sessionId: args?.sessionId })),
+    movePackStatus: (args) => run(() => moves.packStatus({ moveId: args?.moveId })),
+    movePackChunk: (args) => run(() => moves.packChunk({ moveId: args?.moveId, index: args?.index })),
+    movePackRelease: (args) => run(() => moves.packRelease({ moveId: args?.moveId, landed: args?.landed, toName: args?.toName })),
+  };
 }
 
 function buildKeepAwakeDomainService(runtime: AdeRuntime): OpaqueService | null {
@@ -4512,6 +4627,7 @@ export function getAdeActionDomainServices(
     attention: toService(buildAttentionDomainService(runtime)),
     keep_awake: toService(buildKeepAwakeDomainService(runtime)),
     remote_mcp: toService(buildRemoteMcpDomainService(runtime)),
+    lane_share: toService(buildLaneShareDomainService(runtime)),
     lane: toService(buildLaneDomainService(runtime)),
     proxy: toService(buildProxyDomainService(runtime)),
     git: toService(runtime.gitService),

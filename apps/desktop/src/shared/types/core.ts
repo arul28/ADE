@@ -729,6 +729,11 @@ export type AppNavigationTarget =
       place: string;
     }
   | {
+      /** A lane another account shares with this one (an invite link). No project needed. */
+      kind: "lane-share";
+      grantId: string;
+    }
+  | {
       kind: "linear-issue";
       // Linear coding-tool hand-off. The renderer resolves the actual lane
       // by looking up lane.linearIssue.identifier; if no lane matches, the
@@ -905,6 +910,12 @@ export type ProjectFindForRepoArgs = {
 export type ProjectFindForRepoResult = {
   rootPath: string;
   displayName: string;
+  /**
+   * Set when the only copy is on another machine of the account: the link
+   * opens the project there. A project is the repository, so a copy on any
+   * connected machine answers.
+   */
+  remote?: { targetId: string; projectId: string; machineName: string };
 } | null;
 
 export type CreateProjectInput = {

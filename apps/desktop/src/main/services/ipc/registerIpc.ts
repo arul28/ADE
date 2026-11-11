@@ -102,7 +102,11 @@ import { areAutomationsEnabledForPackagedState } from "../../../shared/automatio
 import { normalizeAppPackageChannel, resolveReleaseChannel } from "../../../shared/packageChannel";
 import { loadMachineTelemetryId } from "../analytics/machineTelemetryId";
 import { reportsAsPackagedRelease } from "../../sentry/releaseBuild";
-import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
+import {
+  findProjectCopyOnMachineForRepo,
+  findRecentProjectForRepo,
+  type RepoProjectCopyOnMachine,
+} from "../projects/repoProjectResolver";
 import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
 import { isAgentChatStopMode } from "../../../shared/chatStopModes";
 import {
@@ -125,6 +129,12 @@ import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
 import { pathsEqual } from "../shared/pathCompare";
+import type {
+  ProjectRemovalOutcome,
+  ProjectRemovalReport,
+  ProjectRemovalRequest,
+} from "../../../shared/projectRemoval";
+import { createDesktopProjectRemoval } from "../projects/desktopProjectRemoval";
 import { readClipboardImage, readClipboardItem, writeClipboardFlavors } from "../shared/electronClipboard";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
@@ -389,7 +399,7 @@ import type {
   GitHubAppDeviceAuthStartResult,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
-  GitHubRepoRef,
+  GitHubRemoteStatus,
   GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubSetTokenResult,
@@ -969,6 +979,7 @@ import {
   getOpenAccountContexts,
 } from "../account/accountMigrationRunner";
 import { createAccountSettingsSyncService } from "../account/accountSettingsSync";
+import { createDesktopProjectRecords } from "../projects/desktopProjectRecords";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
 import { captureAutomationTestAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
@@ -2279,6 +2290,11 @@ export function registerIpc({
         raw: "[redacted]",
         cleaned: "[redacted]",
       };
+    }
+    // A lane share ticket opens one guest connection; it is never logged.
+    if (channel === IPC.laneShareGuestConnect) {
+      if (!result || typeof result !== "object" || Array.isArray(result)) return "[redacted]";
+      return { ...(result as Record<string, unknown>), ticket: "[redacted]" };
     }
     // A webhook URL carries its secret token: whoever has it can ring it.
     if (WEBHOOK_URL_RESULT_CHANNELS.has(channel)) {
@@ -4478,6 +4494,35 @@ export function registerIpc({
     return resolveWithinAllowedProjectRoots(getAllowedProjectRoots(), normalized);
   };
 
+  // A repository's icon is shared by every machine of the account (the
+  // project record); this machine's own files are the fallback.
+  const desktopProjectRecords = createDesktopProjectRecords({
+    accountSettings: {
+      get: (scope, key) => accountSettingsSyncService.get(scope, key),
+      set: (scope, key, value) => accountSettingsSyncService.set(scope, key, value),
+    },
+    readOriginUrl: readGitOriginUrl,
+    isSignedIn: () => resolveCurrentAttentionAccountOwnerId() !== null,
+    encoder: { nativeImage },
+    logger: { warn: (event, data) => getCtx().logger.warn(event, data) },
+  });
+  /** The icon from this machine's files, as the project tab shows it. */
+  const resolveLocalProjectTabIcon = (root: string, options: { ignoreOverride: boolean }): ProjectIcon => {
+    // `undefined` as the override skips this machine's own setting.
+    const resolveOptions = options.ignoreOverride ? { iconPathOverride: undefined } : {};
+    const sourcePath = resolveProjectIconPath(root, resolveOptions);
+    if (!sourcePath) return { dataUrl: null, sourcePath: null, mimeType: null };
+    const image = nativeImage.createFromPath(sourcePath);
+    if (!image.isEmpty()) {
+      return {
+        dataUrl: image.resize({ width: 64, height: 64, quality: "best" }).toDataURL(),
+        sourcePath,
+        mimeType: "image/png",
+      };
+    }
+    return resolveProjectIcon(root, resolveOptions);
+  };
+
   ipcMain.handle(
     IPC.projectResolveIcon,
     async (_event, args: { rootPath: string }): Promise<ProjectIcon> => {
@@ -4493,17 +4538,10 @@ export function registerIpc({
       } catch {
         return { dataUrl: null, sourcePath: null, mimeType: null };
       }
-      const sourcePath = resolveProjectIconPath(validatedRoot);
-      if (!sourcePath) return { dataUrl: null, sourcePath: null, mimeType: null };
-      const image = nativeImage.createFromPath(sourcePath);
-      if (!image.isEmpty()) {
-        return {
-          dataUrl: image.resize({ width: 64, height: 64, quality: "best" }).toDataURL(),
-          sourcePath,
-          mimeType: "image/png",
-        };
-      }
-      return resolveProjectIcon(validatedRoot);
+      return await desktopProjectRecords.resolveIcon(
+        validatedRoot,
+        (options) => resolveLocalProjectTabIcon(validatedRoot, options),
+      );
     },
   );
 
@@ -4533,14 +4571,18 @@ export function registerIpc({
 
       const selectedPath = result.filePaths[0];
       if (!selectedPath) return null;
+      let icon: ProjectIcon;
       try {
-        return setProjectIconOverrideFromSelection(validatedRoot, selectedPath);
+        icon = setProjectIconOverrideFromSelection(validatedRoot, selectedPath);
       } catch (error) {
         // Surface validation/import failures so the renderer can display a
         // meaningful error instead of a silently rejected promise.
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`Failed to set project icon: ${message}`);
       }
+      // The icon is set here either way; the shared copy is best effort.
+      await desktopProjectRecords.shareLocalIcon(validatedRoot);
+      return icon;
     },
   );
 
@@ -4555,7 +4597,11 @@ export function registerIpc({
       } catch {
         return { dataUrl: null, sourcePath: null, mimeType: null };
       }
-      return removeProjectIconOverride(validatedRoot);
+      return await desktopProjectRecords.removeIcon(
+        validatedRoot,
+        () => removeProjectIconOverride(validatedRoot),
+        (options) => resolveLocalProjectTabIcon(validatedRoot, options),
+      );
     },
   );
 
@@ -4708,7 +4754,37 @@ export function registerIpc({
       // from .git/config (no git subprocess), cached by config mtime. An SSH
       // origin on a host that is not GitHub or a known forge runs `ssh -G`,
       // once for each host; the cache answers after that.
-      return await findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
+      const local = await findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
+      if (local) return local;
+      // A project is the repository: with no copy here, a copy on another
+      // machine of the account opens there. Connected machines' project lists
+      // first (their brains read the origin), then the recents this app kept.
+      const copies: RepoProjectCopyOnMachine[] = [];
+      for (const connection of runtimeBridge.snapshot().connections) {
+        if (connection.state !== "connected") continue;
+        for (const project of connection.projects ?? []) {
+          copies.push({
+            targetId: connection.target.id,
+            machineName: connection.target.name,
+            projectId: project.projectId,
+            rootPath: project.rootPath,
+            displayName: project.displayName || path.basename(project.rootPath),
+            gitOriginUrl: project.gitOriginUrl,
+          });
+        }
+      }
+      for (const recent of listRecentProjectSummaries()) {
+        if (recent.kind !== "remote" || !recent.remote) continue;
+        copies.push({
+          targetId: recent.remote.targetId,
+          machineName: recent.remote.runtimeName,
+          projectId: recent.remote.projectId,
+          rootPath: recent.rootPath,
+          displayName: recent.displayName,
+          gitOriginUrl: recent.remote.gitOriginUrl ?? recent.gitOriginUrl,
+        });
+      }
+      return await findProjectCopyOnMachineForRepo(copies, { repoOwner, repoName });
     },
   );
 
@@ -4717,8 +4793,22 @@ export function registerIpc({
     appVersion: app.getVersion(),
     authorizeLocalRuntimeRoot: (session, requestedRootPath) => {
       const binding = session?.binding;
+      // A tab bound to another machine may hold no origin (restored from older
+      // saved state). That machine's project list, already in the connection
+      // snapshot, still names it: no network call, so this stays synchronous.
+      const peerOrigin = (): string | null => {
+        if (binding?.kind !== "remote") return null;
+        try {
+          const connection = runtimeBridge.snapshot().connections.find((entry) => entry.target.id === binding.targetId);
+          const origin = connection?.projects?.find((project) => project.projectId === binding.projectId)?.gitOriginUrl;
+          return typeof origin === "string" && origin.trim() ? origin.trim() : null;
+        } catch {
+          // The bridge is still being built (a check during its own setup): no snapshot yet.
+          return null;
+        }
+      };
       const activeOrigin = binding?.gitOriginUrl
-        ?? (binding?.kind === "local" ? readGitOriginUrl(binding.rootPath) : null)
+        ?? (binding?.kind === "local" ? readGitOriginUrl(binding.rootPath) : peerOrigin())
         ?? (session?.project?.rootPath
           ? readGitOriginUrl(session.project.rootPath)
           : null);
@@ -4762,13 +4852,15 @@ export function registerIpc({
     IPC.projectClone,
     async (_event, arg: CloneProjectInput): Promise<CloneProjectResult> => {
       const url = typeof arg?.url === "string" ? arg.url.trim() : "";
-      const parentDir = typeof arg?.parentDir === "string" ? arg.parentDir.trim() : "";
       const name = typeof arg?.name === "string" ? arg.name.trim() : undefined;
       if (!url) throw new Error("Repository URL is required.");
-      if (!parentDir) throw new Error("Parent directory is required.");
       const ctx = getCtx();
+      // No folder: the default one, as a clone on another machine does.
+      const parentDir = (typeof arg?.parentDir === "string" ? arg.parentDir.trim() : "")
+        || ctx.projectScaffoldService.getDefaultParentDir(listLocalRecentProjectSummaries());
+      let result: CloneProjectResult;
       try {
-        return await ctx.projectScaffoldService.cloneRepository({
+        result = await ctx.projectScaffoldService.cloneRepository({
           url,
           parentDir,
           ...(name ? { name } : {}),
@@ -4776,6 +4868,23 @@ export function registerIpc({
       } catch (error) {
         return surfaceCodedError(error);
       }
+      // A new copy is one of this computer's projects at once, as a clone on
+      // another machine joins that machine's list: the tab bar and the Add
+      // project form see it without a separate open. The reopen-on-launch
+      // project stays as it was.
+      try {
+        const before = readGlobalState(globalStatePath);
+        const next = addRecentProjectsWithoutEviction(before, [
+          { rootPath: result.rootPath, displayName: path.basename(result.rootPath) },
+        ]);
+        if (next !== before) {
+          writeGlobalState(globalStatePath, next);
+          clearRecentProjectSummaryCache();
+        }
+      } catch {
+        // The clone is done; a recents write that fails leaves it to the next open.
+      }
+      return result;
     },
   );
 
@@ -4788,17 +4897,13 @@ export function registerIpc({
     await closeCurrentProject();
   });
 
-  ipcMain.handle(IPC.projectForgetRecent, async (_event, arg: { rootPath?: string; key?: string }): Promise<RecentProjectSummary[]> => {
-    // `key` is the stable recent identity (rootPath for local, remote:… for
-    // remote). Older callers pass only `rootPath`; for local entries the key
-    // and the rootPath are identical, so this stays backward compatible.
-    const targetKey = (typeof arg?.key === "string" && arg.key.trim())
-      || (typeof arg?.rootPath === "string" && arg.rootPath.trim())
-      || "";
+  /**
+   * Forgets a recent project: this computer's entry for it. A local project
+   * also closes here and leaves the background service's list; its folder is
+   * never touched.
+   */
+  const forgetRecentProject = async (targetKey: string): Promise<void> => {
     const state = readGlobalState(globalStatePath);
-    if (!targetKey) {
-      return listRecentProjectSummaries();
-    }
     const entries = state.recentProjects ?? [];
     const removed = entries.find((entry) => recentProjectKey(entry) === targetKey);
     const filtered = entries.filter((entry) => recentProjectKey(entry) !== targetKey);
@@ -4840,8 +4945,57 @@ export function registerIpc({
         // Best effort; forgetting a project should still update recents even if teardown fails.
       }
     }
+  };
+
+  ipcMain.handle(IPC.projectForgetRecent, async (_event, arg: { rootPath?: string; key?: string }): Promise<RecentProjectSummary[]> => {
+    // `key` is the stable recent identity (rootPath for local, remote:… for
+    // remote). Older callers pass only `rootPath`; for local entries the key
+    // and the rootPath are identical, so this stays backward compatible.
+    const targetKey = (typeof arg?.key === "string" && arg.key.trim())
+      || (typeof arg?.rootPath === "string" && arg.rootPath.trim())
+      || "";
+    if (!targetKey) {
+      return listRecentProjectSummaries();
+    }
+    await forgetRecentProject(targetKey);
     return listRecentProjectSummaries({ force: true });
   });
+
+  const projectRemoval = createDesktopProjectRemoval({
+    pool: () => localRuntimeConnectionPool ?? projectRecoveryConnectionPool ?? null,
+    recentLocalRoots: () => (readGlobalState(globalStatePath).recentProjects ?? [])
+      .filter((entry) => !entry.remote)
+      .map((entry) => entry.rootPath),
+    forgetRecentProject,
+    closeProjectByPath,
+    trashItem: (folderPath) => shell.trashItem(folderPath),
+    folderExists: (folderPath) => fs.existsSync(folderPath),
+    protectedPaths: () => ({
+      homeDir: app.getPath("home"),
+      adeHome: process.env.ADE_HOME?.trim() || path.join(app.getPath("home"), ".ade"),
+      runtimePaths: [process.cwd(), process.execPath, app.getAppPath(), app.getPath("userData")],
+    }),
+    logger: { warn: (event, fields) => getCtx().logger.warn(event, fields) },
+  });
+
+  ipcMain.handle(IPC.projectInspectRemoval, async (_event, arg: { rootPath?: string }): Promise<ProjectRemovalReport> => {
+    const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+    if (!rootPath) throw new Error("Project path is required.");
+    return await projectRemoval.inspect(rootPath);
+  });
+
+  ipcMain.handle(
+    IPC.projectRemoveCopy,
+    async (_event, arg: { rootPath?: string; request?: Partial<ProjectRemovalRequest> }): Promise<ProjectRemovalOutcome> => {
+      const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+      if (!rootPath) throw new Error("Project path is required.");
+      return await projectRemoval.remove(rootPath, {
+        deleteFolder: arg?.request?.deleteFolder === true,
+        stateToken: typeof arg?.request?.stateToken === "string" ? arg.request.stateToken : null,
+        acceptWork: arg?.request?.acceptWork === true,
+      });
+    },
+  );
 
   ipcMain.handle(IPC.projectSetRecentPinned, async (_event, arg: { key?: string; pinned?: boolean }): Promise<RecentProjectSummary[]> => {
     const key = typeof arg?.key === "string" ? arg.key.trim() : "";
@@ -12010,7 +12164,10 @@ export function registerIpc({
     return await ctx.githubService.getStatus({ forceRefresh: Boolean(arg?.forceRefresh) });
   });
 
-  ipcMain.handle(IPC.githubGetRemoteStatus, async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {
+  // Answers for this window's project context, which can be another project
+  // than the renderer's while the window switches. The answer names its
+  // project (`projectRoot`) so the renderer can drop a mismatch.
+  ipcMain.handle(IPC.githubGetRemoteStatus, async (): Promise<GitHubRemoteStatus> => {
     const ctx = getCtx();
     return await ctx.githubService.getRemoteStatus();
   });
@@ -12510,6 +12667,17 @@ export function registerIpc({
     },
   );
 
+  // Deletes a key on every machine of the account (a tombstone the store
+  // keeps), so a reader sees it as never set.
+  ipcMain.handle(
+    IPC.accountSettingsRemove,
+    async (
+      _event,
+      args: { scope: string; key: string } & AccountSettingsWriteOptions,
+    ): Promise<AccountSettingsResult<null>> =>
+      await accountSettingsSyncService.remove(args.scope, args.key, { expectedAccountUserId: args.expectedAccountUserId }),
+  );
+
   ipcMain.handle(
     IPC.accountSettingsSync,
     async (): Promise<AccountSettingsResult<null>> => await accountSettingsSyncService.sync(),
@@ -12894,6 +13062,24 @@ export function registerIpc({
   ipcMain.handle(IPC.accountListMachines, async (): Promise<AdeAccountMachinesResult> => {
     return accountBridge.listMachines();
   });
+
+  // Lane sharing, the guest's side: account calls from this computer to the
+  // account directory, with this computer's own token (it stays in main). No
+  // machine pin: the shared lane's machine is reached only by the renderer's
+  // guest connection, with the one-use ticket `connect` answers. The ticket
+  // is returned to the renderer and never logged or stored.
+  ipcMain.handle(IPC.laneShareGuestListReceived, async () => accountBridge.laneShareGuest().listReceived());
+  ipcMain.handle(IPC.laneShareGuestOpen, async (_event, arg: { grantId?: unknown }) =>
+    accountBridge.laneShareGuest().open({ grantId: String(arg?.grantId ?? "") }));
+  ipcMain.handle(IPC.laneShareGuestAccept, async (_event, arg: { grantId?: unknown }) =>
+    accountBridge.laneShareGuest().accept({ grantId: String(arg?.grantId ?? "") }));
+  ipcMain.handle(IPC.laneShareGuestLeave, async (_event, arg: { grantId?: unknown }) =>
+    accountBridge.laneShareGuest().leave({ grantId: String(arg?.grantId ?? "") }));
+  ipcMain.handle(IPC.laneShareGuestConnect, async (_event, arg: { grantId?: unknown; dpopThumbprint?: unknown }) =>
+    accountBridge.laneShareGuest().connect({
+      grantId: String(arg?.grantId ?? ""),
+      dpopThumbprint: String(arg?.dpopThumbprint ?? ""),
+    }));
 
   ipcMain.handle(
     IPC.accountGetMachineInventory,

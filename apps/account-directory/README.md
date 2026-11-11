@@ -882,6 +882,161 @@ here (`src/cloud/chats.ts`, routes in `contract.ts`).
 - Rollout: `wrangler r2 bucket create ade-cloud-chats` (and `-production`),
   `wrangler secret put CLOUD_CHAT_MASTER_KEY` on both environments.
 
+## Lane sharing
+
+One account (the giver) gives another account (the receiver) limited access
+to one lane on one of the giver's machines (`src/laneShares/routes.ts`, table
+in migration 0023, tickets in migration 0024, the receiver's name in
+migration 0025, routes and shapes in
+`src/laneShares/contract.ts`). This Worker is only the index and the
+revocation list. It holds no detailed rights and a grant here never opens a
+machine: the host machine keeps the rights and redeems the guest's ticket on
+every guest connection.
+
+Trust: a guest's account token goes only to the directory; a host sees a
+one-use ticket. No sign-in or credential moves to another machine.
+
+On the host machine, a guest's input reaches services that ADE wrote for the
+owner. So the host turns off each interpretation it does for the owner, and
+these rules apply under any rights:
+
+- A guest's text is a plain prompt. The host runs no slash command of any
+  provider, no `!` shell line, no `/side` or `/memory`, no custom command or
+  skill, and no `@chat:`, `@term:`, `@lane:` or `@mac:` expansion on it. A
+  provider CLI can read a leading `/` or `!` itself, so the host refuses a
+  guest message that starts with one (`lane_share_plain_text_only`). The rule
+  applies to a send, a steer, a guest's draft and each edit of it (also when
+  the owner sends it), a guest's answer to a card, and the first input of a
+  CLI session. A guest's draft goes only to an existing chat.
+- Only the owner answers a card that is a permission or a secret: a project
+  secret, an MCP server to add or remove, an integration connect, the Mac
+  real-input lease, a shared-desktop consent, an MCP App call. The host
+  refuses a guest's answer or dismissal of such a card, and a guest sees only
+  "Waiting for the owner" in place of its text. A card kind with no mapped
+  right (such as a model choice) is refused too. With a Decide right, a guest
+  cannot choose "for the whole session" (that saves rules in the provider's
+  settings), and approves a plan only when the mode the plan returns to is
+  one the owner allowed.
+- A guest's thread comment never goes with the owner's next send on its own.
+  The owner includes it by name, and the agent reads it as written by
+  another person. Its `@chat:`-style chips stay plain text.
+- Typing into a CLI session gives the same reach as a shell on the host. Only
+  the typing right allows it. Each submitted line counts as one message. The
+  host refuses guest typing when it runs Windows, where a shell stays after
+  the CLI exits.
+- A guest reads no file that git ignores (such as `.env`) and nothing under
+  `.ade/`, through a file read or a diff read, also through a link.
+- The mode lock holds the mode a turn really runs in, read from the
+  provider's own settings (for a plan, also the mode its approval returns
+  to). A mode the host cannot map is refused. A guest changes the settings
+  only of a chat it started. With no model in the lock, a guest starts no
+  chat and no CLI session.
+- The host keeps the share's end date in its own rights and enforces it on
+  every action and every outgoing message. When a share ends, is revoked
+  (here or on another device), is left, or loses its send and steer rights,
+  the host removes the messages its guest queued that have not started.
+- The host admits a guest only when its rights row names the same lane as
+  the directory's grant. Message and draft limits are counted in one step,
+  so two requests at once cannot both take the last place.
+- With "hide machines" on, a guest sees no device or machine name, id or
+  platform in any payload. With "history before the share" off, previews,
+  summaries, goals, thread comments and subagents from before the share are
+  removed from every read, not only from the transcript.
+- `lane_share.*` actions are user-only, except three: only an RPC caller
+  that names itself as an ADE desktop client and carries no agent identity
+  reaches the rest. A guest never reaches any of them: its commands are
+  limited to a fixed list, and its connection has no runtime RPC channel.
+- An agent (the `ade` CLI, an agent's shell, ADE MCP) can only list shares,
+  make a Watch share (it sees, it cannot act), at most 5 an hour per machine,
+  and stop a share of that machine. The host machine enforces it, from the
+  caller its RPC server knows; this Worker has no part in it.
+
+- Every route takes the account bearer and checks the caller's user id against
+  the row. A pending invite matches a caller only through an address Clerk has
+  VERIFIED for that caller, read on each call with `CLERK_SECRET_KEY`. Without
+  that key, invite, accept and open by the invitee answer 503.
+- A grant the caller may not see answers 404, the same as an id that does not
+  exist. The routes ask Clerk before they decide that 404.
+- At most 5 guests (pending and active) per lane. An invite lasts 24 h, on the
+  server clock. A second invite to the same address refreshes the pending one.
+- Limits against spam: 20 invites and re-sends per giver per UTC day, 5 invite
+  emails per address per UTC day, 2,000 invite emails per UTC day from all
+  accounts together, one email per invite per 10 minutes and 5 in its life
+  (`lane_share_invite_days`, as in the Jev bonus). The per-address cap counts
+  a canonical form of the address (lowercase, no `+tag`, no dots at Gmail);
+  the invite keeps the exact address.
+- Each account may cause 120 Clerk Backend API reads per UTC hour through these
+  routes. Past that, the routes that need Clerk answer 429, and the
+  "Shared with me" list leaves out pending invites.
+- The invite email goes through Resend (`RESEND_API_KEY`). Without the key, or
+  when the send fails, the invite still succeeds and says `emailSent: false`.
+  The email names the giver (cleaned: no link-like or host-like words, no `@`)
+  and carries no project or lane label. Its only link is ADE's invite link.
+- The host read lists every live grant of the machine. A host drops any cached
+  grant that is not in the list, so a revoke counts at the next connection.
+  Each grant carries `createdAt` (the host hides chat history from before it)
+  and, once active, `acceptedAt` and `receiverName`: the receiver's Clerk name,
+  stored at accept (`receiver_label`, migration 0025) and cleaned like the
+  invite email's sender name. The host shows only this name as the author of
+  the guest's messages and in a guest turn's commit trailer; the guest never
+  chooses it. `closed` lists the machine's final grants, so the host can
+  delete their rights and counters.
+- `POST /lane-shares/:id/connect` gives the receiver of an ACTIVE grant the
+  ADE Relay address the host machine published (`wss://…/connect/<machineKey>`),
+  whether the host reported in recently, and a one-use ticket. Nobody else may
+  read it, not even the giver (404); a closed grant answers 410. LAN and
+  tailnet addresses are never given out. The body names the guest's DPoP key
+  (`dpopThumbprint`, RFC 7638). The ticket is 32 random bytes, lives 2
+  minutes, and D1 keeps only its hash. A grant may mint 30 tickets an hour.
+- `POST /lane-shares/host/redeem` is for a machine of the giver only (owner
+  token, no browser Origin). One conditional UPDATE uses the ticket once,
+  and only while it is unexpired, minted for that machine, and its grant is
+  still active with the caller as the giver. The answer names the receiver,
+  the lane and the DPoP key, with the machine's full grant list. Every
+  failure answers the same 404. The host admits the user id from this answer
+  and only for a hello signed by that DPoP key, so a copied ticket is useless.
+- A guest keeps the relay address after a revoke, so a revoked guest can still
+  reach the host's hello step (and use one of the relay's 16 sockets for that
+  machine). The host drops a guest hello without a well-formed ticket and a
+  valid DPoP proof before it calls the directory, and a revoked guest gets no
+  new ticket.
+- Clerk `user.deleted` closes every live grant given by or to the account.
+- The cron writes the clock-derived states, deletes rows closed 90 days ago,
+  drops budget rows older than a week, and deletes tickets older than an hour.
+
+### Moving a chat to the other person
+
+The owner, or a guest with Collaborate (send and start chats), can move a chat
+of the shared lane, with its unpushed work, to a computer of the other person.
+The directory carries none of it: the move goes only over the guest
+connection (the `laneShare.move` guest command) and the machines' own runtime
+actions. `POST /lane-shares/:id/move` is a different thing: it moves the
+owner's grants to another machine of the same account.
+
+- The person who must consent does it on their own machine. A consent refuses
+  by default, ends after 15 minutes, works once, and ends with a revoke, a
+  leave, the end of the share or a pause. One move at a time per share; a
+  second one gets "A move is already waiting".
+- The host binds each step to the guest's grant and lane (from its own role,
+  never from the client), to the move id and to the consent state. It sends no
+  chunk and takes no chunk without an accepted consent for that move id.
+- What moves is a fixed list of fields: the move id, chat title, lane name,
+  branch name, head commit, repository key, a model hint, the handoff brief,
+  the continuation note, the artifact summary, Linear issue references, and
+  the bundle's size, checksum and chunk count. The receiver refuses any other
+  field. No sign-in, token, credential, provider session, environment, MCP
+  configuration or secret moves.
+- The bundle goes in 384 KiB chunks, in order, with its SHA-256 checked at the
+  end, at most 50 MiB. The receiver runs `git bundle verify`, accepts only the
+  one expected ref, fetches with hooks off and no submodule fetch, and lands
+  the work in a NEW lane on a branch that did not exist there. It never
+  touches the shared lane's worktree or an existing branch.
+- The chat on the receiving computer uses only that computer's sign-ins and
+  starts in plan mode. The new lane is shared back to the other person by the
+  receiving computer's own account, with the rights its person chose.
+- When the owner starts a move, the owner's account email goes to the guest,
+  so the guest's computer can share the new lane back.
+
 ## Sign-up analytics
 
 `POST /webhooks/clerk` takes Clerk's `user.created` and `user.deleted`

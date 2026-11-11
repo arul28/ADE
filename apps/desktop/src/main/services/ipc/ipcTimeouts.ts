@@ -252,6 +252,14 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS;
     case IPC.lanesArchive:
       return 4 * 60_000;
+    // The state read runs git in every lane of the project; the removal can
+    // delete a large folder (another machine) or move it to the Trash.
+    case IPC.projectInspectRemoval:
+    case IPC.remoteRuntimeInspectProjectRemoval:
+      return 2 * 60_000;
+    case IPC.projectRemoveCopy:
+    case IPC.remoteRuntimeRemoveProjectCopy:
+      return 11 * 60_000;
     // A box's sleep, wake, resize, backup or delete answers once the provider is done.
     case IPC.cloudMachineAction:
     // A wake, then every lane's commit and push on the computer.

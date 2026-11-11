@@ -1,8 +1,29 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
+import type {
+  ProjectRemovalOutcome,
+  ProjectRemovalReport,
+  ProjectRemovalRequest,
+  RemoteProjectRemovalInspection,
+} from "../shared/projectRemoval";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudReferralSummary, CloudStatus } from "../shared/adeCloud";
 import type { CloudPassEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
+import type {
+  LaneShareGuestBridge,
+  LaneShareCreateArgs,
+  LaneShareCreateResult,
+  LaneShareEvent,
+  LaneShareLeaveResult,
+  LaneShareMoveAction,
+  LaneShareListArgs,
+  LaneShareListResult,
+  LaneShareReceivedResult,
+  LaneShareResendResult,
+  LaneShareRevokeResult,
+  LaneShareUpdateRightsArgs,
+  LaneShareUpdateRightsResult,
+} from "../shared/types/laneShare";
 import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -652,7 +673,7 @@ import type {
   GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
-  GitHubRepoRef,
+  GitHubRemoteStatus,
   GitHubRepoStarState,
   GitHubRequestBudget,
   GitHubSetTokenResult,
@@ -804,6 +825,7 @@ import type {
   ListMyGitHubReposResult,
   PublishProjectInput,
   PublishProjectResult,
+  ProjectFindForRepoResult,
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
@@ -1452,9 +1474,13 @@ declare global {
         findForRepo: (args: {
           repoOwner: string;
           repoName: string;
-        }) => Promise<{ rootPath: string; displayName: string } | null>;
+        }) => Promise<ProjectFindForRepoResult>;
         closeCurrent: () => Promise<void>;
         switchToPath: (rootPath: string) => Promise<ProjectInfo>;
+        /** The state of this computer's copy, for the remove dialog. */
+        inspectRemoval?: (rootPath: string) => Promise<ProjectRemovalReport>;
+        /** Removes this computer's entry for a project and, when asked, moves its folder to the Trash. */
+        removeCopy?: (rootPath: string, request: ProjectRemovalRequest) => Promise<ProjectRemovalOutcome>;
         forgetRecent: (keyOrRootPath: string) => Promise<RecentProjectSummary[]>;
         reorderRecent: (
           orderedKeys: string[],
@@ -1637,6 +1663,17 @@ declare global {
           id: string,
           rootPath: string,
         ) => Promise<ProjectIcon | null>;
+        /** The state of the host's copy, for the remove dialog. Only for a connected machine; never wakes one. */
+        inspectProjectRemoval?: (
+          id: string,
+          projectId: string,
+        ) => Promise<RemoteProjectRemovalInspection>;
+        /** Removes the host's entry for a project and, when asked, deletes its folder there for good. */
+        removeProjectCopy?: (
+          id: string,
+          projectId: string,
+          request: ProjectRemovalRequest,
+        ) => Promise<ProjectRemovalOutcome>;
         getDefaultParentDir: (id: string) => Promise<string>;
         getHandoffStoragePreflight: (
           id: string,
@@ -4607,7 +4644,7 @@ declare global {
         getStatus: (opts?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getRemoteStatus: (opts?: {
           forceRefresh?: boolean;
-        }) => Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }>;
+        }) => Promise<GitHubRemoteStatus>;
         setToken: (token: string, pin?: OpenProjectBinding | null) => Promise<GitHubSetTokenResult>;
         clearToken: (pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getAppUserAuthStatus: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
@@ -4865,6 +4902,10 @@ declare global {
         get: (args: { scope: string; key: string }) => Promise<AccountSettingsResult<unknown>>;
         set: (
           args: { scope: string; key: string; value: unknown } & AccountSettingsWriteOptions,
+        ) => Promise<AccountSettingsResult<null>>;
+        /** Deletes a key on every machine of the account; a reader then sees it as never set. */
+        remove?: (
+          args: { scope: string; key: string } & AccountSettingsWriteOptions,
         ) => Promise<AccountSettingsResult<null>>;
         sync: () => Promise<AccountSettingsResult<null>>;
         onChanged?: (listener: () => void) => () => void;
@@ -5253,6 +5294,30 @@ declare global {
         runProjectScan: (pin?: OpenProjectBinding | null) => Promise<CtoRunProjectScanResult>;
         getAttention: (pin?: OpenProjectBinding | null) => Promise<CtoAttentionState>;
       };
+      /**
+       * The owner's lane sharing (`lane_share` runtime actions, user-only).
+       * A share lives on the lane's own machine: pass that machine's pin.
+       * No pin: the machine the project tab is bound to.
+       */
+      laneShare: {
+        list: (args?: LaneShareListArgs, pin?: OpenProjectBinding | null) => Promise<LaneShareListResult>;
+        create: (args: LaneShareCreateArgs, pin?: OpenProjectBinding | null) => Promise<LaneShareCreateResult>;
+        updateRights: (args: LaneShareUpdateRightsArgs, pin?: OpenProjectBinding | null) => Promise<LaneShareUpdateRightsResult>;
+        revoke: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareRevokeResult>;
+        resendInvite: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareResendResult>;
+        listReceived: (pin?: OpenProjectBinding | null) => Promise<LaneShareReceivedResult>;
+        leave: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareLeaveResult>;
+        /** A step of a chat move (`LaneShareMoveAction`), on the pinned machine. */
+        move: <T = unknown>(action: LaneShareMoveAction, args: Record<string, unknown>, pin?: OpenProjectBinding | null) => Promise<T>;
+        /** `lane_share_event` from the pinned machine, else the bound one. */
+        onEvent: (cb: (event: LaneShareEvent) => void, pin?: OpenProjectBinding | null) => () => void;
+      };
+      /**
+       * Lane sharing, the guest's side: this account's calls to the account
+       * directory (shares given TO it). Account scope, no pin: desktop asks
+       * from main with its own token, the web client from its account session.
+       */
+      laneShareGuest: LaneShareGuestBridge;
       remoteMcpCall: <T = unknown>(
         action: RemoteMcpAction,
         args?: Record<string, unknown>,

@@ -24,6 +24,7 @@ import {
   Robot,
   ShareNetwork,
   Cloud,
+  UsersThree,
   SlidersHorizontal,
   UserCircle,
 } from "@phosphor-icons/react";
@@ -107,6 +108,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   behaviour: SlidersHorizontal,
   "ade-mcp": ShareNetwork,
   "ade-cloud": Cloud,
+  sharing: UsersThree,
 };
 
 /** Tabs whose content sits in the centred `SettingsColumn`. */
@@ -121,6 +123,7 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "android",
   "notifications",
   "stats",
+  "sharing",
   "secrets",
   "behaviour",
   "ade-mcp",
