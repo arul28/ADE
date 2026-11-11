@@ -498,6 +498,8 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
   const requestRef = useRef(0);
   /** Set by the person's Retry: the next read bypasses a cached auth refusal. */
   const forceNextRef = useRef(false);
+  /** While a forced read runs, automatic reloads must not supersede it. */
+  const forcedInFlightRef = useRef(false);
   // What the last reload returned, as text: PR events arrive every few seconds
   // during a sync, and a reload that changed nothing must not re-render the
   // whole home page (every widget under it renders with it).
@@ -508,6 +510,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
     const bridge = window.ade?.prs;
     if (!projectRoot || !bridge?.getGitHubSnapshot) {
       forceNextRef.current = false;
+      forcedInFlightRef.current = false;
       setData({ snapshot: null, tracked: [] });
       setLoadError(null);
       setRetrying(false);
@@ -515,11 +518,13 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
     }
     let timer: number | null = null;
     const load = async () => {
-      const request = ++requestRef.current;
       // A person's Retry forces past the cached "no GitHub sign-in" answer;
-      // automatic reloads keep the short cache.
+      // automatic reloads keep the short cache and wait for that forced read.
       const force = forceNextRef.current;
+      if (!force && forcedInFlightRef.current) return;
       forceNextRef.current = false;
+      if (force) forcedInFlightRef.current = true;
+      const request = ++requestRef.current;
       // One page of closed history (cached ten minutes in main) brings the
       // week's merges with it; open PRs come in the same snapshot.
       const [snapshotResult, trackedResult] = await Promise.allSettled([
@@ -527,6 +532,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
         listPrsCoalesced({ projectRoot }),
       ]);
       if (requestRef.current !== request) return;
+      if (force) forcedInFlightRef.current = false;
       const failed = snapshotResult.status === "rejected" || trackedResult.status === "rejected";
       const snapshot = snapshotResult.status === "fulfilled" ? snapshotResult.value : null;
       const tracked = trackedResult.status === "fulfilled" ? trackedResult.value : [];

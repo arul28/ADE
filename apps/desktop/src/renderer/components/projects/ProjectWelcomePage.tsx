@@ -174,14 +174,18 @@ export function ProjectWelcomePage() {
   const forgetTimerRef = useRef<number | null>(null);
   const dragDepthRef = useRef(0);
 
+  const recentReadRef = useRef(0);
   const loadRecentProjects = useCallback(() => {
+    const request = ++recentReadRef.current;
     window.ade.project
       .listRecent()
       .then((rows) => {
+        if (recentReadRef.current !== request) return;
         setRecentProjects(rows);
         setRecentListError(null);
       })
       .catch((error: unknown) => {
+        if (recentReadRef.current !== request) return;
         setRecentListError(error instanceof Error ? error.message : String(error));
       });
   }, []);

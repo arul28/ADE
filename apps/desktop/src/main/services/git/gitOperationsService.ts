@@ -225,14 +225,10 @@ async function recommendDivergedAction(
     cwd: worktreePath,
     timeoutMs: 5_000
   });
-  if (mergeBaseRes.exitCode === 0) return "force_push_lease";
-  const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
-    cwd: worktreePath,
-    timeoutMs: 5_000
-  });
-  const hasRecentRebase = reflogRes.exitCode === 0 &&
-    reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
-  return hasRecentRebase ? "force_push_lease" : "pull";
+  // A force push is only safe when upstream is already an ancestor of HEAD.
+  // A reflog that happens to mention a rebase is not proof: upstream may hold
+  // commits HEAD does not, and a lease push would replace them.
+  return mergeBaseRes.exitCode === 0 ? "force_push_lease" : "pull";
 }
 
 export function createGitOperationsService({
