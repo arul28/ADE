@@ -22,6 +22,9 @@ function unescapeMountPath(value: string): string {
 /** How long the folder's real path may take before its path as opened is used. */
 const REALPATH_WAIT_MS = 250;
 
+/** True while a real-path lookup has not answered, even after its wait ran out. */
+let realpathLookupPending = false;
+
 /**
  * The folder's real path, so a symlink into a network mount is classified by
  * the mount it points at. Asynchronous and bounded: a mount that stalls the
@@ -29,8 +32,14 @@ const REALPATH_WAIT_MS = 250;
  */
 async function resolvedProjectPath(projectRoot: string): Promise<string> {
   const opened = path.resolve(projectRoot);
+  // One lookup at a time: a lookup a stalled mount never answers holds a
+  // file-system thread until it does, and those threads are shared.
+  if (realpathLookupPending) return opened;
+  realpathLookupPending = true;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  const realpath = fs.promises.realpath(opened).catch(() => opened);
+  const realpath = fs.promises.realpath(opened)
+    .catch(() => opened)
+    .finally(() => { realpathLookupPending = false; });
   const timedOut = new Promise<string>((resolve) => {
     timer = setTimeout(() => resolve(opened), REALPATH_WAIT_MS);
     timer.unref?.();
