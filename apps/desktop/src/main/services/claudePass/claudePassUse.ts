@@ -25,6 +25,7 @@ import type { UsageSnapshot, UsageWindow } from "../../../shared/types/usage";
 import { claudePassKeyOfAccountId, isClaudePassKey } from "../../../shared/types/providerLogins";
 import type { ClaudePassCheck, ClaudePassUseSource, ClaudePassUseView, ClaudePassUseWindow } from "../../../shared/cloudSignIns";
 import { normalizeResetsAtMs, utilizationToPercent } from "../../../shared/claudeSessionQuota";
+import { captureError } from "../../../shared/sentry/capture";
 
 export const CLAUDE_PASS_USE_FILE = "claude-pass-use.json";
 /** At most one file write per minute. */
@@ -64,6 +65,7 @@ let filePath: string | null = null;
 let dirty = false;
 let lastWriteAt = 0;
 let writing = false;
+let writeFailureReported = false;
 
 
 function isStatus(value: unknown): value is Status {
@@ -172,8 +174,18 @@ export function flushClaudePassUse(now: number = Date.now(), options: { force?: 
   writing = true;
   void fs.promises.writeFile(temp, body, { mode: 0o600 })
     .then(() => fs.promises.rename(temp, target))
-    .catch(() => {
+    .catch((error: unknown) => {
+      // Kept dirty, so the next flush tries again; reported once per process.
       dirty = true;
+      if (!writeFailureReported) {
+        writeFailureReported = true;
+        captureError(error, {
+          level: "warning",
+          handled: true,
+          fingerprint: ["claude_pass", "use_write_failed"],
+          tags: { area: "claude_pass", code: (error as NodeJS.ErrnoException)?.code ?? "unknown" },
+        });
+      }
       void fs.promises.rm(temp, { force: true }).catch(() => undefined);
     })
     .finally(() => {

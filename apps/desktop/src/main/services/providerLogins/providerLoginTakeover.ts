@@ -436,7 +436,10 @@ export function createTakeover(s: SyncShared) {
         if (claimed) claimedAt.set(key, now());
         deps.logger.info("provider_login.claim_back", { provider, result: verdict.renew ? "owner" : verdict.reason });
       })
-      .catch(() => undefined)
+      .catch((error: unknown) => {
+        // The next pass tries the claim-back again.
+        deps.logger.warn("provider_login.claim_back_failed", { provider, code: (error as NodeJS.ErrnoException)?.code ?? null });
+      })
       .finally(() => claimBacks.delete(key));
   }
 

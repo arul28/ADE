@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHeadlessAccountVaultBridge } from "../../../../../ade-cli/src/services/account/accountRuntimeLifecycle";
 import { createAccountVaultStore, type AccountVaultRelay } from "../../../../../ade-cli/src/services/account/accountVaultStore";
 import { providerLoginGate } from "./providerLoginHooks";
+import { originId } from "./providerLoginPayload";
 import { createProviderLoginSync } from "./providerLoginSync";
 
 /**
@@ -48,9 +49,13 @@ describe("provider login capture: stable reads", () => {
     return abs;
   }
 
-  async function makeSync() {
+  async function makeSync(seed: Array<{ key: string; value: string | null }> = [], now?: () => number) {
+    const items = seed.map((item) => ({
+      scope: "all", kind: "provider_login", key: item.key, value: item.value,
+      updatedAt: new Date(Date.now() - 60_000).toISOString(), writerDeviceId: "device-a", refreshOwner: null,
+    }));
     const relay = {
-      getAccountVault: vi.fn(async () => ({ items: [], cursor: null, truncated: false })),
+      getAccountVault: vi.fn(async () => ({ items, cursor: null, truncated: false })),
       putAccountVault: vi.fn(async (items: unknown[]) => ({ updatedAt: new Date().toISOString(), results: items.map(() => ({ status: "written" })) })),
       deleteAccountVaultItem: vi.fn(async () => true),
     };
@@ -62,11 +67,12 @@ describe("provider login capture: stable reads", () => {
     });
     await vault.sync();
     const env: NodeJS.ProcessEnv = { HOME: home };
+    const settingValues = new Map<string, unknown>();
     const sync = createProviderLoginSync({
       adeDir,
       staticOff: null,
       vault: () => vault,
-      settings: () => ({ get: () => undefined }),
+      settings: () => ({ get: (_scope: string, key: string) => settingValues.get(key), set: (_scope: string, key: string, value: unknown) => (settingValues.set(key, value), true) }),
       accountUserId: () => USER,
       machine: () => ({ machineKey: "machine-a", deviceId: "device-a", label: "test", platform: "linux" }),
       cloudAccess: async () => "ready",
@@ -75,6 +81,7 @@ describe("provider login capture: stable reads", () => {
       env,
       homeDir: home,
       platform: "linux",
+      ...(now ? { now } : {}),
     });
     /** The files of the one sign-in of `provider` in the account, decoded; null when there is none. */
     const carried = (provider: string): Record<string, string> | null => {
@@ -83,7 +90,7 @@ describe("provider login capture: stable reads", () => {
       const payload = JSON.parse(vault.get("all", "provider_login", row.key)!) as { files: Array<{ rel: string; enc: string; data: string }> };
       return Object.fromEntries(payload.files.map((file) => [file.rel, file.enc === "base64" ? Buffer.from(file.data, "base64").toString("hex") : file.data]));
     };
-    return { sync, carried };
+    return { sync, carried, vault, items };
   }
 
   const grokLogin = (key: string) => JSON.stringify({ "https://auth.x.ai": { key, expires_at: "2099-01-01T00:00:00.000Z", email: "a@example.test" } });
@@ -120,6 +127,77 @@ describe("provider login capture: stable reads", () => {
     await sync.pass();
     expect(carried("grok")).toEqual({ "auth.json": finished });
   });
+
+  // This computer's own key in the account. A copy it cannot open (the relay's
+  // key changed) or one a newer ADE wrote is unknown, not missing: capture
+  // never writes over it. A copy it opens but cannot parse is damaged: replace it.
+  it.each([
+    { name: "a copy this computer cannot open", value: null, replaced: false },
+    { name: "a copy a newer ADE wrote", value: JSON.stringify({ v: 2, files: [] }), replaced: false },
+    { name: "a damaged copy", value: "not a payload", replaced: true },
+  ])("with $name in the account, capture replaces it: $replaced", async ({ value, replaced }) => {
+    const key = `grok/${originId("machine-a")}.base`;
+    const { sync, carried, vault } = await makeSync([{ key, value }]);
+    writeFile(".grok/auth.json", grokLogin("key-local"), 10_000);
+    await sync.pass();
+    if (replaced) expect(carried("grok")).toEqual({ "auth.json": grokLogin("key-local") });
+    else expect(vault.get("all", "provider_login", key)).toBe(value);
+    const grok = (await sync.status("grok")).providers.find((entry) => entry.provider === "grok");
+    expect(grok?.local.state === "account_unreadable").toBe(!replaced);
+  });
+
+  // A newer ADE on this computer (same machine key, so the same key) wrote over
+  // the copy this ADE uploaded. Once the person removes that copy, this ADE's
+  // own sign-in goes up again; its old upload mark must not keep it removed.
+  it("uploads this computer's sign-in again after the person removes a copy it cannot read", async () => {
+    const key = `grok/${originId("machine-a")}.base`;
+    const { sync, carried, vault, items } = await makeSync();
+    writeFile(".grok/auth.json", grokLogin("key-local"), 10_000);
+    await sync.pass();
+    expect(carried("grok")).toEqual({ "auth.json": grokLogin("key-local") });
+
+    const newer = JSON.stringify({ v: 2, files: [] });
+    items.push({ scope: "all", kind: "provider_login", key, value: newer, updatedAt: new Date(Date.now() + 60_000).toISOString(), writerDeviceId: "device-a", refreshOwner: null });
+    await vault.sync();
+    await sync.pass();
+    expect(vault.get("all", "provider_login", key)).toBe(newer);
+
+    await sync.remove({ key });
+    await sync.pass();
+    expect(carried("grok")).toEqual({ "auth.json": grokLogin("key-local") });
+  });
+
+  // A lock or a permission change is not a sign-out: only a login file that
+  // is gone, on two passes 60 s apart, takes the sign-in out of the account.
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "keeps a sign-in in the account while its login file cannot be read, and removes it once the file is gone",
+    async () => {
+      let clock = Date.now();
+      const { sync, carried } = await makeSync([], () => clock);
+      writeFile(".grok/auth.json", grokLogin("key-a"), 10_000);
+      await sync.pass();
+      expect(carried("grok")).not.toBeNull();
+
+      const dir = path.join(home, ".grok");
+      fs.chmodSync(dir, 0o000);
+      try {
+        for (let pass = 0; pass < 3; pass += 1) {
+          clock += 61_000;
+          await sync.pass();
+        }
+      } finally {
+        fs.chmodSync(dir, 0o755);
+      }
+      expect(carried("grok")).not.toBeNull();
+
+      fs.rmSync(path.join(dir, "auth.json"));
+      for (let pass = 0; pass < 2; pass += 1) {
+        clock += 61_000;
+        await sync.pass();
+      }
+      expect(carried("grok")).toBeNull();
+    },
+  );
 
   it("carries a two-file login as a matching pair, never one new file with one old", async () => {
     const { sync, carried } = await makeSync();

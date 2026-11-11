@@ -11,7 +11,7 @@ import { PROVIDER_LOGINS_CLOUD_SETTING, cloudChoiceKey } from "../../../shared/p
 import { isClaudePassKey, type ProviderLoginProvider, type ProviderLoginStatus } from "../../../shared/types/providerLogins";
 import { isRecord } from "../shared/utils";
 import { notifyProviderLoginsChanged } from "./providerLoginHooks";
-import { PROVIDER_LOGIN_VAULT_KIND, parseProviderLoginKey } from "./providerLoginPayload";
+import { PROVIDER_LOGIN_VAULT_KIND, isNewerProviderLoginPayload, originId, parseProviderLoginKey } from "./providerLoginPayload";
 import {
   OFF_MESSAGES,
   type CloudSetting,
@@ -22,7 +22,7 @@ import {
 
 export function createWrites(s: SyncShared) {
   const { deps, jobs } = s;
-  const { cloudSetting, captureOffReason, liveSignInKeys } = s;
+  const { cloudSetting, captureOffReason, liveSignInKeys, loadState, saveState } = s;
 
   async function writableStores(): Promise<{ vault: ProviderLoginVault; settings: ProviderLoginSettings & { set: NonNullable<ProviderLoginSettings["set"]> } }> {
     if (deps.staticOff) throw new Error(OFF_MESSAGES[deps.staticOff]);
@@ -70,6 +70,30 @@ export function createWrites(s: SyncShared) {
     const parsedKey = parseProviderLoginKey(key);
     if (!parsedKey) throw new Error("That sign-in is not in your account.");
     return { provider: parsedKey.provider, slot: parsedKey.slot, place: cloudChoiceKey(parsedKey.provider, parsedKey.slot), pass: false };
+  }
+
+  /** True for a copy of this computer's own sign-in that this computer cannot read (capture's `account_unreadable`). */
+  function unreadableOwnCopy(vault: ProviderLoginVault, key: string): boolean {
+    const machine = deps.machine();
+    const parsedKey = parseProviderLoginKey(key);
+    if (!machine || !parsedKey || parsedKey.origin12 !== originId(machine.machineKey)) return false;
+    const row = vault.list(ACCOUNT_SCOPE_ALL).find((entry) => entry.kind === PROVIDER_LOGIN_VAULT_KIND && entry.key === key);
+    return Boolean(row) && (!row!.readable || isNewerProviderLoginPayload(vault.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, key)));
+  }
+
+  /**
+   * Drop this computer's upload mark for `key`. Without it, capture treats the
+   * tombstone as a removal of the same login and never uploads it again.
+   * Behind the pass in flight, so the marks file has one writer.
+   */
+  async function forgetUploadMark(key: string): Promise<void> {
+    const accountUserId = deps.accountUserId();
+    if (!accountUserId) return;
+    while (s.inFlight) await s.inFlight.catch(() => undefined);
+    const state = loadState(accountUserId);
+    if (!state.pushed[key]) return;
+    delete state.pushed[key];
+    saveState(state);
   }
 
   const writes = {
@@ -126,6 +150,8 @@ export function createWrites(s: SyncShared) {
     async remove(args: { key: string }): Promise<ProviderLoginStatus> {
       const { vault } = await writableStores();
       const found = existingKey(vault, args.key);
+      // A copy this computer cannot read goes so that this computer's own copy replaces it.
+      if (!found.pass && unreadableOwnCopy(vault, args.key)) await forgetUploadMark(args.key);
       if (!vault.remove(ACCOUNT_SCOPE_ALL, PROVIDER_LOGIN_VAULT_KIND, args.key)) {
         throw new Error("ADE couldn't remove that sign-in from your account. Try again in a moment.");
       }

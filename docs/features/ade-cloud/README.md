@@ -69,6 +69,8 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Sleep, wake for use, agent limits | `cloudSleep.ts`, `cloudSleepWatch.ts`, `cloudBrainAccess.ts` |
 | Ready machines | `cloudReadyMachines.ts`, `cloudReadyClaim.ts`, `cloudReadySettings.ts`, `cloudReadyActions.ts` |
 | Sign-ins new machines start with | `cloudSignInStore.ts`, `cloudSignInActions.ts`, `cloudSignInBoot.ts`, `cloudClaudeSignIn.ts` |
+| Claude passes (one per Claude account, cloud only) | `claudePassStore.ts`, `claudePassVerify.ts`, `claudePassEndWarning.ts`; on a machine `services/claudePass/` |
+| Account sign-ins on every computer (capture, apply, renewal) | `services/providerLogins/` (entry `providerLoginSync.ts`, one file per job) |
 | CLI and agent verbs, approvals | `cloudAgentActions.ts`, `cloudBrainMaker.ts`, `cloudDesktopActions.ts` |
 | Desktop IPC | `registerCloudIpc.ts` |
 | Reaching ADE's server, access | `cloudServerProvider.ts`, `cloudAccess.ts`, `cloudVaultItems.ts` |
@@ -190,6 +192,14 @@ $3 a month, a day at twice the week's mean) and emails the owner the report.
 Account vault items, scope `all`, kind `integration`: `cloud-budget` (agent
 limits only; the name is historical), `cloud-ready` (which projects keep a machine ready),
 `cloud-claude-token` and `cloud-key-<provider>` (sign-ins for new machines).
+Kind `provider_login` holds the account's provider sign-ins: `<provider>/<origin>.<slot>`
+(the origin is 12 hex of the computer's machine key) and the Claude passes,
+`claude-pass/<12 hex>` (`claude-pass/legacy` for the item older versions saved).
+The relay caps one such value at 16,000 characters. The account setting
+`providerLogins.cloud` says which sign-in ADE Cloud uses for each provider, which
+are off, and the Claude smart balance switch. Each computer keeps marks only,
+never a token, in `<ADE home>/provider-logins/state.json` and `applied.json`,
+and the use of each pass in `claude-pass-use.json`.
 Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
 `ade_made_by_chat`, `ade_disk_full` and `ade_disk_full_reason`, and the ready-machine keys in `cloudReady.ts`), plus `created_by: ade`.
 

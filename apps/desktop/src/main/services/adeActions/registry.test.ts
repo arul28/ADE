@@ -1358,7 +1358,10 @@ describe("runtime session actions", () => {
     }));
     const runtime = {
       projectRoot: "/repo",
-      agentChatService: {},
+      agentChatService: {
+        // null: no balanced account is picked, so the CLI runs on the machine's own login.
+        pickNewCliSessionAccount: vi.fn(() => null),
+      },
       laneService: {
         getLaneWorktreePath: vi.fn(() => "/repo/.ade/worktrees/lane-1"),
         getLaneBaseAndBranch: vi.fn(),
