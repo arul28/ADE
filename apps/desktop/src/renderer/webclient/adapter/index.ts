@@ -32,6 +32,7 @@ import { createPersonalChatsNamespace } from "./personalChats";
 import { createRemoteRuntimeNamespace } from "./remoteRuntime";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
 import { createWebCloudNamespace } from "./cloud";
+import { createWebProviderLoginsNamespace } from "./providerLogins";
 import type { AdapterEvents, AdapterInfra } from "./types";
 
 export type AdeWebAdapter = {
@@ -191,6 +192,8 @@ export function createAdeWebAdapter(
     builtInBrowser: misc.builtInBrowser,
     usage: misc.usage,
     providerInstances: misc.providerInstances,
+    // The account's sign-ins (Settings › Providers, the ADE Cloud page), through the connected machine.
+    providerLogins: createWebProviderLoginsNamespace(infra),
     automations: misc.automations,
     updateCheckForUpdates: async () => undefined,
     // The web app has no install of its own to move between tracks.

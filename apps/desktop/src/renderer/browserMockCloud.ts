@@ -204,8 +204,25 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
   const period = periodBounds(now);
   const diskUsed = machines.reduce((total, box) => total + (box.resources?.diskGb ?? 0), 0);
   const extra: Record<string, unknown> = {};
-  if (fix.earnedMilli != null) extra.earnedHours = { leftMilli: fix.earnedMilli };
-  if (fix.blocked) extra.freePlan = { state: "computer_claimed" };
+  if (fix.earnedMilli != null) extra.earnedHours = { leftMilli: fix.earnedMilli, usedThisPeriodMilli: 0, grantedMilli: fix.earnedMilli };
+  extra.freePlan = fix.blocked
+    ? { state: "refused", sentence: "This computer already used another account's free hours. Plus gives you 500 hours a month." }
+    : { state: fix.planId === "free" ? "claimed" : "unclaimed", sentence: null };
+  const friends = fix.earnedMilli ? Math.round(fix.earnedMilli / 20_000) : 0;
+  extra.referral = {
+    code: "K7Q2-M9",
+    link: "https://ade-app.dev/invite/K7Q2-M9",
+    friendsJoined: friends + (fix.planId === "free" ? 0 : 1),
+    rewardsPaid: friends,
+    rewardsLeft: 10 - friends,
+    rewardLimit: 10,
+    rewardMilli: 20_000,
+    hoursEarnedMilli: fix.earnedMilli ?? 0,
+    canEnterCode: fix.planId === "free",
+    enterCodeUntil: fix.planId === "free" ? now + 21 * DAY : null,
+    hasReferrer: false,
+    referredState: null,
+  };
   return {
     plan: fix.planId === "free" ? "free" : "paid",
     rules: fix.planId === "free" ? "free" : "paid",
@@ -312,6 +329,12 @@ export function applyBrowserMockCloud(ade: any): void {
     },
     onLaneJob: () => () => undefined,
     clearCaches: async () => ({ freedGb: 1.2 }),
+    getReferral: async () => (state as { referral?: unknown }).referral ?? null,
+    redeemInvite: async (code: string) => {
+      console.info(`[browser mock] cloud.redeemInvite (${code.length} chars)`);
+      if (!code.trim().toUpperCase().includes("FRIEND")) return { ok: false, reason: "unknown_code", message: "That invite code doesn't exist. Check it and try again." };
+      return { ok: true, rewarded: false, referral: (state as { referral?: unknown }).referral ?? null };
+    },
   };
   ade.cloudAccess = {
     read: async () => ({ enabled: accessOn, passEnd: null }),

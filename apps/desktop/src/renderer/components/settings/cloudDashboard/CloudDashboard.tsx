@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowLeft, Broom, Desktop, MagnifyingGlass, Trash, Warning } from "@phosphor-icons/react";
-import { cloudAccountBanner, formatCloudDate, formatCloudHours, planCleanupDoneSentence, timedWakesCancelledSentence, type CloudAccountState } from "../../../../shared/adeCloud";
+import { cloudAccountBanner, cloudFreePlanOf, formatCloudDate, formatCloudHours, planCleanupDoneSentence, timedWakesCancelledSentence, type CloudAccountState } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../../shared/cloudLaneLaunch";
 import { resolveSettingsHash } from "../../../../shared/settingsManifest";
 import { useLocation } from "react-router-dom";
@@ -18,6 +18,7 @@ import { CloudFreeUpSpace } from "./CloudFreeUpSpace";
 import { CloudPlans } from "./CloudPlans";
 import { CloudSizes } from "./CloudSizes";
 import { CloudSignIns } from "./CloudSignIns";
+import { CloudInviteCard } from "./CloudInvite";
 import {
   CLOUD_DISK_WARN_SHARE,
   STATE_LABEL,
@@ -46,7 +47,7 @@ export const CLOUD_DASHBOARD_ID = "ade-cloud-dashboard";
 const NO_MACHINES: CloudLaneMachine[] = [];
 
 /** The settings anchors on this page: a deep link to one scrolls to its card. */
-const CARD_ANCHORS = new Set([ADE_CLOUD_PLAN_ANCHOR, "cloud-plan", "cloud-sign-ins", "cloud-agent-limits", "cloud-sizes", "cloud-lanes", "cloud-machines", "cloud-ready", "cloud-connection"]);
+const CARD_ANCHORS = new Set(["cloud-invite", ADE_CLOUD_PLAN_ANCHOR, "cloud-plan", "cloud-sign-ins", "cloud-agent-limits", "cloud-sizes", "cloud-lanes", "cloud-machines", "cloud-ready", "cloud-connection"]);
 
 /** The card anchor a hash names: its own text first, then a settings entry's. */
 function anchorOfHash(hash: string): string | null {
@@ -264,6 +265,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 
       <CloudPlans account={account} onChanged={refresh} />
       <CloudSizes account={account} />
+      <CloudInviteCard account={account} onChanged={refresh} />
 
       <div className="adecd-pair">
         <CloudSignIns />
@@ -306,10 +308,9 @@ function CloudHero({
   const forecast = hoursForecast(account, now);
   const diskUsed = account.disk.usedGb;
   const diskLimit = account.disk.limitGb ?? 0;
-  const freeBlocked = (account as { freePlan?: { state?: string; message?: string } }).freePlan;
-  const blockedSentence = freeBlocked?.state && freeBlocked.state !== "eligible" && freeBlocked.state !== "claimed"
-    ? freeBlocked.message ?? "This computer already used another account's free hours. Plus gives you 500 hours a month."
-    : null;
+  // The free plan refused on this computer (another account used its free hours): one sentence from the server.
+  const freePlan = cloudFreePlanOf(account);
+  const blockedSentence = freePlan.state === "refused" ? freePlan.sentence ?? null : null;
   const resets = account.billing.cancelAtPeriodEnd
     ? `plan ends ${formatShortDate(account.billing.periodEnd)}`
     : `resets ${formatShortDate(account.billing.periodEnd)}`;

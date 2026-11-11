@@ -5,6 +5,7 @@ import type {
   CloudMachinesResult,
   CloudStatus,
 } from "../../../shared/adeCloud";
+import type { CloudSignInStatus } from "../../../shared/cloudSignIns";
 import type { AdapterInfra } from "./types";
 
 /**
@@ -17,9 +18,10 @@ import type { AdapterInfra } from "./types";
  * this tab is connected to. Account level: no project pin.
  *
  * What only the desktop app can do stays out, so each caller's own guard
- * hides it: the life of a lane's computer (`laneLife`, `onLaneJob`), sign-ins,
- * plans and billing pages. Making a computer and the machine
- * actions that delete or resize refuse with a plain sentence.
+ * hides it: the life of a lane's computer (`laneLife`, `onLaneJob`), saving a
+ * key or a Claude pass, plans and billing pages. Making a computer and the
+ * machine actions that delete or resize refuse with a plain sentence. The
+ * account's cloud sign-ins (saved keys, passes) are read, never written.
  */
 
 const DESKTOP_ONLY = "Do this in the ADE desktop app. The web app reads ADE Cloud but can't change computers.";
@@ -112,6 +114,18 @@ export function createWebCloudNamespace(infra: Pick<AdapterInfra, "client" | "co
     },
     getAgentLimits: async () => await commands.call<CloudAgentLimits | null>("cloud.read", { action: "limits" }, { fallback: null, retainLastRead: false }),
     setAgentLimits: async (limits) => await commands.call<CloudAgentLimits | null>("cloud.write", { action: "set_limits", args: limits }, { idempotent: false }),
+    // The saved ADE Cloud keys and Claude passes, as names and states only (no key). An older brain has no
+    // such read: then the sign-ins card shows the account's sign-ins without them.
+    cloudSignInStatus: async () => {
+      if (!(await access())) return null;
+      try {
+        return await commands.call<CloudSignInStatus | null>("cloud.read", { action: "cloud_sign_in_status" }, { fallback: null, retainLastRead: false });
+      } catch {
+        return null;
+      }
+    },
+    // No push from the host: the page reads it again on open and after its own writes.
+    onCloudSignInChanged: () => () => undefined,
     onCreateProgress: () => () => undefined,
     cancelCreate: async () => ({ cancelled: false }),
   };

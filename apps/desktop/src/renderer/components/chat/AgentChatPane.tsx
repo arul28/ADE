@@ -514,6 +514,7 @@ import {
 } from "../../state/chatLaunchStore";
 import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
 import { recordStarPillMessageSent } from "../../lib/starPillActivity";
+import { recordInvitePillMessageSent } from "../../lib/invitePill";
 import { noteChatSendForSuggestions } from "../app/suggestions/chatSendSignals";
 import {
   COMPOSER_DRAFT_STORAGE_KEY_PREFIX,
@@ -15149,7 +15150,10 @@ export function AgentChatPane({
       return;
     }
     clearPromptSuggestionForSession(selectedSessionId);
-    if (draft.trim().length || attachments.length) recordStarPillMessageSent();
+    if (draft.trim().length || attachments.length) {
+      recordStarPillMessageSent();
+      recordInvitePillMessageSent();
+    }
 
     if (launchRoutesSends && chatLaunch && selectedSessionId && selectedSessionId === chatLaunch.sessionId) {
       // The lane is still being set up (or earlier queued messages still wait

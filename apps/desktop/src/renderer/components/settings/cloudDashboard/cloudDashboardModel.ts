@@ -1,6 +1,7 @@
 import {
   CLOUD_PLAN_LABELS,
   cloudCatalogOf,
+  cloudEarnedHoursOf,
   formatCloudDate,
   formatCloudHoursRate,
   type CloudAccountState,
@@ -226,6 +227,5 @@ export function prefersReducedMotion(): boolean {
  * plan's hours. Null from a server that doesn't send them.
  */
 export function earnedHoursLeftMilli(account: CloudAccountState): number | null {
-  const earned = (account as { earnedHours?: { leftMilli?: unknown } | null }).earnedHours;
-  return typeof earned?.leftMilli === "number" ? earned.leftMilli : null;
+  return account.earnedHours ? cloudEarnedHoursOf(account).leftMilli : null;
 }

@@ -1,6 +1,7 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
+import { buildProviderLoginsDomainService } from "../../../../desktop/src/main/services/providerLogins/providerLoginActions";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
 import { cloudDomainEnabled } from "../../../../desktop/src/shared/adeCloud";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
@@ -6644,7 +6645,7 @@ function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegis
 }
 
 /** What the phone's ADE Cloud page may run (`cloud.read` / `cloud.write`). */
-const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set(["access", "status", "list", "hours", "limits", "make_status"]);
+const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set(["access", "status", "list", "hours", "limits", "make_status", "cloud_sign_in_status"]);
 const CLOUD_REMOTE_WRITES: ReadonlySet<string> = new Set([
   "create", "copy", "move", "sleep", "wake", "resize", "delete", "update", "set_limits",
 ]);
@@ -8365,6 +8366,21 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     await cloudCall(payload, CLOUD_REMOTE_READS), "runtime");
   register("cloud.write", { viewerAllowed: false, controllerAllowed: true }, async (payload) =>
     await cloudCall(payload, CLOUD_REMOTE_WRITES), "runtime");
+
+  // The account's sign-ins (Cloud 4), for Settings › Providers and the ADE
+  // Cloud page on the phone and in the web app: the same `provider_logins`
+  // service the desktop reaches through its runtime pin. `status` is a read.
+  // The rest are the person's own writes, so only a controlling device (the
+  // person's phone or browser) may send them; agents and outside apps never
+  // reach sync commands. The two this-computer-only actions (`allowKeychain`,
+  // `allowGitHubCli`) stay on the desktop in front of that computer.
+  const providerLogins = buildProviderLoginsDomainService();
+  register("providerLogins.status", { viewerAllowed: true }, async (payload) =>
+    await providerLogins.status(payload), "runtime");
+  for (const method of ["captureNow", "use", "setCloud", "setCloudAll", "setCloudBalance", "remove"] as const) {
+    register(`providerLogins.${method}`, { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+      await providerLogins[method](payload), "runtime");
+  }
 
   register("account.getMachineInventory", { viewerAllowed: true }, async (payload) => {
     const machineKey = asTrimmedString(payload.machineKey);
