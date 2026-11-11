@@ -34,6 +34,7 @@ import type {
 } from "../../../shared/types";
 import { getErrorMessage, isRecord } from "../shared/utils";
 import { createCloudSelfApproval, type CloudBrainMakerBase } from "./cloudBrainMaker";
+import { cloudLaneLaunchOutcomes, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import { createCloudLaneLaunchService, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
 
 type Logger = {
@@ -168,8 +169,11 @@ export function createCloudLaneLaunchBrainHost(deps: {
   logger: Logger;
   /** A launch made a new cloud computer (the brain tells the sign-in renewal). */
   onComputerCreated?: () => void;
+  /** How each launch ends, one coarse outcome (cloudLaneAnalytics.ts). */
+  analytics?: CloudLaneAnalyticsCapture;
 }): CloudLaneLaunchBrainHost {
   const { logger } = deps;
+  const countOutcome = cloudLaneLaunchOutcomes(deps.analytics, "api");
   const selfApproval = createCloudSelfApproval({ client: deps.base.client, account: deps.base.account, logger });
   /** Per launch, for this process only: a restart falls back to the safe side (a link, no notice). */
   const live = new Map<string, {
@@ -214,8 +218,9 @@ export function createCloudLaneLaunchBrainHost(deps: {
   const service: CloudLaneLaunchService = createCloudLaneLaunchService({
     recordsDir: deps.recordsDir,
     logger,
-    // Nobody here listens for events: the CLI reads `status`.
+    // Nobody here listens for events (the CLI reads `status`), except the outcome count.
     emit: (event: ChatLaunchEvent) => {
+      countOutcome(event);
       if (event.type === "launch-removed") {
         approvalLinks.delete(event.launchId);
         live.delete(event.launchId);

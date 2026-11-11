@@ -1,4 +1,4 @@
-import { accountDistinctId, uuidFromSeed } from "../signupAnalytics";
+import { accountDistinctId, uuidFromSeed } from "../sinkUtils";
 import type { CloudPlanId, CloudTierId } from "./contract";
 import { logCloud, type CloudEnv } from "./store";
 
@@ -151,6 +151,77 @@ export function captureCloudDay(env: CloudEnv, waitUntil: CloudWaitUntil, userId
         stops: cap(counts.stops),
         starts: cap(counts.starts),
         computers: cap(counts.computers),
+        $geoip_disable: true,
+      },
+    });
+  })());
+}
+
+/* ---- Referrals and the free plan per computer (`referrals.ts`, `freePlan.ts`) ---- */
+
+/** One step of a referral. No code, email or other account's id is ever sent. */
+export type CloudReferralStep = "code_entered" | "reward_paid" | "reward_refused" | "cap_reached";
+
+export type CloudReferralEvent = {
+  step: CloudReferralStep;
+  /** `code_entered`: whether it was taken. */
+  result?: "accepted" | "refused";
+  /** Why a code or a reward was refused (`CloudInviteRefusalReason`, or `friend_computer_used` | `same_computer`). */
+  reason?: string;
+  /** `reward_paid`: which side this account is, and whether the referrer got theirs too. */
+  role?: "friend" | "referrer";
+  referrerRewarded?: boolean;
+};
+
+/**
+ * One `ade_cloud_referral` per account, step and `key` (hashed into the uuid,
+ * never sent) and hour, so a retry stays one event.
+ */
+export function captureCloudReferral(env: CloudEnv, waitUntil: CloudWaitUntil, userId: string, event: CloudReferralEvent, key: string, now: number): void {
+  if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
+  const bucket = Math.floor(now / HOUR_MS) * HOUR_MS;
+  hold(waitUntil, (async () => {
+    await send(env, {
+      event: "ade_cloud_referral",
+      distinct_id: await accountDistinctId(userId),
+      uuid: await uuidFromSeed(`ade-cloud-referral-v1:${userId}:${event.step}:${event.result ?? ""}:${event.reason ?? ""}:${key}:${bucket}`),
+      timestamp: new Date(now).toISOString(),
+      properties: {
+        client: "account",
+        step: event.step,
+        ...(event.result ? { result: event.result } : {}),
+        ...(event.reason ? { reason: event.reason } : {}),
+        ...(event.role ? { role: event.role } : {}),
+        ...(event.referrerRewarded !== undefined ? { referrer_rewarded: event.referrerRewarded } : {}),
+        $geoip_disable: true,
+      },
+    });
+  })());
+}
+
+/**
+ * - `claimed`: a computer's free plan went to this account.
+ * - `restored`: an account refused before claimed a computer of its own.
+ * - `refused`: the computer already gave another account its free hours.
+ * - `id_unreadable`: the computer couldn't read its OS id, so nothing was claimed.
+ * - `unclaimed_use`: free hours used with no computer seen (phone or MCP only).
+ */
+export type CloudFreePlanStep = "claimed" | "restored" | "refused" | "id_unreadable" | "unclaimed_use";
+
+/** One `ade_cloud_free_plan` per account, step and day. The computer's id is never sent. */
+export function captureCloudFreePlan(env: CloudEnv, waitUntil: CloudWaitUntil, userId: string, step: CloudFreePlanStep, platform: string | null, now: number): void {
+  if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
+  const day = Math.floor(now / (24 * HOUR_MS)) * 24 * HOUR_MS;
+  hold(waitUntil, (async () => {
+    await send(env, {
+      event: "ade_cloud_free_plan",
+      distinct_id: await accountDistinctId(userId),
+      uuid: await uuidFromSeed(`ade-cloud-free-plan-v1:${userId}:${step}:${day}`),
+      timestamp: new Date(now).toISOString(),
+      properties: {
+        client: "account",
+        step,
+        ...(platform ? { platform } : {}),
         $geoip_disable: true,
       },
     });

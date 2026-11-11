@@ -716,10 +716,16 @@ ADE Cloud guidance reaches an app this way: the instructions say "Before an
 ADE Cloud lane, run `cloud status` and follow the `ade-cloud` prompt", and the
 `ade-cloud` prompt is the bundled skill an ADE chat's agent reads, word for
 word (shown only to an account with ADE Cloud access). `cloud status` is a
-read, so a read-only connection can see why a lane can't start. An app cannot
-start a cloud lane through the `ade` tool yet, because `--machine` on the
-command line is refused for ADE MCP; the person starts it in ADE. An app is an
-unattended agent there: a size change and a delete are declined. See
+read, so a read-only connection can see why a lane can't start. `--machine`
+on the command line is refused for ADE MCP, with one reviewed exception:
+exactly `--machine cloud` (and `--size`) on `chat create`, `lanes create` and
+`chat launch-status` (`remoteMcpCommandPolicy.ts`, `isCloudLaneMachineUse`).
+It asks this computer's own brain to make a new computer for a new lane and
+reaches no computer that exists. Another value, a list, `--all-machines`,
+`--machine-project`, or `chat launch-cancel` is refused. A start needs full
+access; a read-only connection can follow a launch. An app is an unattended
+agent there: held to the agent limits, and a size change, a delete and a
+cancel are declined. See
 [Guidance for agents](../ade-cloud/README.md#guidance-for-agents).
 
 ## Chat turns from an app

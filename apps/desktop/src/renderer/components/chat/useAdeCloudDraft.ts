@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import {
   cloudCatalogOf,
+  cloudHoursLeftMilli,
+  cloudOutOfHours,
   type CloudAccountState,
   type CloudMachine,
 } from "../../../shared/adeCloud";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
 import type { AgentChatFileRef, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
-import { cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudTierHoursLeftLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useRootAppStore } from "../../state/appStore";
+import { pickCloudDefaultTier } from "../../lib/cloudDefaultTier";
 import { useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
 import type { NewLaneDraftConfig } from "../lanes/CreateLaneDialogHost";
@@ -20,7 +23,6 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, adeCloudSettingsRoute } from "../settings/settingsHash";
 import { isAutoCreateLaneOptionId } from "../terminals/LaneCombobox";
 import { AUTO_CREATE_DRAFT_LANE_OPTION as AUTO_CREATE_LANE_OPTION, type RoutedDraftLane } from "./useDraftMachineRouting";
-import type { CloudSkylineLane } from "../remoteTargets/cloudBrand";
 
 const NO_MACHINES: readonly CloudMachine[] = [];
 
@@ -101,10 +103,6 @@ export function useAdeCloudDraft({
     index.computers.slice(),
     (computer) => `${computer.instanceId}:${computer.laneId}:${computer.laneName}:${computer.projectOrigin ?? ""}:${computer.state}`,
   );
-  const skylineLanes = useMemo<CloudSkylineLane[]>(
-    () => computers.map((computer) => ({ id: computer.instanceId, awake: computer.state === "running" })),
-    [computers],
-  );
   /** This project's lanes on ADE Cloud, by name. */
   const projectLanes = useMemo<AdeCloudLaneComputer[]>(
     () => (origin ? computers.filter((computer) => computer.projectOrigin === origin) : []),
@@ -113,7 +111,7 @@ export function useAdeCloudDraft({
 
   const tiers = useMemo<CloudTier[]>(() => cloudTiers(cloudCatalogOf(account)), [account]);
   const defaultTier = useRootAppStore((state) => state.cloudDefaultTier);
-  const setDefaultTier = useRootAppStore((state) => state.setCloudDefaultTier);
+  const setDefaultTier = pickCloudDefaultTier;
   // The size for this draft. It follows the default until the person picks one.
   const [pickedTier, setPickedTier] = useState<CloudTierId | null>(null);
   const tierId: CloudTierId = (pickedTier && tiers.some((tier) => tier.id === pickedTier) ? pickedTier : null)
@@ -122,6 +120,15 @@ export function useAdeCloudDraft({
     ?? defaultTier;
   const chooseTier = useCallback((next: CloudTierId) => setPickedTier(next), []);
   const resetTier = useCallback(() => setPickedTier(null), []);
+  // Hours left now (the plan's and earned ones), and the Run on row's line: the
+  // size a new lane gets and how long those hours last at it.
+  const hoursLeftMilli = account ? cloudHoursLeftMilli(account) : null;
+  const runOnLine = useMemo(() => {
+    const tier = tiers.find((entry) => entry.id === tierId) ?? null;
+    if (!account || !tier) return null;
+    if (cloudOutOfHours(account) && hoursLeftMilli === 0) return `${tier.label} · no hours left`;
+    return `${tier.label} · ${cloudTierHoursLeftLabel(tier, hoursLeftMilli ?? 0)} left at this size`;
+  }, [account, hoursLeftMilli, tierId, tiers]);
 
   return {
     /**
@@ -134,16 +141,19 @@ export function useAdeCloudDraft({
     machines: result?.machines ?? NO_MACHINES,
     /** True once any read (or the saved copy) said which lanes exist. */
     lanesKnown: index.known,
-    skylineLanes,
     projectLanes,
     /** The account's lane computers: the Run on menu lists them under ADE Cloud, not as computers. */
     computers,
     tiers,
     tierId,
+    /** The size picked for this draft, or null while it follows the default (what a saved pick keeps). */
+    pickedTier,
     defaultTier,
     chooseTier,
     resetTier,
     setDefaultTier,
+    hoursLeftMilli,
+    runOnLine,
     refresh: machines.refresh,
   };
 }

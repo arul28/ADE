@@ -267,15 +267,6 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS;
     case IPC.cloudListMachines:
       return CLOUD_LIST_MACHINES_IPC_TIMEOUT_MS;
-    // A claim reads the pool, tags the machine and waits for its wake; a
-    // project change runs one pool pass (which may delete a machine).
-    case IPC.cloudReadyClaim:
-    case IPC.cloudReadyRelease:
-    case IPC.cloudReadySetProject:
-    case IPC.cloudReadyRemoveProject:
-    case IPC.cloudReadyRetry:
-    case IPC.cloudReadyStatus:
-      return CLOUD_MACHINE_ACTION_IPC_TIMEOUT_MS;
     case IPC.filesDelete:
       return localRuntimeActionIpcTimeoutMs("file", "deletePath");
     // Checkout, `worktree add` and `worktree remove`; see

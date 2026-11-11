@@ -261,17 +261,22 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // ADE Cloud's plan and hours (feature "connections"): plan_checkout | plan_portal
   // (the Stripe page opened) | extra_on | extra_off (the switch). Never an amount.
   "cloud_plan",
-  // Ready machines (feature "connections"): whether people keep a cloud
-  // machine ready for a project, how often preparing one fails, and where the
-  // chats that take one start. enabled | disabled (the per-project switch),
-  // completed | failed (a prepare), ready_picker | ready_cli (a claim). Never
-  // the project, repository, machine, size, setup commands, or an error.
-  "cloud_ready",
   // Sign-ins for cloud machines (feature "connections"): which providers
   // people sign in once for every new cloud machine. Outcome is the
   // provider, prefixed (signin_claude | signin_codex | …), only once it is
   // saved. Never the key, the token, the account, or an error.
   "cloud_sign_in",
+  // ADE Cloud lanes (feature "connections"). `cloud_lane_launch`: how a new
+  // lane on its own computer ends, once per launch and end (completed |
+  // failed | cancelled). `cloud_lane_freed`: a lane's computer freed
+  // (completed | failed). `cloud_clear_caches`: a computer's caches cleared
+  // (completed | failed | denied, an agent's ask declined). `cloud_default_size`:
+  // the person picked another size for new lanes (size_<tier>). Never the
+  // lane, project, computer, branch, prompt, size of a computer, or an error.
+  "cloud_lane_launch",
+  "cloud_lane_freed",
+  "cloud_clear_caches",
+  "cloud_default_size",
   // One coarse fact per automatic diagnostic send: whether it went, was refused
   // by the client budget, or failed. Never the failure code that triggered it,
   // never the surface, never the report or its upload reference — those are the
@@ -455,6 +460,19 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "star_prompt_clicked",
   "star_prompt_dismissed",
   "repo_starred",
+  // ADE Cloud's referral program (feature "cloud_invite", README "Referrals and
+  // the free plan"). The "Invite friends, get free cloud hours" pill: seen,
+  // clicked, dismissed (outcome: which showing, prompt_first | prompt_second |
+  // prompt_third). The invite link copied (outcome: where, from_pill |
+  // from_settings | from_dashboard). A friend's code entered (outcome: accepted,
+  // or refused_<reason> from `CloudInviteRefusalReason`, or refused_unavailable).
+  // Never the code, the link, the friend, or an email. The reward itself is
+  // counted on the server (`ade_cloud_referral`), where it is decided.
+  "invite_pill_shown",
+  "invite_pill_clicked",
+  "invite_pill_dismissed",
+  "invite_link_copied",
+  "invite_code_entered",
   // First run on a new computer (feature "onboarding"): each card of the
   // launch gate as it shows, and how setup ended. One event per card per
   // install a day. Never what the person picked on a card.
@@ -624,6 +642,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "account_sign_in",
     // The desktop "Star ADE on GitHub" pill.
     "star_prompt",
+    // ADE Cloud's referral program: the invite pill, the link, the code box.
+    "cloud_invite",
     // The first-run cards of the launch gate (actions "onboarding_*").
     "onboarding",
   ]),
@@ -679,8 +699,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move", "box_reconnect", "box_push_all_work",
     // ADE Cloud's plan: the Stripe pages opened and the extra-hours switch.
     "plan_checkout", "plan_portal", "extra_on", "extra_off",
-    // Where a chat that took a ready machine started, prefixed the same way.
-    "ready_picker", "ready_cli",
+    // The size an ADE Cloud lane starts with by default (`CLOUD_TIER_IDS`).
+    "size_small", "size_medium", "size_large", "size_xlarge",
     // The provider of a sign-in saved for cloud machines (`CLOUD_SIGN_INS`).
     "signin_claude", "signin_codex", "signin_cursor", "signin_droid", "signin_grok",
     "signin_copilot", "signin_devin", "signin_muse", "signin_openrouter",
@@ -747,6 +767,12 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // Which showing of the star pill: before any dismissal, or the one return
     // after it. Prefixed like the other renderer surfaces.
     "prompt_first", "prompt_second",
+    // The invite pill's third showing (it returns twice), where the invite link
+    // was copied, and what entering a friend's code did. Closed to
+    // `CloudInviteRefusalReason`; a new reason is added here deliberately.
+    "prompt_third", "from_pill", "from_dashboard",
+    "accepted", "refused_invalid_code", "refused_unknown_code", "refused_own_code", "refused_already_referred",
+    "refused_mutual", "refused_too_late", "refused_rate_limited", "refused_unavailable",
   ]),
   provider: PROVIDER_VALUES,
   model_family: new Set([

@@ -351,10 +351,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: ["request"],
   },
   cloud: {
-    read: ["access", "status", "ready_status", "list", "hours", "make_status", "limits", "cloud_sign_in_status", "lane_launch_status"],
+    read: ["access", "status", "list", "hours", "referral", "make_status", "limits", "cloud_sign_in_status", "lane_launch_status"],
     write: [
-      "claim_ready", "release_ready", "create", "sleep", "wake", "resize", "copy", "move", "delete",
-      "update", "ready_set", "ready_off", "ready_retry", "set_limits", "lane_launch", "lane_launch_cancel", "tier_request",
+      "create", "sleep", "wake", "resize", "copy", "move", "delete", "invite_redeem",
+      "update", "set_limits", "lane_launch", "lane_launch_cancel", "tier_request",
       "clear_caches",
       "cloud_sign_in_start", "cloud_sign_in_code", "cloud_sign_in_cancel", "cloud_sign_in_save_key", "cloud_sign_in_remove",
       "cloud_sign_in_keep",

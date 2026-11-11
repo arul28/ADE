@@ -8,8 +8,16 @@
  * already one plain sentence; that sentence is the error the person sees.
  */
 
-import type { CloudAccountState } from "../../../shared/adeCloud";
-import { CLOUD_PATHS, type CloudCheckoutResult, type CloudLaneWithoutComputer } from "../../../../../account-directory/src/cloud/contract";
+import { readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState } from "../../../shared/adeCloud";
+import {
+  CLOUD_COMPUTER_HEADER,
+  CLOUD_COMPUTER_PLATFORM_HEADER,
+  CLOUD_PATHS,
+  type CloudCheckoutResult,
+  type CloudInviteRedeemResult,
+  type CloudLaneWithoutComputer,
+  type CloudReferralSummary,
+} from "../../../../../account-directory/src/cloud/contract";
 import {
   CLOUD_ACCESS_REFUSED,
   CloudProviderError,
@@ -36,6 +44,9 @@ const EXEC_RESPONSE_GRACE_MS = 10_000;
 
 const INSTANCES = "/cloud/instances";
 
+/** This computer's free-plan id (`CLOUD_COMPUTER_HEADER`) and its OS (`CLOUD_COMPUTER_PLATFORM_HEADER`). */
+export type CloudComputerSignal = { id: string; platform: NodeJS.Platform };
+
 export type CloudServerProviderDeps = {
   /** The signed-in account's token, or null when there is none now. */
   accessToken: () => Promise<string | null>;
@@ -45,6 +56,13 @@ export type CloudServerProviderDeps = {
   deviceName?: () => string | null;
   /** The update track of the app that makes a computer (`stable` or `beta`), sent with each create. */
   updateChannel?: () => CloudUpdateChannel | null;
+  /**
+   * This computer's id for the free plan (one per physical computer), sent
+   * with every call but the access check as `x-ade-computer`; `unreadable`
+   * when the OS has none. Left out on an ADE Cloud computer, which never
+   * claims a free plan.
+   */
+  computer?: () => Promise<CloudComputerSignal | null>;
   fetch?: FetchLike;
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
 };
@@ -104,6 +122,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     if (!base) throw new CloudProviderError("ADE's account service isn't set up on this computer.", "network", 0);
     const token = await deps.accessToken();
     if (!token) throw new CloudProviderError("Sign in to ADE to use ADE Cloud.", CLOUD_ACCESS_REFUSED, 401);
+    // Cached after the first read: one OS probe per process. Not on the access
+    // check, which every signed-in account polls: the id goes only to an
+    // account ADE Cloud lets in.
+    const computer = path === CLOUD_PATHS.access ? null : await deps.computer?.().catch(() => null) ?? null;
     const controller = new AbortController();
     const timedOut = () => init.signal?.aborted
       ? new CloudProviderError("Cancelled.", "cancelled", 0)
@@ -124,6 +146,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
           headers: {
             accept: "application/json",
             authorization: `Bearer ${token}`,
+            ...(computer ? { [CLOUD_COMPUTER_HEADER]: computer.id, [CLOUD_COMPUTER_PLATFORM_HEADER]: computer.platform } : {}),
             ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
           },
           ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
@@ -324,7 +347,11 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async billingCheckout(plan): Promise<CloudCheckoutResult> {
       const body = record(await request("POST", "/cloud/billing/checkout", { body: { plan: plan ?? "plus" } }));
-      if (body?.url === null && (body.change === "now" || body.change === "next_period")) return { url: null, change: body.change };
+      if (body?.url === null && (body.change === "now" || body.change === "next_period")) {
+        // A downgrade over the cheaper plan's limits: what they will free, for the warning.
+        const cleanup = readCloudPlanCleanup(body.cleanup);
+        return { url: null, change: body.change, ...(cleanup ? { cleanup } : {}) };
+      }
       if (typeof body?.url !== "string" || !body.url) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
       return { url: body.url };
     },
@@ -341,6 +368,19 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async setExtraDisk(choice): Promise<CloudAccountState> {
       return await request("POST", "/cloud/billing/extra-disk", { body: choice }) as CloudAccountState;
+    },
+
+    async readReferral(): Promise<CloudReferralSummary> {
+      const referral = readCloudReferralSummary(await request("GET", CLOUD_PATHS.referrals));
+      if (!referral) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+      return referral;
+    },
+
+    async redeemInvite(code: string): Promise<CloudInviteRedeemResult> {
+      const body = record(await request("POST", CLOUD_PATHS.referralsRedeem, { body: { code } }));
+      const referral = readCloudReferralSummary(body?.referral);
+      if (body?.result !== "accepted" || !referral) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+      return { result: "accepted", rewarded: body.rewarded === true, referral };
     },
 
     async listSavedChats(args): Promise<CloudSavedChatList> {

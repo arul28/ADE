@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { CloudPassEnd } from "../../shared/cloudSignIns";
+import type { CloudSignInEnd } from "../../shared/cloudSignIns";
 
 /**
  * Whether ADE Cloud exists in this window: the server's yes for this account,
@@ -12,7 +12,7 @@ import type { CloudPassEnd } from "../../shared/cloudSignIns";
 
 let enabled = false;
 /** The end warning's pass, from the same read (desktop main fills it only while ADE Cloud is on). */
-let passEnd: CloudPassEnd | null = null;
+let signInEnd: CloudSignInEnd | null = null;
 let reading = false;
 let readAgain = false;
 const listeners = new Set<() => void>();
@@ -31,15 +31,15 @@ function read(): void {
   }
   reading = true;
   void bridge.read().then(
-    (answer) => ({ on: answer?.enabled === true, end: answer?.enabled === true ? answer.passEnd ?? null : null }),
+    (answer) => ({ on: answer?.enabled === true, end: answer?.enabled === true ? answer.signInEnd ?? null : null }),
     () => ({ on: false, end: null }),
   ).then((next) => {
     reading = false;
-    const changed = next.on !== enabled || (next.end?.fingerprint ?? null) !== (passEnd?.fingerprint ?? null)
-      || (next.end?.endsInDays ?? null) !== (passEnd?.endsInDays ?? null);
+    const changed = next.on !== enabled || (next.end?.fingerprint ?? null) !== (signInEnd?.fingerprint ?? null)
+      || (next.end?.endsInDays ?? null) !== (signInEnd?.endsInDays ?? null);
     enabled = next.on;
     // The same pass state keeps its object, so the warning does not render again for nothing.
-    if (changed) passEnd = next.end;
+    if (changed) signInEnd = next.end;
     if (changed) emit();
     if (readAgain) {
       readAgain = false;
@@ -77,13 +77,13 @@ function snapshot(): boolean {
   return enabled;
 }
 
-function passEndSnapshot(): CloudPassEnd | null {
-  return passEnd;
+function signInEndSnapshot(): CloudSignInEnd | null {
+  return signInEnd;
 }
 
-/** The Claude pass the end warning names, or null (always null while ADE Cloud is off). */
-export function useAdeCloudPassEnd(): CloudPassEnd | null {
-  return useSyncExternalStore(subscribe, passEndSnapshot, passEndSnapshot);
+/** The sign-in the end warning names (a Claude pass or a key), or null (always null while ADE Cloud is off). */
+export function useCloudSignInEnd(): CloudSignInEnd | null {
+  return useSyncExternalStore(subscribe, signInEndSnapshot, signInEndSnapshot);
 }
 
 /** The hook every ADE Cloud surface sits behind. */

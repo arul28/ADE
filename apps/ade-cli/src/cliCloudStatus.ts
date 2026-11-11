@@ -45,7 +45,8 @@ export function formatCloudStatus(value: unknown): string {
   const plan = isRecord(status.plan) ? status.plan : null;
   if (plan) {
     const includes = isRecord(plan.includes) ? plan.includes : {};
-    const disk = typeof includes.diskGb === "number" ? `${includes.diskGb} GB disk${includes.diskShared ? " shared" : " per computer"}` : null;
+    // The plan's disk is one total shared by all the account's computers (every server since plans).
+    const disk = typeof includes.diskGb === "number" ? `${includes.diskGb} GB disk shared by all computers` : null;
     const facts = [
       typeof includes.hours === "number" ? `${cloudHoursText(includes.hours)} hours` : null,
       typeof includes.computers === "number" ? `${includes.computers} computers at once` : null,

@@ -24,7 +24,7 @@ import {
 } from "./cloudMachineCreator";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { enableCloudSleep } from "./cloudSleep";
-import { wakeThroughTransition } from "./cloudReadyClaim";
+import { wakeThroughTransition } from "./cloudInstanceOps";
 
 /** In the account: signed in, and the account did not remove it. */
 function inAccount(auth: Record<string, unknown> | null): boolean {

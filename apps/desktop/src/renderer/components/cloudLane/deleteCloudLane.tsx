@@ -174,6 +174,7 @@ function unpushedText(lane: CloudLaneWorkLane): string {
   const parts: string[] = [];
   if (lane.dirty) parts.push("changes not committed");
   if (lane.ahead > 0) parts.push(`${lane.ahead} commit${lane.ahead === 1 ? "" : "s"} not pushed`);
-  if (lane.state === "failed") parts.push("the last push failed");
+  // `failed` with nothing counted is a lane push-work couldn't read (or fetch for), not a push.
+  if (lane.state === "failed") parts.push(lane.dirty || lane.ahead > 0 ? "the last push failed" : "ADE couldn't read this lane's work");
   return parts.length ? parts.join(", ") : "work not pushed";
 }

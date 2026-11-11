@@ -3,11 +3,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { handleCloudBillingPublicRequest } from "../src/cloud/billing";
+import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
+import type { CloudAccountState } from "../src/cloud/contract";
+import { runPlanCleanups } from "../src/cloud/planCleanup";
+import { createCloudProvider } from "../src/cloud/provider";
+import { rewardReferralIfDue } from "../src/cloud/referrals";
 import { runCloudMinuteCron } from "../src/cloud/cron";
 import { handleCloudRequest } from "../src/cloud/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
-import type { CloudEnv } from "../src/cloud/store";
+import { applyCloudPlanChange, listComputers, type CloudEnv } from "../src/cloud/store";
 import { ISSUER, jwksEndpoint, mintToken, OAUTH_CLIENT_ID } from "./jwks";
 
 /**
@@ -29,6 +33,7 @@ const WEBHOOK_SECRET = "whsec_cloud_test";
 const PROVIDER = "https://api.agent37.com/v1";
 const SANDBOX = "https://sandbox.agent37.app/v1";
 const STRIPE = "https://api.stripe.com/v1";
+const RESEND = "https://api.resend.com";
 
 type SqliteStatement = {
   run(...params: unknown[]): { changes: number | bigint };
@@ -127,6 +132,7 @@ function fakeNetwork() {
       return reply({ error: { message: "no such item" } }, 404);
     }
     if (url.startsWith(STRIPE)) return reply({});
+    if (url.startsWith(RESEND)) return reply({ id: "email_1" });
     const rest = url.replace(PROVIDER, "").replace(SANDBOX, "");
     if (method === "GET" && rest === "/instances") return reply({ data: [...instances.values()].map(instanceJson) });
     if (method === "GET" && rest.startsWith("/usage")) return reply({ instances: [] });
@@ -163,7 +169,7 @@ function fakeNetwork() {
 
   const fetchStub = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input instanceof Request ? input.url : input);
-    if (!url.startsWith(PROVIDER) && !url.startsWith(SANDBOX) && !url.startsWith(STRIPE)) return realFetch(input as RequestInfo, init);
+    if (![PROVIDER, SANDBOX, STRIPE, RESEND].some((prefix) => url.startsWith(prefix))) return realFetch(input as RequestInfo, init);
     const method = init?.method ?? "GET";
     // JSON to the provider, a form to Stripe.
     const body = typeof init?.body !== "string" ? null
@@ -189,7 +195,7 @@ type Harness = ReturnType<typeof sqliteD1> & {
   net: ReturnType<typeof fakeNetwork>;
   /** What reached the push relay over the `ACTIVITY_RELAY` binding. */
   relayCalls: Array<{ method: string; url: string; directoryAuth: string | null }>;
-  send: (caller: string, method: string, url: string, body?: unknown) => Promise<Response>;
+  send: (caller: string, method: string, url: string, body?: unknown, headers?: Record<string, string>) => Promise<Response>;
   tick: () => Promise<void>;
 };
 
@@ -219,9 +225,9 @@ function buildHarness(): Harness {
     env,
     net,
     relayCalls: [],
-    send: (caller, method, url, body) => handleCloudRequest(new Request(`https://directory.test${url}`, {
+    send: (caller, method, url, body, headers = {}) => handleCloudRequest(new Request(`https://directory.test${url}`, {
       method,
-      headers: { authorization: `Bearer ${tokens[caller]}`, "content-type": "application/json" },
+      headers: { authorization: `Bearer ${tokens[caller]}`, "content-type": "application/json", ...headers },
       ...(method === "GET" || method === "HEAD" ? {} : { body: JSON.stringify(body ?? {}) }),
     }), env),
     tick: () => runCloudMinuteCron(env, { now: clock }),
@@ -786,13 +792,15 @@ describe("ADE Cloud account", () => {
   const checkout = (plan: string) => harness.send(OWNER, "POST", "/cloud/billing/checkout", { plan });
 
   it.each<[string, () => Promise<void>]>([
-    ["Pro to Plus above Plus's disk with extra disk off is refused, and nothing moves", async () => {
+    ["Pro to Plus above Plus's disk with extra disk off is accepted for the period end, and names what Plus's limits free", async () => {
       seedSubscribed({ ...proAccount, extra_disk_state: "off" }, "price_pro", [28, 22]);
       const response = await checkout("plus");
-      expect(response.status).toBe(409);
-      expect((await errorOf(response))?.code).toBe("disk_over_plan");
-      expect(itemCalls()).toEqual([]);
-      expect(accountRow()).toEqual(expect.objectContaining({ paid_plan: "pro", paid_plan_next: null }));
+      expect(response.status).toBe(200);
+      const body = await response.json() as { change: string; cleanup?: { planId: string; usedGb: number; limitGb: number; computers: unknown[] } };
+      expect(body.change).toBe("next_period");
+      expect(body.cleanup).toEqual(expect.objectContaining({ planId: "plus", usedGb: 50, limitGb: 40 }));
+      expect(body.cleanup?.computers).toHaveLength(1);
+      expect(accountRow()).toEqual(expect.objectContaining({ paid_plan: "pro", paid_plan_next: "plus" }));
     }],
     ["Pro to Plus that fits waits for the period end, and Stay on Pro undoes it uncharged", async () => {
       seedSubscribed(proAccount, "price_pro", [12, 8]);
@@ -872,10 +880,67 @@ describe("ADE Cloud account", () => {
       await harness.tick();
       expect((await harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 } })).status).toBe(201);
     }],
+    ["the owner hears once per $50 the month's cost passes: once on crossing, never inside a step, and with no limit set", async () => {
+      await costChecks([[40, 0], [60, 1], [90, 1]]);
+      expect(stepEmails()[0]).toContain("$50");
+    }],
+    ["a jump over several $50 steps sends one email, for the highest below the limit", async () => {
+      harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "1000", updated_at: NOW });
+      await costChecks([[40, 0], [170, 1]]);
+      expect(stepEmails()[0]).toContain("$150");
+    }],
+    ["two owner checks at once send one email for a step", async () => {
+      setMonthCost(60);
+      clock += 11 * 60_000;
+      await Promise.all([harness.tick(), harness.tick()]);
+      expect(stepEmails()).toHaveLength(1);
+    }],
+    ["a step email that fails is sent again by the next check", async () => {
+      harness.net.once.push({ match: /POST https:\/\/api\.resend\.com\/emails$/, reply: harness.net.reply({ message: "busy" }, 503) });
+      await costChecks([[60, 1], [60, 2]]);
+    }],
+    ["a new month starts the steps again at $50", async () => {
+      await costChecks([[60, 1]]);
+      clock = Date.UTC(2026, 11, 1, 12) - 11 * 60_000;
+      harness.exec("update cloud_settings set value = '2026-12-01' where key = 'last_daily_day'");
+      harness.insert("cloud_computer_days", { instance_id: INSTANCE, day: "2026-12-01", user_id: OWNER, multiplier_milli: 1000, cost_micros: 55_000_000 });
+      await costChecks([[null, 2]]);
+      expect(stepEmails()[1]).toContain("$50");
+    }],
+    ["at the limit the limit's own email goes, not a step email", async () => {
+      harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "100", updated_at: NOW });
+      await costChecks([[120, 1]]);
+      expect(stepEmails()).toEqual(["ADE Cloud reached your cost limit"]);
+    }],
+    ["a limit email that fails is sent again by the next check", async () => {
+      harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "100", updated_at: NOW });
+      harness.net.once.push({ match: /POST https:\/\/api\.resend\.com\/emails$/, reply: harness.net.reply({ message: "busy" }, 503) });
+      await costChecks([[120, 1], [120, 2]]);
+    }],
   ])("plans and billing: %s", async (_label, run) => {
-    Object.assign(harness.env, MONEY_ENV);
+    Object.assign(harness.env, MONEY_ENV, { RESEND_API_KEY: "resend-key", CLOUD_ALERT_EMAIL: "owner@example.test" });
     await run();
   });
+
+  // The owner's alert emails (steps and the limit): every email but the daily report (the day's run is marked done, so only a new day sends one).
+  const stepEmails = () => providerCalls(harness, /POST https:\/\/api\.resend\.com\/emails$/)
+    .map((call) => String(call.body?.subject)).filter((subject) => !/daily report/i.test(subject));
+  /** This month's settled cost, all on day one. */
+  function setMonthCost(usd: number): void {
+    if (!harness.rows("select 1 from cloud_accounts where user_id = ?", OWNER).length) seedAccount(harness, OWNER, plusAccount);
+    if (!harness.rows("select 1 from cloud_settings where key = 'last_daily_day'").length) harness.insert("cloud_settings", { key: "last_daily_day", value: DAY_ONE, updated_at: NOW });
+    harness.exec("delete from cloud_computer_days where day = ?", DAY_ONE);
+    harness.insert("cloud_computer_days", { instance_id: INSTANCE, day: DAY_ONE, user_id: OWNER, multiplier_milli: 1000, cost_micros: usd * 1_000_000 });
+  }
+  /** One owner check (ten minutes on) per step, each with the step emails expected after it; null keeps the cost. */
+  async function costChecks(steps: Array<[number | null, number]>): Promise<void> {
+    for (const [usd, emails] of steps) {
+      if (usd != null) setMonthCost(usd);
+      clock += 11 * 60_000;
+      await harness.tick();
+      expect(stepEmails()).toHaveLength(emails);
+    }
+  }
 
   it.each<[string, string, string, Row, number, string | null, RegExp]>([
     ["a new computer", "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 } }, 503, "unavailable", /POST .*\/instances$/],
@@ -970,4 +1035,266 @@ describe("ADE Cloud account", () => {
       delete_warned_1d_at: NOW - 2 * DAY,
     });
   }
+});
+
+/*
+ * Earned hours, referrals and one free plan per computer (README "Referrals
+ * and the free plan"). Races and hour accounting only: these have no surface
+ * but the routes and the stored rows, so a test is how they are proven.
+ */
+describe("ADE Cloud earned hours, referrals and the free plan per computer", () => {
+  const COMPUTER = "a".repeat(64);
+  const OTHER_COMPUTER = "b".repeat(64);
+  const from = (computer: string) => ({ "x-ade-computer": computer, "x-ade-computer-platform": "darwin" });
+  const stateOf = async (user = OWNER, headers: Record<string, string> = {}) =>
+    (await (await harness.send(user, "GET", "/cloud/account", undefined, headers)).json()) as CloudAccountState;
+  const plus = { plan: "paid", paid_plan: "plus", included_milli: 500_000, stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1", stripe_status: "active" };
+  const extraReports = () => providerCalls(harness, /POST .*\/billing\/meter_events$/).filter((call) => String(call.body?.identifier).startsWith("ade-extra:"));
+  const ctx = () => ({ now: clock, waitUntil: undefined });
+  const grants = (user: string) => harness.rows("select reason, milli from cloud_earned_hours where user_id = ? order by id", user);
+  const balance = (user: string) => harness.row("select earned_granted_milli, earned_used_milli from cloud_accounts where user_id = ?", user);
+
+  /** The race, written down: `run` (the other request) lands just before the first statement matching `match`. */
+  function landBefore(match: RegExp, run: () => Promise<unknown>): void {
+    const db = harness.env.DB;
+    let armed = true;
+    const hold = async () => {
+      if (!armed) return;
+      armed = false;
+      await run();
+    };
+    const wrap = (statement: D1PreparedStatement, sql: string): D1PreparedStatement => {
+      const hit = () => (match.test(sql) ? hold() : Promise.resolve());
+      return {
+        ...statement,
+        sql,
+        bind: (...values: unknown[]) => wrap(statement.bind(...values), sql),
+        run: async () => { await hit(); return statement.run(); },
+        first: async (...args: []) => { await hit(); return statement.first(...args); },
+        all: async () => { await hit(); return statement.all(); },
+      } as unknown as D1PreparedStatement;
+    };
+    harness.env.DB = {
+      prepare: (sql: string) => wrap(db.prepare(sql), sql),
+      batch: async (statements: Array<D1PreparedStatement & { sql?: string }>) => {
+        if (statements.some((statement) => match.test(statement.sql ?? ""))) await hold();
+        return db.batch(statements);
+      },
+    } as unknown as D1Database;
+  }
+
+  it.each<[string, Row, { state: string; earnedLeft: number; extraUsed: number; reports: number }]>([
+    ["a free account past its plan's hours keeps running on earned hours",
+      { used_milli: 60_000, earned_granted_milli: 20_000 }, { state: "warn80", earnedLeft: 10_000, extraUsed: 0, reports: 0 }],
+    ["a free account is out once its earned hours are gone too",
+      { used_milli: 70_000, earned_granted_milli: 20_000 }, { state: "zero", earnedLeft: 0, extraUsed: 0, reports: 0 }],
+    ["earned hours an ended period drew are gone",
+      { used_milli: 55_000, earned_granted_milli: 20_000, earned_used_milli: 15_000 }, { state: "zero", earnedLeft: 0, extraUsed: 0, reports: 0 }],
+    ["an account refused the free plan runs on earned hours from its first hour",
+      { included_milli: 0, free_refused_at: NOW - DAY, used_milli: 5_000, earned_granted_milli: 20_000 }, { state: "none", earnedLeft: 15_000, extraUsed: 0, reports: 0 }],
+    ["paid extra hours start only after earned hours, and earned hours are never billed",
+      { ...plus, extra_enabled: 1, used_milli: 503_500, earned_granted_milli: 2_000 }, { state: "warn95", earnedLeft: 0, extraUsed: 1_500, reports: 1 }],
+    ["hours granted after extra hours were billed cover only what comes next",
+      { ...plus, extra_enabled: 1, used_milli: 520_000, extra_reported_milli: 20_000, earned_granted_milli: 20_000 }, { state: "warn95", earnedLeft: 20_000, extraUsed: 20_000, reports: 0 }],
+  ])("order of use: %s", async (_label, overrides, expected) => {
+    harness.env.STRIPE_METER_EVENT = "ade_cloud_extra_hours";
+    seedAccount(harness, OWNER, overrides);
+
+    const state = await stateOf();
+    await reportExtraHours(harness.env, clock);
+
+    expect({ state: state.hours.state, earnedLeft: state.earnedHours?.leftMilli, extraUsed: state.extraHours.usedMilli, reports: extraReports().length }).toEqual(expected);
+  });
+
+  it("a period's end draws its earned hours once, even when two reads roll it at once", async () => {
+    seedAccount(harness, OWNER, { period_start: NOW - 31 * DAY, period_end: NOW - HOUR, used_milli: 60_000, earned_granted_milli: 20_000 });
+
+    // The second read rolls the period while the first, holding the old row, is about to.
+    let second: CloudAccountState | null = null;
+    landBefore(/select \* from cloud_computers where user_id = \? and deleted_at is null/, async () => { second = await stateOf(); });
+    const first = await stateOf();
+
+    expect(balance(OWNER)).toEqual({ earned_granted_milli: 20_000, earned_used_milli: 10_000 });
+    expect([first.earnedHours?.leftMilli, second!.earnedHours?.leftMilli]).toEqual([10_000, 10_000]);
+    expect(first.hours.usedMilli).toBe(0);
+  });
+
+  it("a failed payment and a paid invoice in the same period draw that period's earned hours once", async () => {
+    seedAccount(harness, OWNER, { ...plus, used_milli: 520_000, earned_granted_milli: 30_000 });
+
+    await applyCloudPlanChange(harness.env, OWNER, { stripeStatus: "past_due" }, clock);
+    expect(balance(OWNER)).toEqual({ earned_granted_milli: 30_000, earned_used_milli: 20_000 });
+    await applyCloudPlanChange(harness.env, OWNER, { stripeStatus: "active", plan: "paid" }, clock + HOUR);
+
+    // The restored hours draw again when the period ends; what the cut drew came back.
+    expect(balance(OWNER)).toEqual({ earned_granted_milli: 30_000, earned_used_milli: 0 });
+    expect((await stateOf()).earnedHours?.leftMilli).toBe(10_000);
+  });
+
+  it("two accounts using one computer at once: one gets its free plan, the other gets 0 free hours", async () => {
+    seedAccount(harness, OWNER);
+    seedAccount(harness, OTHER);
+    const create = { type: "default", resources: { cpu: 2, memory: 4 } };
+
+    // OTHER claims the computer after OWNER saw it free and before OWNER's claim lands.
+    landBefore(/insert into cloud_free_plan_claims/, () => harness.send(OTHER, "POST", "/cloud/instances", create, from(COMPUTER)));
+    await harness.send(OWNER, "POST", "/cloud/instances", create, from(COMPUTER));
+
+    expect(harness.rows("select user_id from cloud_free_plan_claims")).toEqual([{ user_id: OTHER }]);
+    const refused = await stateOf(OWNER);
+    expect(refused.freePlan).toEqual({ state: "refused", sentence: "This computer already used another account's free hours. Plus gives you 500 hours a month." });
+    expect([refused.hours.includedMilli, refused.hours.state]).toEqual([0, "zero"]);
+    expect((await stateOf(OTHER)).freePlan?.state).toBe("claimed");
+  });
+
+  it.each<[string, Array<[string, "GET" | "POST", Record<string, string>]>, Record<string, string>]>([
+    ["a read never claims, so the first account to use the computer gets it",
+      [[OWNER, "GET", from(COMPUTER)], [OTHER, "POST", from(COMPUTER)], [OWNER, "GET", from(COMPUTER)]], { [OWNER]: "refused", [OTHER]: "claimed" }],
+    ["a reinstall on the same computer is the same claim",
+      [[OWNER, "POST", from(COMPUTER)], [OWNER, "POST", from(COMPUTER)]], { [OWNER]: "claimed", [OTHER]: "unclaimed" }],
+    ["an account with its own computer may use a shared one",
+      [[OWNER, "POST", from(COMPUTER)], [OTHER, "POST", from(OTHER_COMPUTER)], [OTHER, "POST", from(COMPUTER)]], { [OWNER]: "claimed", [OTHER]: "claimed" }],
+    ["a refused account gets its free hours back by using a computer of its own",
+      [[OWNER, "POST", from(COMPUTER)], [OTHER, "GET", from(COMPUTER)], [OTHER, "POST", from(OTHER_COMPUTER)]], { [OWNER]: "claimed", [OTHER]: "claimed" }],
+    ["a refused account's read from another computer (any id it sends) gives nothing back",
+      [[OWNER, "POST", from(COMPUTER)], [OTHER, "GET", from(COMPUTER)], [OTHER, "GET", from(OTHER_COMPUTER)]], { [OWNER]: "claimed", [OTHER]: "refused" }],
+    ["a computer that can't read its id, and the phone, claim nothing",
+      [[OWNER, "POST", { "x-ade-computer": "unreadable" }], [OTHER, "POST", {}]], { [OWNER]: "unclaimed", [OTHER]: "unclaimed" }],
+  ])("free plan per computer: %s", async (_label, steps, expected) => {
+    seedAccount(harness, OWNER);
+    seedAccount(harness, OTHER);
+    for (const [user, method, headers] of steps) {
+      await harness.send(user, method, method === "GET" ? "/cloud/account" : "/cloud/instances", method === "GET" ? undefined : { type: "default", resources: { cpu: 2, memory: 4 } }, headers);
+    }
+
+    const states = { [OWNER]: (await stateOf(OWNER)).freePlan?.state, [OTHER]: (await stateOf(OTHER)).freePlan?.state };
+    expect(states).toEqual(expected);
+    // Only a refused account loses the free plan's hours.
+    for (const user of [OWNER, OTHER]) {
+      expect(harness.row("select included_milli from cloud_accounts where user_id = ?", user).included_milli).toBe(expected[user] === "refused" ? 0 : 50_000);
+    }
+  });
+
+  function seedReferral(friend: string, referrer: string): void {
+    harness.insert("cloud_referrals", { friend_user_id: friend, referrer_user_id: referrer, entered_at: NOW - HOUR, state: "pending" });
+  }
+
+  it("two first chats at once pay the referral once: 20 hours to each account", async () => {
+    seedAccount(harness, OWNER);
+    seedAccount(harness, OTHER);
+    seedReferral(OTHER, OWNER);
+
+    // The second first chat lands after the first read the referral as pending, before it pays.
+    let inner: string | null = null;
+    landBefore(/update cloud_referrals set state = 'rewarded'/, async () => { inner = await rewardReferralIfDue(harness.env, OTHER, ctx()); });
+    const outer = await rewardReferralIfDue(harness.env, OTHER, ctx());
+
+    expect([outer, inner].filter((outcome) => outcome === "rewarded")).toHaveLength(1);
+    expect(grants(OTHER)).toEqual([{ reason: "referral_friend", milli: 20_000 }]);
+    expect(grants(OWNER)).toEqual([{ reason: "referral_referrer", milli: 20_000 }]);
+    expect([balance(OTHER).earned_granted_milli, balance(OWNER).earned_granted_milli]).toEqual([20_000, 20_000]);
+  });
+
+  it("a referrer's 10th and 11th rewards landing at once pay the referrer once; both friends get theirs", async () => {
+    seedAccount(harness, OWNER);
+    for (let index = 1; index <= 9; index += 1) {
+      harness.insert("cloud_earned_hours", { user_id: OWNER, milli: 20_000, reason: "referral_referrer", reference: `user_earlier_${index}`, created_at: NOW - DAY });
+    }
+    seedReferral("user_friend_a", OWNER);
+    seedReferral("user_friend_b", OWNER);
+
+    // Friend B's reward is paid between friend A's read and A's payment.
+    landBefore(/update cloud_referrals set state = 'rewarded'/, () => rewardReferralIfDue(harness.env, "user_friend_b", ctx()));
+    await rewardReferralIfDue(harness.env, "user_friend_a", ctx());
+
+    expect(grants(OWNER)).toHaveLength(10);
+    expect(balance(OWNER).earned_granted_milli).toBe(200_000);
+    expect([balance("user_friend_a").earned_granted_milli, balance("user_friend_b").earned_granted_milli]).toEqual([20_000, 20_000]);
+    expect(Number(harness.row("select sum(referrer_rewarded) as paid from cloud_referrals").paid)).toBe(1);
+
+    // Past the cap nothing comes back for the referrer: its out-of-hours warning and 30-day delete clock stay.
+    harness.exec("update cloud_accounts set warned_zero_at = ?, hours_restored_at = null where user_id = ?", NOW - HOUR, OWNER);
+    seedReferral("user_friend_c", OWNER);
+    expect(await rewardReferralIfDue(harness.env, "user_friend_c", ctx())).toBe("rewarded");
+    expect(balance("user_friend_c").earned_granted_milli).toBe(20_000);
+    expect(harness.row("select warned_zero_at, hours_restored_at from cloud_accounts where user_id = ?", OWNER)).toEqual({ warned_zero_at: NOW - HOUR, hours_restored_at: null });
+  });
+
+  it.each<[string, () => void, string]>([
+    ["the two accounts were seen on one computer", () => {
+      harness.insert("cloud_account_computers", { user_id: OWNER, computer_hash: "shared", first_seen_at: NOW });
+      harness.insert("cloud_account_computers", { user_id: OTHER, computer_hash: "shared", first_seen_at: NOW });
+    }, "same_computer"],
+    ["the friend's computer already gave another account its free hours", () => {
+      harness.exec("update cloud_accounts set free_refused_at = ? where user_id = ?", NOW, OTHER);
+    }, "friend_computer_used"],
+  ])("no reward when %s, and the refusal keeps its reason", async (_label, arrange, reason) => {
+    seedAccount(harness, OWNER);
+    seedAccount(harness, OTHER);
+    seedReferral(OTHER, OWNER);
+    arrange();
+
+    expect(await rewardReferralIfDue(harness.env, OTHER, ctx())).toBe("refused");
+
+    expect(harness.row("select state, reason from cloud_referrals where friend_user_id = ?", OTHER)).toEqual({ state: "refused", reason });
+    expect(harness.rows("select 1 from cloud_earned_hours")).toEqual([]);
+  });
+});
+
+/**
+ * A cheaper plan's limits free the oldest computers (`planCleanup.ts`). The
+ * run deletes computers with nobody watching, from the cron only, so a test is
+ * the one way to prove it never deletes work that isn't on GitHub, and never
+ * a computer the account no longer has to give up.
+ */
+describe("ADE Cloud plan cleanup", () => {
+  const NEWER = ["newer000001", "newer000002", "newer000003"];
+  const lane = (overrides: Row = {}) => ({ laneId: "lane_main", laneName: "main", branchRef: "main", primary: true, state: "clean", ...overrides });
+  const tally = (lanes: Row[], extra: Row = {}) => JSON.stringify({ result: { pushed: 0, failed: 0, skipped: 0, lanes, ...extra } });
+  const quiet = JSON.stringify({ result: { interruptedChats: 0, interruptedClis: 0, stillRunning: 0, chatsUploaded: 0, chatsNotUploaded: 0, timedOut: false } });
+
+  /** The free plan allows 3 computers; the oldest of 4 was warned and is due. */
+  function seedOverFreePlan(): void {
+    seedAccount(harness, OWNER, { plan_cleanup_warned_json: JSON.stringify({ [INSTANCE]: NOW - HOUR }), plan_cleanup_due_at: NOW - HOUR });
+    seedComputer(harness, { created_at: NOW - 40 * DAY });
+    provide(harness);
+    NEWER.forEach((id, index) => seedComputer(harness, { instance_id: id, created_at: NOW - (10 - index) * DAY, disk_gb: 2 }));
+  }
+
+  /** The computer's three answers, in order: prepare-stop, push-work, work-state. */
+  function answerExecs(prepare: string, push: string, check: string): void {
+    for (const stdout of [prepare, push, check]) {
+      harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply({ exit_code: 0, stdout, stderr: "" }) });
+    }
+  }
+
+  const run = async () => runPlanCleanups(harness.env, createCloudProvider("provider-key"), await listComputers(harness.env, OWNER), clock);
+
+  it.each<[string, () => void, boolean]>([
+    ["every lane on GitHub, read against the remotes: freed", () => answerExecs(quiet, tally([lane(), lane({ laneId: "lane_x", primary: false, state: "pushed" })], { readsRemotes: true }), tally([lane()], { readsRemotes: true })), true],
+    ["a primary lane 'clean' from an ADE that counts against its own branch: kept", () => answerExecs(quiet, tally([lane()]), tally([lane()])), false],
+    ["a lane in a state the server doesn't know: kept", () => answerExecs(quiet, tally([lane({ primary: false, state: "unknown" })], { readsRemotes: true }), tally([lane()], { readsRemotes: true })), false],
+    ["agents still running after prepare-stop: kept", () => answerExecs(JSON.stringify({ result: { stillRunning: 1, chatsNotUploaded: 0, timedOut: true } }), tally([lane()], { readsRemotes: true }), tally([lane()], { readsRemotes: true })), false],
+    ["the person deleted a newer computer while it pushed, so the account fits: not freed", () => {
+      answerExecs(quiet, tally([lane()], { readsRemotes: true }), tally([lane()], { readsRemotes: true }));
+      // Lands as the computer is read for the push: after the first check, before the delete.
+      harness.net.after.push({ match: new RegExp(`GET .*/instances/${INSTANCE}$`), run: () => { harness.exec("update cloud_computers set deleted_at = ? where instance_id = ?", NOW, NEWER[2]); } });
+    }, false],
+    ["a sleeping computer it woke for the push and then kept goes back to sleep", () => {
+      harness.exec("update cloud_computers set status = 'sleeping', awake_since = null where instance_id = ?", INSTANCE);
+      harness.net.instances.get(INSTANCE)!.status = "sleeping";
+      answerExecs(quiet, tally([lane({ primary: false, state: "unpushed" })], { readsRemotes: true }), tally([lane()], { readsRemotes: true }));
+    }, false],
+  ])("%s", async (_label, arrange, freed) => {
+    seedOverFreePlan();
+    arrange();
+    const startedAs = harness.net.instances.get(INSTANCE)!.status;
+
+    await run();
+
+    expect(computer(harness).deleted_at != null).toBe(freed);
+    // A computer it keeps ends as it started: one it woke is never left running.
+    if (!freed) expect([harness.net.instances.get(INSTANCE)?.status, computer(harness).status]).toEqual([startedAs, startedAs]);
+    expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toHaveLength(freed ? 1 : 0);
+  });
 });

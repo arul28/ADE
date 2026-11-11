@@ -36,7 +36,6 @@ import {
   type CloudShapeId,
 } from "../../../shared/adeCloud";
 import { CLOUD_MADE_BY_AGENT_METADATA, CLOUD_MADE_BY_CHAT_METADATA, cloudMadeByMetadata, type CloudAgentMaker } from "../../../shared/adeCloud";
-import { CLOUD_READY_METADATA } from "../../../shared/cloudReady";
 import { CLOUD_LANE_METADATA_KEYS } from "../../../shared/cloudLaneLaunch";
 import { getErrorMessage } from "../shared/utils";
 import { CloudProviderError, type CloudProvider, type CloudInstance, type CloudLogger } from "./cloudProvider";
@@ -49,7 +48,7 @@ import {
 } from "./cloudMachineCreator";
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
-import { wakeThroughTransition } from "./cloudReadyClaim";
+import { wakeThroughTransition } from "./cloudInstanceOps";
 import { cloudHoldCommand, cloudReleaseHoldCommand } from "./cloudSleep";
 
 export type CloudCopyDeps = CloudMachineCreatorDeps & {
@@ -73,13 +72,19 @@ const MOVE_SERVE_PORT = 7338;
 const COPY_HOLD_MS = 20 * 60_000;
 const MOVE_HOLD_MS = 45 * 60_000;
 
-/** Metadata a copy must not carry: it is a new machine, not the source's ready machine or row. */
+/**
+ * Metadata a copy must not carry: it is a new machine, not the source's row.
+ * The `ade_ready*` keys are the old ready machines' (removed in Cloud 5): an
+ * older ADE on another computer would still take a copy that carried them as
+ * a project's ready machine.
+ */
 const NOT_COPIED_METADATA = new Set<string>([
   CLOUD_MACHINE_KEY_METADATA,
   CLOUD_MADE_BY_CHAT_METADATA,
   CLOUD_MADE_BY_AGENT_METADATA,
   "ade_request_id",
-  ...Object.values(CLOUD_READY_METADATA),
+  "ade_ready_for", "ade_ready", "ade_ready_name", "ade_ready_path", "ade_ready_lane",
+  "ade_ready_claimed_at", "ade_ready_claim", "ade_ready_by", "ade_ready_ade",
 ]);
 
 function copyMetadata(source: CloudInstance, requestId: string, extra: Record<string, string>): Record<string, string> {

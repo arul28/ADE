@@ -19,7 +19,7 @@ renderer (window.ade.cloud)   CLI (ade cloud)   phone (cloud.read/write)
               \                     |                  /
        registerCloudIpc      `cloud` action domain (adeActions/registry.ts)
                        \            |
-        machines, sleep, create, copy, move, ready machines, hours, sign-ins
+        machines, sleep, create, copy, move, lanes, hours, sign-ins
                                     |            (apps/desktop/src/main/services/adeCloud/)
                        CloudProvider (cloudProvider.ts)
                                     |
@@ -67,16 +67,18 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Copy and move | `cloudMachineCopy.ts` |
 | Reconnect a machine removed from ADE | `cloudReconnect.ts` |
 | Sleep, wake for use, agent limits | `cloudSleep.ts`, `cloudSleepWatch.ts`, `cloudBrainAccess.ts` |
-| Ready machines | `cloudReadyMachines.ts`, `cloudReadyClaim.ts`, `cloudReadySettings.ts`, `cloudReadyActions.ts` |
-| Sign-ins new machines start with | `cloudSignInStore.ts`, `cloudSignInActions.ts`, `cloudSignInBoot.ts`, `cloudClaudeSignIn.ts` |
-| Claude passes (one per Claude account, cloud only) | `claudePassStore.ts`, `claudePassVerify.ts`, `claudePassEndWarning.ts`; on a machine `services/claudePass/` |
+| Saved ADE Cloud keys and Claude's sign-in (kept in the account vault) | `cloudSignInStore.ts`, `cloudSignInActions.ts`, `cloudClaudeSignIn.ts`; `cloudSignInBoot.ts` only for computers an older ADE made |
+| Claude passes (one per Claude account, cloud only) | `claudePassStore.ts`, `claudePassVerify.ts`; on a machine `services/claudePass/` |
+| The sign-in end warning (Claude passes, and keys with an end date from their provider) | `cloudSignInEndWarning.ts`; the banner `renderer/components/settings/providers/cloud/CloudSignInEndNotice.tsx` |
+| Shared machine operations (metadata patch, wake through a transition) | `cloudInstanceOps.ts` |
+| Product analytics for cloud lanes (launch result, freed lane, Clear caches; the renderer sends the default size) | `cloudLaneAnalytics.ts` |
 | Account sign-ins on every computer (capture, apply, renewal) | `services/providerLogins/` (entry `providerLoginSync.ts`, one file per job) |
 | CLI and agent verbs, approvals | `cloudAgentActions.ts`, `cloudBrainMaker.ts`, `cloudDesktopActions.ts` |
 | A new lane on its own new computer (before the hand-off to its brain) | `cloudLaneLaunchService.ts`, `cloudLaneLaunchRecords.ts`, `registerCloudLaneLaunchIpc.ts` |
 | Rules on a cloud computer (one lane, Codex full access) | `cloudComputerRules.ts`, `cloudComputerLaneHold.ts` |
 | Desktop IPC | `registerCloudIpc.ts` |
 | Reaching ADE's server, access | `cloudServerProvider.ts`, `cloudAccess.ts`, `cloudVaultItems.ts` |
-| Server (account directory, `apps/account-directory/src/cloud/`) | `routes.ts`, `store.ts`, `billing.ts`, `cron.ts`, `chats.ts`, `provider.ts`, `accountDeletion.ts` |
+| Server (account directory, `apps/account-directory/src/cloud/`) | `routes.ts`, `store.ts`, `billing.ts`, `cron.ts`, `chats.ts`, `provider.ts`, `accountDeletion.ts`, `referrals.ts`, `freePlan.ts` |
 | Lane launch: the launch's steps and stage cards, the account status a launch checks first | `cloudLaneLaunchSteps.ts`, `cloudLaneComputerStages.ts`, `cloudAccountStatus.ts` |
 | Lane life: delete, keep the lane and free its computer, tier change, work check; the job events to every window | `cloudLaneLife.ts`, `registerCloudLaneLifeIpc.ts`, `broadcast.ts` |
 | Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
@@ -87,7 +89,7 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | The dashboard in Settings › ADE Cloud, and the lane pieces (cities, job card, tier change, lanes without a computer) | `apps/desktop/src/renderer/components/settings/cloudDashboard/*`, `apps/desktop/src/renderer/components/cloudLane/*` |
 | Server: automatic updates, lanes without a computer, the disk usage report (migrations `0020`, `0021`, `0022` in `apps/account-directory/migrations/`) | `apps/account-directory/src/cloud/updates.ts`, `lanesWithoutComputer.ts`, `diskUsage.ts` |
 
-Shared contracts are in `apps/desktop/src/shared/adeCloud.ts`, `cloudReady.ts`,
+Shared contracts are in `apps/desktop/src/shared/adeCloud.ts`,
 `cloudSignIns.ts`, `cloudTiers.ts` (the four lane sizes, read from the catalog)
 and `cloudLaneLaunch.ts`. On a machine, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`
 keeps it awake while it works and asks the server to sleep it 3 minutes after
@@ -95,15 +97,17 @@ that stops (see Sleep and busy rules).
 
 ## Surfaces
 
-- **Settings:** Integrations › ADE Cloud (`CloudSection.tsx`), with Plan and
-  hours (`CloudPlanCard.tsx`: hours left, the plan, computers and disk at one
-  time, reset date, extra hours and extra disk for paid accounts, buy Plus or
-  Pro, move between them, and manage, which opens Stripe's portal), the
-  80% / 95% / out-of-hours banners, and computers due for deletion, ending in
-  "Powered by Agent 37". Settings entries are `integrations.ade-cloud*`.
-- **Add a computer:** New ADE Cloud computer (a size and a "Full computer
-  (Android, Docker)" switch) in Settings and Your computers. The composer no
-  longer offers it.
+- **Settings:** Settings › ADE Cloud, its own tab (`CloudSection.tsx` and the
+  dashboard in `settings/cloudDashboard/`): the hero with hours, disk and
+  computers against the plan, every lane and computer, Plans (`CloudPlans.tsx`:
+  the plans side by side, buy Plus or Pro, move between them or stay on Pro,
+  extra hours and extra disk, and Manage billing, which opens Stripe's portal),
+  Sizes, Invite friends, Sign-ins and what agents may do alone, with the
+  80% / 95% / out-of-hours banners and computers due for deletion. Settings
+  entries are `integrations.ade-cloud*`.
+- **Add a computer:** a new lane on ADE Cloud makes its own computer. The old
+  "New ADE Cloud computer" form and the ready machines are gone (Cloud 5);
+  `ade cloud create` and the phone still make a bare computer.
 - **New lane on ADE Cloud:** a chat launch with a `cloud` target makes one
   computer for one lane, then hands the launch to that computer's brain. See
   [ADE Cloud lanes](../chat/README.md#ade-cloud-lanes).
@@ -122,12 +126,15 @@ that stops (see Sleep and busy rules).
   (`cloudDiskUsage.ts`): its repository, dependencies, Docker, Android and
   caches, measured at its idle step at most every 6 hours and sent with its
   last work. The dashboard reads it with the computer list, so it wakes nothing.
-  Clear caches runs on that lane's own computer, through its brain.
+  Clear caches runs on that lane's own computer, through its brain
+  (`cloud.clear_caches`). The dashboard confirms first; an agent's call asks
+  the person with a card in its chat, and with nobody watching (full-auto, an
+  automation, ADE MCP) the answer is no.
 - **Look:** the Night sky tokens, the cloud mark, the size icon and the skyline
   live in `remoteTargets/cloudBrand.tsx` and `cloudBrand.css`. A light theme
   changes the tokens there once.
-- **CLI:** `ade cloud` (`ade help cloud`), `ade chat create --machine cloud:ready`,
-  and `ade chat create --machine cloud [--size <size>]` (a new lane on its own
+- **CLI:** `ade cloud` (`ade help cloud`) and
+  `ade chat create --machine cloud [--size <size>]` (a new lane on its own
   computer; see [From the CLI and agents](#from-the-cli-and-agents)).
 - **Agents:** the `ade-cloud` skill (see [Guidance for agents](#guidance-for-agents)).
 - **Phone:** the cloud page, over the `cloud.read` and `cloud.write` sync commands.
@@ -158,9 +165,9 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
   provider's own disk limit (`catalog.sizes[].tier`, `label`, `diskMaxGb`).
 - **Changing plans:** Plus to Pro applies now, charges the difference for the
   rest of the period, and keeps the hours used. Pro to Plus applies at the
-  period end (`billing.nextPlanId`); it is refused while the computers hold
-  more than Plus's disk, unless extra disk is on and a month of it fits the
-  limit. Both go through `POST /cloud/billing/checkout {plan}` on the
+  period end (`billing.nextPlanId`). A downgrade is never refused: over
+  Plus's computers or disk, the answer carries `cleanup`, what Plus's limits
+  will free (see **A cheaper plan's limits**). Both go through `POST /cloud/billing/checkout {plan}` on the
   subscription itself: Stripe's portal can't switch a subscription with more
   than one item.
 - **Not set up yet:** Pro and extra disk are offered only once their Stripe
@@ -187,7 +194,32 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
   "Push all work to GitHub" wake, which does not restart the 30-day delete
   clock. Timed wakes already set are deleted, as at 0 hours. Deleting a computer always works,
   and the 30-day delete of unused computers still runs. The owner report
-  lists these accounts.
+  lists these accounts. A cheaper plan's limits then free the oldest
+  computers (below).
+- **A cheaper plan's limits** (`planCleanup.ts`, migration 0027; "never stop
+  a person from paying less; warn them"): Pro to Plus, a cancel, or a plan
+  that ends after failed payments is never refused. Once the cheaper plan is
+  on and the account holds more computers or disk than it allows (disk that
+  extra disk covers counts as fitting; `past_due` is never cleaned), the
+  ten-minute owner check sets `plan_cleanup_due_at` 3 days out and emails the
+  list; at that time it frees the OLDEST computers past the limits, at most 4
+  a run. Each computer's own ADE interrupts its agents, saves its chats and
+  pushes every lane's work (`ade cloud prepare-stop`, `push-work`, run over
+  exec in a free 15-minute wake), a `work-state` read must find nothing left,
+  then the computer is deleted and its lane kept as a lane without a computer
+  (reason `plan_limit`); the next message to the lane makes a new computer.
+  A computer whose work can't all be pushed stays, the person is told, and it
+  is tried again a day later; nothing else goes in its place. The person sees
+  it before (the sentence `planCleanupSentence` at the change in ADE,
+  `downgradePreviews` and `planCleanup` on the account, an email when the
+  downgrade or cancel is made and another when the cheaper plan starts) and
+  after (an email naming each computer and the branch its work went to,
+  `planCleanupDone` for 14 days).
+- **Timed wake-ups cancelled:** when a blocked account's timed wakes are
+  deleted (0 hours, or the free plan over its disk), the person gets one
+  email a period, and the account carries `timedWakesCancelled` while that
+  period runs. Each computer sets its next timed wake again the next time it
+  runs.
 - **Refusals:** a create, copy, move or grow past a limit answers code
   `disk_limit` (or `needs_paid_plan` on Free) with `reason`
   (`CloudDiskRefusalReason`) and a plain `message`. A client that doesn't
@@ -211,6 +243,112 @@ paid plan it gives the extra disk and its monthly cost, sends a person whose
 extra disk is turned down to the plans card, and opens the plans card when
 the server answers `needs_approval`.
 
+## Referrals and the free plan
+
+The owner's rules are decisions 4 and 5 of `docs/plans/cloud-5/PLAN.md`. The
+server enforces all of it (`referrals.ts`, `freePlan.ts`, migration `0026`);
+clients only show it. Every route is behind the `/cloud` access gate except
+the website's invite lookup.
+
+**Earned hours.** `cloud_earned_hours` is append-only: one grant per
+(account, reason, reference), never removed, never expiring. The account row
+keeps `earned_granted_milli` (recomputed from the grants in the batch that
+adds one) and `earned_used_milli` (what ended periods drew). Order of use in a
+period: the plan's hours, then earned hours, then paid extra hours. A period
+draws from earned hours only what it used past the plan's hours and past the
+extra hours already billed or owed in it (`earnedDrawMilli` in `store.ts`),
+so earned hours are never billed and nothing is both billed and drawn. The
+draw is live while the period runs and settles into `earned_used_milli` in
+the batch that ends the period (`startFreshPeriod`). `isOutOfHours` is true
+only once the plan's hours and earned hours are both gone, so a free account
+with earned hours keeps running, and the 0-hours stop, the wake refusal and
+the 80/95% warnings (`allowancePercentUsed`) all follow. The extra-hours
+meter bills `extraUsedMilli`. A failed payment's cut keeps what it drew
+(`past_due_earned_milli`) and a paid invoice in the same period gives it back
+with the hours it restores. The account read carries `earnedHours`
+(`leftMilli`, `usedThisPeriodMilli`, `grantedMilli`); `hours` stays the
+plan's own hours.
+
+**One free plan per computer.** The desktop and a machine's brain send
+`x-ade-computer` on every `/cloud` call: SHA-256 of
+`ade-cloud-free-plan-computer-v1:` plus the OS machine id (`IOPlatformUUID`,
+`MachineGuid`, `/etc/machine-id`, read by `hardwareAnchor.ts`), the same for
+every account on the computer, or `unreadable`. An ADE Cloud computer sends
+nothing (`isAdeCloudComputer`). The server keys it with an HMAC derived from
+`CLOUD_CHAT_MASTER_KEY` (HKDF label `ade-cloud-free-plan-computer-hmac-v1`; a
+logged dev constant without it) and keeps only that.
+- A create or move, a copy or a wake on the free plan's rules claims the
+  computer for the account (`cloud_free_plan_claims`, both keys unique). A
+  read never claims, so opening the dashboard on a shared computer doesn't
+  take its free plan.
+- An account with no claim seen on a computer another account claimed is
+  refused (`free_refused_at`): its free plan has 0 hours everywhere (CLI,
+  phone, MCP) until it claims a computer of its own, which gives the hours
+  back at once. Paid plans, earned hours and extra hours are untouched.
+- An account holds one claim; once it has one, any other computer (a family
+  one) changes nothing for it. A reinstall is the same OS id, so the same claim.
+- An account used only from the phone or MCP sends no header, keeps the free
+  plan unclaimed and is counted (`unclaimed_use`). A computer that can't read
+  its id claims nothing and is counted (`id_unreadable`). A VM is its own
+  computer. Paid accounts claim nothing.
+- The account read carries `freePlan: { state: unclaimed | claimed | refused,
+  sentence }`; the sentence is set only while refused on the free plan's rules.
+- Account deletion keeps the claim (re-making an account must not give the
+  computer's free hours again) and deletes the computers seen and the invite code.
+
+**Referrals.** One invite code per account (`cloud_invite_codes`, 8 characters
+without 0/O/1/I/L), link `https://ade-app.dev/invite/<CODE>`, made at the
+first summary. `POST /cloud/referrals/redeem { code }` takes the link, the
+`ade://` link or the bare code, within 30 days of the friend's ADE account
+(Clerk's `created_at`, kept as `account_created_at`), once and never changed
+(`cloud_referrals` is keyed by the friend), never the account's own code, and
+never a code whose owner lacks ADE Cloud access. Refusals answer
+`invite_refused` with a `reason` (`CloudInviteRefusalReason`) and the sentence.
+The reward, 20 hours to both, is paid when the friend's first chat runs on an
+ADE Cloud computer: the server sees that as the first saved part of a chat
+(`chats.ts`, written only by a computer the account owns), or at the redeem
+when the friend already had one. It is one batch that moves the referral out
+of `pending` under a fresh token, so two first chats at once pay once; the
+referrer's grant counts its earlier grants in the same statement, so the cap
+of 10 holds (the friend still gets 20). No reward, and `refused` with the
+reason, when the two accounts were seen on one computer (`same_computer`) or
+the friend was refused the free plan (`friend_computer_used`). The account
+read carries `referral` (`CloudReferralSummary`); `GET /cloud/referrals` is the
+same summary alone.
+
+**Website.** `/invite/<CODE>` (`apps/web/src/app/pages/InvitePage.tsx`) asks
+the public `GET /invites/<CODE>` (30 a minute per address, CORS open) for the
+inviter's first name, answered only for an inviter with ADE Cloud access (else
+404, the same as an unknown code). It shows every download option and
+"Open in ADE" (`ade://invite/<CODE>`). The code never reaches analytics (the
+screen is `invite`, the address `/invite`), replay masks the page's text, and
+the ad pixel doesn't load there. Not linked from any page while ADE Cloud is hidden.
+
+**Desktop, CLI, phone.** The account read carries the link and summary
+(`CloudAccountState.referral`); `window.ade.cloud.redeemInvite(code)` enters a
+code (account-level, no pin; `CloudInviteRedeemOutcome`). `ade://invite/<CODE>`
+opens Settings › Account (`account.profile`) with `?invite=<CODE>` for the code
+box, and the main log keeps it as `ade://invite/<redacted>`. The `cloud` actions
+`referral` and `invite_redeem` (machine-scoped; `invite_redeem` is user-only, so
+only the person's desktop and phone reach it: an agent, an ADE MCP app and the
+CLI are refused). `ade cloud invite` prints the link and the summary and says
+to enter a friend's invite in Settings › Account. Hidden with the rest of
+`ade cloud` when access is off.
+
+**Analytics and alerts.** Server PostHog events `ade_cloud_referral` (step
+`code_entered` with result and reason, `reward_paid` with role and
+`referrer_rewarded`, `reward_refused` with reason, `cap_reached`) and
+`ade_cloud_free_plan` (step `claimed`, `restored`, `refused`, `id_unreadable`,
+`unclaimed_use`, with platform). Never a code, a link, an email or another
+account's id. Sentry issues tagged `area: cloud-referrals` or `cloud-free-plan`:
+`cloud.free_plan.many_accounts_one_computer` (a refusal on a computer seen
+with 4+ accounts), `cloud.referral.cap_reached_fast` (10 rewards within 7
+days of the first), `cloud.referral.many_friends_one_computer` (3+ friends
+seen on one computer), and the failures `cloud.free_plan.settle_failed`,
+`cloud.referral.reward_failed`, `cloud.referral.summary_failed`,
+`cloud.referral.clerk_read_failed`. The desktop's names (feature
+`cloud_invite`) are in `productAnalyticsPolicy.ts`.
+
 ## Owner cost protection
 
 The Worker estimates what ADE Cloud costs this month (`costReport.ts`, every
@@ -223,11 +361,30 @@ daily run also writes `cloud_account_days` (cost and income per account),
 raises alarms (a paid account that costs more than it pays, a free one past
 $3 a month, a day at twice the week's mean) and emails the owner the report.
 
+Below the limit, the owner check also emails the owner once each time this
+calendar month's estimate passes another $50 (`OWNER_COST_STEP_USD`): the step,
+the estimate, the limit and how far away it is, and the three accounts that
+cost the most this month. A jump over several steps sends one email, for the
+highest. The step at or above the limit is left to the limit's own email.
+`cloud_settings.owner_cost_step_alert` keeps the month and the last step
+(`2026-11:150`); a new month starts again at $50. The check claims the step
+with a conditional write before it sends, so two checks at once send one
+email, and a send that fails gives the step back for the next check. The
+limit's own email does the same: a failed send is tried at the next check,
+not a day later.
+
 ## Stored data
 
 Account vault items, scope `all`, kind `integration`: `cloud-budget` (agent
-limits only; the name is historical), `cloud-ready` (which projects keep a machine ready),
-`cloud-claude-token` and `cloud-key-<provider>` (sign-ins for new machines).
+limits only; the name is historical), `cloud-claude-token` (the single Claude
+item of older versions, adopted as `claude-pass/legacy`) and `cloud-key-<provider>`
+(the saved ADE Cloud keys). A new cloud computer is made with no sign-in in its
+env (only `ADE_MIN_VERSION`), so no sign-in value passes ADE's server or the
+host in plain text: its brain signs in to the account and takes every sign-in
+from the vault (`providerLoginApplyPass.ts` for the saved keys and carried
+logins, `claudePassSync.ts` for the passes). A computer an older ADE made keeps
+its env until it is deleted; its brain takes the variables out at the first
+apply. The old `cloud-ready` item is no longer read.
 Kind `provider_login` holds the account's provider sign-ins: `<provider>/<origin>.<slot>`
 (the origin is 12 hex of the computer's machine key) and the Claude passes,
 `claude-pass/<12 hex>` (`claude-pass/legacy` for the item older versions saved).
@@ -237,7 +394,7 @@ are off, and the Claude smart balance switch. Each computer keeps marks only,
 never a token, in `<ADE home>/provider-logins/state.json` and `applied.json`,
 and the use of each pass in `claude-pass-use.json`.
 Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
-`ade_made_by_chat`, `ade_disk_full` and `ade_disk_full_reason`, the ready-machine keys in `cloudReady.ts`,
+`ade_made_by_chat`, `ade_disk_full` and `ade_disk_full_reason`; a copy drops the old ready-machine keys `ade_ready*`,
 and the lane keys `ade_lane_id`, `ade_lane_name`, `ade_project_origin` in
 `cloudLaneLaunch.ts`), plus `created_by: ade`.
 
@@ -420,8 +577,19 @@ The main process runs these (`cloudLaneLife.ts`, `IPC.cloudLaneLifeCall`).
 Each call is account level: it names a computer of the account, never a pin.
 
 - **Work check.** `ade cloud push-work --check --json` on the computer reads
-  which lanes have uncommitted changes or unpushed commits. It changes
-  nothing and uses the free `push_work` wake.
+  which lanes have uncommitted changes or commits that no remote has
+  (`laneService.readUnsavedWork`, read now, uncached; the primary lane is
+  measured against the remotes, not its own base). A lane whose state can't be
+  read reports `failed`, never `clean`. It changes nothing and uses the free
+  `push_work` wake. Both the check and a push first run one
+  `git fetch --all --prune` per project (60 s), so a branch force-pushed or
+  deleted on GitHub doesn't leave a stale tracking ref that hides unpushed
+  commits. Commits whose changes are all in the remote's base branch already
+  (`git merge-tree` of the lane into it changes nothing) count as saved, so a
+  branch squash-merged and deleted on GitHub is not pushed back; one deleted
+  without being merged reads as unsaved and is pushed again. A fetch that fails marks that
+  project's lanes `failed`: the computer is kept, and delete says ADE couldn't
+  read the work.
 - **Delete lane.** The computer goes, and the lane with it. ADE never refuses
   it. The work check runs first unless the person was already warned, and the
   answer says whether work was only on the computer. Saved chats stay.

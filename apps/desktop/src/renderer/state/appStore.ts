@@ -262,6 +262,16 @@ export type WorkGridSet = {
   layoutId: string;
   sessionIds: string[];
 };
+/**
+ * The Work draft's Run on pick when it is a cloud, not a computer: ADE Cloud
+ * (with its lane, null for a new one, and the size picked for this draft, null
+ * for the saved default), Cursor Cloud or Devin Cloud.
+ */
+export type WorkDraftCloudTarget =
+  | { provider: "ade"; laneId: string | null; sizeId: CloudTierId | null }
+  | { provider: "cursor" }
+  | { provider: "devin" };
+
 export type WorkProjectViewState = {
   openItemIds: string[];
   activeItemId: string | null;
@@ -274,6 +284,8 @@ export type WorkProjectViewState = {
   draftLaneId: string | null;
   /** Machine that owns `draftLaneId`; null means the project tab's bound machine. */
   draftMachineId: string | null;
+  /** A cloud picked in the draft's Run on menu, kept like `draftMachineId`; null for a computer. */
+  draftCloudTarget: WorkDraftCloudTarget | null;
   laneFilter: string;
   search: string;
   /** Session list grouping mode. */
@@ -423,6 +435,7 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     draftKind: "chat",
     draftLaneId: null,
     draftMachineId: null,
+    draftCloudTarget: null,
     laneFilter: "all",
     search: "",
     sessionListOrganization: "by-lane",
@@ -525,6 +538,19 @@ function normalizeWorkSidebarWidthPct(value: unknown): number {
   return Math.max(26, Math.min(55, n));
 }
 
+function normalizeWorkDraftCloudTarget(value: unknown): WorkDraftCloudTarget | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { provider?: unknown; laneId?: unknown; sizeId?: unknown };
+  if (candidate.provider === "cursor" || candidate.provider === "devin") return { provider: candidate.provider };
+  if (candidate.provider !== "ade") return null;
+  return {
+    provider: "ade",
+    laneId: normalizeOptionalString(candidate.laneId),
+    // A size this build doesn't know reads as the saved default.
+    sizeId: isCloudTierId(candidate.sizeId) ? candidate.sizeId : null,
+  };
+}
+
 function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
   const candidate = value && typeof value === "object"
     ? value as Partial<WorkProjectViewState>
@@ -541,6 +567,8 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     draftKind: candidate.draftKind === "cli" ? "cli" : "chat",
     draftLaneId: normalizeOptionalString(candidate.draftLaneId),
     draftMachineId: normalizeOptionalString(candidate.draftMachineId),
+    // Additive like `workViewMode`: an older blob has none and reads as a computer.
+    draftCloudTarget: normalizeWorkDraftCloudTarget(candidate.draftCloudTarget),
     laneFilter: normalizeOptionalString(candidate.laneFilter) ?? "all",
     search: typeof candidate.search === "string" ? candidate.search : "",
     sessionListOrganization:
@@ -1856,6 +1884,7 @@ export type AppState = {
   setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
   setCtoAttention: (snapshot: CtoAttentionState) => void;
   setSmartTooltipsEnabled: (enabled: boolean) => void;
+  /** Sync calls this too; a person's pick is counted in `lib/cloudDefaultTier.ts`. */
   setCloudDefaultTier: (tier: CloudTierId) => void;
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
@@ -3008,13 +3037,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, draftsButtonEnabled: enabled });
       return { draftsButtonEnabled: enabled };
     }),
-  setCloudDefaultTier: (tier) =>
+  // The person's pick is counted where it's made (`lib/cloudDefaultTier.ts`), not here: sync calls this too.
+  setCloudDefaultTier: (tier) => {
+    const next = normalizeCloudDefaultTier(tier);
+    if (get().cloudDefaultTier === next) return;
     set((prev) => {
-      const next = normalizeCloudDefaultTier(tier);
-      if (prev.cloudDefaultTier === next) return {};
       persistUserPreferencesFrom({ ...prev, cloudDefaultTier: next });
       return { cloudDefaultTier: next };
-    }),
+    });
+  },
   setVoiceInputEnabled: (enabled) =>
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, voiceInputEnabled: enabled });

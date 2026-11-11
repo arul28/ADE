@@ -9,6 +9,7 @@ import {
   type CloudChatTranscriptPage,
 } from "./contract";
 import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
+import { rewardAfterCloudChat } from "./referrals";
 import { logCloud, ownedComputer, type CloudEnv } from "./store";
 
 /**
@@ -22,6 +23,10 @@ import { logCloud, ownedComputer, type CloudEnv } from "./store";
  * from the chats. **Platform encryption, not end-to-end**, like the vault
  * (`apps/push-relay/src/accountVault.ts`): whoever holds the Worker's secret can
  * read a chat; a dump of the bucket or the database alone reveals nothing.
+ *
+ * The same secret also keys the stored computer ids of the free plan
+ * (`freePlan.ts`): rotating it orphans every free-plan claim, so every computer
+ * could claim the free plan again. Rotate it only together with a plan for those.
  *
  * Every read looks up the row under the caller's own account, so another
  * account's chat answers 404 exactly like one that doesn't exist. No chat text
@@ -376,6 +381,11 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     userId, machineKey, chatId, instanceId, row.projectKey, row.laneId, summary, prefix, lastActivityMs, row.lastSeq, sealed.byteLength, now,
     delta,
   ).run();
+  // A saved part is the server's proof a chat ran on an ADE Cloud computer: it pays an
+  // invited friend's pending referral (`referrals.ts`). Every save asks, not only a chat's
+  // first, so a reward that failed is retried by the next save; with nothing pending that is
+  // one primary-key read. Never fails the save.
+  await rewardAfterCloudChat(env, userId, now);
   return json({ ok: true, lastSeq: row.lastSeq } satisfies CloudChatPartResponse);
 }
 

@@ -43,7 +43,7 @@
  * The Grok sign-in from MacBook was last renewed by cloud-a, which renews it
  * while MacBook is off (the takeover).
  */
-import type { ClaudePassUseView, CloudClaudeSignInState, CloudPassEnd, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { ClaudePassUseView, CloudClaudeSignInState, CloudSignInEnd, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type {
   ProviderLoginApplied,
   ProviderLoginProvider,
@@ -929,18 +929,18 @@ export function applyBrowserMockProviderLogins(ade: any): void {
       return signInStatus();
     },
   };
-  /** As desktop main computes it (claudePassEnd.ts): the soonest due pass, ended first; nothing while off. */
-  const passEnd = (): CloudPassEnd | null => {
+  /** As desktop main computes it (cloudSignInEndWarning.ts): the soonest due pass, ended first; nothing while off. */
+  const signInEnd = (): CloudSignInEnd | null => {
     if (!state.enabled) return null;
     const now = Date.now();
-    const due: CloudPassEnd[] = [];
+    const due: CloudSignInEnd[] = [];
     for (const pass of state.passes) {
       if (pass.unreadable) continue;
-      const passState: CloudPassEnd["state"] | null = pass.state === "ended"
+      const passState: CloudSignInEnd["state"] | null = pass.state === "ended"
         ? "ended"
         : pass.state === "estimate_passed" ? "estimate_passed" : pass.expiresAt - 7 * DAY <= now ? "ending" : null;
       if (passState) {
-        due.push({ key: pass.key, state: passState, email: pass.email, expiresAt: pass.expiresAt, endedAt: pass.endedAt, endsInDays: endsInDays(pass.expiresAt), more: 0, fingerprint: "" });
+        due.push({ kind: "claude_pass", key: pass.key, state: passState, email: pass.email, expiresAt: pass.expiresAt, endedAt: pass.endedAt, endsInDays: endsInDays(pass.expiresAt), more: 0, fingerprint: "" });
       }
     }
     if (!due.length) return null;
@@ -948,7 +948,7 @@ export function applyBrowserMockProviderLogins(ade: any): void {
     return { ...due[0]!, more: due.length - 1, fingerprint: due.map((entry) => `${entry.key}:${entry.state}`).sort().join("|") };
   };
   ade.cloudAccess = {
-    read: async () => ({ enabled: true, passEnd: passEnd() }),
+    read: async () => ({ enabled: true, signInEnd: signInEnd() }),
     onChanged: () => () => undefined,
   };
 

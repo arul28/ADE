@@ -74,7 +74,6 @@ import {
 import { isWebClientMode } from "../../lib/webClientMode";
 import { decodeSettingsHash } from "./settingsHash";
 import { CloudMark, ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
-import { useAdeCloudEnabled } from "../../state/cloudAccess";
 
 /**
  * What each Settings tab renders: its sections as data (`TAB_SECTIONS`), the
@@ -223,9 +222,8 @@ function IntegrationsTabContent({ machine, standalone }: { machine: SettingsMach
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { pin } = useSettingsMachineScope();
-  const cloudEnabled = useAdeCloudEnabled();
   const requested = openIntegrationFromUrl(searchParams, location.hash);
-  const sections = (TAB_SECTIONS.integrations ?? []).filter((section) => section.group !== "cloud" || cloudEnabled).filter((section) => standalone
+  const sections = (TAB_SECTIONS.integrations ?? []).filter((section) => standalone
     // No project: only the account's pages (the provider, MCP servers) can load.
     ? standaloneSection(section)
     : !machine || !section.machine || machineSectionAvailable(section.machine, machine));
@@ -545,10 +543,11 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["integrations.github", "integrations.github-issues-top-bar"], render: () => <GitHubIntegrationSection />, machine: "routed", title: "GitHub", group: "github" },
     { entryIds: ["integrations.linear", "integrations.linear-top-bar"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
     { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", title: "Jira", group: "jira" },
-    // Account-wide: one workspace key in the account vault, so no machine kind and no pin.
-    { entryIds: ["integrations.ade-cloud", "integrations.ade-cloud-sign-ins", "integrations.ade-cloud-ready", "integrations.ade-cloud-spending", "integrations.ade-cloud-agent-limits"], render: () => <CloudSection />, title: ADE_CLOUD_NAME, group: "cloud" },
     { entryIds: ["mcp.servers", "mcp.found"], render: () => <McpServersSection />, title: "MCP servers", group: "mcp" },
   ],
+  // Account-wide: the plan, hours and computers are the account's, so the page
+  // asks this desktop's own main process with no pin and carries no machine kind.
+  "ade-cloud": [{ entryIds: "tab", render: () => <SettingsColumn wide><CloudSection /></SettingsColumn>, title: ADE_CLOUD_NAME }],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
   // Account-wide: the on/off switch, the computers and the connections live in
   // the account (settings store and vault), so the page asks this desktop's own

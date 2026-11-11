@@ -84,8 +84,11 @@ function logEmail(event: string, meta: Record<string, unknown>): void {
   console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-account-directory", kind: event, ...meta }));
 }
 
-/** The account's primary address from Clerk's Backend API, or null. */
-async function accountEmail(env: CloudEmailEnv, userId: string): Promise<string | null> {
+/** What ADE reads about an account from Clerk's Backend API. The email is never logged. */
+export type ClerkUserFacts = { email: string | null; createdAt: number | null; firstName: string | null };
+
+/** The account's Clerk user, or null without a Clerk key or when Clerk refuses. Throws when Clerk can't be reached. */
+export async function readClerkUser(env: Pick<CloudEmailEnv, "CLERK_SECRET_KEY">, userId: string): Promise<ClerkUserFacts | null> {
   const secretKey = env.CLERK_SECRET_KEY?.trim();
   if (!secretKey) return null;
   const response = await fetch(`${CLERK_USERS_URL}/${encodeURIComponent(userId)}`, {
@@ -93,26 +96,36 @@ async function accountEmail(env: CloudEmailEnv, userId: string): Promise<string 
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) return null;
-  const user = await response.json() as { primary_email_address_id?: unknown; email_addresses?: unknown };
-  if (!Array.isArray(user.email_addresses)) return null;
-  const primary = (user.email_addresses as Array<Record<string, unknown>>)
-    .find((address) => address.id === user.primary_email_address_id)
-    ?? (user.email_addresses as Array<Record<string, unknown>>)[0];
-  return typeof primary?.email_address === "string" ? primary.email_address : null;
+  const user = await response.json() as { primary_email_address_id?: unknown; email_addresses?: unknown; created_at?: unknown; first_name?: unknown };
+  const addresses = Array.isArray(user.email_addresses) ? user.email_addresses as Array<Record<string, unknown>> : [];
+  const primary = addresses.find((address) => address.id === user.primary_email_address_id) ?? addresses[0];
+  return {
+    email: typeof primary?.email_address === "string" ? primary.email_address : null,
+    createdAt: typeof user.created_at === "number" ? user.created_at : null,
+    firstName: typeof user.first_name === "string" ? user.first_name.trim().split(/\s+/)[0]?.slice(0, 40) || null : null,
+  };
 }
 
-export async function sendCloudEmail(env: CloudEmailEnv, email: CloudEmail): Promise<void> {
+/** The account's primary address from Clerk, or null. Never logged. */
+export async function accountEmail(env: CloudEmailEnv, userId: string): Promise<string | null> {
+  return (await readClerkUser(env, userId))?.email ?? null;
+}
+
+/** `skipped`: no sender or no address is set up, so trying again won't help. `failed`: refused or not reached. */
+export type CloudEmailResult = "sent" | "skipped" | "failed";
+
+export async function sendCloudEmail(env: CloudEmailEnv, email: CloudEmail): Promise<CloudEmailResult> {
   const target = "owner" in email ? "owner" : "account";
   const resendKey = env.RESEND_API_KEY?.trim();
   if (!resendKey) {
     logEmail("cloud.email_skipped", { target, subject: email.subject });
-    return;
+    return "skipped";
   }
   try {
     const to = "owner" in email ? env.CLOUD_ALERT_EMAIL?.trim() || null : await accountEmail(env, email.userId);
     if (!to) {
       logEmail("cloud.email_no_recipient", { target, subject: email.subject });
-      return;
+      return "skipped";
     }
     const response = await fetch(RESEND_URL, {
       method: "POST",
@@ -121,8 +134,10 @@ export async function sendCloudEmail(env: CloudEmailEnv, email: CloudEmail): Pro
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     logEmail(response.ok ? "cloud.email_sent" : "cloud.email_refused", { target, subject: email.subject, status: response.status });
+    return response.ok ? "sent" : "failed";
   } catch {
     logEmail("cloud.email_failed", { target, subject: email.subject });
+    return "failed";
   }
 }
 

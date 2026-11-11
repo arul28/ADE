@@ -7,12 +7,12 @@ import {
   cloudLimitsPresetOf,
   type CloudAgentLimits,
 } from "../../../shared/adeCloud";
-import { IntegrationCard, IntegrationChoice } from "./integrations/IntegrationChrome";
+import { IntegrationChoice } from "./integrations/IntegrationChrome";
 import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
 
 /**
- * Settings › Integrations › ADE Cloud › What agents may do: what an agent may
+ * Settings › ADE Cloud › What agents may do alone: what an agent may
  * do when nobody is watching (a full-auto chat, an automation), as one yes/no
  * with its limits under Yes (the preset is derived). Account-wide (the account
  * vault), so it asks this desktop's main process with no pin.
@@ -68,59 +68,60 @@ export function CloudAgentLimitsCard() {
   };
 
   return (
-    <IntegrationCard
-      anchor="cloud-agent-limits"
-      span="full"
-      icon={<Robot size={15} weight="fill" />}
-      title="What agents may do"
-      hint="A watched agent always asks in its chat with an Allow / Don't allow card."
-    >
-      <div className="ade-ig-limit-rows">
-        <div className="ade-ig-limit-row">
-          <div><b>When nobody is watching, may agents make or change computers?</b><small>Nobody is watching a full-auto chat or an automation run.</small></div>
-          <IntegrationChoice
-            label="When nobody is watching, may agents make or change computers?"
-            value={unattended == null ? null : unattended ? "yes" : "no"}
-            disabled={disabled}
-            onChange={(choice) => allow(choice === "yes")}
-            options={[
-              { value: "no", label: "No, they ask you first" },
-              { value: "yes", label: "Yes, within these limits" },
-            ]}
-          />
+    <section id="cloud-agent-limits" data-settings-anchor="cloud-agent-limits" className="kit-card adecd-card" aria-label="What agents may do">
+      <header className="kit-card-head">
+        <Robot size={14} />
+        What agents may do alone
+      </header>
+      <div className="kit-card-body adecd-limits">
+        <p className="adecd-lead">An agent you're watching always asks in its chat first. These rules are for a full-auto chat or an automation, when nobody is watching.</p>
+        <div className="kit-panel adecd-limit-rows">
+          <div className="adecd-limit-row">
+            <div><b>May they make or change computers?</b></div>
+            <IntegrationChoice
+              label="When nobody is watching, may agents make or change computers?"
+              value={unattended == null ? null : unattended ? "yes" : "no"}
+              disabled={disabled}
+              onChange={(choice) => allow(choice === "yes")}
+              options={[
+                { value: "no", label: "No, they ask you first" },
+                { value: "yes", label: "Yes, within these limits" },
+              ]}
+            />
+          </div>
+          {unattended ? (
+            <>
+              <div className="adecd-limit-row">
+                <div><b>New computers a day</b><small>Made, copied or moved by agents</small></div>
+                <IntegrationChoice
+                  label="New computers a day"
+                  value={limits?.machinesPerDay ?? null}
+                  disabled={disabled}
+                  sentenceCase={false}
+                  onChange={(count) => setLimit({ machinesPerDay: count })}
+                  options={CLOUD_MACHINES_PER_DAY_CHOICES.map((count) => ({ value: count, label: String(count) }))}
+                />
+              </div>
+              <div className="adecd-limit-row">
+                <div><b>Largest size</b><small>Bigger computers use hours faster</small></div>
+                <IntegrationChoice
+                  label="Largest size"
+                  value={limits?.maxShape ?? null}
+                  disabled={disabled}
+                  sentenceCase={false}
+                  onChange={(maxShape) => setLimit({ maxShape })}
+                  options={CLOUD_SHAPES.map((shape) => ({ value: shape.id, label: shape.label, title: `${shape.cpu} CPU · ${shape.memoryGb} GB` }))}
+                />
+              </div>
+            </>
+          ) : null}
         </div>
-        {unattended ? (
-          <>
-            <div className="ade-ig-limit-row">
-              <div><b>New computers a day</b><small>Made, copied or moved by agents</small></div>
-              <IntegrationChoice
-                label="New computers a day"
-                value={limits?.machinesPerDay ?? null}
-                disabled={disabled}
-                sentenceCase={false}
-                onChange={(count) => setLimit({ machinesPerDay: count })}
-                options={CLOUD_MACHINES_PER_DAY_CHOICES.map((count) => ({ value: count, label: String(count) }))}
-              />
-            </div>
-            <div className="ade-ig-limit-row">
-              <div><b>Largest size</b><small>Bigger computers use hours faster</small></div>
-              <IntegrationChoice
-                label="Largest size"
-                value={limits?.maxShape ?? null}
-                disabled={disabled}
-                sentenceCase={false}
-                onChange={(maxShape) => setLimit({ maxShape })}
-                options={CLOUD_SHAPES.map((shape) => ({ value: shape.id, label: shape.label, title: `${shape.cpu} CPU · ${shape.memoryGb} GB` }))}
-              />
-            </div>
-          </>
+
+        <p className="adecd-limits-note"><Lock size={12} weight="fill" /> Always yours to decide: changing a computer's size, keeping one awake for good, raising these limits, and deleting a computer an agent didn't make.</p>
+        {error ? (
+          <Banner layout="inline" model={{ id: "cloud-limits-error", tone: "error", title: "What agents may do", detail: error, actions: [{ label: "Dismiss", onClick: () => setError(null) }] }} />
         ) : null}
       </div>
-
-      <p className="ade-ig-note"><Lock size={13} weight="fill" /> Always yours to decide: changing a computer's size, keeping a computer awake for good, raising these limits, and deleting a computer an agent didn't make.</p>
-      {error ? (
-        <Banner layout="inline" model={{ id: "cloud-limits-error", tone: "error", title: "What agents may do", detail: error, actions: [{ label: "Dismiss", onClick: () => setError(null) }] }} />
-      ) : null}
-    </IntegrationCard>
+    </section>
   );
 }

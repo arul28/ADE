@@ -15,6 +15,7 @@ struct ConnectionSettingsView: View {
   @StateObject private var machineController = SettingsMachineController()
   @EnvironmentObject private var machineFleet: MachineFleet
   @ObservedObject private var account = AccountService.shared
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @State private var signInPresented = false
   @State private var presentedSheet: SettingsPairSheetRoute?
   @State private var pinPreset: PinPreset?
@@ -130,6 +131,14 @@ struct ConnectionSettingsView: View {
       } message: { _ in
         Text("The phone keeps \(MachineFleet.liveMachineLimit) machines live at a time. Pick one to disconnect.")
       }
+      // Ask again whether the account has ADE Cloud each time Settings opens
+      // or the connection comes back: the phone may now be on a machine of
+      // another account. Until the answer, the ADE Cloud row stays hidden
+      // (`SyncService` clears `cloudAvailable` whenever the phone leaves a machine).
+      .task(id: syncService.connectionState == .connected) {
+        guard syncService.connectionState == .connected else { return }
+        await syncService.refreshCloudAvailability()
+      }
       .onAppear {
         machineController.bind(syncService: syncService, fleet: machineFleet)
         presentationModel.bind(to: syncService)
@@ -210,9 +219,12 @@ struct ConnectionSettingsView: View {
 
   /// The project pages act on the open project, so they show only while the
   /// phone has one, as the desktop shows them only with a project open.
+  /// ADE Cloud shows only for an account with access, on a machine that can
+  /// run the page: unknown or no is hidden.
   private var visibleRoutes: [SettingsRoute] {
     SettingsRoute.allCases.filter { route in
-      route.group != .project || syncService.activeProject != nil
+      if route == .adeCloud { return syncService.cloudAvailable && syncService.cloudSupported }
+      return route.group != .project || syncService.activeProject != nil
     }
   }
 
@@ -243,6 +255,11 @@ struct ConnectionSettingsView: View {
     case .chat: SettingsChatPage(syncService: syncService)
     case .providers: SettingsProvidersPage(syncService: syncService)
     case .integrations: SettingsIntegrationsPage(syncService: syncService)
+    case .adeCloud:
+      // A stale link from before access changed still lands on nothing.
+      if syncService.cloudAvailable && syncService.cloudSupported {
+        CloudSettingsPage(syncService: syncService)
+      }
     case .notifications:
       ADESettingsPage(route: .notifications) {
         SettingsPushDeliverySection(

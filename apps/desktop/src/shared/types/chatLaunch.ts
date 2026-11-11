@@ -318,6 +318,12 @@ export type ChatLaunchArgs = {
 export type ChatLaunchCloudTarget = {
   /** The size, as `cloudTiers` names it: `small`, `medium`, `large` or `xlarge`. */
   sizeId: string;
+  /**
+   * The project's git origin as the launching window knows it (the one its
+   * composer checked before Send), so main clones the same repository the
+   * composer allowed. Absent: main reads the project's origin itself.
+   */
+  originUrl?: string | null;
 };
 
 export type ChatLaunchIdArgs = { launchId: string };

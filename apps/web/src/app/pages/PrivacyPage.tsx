@@ -9,7 +9,7 @@ import {
   setMarketingAnalyticsEnabled,
 } from "../../lib/marketingAnalyticsBrowser";
 
-const EFFECTIVE_DATE = "November 3, 2026";
+const EFFECTIVE_DATE = "November 11, 2026";
 const CONTACT_EMAIL = "arulsharma1028@gmail.com";
 
 type Section = {
@@ -72,6 +72,7 @@ const sections: Section[] = [
     title: "What the desktop app collects",
     body: [
       "Project files, git history, prompts, terminal content, and process output remain on your disk and are excluded from analytics and error reports. Product analytics is limited to the allowlisted categories described above, and error and crash reports to what is described under Error and crash reporting. A full diagnostic report with local logs is shared only when you choose to submit one.",
+      "We keep a scrambled id of your computer so the free plan is given once per computer.",
     ],
   },
   {

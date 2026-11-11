@@ -43,10 +43,8 @@ A chat id finds its own project and computer. `chat_status`, `chat_read`,
 - The answer gives the chat's real `model`, `reasoningEffort`,
   `permissionMode`, `laneId` and a `link` to hand the person.
 - `chat_update` changes model, effort or permissions in place; the id stays.
-- A lane on its own ADE Cloud computer: first `{"name":"ade","arguments":{"args":["cloud","status","--json"]}}`.
-  If `canStartLane.ok` is false, tell the person `canStartLane.reason` and stop.
-  Then `["chat","create","--machine","cloud","--size","small","--prompt","…"]`
-  (write access). The `ade-cloud` prompt has the full rules.
+- A lane on its own cloud computer: only when the `ade-cloud` prompt is
+  listed (the account has it); that prompt has the steps and the rules.
 
 ## 3. Know when it is done
 

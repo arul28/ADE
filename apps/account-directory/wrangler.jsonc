@@ -118,12 +118,14 @@
     // ADE Cloud prices and meter in the Stripe SANDBOX. `scripts/stripe-setup.mjs`
     // creates or finds them and prints these ids.
     "STRIPE_PLAN_PRICE_ID": "price_1UZkLZBsy4QVYccDJhyDhBPZ",
-    "STRIPE_EXTRA_PRICE_ID": "price_1UZkLZBsy4QVYccDDwJ33ruZ",
+    // Extra hours' price, on its own "Extra hours" product (2026-11-11), so
+    // Checkout names the line. Read before the older STRIPE_EXTRA_PRICE_ID.
+    "STRIPE_EXTRA_HOURS_PRICE_ID": "price_1UadQVBsy4QVYccDnPEBOIkW",
     "STRIPE_METER_EVENT": "ade_cloud_small_hours",
     // Pro, extra disk (its own meter, never the hours price) and the billing
     // portal setup (card, cancel, invoices). Same script, same sandbox.
     "STRIPE_PRO_PRICE_ID": "price_1UaJv6Bsy4QVYccDyUbQTq6x",
-    "STRIPE_DISK_PRICE_ID": "price_1UaJujBsy4QVYccDV5I9JPx0",
+    "STRIPE_DISK_PRICE_ID": "price_1UadQVBsy4QVYccDH47NVQxH",
     "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
     "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD"
   },
@@ -197,12 +199,16 @@
         // STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PLAN_PRICE_ID,
         // STRIPE_EXTRA_PRICE_ID and STRIPE_METER_EVENT are Worker secrets there
         // (never restate one here: a var and a secret can't share a name).
-        // These four are the sandbox ids for Pro, extra disk and the portal.
+        // These five are the sandbox ids for Pro, extra hours, extra disk and
+        // the portal. STRIPE_EXTRA_HOURS_PRICE_ID is a var, read before the
+        // STRIPE_EXTRA_PRICE_ID secret, so the "Extra hours" product's price
+        // ships with this file.
         // For real money: `scripts/stripe-setup.mjs` made the live objects on
         // 2026-11-10; swap all nine values, add a live webhook, and clear the
         // sandbox customer and subscription ids in D1 first.
         "STRIPE_PRO_PRICE_ID": "price_1UaJv6Bsy4QVYccDyUbQTq6x",
-        "STRIPE_DISK_PRICE_ID": "price_1UaJujBsy4QVYccDV5I9JPx0",
+        "STRIPE_EXTRA_HOURS_PRICE_ID": "price_1UadQVBsy4QVYccDnPEBOIkW",
+        "STRIPE_DISK_PRICE_ID": "price_1UadQVBsy4QVYccDH47NVQxH",
         "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
         "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD"
       },

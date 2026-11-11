@@ -42,15 +42,6 @@ import {
   type RemoteTargetFormPrefill,
 } from "./RemoteTargetForm";
 import { PairMachineForm } from "./PairMachineForm";
-import { NewCloudMachineForm } from "./NewCloudMachineForm";
-import {
-  CLOUD_JOIN_WATCH_MS,
-  type CloudCreateMachineResult,
-  type CloudStatus,
-} from "../../../shared/adeCloud";
-import { accountMachineConnectionState } from "../../../shared/accountDirectory";
-import { captureError } from "../../../shared/sentry/capture";
-import { Banner } from "../ui/notice";
 import {
   accountMachineMatchesTarget,
   assignMachineSections,
@@ -81,11 +72,8 @@ import {
   helperTextStyle,
   panelStyle,
 } from "./remoteTargetListStyles";
-import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
-import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { useCloudMachineGroup, type RowExtras } from "./useCloudMachineGroup";
 import type { MachineRow } from "./remoteMachineModel";
-import { isWebClientMode } from "../../lib/webClientMode";
 
 type RemoteTargetListProps = {
   onConnected?: (result: RemoteRuntimeConnectResult) => void;
@@ -124,30 +112,8 @@ type ConnectTargetOptions = {
   onTrustRequired?: (state: "needs_trust" | "changed") => void;
 };
 
-type AddMode = "choose" | "nearby" | "pair" | "ssh" | "code" | "cloud";
+type AddMode = "choose" | "nearby" | "pair" | "ssh" | "code";
 
-/**
- * the provider in the add sheet. `loading` shows nothing extra; `unreachable` is a
- * saved key whose status couldn't be read (or that the provider refused): the
- * option still shows and opens a Retry.
- */
-type CloudPickerState =
-  | { kind: "loading" }
-  | { kind: "none"; signedOut: boolean }
-  | { kind: "ready"; status: CloudStatus }
-  | { kind: "unreachable"; refused: boolean; message: string };
-
-function cloudPickerState(status: CloudStatus | null): CloudPickerState {
-  if (!status) return { kind: "unreachable", refused: false, message: "ADE couldn't read ADE Cloud's status." };
-  if (status.connected && !status.error) return { kind: "ready", status };
-  if (status.error) {
-    return { kind: "unreachable", refused: !status.connected, message: status.error ?? "ADE couldn't reach ADE Cloud." };
-  }
-  return { kind: "none", signedOut: status.signedOut };
-}
-
-/** While a new box finishes starting, how often the account list is refreshed. */
-const CLOUD_JOIN_REFRESH_MS = 15_000;
 
 type AccountConnectionToast = {
   targetId: string;
@@ -938,97 +904,6 @@ export function RemoteTargetList({
     ],
   );
 
-  // the provider is account-wide (its key is in the account vault), so this asks
-  // with no pin. Read when the sheet opens, not polled. A saved key whose
-  // status couldn't be read still offers the option, which then says so.
-  const cloudEnabled = useAdeCloudEnabled();
-  const [cloud, setCloud] = useState<CloudPickerState>({ kind: "loading" });
-  const loadCloudStatus = useCallback((): (() => void) => {
-    const bridge = window.ade.cloud;
-    // The web app reads ADE Cloud but makes no computers: no "New ADE Cloud machine" there.
-    if (!bridge || !cloudEnabled || isWebClientMode()) {
-      setCloud({ kind: "none", signedOut: false });
-      return () => undefined;
-    }
-    let cancelled = false;
-    void bridge.getStatus().then((next) => {
-      if (!cancelled) setCloud(cloudPickerState(next));
-    }, (error: unknown) => {
-      if (!cancelled) setCloud({ kind: "unreachable", refused: false, message: extractError(error) });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [cloudEnabled]);
-  useEffect(() => {
-    if (addMode !== "choose") return;
-    // The last answer stays up while this one loads, so the option never flickers.
-    return loadCloudStatus();
-  }, [addMode, loadCloudStatus]);
-  // Access went away while its form was open: the choice is gone with it.
-  useEffect(() => {
-    if (!cloudEnabled && addMode === "cloud") setAddMode("choose");
-  }, [addMode, cloudEnabled]);
-  const retryCloudStatus = useCallback(() => {
-    setCloud({ kind: "loading" });
-    loadCloudStatus();
-  }, [loadCloudStatus]);
-
-  // A box that signed in but wasn't ready to connect when the create ended:
-  // keep refreshing the account list (the same refresh the list uses) for a
-  // few minutes and connect when its row is ready. Otherwise its row stays
-  // for a manual Connect.
-  const [cloudJoin, setCloudJoin] = useState<{ machineKey: string; name: string; renamed: boolean; until: number } | null>(null);
-  useEffect(() => {
-    if (!cloudJoin) return;
-    const remaining = cloudJoin.until - Date.now();
-    if (remaining <= 0) {
-      setCloudJoin(null);
-      return;
-    }
-    const refresh = setInterval(() => onAccountMachinesChanged?.(), CLOUD_JOIN_REFRESH_MS);
-    const stop = setTimeout(() => setCloudJoin(null), remaining);
-    return () => {
-      clearInterval(refresh);
-      clearTimeout(stop);
-    };
-  }, [cloudJoin, onAccountMachinesChanged]);
-  useEffect(() => {
-    if (!cloudJoin) return;
-    const row = accountMachines?.find((machine) => machine.machineKey === cloudJoin.machineKey) ?? null;
-    if (!row || accountMachineConnectionState(row) !== "available") return;
-    setCloudJoin(null);
-    if (!cloudJoin.renamed && row.name !== cloudJoin.name) {
-      void window.ade.account.renameMachine(row.machineKey, cloudJoin.name).then(
-        () => onAccountMachinesChanged?.(),
-        (error: unknown) => captureError(error, { fingerprint: ["cloud", "join_rename"], handled: true }),
-      );
-    }
-    setAddMode((mode) => (mode === "cloud" ? null : mode));
-    void connectAccountMachine(row);
-  }, [accountMachines, cloudJoin, connectAccountMachine, onAccountMachinesChanged]);
-
-  // A new box signed in to this account on its own: find its row and connect.
-  const onCloudMachineCreated = useCallback(async (result: CloudCreateMachineResult) => {
-    onAccountMachinesChanged?.();
-    if (!result.machineKey) return;
-    if (!result.joined) {
-      setCloudJoin({ machineKey: result.machineKey, name: result.name, renamed: result.renamed, until: Date.now() + CLOUD_JOIN_WATCH_MS });
-      return;
-    }
-    const listed = await window.ade.account.listMachines().catch((error: unknown) => {
-      captureError(error, { fingerprint: ["cloud", "created_list"], handled: true });
-      return null;
-    });
-    const machine = listed?.machines.find((candidate) => candidate.machineKey === result.machineKey);
-    if (!machine) {
-      // Joined a moment ago but not in this read: watch for it like a slow one.
-      setCloudJoin({ machineKey: result.machineKey, name: result.name, renamed: result.renamed, until: Date.now() + CLOUD_JOIN_WATCH_MS });
-      return;
-    }
-    setAddMode(null);
-    await connectAccountMachine(machine);
-  }, [connectAccountMachine, onAccountMachinesChanged]);
 
   const onPaired = useCallback(
     async (targetId: string) => {
@@ -1533,15 +1408,6 @@ export function RemoteTargetList({
     label: string;
     detail: string;
   }> = [
-    // With ADE Cloud access: a new cloud machine, signed in for you.
-    ...(cloudEnabled && (cloud.kind === "ready" || cloud.kind === "unreachable")
-      ? [{
-          key: "cloud" as const,
-          icon: <CloudMark size={18} bold />,
-          label: `New ${ADE_CLOUD_NAME} machine`,
-          detail: "A cloud Linux computer, signed in to your account for you",
-        }]
-      : []),
     {
       key: "nearby",
       icon: <WifiHigh size={18} weight="bold" />,
@@ -1570,7 +1436,6 @@ export function RemoteTargetList({
     pair: "Pair with a nearby computer",
     ssh: "Add over SSH",
     code: "This computer's pairing code",
-    cloud: `New ${ADE_CLOUD_NAME} machine`,
   };
 
   const showEmptyState = !loading
@@ -1689,31 +1554,6 @@ export function RemoteTargetList({
               </>
             ) : null}
 
-            {addMode === "cloud" && cloudEnabled && cloud.kind === "ready" ? (
-              <NewCloudMachineForm onCreated={(result) => void onCloudMachineCreated(result)} />
-            ) : null}
-            {addMode === "cloud" && cloudEnabled && cloud.kind === "unreachable" ? (
-              <Banner
-                layout="inline"
-                model={{
-                  id: "cloud-status-unreachable",
-                  tone: cloud.refused ? "warning" : "error",
-                  icon: <CloudMark size={16} />,
-                  title: cloud.refused ? `${ADE_CLOUD_NAME} refused this account` : `ADE couldn't reach ${ADE_CLOUD_NAME}`,
-                  detail: cloud.message,
-                  actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: retryCloudStatus }],
-                  ...(cloud.refused ? { report: false as const } : {}),
-                }}
-              />
-            ) : null}
-            {addMode === "cloud" && cloudEnabled && cloud.kind === "loading" ? (
-              <div role="status" style={{ ...helperTextStyle, display: "flex", gap: 8, alignItems: "center" }}>
-                <CircleNotch size={14} className="animate-spin" /> Checking {ADE_CLOUD_NAME}…
-              </div>
-            ) : null}
-            {addMode === "cloud" && cloudEnabled && cloud.kind === "none" ? (
-              <div style={helperTextStyle}>{cloud.signedOut ? `Sign in to ADE to use ${ADE_CLOUD_NAME}.` : `${ADE_CLOUD_NAME} isn't available on this account yet.`}</div>
-            ) : null}
             {addMode === "code" ? (
               <div style={{ display: "grid", gap: 10 }}>
                 <div style={helperTextStyle}>

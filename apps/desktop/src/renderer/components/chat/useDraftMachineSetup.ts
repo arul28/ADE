@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type CloudMachine } from "../../../shared/adeCloud";
-import { CLOUD_READY_WAKE_WAIT_MS } from "../../../shared/cloudReady";
+import { CLOUD_WAKE_WAIT_MS, type CloudMachine } from "../../../shared/adeCloud";
 import { githubRepoOf } from "../../../shared/cloudLaneLaunch";
 import { ipcErrorMessage } from "../../lib/format";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
@@ -121,7 +120,7 @@ export function useDraftMachineSetup({
         const { value: connected, lastError } = await connectWithRetry({
           connect: () => window.ade.remoteRuntime.connect(targetId),
           stillWanted,
-          waitMs: CLOUD_READY_WAKE_WAIT_MS,
+          waitMs: CLOUD_WAKE_WAIT_MS,
           retryMs: CONNECT_RETRY_MS,
         });
         if (!stillWanted()) return;

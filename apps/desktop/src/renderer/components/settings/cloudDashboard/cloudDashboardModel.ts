@@ -1,6 +1,9 @@
 import {
+  CLOUD_MACHINE_DEFAULT_NAME,
   CLOUD_PLAN_LABELS,
   cloudCatalogOf,
+  cloudHoursLeftMilli,
+  formatCloudDate,
   formatCloudHoursRate,
   type CloudAccountState,
   type CloudDiskUsage,
@@ -19,8 +22,6 @@ import { formatAgo } from "../../../lib/format";
 
 /** A lane not used for this long gets the "not used for a long time" mark. */
 const CLOUD_LANE_OLD_MS = 14 * 86_400_000;
-/** At this share of the plan's disk, the dashboard warns and offers "Free up space". */
-export const CLOUD_DISK_WARN_SHARE = 0.8;
 
 export type DashLaneState = "awake" | "asleep" | "updating" | "starting" | "failed" | "none";
 
@@ -44,6 +45,8 @@ export type DashLane = {
   safe: boolean | null;
   machine: CloudLaneMachine | null;
   without: CloudLaneWithoutComputer | null;
+  /** A computer the account pays for that holds no lane (made before lanes had their own computer). */
+  noLane: boolean;
 };
 
 function stateOf(machine: CloudMachine): DashLaneState {
@@ -77,15 +80,15 @@ export function dashLanes(input: {
   now: number;
 }): DashLane[] {
   const tiers = cloudTiers(cloudCatalogOf(input.account));
+  // Every computer the account pays for: a lane's own, and one that holds no lane.
   const withComputer = input.machines
-    .filter((machine) => machine.lane)
     .map((machine): DashLane => {
       const tier = cloudTierOfMachine(machine, tiers);
       const lastActiveAt = machine.lastActiveAtMs ?? null;
       return {
         key: machine.instanceId,
         instanceId: machine.instanceId,
-        name: machine.lane?.laneName ?? machine.name ?? machine.instanceId,
+        name: machine.lane?.laneName ?? noLaneName(machine),
         tier,
         tierRank: tier ? cloudTierRank(tier.id) : 1,
         rateLabel: tier ? cloudTierRateLabel(tier) : machine.hoursRate != null ? formatCloudHoursRate(machine.hoursRate) : null,
@@ -98,6 +101,7 @@ export function dashLanes(input: {
         safe: laneSafety(machine.laneWork),
         machine,
         without: null,
+        noLane: !machine.lane,
       };
     });
   const known = new Set(withComputer.map((lane) => lane.machine?.lane?.laneId));
@@ -121,9 +125,19 @@ export function dashLanes(input: {
         safe: null,
         machine: null,
         without: lane,
+        noLane: false,
       };
     });
-  return [...withComputer, ...withoutComputer];
+  // Lanes first (awake, then the most recent), then lanes without a computer, then computers with no lane.
+  const sorted = withComputer.slice().sort((left, right) => Number(right.state === "awake") - Number(left.state === "awake")
+    || (right.lastActiveAt ?? 0) - (left.lastActiveAt ?? 0));
+  return [...sorted.filter((lane) => !lane.noLane), ...withoutComputer, ...sorted.filter((lane) => lane.noLane)];
+}
+
+/** A computer with no lane: its own name when ADE gave it one, else its short id. */
+function noLaneName(machine: CloudMachine): string {
+  const name = machine.name?.trim();
+  return name && name !== CLOUD_MACHINE_DEFAULT_NAME ? name : `Computer ${machine.instanceId.slice(0, 6)}`;
 }
 
 /** The plan's name, for the header tag. */
@@ -132,43 +146,31 @@ export function planName(account: CloudAccountState): string {
   return `${CLOUD_PLAN_LABELS[account.planId ?? "plus"] ?? "Paid"} plan`;
 }
 
-/** Percent of a limit used, 0 to 100; 0 for no limit. */
-export function percentOf(used: number, limit: number): number {
-  if (!(limit > 0)) return 0;
-  return Math.max(0, Math.min(100, (used / limit) * 100));
-}
-
-const shortDate = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
-
-export function formatShortDate(ms: number): string {
-  return shortDate.format(new Date(ms));
-}
-
 /**
  * "At this pace your hours last until Nov 24", from the hours the meter
- * charged over the last days. Null when the server doesn't send them, or
- * nothing was used (no pace to read).
+ * charged over the last days, counting earned hours (used after the plan's).
+ * Null when the server doesn't send them, or nothing was used (no pace to
+ * read). Dates are UTC (`formatCloudDate`): the period ends at midnight UTC.
  */
 export function hoursForecast(account: CloudAccountState, now: number): string | null {
   const recent = account.recentUse;
   if (!recent || recent.days <= 0 || recent.usedMilli <= 0) return null;
   const perDay = recent.usedMilli / recent.days;
-  const left = account.hours.leftMilli;
+  const left = cloudHoursLeftMilli(account);
   if (left <= 0) return null;
   const endsAt = now + (left / perDay) * 86_400_000;
   if (endsAt >= account.billing.periodEnd) return "At this pace your hours last until they reset";
-  return `At this pace your hours last until ${formatShortDate(endsAt)}`;
-}
-
-/** "3.4 GB", "820 MB". */
-export function formatGb(gb: number): string {
-  if (gb > 0 && gb < 1) return `${Math.max(1, Math.round(gb * 1000))} MB`;
-  return `${gb >= 100 ? Math.round(gb) : Math.round(gb * 10) / 10} GB`;
+  return `At this pace your hours last until ${formatCloudDate(endsAt)}`;
 }
 
 /** The last-run phrase a lane row shows. */
 export function lastRunText(lane: DashLane, now: number): string {
-  if (lane.state === "none") return lane.without?.reason === "inactive" ? "Computer removed after 30 days" : "No computer now";
+  if (lane.state === "none") {
+    const reason = lane.without?.reason;
+    if (reason === "inactive") return "Computer removed after 30 days";
+    if (reason === "plan_limit") return "Computer removed to fit your plan";
+    return "No computer now";
+  }
   if (lane.state === "awake") return "Running now";
   if (lane.lastActiveAt == null) return "Not used yet";
   return `Ran ${formatAgo(lane.lastActiveAt, now)}`;

@@ -23,6 +23,7 @@ import {
   PuzzlePiece,
   Robot,
   ShareNetwork,
+  Cloud,
   UsersThree,
   SlidersHorizontal,
   UserCircle,
@@ -106,6 +107,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   appearance: Palette,
   behaviour: SlidersHorizontal,
   "ade-mcp": ShareNetwork,
+  "ade-cloud": Cloud,
   sharing: UsersThree,
 };
 
@@ -125,6 +127,7 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "secrets",
   "behaviour",
   "ade-mcp",
+  "ade-cloud",
   "agents",
   "lanes-git",
   "project-agents",
@@ -280,16 +283,19 @@ export function SettingsPage({
   // Tabs the web client cannot serve still resolve — a deeplink or palette
   // entry naming one should land somewhere real rather than on an empty page,
   // so it falls through to the first tab this renderer does serve.
+  // ADE Cloud's settings exist only with access (`isSettingAvailable`), so a
+  // tab of only those is in the list once the yes arrives, never before.
+  const cloudEnabled = useAdeCloudEnabled();
   const tabs = useMemo(
     () => {
       const all = availableSettingsTabs();
       // With no project open there is no Project group at all.
       return standalone ? all.filter((tab) => STANDALONE_TAB_IDS.has(tab.id) && tab.group !== "project") : all;
     },
-    // `machineBound` is read by the manifest's web resolver, not here: the
-    // list has to be recomputed when it changes.
+    // `machineBound` and `cloudEnabled` are read by the manifest's resolvers,
+    // not here: the list has to be recomputed when they change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [machineBound, standalone],
+    [machineBound, standalone, cloudEnabled],
   );
   // Explicit, so reordering the sidebar cannot move where Settings opens.
   const defaultTab = tabs.some((tab) => tab.id === DEFAULT_SETTINGS_TAB)
@@ -358,6 +364,16 @@ export function SettingsPage({
       { replace: true },
     );
   }, [active, location.hash, location.pathname, navigate, resolvedTab, searchParams, tabParam]);
+
+  // ADE Cloud was an Integrations page (`?integration=cloud`); it is its own tab now. Kept for old links from outside the app.
+  useEffect(() => {
+    if (!active) return;
+    if (searchParams.get("integration")?.trim().toLowerCase() !== "cloud") return;
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set("tab", "ade-cloud");
+    nextParams.delete("integration");
+    navigate({ pathname: location.pathname, search: `?${nextParams.toString()}`, hash: location.hash }, { replace: true });
+  }, [active, location.hash, location.pathname, navigate, searchParams]);
 
   // `?integration=github|linear|jira|cli` with no tab predates the manifest.
   // GitHub, Linear and Jira are the Integrations tab's own sub-pages now, so
@@ -476,7 +492,6 @@ export function SettingsPage({
   }, [section, openProvider]);
 
   const trimmedQuery = deferredQuery.trim();
-  const cloudEnabled = useAdeCloudEnabled();
   const { matchesThisTab, matchesOtherTabs } = useMemo(() => {
     if (!trimmedQuery) {
       return { matchesThisTab: null as SettingEntry[] | null, matchesOtherTabs: [] as SettingEntry[] };

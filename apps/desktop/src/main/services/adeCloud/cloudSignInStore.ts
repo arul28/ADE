@@ -1,7 +1,9 @@
 /**
- * The person's sign-ins for cloud machines, as the account vault keeps them,
- * and the env a new cloud machine starts with. No terminal and no
- * Electron here, so the desktop and the brain both read it. Claude's sign-in
+ * The person's sign-ins for cloud machines, as the account vault keeps them.
+ * A new cloud machine never gets them in its env (the Worker and the host
+ * would see them): its brain reads them from the vault
+ * (providerLogins/providerLoginApplyPass.ts, claudePass/claudePassSync.ts).
+ * No terminal and no Electron here, so the desktop and the brain both read it. Claude's sign-in
  * that makes its token is cloudClaudeSignIn.ts.
  *
  * One vault item per sign-in, so two windows saving different keys never
@@ -124,21 +126,4 @@ export async function readCloudSignIns(
     }),
     unknown: results != null && results.some((result) => !result.readable),
   };
-}
-
-/**
- * The env a new cloud machine starts with: every kept sign-in, in the
- * variable its provider's CLI reads. One that can't be read is left out,
- * never an error: the machine is still made, and that provider asks to sign
- * in on it like before. Codex's key also becomes its auth file on the
- * machine (cloudSignInBoot.ts): Codex's app server ignores the env.
- */
-export async function cloudMachineEnv(vaults: CloudSignInVaults | null, logger?: Logger): Promise<Record<string, string>> {
-  const results = await readAll(vaults, logger);
-  const env: Record<string, string> = {};
-  for (const spec of CLOUD_SIGN_INS) {
-    const stored = results?.find((result) => result.id === spec.id)?.stored;
-    if (stored) env[spec.env] = stored.token;
-  }
-  return env;
 }

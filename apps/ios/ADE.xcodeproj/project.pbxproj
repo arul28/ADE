@@ -52,6 +52,7 @@
 		E20000000000000000000F31 /* SettingsMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F31 /* SettingsMachines.swift */; };
 		E2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */; };
 		E2000000000000000000A620 /* SettingsProviderAccountSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */; };
+		E5C0000000000000000C5001 /* SettingsProviderSignIns.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5C0000000000000000C5001 /* SettingsProviderSignIns.swift */; };
 		E2000000000000000000A610 /* SettingsProviderAccounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A610 /* SettingsProviderAccounts.swift */; };
 		E2000000000000000000A611 /* SettingsProviderAccountSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A611 /* SettingsProviderAccountSettings.swift */; };
 		E2000000000000000000A600 /* ProviderAccountsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A600 /* ProviderAccountsStore.swift */; };
@@ -162,6 +163,12 @@
 		A37A0000000000000000B001 /* SyncService+Cloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = A37A0000000000000000A001 /* SyncService+Cloud.swift */; };
 		A37A0000000000000000B002 /* CloudPaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A37A0000000000000000A002 /* CloudPaneSheet.swift */; };
 		A37A0000000000000000B0F1 /* CloudPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A37A0000000000000000A0F1 /* CloudPreviews.swift */; };
+		C10D000000000000000B0001 /* CloudDashboardCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0001 /* CloudDashboardCards.swift */; };
+		C10D000000000000000B0002 /* CloudMachineScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0002 /* CloudMachineScreen.swift */; };
+		C10D000000000000000B0003 /* CloudLimitsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0003 /* CloudLimitsScreen.swift */; };
+		C10D000000000000000B0004 /* CloudPhoneFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0004 /* CloudPhoneFormat.swift */; };
+		C10D000000000000000B0005 /* CloudSignInsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0005 /* CloudSignInsCard.swift */; };
+		C10D000000000000000B0006 /* ProviderLoginsPhoneStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10D000000000000000A0006 /* ProviderLoginsPhoneStatus.swift */; };
 		B80000000000000000000006 /* SyncMachineWake.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000005 /* SyncMachineWake.swift */; };
 		B80000000000000000000004 /* SyncTerminalInputQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = B80000000000000000000003 /* SyncTerminalInputQueue.swift */; };
 		A11700000000000000000002 /* MobileUsageQuotaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11700000000000000000001 /* MobileUsageQuotaStore.swift */; };
@@ -184,6 +191,7 @@
 		E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */; };
 		E10000000000000000C0A7A1 /* WorkChatAccountNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7A1 /* WorkChatAccountNote.swift */; };
 		E10000000000000000C0A7B9 /* WorkProviderSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7B9 /* WorkProviderSignIn.swift */; };
+		E5C0000000000000000C5002 /* WorkProviderSignInSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5C0000000000000000C5002 /* WorkProviderSignInSteps.swift */; };
 		E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002D /* WorkChatRichCardViews.swift */; };
 		E20000000000000000000F06 /* WorkTurnWorkDisclosure.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F06 /* WorkTurnWorkDisclosure.swift */; };
 		F10000000000000000000103 /* WorkRemoteToolResultAffordance.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */; };
@@ -568,6 +576,7 @@
 		D20000000000000000000F31 /* SettingsMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsMachines.swift; path = ADE/Views/Settings/SettingsMachines.swift; sourceTree = "<group>"; };
 		D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountsPreviews.swift; path = ADE/Views/Settings/SettingsProviderAccountsPreviews.swift; sourceTree = "<group>"; };
 		D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountSignIn.swift; path = ADE/Views/Settings/SettingsProviderAccountSignIn.swift; sourceTree = "<group>"; };
+		D5C0000000000000000C5001 /* SettingsProviderSignIns.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderSignIns.swift; path = ADE/Views/Settings/SettingsProviderSignIns.swift; sourceTree = "<group>"; };
 		D2000000000000000000A610 /* SettingsProviderAccounts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccounts.swift; path = ADE/Views/Settings/SettingsProviderAccounts.swift; sourceTree = "<group>"; };
 		D2000000000000000000A611 /* SettingsProviderAccountSettings.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountSettings.swift; path = ADE/Views/Settings/SettingsProviderAccountSettings.swift; sourceTree = "<group>"; };
 		D2000000000000000000A600 /* ProviderAccountsStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProviderAccountsStore.swift; path = ADE/Services/ProviderAccountsStore.swift; sourceTree = "<group>"; };
@@ -657,6 +666,7 @@
 		D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatHeaderAndMessageViews.swift; path = ADE/Views/Work/WorkChatHeaderAndMessageViews.swift; sourceTree = "<group>"; };
 		D10000000000000000C0A7A1 /* WorkChatAccountNote.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAccountNote.swift; path = ADE/Views/Work/WorkChatAccountNote.swift; sourceTree = "<group>"; };
 		D10000000000000000C0A7B9 /* WorkProviderSignIn.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProviderSignIn.swift; path = ADE/Views/Work/WorkProviderSignIn.swift; sourceTree = "<group>"; };
+		D5C0000000000000000C5002 /* WorkProviderSignInSteps.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProviderSignInSteps.swift; path = ADE/Views/Work/WorkProviderSignInSteps.swift; sourceTree = "<group>"; };
 		D1000000000000000000002D /* WorkChatRichCardViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatRichCardViews.swift; path = ADE/Views/Work/WorkChatRichCardViews.swift; sourceTree = "<group>"; };
 		D20000000000000000000F06 /* WorkTurnWorkDisclosure.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTurnWorkDisclosure.swift; path = ADE/Views/Work/WorkTurnWorkDisclosure.swift; sourceTree = "<group>"; };
 		F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRemoteToolResultAffordance.swift; path = ADE/Views/Work/WorkRemoteToolResultAffordance.swift; sourceTree = "<group>"; };
@@ -871,6 +881,12 @@
 		A37A0000000000000000A001 /* SyncService+Cloud.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+Cloud.swift"; path = "ADE/Services/SyncService+Cloud.swift"; sourceTree = "<group>"; };
 		A37A0000000000000000A002 /* CloudPaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPaneSheet.swift; path = ADE/Views/Cloud/CloudPaneSheet.swift; sourceTree = "<group>"; };
 		A37A0000000000000000A0F1 /* CloudPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPreviews.swift; path = ADE/Views/Cloud/CloudPreviews.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0001 /* CloudDashboardCards.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudDashboardCards.swift; path = ADE/Views/Cloud/CloudDashboardCards.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0002 /* CloudMachineScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudMachineScreen.swift; path = ADE/Views/Cloud/CloudMachineScreen.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0003 /* CloudLimitsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudLimitsScreen.swift; path = ADE/Views/Cloud/CloudLimitsScreen.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0004 /* CloudPhoneFormat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPhoneFormat.swift; path = ADE/Views/Cloud/CloudPhoneFormat.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0005 /* CloudSignInsCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudSignInsCard.swift; path = ADE/Views/Cloud/CloudSignInsCard.swift; sourceTree = "<group>"; };
+		C10D000000000000000A0006 /* ProviderLoginsPhoneStatus.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProviderLoginsPhoneStatus.swift; path = ADE/Services/ProviderLoginsPhoneStatus.swift; sourceTree = "<group>"; };
 		B80000000000000000000005 /* SyncMachineWake.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncMachineWake.swift"; path = "ADE/Services/SyncMachineWake.swift"; sourceTree = "<group>"; };
 		B80000000000000000000003 /* SyncTerminalInputQueue.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncTerminalInputQueue.swift; path = ADE/Services/SyncTerminalInputQueue.swift; sourceTree = "<group>"; };
 		A11700000000000000000001 /* MobileUsageQuotaStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MobileUsageQuotaStore.swift; path = ADE/Services/MobileUsageQuotaStore.swift; sourceTree = "<group>"; };
@@ -1083,6 +1099,11 @@
 			children = (
 				A37A0000000000000000A002 /* CloudPaneSheet.swift */,
 				A37A0000000000000000A0F1 /* CloudPreviews.swift */,
+				C10D000000000000000A0001 /* CloudDashboardCards.swift */,
+				C10D000000000000000A0002 /* CloudMachineScreen.swift */,
+				C10D000000000000000A0003 /* CloudLimitsScreen.swift */,
+				C10D000000000000000A0004 /* CloudPhoneFormat.swift */,
+				C10D000000000000000A0005 /* CloudSignInsCard.swift */,
 			);
 			name = Cloud;
 			sourceTree = "<group>";
@@ -1386,6 +1407,7 @@
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D10000000000000000C0A7A1 /* WorkChatAccountNote.swift */,
 				D10000000000000000C0A7B9 /* WorkProviderSignIn.swift */,
+				D5C0000000000000000C5002 /* WorkProviderSignInSteps.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
 				D20000000000000000000F06 /* WorkTurnWorkDisclosure.swift */,
 				F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */,
@@ -1474,6 +1496,7 @@
 				D20000000000000000000F31 /* SettingsMachines.swift */,
 				D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */,
 				D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */,
+				D5C0000000000000000C5001 /* SettingsProviderSignIns.swift */,
 				D2000000000000000000A610 /* SettingsProviderAccounts.swift */,
 				D2000000000000000000A611 /* SettingsProviderAccountSettings.swift */,
 				D2000000000000000000A600 /* ProviderAccountsStore.swift */,
@@ -1534,6 +1557,7 @@
 				B80000000000000000000001 /* SyncConnectionRace.swift */,
 				B80000000000000000000007 /* SyncService+MachineWake.swift */,
 				A37A0000000000000000A001 /* SyncService+Cloud.swift */,
+				C10D000000000000000A0006 /* ProviderLoginsPhoneStatus.swift */,
 				5E77000000000000000A0007 /* SyncService+SettingsPages.swift */,
 				CA1A00000000000000000006 /* SyncService+ChatLaunch.swift */,
 				CA1A000000000000000000F1 /* SyncService+MachineInventory.swift */,
@@ -2201,6 +2225,12 @@
 				A37A0000000000000000B001 /* SyncService+Cloud.swift in Sources */,
 				A37A0000000000000000B002 /* CloudPaneSheet.swift in Sources */,
 				A37A0000000000000000B0F1 /* CloudPreviews.swift in Sources */,
+				C10D000000000000000B0001 /* CloudDashboardCards.swift in Sources */,
+				C10D000000000000000B0002 /* CloudMachineScreen.swift in Sources */,
+				C10D000000000000000B0003 /* CloudLimitsScreen.swift in Sources */,
+				C10D000000000000000B0004 /* CloudPhoneFormat.swift in Sources */,
+				C10D000000000000000B0005 /* CloudSignInsCard.swift in Sources */,
+				C10D000000000000000B0006 /* ProviderLoginsPhoneStatus.swift in Sources */,
 				CA1A00000000000000000016 /* SyncService+ChatLaunch.swift in Sources */,
 				CA1A000000000000000000F2 /* SyncService+MachineInventory.swift in Sources */,
 				B80000000000000000000006 /* SyncMachineWake.swift in Sources */,
@@ -2263,6 +2293,7 @@
 				E20000000000000000000F31 /* SettingsMachines.swift in Sources */,
 				E2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift in Sources */,
 				E2000000000000000000A620 /* SettingsProviderAccountSignIn.swift in Sources */,
+				E5C0000000000000000C5001 /* SettingsProviderSignIns.swift in Sources */,
 				E2000000000000000000A610 /* SettingsProviderAccounts.swift in Sources */,
 				E2000000000000000000A611 /* SettingsProviderAccountSettings.swift in Sources */,
 				E2000000000000000000A600 /* ProviderAccountsStore.swift in Sources */,
@@ -2394,6 +2425,7 @@
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E10000000000000000C0A7A1 /* WorkChatAccountNote.swift in Sources */,
 				E10000000000000000C0A7B9 /* WorkProviderSignIn.swift in Sources */,
+				E5C0000000000000000C5002 /* WorkProviderSignInSteps.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
 				E20000000000000000000F06 /* WorkTurnWorkDisclosure.swift in Sources */,
 				F10000000000000000000103 /* WorkRemoteToolResultAffordance.swift in Sources */,

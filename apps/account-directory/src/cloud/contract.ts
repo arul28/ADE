@@ -60,9 +60,9 @@
  * other plan it changes the plan itself and answers `{ url: null, change }`:
  * `now` for an upgrade (charged now for the rest of the period; 402
  * `payment_failed` when the card is declined), `next_period` for a downgrade
- * (Pro's hours and limits stay until the period ends; refused with 409
- * `disk_over_plan` while the computers hold more than Plus's disk, unless
- * extra disk is on and fits its limit). The billing portal can't switch plans
+ * (Pro's hours and limits stay until the period ends). A downgrade is never
+ * refused: over Plus's computers or disk, it answers `cleanup`, what Plus's
+ * limits will free (`CloudPlanCleanup`). The billing portal can't switch plans
  * on a subscription with more than one item.
  * `POST /cloud/billing/extra-disk` takes `{ enabled, monthlyLimitUsd }`
  * (`monthlyLimitUsd` a whole number from 1 to 1000, needed to turn it on).
@@ -110,7 +110,24 @@ export const CLOUD_PATHS = {
   billingExtraDisk: "/cloud/billing/extra-disk",
   chats: "/cloud/chats",
   lanesWithoutComputer: "/cloud/lanes/without-computer",
+  /** `GET`: this account's `CloudReferralSummary`. */
+  referrals: "/cloud/referrals",
+  /** `POST { code }` (a pasted link or a bare code): `CloudInviteRedeemResult`, or `invite_refused` with a `CloudInviteRefusalReason`. */
+  referralsRedeem: "/cloud/referrals/redeem",
 } as const;
+
+/**
+ * Sent by the desktop and a machine's brain with every `/cloud` call: SHA-256
+ * of `CLOUD_COMPUTER_ID_DOMAIN:` plus the OS machine id (64 hex), or
+ * `unreadable` when the OS gave none. An ADE Cloud computer sends nothing.
+ * The server keys it again before keeping it (`freePlan.ts`).
+ */
+export const CLOUD_COMPUTER_HEADER = "x-ade-computer";
+/** `darwin`, `win32` or `linux`, next to the header above. */
+export const CLOUD_COMPUTER_PLATFORM_HEADER = "x-ade-computer-platform";
+/** The fixed, ADE-wide salt of the computer id. Not per account: one computer is one id for every account. */
+export const CLOUD_COMPUTER_ID_DOMAIN = "ade-cloud-free-plan-computer-v1";
+export const CLOUD_COMPUTER_UNREADABLE = "unreadable";
 
 /**
  * The metadata that links a computer to the one lane it was made for. The
@@ -140,8 +157,12 @@ export type CloudLaneWithoutComputer = {
   projectOrigin: string | null;
   /** The branch the lane works on, or null when ADE never learned it. */
   branchRef: string | null;
-  /** `freed`: the person kept the lane on a fresh computer. `inactive`: the 30-day rule removed its computer. */
-  reason: "freed" | "inactive";
+  /**
+   * `freed`: the person kept the lane on a fresh computer. `inactive`: the
+   * 30-day rule removed its computer. `plan_limit`: a cheaper plan's limits
+   * removed it, after its work was pushed (`planCleanup.ts`).
+   */
+  reason: "freed" | "inactive" | "plan_limit";
   /** The size the old computer had. */
   type: "default" | "vm";
   cpu: number;
@@ -254,7 +275,12 @@ export type CloudBootReportResult = { ok: true; sleepWhenIdle: boolean };
 export type CloudPaidPlanId = Exclude<CloudPlanId, "free">;
 /** When a switch between Plus and Pro applies: an upgrade now, a downgrade at the period end. */
 export type CloudPlanChangeTiming = "now" | "next_period";
-export type CloudCheckoutResult = { url: string } | { url: null; change: CloudPlanChangeTiming };
+/**
+ * A switch between paid plans answers `url: null`. A downgrade over the
+ * cheaper plan's limits is never refused: it answers what those limits will
+ * free (`cleanup`), which ADE shows as the warning.
+ */
+export type CloudCheckoutResult = { url: string } | { url: null; change: CloudPlanChangeTiming; cleanup?: CloudPlanCleanup | null };
 
 export type CloudExecResult = { exitCode: number; stdout: string; stderr: string };
 
@@ -369,7 +395,249 @@ export type CloudAccountState = {
     /** Banner: a failed payment, or a plan a paid invoice just brought back. */
     notice: "past_due" | "restored" | null;
   };
+  /**
+   * The computers a cheaper plan's limits will free (`planCleanup.ts`): while
+   * a downgrade or a cancel waits for the period end, and once the cheaper
+   * plan is on and the account is still over it. Null when nothing goes.
+   * Older servers leave it out.
+   */
+  planCleanup?: CloudPlanCleanup | null;
+  /**
+   * What moving to a cheaper plan now would free, for the warning before the
+   * change ("Move to Plus", cancel). Only plans that would free something.
+   */
+  downgradePreviews?: { plus?: CloudPlanCleanup; free?: CloudPlanCleanup };
+  /** The last time a cheaper plan's limits freed computers, kept 14 days for a notice. */
+  planCleanupDone?: CloudPlanCleanupDone | null;
+  /** Timed wake-ups this period deleted because computers may not wake (0 hours, or the free plan over its disk). */
+  timedWakesCancelled?: CloudTimedWakesCancelled | null;
+  /**
+   * Earned hours (referrals). Used after the plan's hours and before paid
+   * extra hours; they never expire. `hours` above stays the plan's own hours.
+   * Older servers leave it out.
+   */
+  earnedHours?: CloudEarnedHours;
+  /** Whether this account gets the free plan's hours (one free plan per computer). Older servers leave it out. */
+  freePlan?: CloudFreePlan;
+  /** The account's invite link and what it earned. Older servers leave it out. */
+  referral?: CloudReferralSummary;
 };
+
+/* ---- Referrals, earned hours and the free plan per computer (README "Referrals and the free plan") ---- */
+
+/** Hours both accounts get when an invited friend's first chat runs on an ADE Cloud computer, in thousandths. */
+export const CLOUD_REFERRAL_REWARD_MILLI = 20_000;
+/** Rewards a referrer can get, ever. Past it the friend still gets theirs. */
+export const CLOUD_REFERRAL_REWARD_LIMIT = 10;
+/** Days after an ADE account is created that it may still enter an invite code. */
+export const CLOUD_REFERRAL_ENTER_DAYS = 30;
+/** `cloud_earned_hours.reason` of a referral's two grants; each one's `reference` is the friend's account. */
+export const CLOUD_REFERRAL_REFERRER_REASON = "referral_referrer";
+export const CLOUD_REFERRAL_FRIEND_REASON = "referral_friend";
+/**
+ * A deleted account's kept rows (referrals, earned hours, its free-plan
+ * claim) carry `deleted:<sha256 of the Clerk id>` instead of the id
+ * (`accountDeletion.ts`), so nothing kept names the person.
+ */
+export const CLOUD_DELETED_ACCOUNT_PREFIX = "deleted:";
+/** Invite codes: this many characters of `CLOUD_INVITE_ALPHABET` (no 0/O/1/I/L). */
+export const CLOUD_INVITE_CODE_LENGTH = 8;
+export const CLOUD_INVITE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+/** The invite page on the website; the link is this plus the code. */
+export const CLOUD_INVITE_URL_BASE = "https://ade-app.dev/invite/";
+/** What the website's "Open in ADE" button opens: the app fills the code in Settings › Account. */
+export const CLOUD_INVITE_DEEPLINK_BASE = "ade://invite/";
+
+export const cloudInviteLink = (code: string): string => `${CLOUD_INVITE_URL_BASE}${code}`;
+
+/**
+ * The code in what a person pasted: the invite link, the `ade://` link, or the
+ * bare code, any case, with spaces or dashes. Null when it can't be one.
+ */
+export function parseCloudInviteCode(input: unknown): string | null {
+  if (typeof input !== "string") return null;
+  let text = input.trim();
+  if (!text || text.length > 300) return null;
+  const linked = text.match(/invite\/([^/?#\s]+)/i);
+  if (linked) text = linked[1]!;
+  const code = text.replace(/[\s-]+/g, "").toUpperCase();
+  if (code.length !== CLOUD_INVITE_CODE_LENGTH) return null;
+  for (const char of code) if (!CLOUD_INVITE_ALPHABET.includes(char)) return null;
+  return code;
+}
+
+export type CloudEarnedHours = {
+  /** Earned hours left now, after what this period already drew. Thousandths of a Small-hour. */
+  leftMilli: number;
+  /** What this period drew from earned hours so far. */
+  usedThisPeriodMilli: number;
+  /** Every earned hour ever granted. */
+  grantedMilli: number;
+};
+
+/**
+ * One free plan per physical computer.
+ * - `unclaimed`: no computer holds this account's free plan yet; it gets the
+ *   free hours, and the first computer it uses them from is claimed for it.
+ *   An account used only from the phone or MCP stays here.
+ * - `claimed`: a computer holds this account's free plan.
+ * - `refused`: the computer it was used from already gave another account its
+ *   free hours, so the free plan has 0 hours here. Paid plans, earned hours and
+ *   extra hours still work. Using ADE from a computer of its own claims that one.
+ */
+export type CloudFreePlanState = "unclaimed" | "claimed" | "refused";
+
+export type CloudFreePlan = {
+  state: CloudFreePlanState;
+  /** The one sentence for the dashboard while it matters (refused, on the free plan's rules); null otherwise. */
+  sentence: string | null;
+};
+
+/** The dashboard's sentence for a refused free plan; the server passes `CLOUD_PLANS.plus.includedMilli` (`plans.ts`). */
+export const cloudFreePlanRefusedSentence = (plusIncludedMilli: number): string =>
+  `This computer already used another account's free hours. Plus gives you ${Math.round(plusIncludedMilli / 1000).toLocaleString("en-US")} hours a month.`;
+
+export type CloudReferralSummary = {
+  /** This account's invite code and link. */
+  code: string;
+  link: string;
+  /** Friends who entered this account's code (any state). */
+  friendsJoined: number;
+  /** Rewards this account got as the referrer. */
+  rewardsPaid: number;
+  /** Referrer rewards left of `rewardLimit`. */
+  rewardsLeft: number;
+  rewardLimit: number;
+  /** Hours per reward, in thousandths, for "You both get 20 hours". */
+  rewardMilli: number;
+  /** Every hour this account earned from referrals (as referrer and as friend). */
+  hoursEarnedMilli: number;
+  /** Whether this account may still enter someone's code (no referrer yet, inside its window). */
+  canEnterCode: boolean;
+  /** When the window to enter a code closes (ms); null when unknown or already referred. */
+  enterCodeUntil: number | null;
+  /** Whether this account entered someone's code. */
+  hasReferrer: boolean;
+  /** Where this account's own entered code stands, or null without one. */
+  referredState: "pending" | "rewarded" | "refused" | null;
+};
+
+/**
+ * Why `POST /cloud/referrals/redeem` refused a code (`error.reason`, code
+ * `invite_refused`); `error.message` is the sentence to show.
+ */
+export const CLOUD_INVITE_REFUSAL_REASONS = ["invalid_code", "unknown_code", "own_code", "already_referred", "mutual", "too_late", "rate_limited"] as const;
+/** `mutual`: the code's owner already entered this account's code; two accounts can't refer each other. */
+export type CloudInviteRefusalReason = (typeof CLOUD_INVITE_REFUSAL_REASONS)[number];
+
+export type CloudInviteRedeemResult = {
+  result: "accepted";
+  /** True when the reward was paid at once (the friend's first cloud chat had already run). */
+  rewarded: boolean;
+  referral: CloudReferralSummary;
+};
+
+/** `GET /invites/<code>` (public, rate-limited): the inviter's first name, or null when Clerk has none. */
+export type CloudInviteLookup = { firstName: string | null };
+
+/**
+ * Days between a cheaper plan starting and ADE freeing what is over its
+ * limits: time to delete computers by choice instead.
+ */
+export const CLOUD_PLAN_CLEANUP_GRACE_DAYS = 3;
+
+/** One computer a cheaper plan frees: its lane (when it holds one), the branch its work goes to, its disk. */
+export type CloudPlanCleanupComputer = {
+  instanceId: string;
+  /** The computer's own name. */
+  name: string | null;
+  /** The lane it holds; null for a computer made for no lane (deleted after its work is pushed). */
+  laneName: string | null;
+  branch: string | null;
+  diskGb: number;
+};
+
+/**
+ * What a cheaper plan's limits free. The oldest computers go first, until the
+ * account fits the plan's computers and disk (disk extra disk covers counts as
+ * fitting). Before each goes, its computer pushes every lane's work to its
+ * branch on GitHub; a computer whose work can't all be pushed stays.
+ */
+export type CloudPlanCleanup = {
+  /** The cheaper plan whose limits apply. */
+  planId: CloudPlanId;
+  /** Oldest first. */
+  computers: CloudPlanCleanupComputer[];
+  usedGb: number;
+  limitGb: number;
+  computerCount: number;
+  computerLimit: number;
+  /** When ADE frees them (ms); null in a preview, where it is `CLOUD_PLAN_CLEANUP_GRACE_DAYS` after the plan starts. */
+  dueAt: number | null;
+  /** The plain warning: what to free first, and what ADE does otherwise. */
+  sentence: string;
+};
+
+export type CloudPlanCleanupDone = {
+  at: number;
+  planId: CloudPlanId;
+  /** Freed: the work is on `branch` on GitHub. `laneKept` when the lane stays without a computer. */
+  freed: Array<{ name: string; branch: string | null; laneKept: boolean }>;
+  /** Kept because its work couldn't all be pushed; tried again each day while the account is over. */
+  kept: Array<{ name: string; reason: string }>;
+};
+
+export type CloudTimedWakesCancelled = { at: number; count: number; reason: "out_of_hours" | "over_plan_disk" };
+
+/** Why timed wake-ups were cancelled and how they come back: the email's body and ADE's notice. */
+export function timedWakesCancelledSentence(notice: Pick<CloudTimedWakesCancelled, "count" | "reason">): string {
+  const what = notice.count === 1 ? "A timed wake-up" : `${notice.count} timed wake-ups`;
+  return notice.reason === "over_plan_disk"
+    ? `${what} on your ADE Cloud computers won't run (a chat's scheduled wake-up or an automation's schedule), because your computers hold more disk than the free plan has, so they can't wake. Once you delete a computer or get Plus, each computer sets its next timed wake-up again the next time it runs.`
+    : `${what} on your ADE Cloud computers won't run (a chat's scheduled wake-up or an automation's schedule), because you're out of ADE Cloud hours, so your computers can't wake. When your hours reset or you add hours, each computer sets its next timed wake-up again the next time it runs.`;
+}
+
+/** Each plan's name inside a sentence ("To fit the free plan", "Plus allows ..."): the server's emails and ADE say the same. */
+export const CLOUD_PLAN_SENTENCE_NAMES: Readonly<Record<CloudPlanId, string>> = { free: "the free plan", plus: "Plus", pro: "Pro" };
+
+/** What a cheaper plan's limits freed and kept, for ADE's notice after the run. */
+export function planCleanupDoneSentence(done: CloudPlanCleanupDone): string {
+  const parts: string[] = [];
+  if (done.freed.length) {
+    const list = done.freed.map((entry) => (entry.branch ? `${entry.name} (work on ${entry.branch})` : entry.name)).join(", ");
+    const lanesKept = done.freed.filter((entry) => entry.laneKept).length;
+    // Only a computer that held a lane keeps one: a computer made for no lane is simply gone.
+    const kept = lanesKept === 0 ? ""
+      : ` ${lanesKept === done.freed.length ? (lanesKept === 1 ? "Its lane and chats stay" : "Their lanes and chats stay") : (lanesKept === 1 ? "The lane among them and its chats stay" : "The lanes among them and their chats stay")}; the next message to a lane makes a new computer.`;
+    parts.push(`To fit ${CLOUD_PLAN_SENTENCE_NAMES[done.planId]}, ADE pushed each lane's work to GitHub and removed ${done.freed.length === 1 ? "this computer" : "these computers"}: ${list}.${kept}`);
+  }
+  if (done.kept.length) {
+    parts.push(`ADE kept ${done.kept.map((entry) => entry.name).join(", ")}, because its work couldn't all be pushed to GitHub. Push its work or delete it yourself; ADE tries again tomorrow.`);
+  }
+  return parts.join(" ");
+}
+
+
+/**
+ * The warning for a cheaper plan's limits, said the same by the server, its
+ * emails and ADE: "Free 23 GB first: Plus allows 40 GB and you use 63 GB. ..."
+ */
+export function planCleanupSentence(cleanup: Omit<CloudPlanCleanup, "sentence" | "dueAt">): string {
+  const plan = CLOUD_PLAN_SENTENCE_NAMES[cleanup.planId];
+  const parts: string[] = [];
+  const overGb = cleanup.usedGb - cleanup.limitGb;
+  const overComputers = cleanup.computerCount - cleanup.computerLimit;
+  if (overGb > 0) parts.push(`Free ${overGb} GB first: ${plan} allows ${cleanup.limitGb} GB and you use ${cleanup.usedGb} GB.`);
+  if (overComputers > 0) {
+    parts.push(`Delete ${overComputers} ${overComputers === 1 ? "computer" : "computers"} first: ${plan} allows ${cleanup.computerLimit} at one time and you have ${cleanup.computerCount}.`);
+  }
+  const names = cleanup.computers.map((computer) => computer.laneName ?? computer.name ?? computer.instanceId);
+  if (names.length) {
+    const one = names.length === 1;
+    parts.push(`Otherwise ADE pushes each lane's work to its branch on GitHub, then removes your oldest ${one ? "computer" : "computers"}: ${names.join(", ")}. ${one ? "Its lane and chats stay" : "Their lanes and chats stay"}, and the next message to a lane makes a new computer. A computer whose work can't be pushed stays.`);
+  }
+  return parts.join(" ");
+}
 
 /** Largest part of a chat the server accepts, in bytes of its text. */
 export const CLOUD_CHAT_MAX_PART_BYTES = 8 * 1024 * 1024;

@@ -992,6 +992,8 @@ import {
   FAST_MODE_SETTING_KEY,
   FAST_MODE_SETTING_SCOPE,
 } from "../../../shared/fastModePolicy";
+import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import { PROVIDER_LOGINS_CLOUD_SETTING } from "../../../shared/providerLoginsCloudSetting";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { PrWatchService } from "../prs/prWatchService";
@@ -12723,6 +12725,13 @@ export function registerIpc({
     // Its items in this computer's brain, also with no project here: then the
     // brain opens only those (`accountVault.call`).
     vaultBridge: createAccountVaultBridge({ ...vaultBridgeOptions, machineFallback: true }),
+    // ADE Cloud's sign-in setting: the end warning names only keys that are on for ADE Cloud.
+    readCloudSignInSetting: async () => {
+      const result = await accountSettingsSyncService.get(ACCOUNT_SCOPE_ALL, PROVIDER_LOGINS_CLOUD_SETTING);
+      // The warning logs an unreadable setting and counts it as on.
+      if (!result.ok) throw new Error(result.message);
+      return result.value;
+    },
     // This computer's brain, with no project: the actions are the account's
     // (`cloud.call`, ADE_ACTION_MACHINE_SCOPED), so a window with no project
     // here, or only one on another machine, reaches them too.
@@ -12788,18 +12797,6 @@ export function registerIpc({
         minimumIntervalMs: 6 * 60 * 60 * 1_000,
       });
     },
-    // Ready machines: the switch, each prepare's outcome, picker claims. A
-    // six-hour dedupe per outcome: at most 20 accepted events a day.
-    recordReady: (outcome) => {
-      productAnalyticsService?.capture({
-        event: "ade_feature_used",
-        surface: "desktop",
-        properties: { feature: "connections", action: "cloud_ready", outcome },
-        projectId: null,
-        dedupeKey: `cloud_ready:${outcome}`,
-        minimumIntervalMs: 6 * 60 * 60 * 1_000,
-      });
-    },
     logger: { info: (event, meta) => getCtx().logger.info(event, meta), warn: (event, meta) => getCtx().logger.warn(event, meta) },
   });
 
@@ -12818,6 +12815,7 @@ export function registerIpc({
     pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
     targetIdForMachine: (machineKey) => runtimeBridge.resolveTargetIdForMachineKey(machineKey),
     remote: runtimeBridge.remoteForMain,
+    analytics: productAnalyticsService ?? null,
     logger: getMachineMainLogger(),
   });
 
@@ -12829,6 +12827,7 @@ export function registerIpc({
     },
     pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
     remote: runtimeBridge.remoteForMain,
+    analytics: productAnalyticsService ?? null,
     logger: getMachineMainLogger(),
   });
 

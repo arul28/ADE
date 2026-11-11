@@ -8,7 +8,7 @@ import { createDesktopBridgeConnection } from "./desktopBridgeConnection";
  */
 
 export const CLOUD_BRIDGE_PREFIX = "cloud.";
-export const CLOUD_BRIDGE_METHODS = ["create", "copy", "move", "ready_refresh"] as const;
+export const CLOUD_BRIDGE_METHODS = ["create", "copy", "move"] as const;
 export type CloudBridgeMethod = (typeof CLOUD_BRIDGE_METHODS)[number];
 
 export function isCloudBridgeMethod(name: string): name is CloudBridgeMethod {
@@ -32,7 +32,6 @@ export function createCloudDesktopBridgeClient(args: { socketPath: string }): Cl
     create: (input) => connection.request(`${CLOUD_BRIDGE_PREFIX}create`, { input }, CREATE_TIMEOUT_MS),
     copy: (input) => connection.request(`${CLOUD_BRIDGE_PREFIX}copy`, { input }, COPY_TIMEOUT_MS),
     move: (input) => connection.request(`${CLOUD_BRIDGE_PREFIX}move`, { input }, MOVE_TIMEOUT_MS),
-    readyRefresh: () => connection.request(`${CLOUD_BRIDGE_PREFIX}ready_refresh`, {}, 60_000),
     dispose: () => connection.close(),
   };
 }

@@ -59,6 +59,9 @@ export function cloudLaneStartBlock(
   return null;
 }
 
+/** `--machine cloud`: a new lane on its own new ADE Cloud computer (the CLI and the ADE MCP policy). */
+export const CLOUD_LANE_MACHINE = "cloud";
+
 // The server reads these too (a lane that outlives its computer), so they live in its contract.
 /** The lane this computer was made for (the launch's reserved lane id). */
 export const CLOUD_LANE_ID_METADATA = CLOUD_LANE_METADATA.laneId;

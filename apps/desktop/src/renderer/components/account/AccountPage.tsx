@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
@@ -51,6 +51,8 @@ import { AnotherDeviceSignInPanel } from "./AnotherDeviceSignInPanel";
 import { useSignInFlow } from "./useSignInFlow";
 import { Banner } from "../ui/notice";
 import { AdeWordmark } from "../ui/AdeWordmark";
+import { useCloudAccount } from "../../state/cloudAccountStore";
+import { AccountInviteFact } from "../settings/cloudDashboard/CloudInvite";
 
 export { describeThisComputerMissing } from "./YourMacsCard";
 
@@ -376,6 +378,10 @@ function AccountDetailsSection({
   signingOut: boolean;
 }) {
   const [confirming, setConfirming] = useState(false);
+  // ADE Cloud's account (null without access), for the invite box.
+  const cloudAccount = useCloudAccount();
+  const [searchParams] = useSearchParams();
+  const inviteParam = searchParams.get("invite");
   return (
     <ModernSection
       group="Account"
@@ -401,6 +407,7 @@ function AccountDetailsSection({
             </dd>
           </div>
         ) : null}
+        <AccountInviteFact account={cloudAccount} inviteParam={inviteParam} />
         {showRepoBridge ? (
           <div className="ade-acct-fact">
             <dt><GithubLogo size={13} weight="fill" />GitHub</dt>

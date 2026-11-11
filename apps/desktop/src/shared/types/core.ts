@@ -717,6 +717,11 @@ export type AppNavigationTarget =
       entryId?: string | null;
       /** The machine a Computer page opens for. Null or absent: the default. */
       machineId?: string | null;
+      /**
+       * An ADE Cloud invite code to fill in Settings › Account's code box
+       * (`ade://invite/<CODE>`). The page gets it as `?invite=<CODE>`.
+       */
+      inviteCode?: string | null;
     }
   | {
       /** A page from `shared/openPlaces.ts`. Only a chat chip click sends it. */

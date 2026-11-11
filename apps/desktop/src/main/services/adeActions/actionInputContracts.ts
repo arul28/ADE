@@ -7,6 +7,13 @@ import {
   DEFAULT_ADE_TURN_USAGE_GROUP_BY,
 } from "../../../shared/types/turnUsage";
 import type { AdeActionDomain } from "./domains";
+import {
+  CLOUD_INVITE_REFUSAL_REASONS,
+  CLOUD_REFERRAL_ENTER_DAYS,
+  CLOUD_REFERRAL_REWARD_LIMIT,
+  CLOUD_REFERRAL_REWARD_MILLI,
+  formatCloudHours,
+} from "../../../shared/adeCloud";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION } from "../../../shared/types/account";
 import { PROVIDER_CONTEXT_PROVIDER_IDS } from "../../../shared/types/providerContext";
 
@@ -194,18 +201,8 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
   },
   cloud: {
-    ready_status: {
-      description: "List the account's ADE Cloud ready machines: per project kept ready (its git identity and name), whether a machine is ready (prepared and asleep), being prepared, or failed, with machine names and states. Reads ADE Cloud with the account's key; never returns the key.",
-      input: "no input",
-      example: "ade cloud ready --text",
-    },
-    claim_ready: {
-      description: "Take this project's ready ADE Cloud machine for a new chat: marks it claimed and wakes it (about 1-2 s), then returns {instanceId, machineKey, name, projectPath, laneId, wakeMs, claimToken}. Its ADE comes online a few seconds later; wait for it before sending work there. `ade chat create --machine cloud:ready` does all of this. Throws when there is no ready machine (with whether one is being prepared). A claimed machine bills while awake; give an unused one back with release_ready.",
-      input: "object { originUrl: string }",
-      example: "ade chat create --machine cloud:ready --prompt \"…\"",
-    },
     status: {
-      description: "Read this first. The whole ADE Cloud account in one call, with no wake and no spend: canStartLane {ok, reason, code} (can a new lane start now; when not, reason is the one sentence to tell the person, code is out_of_hours | computers_full | disk_full | signed_out | not_available | unreadable | unreachable | account_unknown), plan {id, label, rulesId, pastDue, includes {hours, computers, diskGb, diskShared}}, hours {left, included, used, percentUsed, state, resetsAt, extraHours}, disk {usedGb, limitGb}, computers {inUse, awake, max}, lanes [{instanceId, name, machineKey, lane {id, name, projectOrigin} | null, size {id, label}, sizeLabel, hoursRate, state, lastUsedAt, deletesAt, disk {sizeGb, full}, readyFor, update {image, channel, target, state (auto = updates itself when idle | updating | failed), error} | null}], sizes [{id, label, kind, cpu, memoryGb, hoursRate, isDefault}], defaultSize (null when unreadable), agents {unattendedSpend, newComputersPerDay, newComputersToday, newComputersLeftToday, sizesAllowed, preset, setting}, message. Hours are plan hours (Small-computer hours). Never returns a key or token.",
+      description: "Read this first. The whole ADE Cloud account in one call, with no wake and no spend: canStartLane {ok, reason, code} (can a new lane start now; when not, reason is the one sentence to tell the person, code is out_of_hours | computers_full | disk_full | signed_out | not_available | unreadable | unreachable | account_unknown), plan {id, label, rulesId, pastDue, includes {hours, computers, diskGb, diskShared}}, hours {left, included, used, percentUsed, state, resetsAt, extraHours}, disk {usedGb, limitGb}, computers {inUse, awake, max}, lanes [{instanceId, name, machineKey, lane {id, name, projectOrigin} | null, size {id, label}, sizeLabel, hoursRate, state, lastUsedAt, deletesAt, disk {sizeGb, full}, update {image, channel, target, state (auto = updates itself when idle | updating | failed), error} | null}], sizes [{id, label, kind, cpu, memoryGb, hoursRate, isDefault}], defaultSize (null when unreadable), agents {unattendedSpend, newComputersPerDay, newComputersToday, newComputersLeftToday, sizesAllowed, preset, setting}, message. Hours are plan hours (Small-computer hours). Never returns a key or token.",
       input: "no input",
       example: "ade cloud status --text",
     },
@@ -218,6 +215,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "The account's plan and hours. Returns {plan, rules, hours: {includedMilli, usedMilli, leftMilli, percentUsed, state}, extraHours, disk, computers, dueForDeletion, billing}. Milli values are thousandths of a Small-hour; state is none, warn80, warn95 or zero.",
       input: "no input",
       example: "ade cloud hours --text",
+    },
+    referral: {
+      description: `The account's ADE Cloud invite link and what it earned: {code, link, friendsJoined, rewardsPaid, rewardsLeft, rewardLimit, rewardMilli, hoursEarnedMilli, canEnterCode, enterCodeUntil, hasReferrer, referredState}. A friend who enters the link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} hours, and so does this account when the friend's first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most). A friend's invite is entered in Settings › Account, never from the CLI. Milli values are thousandths of a Small-hour.`,
+      input: "no input",
+      example: "ade cloud invite --text",
+    },
+    invite_redeem: {
+      description: `Enter a friend's ADE Cloud invite for this account: the invite link or its 8-character code. Once per account, never changed, within ${CLOUD_REFERRAL_ENTER_DAYS} days of making the account. Returns {ok: true, rewarded, referral} or {ok: false, reason (${CLOUD_INVITE_REFUSAL_REASONS.join(" | ")}), message}. The person's own call from the ADE app (Settings › Account, desktop or phone): an agent, an ADE MCP app and the CLI are refused.`,
+      input: "object { code: string (the link https://ade-app.dev/invite/<CODE>, ade://invite/<CODE>, or the bare code) }",
+      example: "App only: Settings › Account (desktop or phone). A terminal is refused.",
     },
     update: {
       description: "Update an ADE Cloud computer to the current ADE: it restarts on the newest ADE release, files stay, running work stops. Asks the person first.",
@@ -260,9 +267,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade cloud resize --request --size large --reason \"Android needs a full computer\"",
     },
     clear_caches: {
-      description: "The person's dashboard only: on the ADE Cloud computer this runs on, delete what is rebuilt on next use (package and tool caches, Docker's build cache), then measure the disk again and send it to ADE's server. Never a repository, dependencies, an image or an emulator. Answers { freedGb }.",
-      input: "object { machine: string (the instance id of the computer this runs on: a call routed to another machine is refused) }",
-      example: "Settings › ADE Cloud › a lane › Clear caches",
+      description: "On the ADE Cloud computer this runs on, delete what is rebuilt on next use (package and tool caches, Docker's build cache), then measure the disk again and send it to ADE's server. Never a repository, dependencies, an image or an emulator. An agent's call asks the person with a card in its chat first; with nobody watching (full-auto, an automation, ADE MCP) the answer is no. Answers { freedGb }.",
+      input: "object { machine?: string (the instance id of the computer this runs on, the default: a call that names another machine is refused) }",
+      example: "ade actions run cloud.clear_caches (on a lane's cloud computer), or Settings › ADE Cloud › a lane › Clear caches",
     },
     lane_launch_cancel: {
       description: "Stop an ADE Cloud lane launch before its chat starts, and delete the computer made for it. Only the chat that started it, or the person.",
@@ -298,26 +305,6 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Delete an ADE Cloud machine and remove it from the account. Its files are gone for good. Asks the person first; a full-auto chat may delete only a machine it made itself.",
       input: "object { machine: string }",
       example: "ade cloud delete \"lane copy\"",
-    },
-    ready_set: {
-      description: "Turn on (or change) \"Keep a cloud machine ready\" for this project: a machine kept prepared and asleep for the next chat. Turning it on asks the person first. A desktop on the account prepares it.",
-      input: "object { originUrl?: string, kind?: \"box\" | \"vm\", shape?: string, setup?: string, projectName?: string }",
-      example: "ade cloud ready on --kind vm --setup \"npm ci\"",
-    },
-    ready_off: {
-      description: "Turn off \"Keep a cloud machine ready\" for this project; its unclaimed machine is deleted on the next pass.",
-      input: "object { originUrl?: string }",
-      example: "ade cloud ready off",
-    },
-    ready_retry: {
-      description: "Prepare this project's ready machine again after a failure.",
-      input: "object { originUrl?: string }",
-      example: "ade cloud ready retry",
-    },
-    release_ready: {
-      description: "Give back a ready machine you claimed in the last 30 minutes and no chat used: it is tagged ready again and put back to sleep. Needs the claimToken claim_ready returned, so it never sleeps a machine another caller claimed. Returns {released: boolean}.",
-      input: "object { instanceId: string, claimToken: string }",
-      example: "ade --role agent actions run cloud.release_ready --input-json '{\"instanceId\":\"o2m461src2\",\"claimToken\":\"<from claim_ready>\"}' --json",
     },
   },
   mcp_registry: {

@@ -719,15 +719,44 @@ client version and for work nobody watches
   by the daily run for the day before: `wakes`, `sleeps`, `stops`, `starts`
   (from `cloud_power_log`) and `computers`, each capped at 1,000. The uuid
   comes from the account and the day.
+- **`ade_cloud_referral`** (`referrals.ts`): `step` is `code_entered` (with
+  `result` `accepted` or `refused` and, refused, `reason`: `invalid_code`,
+  `unknown_code`, `own_code`, `already_referred`, `too_late`,
+  `rate_limited`), `reward_paid` (with `role` `friend` or `referrer`, one each,
+  and `referrer_rewarded`), `reward_refused` (with `reason` `same_computer` or
+  `friend_computer_used`) or `cap_reached` (the referrer's 10th reward). One
+  per account, step, reason and hour.
+- **`ade_cloud_free_plan`** (`freePlan.ts`): `step` is `claimed`, `restored`
+  (a refused account claimed a computer of its own), `refused` (the computer
+  already gave another account its free hours), `id_unreadable` or
+  `unclaimed_use` (free hours used with no computer seen: phone or MCP only),
+  with `platform` (`darwin`, `win32`, `linux`) when known. One per account,
+  step and day.
 
 Never an instance id, a name, a size in numbers, a price, an amount, a
-message or a Stripe id. Volume: a few events per account per active day.
+message, a Stripe id, an invite code or link, an email, a computer id, or the
+other account in a referral. Volume: a few events per account per active day.
+
+Server log lines for referrals and the free plan: `cloud.referral.code_accepted`,
+`cloud.referral.code_refused` (reason), `cloud.referral.reward_paid`,
+`cloud.referral.reward_refused` (reason), `cloud.referral.cap_reached`,
+`cloud.referral.created_at_fallback` (Clerk had no creation date: the ADE Cloud
+account's is used), `cloud.free_plan.claimed`, `cloud.free_plan.refused`,
+`cloud.free_plan.restored`, `cloud.free_plan.id_unreadable`,
+`cloud.free_plan.dev_key` (no `CLOUD_CHAT_MASTER_KEY`). Sentry, tagged
+`area: cloud-free-plan` or `cloud-referrals`, one issue per name:
+`cloud.free_plan.many_accounts_one_computer`, `cloud.referral.cap_reached_fast`,
+`cloud.referral.many_friends_one_computer`, and the failures
+`cloud.free_plan.settle_failed`, `cloud.referral.reward_failed`,
+`cloud.referral.summary_failed`, `cloud.referral.clerk_read_failed`.
 
 Server log lines (Worker logs only, `logCloud`) for plans and cost:
 `cloud.plan_changed` (from, to),
 `cloud.daily_cost_report` (totals only), `cloud.owner_alert` (an alarm),
 `cloud.owner_limit_unset` (once a day while no limit is set),
-`cloud.owner_limit_reached`, `cloud.extra_disk_capped` (a day of extra disk
+`cloud.owner_limit_reached`, `cloud.owner_cost_step` (the month's estimate
+passed another $50 below the limit: step, estimate, limit; one owner email),
+`cloud.extra_disk_capped` (a day of extra disk
 billed only up to the person's monthly limit), and
 `cloud.analytics_capture_failed`.
 
@@ -1820,10 +1849,10 @@ case the in-process latch cannot see, an app or brain restarting inside the
 refusal. Both events reuse the existing `ade_feature_used` 140-per-day /
 30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
 
-Making a cloud box with **New ADE Cloud machine** records `feature:
-"connections"`, `action: "cloud_machine_create"` once per finished create,
-in the desktop IPC handler that runs it (`registerCloudIpc.ts`, where the
-outcome is known): `completed` (the box joined the account), `partial` (signed
+Making a cloud box for the CLI or an agent (`ade cloud create`, over the
+desktop bridge) records `feature: "connections"`, `action:
+"cloud_machine_create"` once per finished create, in the desktop handler that
+runs it (`registerCloudIpc.ts`, where the outcome is known): `completed` (the box joined the account), `partial` (signed
 in, still starting), `cancelled`, or `failed`. The product question is whether
 installations make ADE Cloud machines from ADE at all and how often a create
 fails. No box id, name, size, price, or error travels; those stay in
@@ -1857,19 +1886,21 @@ whether people buy from ADE and use extra hours. No amount, plan id or Stripe
 identifier travels. A six-hour key per outcome bounds it to 16 accepted events
 per installation per UTC day, inside the existing `ade_feature_used` ceilings.
 
-Ready machines record `feature: "connections"`, `action: "cloud_ready"`.
-The desktop records `enabled` and `disabled` when a project is turned on or
-off on the ADE Cloud page, `completed` or `failed` when a prepare ends (a
-cancel is neither), and `ready_picker` when the new-chat picker claims one;
-the brain records `ready_cli` when `ade chat create --machine cloud:ready`
-or an agent claims one (`cloud.claim_ready`). The product question is
-whether people keep machines ready, how often preparing one fails, and where
-the chats that take one start. No project, repository, machine, size, setup
-command or error travels; the setup's output stays out of the local log too
-(`cloud.ready_prepare_failed` carries its exit code only). A six-hour key
-per outcome bounds it to 24 accepted events per installation per UTC day,
-inside the existing `ade_feature_used` ceilings. The keeper's pool reads are
-not analytics.
+ADE Cloud lanes record `feature: "connections"` with one coarse outcome
+(`cloudLaneAnalytics.ts`). `cloud_lane_launch`: how a new lane on its
+own computer ends, `completed`, `failed` or `cancelled`, counted once per end
+when the launch host (the desktop's `registerCloudLaneLaunchIpc.ts`, surface
+`desktop`, or the brain's `cloudLaneLaunchBrainHost.ts`, surface `api`) saw it
+move there; a Retry that fixes a failure counts the failure, then the
+completion. `cloud_lane_freed`: Keep the lane and free its computer from the
+desktop, `completed` or `failed`. `cloud_clear_caches`: the computer's own
+brain clears its caches, `completed`, `failed`, or `denied` (an agent's ask
+declined or unanswered). `cloud_default_size`: the person picked another size
+for new lanes, `size_small` to `size_xlarge` (a value another computer synced
+is not counted again). No lane, project, computer, branch, prompt, size of a
+computer or error travels. Each is a person's decision or a launch that makes
+a computer, so the existing `ade_feature_used` ceilings bound them; there is
+no dedupe key.
 
 Sign-ins for cloud machines record `feature: "connections"`, `action:
 "cloud_sign_in"` in the brain, when a sign-in is saved

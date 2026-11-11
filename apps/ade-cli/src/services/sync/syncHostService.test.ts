@@ -8792,6 +8792,13 @@ describe("CTO-gated Linear sync commands", () => {
         viewerBlockedActions.add(`providerAccounts.${method}`);
         controllerAllowedActions.add(`providerAccounts.${method}`);
       }
+      // The account's sign-ins (Cloud 4): `status` is a read; every other
+      // `providerLogins.*` is the person's own write, for a controller only.
+      for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
+        if (!action.startsWith("providerLogins.") || action === "providerLogins.status") continue;
+        viewerBlockedActions.add(action);
+        controllerAllowedActions.add(action);
+      }
 
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
         // `apple.*` is registered only by a runtime that built a simulator
@@ -8822,7 +8829,7 @@ describe("CTO-gated Linear sync commands", () => {
           "ai.antigravitySignInCancel",
         ]);
         // Provider accounts are machine-wide config homes, never a project's.
-        const scope = RUNTIME_SCOPED_OPTIONAL_ACTIONS.has(action) || action.startsWith("providerAccounts.")
+        const scope = RUNTIME_SCOPED_OPTIONAL_ACTIONS.has(action) || action.startsWith("providerAccounts.") || action.startsWith("providerLogins.")
           ? "runtime"
           : "project";
         // Policy shape varies (lifecycle mutations are additionally queueable);

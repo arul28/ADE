@@ -18,6 +18,7 @@ import { isRecord } from "../shared/utils";
 import { sendToAllWindows } from "./broadcast";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { createCloudLaneLaunchService, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
+import { cloudLaneLaunchOutcomes, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 
 /** The launch id of an id-based call, or null when the args carry none. */
 function launchIdOf(args: unknown): string | null {
@@ -36,6 +37,8 @@ export function registerCloudLaneLaunchIpc(args: {
   forgetMachineConnections: (machine: { machineKey: string | null; instanceId: string }) => void;
   pairMachine: (machineKey: string) => Promise<{ targetId: string }>;
   remote: RuntimeBridgeRegistration["remoteForMain"];
+  /** How each launch ends, one coarse outcome (cloudLaneAnalytics.ts). */
+  analytics?: CloudLaneAnalyticsCapture;
   logger: Logger;
 }): CloudLaneLaunchService {
   const { remote, logger } = args;
@@ -43,10 +46,14 @@ export function registerCloudLaneLaunchIpc(args: {
   // The launch kinds each connect's brain advertised, so the hand-off reads
   // what its own connect just saw instead of connecting again.
   const brainLaunchKinds = new Map<string, string[]>();
+  const countOutcome = cloudLaneLaunchOutcomes(args.analytics, "desktop");
   const service = createCloudLaneLaunchService({
     recordsDir: path.join(app.getPath("userData"), "cloud-lane-launches"),
     logger,
-    emit: (event: ChatLaunchEvent) => sendToAllWindows(IPC.cloudLaneLaunchEvent, event),
+    emit: (event: ChatLaunchEvent) => {
+      sendToAllWindows(IPC.cloudLaneLaunchEvent, event);
+      countOutcome(event);
+    },
     creator,
     removeAccountMachine: args.removeAccountMachine,
     forgetMachineConnections: args.forgetMachineConnections,
@@ -74,37 +81,43 @@ export function registerCloudLaneLaunchIpc(args: {
     ),
   });
 
-  ipcMain.handle(IPC.cloudLaneLaunchCall, async (event, raw: unknown): Promise<CloudLaneLaunchCallResult> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneLaunchCall)) {
-      throw new Error("ADE can't do that from here.");
-    }
-    const request = (isRecord(raw) ? raw : {}) as Partial<CloudLaneLaunchCallRequest>;
+  // One origin read for `start` and `list`. The project is the repository:
+  // the origin the launch carries (what the composer checked before Send),
+  // else the tab's stamped origin, this computer's copy (the file, then git
+  // itself), or the machine that holds the copy (`resolveProjectRepoOrigin`).
+  const readOrigin = async (request: Partial<CloudLaneLaunchCallRequest>): Promise<string | null> => {
     const source = isRecord(request.source) ? request.source : null;
+    const carried = isRecord(request.args) && isRecord(request.args.cloud) && typeof request.args.cloud.originUrl === "string"
+      ? request.args.cloud.originUrl.trim() || null
+      : null;
     const remoteSource = isRecord(source?.remote)
       && typeof source.remote.targetId === "string"
       && typeof source.remote.projectId === "string"
       ? { targetId: source.remote.targetId, projectId: source.remote.projectId }
       : null;
-    // The project is the repository: the origin the tab holds, else this
-    // computer's copy, else the machine that holds the copy. Only `start` and
-    // `list` need it; an id-based call skips the lookup.
-    const needsOrigin = request.method === "start" || request.method === "list";
-    const originUrl = needsOrigin
-      ? await resolveProjectRepoOrigin({
-        gitOriginUrl: typeof source?.gitOriginUrl === "string" ? source.gitOriginUrl : null,
-        localRootPath: typeof source?.localRootPath === "string" ? source.localRootPath : null,
-        remote: remoteSource,
-      }, { remoteProjects: (targetId) => remote.projects(targetId), logger })
-      : null;
+    return await resolveProjectRepoOrigin({
+      gitOriginUrl: carried ?? (typeof source?.gitOriginUrl === "string" ? source.gitOriginUrl : null),
+      localRootPath: typeof source?.localRootPath === "string" ? source.localRootPath : null,
+      remote: remoteSource,
+    }, { remoteProjects: (targetId) => remote.projects(targetId), logger });
+  };
+
+  ipcMain.handle(IPC.cloudLaneLaunchCall, async (event, raw: unknown): Promise<CloudLaneLaunchCallResult> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneLaunchCall)) {
+      throw new Error("ADE can't do that from here.");
+    }
+    const request = (isRecord(raw) ? raw : {}) as Partial<CloudLaneLaunchCallRequest>;
     switch (request.method) {
-      case "start":
+      case "start": {
+        const originUrl = await readOrigin(request);
         return {
           owned: true,
           result: await service.start({ args: request.args as ChatLaunchArgs, originUrl }),
           projectIdentity: normalizeGitRemoteIdentity(originUrl),
         };
+      }
       case "list": {
-        const projectIdentity = normalizeGitRemoteIdentity(originUrl);
+        const projectIdentity = normalizeGitRemoteIdentity(await readOrigin(request));
         // No project, or one with no origin: it has no cloud launches.
         return { owned: true, result: projectIdentity ? service.list({ originUrl: projectIdentity }) : [], projectIdentity };
       }

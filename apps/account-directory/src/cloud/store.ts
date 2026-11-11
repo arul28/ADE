@@ -1,14 +1,11 @@
 import * as Sentry from "@sentry/cloudflare";
 import type { CallerTokenEnv } from "../callerToken";
-import { overPlanDiskSentence, type CloudAccountState, type CloudExtraDiskState, type CloudHoursState, type CloudInstance, type CloudPlanFacts, type CloudPlanId } from "./contract";
+import { overPlanDiskSentence, type CloudExtraDiskState, type CloudHoursState, type CloudInstance, type CloudPlanFacts, type CloudPlanId } from "./contract";
 import type { CloudEmailEnv } from "./email";
-import { RECENT_USE_DAYS, recentUsedMilli } from "./diskUsage";
 import {
   CLOUD_PLANS,
-  CENT_MICROS,
   EXTRA_DISK_MICROS_PER_GB_DAY,
   FREE_INCLUDED_MILLI,
-  cloudCatalog,
   computeCostMicrosFor,
   type CloudOffers,
   freePeriodFor,
@@ -36,7 +33,10 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   STRIPE_PLAN_PRICE_ID?: string;
+  /** The older name of extra hours' price: a Worker secret in production, so `STRIPE_EXTRA_HOURS_PRICE_ID` (a var) wins. */
   STRIPE_EXTRA_PRICE_ID?: string;
+  /** Extra hours' price on its own "Extra hours" product (`scripts/stripe-setup.mjs`). */
+  STRIPE_EXTRA_HOURS_PRICE_ID?: string;
   STRIPE_METER_EVENT?: string;
   /** Pro's monthly price (`scripts/stripe-setup.mjs`). Unset: only Plus can be bought. */
   STRIPE_PRO_PRICE_ID?: string;
@@ -52,7 +52,12 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   CLOUD_CHATS?: R2Bucket;
   /** 32 random bytes, base64. Seals each user's chat key. Required for saved chats. */
   CLOUD_CHAT_MASTER_KEY?: string;
+  /** `production` only in the deployed config (`sentry.ts`). */
+  SENTRY_ENVIRONMENT?: string;
 };
+
+/** The deployed production Worker, where a missing secret or an email that can't be sent is a failure, not a setup. */
+export const isProduction = (env: Pick<CloudEnv, "SENTRY_ENVIRONMENT">): boolean => env.SENTRY_ENVIRONMENT?.trim() === "production";
 
 /** What a function needs that only touches the tables. */
 export type CloudDb = Pick<CloudEnv, "DB">;
@@ -108,7 +113,7 @@ export type ComputerRow = {
   lane_name?: string | null;
   lane_project_origin?: string | null;
   lane_branch?: string | null;
-  /** `freed` or `inactive` while a delete that keeps the lane runs: closing the row writes the lane's row. */
+  /** `freed`, `inactive` or `plan_limit` while a delete that keeps the lane runs: closing the row writes the lane's row. */
   lane_keep_reason?: string | null;
   /** Use facts (migration 0022, `diskUsage.ts`): the last disk measure, as JSON, and when it was taken. */
   disk_usage_json?: string | null;
@@ -149,6 +154,27 @@ export type AccountRow = {
   extra_disk_asked_at: number | null;
   /** When the person was told their extra disk, kept a full month, passes their limit; cleared once it fits again. */
   extra_disk_over_limit_at: number | null;
+  /** Earned hours (migration 0026, `referrals.ts`): every grant, recomputed from `cloud_earned_hours`. */
+  earned_granted_milli: number;
+  /** What ended periods drew from earned hours. The balance is granted minus this. */
+  earned_used_milli: number;
+  /** What the period a failed payment cut short drew from earned hours, given back if that period is restored. */
+  past_due_earned_milli: number | null;
+  /** Refused the free plan: its computer already gave another account free hours (`freePlan.ts`). Free hours are 0 while set. */
+  free_refused_at: number | null;
+  /** When the ADE account was created (Clerk), for the invite code's 30-day window. */
+  account_created_at: number | null;
+  /** A cheaper plan's limits (migration 0027, `planCleanup.ts`): when ADE frees what is over them; null while the account fits. */
+  plan_cleanup_due_at: number | null;
+  /** The computers the person was warned about, as JSON `{ instanceId: dueAt }`: only these are ever freed, each from its own due time. */
+  plan_cleanup_warned_json: string | null;
+  /** The last run that freed or kept something (`CloudPlanCleanupDone` as JSON), and when. */
+  plan_cleanup_result_json: string | null;
+  plan_cleanup_result_at: number | null;
+  /** Timed wake-ups cancelled this period (`accountNotices.ts`): when, how many, and why. */
+  wakes_cancelled_at: number | null;
+  wakes_cancelled_count: number | null;
+  wakes_cancelled_reason: string | null;
   deleted_at: number | null;
   created_at: number;
   updated_at: number;
@@ -162,14 +188,17 @@ export function logCloud(event: string, meta: Record<string, unknown> = {}): voi
 const FAILURE_REPORT_INTERVAL_MS = 60 * 60_000;
 const lastFailureReport = new Map<string, number>();
 
-/** {@link logCloud} for a failure that's ADE's to fix: the line stays local, the event name reaches Sentry. */
-export function reportCloudFailure(event: string, meta: Record<string, unknown> = {}): void {
+/**
+ * {@link logCloud} for a failure that's ADE's to fix: the line stays local, the event name reaches Sentry.
+ * `area` tags the Sentry issue (`cloud`, `cloud-referrals`, `cloud-free-plan`) so alert rules can pick one.
+ */
+export function reportCloudFailure(event: string, meta: Record<string, unknown> = {}, area = "cloud"): void {
   logCloud(event, meta);
   const now = Date.now();
   if (now - (lastFailureReport.get(event) ?? 0) < FAILURE_REPORT_INTERVAL_MS) return;
   lastFailureReport.set(event, now);
   // Only the event name: `meta` carries account and instance ids.
-  Sentry.captureMessage(event, { level: "warning", fingerprint: [event], tags: { area: "cloud" } });
+  Sentry.captureMessage(event, { level: "warning", fingerprint: [event], tags: { area } });
 }
 
 /** A reservation with no computer behind it after this long is given up on. */
@@ -469,6 +498,9 @@ export function groupByUser<T extends { user_id: string }>(rows: T[]): Map<strin
 
 /* ---- Accounts ---- */
 
+/** {@link accountRules} is `paid`, as SQL on a `cloud_accounts` row. The two must say the same. */
+export const PAID_RULES_SQL = "(plan = 'paid' and coalesce(stripe_status, '') <> 'past_due')";
+
 /** `past_due` puts a paid account on free-plan rules until a paid invoice. */
 export function accountRules(account: Pick<AccountRow, "plan" | "stripe_status">): "free" | "paid" {
   return account.plan === "paid" && account.stripe_status !== "past_due" ? "paid" : "free";
@@ -608,9 +640,56 @@ export async function extraDiskMicrosThisPeriod(env: CloudDb, account: Pick<Acco
   return (row?.gb_days ?? 0) * EXTRA_DISK_MICROS_PER_GB_DAY;
 }
 
+/*
+ * ---- Earned hours (migration 0026, `referrals.ts`) ----
+ *
+ * Order of use in a period: the plan's hours, then earned hours, then paid
+ * extra hours. A period draws from earned hours only what it used past the
+ * plan's hours and past the extra hours already billed or owed in it (a grant
+ * that lands after extra hours were billed covers only what comes next, so
+ * nothing is both billed and drawn). The draw is live while the period runs
+ * and is settled into `earned_used_milli` when the period ends
+ * (`startFreshPeriod`). Earned hours never expire.
+ */
+
+type EarnedAccount = Pick<AccountRow, "plan" | "stripe_status" | "included_milli" | "extra_reported_milli" | "extra_owed_milli" | "earned_granted_milli" | "earned_used_milli">;
+
+/** Earned hours this period may draw from: every grant minus what ended periods drew. */
+export function earnedBalanceMilli(account: Pick<AccountRow, "earned_granted_milli" | "earned_used_milli">): number {
+  return Math.max(0, account.earned_granted_milli - account.earned_used_milli);
+}
+
+/** Extra hours this period already billed or owes: never drawn from earned hours. Only paid rules bill them. */
+function billedExtraMilli(account: Pick<AccountRow, "plan" | "stripe_status" | "extra_reported_milli" | "extra_owed_milli">): number {
+  return accountRules(account) === "paid" ? Math.max(account.extra_reported_milli, account.extra_owed_milli, 0) : 0;
+}
+
+/** What this period draws from earned hours with `liveUsed` used. */
+export function earnedDrawMilli(account: EarnedAccount, liveUsed: number): number {
+  const pastPlan = Math.max(0, liveUsed - account.included_milli);
+  return Math.min(earnedBalanceMilli(account), Math.max(0, pastPlan - billedExtraMilli(account)));
+}
+
+/** Earned hours left now. */
+export function earnedLeftMilli(account: EarnedAccount, liveUsed: number): number {
+  return earnedBalanceMilli(account) - earnedDrawMilli(account, liveUsed);
+}
+
+/**
+ * {@link earnedDrawMilli} as SQL on a `cloud_accounts` row with its settled
+ * `used_milli`, for the statement that ends a period.
+ */
+const EARNED_DRAW_SQL = `min(max(0, earned_granted_milli - earned_used_milli), max(0, used_milli - included_milli - (case
+  when ${PAID_RULES_SQL} then max(extra_reported_milli, extra_owed_milli, 0) else 0 end)))`;
+
+/** The hours past the plan's that extra hours bill: what earned hours don't cover. */
+export function extraUsedMilli(account: EarnedAccount, liveUsed: number): number {
+  return Math.max(0, liveUsed - account.included_milli - earnedDrawMilli(account, liveUsed));
+}
+
 /** Extra hours already used: what is still billed once the switch goes off. */
 export function extraOwedMilli(account: AccountRow, liveUsed: number): number {
-  return Math.max(account.extra_owed_milli, liveUsed - account.included_milli, 0);
+  return Math.max(account.extra_owed_milli, extraUsedMilli(account, liveUsed), 0);
 }
 
 export function extraActive(account: AccountRow): boolean {
@@ -622,8 +701,9 @@ export function liveUsedMilli(account: AccountRow, computers: ComputerRow[], now
   return computers.reduce((sum, computer) => sum + liveMilli(computer, now), account.used_milli);
 }
 
+/** Out once the plan's hours and every earned hour are used, unless extra hours are on. */
 export function isOutOfHours(account: AccountRow, liveUsed: number): boolean {
-  return !extraActive(account) && liveUsed >= account.included_milli;
+  return !extraActive(account) && liveUsed >= account.included_milli && earnedLeftMilli(account, liveUsed) <= 0;
 }
 
 /** Whole percent of the included hours used; extra hours can pass 100. */
@@ -632,9 +712,20 @@ export function percentUsed(account: AccountRow, liveUsed: number): number {
   return Math.floor((liveUsed * 100) / account.included_milli);
 }
 
+/**
+ * Whole percent of everything this period may use before it runs out: the
+ * plan's hours and the earned hours it can draw. What the 80% and 95%
+ * warnings read, so earned hours push them back.
+ */
+export function allowancePercentUsed(account: AccountRow, liveUsed: number): number {
+  const allowance = account.included_milli + earnedBalanceMilli(account);
+  if (allowance <= 0) return 100;
+  return Math.floor((liveUsed * 100) / allowance);
+}
+
 export function hoursState(account: AccountRow, liveUsed: number): CloudHoursState {
   if (isOutOfHours(account, liveUsed)) return "zero";
-  const percent = percentUsed(account, liveUsed);
+  const percent = allowancePercentUsed(account, liveUsed);
   if (percent >= 95) return "warn95";
   if (percent >= 80) return "warn80";
   return "none";
@@ -655,10 +746,24 @@ export async function loadAccount(env: CloudEnv, userId: string, now: number): P
   return rollPeriodIfDue(env, account, now);
 }
 
-type FreshPeriod = { plan: "free" | "paid"; start: number; end: number; included: number };
+/** `included: "free"`: the free plan's hours, which an account refused the free plan doesn't get (`freePlan.ts`). */
+type FreshPeriod = { plan: "free" | "paid"; start: number; end: number; included: "free" | number };
 
-/** Settles what's open into the period that's ending, then starts `next`, resetting warnings. */
-async function startFreshPeriod(env: CloudEnv, account: AccountRow, next: FreshPeriod, now: number, alongside: D1PreparedStatement[] = []): Promise<AccountRow> {
+/**
+ * Settles what's open into the period that's ending, then starts `next`,
+ * resetting warnings. What the ending period drew from earned hours is
+ * settled in the same batch, once: the statement is held to the period it
+ * read, so two rolls racing each other draw once. `stashEarnedDraw` keeps that
+ * draw aside too, for a failed payment whose period may still be restored.
+ */
+async function startFreshPeriod(
+  env: CloudEnv,
+  account: AccountRow,
+  next: FreshPeriod,
+  now: number,
+  alongside: D1PreparedStatement[] = [],
+  options: { stashEarnedDraw?: boolean } = {},
+): Promise<AccountRow> {
   const computers = await listComputers(env, account.user_id);
   const statements: D1PreparedStatement[] = [];
   for (const computer of computers) statements.push(...settleStatements(env, computer, now));
@@ -666,18 +771,33 @@ async function startFreshPeriod(env: CloudEnv, account: AccountRow, next: FreshP
   statements.push(env.DB.prepare(`
     update cloud_computers set awake_since = ? where user_id = ? and awake_since is not null and awake_since <= ?
   `).bind(now, account.user_id, now));
-  const restored = account.warned_zero_at != null ? now : account.hours_restored_at;
+  // After the settles above, before `used_milli` resets below; both columns read the row as it was.
   statements.push(env.DB.prepare(`
-    update cloud_accounts set plan = ?, included_milli = ?, used_milli = 0, period_start = ?, period_end = ?,
+    update cloud_accounts set earned_used_milli = earned_used_milli + ${EARNED_DRAW_SQL}
+      ${options.stashEarnedDraw ? `, past_due_earned_milli = ${EARNED_DRAW_SQL}` : ""}
+    where user_id = ? and period_start = ?
+  `).bind(account.user_id, account.period_start));
+  const restored = account.warned_zero_at != null ? now : account.hours_restored_at;
+  // A refusal written since `account` was read still holds: the free hours are read from the row.
+  const included = next.included === "free" ? `case when free_refused_at is not null then 0 else ${FREE_INCLUDED_MILLI} end` : "?";
+  statements.push(env.DB.prepare(`
+    update cloud_accounts set plan = ?, included_milli = ${included},
+      used_milli = 0, period_start = ?, period_end = ?,
       warned_80_at = null, warned_95_at = null, warned_zero_at = null, hours_restored_at = ?, updated_at = ?
     where user_id = ?
-  `).bind(next.plan, next.included, next.start, next.end, restored, now, account.user_id));
+  `).bind(next.plan, ...(next.included === "free" ? [] : [next.included]), next.start, next.end, restored, now, account.user_id));
   // One batch: a retry decides from these columns, so half of a change could never be finished.
   await env.DB.batch([...statements, ...alongside]);
+  const after = await env.DB.prepare("select earned_used_milli, past_due_earned_milli, included_milli from cloud_accounts where user_id = ?")
+    .bind(account.user_id).first<Pick<AccountRow, "earned_used_milli" | "past_due_earned_milli" | "included_milli">>();
+  // The batch just wrote this row.
+  if (!after) throw new Error("cloud account row missing after a period start");
   return {
     ...account,
     plan: next.plan,
-    included_milli: next.included,
+    included_milli: after.included_milli,
+    earned_used_milli: after.earned_used_milli,
+    past_due_earned_milli: after.past_due_earned_milli,
     used_milli: 0,
     period_start: next.start,
     period_end: next.end,
@@ -700,7 +820,7 @@ export async function rollPeriodIfDue(env: CloudEnv, account: AccountRow, now: n
   const period = freePeriodFor(now);
   // `past_due` stays a paid account underneath: only a cancel ends the plan here.
   const nextPlan = cancelled ? "free" : account.plan === "paid" ? "paid" : "free";
-  const rolled = await startFreshPeriod(env, account, { plan: nextPlan, start: period.start, end: period.end, included: FREE_INCLUDED_MILLI }, now, cancelled ? [
+  const rolled = await startFreshPeriod(env, account, { plan: nextPlan, start: period.start, end: period.end, included: "free" }, now, cancelled ? [
     env.DB.prepare("update cloud_accounts set cancel_at_period_end = 0, extra_enabled = 0, extra_disk_state = 'off', stripe_status = null, updated_at = ? where user_id = ?").bind(now, account.user_id),
   ] : []);
   return cancelled ? { ...rolled, cancel_at_period_end: 0, extra_enabled: 0, extra_disk_state: "off", stripe_status: null } : rolled;
@@ -734,7 +854,7 @@ function planTransition(
   const paidIncluded = CLOUD_PLANS[nextPaidPlan].includedMilli;
   const free = freePeriodFor(now);
   if (!wasPastDue && isPastDue && account.plan === "paid") {
-    return { kind: "past_due", next: { plan: "paid", start: free.start, end: free.end, included: FREE_INCLUDED_MILLI } };
+    return { kind: "past_due", next: { plan: "paid", start: free.start, end: free.end, included: "free" } };
   }
   if (wasPastDue && !isPastDue && nextPlan === "paid") {
     const stashEnd = account.past_due_period_end;
@@ -747,7 +867,7 @@ function planTransition(
     return { kind: "to_paid", next: { plan: "paid", start: change.periodStart ?? now, end: change.periodEnd ?? free.end, included: paidIncluded } };
   }
   if (account.plan === "paid" && nextPlan === "free") {
-    return { kind: "to_free", next: { plan: "free", start: free.start, end: free.end, included: FREE_INCLUDED_MILLI } };
+    return { kind: "to_free", next: { plan: "free", start: free.start, end: free.end, included: "free" } };
   }
   if (nextPlan === "paid" && change.periodStart !== undefined && change.periodStart !== account.period_start && !isPastDue) {
     return { kind: "renewal", next: { plan: "paid", start: change.periodStart, end: change.periodEnd ?? account.period_end, included: paidIncluded } };
@@ -806,10 +926,12 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   switch (transition?.kind) {
     case "restored_same_period":
       updates.push(env.DB.prepare("update cloud_accounts set used_milli = ? where user_id = ?").bind(account.past_due_used_milli ?? 0, userId));
+      // The restored hours draw from earned hours again when this period ends, so what the cut drew comes back.
+      updates.push(env.DB.prepare("update cloud_accounts set earned_used_milli = max(0, earned_used_milli - coalesce(past_due_earned_milli, 0)), past_due_earned_milli = null where user_id = ?").bind(userId));
       extras.push(["past_due_used_milli", null], ["past_due_period_end", null], ["billing_restored_at", now]);
       break;
     case "restored_new_period":
-      extras.push(...clearExtraReports, ["past_due_used_milli", null], ["past_due_period_end", null], ["billing_restored_at", now]);
+      extras.push(...clearExtraReports, ["past_due_used_milli", null], ["past_due_period_end", null], ["past_due_earned_milli", null], ["billing_restored_at", now]);
       break;
     case "to_paid":
     case "renewal":
@@ -838,7 +960,7 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
     updates.push(env.DB.prepare(`update cloud_accounts set ${sets}, updated_at = ? where user_id = ?`)
       .bind(...extras.map(([, value]) => value), now, userId));
   }
-  if (transition) await startFreshPeriod(env, account, transition.next, now, updates);
+  if (transition) await startFreshPeriod(env, account, transition.next, now, updates, { stashEarnedDraw: transition.kind === "past_due" });
   else if (updates.length) await env.DB.batch(updates);
   const after = (await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>()) ?? account;
   // Today's disk-day follows the plan as it is now: an upgrade raises its plan disk, `past_due` makes it unbillable.
@@ -848,7 +970,6 @@ export async function applyCloudPlanChange(env: CloudEnv, userId: string, change
   return after;
 }
 
-const BILLING_RESTORED_NOTICE_MS = 3 * 24 * 60 * 60_000;
 export const DELETION_AFTER_INACTIVE_MS = 30 * 24 * 60 * 60_000;
 export const DELETION_WARNING_LATE_MS = 7 * 24 * 60 * 60_000;
 
@@ -862,87 +983,4 @@ export function deletionDueAt(computer: ComputerRow, account: AccountRow, liveUs
   const lastAwake = computer.last_awake_at ?? computer.created_at;
   const since = Math.max(lastAwake, account.hours_restored_at ?? 0);
   return since + DELETION_AFTER_INACTIVE_MS;
-}
-
-/** The banner for the account: a failed payment, or a plan that just came back. */
-function billingNotice(account: AccountRow, now: number): "past_due" | "restored" | null {
-  if (account.plan !== "paid") return null;
-  if (account.stripe_status === "past_due") return "past_due";
-  return account.billing_restored_at != null && now - account.billing_restored_at < BILLING_RESTORED_NOTICE_MS ? "restored" : null;
-}
-
-/** How long a deleted computer's id is still reported, so its leftover ADE row can be explained. */
-const DELETED_REPORTED_MS = 90 * 24 * 60 * 60_000;
-
-async function recentlyDeletedInstanceIds(env: CloudEnv, userId: string, now: number): Promise<string[]> {
-  const rows = await env.DB.prepare(`
-    select c.instance_id from cloud_computers c
-    where c.user_id = ? and c.deleted_at is not null and c.deleted_at >= ?
-  `).bind(userId, now - DELETED_REPORTED_MS).all<{ instance_id: string }>();
-  return (rows.results ?? []).map((row) => row.instance_id);
-}
-
-export async function buildAccountState(env: CloudEnv, userId: string, now: number): Promise<CloudAccountState> {
-  const account = await loadAccount(env, userId, now);
-  const [computers, deletedInstanceIds, recentMilli] = await Promise.all([
-    listComputers(env, userId),
-    recentlyDeletedInstanceIds(env, userId, now),
-    recentUsedMilli(env, userId, now),
-  ]);
-  const live = liveUsedMilli(account, computers, now);
-  const rules = accountRules(account);
-  const plan = planFacts(account);
-  // The same total the wake rule and the limits use: a move's source stays out while the move runs.
-  const diskUsed = countedDiskGb(computers);
-  const offers = cloudOffers(env);
-  const extraDiskMicros = offers.extraDisk && rules === "paid" && account.extra_disk_state === "on" ? await extraDiskMicrosThisPeriod(env, account) : 0;
-  const due = computers
-    .filter((computer) => !isPendingId(computer.instance_id))
-    .map((computer) => ({ computer, deletesAt: deletionDueAt(computer, account, live) }))
-    .filter((entry): entry is { computer: ComputerRow; deletesAt: number } => entry.deletesAt != null && entry.deletesAt - now <= DELETION_WARNING_LATE_MS)
-    .sort((a, b) => a.deletesAt - b.deletesAt)
-    .map(({ computer, deletesAt }) => ({ instanceId: computer.instance_id, name: computer.name, deletesAt }));
-  return {
-    plan: account.plan,
-    rules,
-    planId: boughtPlanIdOf(account),
-    hours: {
-      includedMilli: account.included_milli,
-      usedMilli: live,
-      leftMilli: Math.max(0, account.included_milli - live),
-      percentUsed: percentUsed(account, live),
-      state: hoursState(account, live),
-    },
-    extraHours: {
-      available: rules === "paid",
-      enabled: extraActive(account),
-      usedMilli: Math.max(0, live - account.included_milli),
-    },
-    ...(offers.extraDisk ? {
-      extraDisk: {
-        available: rules === "paid",
-        state: account.extra_disk_state,
-        monthlyLimitCents: account.extra_disk_limit_cents,
-        usedCents: Math.floor(extraDiskMicros / CENT_MICROS),
-      },
-    } : {}),
-    disk: { usedGb: diskUsed, limitGb: plan.diskGb },
-    computers: {
-      total: computers.length,
-      awake: computers.filter((computer) => isMeteredStatus(computer.status)).length,
-      limit: computerLimit(account),
-    },
-    recentUse: { days: RECENT_USE_DAYS, usedMilli: recentMilli },
-    dueForDeletion: due,
-    deletedInstanceIds,
-    catalog: cloudCatalog(offers),
-    billing: {
-      periodStart: account.period_start,
-      periodEnd: account.period_end,
-      stripeStatus: account.stripe_status,
-      cancelAtPeriodEnd: account.cancel_at_period_end === 1,
-      nextPlanId: account.plan === "paid" ? account.paid_plan_next : null,
-      notice: billingNotice(account, now),
-    },
-  };
 }

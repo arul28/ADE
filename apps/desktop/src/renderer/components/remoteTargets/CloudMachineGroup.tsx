@@ -26,12 +26,6 @@ import { CloudUpdateLine } from "./CloudUpdateLine";
 import { cloudPendingLabel, type CloudBoxActionError, type CloudBoxPending } from "./useCloudBoxActions";
 import { connectButtonStyle, machineRowStyle, nameStyle, subTextStyle } from "./remoteTargetListStyles";
 
-/** The tag on a ready machine that is not yet anyone's (a claimed one is an ordinary machine). */
-const READY_STATE_LABELS = {
-  preparing: "Being prepared",
-  failed: "Prepare failed",
-} as const;
-
 
 /** The group's head: the mark, how many computers, and how fast they use hours now. */
 export function CloudGroupHead({
@@ -169,15 +163,6 @@ export function CloudBoxStrip({
           <span className="kit-tag" data-tone={tone ?? undefined} title={`ADE Cloud status: ${box.status}`}>
             {stateLabel}
           </span>
-          {box.ready && box.ready.state !== "claimed" ? (
-            <span
-              className="kit-tag"
-              data-tone={box.ready.state === "failed" ? "crit" : undefined}
-              title={`ADE keeps this machine ready for ${box.ready.projectName}: the next chat there starts on it. Settings › Integrations › ADE Cloud.`}
-            >
-              {box.ready.state === "ready" ? `Ready for ${box.ready.projectName}` : READY_STATE_LABELS[box.ready.state]}
-            </span>
-          ) : null}
           <span className="ade-cx-cloud-fact">{describeCloudMachineSize(box)}</span>
           {rate ? <span className="ade-cx-cloud-fact kit-num">{rate}</span> : null}
           {box.sleep.state !== "auto" ? (

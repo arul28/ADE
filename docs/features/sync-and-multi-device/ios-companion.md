@@ -846,7 +846,7 @@ apps/ios/
 │   │   │                            #   docs/features/issues).
 │   │   ├── Cloud/                    # ADE Cloud page (Work ⋯ menu, shown once the
 │   │   │                            #   account has ADE Cloud): machines and their
-│   │   │                            #   actions, spending, ready machines, a new
+│   │   │                            #   actions, spending, a new
 │   │   │                            #   machine approved here, what agents may
 │   │   │                            #   spend; Duo book and laptop layouts. Over
 │   │   │                            #   cloud.read / cloud.write (see

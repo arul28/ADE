@@ -1,6 +1,6 @@
 ---
 name: ade-cloud
-description: Use this skill before any ADE Cloud work: reading the account (plan, hours, disk, computers, lanes, sizes, agent limits, and whether a new lane can start and why not), starting a lane on its own cloud computer, following, retrying or cancelling that launch, explaining a refusal, proposing a cleanup, or the other `ade cloud` commands (sleep, wake, resize, copy, move, delete, keep one ready).
+description: Use this skill before any ADE Cloud work: reading the account (plan, hours, disk, computers, lanes, sizes, agent limits, and whether a new lane can start and why not), starting a lane on its own cloud computer, following, retrying or cancelling that launch, explaining a refusal, proposing a cleanup, or the other `ade cloud` commands (sleep, wake, resize, copy, move, delete, clear caches).
 ---
 
 # ADE Cloud
@@ -22,7 +22,7 @@ manages lanes, not computers.
 
 `ade chat create --machine cloud --launch-id <a new UUID> --prompt "<task>"` starts a lane with a chat.
 `ade lanes create --machine cloud --launch-id <a new UUID> --name "<name>"` makes the lane alone, with no chat.
-Over ADE MCP: the `ade` tool refuses `--machine`, so an outside app cannot start a lane yet. Ask the person to start it in ADE.
+Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `chat create`, `lanes create` and `chat launch-status`; every other `--machine` is refused. An app is an unattended agent there (the next point).
 
 - Size: leave out `--size` to use the person's saved size (`defaultSize`). Medium when Small is too slow. Large or X-Large (full computers) only for Android or Docker.
 - Push the branch first. The lane starts from the pushed copy; uncommitted changes stay here.
@@ -75,11 +75,15 @@ Delete nothing without their yes. Deleting a lane deletes its computer.
 ## Other commands
 
 `ade help cloud` lists `list`, `hours`, `limits`, `sleep`, `wake`, `resize`,
-`update`, `copy`, `move`, `delete` and `ready`. Each asks the person like a new
-lane when it uses hours or deletes. A computer sleeps 3 minutes after its last
+`update`, `copy`, `move` and `delete`. Each asks the person like a new
+lane when it uses hours or deletes.
+On a lane's cloud computer with a full disk, `ade actions run cloud.clear_caches`
+deletes package and build caches there (never a repository or dependencies). It
+asks the person with a card first; with nobody watching the answer is no. A computer sleeps 3 minutes after its last
 activity and wakes on use, so you rarely need `sleep` or `wake`.
 `ade cloud work-state` lists the lanes with work not pushed yet. Freeing a computer (keeping its lane) is refused while the agent works: stop it or wait.
 With nobody there you cannot change a size: ask with `ade cloud resize --request`, as in Never.
+`ade cloud invite --text` shows the person's invite link, friends joined and hours earned. Only the person enters a friend's invite, in Settings › Account.
 
 Cloud computers update themselves when idle or asleep, never while work runs.
 `ade cloud status` shows each one's `update` (image, channel, target, state).

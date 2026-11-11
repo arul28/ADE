@@ -73,6 +73,8 @@ html[data-scene="image"][data-theme="light"] {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
 }
+/* A big figure that reads as a number, not code: the UI face, still tabular. */
+.kit-num[data-face="ui"] { font-family: inherit; letter-spacing: -0.01em; }
 
 /* A coloured page header: the Account banner and the Custom providers banner.
    A wash painted from four colour stops (`--hero-deep`, `--hero-mid`,
@@ -284,6 +286,11 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
 .kit-tag[data-tone="ok"] { background: color-mix(in srgb, var(--kit-ok) 14%, transparent); color: var(--kit-ok); }
 .kit-tag[data-tone="warn"] { background: color-mix(in srgb, var(--kit-warn) 14%, transparent); color: var(--kit-warn); }
 .kit-tag[data-tone="crit"] { background: color-mix(in srgb, var(--kit-crit) 14%, transparent); color: var(--kit-crit); }
+/* The surface's own accent ("Your plan", "Default"). A surface with its own brand sets `--kit-tag-accent`. */
+.kit-tag[data-tone="accent"] {
+  background: color-mix(in srgb, var(--kit-tag-accent, var(--color-accent)) 18%, transparent);
+  color: var(--kit-tag-accent, var(--color-accent));
+}
 
 /* A key or chord as the OS prints it (⌘K, Ctrl+Shift+E). One chip per chord;
    a binding with two chords is two chips. `data-size="sm"` for a line of

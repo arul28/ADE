@@ -4,10 +4,11 @@
  * in once here: Claude with Claude Code's own `claude setup-token` (a
  * long-lived subscription token made for headless machines), the others with
  * the API key each provider's CLI reads from its environment. ADE keeps them
- * in the person's account vault and gives them to every new cloud machine
- * as instance env. Each variable is the one ADE's own status reads for that
- * provider (authDetector.ts); Codex also needs its auth file, written on the
- * box at boot (cloudSignInBoot.ts).
+ * in the person's account vault; each cloud computer's brain reads them from
+ * there and puts each in the variable ADE's own status reads for that
+ * provider (authDetector.ts), or Codex's auth file
+ * (providerLogins/providerLoginApplyPass.ts). They never go in a computer's
+ * instance env: the Worker and the host would see them.
  */
 
 import type { ProviderLoginProvider } from "./types/providerLogins";
@@ -32,7 +33,7 @@ export type CloudSignInSpec = {
   providers: readonly ProviderLoginProvider[];
   /** `claude-token`: Claude Code's own sign-in makes the token. `key`: the person pastes a key. */
   method: "claude-token" | "key";
-  /** The variable a new machine gets it in. */
+  /** The variable the brain on a cloud computer puts it in. */
   env: string;
   /** What the key is called where the person makes it. */
   keyName: string;
@@ -210,22 +211,43 @@ export type ClaudePassLabelSource = "checked" | "pressed" | "typed" | "none";
  */
 export type ClaudePassState = "active" | "ending_soon" | "estimate_passed" | "ended";
 
+/** The end warning is due this long before a sign-in's end: a Claude pass's or a provider key's. */
+export const SIGN_IN_END_NOTICE_MS = 7 * 24 * 60 * 60_000;
+
 /**
- * The Claude pass the end warning names (`cloudAccess.read().passEnd`): the
- * soonest pass whose notice is due (7 days before its expected end), whose
- * expected end has passed, or that Claude ended. Computed in desktop main from
- * the account's local pass store, only while ADE Cloud is on. No token.
+ * The sign-in the end warning names (`cloudAccess.read().signInEnd`): the
+ * soonest one whose notice is due (7 days before its end), whose expected end
+ * has passed, or that ended. A Claude pass, or a key ADE Cloud carries whose
+ * provider wrote its end date (Cursor's key from the Cursor sign-in); a key
+ * with no end date from its provider is never named (no guess). Computed in
+ * desktop main from the account's vault, only while ADE Cloud is on. No token.
  */
-export type CloudPassEnd = {
+export type CloudSignInEnd =
+  | (CloudSignInEndFacts & { kind: "claude_pass" })
+  | CloudKeyEnd;
+
+/** A key ADE Cloud carries whose end its provider wrote. */
+export type CloudKeyEnd = CloudSignInEndFacts & {
+  kind: "key";
+  /** The provider it signs in. */
+  provider: ProviderLoginProvider;
+  /** The computer the sign-in that made it was on, or null. */
+  madeOnLabel: string | null;
+};
+
+/** What every due sign-in carries, a pass or a key. */
+export type CloudSignInEndFacts = {
+  /** The vault key: `claude-pass/<id>` or `<provider>/<origin>.<slot>`. */
   key: string;
+  /** `estimate_passed` is a Claude pass only: a key's end date is the provider's own. */
   state: "ending" | "estimate_passed" | "ended";
   email: string | null;
   expiresAt: number;
   endedAt: number | null;
   endsInDays: number;
-  /** Other passes that are also due. */
+  /** Other sign-ins (passes or keys) that are also due. */
   more: number;
-  /** Every due pass as `key:state`: a dismiss lasts until this changes (once per pass state). */
+  /** Every due sign-in as `key:state`: a dismiss lasts until this changes (once per state). */
   fingerprint: string;
 };
 

@@ -157,6 +157,8 @@ describe("isAllowedAdeAction", () => {
       ["android_emulator", "installSdk"],
       ["android_emulator", "cancelSdkInstall"],
       ["android_emulator", "setSdkPath"],
+      // An invite code sets the account's referrer once, forever.
+      ["cloud", "invite_redeem"],
     ] as const) {
       expect(isAllowedAdeAction(domain, action), action).toBe(true);
       expect(isUserOnlyAdeAction(domain, action), action).toBe(true);
@@ -166,6 +168,8 @@ describe("isAllowedAdeAction", () => {
     expect(isAutomationAllowedAdeAction("ios_simulator", "deviceDelete")).toBe(true);
     // Reading the setup plan stays open to agents.
     expect(isUserOnlyAdeAction("android_emulator", "getSdkSetupPlan")).toBe(false);
+    // Reading the invite link and its rewards stays open to agents.
+    expect(isUserOnlyAdeAction("cloud", "referral")).toBe(false);
   });
 
   it("exposes snooze/wake/settle-override and lane branch drift to generic actions", () => {

@@ -11,13 +11,12 @@ import type { ProviderBrandLogo } from "../providers/providerBrand";
 import githubArt from "./banners/github.webp";
 import jiraArt from "./banners/jira.webp";
 import linearArt from "./banners/linear.webp";
-import adeCloudArt from "./banners/ade-cloud.svg";
-import { CloudMark, ADE_CLOUD_NAME } from "../../remoteTargets/cloudBrand";
 
-/** The integrations an agent can ask to connect, and ADE Cloud. */
-export type IntegrationId = ConnectProviderId | "cloud";
+/** The integrations an agent can ask to connect. ADE Cloud has its own Settings tab (`ade-cloud`). */
+export type IntegrationId = ConnectProviderId;
 
-export const INTEGRATION_IDS: readonly IntegrationId[] = [...CONNECT_PROVIDER_IDS, "cloud"];
+/** The Integrations grid. */
+export const INTEGRATION_IDS: readonly IntegrationId[] = [...CONNECT_PROVIDER_IDS];
 
 export function isIntegrationId(value: string | null | undefined): value is IntegrationId {
   return (INTEGRATION_IDS as readonly unknown[]).includes(value);
@@ -104,26 +103,6 @@ const BRANDS: Record<IntegrationId, IntegrationBrand> = {
     art: jiraArt,
     lightBanner: true,
     logo: { kind: "solid", mark: mark(JIRA_LOGO_PATH), face: "#2684FF", side: "#0B3F99", size: 76 },
-  },
-  cloud: {
-    id: "cloud",
-    label: ADE_CLOUD_NAME,
-    tagline: "A cloud computer for each lane.",
-    accent: "#E9E9E9",
-    banner: {
-      background: [
-        "radial-gradient(60% 130% at 100% 100%, rgba(255, 255, 255, 0.07), transparent 60%)",
-        "linear-gradient(90deg, #0A0A0A 0%, #111111 55%, #171717 100%)",
-      ].join(", "),
-    },
-    art: adeCloudArt,
-    logo: {
-      kind: "solid",
-      mark: (size: number) => <CloudMark size={size} bold />,
-      face: "#FFFFFF",
-      side: "#3A3A3A",
-      size: 76,
-    },
   },
 };
 

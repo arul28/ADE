@@ -15,6 +15,7 @@ import {
   logCloud,
   planIdOf,
   readSetting,
+  reportCloudFailure,
   readTimeSetting,
   writeSetting,
   type AccountRow,
@@ -37,12 +38,20 @@ import {
  * with this calendar month's estimated cost. At it, no new computer and no
  * disk growth; wakes of existing computers always work. Unset: nothing is
  * enforced.
+ *
+ * Below the limit, the owner gets one email each time the estimate passes
+ * another `OWNER_COST_STEP_USD` in the calendar month (`alertCostStep`).
  */
 
 export const OWNER_LIMIT_KEY = "owner_cost_limit_usd";
 const COST_MTD_KEY = "cost_mtd_micros";
 const OWNER_LIMIT_ALERT_KEY = "owner_limit_alert_at";
 const OWNER_LIMIT_ALERT_REPEAT_MS = 24 * 60 * 60_000;
+/** An owner email each time this month's estimate passes another step of this many dollars. */
+export const OWNER_COST_STEP_USD = 50;
+/** The last step alerted, with its month: `2026-11:150`. */
+const OWNER_COST_STEP_KEY = "owner_cost_step_alert";
+const STEP_ALERT_TOP_ACCOUNTS = 3;
 /** A free account costing more than this in a month is worth a look. */
 const FREE_ACCOUNT_ALARM_MICROS = 3_000_000;
 /** A day whose cost passes this many times the 7-day mean, and this floor, is a jump. */
@@ -99,16 +108,79 @@ export async function refreshCostEstimate(env: CloudEnv, awake: ComputerRow[], n
   await writeSetting(env, COST_MTD_KEY, String(Math.round(micros)), now);
 
   const limitUsd = readLimitUsd(await readSetting(env, OWNER_LIMIT_KEY));
+  await alertCostStep(env, micros, limitUsd, now);
   if (limitUsd == null || micros < limitUsd * 1_000_000) return;
   const lastAlert = await readTimeSetting(env, OWNER_LIMIT_ALERT_KEY);
   logCloud("cloud.owner_limit_reached", { limitUsd, costMtdMicros: Math.round(micros) });
   if (now - lastAlert < OWNER_LIMIT_ALERT_REPEAT_MS) return;
   await writeSetting(env, OWNER_LIMIT_ALERT_KEY, String(now), now);
-  await sendCloudEmail(env, {
+  const result = await sendCloudEmail(env, {
     owner: true,
     subject: "ADE Cloud reached your cost limit",
     text: `This month's estimated cost is ${usd(micros)}, at your limit of $${limitUsd}. New computers and disk growth are refused until you raise it. Wakes still work.\nRaise it: update cloud_settings set value = '<dollars>' where key = '${OWNER_LIMIT_KEY}'.`,
   });
+  // A send that failed is tried again at the next check, not a day later.
+  if (result === "failed") {
+    await env.DB.prepare("update cloud_settings set value = ? where key = ? and value = ?")
+      .bind(String(lastAlert), OWNER_LIMIT_ALERT_KEY, String(now)).run();
+  }
+}
+
+/**
+ * One owner email when this month's estimate passes a step of
+ * `OWNER_COST_STEP_USD` higher than the last one alerted this month (a jump
+ * over several sends one, for the highest). At or over the limit, the limit's
+ * own alert speaks instead. The check that moves the stored step from what it
+ * read sends; an overlapping check finds it moved and sends nothing. A send
+ * that fails gives the step back, so the next check (ten minutes on) tries again.
+ */
+async function alertCostStep(env: CloudEnv, micros: number, limitUsd: number | null, now: number): Promise<void> {
+  if (limitUsd != null && micros >= limitUsd * 1_000_000) return;
+  const step = Math.floor(micros / (OWNER_COST_STEP_USD * 1_000_000)) * OWNER_COST_STEP_USD;
+  if (step < OWNER_COST_STEP_USD) return;
+  const month = monthStartDay(now).slice(0, 7);
+  const stored = await readSetting(env, OWNER_COST_STEP_KEY);
+  const [storedMonth, storedStep] = stored?.split(":") ?? [];
+  if (step <= (storedMonth === month ? Number(storedStep) || 0 : 0)) return;
+  const claimed = `${month}:${step}`;
+  const claim = stored == null
+    ? await env.DB.prepare("insert into cloud_settings (key, value, updated_at) values (?, ?, ?) on conflict (key) do nothing").bind(OWNER_COST_STEP_KEY, claimed, now).run()
+    : await env.DB.prepare("update cloud_settings set value = ?, updated_at = ? where key = ? and value = ?").bind(claimed, now, OWNER_COST_STEP_KEY, stored).run();
+  if (claim.meta.changes !== 1) return;
+  logCloud("cloud.owner_cost_step", { stepUsd: step, costMtdMicros: Math.round(micros), limitUsd });
+
+  const monthStart = monthStartDay(now);
+  // The daily report's cost per account (awake time plus peak disk), summed over the month so far.
+  // Best effort: the step is claimed now, so a failed read must not stop its email.
+  const top = await env.DB.prepare(`
+    select user_id, sum(cost) as cost from (
+      select user_id, cost_micros as cost from cloud_computer_days where day >= ?
+      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ?
+    ) group by user_id order by cost desc limit ?
+  `).bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, STEP_ALERT_TOP_ACCOUNTS).all<{ user_id: string; cost: number }>()
+    .catch((error: unknown) => {
+      reportCloudFailure("cloud.owner_cost_top_accounts_failed", { message: error instanceof Error ? error.name : "unknown" });
+      return { results: [] as Array<{ user_id: string; cost: number }> };
+    });
+  const limitLine = limitUsd == null
+    ? "No cost limit is set."
+    : `Your limit is $${limitUsd}, ${usd(limitUsd * 1_000_000 - micros)} away.`;
+  const topLines = (top.results ?? []).map((row) => `${row.user_id}: ${usd(row.cost)}`);
+  const result = await sendCloudEmail(env, {
+    owner: true,
+    subject: `ADE Cloud passed $${step} this month`,
+    text: [
+      `This month's estimated cost passed $${step}. It is ${usd(micros)} now.`,
+      limitLine,
+      ...(topLines.length ? ["The accounts that cost the most this month:", ...topLines] : []),
+    ].join("\n"),
+  });
+  if (result !== "failed") return;
+  // Given back only if no later check moved it on.
+  const giveBack = stored == null
+    ? env.DB.prepare("delete from cloud_settings where key = ? and value = ?").bind(OWNER_COST_STEP_KEY, claimed)
+    : env.DB.prepare("update cloud_settings set value = ? where key = ? and value = ?").bind(stored, OWNER_COST_STEP_KEY, claimed);
+  await giveBack.run();
 }
 
 type DayAccount = {
@@ -222,10 +294,10 @@ export async function runDailyCostReport(env: CloudEnv, day: string, extraDiskOv
   for (const row of overDiskRows.results ?? []) {
     const planId = planIdOf(row);
     if (planId !== "free" && row.extra_disk_state !== "on" && row.disk_gb > CLOUD_PLANS[planId].diskGb) {
-      alarms.push(`Account ${row.user_id} holds ${row.disk_gb} GB on the ${planId} plan, over its ${CLOUD_PLANS[planId].diskGb} GB, with extra disk off. A move left its old computer; nothing bills the difference.`);
+      alarms.push(`Account ${row.user_id} holds ${row.disk_gb} GB on the ${planId} plan, over its ${CLOUD_PLANS[planId].diskGb} GB, with extra disk off: a downgrade (freed by the plan cleanup after its grace days) or a move that left its old computer. Nothing bills the difference.`);
     }
     if (!freePlanOverDisk(row, row.disk_gb)) continue;
-    alarms.push(`Account ${row.user_id} is on the free plan with ${row.disk_gb} GB of disk, over the free ${CLOUD_PLANS.free.diskGb} GB. Its computers stay stopped until it deletes some or buys a plan; unused ones are deleted after 30 days.`);
+    alarms.push(`Account ${row.user_id} is on the free plan with ${row.disk_gb} GB of disk, over the free ${CLOUD_PLANS.free.diskGb} GB. Its computers stay stopped until it deletes some or buys a plan; the plan cleanup pushes and frees the oldest after its grace days.`);
   }
   if (owner.limitUsd == null) logCloud("cloud.owner_limit_unset", { costMtdMicros: owner.costMtdMicros });
   logCloud("cloud.daily_cost_report", { day, accounts: rows.length, dayCostMicros: dayCost, dayIncomeMicros: dayIncome, alarms: alarms.length });

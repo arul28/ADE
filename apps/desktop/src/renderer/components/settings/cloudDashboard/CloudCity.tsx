@@ -135,6 +135,7 @@ export function CloudCity({
   label,
   compact = false,
   stars = true,
+  maxLabels = 6,
 }: {
   items: readonly CityItem[];
   selectedKey: string | null;
@@ -144,6 +145,8 @@ export function CloudCity({
   label: string;
   compact?: boolean;
   stars?: boolean;
+  /** Above this many blocks the names go (they would overlap); hover and selection still show them. */
+  maxLabels?: number;
 }) {
   const id = `adecd${useId().replace(/[^A-Za-z0-9]/g, "")}`;
   const animate = !prefersReducedMotion();
@@ -165,7 +168,7 @@ export function CloudCity({
   // The ground's near corner fades out; the view stops a little after it.
   const viewH = Math.ceil(geo.oy + geo.ground * geo.unit * 0.8 + 8);
   // A crowded city names the block under the pointer only (the list names them all).
-  const labels = drawn.length <= 6;
+  const labels = drawn.length <= maxLabels;
   const center = geo.iso(geo.ground / 2, geo.ground / 2, 0);
   const radius = geo.ground * geo.cx * 0.98;
   // Labels are sized in screen pixels (12 px name, 11 px line): the SVG

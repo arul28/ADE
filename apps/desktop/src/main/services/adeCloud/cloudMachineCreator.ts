@@ -20,6 +20,7 @@
  */
 
 import {
+  CLOUD_MACHINE_DEFAULT_NAME,
   CLOUD_WAKE_PORT,
   CLOUD_WAKE_PORT_LABEL,
   cloudInstanceType,
@@ -93,12 +94,6 @@ export type CloudMachineCreatorDeps = {
    * agent limits. Logged by the brain each time it answers yes.
    */
   selfApproval?: (args: { instanceId: string; requestId: string }) => Promise<boolean>;
-  /**
-   * Env the new machine starts with: the person's provider sign-ins, so they
-   * work from the first chat (cloudSignInStore.ts). the provider
-   * keeps it with the machine and gives it back on every boot.
-   */
-  machineEnv?: () => Promise<Record<string, string>>;
   /**
    * The ADE release this computer runs, or null for a build that is not a
    * published release. The machine installs it on boot when its template is
@@ -262,7 +257,7 @@ function approvalErrorMessage(status: number, code: string | null): string {
 
 export function normalizeCloudMachineName(raw: string): string {
   const cleaned = raw.replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
-  return cleaned || "ADE Cloud computer";
+  return cleaned || CLOUD_MACHINE_DEFAULT_NAME;
 }
 
 /** A published release a machine can install (`ade brain update --version`), or null. */
@@ -281,7 +276,7 @@ export async function createCloudMachine(
   options: {
     /** Cancels the create (the dialog closed); a box that never signed in is deleted. */
     signal?: AbortSignal;
-    /** More tags for the box (a ready machine's project and state); ADE's own tags win. */
+    /** More tags for the box; ADE's own tags win. */
     metadata?: Record<string, string>;
     /** The computer this one replaces in a move: its disk size carries over. */
     moveFromInstanceId?: string;
@@ -309,20 +304,13 @@ export async function createCloudMachine(
   const logger = deps.logger ?? {};
   const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-  // The person's provider sign-ins, read before anything is recorded: a slow
-  // or cancelled read leaves no half-made create behind. An unreadable vault
-  // gives none; the machine is still made and asks to sign in like before.
+  // No sign-in value goes in the new machine's env: the Worker and the host
+  // would see it in plain text. The machine's brain signs in to the account
+  // and takes every sign-in (saved keys, Claude passes, carried logins) from
+  // the account vault (providerLogins/providerLoginApplyPass.ts,
+  // claudePass/claudePassSync.ts).
   const minAdeVersion = cloudMinAdeVersion(deps.minAdeVersion?.() ?? null);
-  // The async wrapper also catches a throw before the read starts. Only the
-  // error's name is logged: its message could quote a vault value.
-  const signInEnv: Record<string, string> = await (async () => (await deps.machineEnv?.()) ?? {})().catch((error: unknown) => {
-    logger.warn?.("cloud.machine_env_read_failed", { error: error instanceof Error ? error.name : typeof error });
-    return {};
-  });
-  const machineEnv = {
-    ...signInEnv,
-    ...(minAdeVersion ? { ADE_MIN_VERSION: minAdeVersion } : {}),
-  };
+  const machineEnv: Record<string, string> = minAdeVersion ? { ADE_MIN_VERSION: minAdeVersion } : {};
   checkCancelled();
   // On disk before the request goes out: whatever happens to the answer, the
   // box carries this request id and the next start can find it.

@@ -69,8 +69,6 @@ export type CloudStatusComputer = {
    * itself while awake (`measuredAt`); `usage` is null before its first measure.
    */
   disk: { sizeGb: number | null; full: string | null; usage: CloudDiskUsage | null };
-  /** Set when it is a project's ready machine (kept asleep for the next chat). */
-  readyFor: string | null;
   /**
    * How it keeps current: the image it runs, its channel, the image the
    * channel is on, and `auto` (updates itself when idle), `updating` or
@@ -88,7 +86,12 @@ export type CloudAccountStatus = {
     /** The plan whose rules are in force: a paid plan with a failed payment follows the free one. */
     rulesId: "free" | "paid";
     pastDue: boolean;
-    includes: { hours: number; computers: number; diskGb: number; diskShared: boolean };
+    /**
+     * `diskShared` is always true now: every plan's disk is one total its
+     * computers share. Kept in the agent-facing answer (`ade cloud status
+     * --json`, the action contract) so a reader of the older shape still works.
+     */
+    includes: { hours: number; computers: number; diskGb: number; diskShared: true };
   } | null;
   hours: {
     left: number;
@@ -173,7 +176,6 @@ export function buildCloudAccountStatus(input: {
       lastUsedAt: box.lastActiveAtMs != null ? new Date(box.lastActiveAtMs).toISOString() : null,
       deletesAt: deletesAt.get(box.instanceId) ?? null,
       disk: { sizeGb: box.resources?.diskGb ?? null, full: box.diskFull, usage: box.diskUsage ?? null },
-      readyFor: box.ready?.projectName ?? null,
       update: box.update
         ? { image: box.update.image, channel: box.update.channel, target: box.update.target, state: box.update.state, error: box.update.error }
         : null,
@@ -191,7 +193,8 @@ export function buildCloudAccountStatus(input: {
           label: cloudPlanLabelOf(account, catalog),
           rulesId: account.rules,
           pastDue: part.billing?.notice === "past_due",
-          includes: { hours: milliToHours(plan.includedMilli), computers: plan.computerLimit, diskGb: plan.diskGb, diskShared: account.rules === "paid" },
+          // Every plan's disk is one total its computers share at one time (server `plans.ts`).
+          includes: { hours: milliToHours(plan.includedMilli), computers: plan.computerLimit, diskGb: plan.diskGb, diskShared: true },
         }
       : null,
     hours: account && part.hours && part.billing

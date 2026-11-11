@@ -5,6 +5,7 @@ export type StartChatDraftPatch = Pick<
   | "draftKind"
   | "draftLaneId"
   | "draftMachineId"
+  | "draftCloudTarget"
   | "activeItemId"
   | "selectedItemId"
   | "workSidebarOpen"
@@ -65,6 +66,8 @@ export function startChatDraftPatch(
     draftKind: "chat",
     draftLaneId: laneId || null,
     draftMachineId: machineId,
+    // A chat started in a named lane runs on that lane's machine, not a cloud picked earlier.
+    draftCloudTarget: null,
     activeItemId: null,
     selectedItemId: null,
     // New chat has no Tools toggle; close a leftover pane from the previous

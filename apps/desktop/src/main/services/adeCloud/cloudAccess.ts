@@ -10,9 +10,12 @@ import { setAdeCloudSkillVisible, setAgentSkillAccessRefresh } from "../../../sh
 import type { AccountVaultResult } from "../../../shared/types/accountVault";
 import { getSignedInAccountAccessToken, type AccountAuthService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { resolveSelectedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
+import { readCloudComputerIdAsync } from "../../../../../ade-cli/src/services/account/hardwareAnchor";
+import { isAdeCloudComputer } from "./cloudComputerRules";
 import { getErrorMessage } from "../shared/utils";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider } from "./cloudProvider";
-import { createCloudServerProvider } from "./cloudServerProvider";
+import { createCloudServerProvider, type CloudComputerSignal } from "./cloudServerProvider";
+import { CLOUD_COMPUTER_UNREADABLE } from "../../../../../account-directory/src/cloud/contract";
 
 export const CLOUD_VAULT_KIND = "integration";
 
@@ -36,6 +39,8 @@ export type CloudAccessDeps = {
   deviceName?: () => string | null;
   /** This machine's update track: a computer it makes follows the same channel. */
   updateChannel?: () => "stable" | "beta" | null;
+  /** This computer's id for the free plan (`cloudFreePlanComputer`); left out on an ADE Cloud computer. */
+  computer?: () => Promise<CloudComputerSignal | null>;
   fetch?: FetchLike;
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
 };
@@ -72,8 +77,35 @@ export function cloudAccessDepsFor(args: {
       const version = args.runningVersion?.() ?? process.env.ADE_CLI_VERSION?.trim() ?? null;
       return /-alpha\b/i.test(version ?? "") ? "beta" : resolveSelectedUpdateTrack(version);
     },
+    computer: cloudFreePlanComputer,
     logger: args.logger,
   };
+}
+
+/** An `unreadable` id is sent for this long, then read again. */
+const COMPUTER_ID_RETRY_MS = 10 * 60_000;
+
+/**
+ * The id ADE Cloud's free plan is given once for (one per physical computer,
+ * `freePlan.ts` on the server), read once per process off the event loop. An
+ * ADE Cloud computer sends none: it never claims a free plan. `unreadable`
+ * is not kept for the process's life: a probe that timed out once (a slow
+ * `reg query`) is read again after a while, so the computer can still claim.
+ */
+let freePlanComputer: Promise<CloudComputerSignal> | null = null;
+/** When an `unreadable` answer may be read again; null while the read is pending or found an id. */
+let freePlanRetryAt: number | null = null;
+export function cloudFreePlanComputer(): Promise<CloudComputerSignal | null> {
+  if (isAdeCloudComputer()) return Promise.resolve(null);
+  if (freePlanComputer && (freePlanRetryAt === null || Date.now() < freePlanRetryAt)) return freePlanComputer;
+  freePlanRetryAt = null;
+  freePlanComputer = readCloudComputerIdAsync()
+    .catch(() => CLOUD_COMPUTER_UNREADABLE)
+    .then((id) => {
+      if (id === CLOUD_COMPUTER_UNREADABLE) freePlanRetryAt = Date.now() + COMPUTER_ID_RETRY_MS;
+      return { id, platform: process.platform };
+    });
+  return freePlanComputer;
 }
 
 type CloudVaultBridge = {
@@ -251,6 +283,7 @@ function serverProviderFor(deps: CloudAccessDeps): CloudProvider {
     baseUrl: deps.directoryBaseUrl,
     deviceName: deps.deviceName,
     updateChannel: deps.updateChannel,
+    computer: deps.computer,
     fetch: deps.fetch,
     logger: deps.logger,
   });

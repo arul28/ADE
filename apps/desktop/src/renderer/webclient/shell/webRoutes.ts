@@ -20,6 +20,7 @@ import { LANE_SHARE_GRANT_ID_PATTERN } from "../../../shared/laneShareDirectory"
 
 import {
   ADE_DEEPLINK_HTTPS_BASE_URL,
+  INVITE_SETTINGS_ENTRY_ID,
   parseDeeplink,
   type DeeplinkTarget,
 } from "../../../shared/deeplinks";
@@ -104,6 +105,12 @@ export function targetToWebPath(target: DeeplinkTarget): string {
     case "open": {
       const place = openPlaceById(target.place);
       return place?.target.kind === "route" ? place.target.route : "/work";
+    }
+    case "invite": {
+      // Settings › Account, with the code for its box (`?invite=`), as on the desktop.
+      const url = new URL(settingsRouteFor(INVITE_SETTINGS_ENTRY_ID), "https://ade.invalid");
+      url.searchParams.set("invite", target.code);
+      return `${url.pathname}${url.search}${url.hash}`;
     }
   }
 }

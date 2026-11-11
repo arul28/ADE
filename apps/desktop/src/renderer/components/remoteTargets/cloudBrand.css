@@ -18,28 +18,16 @@
   --adec-lamp-hot: #fff4da;
   --adec-asleep: #27304d;
 
-  /* The mark and the text on an ADE Cloud pill. */
+  /* The mark, and ADE Cloud's text on a chip (the lane chip, the size change). */
   --adec-mark: var(--adec-300);
   --adec-pill-fg: var(--adec-100);
-  --adec-pill-border: color-mix(in srgb, var(--adec-400) 26%, transparent);
-  --adec-pill-bg: color-mix(in srgb, var(--adec-600) 13%, transparent);
-  --adec-pill-bg-hover: color-mix(in srgb, var(--adec-600) 22%, transparent);
+  /* A lit-window figure in text (the hero's earned hours). */
+  --adec-lamp-text: var(--adec-lamp);
 
   /* The size icon. */
   --adec-size-on: var(--adec-300);
   --adec-size-off: color-mix(in srgb, var(--color-fg, #f5f5f7) 19%, transparent);
   --adec-size-line: color-mix(in srgb, var(--adec-300) 58%, transparent);
-
-  /* The skyline. */
-  --adec-sky-asleep-wall: var(--adec-asleep);
-  --adec-sky-asleep-side: #1a2138;
-  --adec-sky-asleep-edge: #3b4870;
-  --adec-sky-lit-wall: #2f5aae;
-  --adec-sky-lit-side: #173373;
-  --adec-sky-lit-edge: #8db8ff;
-  --adec-sky-window-dark: #16295c;
-  --adec-sky-ground: rgba(157, 196, 255, 0.22);
-  --adec-sky-glow: rgba(255, 214, 150, 0.18);
 
   /* The step card while a computer is made. */
   --adec-tile-fg: var(--adec-200);
@@ -51,21 +39,10 @@
 [data-theme="light"] {
   --adec-mark: #2a62c8;
   --adec-pill-fg: #1d4594;
-  --adec-pill-border: rgba(42, 98, 200, 0.3);
-  --adec-pill-bg: rgba(68, 130, 238, 0.08);
-  --adec-pill-bg-hover: rgba(68, 130, 238, 0.14);
+  --adec-lamp-text: #b26b00;
   --adec-size-on: #2a62c8;
   --adec-size-off: rgba(26, 26, 30, 0.16);
   --adec-size-line: rgba(42, 98, 200, 0.55);
-  --adec-sky-asleep-wall: #c9d3e8;
-  --adec-sky-asleep-side: #b3bfd8;
-  --adec-sky-asleep-edge: #8e9cbd;
-  --adec-sky-lit-wall: #4f7fd6;
-  --adec-sky-lit-side: #2f5aae;
-  --adec-sky-lit-edge: #1d4594;
-  --adec-sky-window-dark: #9fb3da;
-  --adec-sky-ground: rgba(42, 98, 200, 0.28);
-  --adec-sky-glow: rgba(255, 190, 90, 0.22);
   --adec-tile-fg: #1d4594;
   --adec-tile-border: rgba(42, 98, 200, 0.3);
   --adec-tile-bg: rgba(68, 130, 238, 0.1);
@@ -74,17 +51,6 @@
 
 .adec-mark {
   color: var(--adec-mark);
-}
-
-/* A pill that names ADE Cloud: the Run on trigger, the chat's machine chip. */
-.adec-pill {
-  color: var(--adec-pill-fg) !important;
-  border-color: var(--adec-pill-border) !important;
-  background-color: var(--adec-pill-bg) !important;
-}
-.adec-pill:hover,
-.adec-pill[data-state="open"] {
-  background-color: var(--adec-pill-bg-hover) !important;
 }
 
 /* The size icon (owner's pick, "rising fill"): the cloud fills 1/4 to full. */
@@ -101,20 +67,6 @@
   stroke: var(--adec-size-line);
   stroke-linejoin: round;
 }
-
-/* The skyline beside ADE Cloud in the Run on menu. */
-.adec-sky-asleep .adec-sky-wall { fill: var(--adec-sky-asleep-wall); }
-.adec-sky-asleep .adec-sky-side { fill: var(--adec-sky-asleep-side); }
-.adec-sky-asleep .adec-sky-edge { fill: var(--adec-sky-asleep-edge); }
-.adec-sky-asleep .adec-sky-window { fill: var(--adec-sky-window-dark); }
-.adec-sky-lit .adec-sky-wall { fill: var(--adec-sky-lit-wall); }
-.adec-sky-lit .adec-sky-side { fill: var(--adec-sky-lit-side); }
-.adec-sky-lit .adec-sky-edge { fill: var(--adec-sky-lit-edge); }
-.adec-sky-lit .adec-sky-window { fill: var(--adec-lamp); }
-.adec-sky-lit .adec-sky-window-dark { fill: var(--adec-sky-window-dark); }
-.adec-sky-ground { stroke: var(--adec-sky-ground); }
-.adec-sky-glow { fill: var(--adec-sky-glow); }
-.adec-sky-empty { fill: none; stroke: var(--adec-sky-ground); stroke-dasharray: 1.5 1.5; }
 
 /* The size menu and the Run on menu share these rows. */
 .adec-menu-label {

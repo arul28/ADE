@@ -1,4 +1,4 @@
-import { CLOUD_READY_WAKE_WAIT_MS } from "../../../shared/cloudReady";
+import { CLOUD_WAKE_WAIT_MS } from "../../../shared/adeCloud";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import type { OpenProjectBinding } from "../../../shared/types/core";
@@ -82,7 +82,7 @@ export async function resolveAdeCloudLaneBinding(args: {
   const { value: connected, lastError } = await connectWithRetry({
     connect: () => window.ade.remoteRuntime.connect(targetId),
     stillWanted: args.stillWanted,
-    waitMs: CLOUD_READY_WAKE_WAIT_MS,
+    waitMs: CLOUD_WAKE_WAIT_MS,
     retryMs: CONNECT_RETRY_MS,
   });
   if (!connected) {

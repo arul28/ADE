@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import { Check, Question, X } from "@phosphor-icons/react";
-import type { CloudAccountState } from "../../../../shared/adeCloud";
+import { formatCloudGb, type CloudAccountState } from "../../../../shared/adeCloud";
 import { ipcErrorMessage } from "../../../lib/format";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
 import { CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import { Dialog, confirmDialog } from "../../ui/dialog";
-import { cleanupOrder, formatGb, lastRunText, type DashLane } from "./cloudDashboardModel";
+import { cleanupOrder, lastRunText, type DashLane } from "./cloudDashboardModel";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneLifeAvailable, cloudLaneWorkState, deleteCloudLane, freeCloudLane } from "../../cloudLane/cloudLaneActions";
 import { refreshCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStores";
 
@@ -81,7 +81,7 @@ export function CloudFreeUpSpace({
       showToast({ tone: "error", title: "Some lanes kept their computer", message: failed.join(" "), durationMs: READABLE_TOAST_DURATION_MS });
       return;
     }
-    showToast({ tone: "success", title: `Freed ${formatGb(freedGb)}`, message: "The dashboard shows the new disk." });
+    showToast({ tone: "success", title: `Freed ${formatCloudGb(freedGb)}`, message: "The dashboard shows the new disk." });
     onClose();
   };
 
@@ -93,8 +93,8 @@ export function CloudFreeUpSpace({
       onOpenChange={(open) => { if (!open && !busy) onClose(); }}
       dismissible={!busy}
       title="Free up space"
-      description={`${formatGb(account.disk.usedGb)} of ${formatGb(account.disk.limitGb ?? 0)} used. Biggest lanes first.`}
-      footerStart={<span className="adecd-sheet-total">{picked.length ? `Frees ${formatGb(freedGb)}` : "Pick what to free"}</span>}
+      description={`${formatCloudGb(account.disk.usedGb)} of ${formatCloudGb(account.disk.limitGb ?? 0)} used. Biggest lanes first.`}
+      footerStart={<span className="adecd-sheet-total">{picked.length ? `Frees ${formatCloudGb(freedGb)}` : "Pick what to free"}</span>}
       actions={[
         { label: busy ? "Working…" : "Free up space", onClick: () => void apply(), disabled: busy || !picked.length || !canAct, variant: "solid" },
         { label: "Cancel", onClick: onClose, disabled: busy },
@@ -106,14 +106,14 @@ export function CloudFreeUpSpace({
           const choice = choices[lane.key] ?? "keep";
           const set = (next: Choice) => setChoices((current) => ({ ...current, [lane.key]: next }));
           return (
-            <div key={lane.key} className="adecd-fl" data-safe={lane.safe ? "1" : "0"}>
+            <div key={lane.key} className="kit-panel adecd-fl" data-safe={lane.safe ? "1" : "0"}>
               <div className="adecd-fl-top">
                 {lane.tier ? <CloudSizeIcon tier={lane.tier.id} size={16} /> : <CloudMark size={16} brand />}
                 <b>{lane.name}</b>
-                <span className="kit-num">{formatGb(lane.diskGb)}</span>
+                <span className="kit-num">{formatCloudGb(lane.diskGb)}</span>
                 <span className="adecd-grow" />
                 {lane.safe ? <span className="kit-tag" data-tone="ok">Safe to delete</span> : null}
-                {lane.old ? <span className="adecd-old">Not used for a long time</span> : null}
+                {lane.old ? <span className="kit-tag" data-tone="warn">Not used for a long time</span> : null}
               </div>
               <div className="adecd-fl-meta">{lastRunText(lane, now)}</div>
               <div className="adecd-fl-safe">

@@ -1423,13 +1423,20 @@ export function createGitOperationsService({
       return action;
     },
 
-    async fetch(args: { laneId: string; signal?: AbortSignal }): Promise<GitActionResult> {
+    /**
+     * `allRemotes`: fetch and prune every remote (`--all --prune`), for a
+     * check of unsaved work that counts commits against every remote: a
+     * branch deleted on GitHub loses its tracking ref, so its commits read as
+     * unsaved unless they are already in the base (`readUnsavedWork`).
+     */
+    async fetch(args: { laneId: string; signal?: AbortSignal; allRemotes?: boolean }): Promise<GitActionResult> {
+      const fetchArgs = args.allRemotes ? ["fetch", "--all", "--prune"] : ["fetch", "--prune"];
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_fetch",
         reason: "fetch",
         fn: async (lane) => {
-          await runGitWithGithubAuthFallbackOrThrow(["fetch", "--prune"], {
+          await runGitWithGithubAuthFallbackOrThrow(fetchArgs, {
             cwd: lane.worktreePath,
             timeoutMs: GIT_FETCH_TIMEOUT_MS,
             signal: args.signal,

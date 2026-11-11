@@ -19,8 +19,7 @@ import {
 } from "../../desktop/src/shared/laneShareRights";
 import { LANE_SHARE_GRANT_ID_PATTERN } from "../../desktop/src/shared/laneShareDirectory";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
-import type { CloudReadyPool } from "../../desktop/src/shared/cloudReady";
-import { cloudCatalogOf, cloudPlanLabelOf, formatCloudHours, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
+import { CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
   setSharedAccountLiveQuotaFetcher,
@@ -996,10 +995,10 @@ export type FormatterId =
   | "terminal-read"
   | "project-secrets"
   | "integrations"
-  | "cloud-ready"
   | "cloud-status"
   | "cloud-list"
   | "cloud-hours"
+  | "cloud-invite"
   | "cloud-result"
   | "mcp-servers"
   | "mcp-servers-remove"
@@ -1691,11 +1690,7 @@ function remoteMcpHelpScope(): "read" | "write" | undefined {
 /** Whether this account has ADE Cloud, answered by this machine's brain; false until it does. */
 let cliCloudEnabled = false;
 
-const CHAT_CLOUD_READY_HELP = `    $ ade chat create --machine cloud:ready --prompt "…"
-                                                    Start on this project's ready ADE Cloud machine (prepared and
-                                                    asleep): ADE wakes it, waits until it is online, then sends.
-                                                    No --lane needed; --json adds readyMachine. See ade cloud ready.
-    $ ade chat create --machine cloud --size medium --prompt "…"
+const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --prompt "…"
                                                     A new lane on its own new ADE Cloud computer: ADE makes the
                                                     computer, gets the repository there (the pushed branch) and
                                                     starts the chat there. --size small, medium, large, xlarge
@@ -1719,7 +1714,7 @@ const LANES_CLOUD_HELP = `  ade lanes create --machine cloud [--size small|mediu
 function withoutHiddenCloudHelp(text: string): string;
 function withoutHiddenCloudHelp(text: string | undefined): string | undefined;
 function withoutHiddenCloudHelp(text: string | undefined): string | undefined {
-  return text && !cliCloudEnabled ? text.replace(CHAT_CLOUD_READY_HELP, "").replace(LANES_CLOUD_HELP, "") : text;
+  return text && !cliCloudEnabled ? text.replace(CHAT_CLOUD_HELP, "").replace(LANES_CLOUD_HELP, "") : text;
 }
 
 function helpPagesWithoutCloud(): Record<string, string> {
@@ -2869,7 +2864,7 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
                                                     Without --lane it starts in the project's primary lane there.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
-${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List machine personal-chat actions
+${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
@@ -3970,7 +3965,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     ANDROID_NOT_RUNNING              ade android start first
     ANDROID_LOW_MEMORY               free memory, or ask the user, then start --force
     ANDROID_LOW_DISK                 the disk can't hold a new device's data; tell the user
-                                     (on ADE Cloud the Android pane offers Grow the disk)
+                                     (where the Android pane offers Grow the disk, they use it)
     ANDROID_ELEMENT_NOT_FOUND        ade android snapshot, then aim again
     ANDROID_BUILD_FAILED             read the Gradle output, fix the build
     ANDROID_SYSTEM_IMAGE_IN_USE      an AVD uses that image; stop its emulator first
@@ -4649,8 +4644,8 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade providers accounts remove --instance you@example.com --text
                                                     Sign an account out and forget it
     $ ade providers accounts refresh --text         Re-read each config home and record who is signed in
-    $ ade providers accounts list --synced --text   Sign-ins your account keeps for ADE Cloud, and
-                                                    whether this computer copies its own (and why not)
+    $ ade providers accounts list --synced --text   Sign-ins your account keeps for your computers,
+                                                    and whether this computer copies its own (and why not)
     $ ade providers accounts list --synced --provider grok --text
     $ ade providers accounts refresh --synced --text
                                                     Look at this computer's login files now (yours only)
@@ -4790,7 +4785,9 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade cloud status --text                     Everything in one read: can a new lane start (and why not),
                                                     plan, hours, disk, computers, each lane, sizes, agent limits
     $ ade cloud list --text                       Computers, state, size, how fast each uses hours
-    $ ade cloud hours --text                      Plan, hours left, reset date
+    $ ade cloud hours --text                      Plan, hours left, reset date, earned hours
+    $ ade cloud invite --text                     Your invite link: friends joined, rewards left, hours earned
+                                                    (enter a friend's invite in Settings › Account)
     $ ade cloud create --kind vm --shape medium --name "android vm"
     $ ade cloud sleep <machine>                   Sleep now (uses no hours)
     $ ade cloud wake <machine>                    Wake (the server refuses it at 0 hours)
@@ -4803,19 +4800,21 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
     $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat
     $ ade cloud delete <machine>                  Gone for good, files and all
     $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may do (--per-day N, --max-shape large, --unattended on|off)
-    $ ade cloud ready [status|on|off|retry]       Keep a cloud machine ready for this project
-                                                    on takes --kind, --shape, --setup "npm ci"
-    $ ade chat create --machine cloud:ready --prompt "…"
-                                                    Start the chat on this project's ready machine
     $ ade chat create --machine cloud --size medium --prompt "…"
                                                     A new lane on its own new computer (sizes: small, medium,
                                                     large, xlarge); the chat starts there
     $ ade lanes create --machine cloud --name <n>  The lane alone on its own new computer, no chat
 
   ade cloud alone is ade cloud status. status, list, hours, limits (reading
-  them), sleep and wake are the account's and work from any folder; the rest
+  them), invite, sleep and wake are the account's and work from any folder; the rest
   run in this folder's project. A new lane, create and copy are refused at
   once when status says no new lane can start, with the same sentence.
+
+  Invites: a friend who enters your link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} extra free cloud hours, and
+  so do you once their first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most).
+  A friend's invite is entered in Settings › Account, within ${CLOUD_REFERRAL_ENTER_DAYS} days of signing up.
+  Earned hours never expire; they are used after the plan's hours and before
+  extra hours. The free plan is given once per computer.
 
   Plans: \`ade cloud hours\` shows yours, with its hours, disk and computers.
   Change it in Settings › ADE Cloud › Plan and hours.
@@ -4824,7 +4823,7 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
   monthly limit you set. A grow past it is refused with a sentence that says why.
 
   Asks first: create, resize, update, copy, move, delete,
-  raising the limits, ready on, a new lane (--machine cloud). The card shows in your chat and gives up
+  raising the limits, a new lane (--machine cloud). The card shows in your chat and gives up
   after 5 minutes. In a full-auto chat or an automation ADE answers it with
   the person's limits (balanced: 3 new machines a day, up to 4x16), and says
   no to deleting a machine that chat didn't make. create, copy and move work
@@ -21097,8 +21096,6 @@ function buildCloudPlan(args: string[]): CliPlan {
   const name = readValue(args, ["--name"]);
   const to = readValue(args, ["--to"]);
   const reason = readValue(args, ["--reason"]);
-  const setup = readValue(args, ["--setup"]);
-  const origin = readValue(args, ["--origin"]);
   // `ade cloud` alone is the whole picture, like `ade cloud status`.
   const sub = firstPositional(args) ?? "status";
   const target = () => {
@@ -21106,7 +21103,6 @@ function buildCloudPlan(args: string[]): CliPlan {
     if (!machine) throw new CliUsageError(`ade cloud ${sub} needs the machine: its name or id (ade cloud list).`);
     return machine;
   };
-  const originUrl = () => origin ?? getGitRemote(process.cwd());
   switch (sub) {
     case "status":
       return cloudStep("status", "status", {}, "cloud-status");
@@ -21116,6 +21112,15 @@ function buildCloudPlan(args: string[]): CliPlan {
       return cloudStep("list", "list", {}, "cloud-list");
     case "hours":
       return cloudStep("hours", "hours", {}, "cloud-hours");
+    case "invite":
+    case "invites": {
+      const verb = firstPositional(args);
+      if (!verb || verb === "status" || verb === "show") return cloudStep("invite", "referral", {}, "cloud-invite");
+      // Entering an invite sets the account's referrer forever: the person's
+      // own call in the app, never a terminal an agent or ADE MCP app can run.
+      if (verb === "redeem" || verb === "enter") throw new CliUsageError(CLOUD_ENTER_INVITE_HINT);
+      throw new CliUsageError("ade cloud invite");
+    }
     case "create":
     case "new":
       return cloudStep("create", "create", { ...(kind ? { kind } : {}), ...(shape ? { shape } : {}), ...(name ? { name } : {}) }, "cloud-result", true);
@@ -21164,28 +21169,11 @@ function buildCloudPlan(args: string[]): CliPlan {
         ...(unattended != null ? { unattendedSpend: unattended === "on" || unattended === "yes" || unattended === "true" } : {}),
       }, "cloud-result", true);
     }
-    case "ready": {
-      const verb = firstPositional(args) ?? "status";
-      if (verb === "status" || verb === "list") {
-        return cloudStep("ready", "ready_status", {}, "cloud-ready");
-      }
-      const url = originUrl();
-      if (!url) throw new CliUsageError("This directory has no git origin. Pass --origin <url>.");
-      if (verb === "on" || verb === "set") {
-        return cloudStep("ready on", "ready_set", {
-          originUrl: url,
-          ...(kind ? { kind } : {}),
-          ...(shape ? { shape } : {}),
-          ...(setup != null ? { setup } : {}),
-          ...(name ? { projectName: name } : {}),
-        }, "cloud-result", true);
-      }
-      if (verb === "off") return cloudStep("ready off", "ready_off", { originUrl: url });
-      if (verb === "retry") return cloudStep("ready retry", "ready_retry", { originUrl: url }, "cloud-result", true);
-      throw new CliUsageError(`Unknown cloud ready command "${verb}". Use: status, on, off, retry.`);
-    }
+    case "ready":
+      // Ready machines are gone: a new lane gets its own computer when it starts.
+      throw new CliUsageError("ade cloud ready no longer exists: ADE makes a computer for each new lane. Use ade chat create --machine cloud --prompt \"…\".");
     default:
-      throw new CliUsageError(`Unknown cloud command "${sub}". Use: status, list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, ready, prepare-stop, push-work, work-state.`);
+      throw new CliUsageError(`Unknown cloud command "${sub}". Use: status, list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, prepare-stop, push-work, work-state.`);
   }
 }
 
@@ -21222,7 +21210,31 @@ function formatCloudAccount(value: unknown): string {
     ? `${account.computers.total} of ${account.computers.limit} computers`
     : null;
   const atOneTime = disk || computers ? `\n${[disk, computers].filter(Boolean).join(", ")} at one time.` : "";
-  return (hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`) + atOneTime;
+  // Earned hours (referrals), used after the plan's hours; and why a computer gets no free hours.
+  const earned = cloudEarnedHoursOf(account as Pick<CloudAccountState, "earnedHours">);
+  const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned hours left (they never expire).` : "";
+  const freePlan = cloudFreePlanOf(account as Pick<CloudAccountState, "freePlan">);
+  const freeLine = freePlan.sentence ? `\n${freePlan.sentence}` : "";
+  return (hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`) + atOneTime + earnedLine + freeLine;
+}
+
+/** Where the person enters a friend's invite: the app only, never a terminal. */
+const CLOUD_ENTER_INVITE_HINT = "Enter an invite in Settings › Account.";
+
+/** `ade cloud invite`: the link, then what it earned. */
+function formatCloudInvite(value: unknown): string {
+  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
+  const referral = readCloudReferralSummary(raw);
+  if (!referral) return JSON.stringify(raw, null, 2);
+  const lines = [
+    `Your invite link: ${referral.link}`,
+    `A friend who enters it gets ${formatCloudHours(referral.rewardMilli)} extra free cloud hours, and so do you once their first chat runs on ADE Cloud.`,
+    `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} rewards paid, ${formatCloudHours(referral.hoursEarnedMilli)} hours earned.`,
+  ];
+  if (referral.canEnterCode && referral.enterCodeUntil != null) {
+    lines.push(`You can still enter a friend's invite until ${new Date(referral.enterCodeUntil).toISOString().slice(0, 10)}. ${CLOUD_ENTER_INVITE_HINT}`);
+  }
+  return lines.join("\n");
 }
 
 function formatCloudResult(value: unknown): string {
@@ -21232,27 +21244,6 @@ function formatCloudResult(value: unknown): string {
     return `${raw.name} (${raw.instanceId})${raw.joined === false ? " is signed in and still starting." : " is ready."}`;
   }
   return JSON.stringify(raw, null, 2);
-}
-
-function formatCloudReady(value: unknown): string {
-  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
-  const pool = isRecord(raw) && Array.isArray(raw.projects) ? raw as unknown as CloudReadyPool : { projects: [] };
-  if (!pool.projects.length) {
-    return "No project keeps an ADE Cloud machine ready. Turn it on in Settings › Integrations › ADE Cloud.";
-  }
-  const lines: string[] = [];
-  for (const project of pool.projects) {
-    const summary = [
-      project.ready ? `${project.ready} ready` : project.preparing ? "being prepared" : project.keptReady ? "none ready yet" : "turned off",
-      ...(project.inUse ? [`${project.inUse} in use`] : []),
-      ...(project.failure ? [`last prepare failed: ${project.failure}`] : []),
-    ].join(", ");
-    lines.push(`${project.projectName} (${project.identity}): ${summary}`);
-    for (const machine of project.machines) {
-      lines.push(`  ${machine.name ?? machine.instanceId}  ${machine.state}  (${machine.status}, ${machine.instanceId})`);
-    }
-  }
-  return lines.join("\n");
 }
 
 /** `ade mcp servers …`: the MCP registry. `args` are the words after `servers`. */
@@ -29011,8 +29002,9 @@ async function runServe(
           + `(signed out; the old identity is kept in ${hostGuard.movedTo}).\n`,
       );
     }
-    // A cloud machine made with the person's sign-ins: Codex reads its key
-    // only from its auth file, so it is written before any chat starts, and
+    // A cloud machine an older ADE made with the person's sign-ins in its env
+    // (new machines get none: the account vault carries them): Codex reads its
+    // key only from its auth file, so it is written before any chat starts, and
     // the sign-in variables stay in the env. On an ADE Cloud computer the
     // sign-in sync takes them out at its first apply, once the account's
     // vault can give each key back (fix B1, providerLoginBoot.ts).
@@ -37306,13 +37298,19 @@ function formatProviderLogins(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const here = isRecord(record.thisComputer) ? record.thisComputer : {};
   const cloud = isRecord(record.cloud) ? record.cloud : {};
+  // The sign-ins are shared between a person's own computers either way; only
+  // an account with ADE Cloud reads what ADE Cloud does with them.
   const lines = [
-    renderKeyValues("Sign-ins for ADE Cloud", [
+    renderKeyValues(cliCloudEnabled ? "Sign-ins for ADE Cloud" : "Sign-ins in your account", [
       ["this computer", here.label],
       ["copies sign-ins", here.capture === "on" ? "yes" : `no (${asString(here.reason) ?? "unknown"})`],
       ["why", here.message],
-      ["cloud computer", here.cloudComputer === true ? "yes" : "no"],
-      ["ADE Cloud sign-ins", cloud.enabled === false ? "switched off" : "on"],
+      ...(cliCloudEnabled
+        ? [
+          ["cloud computer", here.cloudComputer === true ? "yes" : "no"],
+          ["ADE Cloud sign-ins", cloud.enabled === false ? "switched off" : "on"],
+        ] as Array<[string, unknown]>
+        : []),
       ["last pass", here.lastPassAt],
     ]),
   ];
@@ -37322,8 +37320,8 @@ function formatProviderLogins(value: unknown): string {
     const origin = isRecord(signIn.origin) ? signIn.origin : {};
     const account = isRecord(signIn.account) ? (asString(signIn.account.email) ?? asString(signIn.account.id)) : null;
     const flags = [
-      signIn.inUseOnCloud === true ? "in use on ADE Cloud" : null,
-      signIn.onForCloud === false ? "off for ADE Cloud" : null,
+      cliCloudEnabled && signIn.inUseOnCloud === true ? "in use on ADE Cloud" : null,
+      cliCloudEnabled && signIn.onForCloud === false ? "off for ADE Cloud" : null,
       origin.thisComputer === true ? "this computer" : null,
     ].filter(Boolean).join(", ");
     lines.push(`  ${cell(signIn.provider, 12)} ${cell(account ?? `Sign-in from ${asString(origin.label) ?? "a computer"}`, 40)} `
@@ -38285,14 +38283,14 @@ function formatTextOutput(
       return formatProjectSecrets(value);
     case "integrations":
       return formatIntegrations(value);
-    case "cloud-ready":
-      return formatCloudReady(value);
     case "cloud-status":
       return formatCloudStatus(value);
     case "cloud-list":
       return formatCloudList(value);
     case "cloud-hours":
       return formatCloudAccount(value);
+    case "cloud-invite":
+      return formatCloudInvite(value);
     case "cloud-result":
       return formatCloudResult(value);
     case "mcp-servers":
@@ -40684,7 +40682,9 @@ async function resolveCliCloudEnabled(parsed: ReturnType<typeof extractMachineTa
       return;
     }
   }
-  const skipped = !isCloud && primary !== "skill" && primary !== "skills" && primary !== "help" && primary !== "settings" && primary !== "setting";
+  // `providers accounts list --synced` names ADE Cloud's part of the shared sign-ins only with access.
+  const syncedSignIns = (primary === "providers" || primary === "provider") && parsed.command.includes("--synced");
+  const skipped = !isCloud && !syncedSignIns && primary !== "skill" && primary !== "skills" && primary !== "help" && primary !== "settings" && primary !== "setting";
   if (skipped && !hasHelpFlag(parsed.command)) return;
   let client: Pick<CliConnection, "request" | "close"> | null = null;
   try {

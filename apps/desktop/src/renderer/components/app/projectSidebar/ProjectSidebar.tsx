@@ -15,6 +15,7 @@ import {
 } from "./projectSidebarPrefs";
 import { useProjectSidebarSlotTarget } from "./ProjectSidebarSlot";
 import { StarRepoPill } from "./StarRepoPill";
+import { InviteFriendsPill } from "./InviteFriendsPill";
 import { lastSettingsRoute, rememberProjectRoute, settingsReturnRoute } from "./settingsReturnRoute";
 import {
   PROJECT_SIDEBAR_FOOTER_TABS,
@@ -183,6 +184,7 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
       <div ref={setBodyRef} className="ade-project-sidebar-body relative flex min-h-0 flex-1 flex-col" />
 
       {starPillSlotActive ? <StarRepoPill /> : null}
+      {starPillSlotActive ? <InviteFriendsPill /> : null}
 
       <div className="ade-project-sidebar-footer shrink-0" data-ph-unmask="">
         {visibleProjectSidebarTabs(PROJECT_SIDEBAR_FOOTER_TABS).map((item) => {

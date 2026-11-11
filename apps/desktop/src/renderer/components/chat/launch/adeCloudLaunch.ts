@@ -144,7 +144,9 @@ export function startAdeCloudLaunch(input: {
   const args: ChatLaunchArgs & { laneId: string; laneName: string } = {
     ...input.args,
     originClientId: getChatLaunchOriginClientId(),
-    cloud: { sizeId: input.sizeId },
+    // The origin the caller checked before Send goes with the launch: main
+    // clones that repository, so the two never disagree about it.
+    cloud: { sizeId: input.sizeId, ...(input.originUrl?.trim() ? { originUrl: input.originUrl.trim() } : {}) },
   };
   registerChatLaunchLocalRecord(args.launchId, {
     args,

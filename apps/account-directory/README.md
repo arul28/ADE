@@ -838,8 +838,11 @@ the provider's limit (80%). A computer not awake for 30 days is deleted after
 
 `src/cloud/billing.ts` sells the plan through Stripe Managed Payments (secrets
 `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`; vars `STRIPE_PLAN_PRICE_ID`,
-`STRIPE_EXTRA_PRICE_ID`, `STRIPE_METER_EVENT`, from
-`scripts/stripe-setup.mjs`). `POST /cloud/billing/checkout` and `/portal` answer
+`STRIPE_EXTRA_HOURS_PRICE_ID` (read before the older `STRIPE_EXTRA_PRICE_ID`),
+`STRIPE_METER_EVENT`, from `scripts/stripe-setup.mjs`). Plus, Pro, extra hours
+and extra disk are four products, so Checkout names each line and shows its
+one-line description (Managed Payments refuses `custom_text`); the customer
+is made with the account's email from Clerk, so Checkout shows it filled in. `POST /cloud/billing/checkout` and `/portal` answer
 a URL for the person's browser, which comes back to `/billing/return`.
 `POST /cloud/billing/extra-hours` takes `{ enabled }`, paid plan only.
 

@@ -28,7 +28,7 @@ import {
   type AppliedStateFile,
 } from "./providerLoginApply";
 import { takeCloudSignInEnv } from "./providerLoginBoot";
-import { carryRow, type CarryBundle, type ParsedLogin } from "./providerLoginCarry";
+import type { CarryBundle, ParsedLogin } from "./providerLoginCarry";
 import { copilotCarriedHash, setCopilotCarriedToken } from "./providerLoginCopilotEnv";
 import { notifyProviderLoginsChanged, restartProviderRuntimesWhenIdle, type ProviderLoginRestartOptions } from "./providerLoginHooks";
 import { PROVIDER_LOGIN_VAULT_KIND, parseProviderLoginKey, readProviderLoginPayload, shortHash } from "./providerLoginPayload";
@@ -36,12 +36,13 @@ import {
   OVERWRITE_SAFE,
   SAVED_KEYS,
   accountHash,
+  cloudPlacePicks,
+  savedKeyTokenOf,
+  savedKeyVaultKey,
   type CloudSetting,
   type LoginMemo,
-  type LoginMeta,
   type ProviderLoginVault,
   type SyncShared,
-  type VaultRow,
 } from "./providerLoginSyncShared";
 
 export function createApplyPass(s: SyncShared) {
@@ -155,45 +156,25 @@ export function createApplyPass(s: SyncShared) {
   }
 
   function savedKeyToken(id: string, vault: ProviderLoginVault): string | null {
-    const raw = vault.get(ACCOUNT_SCOPE_ALL, "integration", `cloud-key-${id}`);
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      return isRecord(parsed) && parsed.v === 1 && typeof parsed.token === "string" && parsed.token ? parsed.token : null;
-    } catch {
-      return null;
-    }
+    return savedKeyTokenOf(vault.get(ACCOUNT_SCOPE_ALL, "integration", savedKeyVaultKey(id)));
   }
 
   /** What ADE Cloud uses for each place now (P5 §4.2), from the vault and the setting. */
   function desiredPlaces(vault: ProviderLoginVault, setting: CloudSetting, origin12: string, deviceId: string): Map<string, Want> {
-    const candidates = new Map<string, Array<{ row: VaultRow; meta: NonNullable<LoginMeta>; provider: ProviderLoginProvider; slot: string }>>();
-    if (setting.enabled) {
-      for (const row of vault.list(ACCOUNT_SCOPE_ALL)) {
-        if (row.kind !== PROVIDER_LOGIN_VAULT_KIND || row.deleted || !row.readable || setting.off.includes(row.key)) continue;
-        const parsedKey = parseProviderLoginKey(row.key);
-        if (!parsedKey || carryRow(parsedKey.provider).carry !== "carried") continue;
-        const meta = metaFor(vault, row);
-        if (!meta) continue;
-        const place = cloudChoiceKey(parsedKey.provider, parsedKey.slot);
-        candidates.set(place, [...(candidates.get(place) ?? []), { row, meta, provider: parsedKey.provider, slot: parsedKey.slot }]);
-      }
-    }
+    const picks = cloudPlacePicks(vault.list(ACCOUNT_SCOPE_ALL), setting, {
+      usable: (row) => row.readable,
+      meta: (row) => metaFor(vault, row),
+      savedKeyToken: (id) => savedKeyToken(id, vault),
+    });
     const wants = new Map<string, Want>();
     const keyWant = (place: string, provider: ProviderLoginProvider, id: string, token: string): Want =>
       ({ kind: "key", place, provider, id, token, contentHash: shortHash(token) });
-    for (const [place, list] of candidates) {
-      const chosen = setting.inUse[place];
-      const saved = list[0]!.provider === "pi" ? null : SAVED_KEYS.find((spec) => spec.provider === list[0]!.provider) ?? null;
-      // Copilot with no pick: a saved key goes before a carried GitHub CLI login (G1 Q2).
-      const keyFirst = chosen === "key" || (chosen === undefined && list[0]!.provider === "copilot");
-      const savedToken = saved && keyFirst ? savedKeyToken(saved.id, vault) : null;
-      if (saved && savedToken) {
-        wants.set(place, keyWant(place, list[0]!.provider, saved.id, savedToken));
+    for (const [place, picked] of picks) {
+      if ("savedKey" in picked) {
+        wants.set(place, keyWant(place, picked.provider, picked.savedKey.id, picked.savedKey.token));
         continue;
       }
-      const pick = list.find((entry) => entry.row.key === chosen)
-        ?? [...list].sort((left, right) => (right.meta.renewedAt ?? right.meta.capturedAt) - (left.meta.renewedAt ?? left.meta.capturedAt))[0]!;
+      const pick = picked.signIn;
       const parsedKey = parseProviderLoginKey(pick.row.key)!;
       wants.set(place, {
         kind: "signin",

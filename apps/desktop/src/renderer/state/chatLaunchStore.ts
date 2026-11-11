@@ -9,7 +9,7 @@ import type {
   LaneEnvInitStep,
   OpenProjectBinding,
 } from "../../shared/types";
-import { chatLaunchStatusLine, createChatLaunchSnapshot, isChatLaunchPending, isChatLaunchSucceeded, mergeChatLaunchSnapshot } from "../../shared/chatLaunch";
+import { chatLaunchErrorMessage, chatLaunchStatusLine, createChatLaunchSnapshot, isChatLaunchPending, isChatLaunchSucceeded, mergeChatLaunchSnapshot } from "../../shared/chatLaunch";
 import type { DraftLaunchSnapshot } from "../lib/draftLaunchJobs";
 import type { WorkPtyLaunchArgs } from "../components/terminals/cliLaunch";
 import { announceChatLaunchClosed } from "../components/chat/launch/chatLaunchDraftRestore";
@@ -357,20 +357,18 @@ export function hydrateChatLaunches(binding: OpenProjectBinding | null, snapshot
   announceCancelled(cancelled);
 }
 
-function failFirstOpenStage(stages: ChatLaunchStage[], message: string): ChatLaunchStage[] {
-  const index = stages.findIndex((stage) => stage.status === "running" || stage.status === "pending");
-  if (index < 0) return stages;
-  const endedAt = new Date().toISOString();
-  return stages.map((stage, i) => (i === index
-    ? { ...stage, status: "failed", error: message, startedAt: stage.startedAt ?? endedAt, endedAt }
-    : stage));
-}
-
-/** `start` rejected: the launch never reached the host. */
-export function markChatLaunchStartFailed(launchId: string, message: string): void {
+/**
+ * `start` rejected: the launch never reached the host, so nothing was made.
+ * No step failed: every step goes back to waiting (no made-up "0ms" on the
+ * first one) and the card shows the refusal's plain sentence
+ * (`isChatLaunchRefused`). Retry sends the same start again.
+ */
+export function markChatLaunchStartFailed(launchId: string, error: unknown): void {
+  const message = chatLaunchErrorMessage(error);
   setEntries((entries) => {
     const current = entries[launchId];
     if (!current || current.hostSeen) return null;
+    const nowIso = new Date().toISOString();
     return {
       ...entries,
       [launchId]: {
@@ -380,8 +378,12 @@ export function markChatLaunchStartFailed(launchId: string, message: string): vo
           ...current.snapshot,
           phase: "failed",
           error: message,
-          stages: failFirstOpenStage(current.snapshot.stages, message),
-          updatedAt: new Date().toISOString(),
+          stages: current.snapshot.stages.map((stage) => (stage.status === "pending"
+            ? stage
+            : { ...stage, status: "pending", error: null, startedAt: null, endedAt: null, percent: null })),
+          // The clock stops at the refusal, not at whenever the card is next drawn.
+          endedAt: nowIso,
+          updatedAt: nowIso,
         },
       },
     };
@@ -405,6 +407,7 @@ export function resetChatLaunchStartFailure(launchId: string): void {
           stages: current.snapshot.stages.map((stage) => (stage.status === "failed"
             ? { ...stage, status: "pending", error: null, startedAt: null, endedAt: null }
             : stage)),
+          endedAt: null,
           updatedAt: new Date().toISOString(),
         },
       },
