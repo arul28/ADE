@@ -7569,18 +7569,23 @@ function resolveCodexReasoningEffortForRuntime(
   primary: string | null | undefined,
   fallback?: string | null,
   descriptor?: ModelDescriptor | null,
-): string {
-  const descriptorDefault =
+  options?: { allowDefault?: boolean },
+): string | null {
+  const explicit =
+    validateReasoningEffortForDescriptor("codex", normalizeReasoningEffort(primary), descriptor)
+    ?? validateReasoningEffortForDescriptor("codex", normalizeReasoningEffort(fallback), descriptor);
+  if (explicit) return explicit;
+  // A preset owns this session's ladder. When its source tiers dropped the
+  // picked level, leave the request field unset so the model default applies
+  // instead of restoring a level the preset does not offer.
+  if (options?.allowDefault === false) return null;
+  return (
     validateReasoningEffortForDescriptor("codex", descriptor?.defaultReasoningEffort, descriptor)
     ?? validateReasoningEffortForDescriptor("codex", DEFAULT_REASONING_EFFORT, descriptor)
     ?? descriptor?.reasoningTiers
       ?.map((tier) => validateReasoningEffort("codex", tier))
       .find((tier): tier is string => Boolean(tier))
-    ?? DEFAULT_REASONING_EFFORT;
-  return (
-    validateReasoningEffortForDescriptor("codex", normalizeReasoningEffort(primary), descriptor)
-    ?? validateReasoningEffortForDescriptor("codex", normalizeReasoningEffort(fallback), descriptor)
-    ?? descriptorDefault
+    ?? DEFAULT_REASONING_EFFORT
   );
 }
 
@@ -46891,6 +46896,7 @@ export function createAgentChatService(args: {
       managed.session.reasoningEffort,
       null,
       descriptor,
+      { allowDefault: !sessionPresetReasoningTiers(managed)?.length },
     );
     managed.session.reasoningEffort = reasoningEffort;
     const dynamicTools = refreshCodexDynamicTools(managed, runtime);
@@ -63487,6 +63493,7 @@ export function createAgentChatService(args: {
               managed.session.reasoningEffort,
               readPersistedState(sessionId)?.reasoningEffort,
               resolveSessionModelDescriptor(managed.session),
+              { allowDefault: !sessionPresetReasoningTiers(managed)?.length },
             );
             managed.session.reasoningEffort = resumeReasoningEffort;
             const resumeResponse = await resumeCodexThread<CodexThreadLifecycleResponse>(runtime, {
@@ -67857,6 +67864,7 @@ export function createAgentChatService(args: {
         managed.session.reasoningEffort,
         persisted?.reasoningEffort,
         resolveSessionModelDescriptor(managed.session),
+        { allowDefault: !sessionPresetReasoningTiers(managed)?.length },
       );
       const threadId = persisted?.threadId ?? managed.session.threadId;
       if (threadId) {
@@ -78077,6 +78085,7 @@ export function createAgentChatService(args: {
           managed.session.reasoningEffort,
           readPersistedState(managed.session.id)?.reasoningEffort,
           resolveSessionModelDescriptor(managed.session),
+          { allowDefault: !sessionPresetReasoningTiers(managed)?.length },
         );
         managed.session.reasoningEffort = resumeReasoningEffort;
         const resumeResponse = await resumeCodexThread<CodexThreadLifecycleResponse>(runtime, {
