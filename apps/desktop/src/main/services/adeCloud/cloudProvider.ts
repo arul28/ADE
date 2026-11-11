@@ -16,9 +16,16 @@ import type {
   CloudSavedChatReadArgs,
   CloudSavedChatsListArgs,
 } from "../../../shared/cloudSavedChats";
-import type { CloudCheckoutResult, CloudExecResult, CloudInstance, CloudPaidPlanId } from "../../../../../account-directory/src/cloud/contract";
+import type {
+  CloudCheckoutResult,
+  CloudExecResult,
+  CloudInstance,
+  CloudPaidPlanId,
+  CloudUpdateChannel,
+  CloudUpdateCheck,
+} from "../../../../../account-directory/src/cloud/contract";
 
-export type { CloudExecResult, CloudInstance };
+export type { CloudExecResult, CloudInstance, CloudUpdateChannel, CloudUpdateCheck };
 
 /** What the ADE Cloud services log through: a `cloud.*` event and its fields, never a credential. */
 export type CloudLogger = {
@@ -37,6 +44,8 @@ export type CloudCreateInstanceInput = {
   publicPorts?: Array<{ port: number; label: string }>;
   /** The computer this one replaces in a move: the server gives this one the same disk. */
   moveFromInstanceId?: string;
+  /** The update channel it follows. Left out, the provider sends the track of the app that makes it. */
+  channel?: CloudUpdateChannel;
 };
 
 /** `code` on a `CloudProviderError` when the provider refused this computer's access. */
@@ -74,8 +83,17 @@ export type CloudProvider = {
   startInstance(id: string, options?: { reason?: "push_work" }): Promise<string>;
   /** Stops the machine (no memory kept). Only an explicit start brings it back. */
   stopInstance(id: string): Promise<string>;
-  /** Moves the machine to the current ADE image: it restarts, and only its home folder and caches outlive the system layer. */
-  updateInstance(id: string): Promise<string>;
+  /**
+   * Moves the machine to its channel's ADE image: it restarts, and only its
+   * home folder and caches outlive the system layer. `reason: "idle"` is the
+   * computer updating itself from its idle step; the server runs it only when
+   * the computer is behind, and answers the status it has then.
+   */
+  updateInstance(id: string, options?: { reason: "idle"; computerIdle: true }): Promise<string>;
+  /** The computer asks whether it should update itself now. */
+  checkForUpdate(id: string): Promise<CloudUpdateCheck>;
+  /** The computer's brain started: settles a waiting update. `sleepWhenIdle`: it woke only for that update. */
+  reportBooted(id: string, adeVersion: string | null): Promise<{ sleepWhenIdle: boolean }>;
   /** Changes the size in place: the machine restarts, files stay, the disk only grows. */
   /** `origin: "auto"` marks the computer's own disk grower, for the server's analytics. */
   resizeInstance(id: string, resources: { cpu: number; memory: number; disk?: number }, options?: { computerIdle?: boolean; origin?: "auto" }): Promise<string>;

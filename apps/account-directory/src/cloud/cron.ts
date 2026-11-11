@@ -5,6 +5,7 @@ import type { CloudHoursState, CloudInstance } from "./contract";
 import { refreshCostEstimate, runDailyCostReport } from "./costReport";
 import { cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
+import { runCloudAutoUpdates } from "./updates";
 import {
   DELETION_WARNING_LATE_MS,
   PENDING_TIMEOUT_MS,
@@ -154,7 +155,13 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
   if (statements.length) await env.DB.batch(statements);
 
   await confirmGone(env, provider, gone, live, now);
-  await settleAccounts(env, provider, live, now);
+  const blockedUsers = await settleAccounts(env, provider, live, now);
+  // Rollbacks for updates that never reported in, then a few asleep computers onto their channel's image.
+  try {
+    await runCloudAutoUpdates(env, provider, live, blockedUsers, now);
+  } catch (error) {
+    reportCloudFailure("cloud.auto_updates_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
   await sleepUnseen(env, provider, live, now);
   await runOwnerChecks(env, provider, instances, live, now);
   await runDaily(env, provider, live, now, waitUntil);
@@ -213,10 +220,10 @@ async function accountsOf(env: CloudEnv, byUser: Map<string, unknown>): Promise<
   return accounts.results ?? [];
 }
 
-/** Period rolls, the 80/95/zero warnings, and the 0-hours stop. */
-async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number): Promise<void> {
+/** Period rolls, the 80/95/zero warnings, and the 0-hours stop. Answers the accounts whose computers may not wake. */
+async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers: TickComputer[], now: number): Promise<Set<string>> {
   const byUser = groupByUser(computers);
-  if (byUser.size === 0) return;
+  if (byUser.size === 0) return new Set();
   const accounts = await accountsOf(env, byUser);
   let rolls = 0;
   /** Accounts whose computers may not wake now (0 hours, or the free plan above its disk). */
@@ -259,6 +266,7 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
   if (blockedUsers.length) {
     await env.DB.prepare("delete from cloud_wakes where user_id in (select value from json_each(?))").bind(JSON.stringify(blockedUsers)).run();
   }
+  return new Set(blockedUsers);
 }
 
 const HOURS_WARNINGS: Record<Exclude<CloudHoursState, "none">, {

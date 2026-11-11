@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { CaretRight, ChatCircleText, Check, TerminalWindow, Warning } from "@phosphor-icons/react";
+import { CaretRight, ChatCircleText, Check, GitBranch, TerminalWindow, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { ChatLaunchSnapshot } from "../../../shared/types";
 import { chatLaunchProgress, chatLaunchStatusLine, isChatLaunchSucceeded } from "../../../shared/chatLaunch";
@@ -122,7 +122,8 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
         navigate(`/work?${params.toString()}`);
       }
     : null;
-  const KindIcon = launch.kind === "cli" ? TerminalWindow : ChatCircleText;
+  // A lane launch (`ade lanes create --machine cloud`) starts nothing in its lane.
+  const KindIcon = launch.kind === "cli" ? TerminalWindow : launch.kind === "lane" ? GitBranch : ChatCircleText;
   const tone = launchTone(failed, succeeded);
   const cloud = launch.cloud != null;
   const cloudRunning = cloud && !failed && !succeeded;
@@ -165,7 +166,7 @@ const LaunchRow = React.memo(function LaunchRow({ launch }: { launch: ChatLaunch
             {launch.title || launch.prompt.text}
           </span>
           <span className="shrink-0 rounded-full border border-fg/[0.09] bg-fg/[0.04] px-1.5 py-px text-[10px] text-muted-fg">
-            {launch.kind === "cli" ? "CLI" : "Chat"}
+            {launch.kind === "cli" ? "CLI" : launch.kind === "lane" ? "Lane" : "Chat"}
           </span>
           <CaretRight
             size={10}

@@ -2,6 +2,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { ArrowClockwise, CircleNotch, GitBranch, Sun, UserMinus } from "@phosphor-icons/react";
 import {
   cloudAccountBanner,
+  cloudMachineSelfUpdating,
   cloudOutOfHours,
   describeCloudMachineSize,
   describeCloudSleepPolicy,
@@ -21,6 +22,7 @@ import {
   type CloudBoxWork,
 } from "./cloudMachineModel";
 import { MachineActionsMenu, type MachineAction } from "./MachineActionsMenu";
+import { CloudUpdateLine } from "./CloudUpdateLine";
 import { cloudPendingLabel, type CloudBoxActionError, type CloudBoxPending } from "./useCloudBoxActions";
 import { connectButtonStyle, machineRowStyle, nameStyle, subTextStyle } from "./remoteTargetListStyles";
 
@@ -134,6 +136,7 @@ export function CloudBoxStrip({
   error,
   onDismissError,
   onWake,
+  onRetryUpdate,
   onOpenSettings,
 }: {
   box: CloudMachine;
@@ -143,6 +146,8 @@ export function CloudBoxStrip({
   onDismissError: () => void;
   /** Wake on the card itself; rows that put Wake in place of Connect pass null. */
   onWake?: (() => void) | null;
+  /** The person's own update, offered when the last one failed. */
+  onRetryUpdate?: (() => void) | null;
   onOpenSettings?: (() => void) | null;
 }) {
   const tone = cloudStateTone(box);
@@ -189,6 +194,8 @@ export function CloudBoxStrip({
               <span>{laneNames.length === 1 ? laneNames[0] : `${laneNames.length} lanes`}</span>
             </span>
           ) : null}
+          {/* It updates itself: the line takes the place of an Update button. A failure gets its own row below. */}
+          {cloudMachineSelfUpdating(box) && box.update?.state !== "failed" ? <CloudUpdateLine update={box.update} /> : null}
           {work.runningChats > 0 && !atRest ? (
             <span className="ade-cx-cloud-fact">{work.runningChats === 1 ? "1 chat running" : `${work.runningChats} chats running`}</span>
           ) : null}
@@ -204,6 +211,11 @@ export function CloudBoxStrip({
         <div role="status" className="ade-cx-cloud-pending">
           <CircleNotch size={12} className="animate-spin" />
           {cloudPendingLabel(pending)}
+        </div>
+      ) : null}
+      {cloudMachineSelfUpdating(box) && box.update?.state === "failed" ? (
+        <div>
+          <CloudUpdateLine update={box.update} onRetry={box.pastDue ? null : onRetryUpdate} retrying={pending === "update"} />
         </div>
       ) : null}
       {box.failure ? (

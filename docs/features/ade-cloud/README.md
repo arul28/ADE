@@ -265,12 +265,28 @@ no. `cloud.status` is a read for ADE MCP read access, the phone
 
 `ade chat create --machine cloud --size <small|medium|large|xlarge> --prompt "…"`
 makes one new computer for one new lane, gets the repository there, and starts
-the chat there. `--size` is optional (Small). `ade chat launch --machine cloud`
+the chat there. `--size` is optional: without it, the brain uses the size the
+person saved for new lanes (`CLOUD_DEFAULT_TIER_SETTING_KEY`), else Small.
+`ade chat launch --machine cloud`
 takes the same flags with `chat launch`'s lane flags (`--from`, `--lane-name`,
 `--existing-branch`). The lane starts from the pushed copy of its branch:
 `--on uncommitted` and `--on local` are refused, and so are a Linear issue,
-`--notify-url`, `--lane`, `--project` and `--clone`. `ade lanes create
---machine cloud` is refused for now: a lane on ADE Cloud starts with a chat.
+`--notify-url`, `--lane`, `--project` and `--clone`.
+
+`ade lanes create --machine cloud [--size …] [--launch-id <id>] --name <n>`
+makes the lane alone, with no chat: a launch of kind `lane`. Its stages are
+computer, join, clone, fetch, checkout and environment, with no agent stage,
+and it completes when the environment stage ends. It takes `--from`,
+`--branch-name`, `--existing-branch` and `--template`. It refuses
+`--description`, `--no-template` and a Linear issue for now. The id, replay,
+one-lane, cancel and delete rules are the same as for a chat launch.
+
+A CLI session can also be the first session in a new ADE Cloud lane, but only
+from the app (pick CLI, then Run on: ADE Cloud). The computer's brain parks the
+launch at `awaiting-client`. The launching window then starts the tracked CLI
+session on the new computer through `snapshot.cloud.binding`. The brain's
+`cloud.lane_launch` refuses kind `cli`, because a brain has no window to start
+a terminal in.
 
 - **Who runs it.** This computer's brain (`ade serve`), not the CLI process:
   the brain holds the account and the provider key. The CLI calls
@@ -354,12 +370,64 @@ text: an agent reads them from the status.
 `ADE_HOST_INSTANCE_ID=cloud:<hostname>` and `ADE_CLOUD_INSTANCE_ID`, the only
 variables the rest of ADE reads to know it runs on a cloud machine. ADE does
 not build the template from the app: every release builds it
-(`.github/workflows/cloud-template.yml`), and a tested build is moved to with
-`infra/ade-cloud/promote-template.mjs`. The server creates from one pinned
-version; the client doesn't choose. "Update this computer" moves one computer
-to it (`updateInstance`).
+(`.github/workflows/cloud-template.yml`), tests the build on a real computer
+and moves the image of the tag's update channel only on a pass
+(`infra/ade-cloud/promote-template.mjs`). The server creates from the pinned
+image of the computer's channel; the client picks only the channel. "Update
+this computer" moves one computer to it (`updateInstance`).
 On first boot a new machine installs the ADE version of the app that made it,
 when the image's ADE is older.
+
+## Updates
+
+Cloud computers update themselves: image and ADE together, onto their
+channel's image, only when nothing runs on them. The server's rules are in
+`apps/account-directory/src/cloud/updates.ts`.
+
+- **Channels.** The server keeps one image per channel in `cloud_settings`:
+  `template_version_stable` and `template_version_beta` (`template_version` is
+  the older single setting and the fallback; a Stable move writes both). A
+  computer follows the channel of the app that made it: the create sends
+  `channel` from the machine's update track (`~/.ade/update-track.json`, else
+  the build's track; an Alpha build makes Beta computers). A copy follows its
+  original. The column is `cloud_computers.channel`.
+- **When.** Idle: when the keep-awake loop
+  (`apps/ade-cli/src/services/power/cloudKeepAwake.ts`) would sleep the
+  computer, it first asks `GET /cloud/instances/:id/update-check`. When the
+  computer is behind, it calls `POST .../update` with
+  `{ reason: "idle", computerIdle: true }` instead of sleeping, and the new
+  brain sleeps it once idle again. Asleep: the minute cron updates up to three
+  computers per tick that slept 10 minutes or more and are behind, unless the
+  account is out of hours, over the plan's disk, or the computer is in cold
+  storage or a move. Never while work runs.
+- **Only a tested image.** Automatic updates go only to the image a passed
+  template test named in `auto_update_<channel>` (`off` stops them). A
+  person's "Update this computer" (`ade cloud update`) goes to the channel's
+  image whatever it says, and one update runs at a time (`409 update_in_progress`).
+- **Proof and rollback.** Every brain start sends
+  `POST /cloud/instances/:id/booted { adeVersion }`, which settles a waiting
+  update (`updated_at`). An automatic update with no report 15 minutes after
+  the computer came up has failed: the cron moves it back once to
+  `previous_template`, sets `update_state = 'failed'`, `update_error` and
+  `update_failed_template`, and never tries that image on its own again (a
+  newer image clears it). A rollback that fails or never reports stays failed
+  and is never retried on its own. An update to an image older than boot
+  reports is settled after 15 minutes, not rolled back.
+- **Hours.** The minutes awake for an automatic update or a rollback are free.
+  They use the push-work wake's free window (`free_wake_started_at`,
+  `free_wake_until`, `awake_since` held at its end), which settling and the
+  daily reconcile already leave out. The boot report closes the window, so
+  hours count from then on; a computer the cron woke only for the update
+  sleeps at its first idle check. Asleep, the update does not reset the
+  30-day delete clock. A person's update is metered as before.
+- **What people see.** Where another machine has an Update button (Settings
+  "Update other machines", the General page rows, the Machines list), a cloud
+  computer shows one line: "Updates itself when idle", "Updating…", or
+  "Update failed: <why>." with Retry (the person's update). `ade cloud status`
+  and the `cloud.status` action give each computer's `update {image, channel,
+  target, state, error}`. Each update and rollback writes a row to
+  `cloud_power_log` (reason `update_manual`, `update_idle`, `update_asleep`,
+  `update_rollback`).
 
 ## Rules on a cloud computer
 

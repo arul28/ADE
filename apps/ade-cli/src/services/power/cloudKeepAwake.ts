@@ -1,6 +1,8 @@
 /**
  * Keeps a cloud machine awake exactly while ADE is doing something on it, and
- * puts it to sleep three minutes after that stops.
+ * puts it to sleep three minutes after that stops. At that idle moment it
+ * first moves to its channel's newer image when it is behind (the server's
+ * `updates.ts`), and each brain start reports in, which settles an update.
  *
  * The one busy list lives here (`decideCloudBusy`). Unknown is busy.
  *
@@ -138,6 +140,19 @@ export type CloudKeepAwakeOptions = {
   requestIdleSleep?: (instanceId: string) => Promise<void>;
   /** Grows the disk if it's near full (it restarts the machine). True when it did, so sleep waits for the restart. */
   growDiskIfNeeded?: (stillIdle: () => boolean) => Promise<boolean>;
+  /**
+   * Moves the machine to its channel's newer image when the server says it is
+   * behind (it restarts the machine). True when an update started, so sleep
+   * waits for the restart. Runs before the disk grow, at the same idle moment.
+   */
+  updateIfBehind?: (stillIdle: () => boolean) => Promise<boolean>;
+  /**
+   * Tells the server this brain started, which settles a waiting update.
+   * `sleepWhenIdle`: the machine woke only for that update, so it sleeps at
+   * its first idle check instead of after three minutes. Rejects to be tried
+   * again at the next check.
+   */
+  reportBooted?: () => Promise<{ sleepWhenIdle: boolean }>;
   fetch?: (url: string, init: { method: string; signal: AbortSignal }) => Promise<{ status: number }>;
   logger?: {
     info(event: string, data?: unknown): void;
@@ -208,6 +223,28 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   let wasBusy = false;
   /** Asked the server to sleep this machine; the next check runs after a wake, or a failed ask. */
   let askedToSleep = false;
+  /** The boot report reached the server (or there is none to send); one in flight at a time. */
+  let bootReported = !options.reportBooted;
+  let bootReporting = false;
+
+  /** Once per brain start, beside the checks: a slow server must not hold a busy machine's ping back. */
+  const reportBoot = (): void => {
+    if (bootReported || bootReporting || !options.reportBooted) return;
+    bootReporting = true;
+    void options.reportBooted().then(
+      ({ sleepWhenIdle }) => {
+        bootReported = true;
+        options.logger?.info("cloud.boot_reported", { sleepWhenIdle });
+        // Woken only for an update: the next idle check may sleep it at once.
+        if (sleepWhenIdle && !wasBusy) lastBusyAt = Math.min(lastBusyAt, now() - CLOUD_IDLE_SLEEP_AFTER_MS);
+      },
+      (error: unknown) => {
+        options.logger?.warn("cloud.boot_report_failed", { error: error instanceof Error ? error.message : String(error) });
+      },
+    ).finally(() => {
+      bootReporting = false;
+    });
+  };
 
   /** Sends the next timer when it changed; true when the server holds it. */
   const syncTimedWake = async (url: string | null, nextWakeAt: number | null): Promise<boolean> => {
@@ -269,6 +306,17 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
     if (!options.requestIdleSleep || at - lastBusyAt < CLOUD_IDLE_SLEEP_AFTER_MS - 5_000) return;
     askedToSleep = true;
     try {
+      // An image behind its channel's goes first: the update restarts the
+      // machine, and the new brain sleeps it once it is idle again. A failed
+      // check (an older server) never stands in the way of the sleep.
+      const updating = await options.updateIfBehind?.(() => !usedSinceTick).catch((error: unknown) => {
+        options.logger?.warn("cloud.idle_update_check_failed", { error: error instanceof Error ? error.message : String(error) });
+        return false;
+      });
+      if (updating) {
+        options.logger?.info("cloud.idle_update_started", { idleMs: at - lastBusyAt });
+        return;
+      }
       if (await options.growDiskIfNeeded?.(() => !usedSinceTick)) return;
       // Work noted while the disk check ran wins: sleep waits for the next idle stretch.
       if (usedSinceTick) {
@@ -289,6 +337,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   const tick = async (): Promise<void> => {
     if (!enabled || ticking || disposed) return;
     ticking = true;
+    reportBoot();
     try {
       const url = readWakeUrl(paths.wakeUrl, instanceId);
       let state: CloudKeepAwakeBusy;

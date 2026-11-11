@@ -173,6 +173,12 @@ export type CloudStatusComputer = {
   disk: { sizeGb: number | null; full: string | null };
   /** Set when it is a project's ready machine (kept asleep for the next chat). */
   readyFor: string | null;
+  /**
+   * How it keeps current: the image it runs, its channel, the image the
+   * channel is on, and `auto` (updates itself when idle), `updating` or
+   * `failed` with why. Null from a server before updates.
+   */
+  update: { image: string | null; channel: "stable" | "beta"; target: string | null; state: "auto" | "updating" | "failed"; error: string | null } | null;
 };
 
 /** `cloud.status`: the whole account in one read, with no wake and no spend. */
@@ -629,6 +635,9 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
           deletesAt: deletesAt.get(box.instanceId) ?? null,
           disk: { sizeGb: box.resources?.diskGb ?? null, full: box.diskFull },
           readyFor: box.ready?.projectName ?? null,
+          update: box.update
+            ? { image: box.update.image, channel: box.update.channel, target: box.update.target, state: box.update.state, error: box.update.error }
+            : null,
         };
       }).sort((left, right) => Number(right.lane != null) - Number(left.lane != null));
       // A paid plan with a failed payment follows the free plan's rules until paid.
@@ -815,17 +824,28 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     },
 
     /**
-     * `ade chat create --machine cloud`: one new computer for one new lane,
-     * the repository there, and the chat started there. Returns at once with
+     * `ade chat create --machine cloud` (kind `chat`) and `ade lanes create
+     * --machine cloud` (kind `lane`, no chat): one new computer for one new
+     * lane, the repository there, and the chat started there, if any. With no
+     * `cloud.sizeId`, the person's saved size for new lanes. Returns at once with
      * the launch's status; read it again with `lane_launch_status`. The same
      * launch id again answers that launch (a failed one goes on from its
      * failed step): never a second computer.
      */
     async lane_launch(rawArgs?: unknown) {
       const args = record(rawArgs);
-      const launch = record(args.launch) as unknown as ChatLaunchArgs;
-      const sizeId = record(launch.cloud).sizeId;
+      const asked = record(args.launch) as unknown as ChatLaunchArgs;
+      // A CLI session needs a window to start its terminal in, which a brain
+      // doesn't have: it starts from the ADE app.
+      if (asked.kind === "cli") {
+        throw new Error("A CLI session on ADE Cloud starts from the ADE app. Here, start a chat (ade chat create --machine cloud) or the lane alone (ade lanes create --machine cloud).");
+      }
+      // No size asked for: the size the person saved for new lanes, then Small.
+      const askedSize = record(asked.cloud).sizeId;
+      const sizeId = askedSize == null || askedSize === "" ? readDefaultTier() ?? "small" : askedSize;
       if (!isCloudTierId(sizeId)) throw new Error(`Pick a size: ${CLOUD_TIER_IDS.join(", ")}.`);
+      const launch: ChatLaunchArgs = { ...asked, cloud: { sizeId } };
+      const laneOnly = launch.kind === "lane";
       const host = deps.laneLaunch?.() ?? null;
       if (!host) throw new Error("This ADE can't start a lane on ADE Cloud. Use the ADE app, or the ade command where ADE runs in the background.");
       const approval = readApproval(args);
@@ -859,7 +879,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const yes = await approve(approval, {
         action: "spend",
         title: "Start a lane on ADE Cloud",
-        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and starts the chat on it.${shape ? ` It uses ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}, and none while it sleeps.` : ""}`,
+        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${laneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` It uses ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}, and none while it sleeps.` : ""}`,
         confirm: "Start it",
         newMachine: true,
         shape: shape?.id ?? null,

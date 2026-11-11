@@ -13450,11 +13450,10 @@ export function AgentChatPane({
     ) {
       return;
     }
-    // A draft ADE Cloud can't run (a CLI): never fall through to another
-    // machine. The label above the box already says why, and Send is off.
-    if (adeCloudModeRef.current && kind !== "chat") return;
     // ADE Cloud is its own target: the picked machine's state does not apply.
-    const cloudSend = kind === "chat" && adeCloudModeRef.current ? adeCloudSendRef.current : null;
+    // A chat or a CLI session: a draft ADE Cloud can't run never falls through
+    // to another machine (`cloudSend.notice` below keeps Send off).
+    const cloudSend = adeCloudModeRef.current ? adeCloudSendRef.current : null;
     if (!cloudSend && draftMachineUnavailableRef.current) {
       setError({ message: "The selected machine is not currently available.", kind: "status" });
       return;
@@ -16796,7 +16795,9 @@ export function AgentChatPane({
    * Why Send can't go to ADE Cloud now, shown above the box before Send:
    * a fact of the account (out of hours, all computers in use, disk full) or
    * a start refusal the composer can already see (a local file, an
-   * "uncommitted" start, no GitHub origin, a CLI draft, parallel models).
+   * "uncommitted" start, no GitHub origin, parallel models). A CLI draft
+   * runs there: its lane is set up, then this window starts the CLI session
+   * on the new computer.
    * The same sentences main would refuse with, so none appears after Send.
    */
   const adeCloudNotice = useMemo<AdeCloudTrayNotice | null>(() => {
@@ -16809,14 +16810,6 @@ export function AgentChatPane({
         tone: "notice",
         message: "Parallel models runs on this computer. Pick This computer to use it.",
         short: "Parallel models runs here only.",
-        actions: [],
-      };
-    }
-    if (isWorkCliLaunchDraft) {
-      return {
-        tone: "notice",
-        message: "An ADE Cloud lane starts with a chat. Pick Chat, or pick This computer for a CLI.",
-        short: "ADE Cloud lanes start as chats.",
         actions: [],
       };
     }
@@ -16922,7 +16915,7 @@ export function AgentChatPane({
   } = draftMachineSetup;
   /**
    * Why the ADE Cloud entry can't be picked now, or null. Parallel models
-   * start several lanes on this computer; a CLI draft has no ADE Cloud lane.
+   * start several lanes on this computer. A chat and a CLI session both run there.
    */
   const adeCloudUnavailableReason = adeCloudMode
     // Picked already: the label above the box says why it can't run now, and
@@ -16930,9 +16923,7 @@ export function AgentChatPane({
     ? null
     : parallelChatMode
       ? PARALLEL_MODELS_HERE_ONLY
-      : isWorkCliLaunchDraft
-        ? "An ADE Cloud lane starts with a chat."
-        : null;
+      : null;
   /**
    * The Run on menu. Its rows keep one order whatever loads when: the
    * connected computers in connection order (a computer that gains the

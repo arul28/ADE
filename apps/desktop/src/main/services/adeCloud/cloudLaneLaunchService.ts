@@ -8,6 +8,8 @@ import {
 } from "../../../shared/adeCloud";
 import {
   CHAT_LAUNCH_CLOUD_STAGE_IDS,
+  chatLaunchKindOf,
+  chatLaunchKindUnknownToBrain,
   createChatLaunchSnapshot,
   isChatLaunchCloudStageId,
   isChatLaunchTerminal,
@@ -27,6 +29,7 @@ import { requireNormalizedUuid } from "../../../shared/uuid";
 import type {
   ChatLaunchArgs,
   ChatLaunchCloudStageId,
+  ChatLaunchCompleteClientArgs,
   ChatLaunchEvent,
   ChatLaunchIdArgs,
   ChatLaunchLaneConfig,
@@ -115,6 +118,13 @@ export type CloudLaneLaunchDeps = {
   pairMachine: (machineKey: string) => Promise<{ targetId: string }>;
   /** Connects to a saved remote target (waking a sleeping cloud computer). Truthy once connected. */
   connect: (targetId: string) => Promise<unknown>;
+  /**
+   * The launch kinds the computer's brain advertised (`chatLaunchKinds`),
+   * read after `connect`; empty when it advertised none (an older brain), null
+   * when its answer couldn't be read. Read only to hand off a CLI or lane
+   * launch. Unset: no check.
+   */
+  brainLaunchKinds?: (targetId: string) => Promise<readonly string[] | null>;
   listProjects: (targetId: string) => Promise<RemoteRuntimeProjectRecord[]>;
   defaultParentDir: (targetId: string) => Promise<string>;
   /** Clones with the computer's own Git sign-in: no credential from this computer goes with it. */
@@ -171,8 +181,13 @@ const RESUBSCRIBE_MS = 15_000;
 const RESUBSCRIBE_ATTEMPTS = 20;
 
 const CANT_MAKE_COMPUTER = "ADE Cloud can't make a computer right now. Try again soon.";
+const BRAIN_TOO_OLD = "The ADE on this cloud computer is too old for this. Update it (Settings › Machines, or ade cloud update), then retry.";
 const CANT_DELETE_YET = "ADE couldn't delete the computer it made yet. It tries again when ADE next opens, or delete it in Settings › ADE Cloud.";
-const LANE_ALREADY_STARTED = "This chat already started — delete its lane from the lane menu instead.";
+const alreadyStarted = (record: CloudLaneLaunchRecord): string => {
+  if (record.snapshot.kind === "lane") return "This lane is already set up — delete it from the lane menu instead.";
+  if (record.snapshot.kind === "cli") return "This CLI session already started — delete its lane from the lane menu instead.";
+  return "This chat already started — delete its lane from the lane menu instead.";
+};
 
 class LaunchCancelled extends Error {
   constructor() { super("Launch cancelled."); }
@@ -810,6 +825,16 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (!binding || !record.targetId) throw new LaunchStepError("ADE lost track of the project on the new computer. Retry to set it up again.");
     await deps.connect(record.targetId);
     assertActive(record, signal);
+    // An older brain reads a CLI or lane launch as a chat and fails for "no
+    // chat". Refused here with what to do; Retry runs this step again.
+    if (record.snapshot.kind !== "chat" && deps.brainLaunchKinds) {
+      const kinds = await deps.brainLaunchKinds(record.targetId).catch(() => null);
+      assertActive(record, signal);
+      if (chatLaunchKindUnknownToBrain(record.snapshot.kind, kinds)) {
+        logger.warn("cloud_lane_launch.brain_too_old", { launchId, kind: record.snapshot.kind, kinds });
+        throw new LaunchStepError(BRAIN_TOO_OLD);
+      }
+    }
     const priorStages = record.snapshot.stages.filter((stage) => isChatLaunchCloudStageId(stage.id)).map((stage) => ({ ...stage }));
     const args: ChatLaunchArgs = {
       ...record.launch,
@@ -990,7 +1015,10 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     const problem = cloudLaneLaunchStartProblem(input);
     if (problem) throw new Error(problem);
     const project = githubClone(input.originUrl)!;
-    if (!args.chat || !args.cloud) throw new Error("An ADE Cloud lane starts with a chat.");
+    if (!args.cloud) throw new Error("Pick a size for the ADE Cloud computer.");
+    // A chat, a tracked CLI session the launching window starts after the
+    // hand-off (as on this computer), or the lane alone.
+    const kind = chatLaunchKindOf(args.kind);
     const laneId = args.laneId?.trim() ? requireNormalizedUuid(args.laneId, "laneId must be a UUID.") : randomUUID();
     const prompt = String(args.prompt ?? "");
     const laneName = args.laneName?.trim()
@@ -998,7 +1026,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       || deriveDeterministicLaneNameFromPrompt(prompt, { genericSuffix: launchId.slice(0, 8) });
     const { cloud, priorStages: _priorStages, ...launch } = args;
     const snapshot = createChatLaunchSnapshot({
-      launch: { ...launch, launchId, kind: "chat" },
+      launch: { ...launch, launchId, kind },
       laneId,
       laneName,
       includeCloud: true,
@@ -1013,7 +1041,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         ...snapshot,
         cloud: { sizeId: cloud.sizeId, projectOrigin: project.identity, instanceId: null, machineKey: null, binding: null, handedOff: false },
       },
-      launch: { ...launch, launchId, kind: "chat", laneId, laneName },
+      launch: { ...launch, launchId, kind, laneId, laneName },
       project,
       tier: null,
       computerName: normalizeCloudMachineName(laneName),
@@ -1026,7 +1054,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     };
     records.set(launchId, record);
     publish(record);
-    logger.info("cloud_lane_launch.started", { launchId, laneId, sizeId: cloud.sizeId });
+    logger.info("cloud_lane_launch.started", { launchId, laneId, kind, sizeId: cloud.sizeId });
     void runPipeline(record);
     return served(record);
   };
@@ -1064,12 +1092,12 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (!record) return null;
     const launchId = record.snapshot.launchId;
     if (record.snapshot.phase === "cancelled") return served(record);
-    if (record.snapshot.agentStarted || record.snapshot.phase === "completed") throw new Error(LANE_ALREADY_STARTED);
+    if (record.snapshot.agentStarted || record.snapshot.phase === "completed") throw new Error(alreadyStarted(record));
     if (isHandedOff(record)) {
       const binding = record.snapshot.cloud.binding!;
       // The brain refuses once the agent runs; then nothing here is deleted.
       const brain = await deps.callChatAction(binding, "cancelLaunch", { args: { launchId } }) as ChatLaunchSnapshot | null;
-      if (!brain) throw new Error(LANE_ALREADY_STARTED);
+      if (!brain) throw new Error(alreadyStarted(record));
       adoptBrainSnapshot(record, brain);
     }
     const runtime = runtimeFor(launchId);
@@ -1144,6 +1172,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     const text = String(args.text ?? "");
     if (!text.trim() && !args.attachments?.length) throw new Error("A queued message needs text or an attachment.");
     if (record.snapshot.phase === "cancelled") throw new Error("This launch was cancelled.");
+    if (record.snapshot.kind === "lane") throw new Error("This lane starts no chat, so it can't take messages.");
     if (hasLocalAttachments(args.attachments) && !isHandedOff(record)) {
       throw new Error("Files from this computer can't go to the new ADE Cloud computer yet. Send this once the chat starts.");
     }
@@ -1175,10 +1204,28 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     return served(record);
   };
 
-  /** Only a CLI launch waits on its client, and a cloud launch is always a chat. */
-  const completeClient = async (args: ChatLaunchIdArgs): Promise<ChatLaunchSnapshot | null> => {
+  /**
+   * A CLI launch: the launching window started the CLI session on the
+   * computer (through `snapshot.cloud.binding`) and reports it, or reports why
+   * it couldn't. Only the computer's brain waits on it, so before the
+   * hand-off there is nothing to complete.
+   */
+  const completeClient = async (args: ChatLaunchCompleteClientArgs): Promise<ChatLaunchSnapshot | null> => {
     const record = recordFor(args);
-    return record ? served(record) : null;
+    if (!record) return null;
+    if (record.snapshot.kind !== "cli" || !isHandedOff(record)) return served(record);
+    const brain = await deps.callChatAction(record.snapshot.cloud.binding!, "completeLaunchClient", {
+      args: {
+        launchId: record.snapshot.launchId,
+        ...(args.sessionId ? { sessionId: args.sessionId } : {}),
+        ...(args.error ? { error: args.error } : {}),
+      },
+    }) as ChatLaunchSnapshot | null;
+    if (brain?.launchId === record.snapshot.launchId) {
+      adoptBrainSnapshot(record, brain);
+      publish(record);
+    }
+    return served(record);
   };
 
   /** Picks up what a quit left: setup goes on, a handed-off launch is followed again, a cancel finishes its cleanup. */

@@ -20,19 +20,21 @@ manages lanes, not computers.
 
 ## 2. Start a lane
 
-`ade chat create --machine cloud --size small --launch-id <a new UUID> --prompt "<task>"`.
+`ade chat create --machine cloud --launch-id <a new UUID> --prompt "<task>"` starts a lane with a chat.
+`ade lanes create --machine cloud --launch-id <a new UUID> --name "<name>"` makes the lane alone, with no chat.
 Over ADE MCP (write access): the same words to the `ade` tool, with `timeout_seconds: 600`.
 
-- Size: `defaultSize` from the status, else Small. Medium when Small is too slow. Large or X-Large (full computers) only for Android or Docker.
+- Size: leave out `--size` to use the person's saved size (`defaultSize`). Medium when Small is too slow. Medium when Small is too slow. Large or X-Large (full computers) only for Android or Docker.
 - Push the branch first. The lane starts from the pushed copy; uncommitted changes and local files stay here.
 - The approval card asks the person in your chat, with the size and its hours rate. No answer in 5 minutes means no.
 - In a full-auto chat, an automation or an ADE MCP app, nobody watches. ADE answers with the agent limits (`agents` in the status): only sizes in `sizesAllowed`, at most `newComputersLeftToday` new computers today. Each new lane counts one. A person never counts.
 - From a terminal with no ADE chat, it is refused: ADE can't tell a person there from an agent. Tell the person to start it in the ADE app (Run on: ADE Cloud) or in an ADE chat.
-- One computer holds one lane. On a cloud computer, never `ade lanes create`: start a new lane on ADE Cloud.
+- A CLI session (Claude Code, Codex and others in a terminal) can be the first thing in a new cloud lane, but only from the ADE app: the person picks CLI and Run on: ADE Cloud. From the command line, start a chat or the lane alone.
+- One computer holds one lane. On a cloud computer, never plain `ade lanes create`: start a new lane on ADE Cloud.
 
 ## 3. Follow, retry, cancel
 
-- The command prints the launch id first, then waits until the agent starts there. If the join waits, give the person the approval link it prints.
+- The command prints the launch id first, then waits until the agent starts there (the lane alone: until it is set up). If the join waits, give the person the approval link it prints.
 - Follow: `ade chat launch-status <id> --machine cloud`.
 - Retry after a failure: the same command with the same `--launch-id`. It goes on from the failed step, on the same computer.
 - Cancel, which deletes its computer: `ade chat launch-cancel <id> --machine cloud`. Only the chat that started it, or the person. ADE MCP apps can't.
@@ -74,6 +76,10 @@ Delete nothing without their yes. Deleting a lane deletes its computer.
 `update`, `copy`, `move`, `delete` and `ready`. Each asks the person like a new
 lane when it uses hours or deletes. A computer sleeps 3 minutes after its last
 activity and wakes on use, so you rarely need `sleep` or `wake`.
+
+Cloud computers update themselves when idle or asleep, never while work runs.
+`ade cloud status` shows each one's `update` (image, channel, target, state).
+Use `ade cloud update <machine>` only to update now or to retry a failed one.
 
 Your chat needs Android but runs on a standard computer (`ade android start`
 says so): tell the person, then `ade cloud create --kind vm --shape <the size

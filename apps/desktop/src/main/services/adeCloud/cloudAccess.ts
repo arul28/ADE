@@ -9,6 +9,7 @@ import { cloudStatusAwake, type CloudStatus } from "../../../shared/adeCloud";
 import { setAdeCloudSkillVisible, setAgentSkillAccessRefresh } from "../../../shared/agentSkillRoots";
 import type { AccountVaultResult } from "../../../shared/types/accountVault";
 import { getSignedInAccountAccessToken, type AccountAuthService } from "../../../../../ade-cli/src/services/account/accountAuthService";
+import { resolveSelectedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
 import { getErrorMessage } from "../shared/utils";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider } from "./cloudProvider";
 import { createCloudServerProvider } from "./cloudServerProvider";
@@ -33,6 +34,8 @@ export type CloudAccessDeps = {
   directoryBaseUrl: () => string | null;
   /** Names this computer in the server's delete log. */
   deviceName?: () => string | null;
+  /** This machine's update track: a computer it makes follows the same channel. */
+  updateChannel?: () => "stable" | "beta" | null;
   fetch?: FetchLike;
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
 };
@@ -42,6 +45,8 @@ export function cloudAccessDepsFor(args: {
   account: () => Pick<AccountAuthService, "getStatus" | "getAccessToken"> | null | undefined;
   directoryBaseUrl: () => string;
   deviceName?: () => string | null;
+  /** The ADE version this process runs, for its update track when none was saved. Default: `ADE_CLI_VERSION`. */
+  runningVersion?: () => string | null;
   logger?: CloudAccessDeps["logger"];
   onDirectoryUnavailable?: (error: unknown) => void;
 }): CloudAccessDeps {
@@ -61,6 +66,12 @@ export function cloudAccessDepsFor(args: {
       }
     },
     deviceName: args.deviceName,
+    // The machine's saved track (one file the app, brain and CLI share), else
+    // the track of this build. An Alpha build makes Beta computers.
+    updateChannel: () => {
+      const version = args.runningVersion?.() ?? process.env.ADE_CLI_VERSION?.trim() ?? null;
+      return /-alpha\b/i.test(version ?? "") ? "beta" : resolveSelectedUpdateTrack(version);
+    },
     logger: args.logger,
   };
 }
@@ -206,6 +217,7 @@ function serverProviderFor(deps: CloudAccessDeps): CloudProvider {
     accessToken: deps.accessToken,
     baseUrl: deps.directoryBaseUrl,
     deviceName: deps.deviceName,
+    updateChannel: deps.updateChannel,
     fetch: deps.fetch,
     logger: deps.logger,
   });

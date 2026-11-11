@@ -556,8 +556,12 @@ export type RuntimeBridgeRegistration = {
    * hands the launch to that computer's brain with the window closed.
    */
   remoteForMain: {
-    /** Connects (waking a sleeping cloud computer); true once connected, throws otherwise. */
-    connect(targetId: string): Promise<boolean>;
+    /**
+     * Connects (waking a sleeping cloud computer). Resolves once connected,
+     * with the launch kinds its brain advertised (`chatLaunchKinds`; empty
+     * from an older brain); throws otherwise.
+     */
+    connect(targetId: string): Promise<{ chatLaunchKinds: string[] }>;
     projects(targetId: string): Promise<RemoteRuntimeProjectRecord[]>;
     defaultParentDir(targetId: string): Promise<string>;
     /** Clones with the computer's own Git sign-in; no credential from here goes with it. */
@@ -814,8 +818,8 @@ export function registerRuntimeBridge({
     remoteForMain: {
       connect: async (targetId) => {
         // Resolves only once connected; a failure throws.
-        await remoteConnectionService.connect(requireRemoteTarget(targetId).id, { explicit: true });
-        return true;
+        const connected = await remoteConnectionService.connect(requireRemoteTarget(targetId).id, { explicit: true });
+        return { chatLaunchKinds: connected.capabilities?.chatLaunchKinds ?? [] };
       },
       projects: (targetId) => remoteConnectionService.projects(requireRemoteTarget(targetId).id),
       defaultParentDir: (targetId) => remoteConnectionService.getDefaultParentDir(requireRemoteTarget(targetId).id),

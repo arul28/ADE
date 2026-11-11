@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { UserMinus } from "@phosphor-icons/react";
-import type { CloudMachine } from "../../../shared/adeCloud";
+import { cloudMachineSelfUpdating, type CloudMachine } from "../../../shared/adeCloud";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
 import { accountMachinePresence, machineIsAwake } from "../../../shared/machinePresence";
 import type { AdeAccountMachine, RemoteRuntimeTarget } from "../../../shared/types";
@@ -25,6 +25,8 @@ export type RowExtras = {
   extraActions?: MachineAction[];
   hideLocalRemove?: boolean;
   parked?: { label: string; action: ReactNode } | null;
+  /** A cloud computer that updates itself: its card shows the update line, so the row has no Update button. */
+  selfUpdating?: boolean;
 };
 
 /**
@@ -138,6 +140,7 @@ export function useCloudMachineGroup(args: {
       error={cloudActions.errorById[ctx.box.instanceId] ?? null}
       onDismissError={() => cloudActions.dismissError(ctx.box.instanceId)}
       onWake={wakeOnCard ? () => void cloudActions.wake(ctx) : null}
+      onRetryUpdate={() => void cloudActions.update(ctx)}
       onOpenSettings={onOpenSettings}
     />
   );
@@ -160,6 +163,7 @@ export function useCloudMachineGroup(args: {
         // Remove from ADE takes the saved connection with it; without an
         // account row, the row keeps its own Remove from this computer.
         hideLocalRemove: ctx.accountMachine != null,
+        selfUpdating: cloudMachineSelfUpdating(box),
         parked: cloudParkedRow(box, ctx.name, cloudActions.pendingById[box.instanceId] ?? null, () => void cloudActions.wake(ctx)),
       };
     }

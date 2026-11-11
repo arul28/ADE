@@ -5,7 +5,7 @@ import type { ProjectHealthIssue, ProjectHealthReport } from "../../../../shared
 import type { UsageSnapshot } from "../../../../shared/types/usage";
 import type { AiProviderConnectionStatus } from "../../../../shared/types/config";
 import { isBackgroundItemBlocked } from "../../../../shared/types/core";
-import { cloudMachineResting } from "../../../../shared/adeCloud";
+import { cloudMachineResting, selfUpdatingCloudMachineKeys } from "../../../../shared/adeCloud";
 import { adeCloudEnabled } from "../../../state/cloudAccess";
 import type { AiConfig } from "../../../../shared/types/config";
 import type { ProviderInstance } from "../../../../shared/types/providerInstances";
@@ -21,6 +21,8 @@ import {
   machinesBehindOnTheirTrack,
 } from "../../remoteTargets/remoteMachineModel";
 import { cloudBoxForMachine } from "../../remoteTargets/cloudMachineModel";
+import { readSelfUpdatingCloudKeys, withoutSelfUpdatingCloud } from "../../remoteTargets/machineUpdates";
+import { watchedCloudMachines } from "../../remoteTargets/useCloudMachines";
 import { missingMcpSecrets } from "../mcp/useMcpRegistry";
 import { settingsRouteFor } from "../settingsManifest";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
@@ -348,6 +350,38 @@ async function restingCloudItemIds(snapshot: ConnectionSnapshot | null): Promise
     .map((connection) => machineItemId(connection.target.id)));
 }
 
+/**
+ * "N machines run an older ADE", on each machine's own track only (a Stable
+ * machine is not "older" than this computer's Beta). A cloud computer that
+ * updates itself (`selfUpdating`, its machine key) is never in it.
+ */
+function machinesBehindItem(snapshot: ConnectionSnapshot | null, update: AutoUpdateSnapshot | null, selfUpdating: ReadonlySet<string>): AttentionItem | null {
+  if (!snapshot) return null;
+  const behind = withoutSelfUpdatingCloud(machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), knownAdeVersions(update)), selfUpdating);
+  if (behind.length === 0) return null;
+  return {
+    id: MACHINES_BEHIND_ITEM_ID,
+    severity: "note",
+    title: behind.length === 1 ? `${behind[0]!.name} runs an older ADE` : `${behind.length} machines run an older ADE`,
+    detail: behind.map((machine) => `${machine.name}: ${machine.versionLabel ?? machine.version ?? "unknown"}`).join(", "),
+    where: behind.length === 1 ? behind[0]!.name : "Your computers",
+    route: settingsRouteFor("general.update-other-machines"),
+  };
+}
+
+const MACHINES_BEHIND_ITEM_ID = "machines-behind";
+
+/**
+ * The behind item again once the account's cloud list says which computers
+ * update themselves. Undefined when nothing changes (no item, or no cloud
+ * computer among the behind ones). Never rejects.
+ */
+async function machinesBehindWithCloud(snapshot: ConnectionSnapshot | null, update: AutoUpdateSnapshot | null): Promise<AttentionItem | null | undefined> {
+  if (!machinesBehindItem(snapshot, update, new Set())) return undefined;
+  const keys = await readSelfUpdatingCloudKeys();
+  return keys.size === 0 ? undefined : machinesBehindItem(snapshot, update, keys);
+}
+
 function machineItems(snapshot: ConnectionSnapshot | null, update: AutoUpdateSnapshot | null): AttentionItem[] {
   if (!snapshot) return [];
   const items: AttentionItem[] = [];
@@ -361,19 +395,10 @@ function machineItems(snapshot: ConnectionSnapshot | null, update: AutoUpdateSna
       route: settingsRouteFor("account.computers"),
     });
   }
-  // Behind on its own track only: a Stable machine is not "older" than this
-  // computer's Beta.
-  const behind = machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), knownAdeVersions(update));
-  if (behind.length > 0) {
-    items.push({
-      id: "machines-behind",
-      severity: "note",
-      title: behind.length === 1 ? `${behind[0]!.name} runs an older ADE` : `${behind.length} machines run an older ADE`,
-      detail: behind.map((machine) => `${machine.name}: ${machine.versionLabel ?? machine.version ?? "unknown"}`).join(", "),
-      where: behind.length === 1 ? behind[0]!.name : "Your computers",
-      route: settingsRouteFor("general.update-other-machines"),
-    });
-  }
+  // The cloud list already in memory, if a surface read it; the full read
+  // after the list is on screen corrects it (`machinesBehindWithCloud`).
+  const behind = machinesBehindItem(snapshot, update, selfUpdatingCloudMachineKeys(watchedCloudMachines()));
+  if (behind) items.push(behind);
   return items;
 }
 
@@ -615,6 +640,14 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     void restingCloudItemIds(machines).then((resting) => {
       if (current !== request.current || resting.size === 0) return;
       setItems((currentItems) => currentItems.filter((item) => !resting.has(item.id)));
+    });
+    // A cloud computer that updates itself never counts as behind.
+    void machinesBehindWithCloud(machines, update).then((behind) => {
+      if (current !== request.current || behind === undefined) return;
+      setItems((currentItems) => [
+        ...currentItems.filter((item) => item.id !== MACHINES_BEHIND_ITEM_ID),
+        ...(behind ? [behind] : []),
+      ]);
     });
     const late = await Promise.all([
       quiet(mcpItems, failed, "MCP servers"),

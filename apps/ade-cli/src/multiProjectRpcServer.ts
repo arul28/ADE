@@ -1,4 +1,5 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
+import { CHAT_LAUNCH_KINDS } from "../../desktop/src/shared/types/chatLaunch";
 import { readDeletedChatOnDisk } from "../../desktop/src/main/services/chat/deletedChats";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { isInsideTempFolder } from "../../desktop/src/main/services/shared/pathCompare";
@@ -2505,6 +2506,9 @@ export function createMultiProjectRpcRequestHandler(
           // `chat.sendMessage` drops a repeat of a `clientSendId` it has seen.
           // A client retries a send of unknown outcome only against this.
           clientSendDedupe: true,
+          // The chat launch kinds this brain runs. An ADE Cloud hand-off of a
+          // CLI or lane launch is refused by a brain that doesn't list it.
+          chatLaunchKinds: [...CHAT_LAUNCH_KINDS],
           machineProjects: {
             browseDirectories: true,
             getDetail: true,

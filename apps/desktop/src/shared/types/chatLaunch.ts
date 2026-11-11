@@ -40,7 +40,19 @@ import type { OpenProjectBinding } from "./core";
  *   in the thread after reload and on every device.
  */
 
-export type ChatLaunchKind = "chat" | "cli";
+/**
+ * What the launch starts in its new lane: a chat, a tracked CLI session (the
+ * launching client starts it at `awaiting-client`), or nothing (`lane`: the
+ * lane alone, with no `agent` stage; `ade lanes create --machine cloud`).
+ */
+export type ChatLaunchKind = "chat" | "cli" | "lane";
+
+/**
+ * Every kind this ADE's brain runs. A brain advertises them as the
+ * `chatLaunchKinds` capability of `ade/initialize`, so the ADE Cloud hand-off
+ * can refuse a kind an older brain (which would read it as `chat`) can't run.
+ */
+export const CHAT_LAUNCH_KINDS: readonly ChatLaunchKind[] = ["chat", "cli", "lane"];
 
 /** foreground = the launching client opens the chat now; background = it keeps its composer. */
 export type ChatLaunchMode = "foreground" | "background";
@@ -93,7 +105,7 @@ export type ChatLaunchPhase =
   | "awaiting-client"
   /** A stage failed. The launch waits for Retry, Start anyway, or Delete. */
   | "failed"
-  /** The agent is running and every stage has finished. Terminal. */
+  /** The agent is running (a `lane` launch: the lane is ready) and every stage has finished. Terminal. */
   | "completed"
   /** The user cancelled or deleted the launch; its lane and chat are gone. Terminal. */
   | "cancelled";
@@ -277,11 +289,11 @@ export type ChatLaunchArgs = {
   provider?: string | null;
   title?: string | null;
   originClientId?: string | null;
-  /** Required for kind "chat"; ignored for kind "cli". */
+  /** Required for kind "chat"; ignored for kinds "cli" and "lane". */
   chat?: ChatLaunchChatArgs;
   /**
    * Run the launch on a new ADE Cloud computer made for this lane alone.
-   * Chat launches only. The desktop app handles it, or a brain's
+   * Any kind (a chat, a CLI session, or the lane alone). The desktop app handles it, or a brain's
    * `cloud.lane_launch` (the CLI's `--machine cloud`); `chat.startLaunch` ignores it.
    */
   cloud?: ChatLaunchCloudTarget | null;

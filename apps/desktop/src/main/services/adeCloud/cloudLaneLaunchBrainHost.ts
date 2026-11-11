@@ -60,6 +60,12 @@ export type CloudLaneLaunchMachineTransport = {
   }): Promise<{ result: unknown }>;
   /** Sets the GitHub repository up on that machine with its own Git sign-in; an existing checkout wins. */
   setUpRepository(input: { machine: string; originUrl: string }): Promise<unknown>;
+  /**
+   * The launch kinds that machine's brain advertised when this brain
+   * connected (`chatLaunchKinds`; empty from an older brain). Unset: the
+   * hand-off doesn't check them.
+   */
+  chatLaunchKinds?(machine: string): Promise<string[]>;
 };
 
 let transport: CloudLaneLaunchMachineTransport | null = null;
@@ -241,6 +247,7 @@ export function createCloudLaneLaunchBrainHost(deps: {
       return true;
     },
     listProjects: async (targetId) => toProjectList(await probe(targetId)),
+    brainLaunchKinds: async (targetId) => (transport?.chatLaunchKinds ? await transport.chatLaunchKinds(targetId) : null),
     // The computer picks its own projects folder for a clone it is asked for.
     defaultParentDir: async () => "",
     cloneProject: async (targetId, input) => {

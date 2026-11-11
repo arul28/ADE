@@ -2275,7 +2275,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       return {
         ...prev,
         openItemIds: nextOpen,
-        ...(toDraft ? { activeItemId: null, selectedItemId: null, draftKind: detail.kind } : {}),
+        // A lane launch has no draft of its own (it starts nothing): the chat draft.
+        ...(toDraft ? { activeItemId: null, selectedItemId: null, draftKind: detail.kind === "cli" ? "cli" as const : "chat" as const } : {}),
       };
     });
   }), [setProjectViewState]);

@@ -20,6 +20,7 @@ import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/
 import { normalizeGitRemoteIdentity, pickLiveCheckout } from "../../../../desktop/src/shared/crossMachineHandoff";
 import { peerGitRemoteIdentity } from "../../../../desktop/src/main/services/github/githubSshAlias";
 import { accountMachinePresence } from "../../../../desktop/src/shared/machinePresence";
+import { readChatLaunchKindsCapability } from "../../../../desktop/src/shared/chatLaunch";
 import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainment";
 import type { ContainmentPlatform } from "../../../../desktop/src/shared/pathCase";
 import {
@@ -582,9 +583,24 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     );
   };
 
+  /**
+   * The chat launch kinds a machine's brain advertised in its `ade/initialize`
+   * capabilities (`chatLaunchKinds`); empty from an older brain. Read from
+   * the open connection, no call. Not an agent method: only this brain's own
+   * ADE Cloud lane hand-off asks, to refuse a kind an older brain can't run.
+   */
+  const chatLaunchKinds = async (machineKey: string): Promise<string[]> => {
+    const machine = await pool.selectMachine(machineKey);
+    if (pool.isThisMachine(machine)) throw new MachineIsLocalError(machineName(machine));
+    if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
+    const entry = await pool.acquire(machine);
+    return readChatLaunchKindsCapability(entry.capabilities);
+  };
+
   return {
     call,
     setUpRepository,
+    chatLaunchKinds,
     listMachines,
     deliverWake,
     locateChat,

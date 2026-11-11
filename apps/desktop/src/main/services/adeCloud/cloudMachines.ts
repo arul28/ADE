@@ -25,6 +25,7 @@ import {
   type CloudAccountState,
   type CloudMachine,
   type CloudMachineActionArgs,
+  type CloudMachineUpdate,
   type CloudCatalog,
   type CloudMachineActionResult,
   type CloudMachinesResult,
@@ -98,7 +99,22 @@ function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudLa
     ready: readyOf(instance),
     sleep: cloudSleepPolicyOf(instance),
     diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], catalog, instance.metadata[CLOUD_DISK_FULL_REASON_METADATA]),
+    update: updateOf(instance),
     ...(lane ? { lane } : {}),
+  };
+}
+
+/** The server's update facts, or null from a server before updates. */
+function updateOf(instance: CloudInstance): CloudMachineUpdate | null {
+  if (!instance.channel) return null;
+  return {
+    channel: instance.channel === "beta" ? "beta" : "stable",
+    image: instance.templateVersion ?? null,
+    target: instance.targetTemplate ?? null,
+    auto: instance.autoUpdate === true,
+    state: instance.updateState === "updating" || instance.updateState === "failed" ? instance.updateState : "auto",
+    error: instance.updateState === "failed" ? instance.updateError ?? null : null,
+    updatedAtMs: instance.updatedAt ?? null,
   };
 }
 

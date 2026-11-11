@@ -85,6 +85,20 @@ export type ComputerRow = {
   zero_stop_started_at: number | null;
   delete_warned_7d_at: number | null;
   delete_warned_1d_at: number | null;
+  /** Updates (migration 0020, `updates.ts`): the channel the computer follows, `stable` or `beta`. */
+  channel: string;
+  /** The image before the last update, for the rollback. */
+  previous_template: string | null;
+  /** null, `updating` (waiting for the boot report) or `failed`. */
+  update_state: string | null;
+  update_started_at: number | null;
+  /** `manual`, `idle`, `asleep` or `rollback`. */
+  update_reason: string | null;
+  /** The last boot report on a new image. */
+  updated_at: number | null;
+  /** An image this computer failed to start on: never tried again on its own. */
+  update_failed_template: string | null;
+  update_error: string | null;
 };
 
 export type AccountRow = {
@@ -230,7 +244,7 @@ export function restartStretchStatements(env: CloudEnv, computer: ComputerRow, n
 }
 
 /** The free push-work time of a closing stretch, so the daily reconcile doesn't charge it. */
-function freeWakeStatements(env: CloudEnv, computer: ComputerRow, closedAt: number, guard: StatusGuard): D1PreparedStatement[] {
+export function freeWakeStatements(env: CloudEnv, computer: ComputerRow, closedAt: number, guard: StatusGuard): D1PreparedStatement[] {
   if (computer.free_wake_started_at == null || computer.free_wake_until == null) return [];
   const freeEnd = Math.min(closedAt, computer.free_wake_until);
   return splitByUtcDay(computer.free_wake_started_at, freeEnd).map(({ day, ms }) =>

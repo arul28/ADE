@@ -17,7 +17,9 @@
  *   POST   /cloud/instances/:id/start          { status }
  *   POST   /cloud/instances/:id/stop           { status }
  *   POST   /cloud/instances/:id/idle           { status }   the computer asks to be slept
- *   POST   /cloud/instances/:id/update         { status, templateVersion }
+ *   POST   /cloud/instances/:id/update         { status, templateVersion }   409 `update_in_progress`
+ *   GET    /cloud/instances/:id/update-check   CloudUpdateCheck   (from the computer)
+ *   POST   /cloud/instances/:id/booted         CloudBootReportResult   (from the computer)
  *   POST   /cloud/instances/:id/resize         { status }
  *   POST   /cloud/instances/:id/backups        { id, created, sizeBytes }
  *   PUT    /cloud/instances/:id/auto-sleep     { ok: true }
@@ -66,6 +68,15 @@
  * included, never `past_due`) with more disk than it has is refused with 402
  * `over_plan_disk`; timed wakes already set are deleted, as at 0 hours.
  * Deleting a computer always works.
+ * `POST /cloud/instances` takes `{ channel: "stable" | "beta" }` (an Alpha
+ * build sends `beta`; left out is `stable`): the computer starts from that
+ * channel's image and follows it. A copy follows its original's channel.
+ * `POST /cloud/instances/:id/update` moves the computer to its channel's
+ * image. `{ reason: "idle", computerIdle: true }` is the computer updating
+ * itself: refused unless it is running, and a no-op (`started: false`) unless
+ * it is behind the image a passed check allowed. One update at a time.
+ * `POST /cloud/instances/:id/booted` takes `{ adeVersion }`; every brain start
+ * sends it, and it settles a waiting update.
  * `POST /cloud/instances/:id/resize` takes `{ origin: "auto" }` from the
  * computer's own disk grower, so analytics can tell it from a person's grow.
  * The checkout and portal URLs open in the person's browser and come back to
@@ -114,7 +125,43 @@ export type CloudInstance = {
   idleTimeoutSeconds: number | null;
   /** The machine's public ports (unauthenticated URLs); ADE's wake URL is one of them. */
   publicPorts: Array<{ port: number; url: string; label: string | null }>;
+  /*
+   * ADE's own update facts (`updates.ts`). Servers before updates leave them
+   * out; the provider's `template` is only the image's name.
+   */
+  /** The channel it follows, picked by the app that made it. */
+  channel?: CloudUpdateChannel;
+  /** The image it runs, `ade@N`. */
+  templateVersion?: string | null;
+  /** The channel's current image: what it updates to. */
+  targetTemplate?: string | null;
+  /** Whether it updates itself: its channel's automatic updates are on (`auto_update_<channel>` set and not `off`). */
+  autoUpdate?: boolean;
+  /** null when settled: `updating` until it reports in, `failed` after a rollback or a failed one. */
+  updateState?: CloudUpdateState | null;
+  /** When it last reported in on a new image (ms). */
+  updatedAt?: number | null;
+  /** Why the last update failed, one plain sentence; null unless `updateState` is `failed`. */
+  updateError?: string | null;
 };
+
+/** The update channel a computer follows. A client's `alpha` counts as `beta`. */
+export type CloudUpdateChannel = "stable" | "beta";
+export type CloudUpdateState = "updating" | "failed";
+/** Why an update started: a person, the idle computer itself, the cron while it slept, or the rollback. */
+export type CloudUpdateReason = "manual" | "idle" | "asleep" | "rollback";
+
+/** `GET /cloud/instances/:id/update-check`: whether the computer should update itself now. */
+export type CloudUpdateCheck = {
+  behind: boolean;
+  channel: CloudUpdateChannel;
+  templateVersion: string | null;
+  targetTemplate: string | null;
+  updateState: CloudUpdateState | null;
+};
+
+/** `POST /cloud/instances/:id/booted`: it woke only for an update, so it may sleep at its first idle check. */
+export type CloudBootReportResult = { ok: true; sleepWhenIdle: boolean };
 
 /** What `POST /cloud/billing/checkout` answers. */
 export type CloudPaidPlanId = Exclude<CloudPlanId, "free">;

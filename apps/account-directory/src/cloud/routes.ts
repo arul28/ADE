@@ -58,6 +58,19 @@ import {
   type CloudEnv,
   type ComputerRow,
 } from "./store";
+import {
+  CloudUpdateInProgressError,
+  automaticTemplate,
+  channelOfComputer,
+  channelTemplate,
+  isBehindAutomatic,
+  readUpdateChannel,
+  readUpdateTargets,
+  recordBootReport,
+  startCloudUpdate,
+  updateCheckOf,
+  withUpdateFacts,
+} from "./updates";
 
 /**
  * The ADE Cloud routes (README, "ADE Cloud account"; shapes in `contract.ts`).
@@ -274,14 +287,15 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
   name: string | null;
   requestId: string;
   templateVersion: string | null;
+  channel: "stable" | "beta";
   now: number;
 }): Promise<{ ok: true; pendingId: string } | ({ ok: false } & Refused) | { ok: false; response: Response; refusal: null } | { ok: false; replay: true }> {
   const limit = computerLimit(account);
   const pendingId = newPendingId();
   const cutoff = args.now - PENDING_TIMEOUT_MS;
   const result = await env.DB.prepare(`
-    insert into cloud_computers (instance_id, user_id, request_id, type, cpu, memory_gb, disk_gb, multiplier_milli, template_version, name, status, status_changed_at, last_awake_at, created_at, moving_from)
-    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?
+    insert into cloud_computers (instance_id, user_id, request_id, type, cpu, memory_gb, disk_gb, multiplier_milli, template_version, name, status, status_changed_at, last_awake_at, created_at, moving_from, channel)
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'provisioning', ?, ?, ?, ?, ?
     where (select count(*) from cloud_computers where user_id = ? and deleted_at is null and (status != 'provisioning' or created_at > ?)) < ?
       and ${accountDiskSql("?", { except: true })} + ? <= ?
       and not exists (select 1 from cloud_computers where request_id = ? and user_id <> ?)
@@ -289,7 +303,7 @@ async function reserveComputer(env: CloudEnv, account: AccountRow, args: {
       and not exists (select 1 from cloud_computers where deleted_at is null and moving_from is not null and (moving_from = ? or instance_id = ?))
   `).bind(
     pendingId, account.user_id, args.requestId, args.size.type, args.size.cpu, args.size.memoryGb, args.diskGb, args.size.multiplierMilli,
-    args.templateVersion, args.name, args.now, args.now, args.now, args.moveFromInstanceId,
+    args.templateVersion, args.name, args.now, args.now, args.now, args.moveFromInstanceId, args.channel,
     account.user_id, cutoff, limit,
     account.user_id, args.moveFromInstanceId ?? "", args.diskGb, args.capGb,
     args.requestId, account.user_id,
@@ -399,6 +413,9 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
   const clientEnv = stringMap(body.env, MAX_ENV_ENTRIES);
   const publicPorts = onlyWakePorts(body.publicPorts);
   if (!clientMetadata || !clientEnv || !publicPorts) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  // The app's own update track: the computer starts from that channel's image and follows it.
+  const channel = body.channel === undefined ? "stable" : readUpdateChannel(body.channel);
+  if (!channel) return badRequest("That update channel isn't one ADE knows.");
 
   // A repeat of a request this account made gets that computer, before any
   // limit: it is not a new computer, so hours or the computer limit can't refuse it.
@@ -408,9 +425,10 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
     if (replay) return replay;
   }
 
-  const templateVersion = await readSetting(env, "template_version");
+  const targets = await readUpdateTargets(env);
+  const templateVersion = channelTemplate(targets, channel);
   if (!templateVersion) {
-    reportCloudFailure("cloud.create_refused_no_template_version", { userId });
+    reportCloudFailure("cloud.create_refused_no_template_version", { userId, channel });
     return fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503);
   }
   const { account, outOfHours: empty } = await getAccountContext(env, userId, now);
@@ -440,7 +458,7 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
   const room = await diskRoom(env, account, await accountDiskGb(env, userId, moveFromInstanceId ?? "") + diskGb, now);
   if (!room.ok) return refuse(room);
 
-  const reservation = await reserveComputer(env, account, { size, diskGb, capGb: room.capGb, moveFromInstanceId, name, requestId, templateVersion, now });
+  const reservation = await reserveComputer(env, account, { size, diskGb, capGb: room.capGb, moveFromInstanceId, name, requestId, templateVersion, channel, now });
   if (!reservation.ok) {
     if ("replay" in reservation) return await replayRequest(env, provider, userId, requestId, now) ?? createInProgress();
     return reservation.refusal ? refuse({ response: reservation.response, refusal: reservation.refusal }) : reservation.response;
@@ -462,7 +480,7 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
       diskDayStatement(env, account, now),
     ]);
     track({ action, tier: tierOf(size) });
-    return json(instance, 201);
+    return json(withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null }, targets), 201);
   } catch (error) {
     if (providerMadeNothing(error)) await releasePending(env, reservation.pendingId);
     if (error instanceof CloudProviderError && (error.code === "not_found" || error.code === "invalid_request")) {
@@ -515,6 +533,8 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
     name: name ?? computer.name,
     requestId,
     templateVersion: computer.template_version,
+    // A copy follows its original's channel.
+    channel: channelOfComputer(computer),
     now,
   });
   if (!reservation.ok) {
@@ -685,20 +705,41 @@ async function handleStop(env: CloudEnv, computer: ComputerRow, provider: CloudP
   return json({ status });
 }
 
-async function handleUpdate(env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number): Promise<Response> {
-  const templateVersion = await readSetting(env, "template_version");
+/**
+ * Moves the computer to its channel's image (`updates.ts`). A person's update
+ * (no reason, or `manual`) always runs; the computer's own (`idle`) runs only
+ * while it is running and says it is idle, and only when it is behind the
+ * image a passed check allowed.
+ */
+async function handleUpdate(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, { now }: CloudRequestContext): Promise<Response> {
+  const body = await readJson(request);
+  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  const reason = body.reason === undefined || body.reason === "manual" ? "manual" : body.reason === "idle" ? "idle" : null;
+  if (!reason) return badRequest("That update reason isn't one ADE Cloud knows.");
+  const targets = await readUpdateTargets(env);
+  const channel = channelOfComputer(computer);
+  if (reason === "idle") {
+    // It restarts the computer, so only the computer can say it's safe.
+    if (body.computerIdle !== true || computer.status !== "running") {
+      return fail("computer_busy", "A computer updates itself only while it's idle.", 409);
+    }
+    if (!isBehindAutomatic(computer, targets)) return json({ status: computer.status, templateVersion: computer.template_version, started: false });
+  }
+  const templateVersion = reason === "idle" ? automaticTemplate(targets, channel) : channelTemplate(targets, channel);
   if (!templateVersion) {
-    reportCloudFailure("cloud.update_refused_no_template_version", { userId: computer.user_id, instanceId: computer.instance_id });
+    reportCloudFailure("cloud.update_refused_no_template_version", { userId: computer.user_id, instanceId: computer.instance_id, channel });
     return fail("template_unset", CANT_MAKE_COMPUTER_MESSAGE, 503);
   }
+  if (computer.update_state === "updating") return fail("update_in_progress", new CloudUpdateInProgressError().message, 409);
   const { blocked } = await wakeBlocker(env, computer.user_id, now);
   if (blocked) return blocked.response;
-  const status = await provider.updateInstance(computer.instance_id, templateVersion);
-  await env.DB.batch([
-    env.DB.prepare("update cloud_computers set template_version = ? where instance_id = ?").bind(templateVersion, computer.instance_id),
-    ...statusChangeStatements(env, computer, status, now, "update"),
-  ]);
-  return json({ status, templateVersion });
+  try {
+    const started = await startCloudUpdate(env, provider, computer, { reason, target: templateVersion, now });
+    return json({ ...started, started: true });
+  } catch (error) {
+    if (error instanceof CloudUpdateInProgressError) return fail("update_in_progress", error.message, 409);
+    throw error;
+  }
 }
 
 async function handleDelete(request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, { now, waitUntil }: CloudRequestContext): Promise<Response> {
@@ -736,15 +777,16 @@ async function handleTemplate(env: CloudEnv, provider: CloudProvider): Promise<R
 
 async function handleList(env: CloudEnv, userId: string, provider: CloudProvider): Promise<Response> {
   const all = await provider.listInstances();
-  const rows = await env.DB.prepare("select instance_id, request_id from cloud_computers where user_id = ? and deleted_at is null")
-    .bind(userId).all<{ instance_id: string; request_id: string | null }>();
+  const [rows, targets] = await Promise.all([listComputers(env, userId), readUpdateTargets(env)]);
   const owned = new Set<string>();
   const pendingRequestIds = new Map<string, string>();
-  for (const row of rows.results ?? []) {
+  const rowById = new Map<string, ComputerRow>();
+  for (const row of rows) {
     if (isPendingId(row.instance_id)) {
       if (row.request_id) pendingRequestIds.set(row.request_id, row.instance_id);
     } else {
       owned.add(row.instance_id);
+      rowById.set(row.instance_id, row);
     }
   }
   // A create cancelled or lost in flight: the client finds it by its request tag.
@@ -753,10 +795,14 @@ async function handleList(env: CloudEnv, userId: string, provider: CloudProvider
     const pendingId = pendingRequestIds.get(instance.metadata.ade_request_id ?? "");
     if (pendingId && !owned.has(instance.id)) {
       const [adopted] = await env.DB.batch(adoptionStatements(env, { pendingId, instance, machineKey: instance.metadata.ade_machine_key ?? null, now, reason: "create_adopted" }));
-      if (adopted?.meta.changes === 1) owned.add(instance.id);
+      if (adopted?.meta.changes === 1) {
+        owned.add(instance.id);
+        const pending = rows.find((row) => row.instance_id === pendingId);
+        if (pending) rowById.set(instance.id, pending);
+      }
     }
   }
-  return json({ data: all.filter((instance) => owned.has(instance.id)) });
+  return json({ data: all.filter((instance) => owned.has(instance.id)).map((instance) => withUpdateFacts(instance, rowById.get(instance.id), targets)) });
 }
 
 const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer: ComputerRow, provider: CloudProvider, ctx: CloudRequestContext) => Promise<Response>> = {
@@ -764,7 +810,15 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   "POST idle": (_request, env, computer, provider, { now }) => handleSleepLike(env, computer, provider, now, "idle_request"),
   "POST start": handleStart,
   "POST stop": (_request, env, computer, provider, { now }) => handleStop(env, computer, provider, now),
-  "POST update": (_request, env, computer, provider, { now }) => handleUpdate(env, computer, provider, now),
+  "POST update": handleUpdate,
+  // The computer asks whether it should update itself (its idle step), and reports in after each brain start.
+  "GET update-check": async (_request, env, computer) => json(updateCheckOf(computer, await readUpdateTargets(env))),
+  "POST booted": async (request, env, computer, _provider, { now }) => {
+    const body = await readJson(request);
+    if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+    const { sleepWhenIdle } = await recordBootReport(env, computer, shortText(body.adeVersion, 64), now);
+    return json({ ok: true, sleepWhenIdle });
+  },
   "POST resize": handleResize,
   "POST fork": handleFork,
   "POST exec": handleExec,
@@ -820,7 +874,7 @@ async function routeInstance(request: Request, env: CloudEnv, provider: CloudPro
       try {
         const instance = await provider.getInstance(instanceId);
         await recordStatus(env, computer, instance.status, now, "seen");
-        return json(instance);
+        return json(withUpdateFacts(instance, computer, await readUpdateTargets(env)));
       } catch (error) {
         if (error instanceof CloudProviderError && error.status === 404) await markGone(env, computer, now);
         throw error;

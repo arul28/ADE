@@ -1337,7 +1337,8 @@ export function RemoteTargetList({
           updateTargetVersion={
             updatePhase && updateAttempt?.pendingVersion
               ? updateAttempt.pendingVersion
-              : row.connected
+              // A cloud computer updates itself; its card shows that line instead.
+              : row.connected && !extras.selfUpdating
                 ? machineUpdateTargetVersion({ version: row.version }, knownVersions)
                 : null
           }

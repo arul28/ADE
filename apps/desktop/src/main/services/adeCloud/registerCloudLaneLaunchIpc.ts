@@ -5,6 +5,7 @@ import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff"
 import { IPC } from "../../../shared/ipc";
 import type {
   ChatLaunchArgs,
+  ChatLaunchCompleteClientArgs,
   ChatLaunchEvent,
   ChatLaunchIdArgs,
   ChatLaunchQueueMessageArgs,
@@ -50,6 +51,9 @@ export function registerCloudLaneLaunchIpc(args: {
 }): CloudLaneLaunchService {
   const { remote, logger } = args;
   const { pendingCreates: _pendingCreates, ...creator } = args.machineCreatorDeps;
+  // The launch kinds each connect's brain advertised, so the hand-off reads
+  // what its own connect just saw instead of connecting again.
+  const brainLaunchKinds = new Map<string, string[]>();
   const service = createCloudLaneLaunchService({
     recordsDir: path.join(app.getPath("userData"), "cloud-lane-launches"),
     logger,
@@ -57,7 +61,12 @@ export function registerCloudLaneLaunchIpc(args: {
     creator,
     removeAccountMachine: args.removeAccountMachine,
     pairMachine: args.pairMachine,
-    connect: (targetId) => remote.connect(targetId),
+    connect: async (targetId) => {
+      const connected = await remote.connect(targetId);
+      brainLaunchKinds.set(targetId, connected.chatLaunchKinds);
+      return true;
+    },
+    brainLaunchKinds: async (targetId) => brainLaunchKinds.get(targetId) ?? null,
     listProjects: (targetId) => remote.projects(targetId),
     defaultParentDir: (targetId) => remote.defaultParentDir(targetId),
     cloneProject: (targetId, input) => remote.cloneProject(targetId, input),
@@ -117,7 +126,7 @@ export function registerCloudLaneLaunchIpc(args: {
           case "queueMessage":
             return { owned: true, result: await service.queueMessage(request.args as ChatLaunchQueueMessageArgs) };
           case "completeClient":
-            return { owned: true, result: await service.completeClient(idArgs) };
+            return { owned: true, result: await service.completeClient(request.args as ChatLaunchCompleteClientArgs) };
         }
         return { owned: false };
       }

@@ -17,6 +17,8 @@ import {
   type CloudExecResult,
   type CloudInstance,
   type CloudProvider,
+  type CloudUpdateChannel,
+  type CloudUpdateCheck,
 } from "./cloudProvider";
 import { cloudSavedChatUrl, cloudSavedChatsUrl, type CloudSavedChatList, type CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 
@@ -41,6 +43,8 @@ export type CloudServerProviderDeps = {
   baseUrl: () => string | null;
   /** Names this computer in the server's delete log. */
   deviceName?: () => string | null;
+  /** The update track of the app that makes a computer (`stable` or `beta`), sent with each create. */
+  updateChannel?: () => CloudUpdateChannel | null;
   fetch?: FetchLike;
   logger?: { warn(event: string, meta?: Record<string, unknown>): void };
 };
@@ -170,7 +174,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     },
 
     async createInstance(input: CloudCreateInstanceInput, signal?: AbortSignal): Promise<CloudInstance> {
-      return readInstance(await request("POST", INSTANCES, { body: input, timeoutMs: CREATE_TIMEOUT_MS, signal }));
+      // Every create names a channel, so a Beta app never makes a Stable computer by leaving it out.
+      const channel = input.channel ?? deps.updateChannel?.() ?? null;
+      const body = channel ? { ...input, channel } : input;
+      return readInstance(await request("POST", INSTANCES, { body, timeoutMs: CREATE_TIMEOUT_MS, signal }));
     },
 
     async deleteInstance(id: string, context?: CloudDeleteContext): Promise<void> {
@@ -198,8 +205,26 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       return statusOf(await request("POST", instancePath(id, "stop"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "stopped");
     },
 
-    async updateInstance(id: string): Promise<string> {
-      return statusOf(await request("POST", instancePath(id, "update"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "updating");
+    async updateInstance(id, options): Promise<string> {
+      const body = options?.reason === "idle" ? { reason: "idle", computerIdle: true } : {};
+      return statusOf(await request("POST", instancePath(id, "update"), { body, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "updating");
+    },
+
+    async checkForUpdate(id: string): Promise<CloudUpdateCheck> {
+      const body = record(await request("GET", instancePath(id, "update-check")));
+      const text = (value: unknown) => (typeof value === "string" && value ? value : null);
+      return {
+        behind: body?.behind === true,
+        channel: body?.channel === "beta" ? "beta" : "stable",
+        templateVersion: text(body?.templateVersion),
+        targetTemplate: text(body?.targetTemplate),
+        updateState: body?.updateState === "updating" || body?.updateState === "failed" ? body.updateState : null,
+      };
+    },
+
+    async reportBooted(id: string, adeVersion: string | null): Promise<{ sleepWhenIdle: boolean }> {
+      const body = record(await request("POST", instancePath(id, "booted"), { body: { adeVersion } }));
+      return { sleepWhenIdle: body?.sleepWhenIdle === true };
     },
 
     async resizeInstance(id, resources, options): Promise<string> {

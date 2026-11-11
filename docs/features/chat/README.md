@@ -3189,6 +3189,20 @@ closed.
   its cleanup.
 - **Limits.** Only GitHub origins, no local file attachments before the
   hand-off, and no uncommitted start.
+- **Kinds.** Any kind can start a cloud lane. A `chat` starts its agent there.
+  A `cli` parks at `awaiting-client` on the computer's brain, and the
+  launching window's `useChatLaunchCliDriver` starts the tracked CLI session
+  through `snapshot.cloud.binding`. Its `completeClient` goes to main, which
+  forwards it to the brain. A `lane` (`ade lanes create --machine cloud`) has
+  no `agent` stage and completes when its environment stage ends. It takes no
+  queued messages.
+  A brain advertises the kinds it runs as the `chatLaunchKinds` capability of
+  `ade/initialize` (`CHAT_LAUNCH_KINDS`). Before it hands off a `cli` or
+  `lane` launch, the launch owner reads that list from its connection (the
+  connect result in the app, the bridge's open connection in a brain). A
+  brain that does not list the kind would read it as `chat`, so the step
+  fails with "too old, update it, then retry". A list that can't be read is
+  not refused.
 
 #### Run on ADE Cloud in the composer
 

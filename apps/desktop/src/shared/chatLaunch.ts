@@ -108,14 +108,38 @@ export function laneSetupLaunchIdFromCardId(cardId: string | null | undefined): 
 /** `metrics[].label` under which a `lane_setup` card carries its lane template's name. */
 export const LANE_SETUP_CARD_TEMPLATE_METRIC = "Template";
 
+/**
+ * Whether a brain can't run a launch of this kind handed to it, from the
+ * `chatLaunchKinds` capability it advertised. A chat runs on any brain. Null
+ * (its answer couldn't be read) is not refused; a brain that answered without
+ * the list predates the kinds, so only `chat` is assumed.
+ */
+export function chatLaunchKindUnknownToBrain(kind: ChatLaunchKind, brainKinds: readonly string[] | null): boolean {
+  if (kind === "chat" || brainKinds === null) return false;
+  return !brainKinds.includes(kind);
+}
+
+/** The `chatLaunchKinds` capability as a brain sent it: the strings only; absent is an empty list. */
+export function readChatLaunchKindsCapability(capabilities: unknown): string[] {
+  if (!capabilities || typeof capabilities !== "object") return [];
+  const kinds = (capabilities as { chatLaunchKinds?: unknown }).chatLaunchKinds;
+  return Array.isArray(kinds) ? kinds.filter((kind): kind is string => typeof kind === "string") : [];
+}
+
+/** A launch kind from untrusted input; anything unknown is a chat, as before kinds grew. */
+export function chatLaunchKindOf(value: unknown): ChatLaunchKind {
+  return value === "cli" || value === "lane" ? value : "chat";
+}
+
 function newChatLaunchStage(id: ChatLaunchStageId): ChatLaunchStage {
   return { id, status: "pending", startedAt: null, endedAt: null, percent: null, detail: null, error: null };
 }
 
 /** The stages a launch shows, in {@link CHAT_LAUNCH_STAGE_ORDER}. */
-function chatLaunchStageIds(args: { includeCloud?: boolean; includeFetch: boolean; includeEnvironment: boolean }): ChatLaunchStageId[] {
+function chatLaunchStageIds(args: { includeCloud?: boolean; includeFetch: boolean; includeEnvironment: boolean; includeAgent: boolean }): ChatLaunchStageId[] {
   return CHAT_LAUNCH_STAGE_ORDER.filter((id) =>
     (!isChatLaunchCloudStageId(id) || args.includeCloud === true)
+    && (id !== "agent" || args.includeAgent)
     && (id !== "fetch" || args.includeFetch)
     && (id !== "environment" || args.includeEnvironment));
 }
@@ -144,7 +168,7 @@ export function createChatLaunchSnapshot(args: {
   nowIso: string;
 }): ChatLaunchSnapshot {
   const launch = args.launch;
-  const kind: ChatLaunchKind = launch.kind === "cli" ? "cli" : "chat";
+  const kind = chatLaunchKindOf(launch.kind);
   const prompt = String(launch.prompt ?? "");
   const chat = kind === "chat" ? launch.chat : undefined;
   return {
@@ -169,7 +193,8 @@ export function createChatLaunchSnapshot(args: {
     phase: "running",
     stages: [
       ...(args.priorStages ?? []).map((stage) => ({ ...stage })),
-      ...chatLaunchStageIds({ ...args, includeCloud: args.includeCloud === true && !args.priorStages?.length })
+      // A lane launch starts nothing in the lane, so it has no agent stage.
+      ...chatLaunchStageIds({ ...args, includeCloud: args.includeCloud === true && !args.priorStages?.length, includeAgent: kind !== "lane" })
         .map(newChatLaunchStage),
     ],
     error: null,
@@ -290,7 +315,9 @@ export function chatLaunchStatusLine(launch: ChatLaunchSnapshot): string {
     const label = failed ? chatLaunchStageLabel(failed.id, context) : "Setup";
     return `${label} failed`;
   }
-  if (launch.phase === "completed") return launch.kind === "cli" ? "CLI session started" : "Agent started";
+  if (launch.phase === "completed") {
+    return launch.kind === "cli" ? "CLI session started" : launch.kind === "lane" ? "Lane ready" : "Agent started";
+  }
   const active = chatLaunchActiveStage(launch);
   if (!active) return "Setting up lane";
   const label = chatLaunchStageActiveLabel(active.id, context);

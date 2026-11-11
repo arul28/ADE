@@ -138,6 +138,7 @@ export function registerCloudIpc(args: {
     account,
     directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl(),
     deviceName: () => hostname(),
+    runningVersion: () => app.getVersion(),
     logger,
     onDirectoryUnavailable: (error) => logger.warn("cloud.account_directory_unavailable", { error: getErrorMessage(error) }),
   });

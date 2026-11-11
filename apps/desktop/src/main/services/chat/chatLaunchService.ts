@@ -30,6 +30,7 @@ import {
   chatLaunchLaneStart,
   createChatLaunchSnapshot,
   isChatLaunchTerminal,
+  chatLaunchKindOf,
   normalizeChatLaunchPriorStages,
   toQueuedMessage,
 } from "../../../shared/chatLaunch";
@@ -194,6 +195,9 @@ const requireLaunchId = (value: unknown): string => requireNormalizedUuid(value,
 
 /** Cancel is for setup only; once the agent runs, the lane is the user's to delete. */
 export const CHAT_LAUNCH_ALREADY_STARTED_ERROR = "This chat already started — delete its lane from the lane menu instead.";
+export const CHAT_LAUNCH_LANE_READY_ERROR = "This lane is already set up — delete it from the lane menu instead.";
+/** A lane launch starts no chat, so there is nothing to send a message to. */
+export const CHAT_LAUNCH_NO_CHAT_ERROR = "This lane starts no chat, so it can't take messages.";
 
 function autoLaneGenericSuffix(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -852,7 +856,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
   /** Complete the launch once the agent runs and no stage is still open. Returns whether it did. */
   const finishIfSettled = (record: LaunchRecord): boolean => {
     const snapshot = record.snapshot;
-    if (snapshot.phase !== "running" || !snapshot.agentStarted) return false;
+    // A lane launch starts nothing: it is done once its stages are.
+    if (snapshot.phase !== "running" || (!snapshot.agentStarted && snapshot.kind !== "lane")) return false;
     if (snapshot.stages.some((stage) => stage.status === "pending" || stage.status === "running")) return false;
     snapshot.phase = "completed";
     snapshot.endedAt = nowIso();
@@ -903,7 +908,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       activeStage = "agent";
       if (record.snapshot.kind === "chat") {
         await runChatAgentStage(record);
-      } else if (!record.snapshot.agentStarted) {
+      } else if (record.snapshot.kind === "cli" && !record.snapshot.agentStarted) {
         setStage(record, "agent", "running");
         record.snapshot.phase = "awaiting-client";
         publish(record);
@@ -956,7 +961,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       deps.laneService.assertRoomForNewLane?.();
     }
 
-    const kind = args.kind === "cli" ? "cli" : "chat";
+    const kind = chatLaunchKindOf(args.kind);
     let chat: ChatLaunchChatArgs | null = null;
     if (kind === "chat") {
       // Untrusted payloads were already parsed by `parseChatLaunchArgs` (chatLaunchArgs.ts).
@@ -980,7 +985,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const environment = deps.planEnvironment(laneConfig?.templateId ?? null);
     // An ADE Cloud launch's desktop stages: shown first and never run here.
     // Re-checked even after the parser, because in-process callers skip it.
-    const priorStages = kind === "chat" ? normalizeChatLaunchPriorStages(args.priorStages) : [];
+    const priorStages = normalizeChatLaunchPriorStages(args.priorStages);
     const snapshot = createChatLaunchSnapshot({
       launch: { ...args, launchId, kind, ...(chat ? { chat } : {}) },
       laneId,
@@ -1069,7 +1074,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     if (!record) return null;
     if (record.snapshot.phase === "cancelled") return cloneSnapshot(record.snapshot);
     if (record.snapshot.agentStarted || record.snapshot.phase === "completed") {
-      throw new Error(CHAT_LAUNCH_ALREADY_STARTED_ERROR);
+      throw new Error(record.snapshot.kind === "lane" ? CHAT_LAUNCH_LANE_READY_ERROR : CHAT_LAUNCH_ALREADY_STARTED_ERROR);
     }
     const runtime = runtimeFor(launchId);
     const pipeline = runtime.pipeline;
@@ -1182,6 +1187,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const text = String(args.text ?? "");
     if (!text.trim() && !args.attachments?.length) throw new Error("A queued message needs text or an attachment.");
     if (record.snapshot.phase === "cancelled") throw new Error("This launch was cancelled.");
+    if (record.snapshot.kind === "lane") throw new Error(CHAT_LAUNCH_NO_CHAT_ERROR);
     // A client that still sees the failed launch routes the chat's sends here.
     await adoptIfChatStarted(record);
     // A cancel can land during that transcript read (re-read: the await widens what TS narrowed).

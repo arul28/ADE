@@ -114,8 +114,9 @@ export type CloudLaneLaunchRefusal = { message: string; short: string };
  */
 export function cloudLaneLaunchStartRefusal(input: { args: ChatLaunchArgs; originUrl: string | null }): CloudLaneLaunchRefusal | null {
   const args = input.args;
-  if (args?.kind === "cli" || !args?.chat) {
-    return { message: "An ADE Cloud lane starts with a chat.", short: "ADE Cloud lanes start as chats." };
+  // A chat, a tracked CLI session, or the lane alone can start a new ADE Cloud lane.
+  if (args?.kind !== "cli" && args?.kind !== "lane" && !args?.chat) {
+    return { message: "A chat launch needs its first message.", short: "Add a message first." };
   }
   if (!args.cloud?.sizeId) return { message: "Pick a size for the ADE Cloud computer.", short: "Pick a size first." };
   if (!isGithubOrigin(input.originUrl)) {
@@ -124,9 +125,11 @@ export function cloudLaneLaunchStartRefusal(input: { args: ChatLaunchArgs; origi
       short: "ADE Cloud needs a GitHub origin.",
     };
   }
-  if (hasLocalAttachments(args.attachments) || hasLocalAttachments(args.chat.message?.attachments)) {
+  if (hasLocalAttachments(args.attachments) || hasLocalAttachments(args.chat?.message?.attachments)) {
     return {
-      message: "Files from this computer can't go to a new ADE Cloud computer yet. Send without them, then add them once the chat starts.",
+      message: args.kind === "cli"
+        ? "Files from this computer can't go to a new ADE Cloud computer yet. Start without them, then add them once the CLI session runs."
+        : "Files from this computer can't go to a new ADE Cloud computer yet. Send without them, then add them once the chat starts.",
       short: "Send without local files.",
     };
   }
