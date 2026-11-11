@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Banner } from "../../ui/notice";
 import { ArrowSquareOut, Copy, File as FileIcon, FilePlus, FolderPlus, Path, PencilSimple, TextT, Trash } from "@phosphor-icons/react";
 import type { FileChangeEvent, FileContent, FilesWorkspace } from "../../../../shared/types";
 import type { OpenProjectBinding } from "../../../../shared/types/core";
@@ -1121,7 +1122,7 @@ export function FilesWorkbench({
           line,
         });
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
       }
     },
     [upsertWorkspace],
@@ -1480,7 +1481,7 @@ export function FilesWorkbench({
       try {
         await files.rename({ workspaceId, oldPath: sourcePath, newPath: destinationPath });
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
         return;
       }
       forgetRecentFilesUnder(recentSessionKey, sourcePath);
@@ -1507,7 +1508,7 @@ export function FilesWorkbench({
         closeOpenTabsUnder(workspaceId, path);
         await refreshRoot();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
       }
     },
     [closeOpenTabsUnder, confirmDiscardDirtyTabIds, dirtyTabsUnder, files, recentSessionKey, refreshRoot, workspaceId],
@@ -1556,7 +1557,7 @@ export function FilesWorkbench({
         await refreshRoot();
         if (kind === "file") void openFile(rel, { preview: false });
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatFilesError(err));
       }
     },
     [files, workspaceId, refreshRoot, openFile],
@@ -1721,7 +1722,7 @@ export function FilesWorkbench({
           onToggleDirectory={toggleDirectory}
           onLoadMoreChildren={(path, offset) => {
             loadMoreChildren(path, offset).catch((err: unknown) => {
-              setError(err instanceof Error ? err.message : String(err));
+              setError(formatFilesError(err));
             });
           }}
           onOpenFile={(path) => void openFile(path, { preview: true })}
@@ -1785,15 +1786,26 @@ export function FilesWorkbench({
         </div>
       ) : null}
       {error ? (
-        <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-1 text-xs" style={{ color: COLORS.danger, background: "rgba(255,0,0,0.06)" }}>
-          <span>{error}</span>
-          <button
-            type="button"
-            onClick={() => { void refreshRoot(); }}
-            className="shrink-0 underline-offset-2 hover:underline"
-          >
-            Retry
-          </button>
+        <div className="shrink-0">
+          <Banner
+            layout="inline"
+            model={{
+              id: "files-workbench-error",
+              tone: "error",
+              title: error,
+              // Most of these are the person's own local state (a name in use,
+              // a permission); they are not ADE defects to report.
+              report: false,
+              actions: [{
+                label: "Retry",
+                onClick: () => {
+                  setError(null);
+                  void refreshRoot();
+                },
+              }],
+              dismiss: { onDismiss: () => setError(null) },
+            }}
+          />
         </div>
       ) : null}
       {/*

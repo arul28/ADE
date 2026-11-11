@@ -3,6 +3,7 @@ import { LaneShareGuestView } from "../laneShare/guest/LaneShareGuestView";
 import { clearLaneShareWorkSelection, selectLaneShareInWork, useLaneShareGuestStore } from "../laneShare/guest/laneShareGuestStore";
 import { Trash } from "@phosphor-icons/react";
 import { useLatestCallback } from "../../lib/stableIdentity";
+import { useAutoDismiss } from "../../lib/useAutoDismiss";
 import { AnimatePresence, motion } from "motion/react";
 import { paneTransition } from "../../lib/motion";
 import type { PaneSplit } from "../ui/PaneTilingLayout";
@@ -243,15 +244,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
   const [bulkMenu, setBulkMenu] = useState<ContextMenuState>(null);
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
-  const [sessionActionError, setSessionActionError] = useState<string | null>(null);
-  // One owner for the 6 s dismiss: a new message (or a reset) cancels the old
-  // timer, and unmount cancels it too, instead of an older timer clearing a
-  // newer message early.
-  useEffect(() => {
-    if (!sessionActionError) return undefined;
-    const timer = window.setTimeout(() => setSessionActionError(null), 6000);
-    return () => window.clearTimeout(timer);
-  }, [sessionActionError]);
+  const [sessionActionError, setSessionActionError] = useAutoDismiss<string | null>(null, 6000);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
@@ -290,7 +283,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           setSessionActionError(`${options.errorLabel} failed: ${message}`);
         });
     },
-    [refreshWork],
+    [refreshWork, setSessionActionError],
   );
   useWorkLaneDeleteProgress({
     active,
@@ -817,7 +810,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           setDeletingSessionId((current) => (current === session.id ? null : current));
         });
     },
-    [resolveSessionRuntimePin, showDeletedChatToast, work],
+    [resolveSessionRuntimePin, setSessionActionError, showDeletedChatToast, work],
   );
 
   const handleDeleteSession = useCallback(
@@ -860,7 +853,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           setDeletingSessionId((current) => (current === session.id ? null : current));
         });
     },
-    [resolveSessionRuntimePin, work],
+    [resolveSessionRuntimePin, setSessionActionError, work],
   );
 
   const handleStopAndDeleteSession = useCallback(
@@ -903,7 +896,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         }
       })();
     },
-    [resolveSessionRuntimePin, work],
+    [resolveSessionRuntimePin, setSessionActionError, work],
   );
 
   const selectedSessions = useMemo(
@@ -979,7 +972,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         const message = err instanceof Error ? err.message : String(err);
         setSessionActionError(`Stop failed: ${message}`);
       });
-  }, [selectedSessions, work]);
+  }, [selectedSessions, setSessionActionError, work]);
 
   const handleBulkDeleteSelected = useCallback(async () => {
     const deletable = selectedSessions.filter(canBulkDeleteSession);
@@ -1044,7 +1037,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       .finally(() => {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
       });
-  }, [deleteSelectedSession, selectedSessions, work]);
+  }, [deleteSelectedSession, selectedSessions, setSessionActionError, work]);
 
   const handleRefreshOrphanSessions = useCallback(() => {
     setSessionActionError(null);
@@ -1058,7 +1051,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       .finally(() => {
         setDeletingSessionId((current) => (current === "orphan-refresh" ? null : current));
       });
-  }, [work]);
+  }, [setSessionActionError, work]);
 
   const handleBulkStopAndDeleteSelected = useCallback(() => {
     void (async () => {
@@ -1118,7 +1111,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
       }
     })();
-  }, [deleteSelectedSession, selectedSessions, work]);
+  }, [deleteSelectedSession, selectedSessions, setSessionActionError, work]);
 
   const finalizeCliResumeResult = useCallback(
     async (
@@ -1166,7 +1159,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         throw err;
       }
     },
-    [finalizeCliResumeResult, resolveSessionRuntimePin],
+    [finalizeCliResumeResult, resolveSessionRuntimePin, setSessionActionError],
   );
 
   const handleContinueCliSession = useLatestCallback(

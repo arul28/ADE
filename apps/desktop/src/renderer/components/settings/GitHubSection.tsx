@@ -1,6 +1,6 @@
 import { githubReminderKey, resetGithubReminders, migrateGithubReminder, useBannerDismissals } from "../../lib/bannerDismiss";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { issueWriteSourceLabel } from "../../../shared/githubOperationCredential";
 import type { GitHubCredentialState, GitHubStatus } from "../../../shared/types";
 import {
@@ -211,19 +211,29 @@ export function GitHubSection() {
   // with the install panel on this same page, which is where it is disconnected.
   const { appAuth } = useGithubAppUserAuth(pin);
 
-  useEffect(() => {
-    let cancelled = false;
-
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const statusRequestRef = useRef(0);
+  const readStatus = useCallback(() => {
+    // Switching machines while a read is in flight must not land the old
+    // machine's answer (or clear the new machine's real error).
+    const request = ++statusRequestRef.current;
     window.ade.github
-      .getStatus(undefined, pin)
+      .getStatus(undefined, pinRef.current)
       .then((status) => {
-        if (cancelled) return;
+        if (statusRequestRef.current !== request) return;
         setGithubStatus(status);
         setStatusError(null);
       })
       .catch((error: unknown) => {
-        if (!cancelled) setStatusError(error instanceof Error ? error.message : String(error));
+        if (statusRequestRef.current !== request) return;
+        setStatusError(error instanceof Error ? error.message : String(error));
       });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    readStatus();
     window.ade.projectConfig
       .get(pin)
       .then((snapshot) => {
@@ -235,28 +245,14 @@ export function GitHubSection() {
     return () => {
       cancelled = true;
     };
-  }, [pin]);
+  }, [pin, readStatus]);
 
   // A credential can change while this page stays open (gh logs out, a token
   // is saved elsewhere), so read the status again when ADE comes back to the
   // front and when any surface reports a change. The reads are cached in the
   // main process for 30 seconds, so this costs little.
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
   useEffect(() => {
-    let cancelled = false;
-    const reload = () => {
-      window.ade.github
-        .getStatus(undefined, pinRef.current)
-        .then((status) => {
-          if (cancelled) return;
-          setGithubStatus(status);
-          setStatusError(null);
-        })
-        .catch((error: unknown) => {
-          if (!cancelled) setStatusError(error instanceof Error ? error.message : String(error));
-        });
-    };
+    const reload = readStatus;
     const onVisibility = () => {
       if (document.visibilityState === "visible") reload();
     };
@@ -264,12 +260,11 @@ export function GitHubSection() {
     document.addEventListener("visibilitychange", onVisibility);
     const offStatus = window.ade.github.onStatusChanged?.(() => reload()) ?? (() => {});
     return () => {
-      cancelled = true;
       window.removeEventListener("focus", reload);
       document.removeEventListener("visibilitychange", onVisibility);
       offStatus();
     };
-  }, [pin?.key]);
+  }, [pin?.key, readStatus]);
 
   const handleSaveToken = () => {
     const token = githubTokenDraft.trim();
@@ -597,10 +592,7 @@ export function GitHubSection() {
                 label: "Retry",
                 onClick: () => {
                   setStatusError(null);
-                  void window.ade.github
-                    .getStatus(undefined, pinRef.current)
-                    .then((status) => setGithubStatus(status))
-                    .catch((error: unknown) => setStatusError(error instanceof Error ? error.message : String(error)));
+                  readStatus();
                 },
               }],
             }}

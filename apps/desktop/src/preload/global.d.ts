@@ -659,7 +659,6 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncStatuses,
-  GitGetSyncStatusArgs,
   GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
@@ -4550,7 +4549,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<GitActionResult>;
         getSyncStatus: (
-          args: GitGetSyncStatusArgs,
+          args: { laneId: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<GitUpstreamSyncStatus>;
         getSyncStatuses: (

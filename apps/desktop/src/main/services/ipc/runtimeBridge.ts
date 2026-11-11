@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
+import { app, BrowserWindow, powerMonitor, type WebContents } from "electron";
+import { createTrustedIpcHandle } from "./trustedRendererSender";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import { cloudAsleepForUse, cloudRestChanged, cloudUpdateBlocker, cloudWakeForUse } from "../adeCloud/cloudWakeHook";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
@@ -603,6 +604,9 @@ export function registerRuntimeBridge({
   getWindowSession,
   localRuntimeConnectionPool,
 }: RuntimeBridgeArgs): RuntimeBridgeRegistration {
+  // Registered from inside registerIpc, so these channels sit behind the same
+  // deny-by-default sender check as the rest of the app's IPC surface.
+  const handle = createTrustedIpcHandle(getMachineMainLogger());
   const remoteTargetRegistry = new RemoteTargetRegistry();
   const pairedMachineStore = new DesktopPairedMachineStore();
   const accountAuthService = getSharedAccountAuthService({
@@ -1075,7 +1079,7 @@ export function registerRuntimeBridge({
     return binding?.kind === "remote" ? binding.targetId : null;
   };
 
-  ipcMain.handle(
+  handle(
     IPC.personalChatsCall,
     async (
       event,
@@ -1103,7 +1107,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.personalChatsStreamEvents,
     async (
       event,
@@ -1142,7 +1146,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeListTargets,
     async (): Promise<RemoteRuntimeTarget[]> => {
       return remoteConnectionService.listTargets();
@@ -1154,7 +1158,7 @@ export function registerRuntimeBridge({
   // host (the paired machine's account key) and that host's canonical project
   // id; a local one, this computer and the canonical id of its root. Answered
   // here from what this desktop already knows, without a call to the host.
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeLinkOwnership,
     async (_event, args: { binding?: OpenProjectBinding | null } | null): Promise<DeeplinkOwnership | null> => {
       const binding = args?.binding ?? null;
@@ -1172,21 +1176,21 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeGetConnectionSnapshot,
     async (): Promise<RemoteRuntimeConnectionSnapshot> => {
       return remoteConnectionService.snapshot();
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeListDiscoveredMachines,
     async (): Promise<RemoteRuntimeDiscoveryResult> => {
       return await refreshLanDiscovery();
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeParsePairingInput,
     async (_event, arg: { text?: string }): Promise<RemoteRuntimeParsedPairingInput> => {
       return parseRemoteRuntimePairingInput(
@@ -1195,7 +1199,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimePairWithMachine,
     async (
       _event,
@@ -1209,7 +1213,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeGetLocalPairingInfo,
     async (): Promise<RemoteRuntimeLocalPairingInfo> => {
       if (!localRuntimeConnectionPool) {
@@ -1236,7 +1240,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeRunDoctor,
     async (_event, arg: { id?: string }): Promise<RemoteRuntimeDoctorResult> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
@@ -1251,7 +1255,7 @@ export function registerRuntimeBridge({
 
   // "Can my other devices reach that computer?", asked of the connected
   // machine's own brain: the same check as the This computer card, run there.
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeCheckReachability,
     async (_event, arg: { id?: string }): Promise<HostReachabilityReport> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
@@ -1281,7 +1285,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeSaveTarget,
     async (
       _event,
@@ -1295,7 +1299,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeSetAutoConnect,
     async (
       _event,
@@ -1307,7 +1311,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeRemoveTarget,
     async (_event, arg: { id: string }): Promise<{ removed: boolean }> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
@@ -1316,7 +1320,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeGetSshHostKeyTrust,
     async (
       _event,
@@ -1328,7 +1332,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeTrustSshHostKey,
     async (
       _event,
@@ -1349,7 +1353,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeConnect,
     async (
       _event,
@@ -1360,7 +1364,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeListProjects,
     async (
       _event,
@@ -1372,7 +1376,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeAddProject,
     async (
       _event,
@@ -1386,7 +1390,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeBrowseDirectories,
     async (
       _event,
@@ -1400,7 +1404,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeGetProjectDetail,
     async (
       _event,
@@ -1416,7 +1420,7 @@ export function registerRuntimeBridge({
 
   // Pick an image on THIS machine and store it as the icon of a project that
   // lives on the remote host, so every device listing that host sees it.
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeChooseProjectIcon,
     async (
       event,
@@ -1444,7 +1448,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeRemoveProjectIcon,
     async (
       _event,
@@ -1458,7 +1462,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeInspectProjectRemoval,
     async (
       _event,
@@ -1471,7 +1475,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeRemoveProjectCopy,
     async (
       _event,
@@ -1489,7 +1493,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeGetDefaultParentDir,
     async (_event, arg: { id: string }): Promise<string> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
@@ -1497,7 +1501,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeGetHandoffStoragePreflight,
     async (
       _event,
@@ -1508,7 +1512,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeCreateProject,
     async (
       _event,
@@ -1522,7 +1526,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeCloneProject,
     async (
       _event,
@@ -1556,7 +1560,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeListMyGitHubRepos,
     async (
       _event,
@@ -1570,7 +1574,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeOpenProject,
     async (
       event,
@@ -1606,7 +1610,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeListActionRegistry,
     async (
       _event,
@@ -1624,7 +1628,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeCallAction,
     async (
       event,
@@ -1670,7 +1674,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeAttachmentUploadCapability,
     async (
       _event,
@@ -1684,7 +1688,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeUploadChatAttachment,
     async (
       _event,
@@ -1722,7 +1726,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeEnsurePortForward,
     async (
       _event,
@@ -1768,7 +1772,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeCallSync,
     async (
       _event,
@@ -1797,7 +1801,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeUpdateAndRestart,
     async (
       _event,
@@ -1857,7 +1861,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeGetUpdateImpact,
     async (_event, arg: { id: string }): Promise<UpdateImpact> => {
       // Never rejects: the caller is a confirmation dialog, and a machine that
@@ -1893,7 +1897,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.localRuntimeListActionRegistry,
     async (
       event,
@@ -1918,7 +1922,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.localRuntimeCallAction,
     async (
       event,
@@ -1967,7 +1971,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.localRuntimeCallSync,
     async (
       event,
@@ -2001,7 +2005,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.localRuntimeStreamEvents,
     async (
       event,
@@ -2068,7 +2072,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeStreamEvents,
     async (
       event,
@@ -2153,7 +2157,7 @@ export function registerRuntimeBridge({
   // stops reading says so explicitly; expiry stays as the backstop for renderers
   // that die without one. The argument mirrors the subscribe call so main can
   // re-derive the same request key rather than trust one the renderer guessed.
-  ipcMain.handle(
+  handle(
     IPC.runtimeEventsRelease,
     async (
       event,
@@ -2203,7 +2207,7 @@ export function registerRuntimeBridge({
     },
   );
 
-  ipcMain.handle(
+  handle(
     IPC.remoteRuntimeDisconnect,
     async (
       event,

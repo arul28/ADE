@@ -2701,8 +2701,10 @@ export function registerIpc({
 
   /**
    * Deny by default: every channel this module registers answers only ADE's
-   * own renderer. Declared after the scope/trace wrappers so every
-   * registration gets them too.
+   * own renderer. The built-in browser, scene frames, preview windows and any
+   * future webview never carry the ADE preload, so refusing them here is a
+   * second door behind that topology, not a capability check. Declared after
+   * the scope/trace wrappers so every registration gets them too.
    */
   const handle = createTrustedIpcHandle(getTraceLogger());
 

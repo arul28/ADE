@@ -211,6 +211,30 @@ async function listUnmergedFiles(worktreePath: string, timeoutMs: number): Promi
   return res.exitCode === 0 ? parseDiffNameOnlySorted(res.stdout) : [];
 }
 
+/**
+ * The safe recommendation for a diverged branch. `pull` is the default; a
+ * force-push lease is only suggested when the upstream is already an ancestor
+ * of HEAD or a rebase is visibly recent. Two extra git probes, so counts-only
+ * callers skip this whole function.
+ */
+async function recommendDivergedAction(
+  worktreePath: string,
+  upstreamRef: string,
+): Promise<GitRecommendedAction> {
+  const mergeBaseRes = await runGit(["merge-base", "--is-ancestor", upstreamRef, "HEAD"], {
+    cwd: worktreePath,
+    timeoutMs: 5_000
+  });
+  if (mergeBaseRes.exitCode === 0) return "force_push_lease";
+  const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
+    cwd: worktreePath,
+    timeoutMs: 5_000
+  });
+  const hasRecentRebase = reflogRes.exitCode === 0 &&
+    reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
+  return hasRecentRebase ? "force_push_lease" : "pull";
+}
+
 export function createGitOperationsService({
   laneService,
   operationService,
@@ -1177,27 +1201,9 @@ export function createGitOperationsService({
         } else if (normalizedBehind > 0 && normalizedAhead === 0) {
           recommendedAction = "pull";
         } else if (diverged) {
-          if (skipRecommendation) {
-            // Counts-only callers never show the force-push hint, so the two
-            // extra git process spawns are pure cost. `pull` is the safe answer.
-            recommendedAction = "pull";
-          } else {
-            const mergeBaseRes = await runGit(["merge-base", "--is-ancestor", upstreamRef, "HEAD"], {
-              cwd: lane.worktreePath,
-              timeoutMs: 5_000
-            });
-            if (mergeBaseRes.exitCode === 0) {
-              recommendedAction = "force_push_lease";
-            } else {
-              const reflogRes = await runGit(["reflog", "show", "HEAD", "--format=%gs", "-n", "30"], {
-                cwd: lane.worktreePath,
-                timeoutMs: 5_000
-              });
-              const hasRecentRebase = reflogRes.exitCode === 0 &&
-                reflogRes.stdout.split("\n").some((line) => /rebase/.test(line));
-              recommendedAction = hasRecentRebase ? "force_push_lease" : "pull";
-            }
-          }
+          recommendedAction = skipRecommendation
+            ? "pull"
+            : await recommendDivergedAction(lane.worktreePath, upstreamRef);
         }
 
         return {

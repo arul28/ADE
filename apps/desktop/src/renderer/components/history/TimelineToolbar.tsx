@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useAutoDismiss } from "../../lib/useAutoDismiss";
 import { useNavigate } from "react-router-dom";
 import * as Popover from "@radix-ui/react-popover";
 import {
@@ -114,15 +115,7 @@ export function TimelineToolbar({
 } = {}) {
   const lanes = useAppStore((s) => s.lanes ?? []);
   const laneStatusStale = useAppStore((s) => s.laneStatusStale);
-  const [exportNotice, setExportNotice] = useState<string | null>(null);
-  // A single dismiss owner: a new notice resets the timer, and leaving History
-  // (this toolbar unmounts) stops it, instead of a stale timer clearing a
-  // newer notice early.
-  useEffect(() => {
-    if (!exportNotice) return undefined;
-    const timer = window.setTimeout(() => setExportNotice(null), 5000);
-    return () => window.clearTimeout(timer);
-  }, [exportNotice]);
+  const [exportNotice, setExportNotice] = useAutoDismiss<string | null>(null, 5000);
   /* ── Store ─────────────────────────────────────────────────── */
   const surface = useTimelineStore((s) => s.surface);
   const setSurface = useTimelineStore((s) => s.setSurface);
@@ -229,7 +222,7 @@ export function TimelineToolbar({
         `Export failed: ${extractError(err)}`,
       );
     }
-  }, [focusLaneId, focusLaneMachineId, filters.statuses]);
+  }, [focusLaneId, focusLaneMachineId, filters.statuses, setExportNotice]);
 
   /* ── Render ────────────────────────────────────────────────── */
   const showActivityControls = surface === "activity";
@@ -617,21 +610,8 @@ function LaneGitActionsMenu({
   const navigate = useNavigate();
   const [runningAction, setRunningAction] = useState<HistoryLaneActionId | null>(null);
   const [conflictState, setConflictState] = useState<GitConflictState | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  // The popover can close while an action is still running; the effect's
-  // cleanup stops these timers on unmount and when a newer message replaces
-  // the old one.
-  useEffect(() => {
-    if (!notice) return undefined;
-    const timer = window.setTimeout(() => setNotice(null), 3500);
-    return () => window.clearTimeout(timer);
-  }, [notice]);
-  useEffect(() => {
-    if (!error) return undefined;
-    const timer = window.setTimeout(() => setError(null), 5000);
-    return () => window.clearTimeout(timer);
-  }, [error]);
+  const [notice, setNotice] = useAutoDismiss<string | null>(null, 3500);
+  const [error, setError] = useAutoDismiss<string | null>(null, 5000);
   const actions = buildHistoryLaneActions({ hasLane: Boolean(laneId) && laneHasWorktree, conflictState });
 
   const refreshConflictState = useCallback(async () => {
@@ -681,7 +661,7 @@ function LaneGitActionsMenu({
         setRunningAction(null);
       }
     },
-    [handleComplete, laneId, laneName, navigate],
+    [handleComplete, laneId, laneName, navigate, setError, setNotice],
   );
   const actionGroups = groupHistoryLaneActions(actions);
 

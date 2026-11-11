@@ -7268,10 +7268,7 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
   register("git.redoLastHeadChange", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").redoLastHeadChange(parseConflictLaneArgs(payload, "git.redoLastHeadChange")));
   register("git.getSyncStatus", { viewerAllowed: true }, async (payload) =>
-    requireService(args.gitService, "Git service not available.").getSyncStatus({
-      ...parseConflictLaneArgs(payload, "git.getSyncStatus"),
-      ...(payload.skipRecommendation === true ? { skipRecommendation: true } : {}),
-    }));
+    requireService(args.gitService, "Git service not available.").getSyncStatus(parseConflictLaneArgs(payload, "git.getSyncStatus")));
   register("git.getSyncStatuses", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").getSyncStatuses({
       laneIds: asStringArray(payload.laneIds),

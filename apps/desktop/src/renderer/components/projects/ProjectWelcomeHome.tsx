@@ -478,12 +478,20 @@ const RECENT_PR_WINDOW_MS = 7 * 86_400_000;
  * state. Reloads on PR
  * events and when the window regains focus — never on a timer of its own.
  */
-export type HomePullRequests = { open: HomePr[]; recent: HomePr[]; loaded: boolean; viewer: string | null; error: string | null };
+export type HomePullRequests = {
+  open: HomePr[];
+  recent: HomePr[];
+  loaded: boolean;
+  viewer: string | null;
+  error: string | null;
+  retry: () => void;
+};
 
 export function usePullRequests(projectRoot: string | null): HomePullRequests {
   const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
   const [data, setData] = useState<{ snapshot: GitHubPrSnapshot | null; tracked: PrSummary[] } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const requestRef = useRef(0);
   // What the last reload returned, as text: PR events arrive every few seconds
   // during a sync, and a reload that changed nothing must not re-render the
@@ -501,24 +509,26 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
     let timer: number | null = null;
     const load = async () => {
       const request = ++requestRef.current;
-      let failed = false;
-      const [snapshot, tracked] = await Promise.all([
-        // One page of closed history (cached ten minutes in main) brings the
-        // week's merges with it; open PRs come in the same snapshot.
-        getGitHubSnapshotCoalesced({ automaticRefresh: true, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: projectBindingKey }).catch(() => { failed = true; return null; }),
-        listPrsCoalesced({ projectRoot }).catch(() => { failed = true; return [] as PrSummary[]; }),
+      // One page of closed history (cached ten minutes in main) brings the
+      // week's merges with it; open PRs come in the same snapshot.
+      const [snapshotResult, trackedResult] = await Promise.allSettled([
+        getGitHubSnapshotCoalesced({ automaticRefresh: true, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: projectBindingKey }),
+        listPrsCoalesced({ projectRoot }),
       ]);
       if (requestRef.current !== request) return;
+      const failed = snapshotResult.status === "rejected" || trackedResult.status === "rejected";
+      const snapshot = snapshotResult.status === "fulfilled" ? snapshotResult.value : null;
+      const tracked = trackedResult.status === "fulfilled" ? trackedResult.value : [];
       const signature = JSON.stringify([
         snapshot?.viewerLogin ?? null,
         snapshot?.repoPullRequests ?? null,
         snapshot?.externalPullRequests ?? null,
         // lastSyncedAt moves on every sync and the home page never shows it.
-        (tracked ?? []).map((pr) => ({ ...pr, lastSyncedAt: null })),
+        tracked.map((pr) => ({ ...pr, lastSyncedAt: null })),
       ]);
       if (signature === lastSignatureRef.current) return;
       lastSignatureRef.current = signature;
-      setData({ snapshot, tracked: tracked ?? [] });
+      setData({ snapshot, tracked });
       setLoadError(failed ? "ADE couldn't read this project's pull requests." : null);
     };
     const soon = () => {
@@ -534,7 +544,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
       unsubscribe?.();
       window.removeEventListener("focus", soon);
     };
-  }, [projectRoot, projectBindingKey]);
+  }, [projectRoot, projectBindingKey, reloadKey]);
   return useMemo(() => {
     const snapshot = data?.snapshot ?? null;
     const trackedById = new Map((data?.tracked ?? []).map((pr) => [pr.id, pr]));
@@ -570,7 +580,14 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
     const recent = prs
       .filter((pr) => pr.state === "merged" && Date.parse(pr.mergedAt || pr.updatedAt) >= cutoff)
       .sort((a, b) => (b.mergedAt || b.updatedAt).localeCompare(a.mergedAt || a.updatedAt));
-    return { open, recent, loaded: data != null, viewer, error: loadError };
+    return {
+      open,
+      recent,
+      loaded: data != null,
+      viewer,
+      error: loadError,
+      retry: () => setReloadKey((key) => key + 1),
+    };
   }, [data, loadError]);
 }
 
@@ -649,7 +666,7 @@ export function PullRequestsCard({
   prs: HomePullRequests;
   onOpenPrs?: () => void;
 }) {
-  const { open, recent, loaded, error: prLoadError } = prs;
+  const { open, recent, loaded, error: prLoadError, retry: retryPullRequests } = prs;
   const counts = useMemo(() => {
     const result = { failing: 0, review: 0, ready: 0 };
     for (const pr of open) {
@@ -685,6 +702,11 @@ export function PullRequestsCard({
               <div className="ade-home-empty">
                 <GitPullRequest size={18} aria-hidden />
                 <span>{prLoadError ?? (loaded ? "No pull requests this week." : "Reading pull requests…")}</span>
+                {prLoadError ? (
+                  <button type="button" className="ade-home-line-link" onClick={retryPullRequests}>
+                    Retry
+                  </button>
+                ) : null}
               </div>
             ) : (
               <FitList

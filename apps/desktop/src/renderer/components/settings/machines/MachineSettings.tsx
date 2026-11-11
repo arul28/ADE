@@ -117,7 +117,12 @@ export function MachineSettings({
           value="SDK and emulator tools"
           control={reach ? <RowLink onClick={() => openMachine(scope.machineId, "android")} /> : elsewhere}
         />
-        <MachineRow icon={<Cpu size={14} />} title="System" value={[os, arch].filter(Boolean).join(" · ") || (isThis && local.error ? "Couldn't read" : "Unknown")} />
+        <MachineRow
+          icon={<Cpu size={14} />}
+          title="System"
+          value={[os, arch].filter(Boolean).join(" · ") || (isThis && local.error.info ? "Couldn't read" : "Unknown")}
+          control={isThis && local.error.info ? <RowLink label="Retry" onClick={local.retry} /> : null}
+        />
         {isThis && local.pressure && local.pressure.totalBytes > 0 ? (
           <MachineRow
             icon={<HardDrive size={14} />}
@@ -128,6 +133,13 @@ export function MachineSettings({
                 <FreeSpaceMeter freeBytes={local.pressure.freeBytes} totalBytes={local.pressure.totalBytes} level={freeSpaceLevel(local.pressure.freeBytes, local.pressure.totalBytes)} />
               </span>
             )}
+          />
+        ) : isThis && local.error.pressure ? (
+          <MachineRow
+            icon={<HardDrive size={14} />}
+            title="Disk"
+            value="Couldn't read"
+            control={<RowLink label="Retry" onClick={local.retry} />}
           />
         ) : null}
         {projects ? (
@@ -418,9 +430,11 @@ function KeepAwakeRow({ scope, reach, onOpen }: { scope: SettingsMachinePage; re
 function CliRow({ isThis, onOpen }: { isThis: boolean; onOpen: () => void }) {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof window.ade.adeCli.getStatus>> | null>(null);
   const [statusError, setStatusError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   useEffect(() => {
     if (!isThis || !isAdeAvailable(window.ade.adeCli?.getStatus)) return undefined;
     let cancelled = false;
+    setStatusError(false);
     void Promise.resolve()
       .then(() => window.ade.adeCli.getStatus())
       .then((next) => {
@@ -432,14 +446,19 @@ function CliRow({ isThis, onOpen }: { isThis: boolean; onOpen: () => void }) {
     return () => {
       cancelled = true;
     };
-  }, [isThis]);
+  }, [isThis, reloadKey]);
   const installed = status?.terminalInstalled;
   return (
     <MachineRow
       icon={<Terminal size={14} />}
       title="ade command"
       value={isThis ? (status ? (installed ? "In your Terminal" : "Agents only — not in your Terminal") : statusError ? "Couldn't check" : "…") : null}
-      control={isThis ? <RowLink label="Advanced" onClick={onOpen} /> : <RowHint />}
+      control={isThis ? (
+        <span className="inline-flex items-center gap-2">
+          {statusError ? <RowLink label="Retry" onClick={() => setReloadKey((key) => key + 1)} /> : null}
+          <RowLink label="Advanced" onClick={onOpen} />
+        </span>
+      ) : <RowHint />}
     />
   );
 }

@@ -3001,7 +3001,11 @@ app.whenReady().then(async () => {
       .then(() => {
         notifyMobileSyncProjectCatalogChanged();
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        getActiveContext().logger.warn("sync.host_reconcile_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     if (activeProjectRoot) {
       projectLastActivatedAt.set(activeProjectRoot, Date.now());
       const activeCtx = projectContexts.get(activeProjectRoot);
@@ -10966,7 +10970,11 @@ app.whenReady().then(async () => {
         void startupProjectOpenTask?.then(() => {
           if (initialWindow.isDestroyed() || windowProjectRoots.get(initialWindow.id) || !activeProjectRoot) return;
           bindWindowToProject(initialWindow.id, activeProjectRoot, { emit: true, foreground: false });
-        }).catch(() => {});
+        }).catch((error: unknown) => {
+          getActiveContext().logger.warn("startup.project_open_late_bind_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       }
       bindLaunchWindow();
     } finally {

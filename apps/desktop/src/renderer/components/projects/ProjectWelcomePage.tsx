@@ -121,11 +121,12 @@ export function ProjectWelcomePage() {
    * reporting, and only the row knows that.
    */
   const [openingRowKey, setOpeningRowKey] = useState<string | null>(null);
+  // A row action's failure (open, pin, forget).
   const [rowError, setRowError] = useState<string | null>(null);
   // A failed recents read must not look like "no projects yet".
   const [recentListError, setRecentListError] = useState<string | null>(null);
-  // Kept apart from rowError: the recents-list error banner only renders when
-  // there are rows, and a directory retry fails precisely when there are none.
+  // Kept apart from both: a hosted directory retry fails precisely when the
+  // recents list has no rows, which is when the other banners are least useful.
   const [directoryRetryError, setDirectoryRetryError] = useState<string | null>(
     null,
   );

@@ -136,13 +136,11 @@ export function whenSystemCertificateReadSettles(timeoutMs: number): Promise<voi
   if (!read) return Promise.resolve();
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, timeoutMs);
-    void read.then(() => {
+    const settle = () => {
       clearTimeout(timer);
       resolve();
-    }).catch(() => {
-      clearTimeout(timer);
-      resolve();
-    });
+    };
+    void read.then(settle, settle);
   });
 }
 

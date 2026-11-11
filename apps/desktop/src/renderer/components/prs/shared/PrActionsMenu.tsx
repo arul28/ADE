@@ -82,12 +82,16 @@ export type PrActionsContext = {
   onError?: (message: string) => void;
   /** Opens the "Manage lane" dialog. Undefined, or a PR with no lane, hides the item. */
   onManageLane?: () => void;
-  /** Lane chats the caller already has. When set, the menu does not fetch them again. */
-  laneChats?: AgentChatSessionSummary[];
-  /** The caller's chat read failed; show it instead of pretending there are none. */
-  laneChatsError?: string;
-  /** Re-runs the caller's chat read (paired with `laneChatsError`). */
-  onRetryChats?: () => void;
+  /**
+   * Lane chats the caller already has, including its failure and retry. One
+   * atomic value: a caller that owns the read cannot supply an error without
+   * the way to retry it.
+   */
+  laneChats?: {
+    sessions: AgentChatSessionSummary[];
+    error: string | null;
+    retry: () => void;
+  };
 };
 
 type PrMenuItem = {
@@ -125,8 +129,6 @@ export function usePrActionsMenu(context: PrActionsContext) {
   const {
     pr, status, findings, failingChecks, mergeMethod, onRefresh, refreshing, onChanged, onError, onManageLane,
     laneChats: providedChats,
-    laneChatsError: providedChatsError,
-    onRetryChats,
   } = context;
   const [fetchedChats, setFetchedChats] = React.useState<AgentChatSessionSummary[] | null>(null);
   const [fetchedChatsError, setFetchedChatsError] = React.useState<string | null>(null);
@@ -135,8 +137,8 @@ export function usePrActionsMenu(context: PrActionsContext) {
   const onPin = React.useMemo(() => pinArg(runtimePin), [runtimePin]);
   // Chat hand-offs keep the lane's machine (a draft or focus on the owner).
   const handOff = usePrChatHandoff();
-  const laneChats = providedChats ?? fetchedChats;
-  const chatsError = providedChats !== undefined ? (providedChatsError ?? null) : fetchedChatsError;
+  const laneChats = providedChats?.sessions ?? fetchedChats;
+  const chatsError = providedChats ? (providedChats.error ?? null) : fetchedChatsError;
   const [busy, setBusy] = React.useState<string | null>(null);
 
   const ensureChats = React.useCallback(() => {
@@ -216,7 +218,11 @@ export function usePrActionsMenu(context: PrActionsContext) {
         const target = linked[0] ?? null;
         return {
           id, label, icon, tone,
-          description: description ?? (target ? `In ${chatLabel(target)}` : "Starts a chat in this lane"),
+          description: description ?? (target
+            ? `In ${chatLabel(target)}`
+            : chatsError
+              ? "Couldn't check existing chats; starts a new one"
+              : "Starts a chat in this lane"),
           onSelect: () => handOff({ laneId, sessionId: target?.sessionId ?? null, prompt: prompt() }),
         };
       };
@@ -259,8 +265,8 @@ export function usePrActionsMenu(context: PrActionsContext) {
           icon: <WarningCircle size={14} weight="duotone" />,
           tone: TONE.danger,
           onSelect: () => {
-            if (providedChats !== undefined) {
-              onRetryChats?.();
+            if (providedChats) {
+              providedChats.retry();
               return;
             }
             setFetchedChatsError(null);
@@ -373,7 +379,7 @@ export function usePrActionsMenu(context: PrActionsContext) {
       });
     }
     return out;
-  }, [busy, chatsError, ensureChats, failingChecks, findings, handOff, laneChats, mergeMethod, onManageLane, onPin, onRefresh, onRetryChats, providedChats, pr, prs, refreshing, run, status]);
+  }, [busy, chatsError, ensureChats, failingChecks, findings, handOff, laneChats, mergeMethod, onManageLane, onPin, onRefresh, providedChats, pr, prs, refreshing, run, status]);
 
   return { sections, ensureChats, busy };
 }
