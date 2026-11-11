@@ -672,15 +672,20 @@ final class ChatThreadEngineTests: XCTestCase {
     await engine.ingest(snapshot([user(10, "newer question")], hasOlder: true))
     _ = await engine.flush()
 
-    let notice = event(nil, [
-      "type": "system_notice",
-      "noticeKind": "info",
-      "status": "history_row_omitted",
-      "message": "fixture-omitted-row",
-    ], at: 8)
+    // Two stand-ins with the same timestamp and no page offsets (a
+    // service-backed page): their rows' offsets keep both.
+    let notices = [100, 9_000_000].map { offset in
+      event(nil, [
+        "type": "system_notice",
+        "noticeKind": "info",
+        "status": "history_row_omitted",
+        "message": "fixture-omitted-row-\(offset)",
+        "omittedRow": ["offset": offset, "bytes": 3_000_000],
+      ], at: 8)
+    }
     await engine.ingest(.olderPage(ChatThreadOlderPageInput(
       sessionId: sessionId,
-      events: [user(7, "older question"), notice],
+      events: [user(7, "older question")] + notices,
       hasMore: true
     )))
     let frame = await engine.flush()
@@ -688,7 +693,10 @@ final class ChatThreadEngineTests: XCTestCase {
       if case .systemNotice(_, let message, _, _, _) = entry.event { return "notice:\(message)" }
       return "seq:\(entry.sequence ?? -1)"
     }
-    XCTAssertEqual(order, ["seq:7", "notice:fixture-omitted-row", "seq:10"])
+    XCTAssertEqual(order.first, "seq:7")
+    XCTAssertEqual(order.last, "seq:10")
+    XCTAssertEqual(Set(order.dropFirst().dropLast()), ["notice:fixture-omitted-row-100", "notice:fixture-omitted-row-9000000"])
+    XCTAssertEqual(order.count, 4)
 
     // Display-only: not in the durable log, and not the next cursor.
     await engine.flushPersistence()

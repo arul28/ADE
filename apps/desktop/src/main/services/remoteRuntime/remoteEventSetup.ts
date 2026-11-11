@@ -1,4 +1,5 @@
 import { armDeadline } from "../../../shared/deadlineTimer";
+import { captureError } from "../../../shared/sentry/capture";
 import { createPhaseClock, type PhaseClock } from "../../../shared/phaseClock";
 
 /**
@@ -86,6 +87,15 @@ export function runWithEventSetupDeadline<T>(args: {
 }): Promise<T> {
   const timeoutMs = REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS;
   const clock = createPhaseClock<RemoteEventSetupPhase>("authorize");
+  // Reporting is best-effort: a reporter that throws must not leave the
+  // request unsettled or escape the deadline's timer.
+  const report = (timedOut: boolean): void => {
+    try {
+      args.onSettled?.({ timedOut, clock });
+    } catch (error) {
+      captureError(error, { fingerprint: ["remote-event-setup", "report-failed"] });
+    }
+  };
   let settled = false;
   let timedOut = false;
   return new Promise<T>((resolve, reject) => {
@@ -94,8 +104,8 @@ export function runWithEventSetupDeadline<T>(args: {
       settled = true;
       timedOut = true;
       const error = new RemoteEventSetupTimeoutError(args.machineName, clock.current(), timeoutMs);
-      args.onSettled?.({ timedOut: true, clock });
       reject(error);
+      report(true);
     });
     let running: Promise<T>;
     try {
@@ -116,15 +126,15 @@ export function runWithEventSetupDeadline<T>(args: {
         if (settled) return;
         settled = true;
         deadline.cancel();
-        args.onSettled?.({ timedOut: false, clock });
         resolve(value);
+        report(false);
       },
       (error: unknown) => {
         if (settled) return;
         settled = true;
         deadline.cancel();
-        args.onSettled?.({ timedOut: false, clock });
         reject(error);
+        report(false);
       },
     );
   });

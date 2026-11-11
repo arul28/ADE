@@ -31,6 +31,10 @@ export const HEAP_PCT_BUCKETS = [
 export const OPEN_FOR_SEC_BUCKETS = [
   ["under_10s", 10], ["under_1m", 60], ["under_5m", 300], ["under_30m", 1800], ["under_2h", 7200], ["over_2h", Infinity],
 ] as const satisfies BucketTable;
+/** Chat panes open in the window. */
+export const CHAT_PANE_BUCKETS = [
+  ["0", 1], ["1", 2], ["2_5", 6], ["6_plus", Infinity],
+] as const satisfies BucketTable;
 export const TRANSCRIPT_EVENT_BUCKETS = [
   ["under_1k", 1000], ["1k_5k", 5000], ["5k_20k", 20000], ["20k_plus", Infinity],
 ] as const satisfies BucketTable;

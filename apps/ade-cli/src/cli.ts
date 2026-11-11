@@ -24888,8 +24888,11 @@ class SocketJsonRpcClient {
     private readonly describeLoss: DescribeBrainConnectionLoss | null,
   ) {
     socket.on("data", (chunk) => this.onData(Buffer.from(chunk)));
+    // One terminal error: the socket's own failure (with its errno) is what
+    // pending calls, later calls and close listeners all hear; the `close`
+    // that follows it finds the connection already failed.
     socket.on("error", (error) =>
-      this.rejectAll(brainConnectionLostError(error instanceof Error ? error : new Error(String(error)), this.describeLoss)),
+      this.failConnection(brainConnectionLostError(error instanceof Error ? error : new Error(String(error)), this.describeLoss)),
     );
     socket.on("close", () =>
       this.failConnection(this.pending.size > 0 || this.describeLoss

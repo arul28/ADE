@@ -77,15 +77,13 @@ export async function readTranscriptHistoryPage(args: {
   maxBytes?: number | null;
   signal?: AbortSignal;
 }): Promise<TranscriptHistoryPageRead> {
-  return (await readHistoryPage(args, { parseOmittedRow: true })).page;
+  return await readHistoryPage(args, { parseOmittedRow: true });
 }
 
 /**
  * `readTranscriptHistoryPage`, plus whether an oversized row is parsed for
  * its stand-in. A sequence-cursor read stepping over a run of oversized rows
- * passes false: each later row only needs its start found. `oversizedRow`
- * marks a page that is exactly one row too large to page, whether it came
- * back as a stand-in or was dropped (another chat's, malformed).
+ * passes false: each later row only needs its start found.
  */
 async function readHistoryPage(
   args: {
@@ -96,15 +94,15 @@ async function readHistoryPage(
     signal?: AbortSignal;
   },
   options: { parseOmittedRow: boolean },
-): Promise<{ page: TranscriptHistoryPageRead; oversizedRow: boolean }> {
+): Promise<TranscriptHistoryPageRead> {
   const { transcriptPath, sessionId } = args;
   const beforeOffset = Number.isFinite(args.beforeOffset) ? Math.floor(args.beforeOffset) : 0;
-  if (beforeOffset <= 0) return { page: { ...EMPTY_PAGE }, oversizedRow: false };
+  if (beforeOffset <= 0) return { ...EMPTY_PAGE };
 
   const pageBytes = clampHistoryPageBytes(args.maxBytes);
   const size = await readHistoryFileSize(transcriptPath);
   const end = Math.min(beforeOffset, size);
-  if (end <= 0) return { page: { ...EMPTY_PAGE }, oversizedRow: false };
+  if (end <= 0) return { ...EMPTY_PAGE };
 
   let readBytes = pageBytes;
   let slice: Awaited<ReturnType<typeof readHistoryFileRange>>;
@@ -131,7 +129,7 @@ async function readHistoryPage(
       break;
     }
     if (readBytes >= CHAT_EVENT_HISTORY_PAGE_MAX_BYTES) {
-      const page = await readOmittedRowPage({
+      return await readOmittedRowPage({
         transcriptPath,
         sessionId,
         searchBefore: readStart,
@@ -139,7 +137,6 @@ async function readHistoryPage(
         parse: options.parseOmittedRow,
         ...(args.signal ? { signal: args.signal } : {}),
       });
-      return { page, oversizedRow: true };
     }
     readBytes = Math.min(CHAT_EVENT_HISTORY_PAGE_MAX_BYTES, readBytes * 2);
   }
@@ -178,13 +175,10 @@ async function readHistoryPage(
     ? parsedLineOffsets
     : envelopes.map(() => startOffset);
   return {
-    page: {
-      envelopes,
-      envelopeStartOffsets,
-      startOffset,
-      hasMore: startOffset > 0,
-    },
-    oversizedRow: false,
+    envelopes,
+    envelopeStartOffsets,
+    startOffset,
+    hasMore: startOffset > 0,
   };
 }
 
@@ -200,6 +194,17 @@ export function isOmittedHistoryRowNotice(envelope: AgentChatEventEnvelope): boo
   return envelope.event.type === "system_notice"
     && envelope.event.status === HISTORY_ROW_OMITTED_NOTICE_STATUS
     && envelope.sequence === undefined;
+}
+
+/**
+ * True for a stand-in whose row may have been a message (a user message or
+ * a reply), or whose kind is unknown (too large to parse). A reader that
+ * returns messages must report such a row as missing.
+ */
+export function omittedHistoryRowMayHoldMessage(envelope: AgentChatEventEnvelope): boolean {
+  if (!isOmittedHistoryRowNotice(envelope) || envelope.event.type !== "system_notice") return false;
+  const eventType = envelope.event.omittedRow?.eventType;
+  return eventType === undefined || eventType === "user_message" || eventType === "text";
 }
 
 /** Chunk size of the backward scan for an oversized row's start. */
@@ -383,6 +388,11 @@ async function readOmittedRowPage(args: {
       status: HISTORY_ROW_OMITTED_NOTICE_STATUS,
       message: "One very large entry was left out of this chat's history.",
       detail: `The entry${stoodInFor} is ${formatOmittedRowSize(rowBytes)}, more than chat history loads at once (${formatOmittedRowSize(CHAT_EVENT_HISTORY_PAGE_MAX_BYTES)}). It is still saved in the chat's transcript file.`,
+      omittedRow: {
+        offset: rowStart,
+        bytes: rowBytes,
+        ...(fields.eventType ? { eventType: fields.eventType } : {}),
+      },
     },
     ...(fields.targetKind ? { provenance: { targetKind: fields.targetKind } } : {}),
   });
@@ -533,6 +543,11 @@ export async function readTranscriptHistoryPageBeforeSequence(args: {
   beforeSequence: number;
   maxBytes?: number | null;
   signal?: AbortSignal;
+  /**
+   * Rows the caller will show the client; the rest (filtered after this
+   * read) cannot serve as the client's next cursor. Default: every row.
+   */
+  isVisible?: (envelope: AgentChatEventEnvelope) => boolean;
 }): Promise<TranscriptHistoryPageRead> {
   const beforeSequence = Math.floor(args.beforeSequence);
   if (!Number.isFinite(beforeSequence) || beforeSequence <= 1) return { ...EMPTY_PAGE };
@@ -548,31 +563,39 @@ export async function readTranscriptHistoryPageBeforeSequence(args: {
     maxBytes: args.maxBytes,
     ...(args.signal ? { signal: args.signal } : {}),
   };
-  const first = await readHistoryPage({ ...pageArgs, beforeOffset }, { parseOmittedRow: true });
-  let page = first.page;
-  // Invariant for a sequence cursor: the reply holds a sequenced row older
-  // than the cursor, or `hasMore: false`. The client's next request is its
-  // oldest cached sequence, and a row too large to page yields no sequenced
-  // row (a stand-in without a sequence, or nothing when the row is another
-  // chat's), so such a page alone would be asked for again forever. While the
-  // page just read was one oversized row, the next older page is taken too,
-  // until one holds a sequenced row or the head is reached. An empty page (a
-  // window of only other chats' rows, all filtered out) continues the same
-  // way. Rows stepped over are not parsed (only their start is found, and a
-  // 1 KB head is read), so the cost is the run scanned backward once, with no
-  // count to strand the client. A page with rows of this chat but none
-  // sequenced (a legacy run) ends the loop, exactly as before stand-ins.
-  const hasSequencedRow = (read: TranscriptHistoryPageRead) =>
-    read.envelopes.some((envelope) => typeof envelope.sequence === "number");
-  let latestYieldsNoRows = first.oversizedRow || first.page.envelopes.length === 0;
-  while (page.hasMore && !hasSequencedRow(page) && latestYieldsNoRows) {
-    const latest = await readHistoryPage({ ...pageArgs, beforeOffset: page.startOffset }, { parseOmittedRow: false });
-    latestYieldsNoRows = latest.oversizedRow || latest.page.envelopes.length === 0;
+  let page = await readTranscriptHistoryPage({ ...pageArgs, beforeOffset });
+  // Invariant for a sequence cursor: the reply holds a row the client can use
+  // as its next cursor (sequenced, older than the cursor, and visible to the
+  // client), or `hasMore: false`. Otherwise the client, whose next request is
+  // its oldest cached sequence, asks for this same page forever. Shapes that
+  // yield no such row: an oversized row (a stand-in has no sequence; another
+  // chat's is dropped), a window of other chats' rows, a run of legacy
+  // unsequenced rows, rows the caller hides (Codex subagent rows), rows a
+  // restarted numbering puts at or above the cursor. Each takes the next
+  // older page, until a usable row or the head.
+  //
+  // Pages read this way carry only visible sequenced rows and stand-ins:
+  // every client that sends a sequence cursor already holds sequenced history
+  // and drops unsequenced rows, and hidden rows are filtered by the caller. Oversized rows stepped over are not parsed (their start
+  // is found and a 1 KB head is read). Worst case, one request scans back to
+  // the nearest usable row, or to the head, which then ends paging
+  // (`hasMore: false`), so it is paid once rather than on every request. The
+  // byte-cursor path does not take this loop.
+  const isVisible = args.isVisible ?? (() => true);
+  const hasUsableRow = (read: TranscriptHistoryPageRead) => read.envelopes.some((envelope) =>
+    typeof envelope.sequence === "number" && envelope.sequence < beforeSequence && isVisible(envelope));
+  while (page.hasMore && !hasUsableRow(page)) {
+    const older = await readHistoryPage({ ...pageArgs, beforeOffset: page.startOffset }, { parseOmittedRow: false });
+    const keep = older.envelopes.map((envelope) =>
+      (typeof envelope.sequence === "number" && isVisible(envelope)) || isOmittedHistoryRowNotice(envelope));
     page = {
-      envelopes: [...latest.page.envelopes, ...page.envelopes],
-      envelopeStartOffsets: [...latest.page.envelopeStartOffsets, ...page.envelopeStartOffsets],
-      startOffset: latest.page.startOffset,
-      hasMore: latest.page.hasMore,
+      envelopes: [...older.envelopes.filter((_, index) => keep[index]), ...page.envelopes],
+      envelopeStartOffsets: [
+        ...older.envelopeStartOffsets.filter((_, index) => keep[index]),
+        ...page.envelopeStartOffsets,
+      ],
+      startOffset: older.startOffset,
+      hasMore: older.hasMore,
     };
   }
   // Defensive: a legacy file whose numbering restarted can put a newer

@@ -264,7 +264,7 @@ extension ChatThreadEngine {
     // above would drop it and the reader would scroll past the hole unwarned.
     // Kept in memory only, at its row's place in time.
     for event in page.events where chatThreadIsOmittedHistoryRowNotice(event) {
-      let noticeKey = "\(event.envelope.id)|\(event.envelope.sourceOffset ?? -1)"
+      let noticeKey = chatThreadOmittedHistoryRowKey(event)
       guard omittedRowNoticeKeys.insert(noticeKey).inserted else { continue }
       omittedRowNotices.append(LogEntry(envelope: event.envelope, raw: event.raw, sequence: nil))
       outcomes.append(.rewritten)

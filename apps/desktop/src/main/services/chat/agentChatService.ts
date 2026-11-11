@@ -1302,6 +1302,7 @@ import { createAgentCliWakes } from "./agentCliWakes";
 import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS, parseClaudeGoalCommand } from "../../../shared/chatGoals";
 import {
   CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
+  omittedHistoryRowMayHoldMessage,
   readTranscriptHistoryPage,
   readEnvelopesBackToSequence,
   readTranscriptHistoryPageBeforeSequence,
@@ -15623,11 +15624,19 @@ export function createAgentChatService(args: {
   const readTranscriptEntries = async (
     managed: ManagedChatSession,
     signal?: AbortSignal,
-  ): Promise<{ entries: AgentChatTranscriptEntry[]; turnFailures: AgentChatTranscriptTurnFailure[] }> => {
+  ): Promise<{
+    entries: AgentChatTranscriptEntry[];
+    turnFailures: AgentChatTranscriptTurnFailure[];
+    /** Timestamps of messages too large to page (see `omittedHistoryRowMayHoldMessage`). */
+    omittedMessageTimestamps: string[];
+  }> => {
     const envelopes = await readRecentTranscriptEnvelopesForSessionIdAsync(managed.session.id, signal);
     return {
       entries: transcriptEntriesFromEnvelopes(managed.session.id, envelopes),
       turnFailures: transcriptTurnFailuresFromEnvelopes(managed.session.id, envelopes),
+      omittedMessageTimestamps: envelopes
+        .filter(omittedHistoryRowMayHoldMessage)
+        .map((envelope) => envelope.timestamp),
     };
   };
 
@@ -15820,7 +15829,11 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
     // Flush any pending buffered text so the transcript includes all content
     flushBufferedText(managed);
-    const { entries: transcriptEntries, turnFailures: allTurnFailures } = await readTranscriptEntries(managed, signal);
+    const {
+      entries: transcriptEntries,
+      turnFailures: allTurnFailures,
+      omittedMessageTimestamps,
+    } = await readTranscriptEntries(managed, signal);
     const fallbackEntries = transcriptEntries.length
       ? transcriptEntries
       : managed.recentConversationEntries.map((entry) => ({
@@ -15857,12 +15870,17 @@ export function createAgentChatService(args: {
     }
 
     bounded.reverse();
+    // A message too large to page, inside the returned window, is missing from
+    // it: say so (a handoff brief then marks its excerpt incomplete).
+    const oldestReturned = bounded[0]?.timestamp;
+    const missingMessage = omittedMessageTimestamps.some((timestamp) =>
+      oldestReturned === undefined || timestamp >= oldestReturned);
     const failureWindow = turnFailuresForWindow(allTurnFailures, bounded, normalizedLimit, failureReserve + remainingChars);
     const turnFailures = failureWindow.turnFailures;
     return {
       sessionId: managed.session.id,
       entries: bounded,
-      truncated: truncated || failureWindow.truncated,
+      truncated: truncated || missingMessage || failureWindow.truncated,
       totalEntries: fallbackEntries.length,
       ...(turnFailures.length ? { turnFailures } : {}),
     };
@@ -15996,13 +16014,21 @@ export function createAgentChatService(args: {
         nextCursor = oldestSourceOffset > 0 ? oldestSourceOffset : null;
       }
     }
+    // A message too large to page, at or after the oldest returned entry, is
+    // missing from this page.
+    const oldestReturnedOffset = entries.length > 0
+      ? convertedEntryOffsets[converted.length - entries.length] ?? null
+      : null;
+    const missingMessage = collected.some((row) =>
+      omittedHistoryRowMayHoldMessage(row.envelope)
+      && (oldestReturnedOffset == null || row.offset >= oldestReturnedOffset));
     const failureWindow = turnFailuresForWindow(pageTurnFailures, entries, normalizedLimit, failureReserve + remainingChars);
     const turnFailures = failureWindow.turnFailures;
     return {
       sessionId,
       entries,
       ...(turnFailures.length ? { turnFailures } : {}),
-      truncated: charTruncated || failureWindow.truncated || nextCursor != null,
+      truncated: charTruncated || missingMessage || failureWindow.truncated || nextCursor != null,
       // Byte-cursor consumers must treat this as the count resident in this
       // bounded page, not as a global transcript index.
       totalEntries: entries.length,
@@ -16784,6 +16810,10 @@ export function createAgentChatService(args: {
           newestFirst.push(envelope);
           retainedFailureEvents += 1;
           retainedChars += envelopeChars;
+        } else if (omittedHistoryRowMayHoldMessage(envelope)) {
+          // A message too large to page: kept as is (small), so a transcript
+          // read can report the gap instead of joining both sides of it.
+          newestFirst.push(envelope);
         } else if (newestFirst.length > 0 && newestFirst.at(-1)?.event.type !== "status") {
           newestFirst.push({
             sessionId: envelope.sessionId,
@@ -17391,6 +17421,8 @@ export function createAgentChatService(args: {
           beforeSequence,
           maxBytes: options?.maxBytes,
           signal: options.signal,
+          // The page below drops these, so they cannot be the client's next cursor.
+          isVisible: (entry) => !isCodexSubagentTranscriptEnvelope(entry),
         })
         : await readTranscriptHistoryPage({
           transcriptPath: readPath,
@@ -17418,10 +17450,15 @@ export function createAgentChatService(args: {
       transcriptPath = replacementPath;
       page = await readPage(transcriptPath);
     }
+    const visible = page.envelopes.map((entry) => !isCodexSubagentTranscriptEnvelope(entry));
+    const offsetsAligned = page.envelopeStartOffsets.length === page.envelopes.length;
     return {
       sessionId: trimmedId,
-      events: page.envelopes.filter((entry) => !isCodexSubagentTranscriptEnvelope(entry)),
+      events: page.envelopes.filter((_, index) => visible[index]),
       startOffset: page.startOffset,
+      // Row locations, aligned with `events` (exact `chat_tool_result` reads,
+      // distinct keys for stand-ins that share a timestamp).
+      ...(offsetsAligned ? { envelopeStartOffsets: page.envelopeStartOffsets.filter((_, index) => visible[index]) } : {}),
       hasMore: page.hasMore,
       sessionFound: true,
     };

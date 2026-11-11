@@ -146,7 +146,7 @@ window.addEventListener("unhandledrejection", (event) => {
 let rendererWatchdogLastTick = performance.now();
 let rendererWatchdogIntervalId: number | null = null;
 let rendererWatchdogTicks = 0;
-/** Every 30th watchdog tick (30 s while visible), main gets what this window holds. */
+/** On the first watchdog tick, then every 30th (30 s while visible), main gets what this window holds. */
 const RENDERER_MEMORY_SNAPSHOT_TICKS = 30;
 
 function startWatchdog() {
@@ -157,7 +157,8 @@ function startWatchdog() {
     const driftMs = now - rendererWatchdogLastTick - 1000;
     rendererWatchdogLastTick = now;
     rendererWatchdogTicks += 1;
-    if (rendererWatchdogTicks % RENDERER_MEMORY_SNAPSHOT_TICKS === 0) reportRendererMemorySnapshot();
+    // The first tick reports too, so a window lost early still left a snapshot.
+    if (rendererWatchdogTicks % RENDERER_MEMORY_SNAPSHOT_TICKS === 1) reportRendererMemorySnapshot();
     if (driftMs < 1500) return;
     logRendererDebugEvent("renderer.event_loop_stall", {
       driftMs: Math.round(driftMs),

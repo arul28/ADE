@@ -44,9 +44,10 @@ export function brainConnectionLostError(
   } catch {
     loss = null;
   }
-  const message = socketError
-    ? `${BRAIN_CONNECTION_LOST_CODE}: ADE brain connection lost: the brain on this machine closed its socket (${socketError}) before it answered.`
-    : `${BRAIN_CONNECTION_LOST_CODE}: ADE brain connection lost: the ADE runtime endpoint closed before it answered.`;
+  // Both wordings keep "runtime endpoint closed", which marks the expected end
+  // of a `shutdown` however the socket went.
+  const message = `${BRAIN_CONNECTION_LOST_CODE}: ADE brain connection lost: the ADE runtime endpoint closed`
+    + `${socketError ? ` (${socketError})` : ""} before it answered.`;
   const data: Partial<BrainConnectionLossData> = { code: BRAIN_CONNECTION_LOST_CODE, socketError, ...(loss ?? {}) };
   return new JsonRpcError(JsonRpcErrorCode.internalError, message, data);
 }

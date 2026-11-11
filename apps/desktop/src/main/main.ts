@@ -472,7 +472,7 @@ import {
   createRendererCrashRecoveryBudget,
   isRecoverableRenderProcessGone,
 } from "./rendererCrashRecovery";
-import { forgetRendererMemory, rendererMemoryAnalytics, takeRendererMemory, type RendererRecoveryOutcome } from "./rendererMemoryLedger";
+import { forgetRendererMemory, noteRendererPageStarted, rendererMemoryAnalytics, takeRendererCrashState, type RendererRecoveryOutcome } from "./rendererMemoryLedger";
 import { isWindowLoadTargetGone } from "./windowLoadTarget";
 import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
@@ -1235,14 +1235,18 @@ async function createWindow(args: {
 
   const webContentsId = win.webContents.id;
   win.once("closed", () => forgetRendererMemory(webContentsId));
+  // A load or reload (including a recovery) is a new page: its own clock and peak.
+  win.webContents.on("did-navigate", () => noteRendererPageStarted(webContentsId));
   win.webContents.on("render-process-gone", (_event, details) => {
     // `killed` is the renderer ended from outside (SIGTERM on macOS, Windows
     // ending it at sign-out or shutdown, 0xC000013A): logged, recovered, not
     // an issue. A crash, an OOM or a failed launch stays one.
     const level = details.reason === "killed" ? "warn" : "error";
-    // What the renderer last said it held (every 30 s while visible). The
-    // line goes to Sentry with these numbers; analytics gets only buckets.
-    const memory = takeRendererMemory(webContentsId);
+    // What the renderer last said it held (every 30 s while visible), with
+    // the snapshot's age. The line goes to Sentry with these numbers;
+    // analytics gets only buckets, and none from a stale snapshot.
+    const crashState = takeRendererCrashState(webContentsId);
+    const memory = crashState.record;
     args.logger?.[level]("window.render_process_gone", {
       windowId: win.id,
       reason: details.reason,
@@ -1253,15 +1257,15 @@ async function createWindow(args: {
             lastHeapUsedMb: memory.heapUsedMb,
             peakHeapUsedMb: memory.peakHeapUsedMb,
             heapLimitMb: memory.heapLimitMb,
-            openForSec: memory.openForSec,
             openChatPanes: memory.openChatPanes,
             largestTranscriptEvents: memory.largestTranscriptEvents,
             replayActive: memory.replayActive,
-            snapshotAgeSec: Math.round((Date.now() - memory.reportedAtMs) / 1000),
           }
-        : { memorySnapshot: "none" }),
+        : { memorySnapshot: crashState.snapshotAgeSec == null ? "none" : "stale" }),
+      openForSec: crashState.openForSec,
+      snapshotAgeSec: crashState.snapshotAgeSec,
     });
-    const memoryBuckets = rendererMemoryAnalytics(memory);
+    const memoryBuckets = rendererMemoryAnalytics(crashState);
 
     // Monotonic on purpose: the budget is a rolling time window, and a wall-clock
     // correction mid-crash-storm would either free the budget early or freeze it.

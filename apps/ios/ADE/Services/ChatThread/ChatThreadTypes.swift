@@ -97,12 +97,26 @@ struct ChatThreadLiveEvent: @unchecked Sendable {
 /// A host stand-in for a transcript row too large to page: a `system_notice`
 /// with `status: "history_row_omitted"` and no `sequence`.
 func chatThreadIsOmittedHistoryRowNotice(_ event: ChatThreadLiveEvent) -> Bool {
+  chatThreadOmittedHistoryRowBody(event) != nil
+}
+
+/// The stand-in's identity: the omitted row's byte offset (`omittedRow.offset`,
+/// from hosts that send it), else the page's row offset, else its timestamp.
+func chatThreadOmittedHistoryRowKey(_ event: ChatThreadLiveEvent) -> String {
+  let omittedRow = chatThreadOmittedHistoryRowBody(event)?["omittedRow"] as? [String: Any]
+  if let offset = (omittedRow?["offset"] as? NSNumber)?.intValue { return "offset:\(offset)" }
+  if let offset = event.envelope.sourceOffset { return "offset:\(offset)" }
+  return "id:\(event.envelope.id)"
+}
+
+private func chatThreadOmittedHistoryRowBody(_ event: ChatThreadLiveEvent) -> [String: Any]? {
   guard event.envelope.sequence == nil,
         event.envelope.event.typeName == "system_notice",
         let object = try? JSONSerialization.jsonObject(with: event.raw) as? [String: Any],
-        let body = object["event"] as? [String: Any]
-  else { return false }
-  return body["status"] as? String == "history_row_omitted"
+        let body = object["event"] as? [String: Any],
+        body["status"] as? String == "history_row_omitted"
+  else { return nil }
+  return body
 }
 
 /// A `chat_subscribe` ack, decoded off the main actor.

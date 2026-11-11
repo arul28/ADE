@@ -35,12 +35,14 @@ function envelopeLine(args: {
   sequence?: number;
   /** Pad `text` with "x" until the serialized line (incl. trailing \n) is exactly this many BYTES. */
   exactLineBytes?: number;
+  targetKind?: string;
 }): string {
   const envelope: AgentChatEventEnvelope = {
     sessionId: args.sessionId ?? SESSION_ID,
     timestamp: "2026-06-10T10:00:00.000Z",
     event: { type: "text", text: args.text } as AgentChatEventEnvelope["event"],
     ...(args.sequence != null ? { sequence: args.sequence } : {}),
+    ...(args.targetKind ? { provenance: { targetKind: args.targetKind } } : {}),
   };
   let line = `${JSON.stringify(envelope)}\n`;
   if (args.exactLineBytes != null) {
@@ -489,66 +491,56 @@ describe("readTranscriptHistoryPageBeforeSequence", () => {
     expect(page.envelopes.map(sequenceOf)).toEqual([2, 4, 6, 8]);
   });
 
-  // A row too large to page yields no sequenced row (a stand-in, or nothing
-  // when it is another chat's), and the client's next request is its oldest
-  // sequence, so the reply must reach a sequenced row (or the head): else the
-  // client asks for the same page forever.
+  // The client's next request is its oldest sequence, so a sequence-cursor
+  // reply must hold a sequenced row it can see, older than the cursor, or say
+  // `hasMore: false`: else it asks for the same page forever. Rows 1 and 2
+  // sit below each run; `isVisible` is the service's filter (Codex subagent
+  // rows hidden).
   const MB9 = 9 * 1024 * 1024;
-  it.each([
-    { name: "one big row", bigRows: [{ bytes: 3_000_000 }] },
-    { name: "a run of big rows past the parse bound", bigRows: [{ bytes: MB9 }, { bytes: MB9 }, { bytes: MB9 }] },
-    { name: "another chat's big row", bigRows: [{ bytes: MB9, sessionId: "someone-else" }] },
-    {
-      name: "two of another chat's big rows",
-      bigRows: [{ bytes: MB9, sessionId: "someone-else" }, { bytes: MB9, sessionId: "someone-else" }],
-    },
-    // Windows of only other chats' rows read as empty pages.
-    { name: "a big row over windows of another chat's rows", bigRows: [{ bytes: 3_000_000 }], foreignRows: 200 },
-    { name: "windows of another chat's rows", bigRows: [], foreignRows: 200 },
-  ])("moves a sequence cursor past $name", async ({ bigRows, foreignRows = 0 }) => {
-    const top = 3 + bigRows.length;
-    writeTranscript([
-      envelopeLine({ text: "r1", sequence: 1 }),
-      envelopeLine({ text: "r2", sequence: 2 }),
-      ...Array.from({ length: foreignRows }, (_, index) =>
-        envelopeLine({ text: `other-${index}`, sessionId: "someone-else", sequence: 900 + index, exactLineBytes: 1_024 })),
-      ...bigRows.map((row, index) => envelopeLine({
-        text: "big",
-        sequence: 3 + index,
-        exactLineBytes: row.bytes,
-        ...("sessionId" in row ? { sessionId: row.sessionId } : {}),
-      })),
-      envelopeLine({ text: "top", sequence: top }),
-    ]);
+  type Fill = "big" | "big9" | "otherBig9" | "other1k" | "legacy1k" | "subagent1k";
+  it.each<{ name: string; fill: Array<[Fill, number]> }>([
+    { name: "one big row", fill: [["big", 1]] },
+    { name: "a run of big rows past the parse bound", fill: [["big9", 3]] },
+    { name: "another chat's big row", fill: [["otherBig9", 1]] },
+    { name: "two of another chat's big rows", fill: [["otherBig9", 2]] },
+    { name: "a big row over windows of another chat's rows", fill: [["other1k", 200], ["big", 1]] },
+    { name: "windows of another chat's rows", fill: [["other1k", 200]] },
+    { name: "a big row over pages of legacy unsequenced rows", fill: [["legacy1k", 200], ["big", 1]] },
+    { name: "pages of legacy unsequenced rows", fill: [["legacy1k", 200]] },
+    { name: "a big row over pages of hidden subagent rows", fill: [["subagent1k", 200], ["big", 1]] },
+    { name: "pages of hidden subagent rows", fill: [["subagent1k", 200]] },
+  ])("moves a sequence cursor past $name", async ({ fill }) => {
+    let sequence = 3;
+    const lines = [envelopeLine({ text: "r1", sequence: 1 }), envelopeLine({ text: "r2", sequence: 2 })];
+    let ownBigRows = 0;
+    for (const [kind, count] of fill) {
+      for (let index = 0; index < count; index += 1) {
+        if (kind === "big" || kind === "big9") ownBigRows += 1;
+        lines.push(envelopeLine({
+          text: kind,
+          ...(kind === "legacy1k" ? {} : { sequence: sequence++ }),
+          ...(kind === "otherBig9" || kind === "other1k" ? { sessionId: "someone-else" } : {}),
+          ...(kind === "subagent1k" ? { targetKind: "codex_subagent" } : {}),
+          exactLineBytes: kind === "big" ? 3_000_000 : kind.endsWith("9") ? MB9 : 1_024,
+        }));
+      }
+    }
+    lines.push(envelopeLine({ text: "top", sequence }));
+    writeTranscript(lines);
+    const isVisible = (envelope: AgentChatEventEnvelope) => envelope.provenance?.targetKind !== "codex_subagent";
     const page = await readTranscriptHistoryPageBeforeSequence({
       transcriptPath,
       sessionId: SESSION_ID,
-      beforeSequence: top,
+      beforeSequence: sequence,
       maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
+      isVisible,
     });
-    const ownBigRows = bigRows.filter((row) => !("sessionId" in row)).length;
-    expect(page.envelopes.map((envelope) => envelope.sequence ?? envelope.event.type))
-      .toEqual([1, 2, ...Array.from({ length: ownBigRows }, () => "system_notice")]);
-    expect(page.envelopeStartOffsets).toHaveLength(2 + ownBigRows);
+    const seen = page.envelopes.filter(isVisible);
+    expect(seen.filter((envelope) => typeof envelope.sequence === "number").map((envelope) => envelope.sequence))
+      .toEqual([1, 2]);
+    expect(seen.filter((envelope) => envelope.event.type === "system_notice")).toHaveLength(ownBigRows);
+    expect(page.envelopeStartOffsets).toHaveLength(page.envelopes.length);
     expect(page.hasMore).toBe(false);
-  });
-
-  it("serves a legacy run of unsequenced rows as read", async () => {
-
-    // No stand-in: one byte window, no extra pages.
-    writeTranscript([
-      envelopeLine({ text: "r1", sequence: 1 }),
-      ...Array.from({ length: 200 }, (_, index) => envelopeLine({ text: `legacy-${index}`, exactLineBytes: 1_024 })),
-      envelopeLine({ text: "r2", sequence: 2 }),
-    ]);
-    const legacy = await readTranscriptHistoryPageBeforeSequence({
-      transcriptPath,
-      sessionId: SESSION_ID,
-      beforeSequence: 2,
-      maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
-    });
-    expect(legacy.envelopes).toHaveLength(64);
-    expect(legacy.hasMore).toBe(true);
   });
 
   it("never returns a row at or above the cursor from a file whose numbering restarted", async () => {

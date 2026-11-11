@@ -21,15 +21,16 @@ function unescapeMountPath(value: string): string {
 
 /**
  * What file system a project folder lives on, for the slow-open log line.
- * Linux only: one read of `/proc/self/mountinfo`, matched against the
- * folder's real path. Elsewhere, and on any failure, it says `unknown`. Read
- * only when an open was already slow, never on the normal path.
+ * Linux only: one asynchronous read of `/proc/self/mountinfo` (kernel memory,
+ * never the project's own file system), matched against the folder's path as
+ * the brain opened it. The folder itself is not touched, so a stalled network
+ * mount cannot stall this. Elsewhere, and on any failure, it says `unknown`.
  */
-export function projectFilesystemKind(projectRoot: string): ProjectFilesystemKind {
+export async function projectFilesystemKind(projectRoot: string): Promise<ProjectFilesystemKind> {
   if (process.platform !== "linux") return { kind: "unknown", fsType: null };
   try {
-    const mountInfo = fs.readFileSync("/proc/self/mountinfo", "utf8");
-    const target = fs.realpathSync.native(projectRoot);
+    const mountInfo = await fs.promises.readFile("/proc/self/mountinfo", "utf8");
+    const target = path.resolve(projectRoot);
     let best: { mountPoint: string; fsType: string } | null = null;
     for (const line of mountInfo.split("\n")) {
       const separator = line.indexOf(" - ");
@@ -44,7 +45,7 @@ export function projectFilesystemKind(projectRoot: string): ProjectFilesystemKin
     if (!best) return { kind: "unknown", fsType: null };
     const fsType = best.fsType.slice(0, 40);
     if (NETWORK_FS_TYPES.has(fsType)) return { kind: "network", fsType };
-    if (fsType === "fuse" || fsType.startsWith("fuse.")) return { kind: "fuse", fsType };
+    if (fsType === "fuse" || fsType === "fuseblk" || fsType.startsWith("fuse.")) return { kind: "fuse", fsType };
     return { kind: "local", fsType };
   } catch {
     return { kind: "unknown", fsType: null };

@@ -1680,7 +1680,9 @@ export class RemoteConnectionService {
     request: RemoteRuntimeStreamEventsRequest,
     options?: { projectRootPath?: string | null },
   ): Promise<RemoteRuntimeStreamEventsResult> {
-    return await this.withEventSetupDeadline(targetId, "read", async (notePhase) => {
+    // A read that finishes after its deadline changes no status: a newer
+    // poll owns the machine's status by then.
+    return await this.withEventSetupDeadline(targetId, "read", async (notePhase, gaveUp) => {
       const target = await this.requireTargetForImplicitUse(targetId);
       try {
         const result = await this.pool.streamEventsForTarget(
@@ -1689,6 +1691,7 @@ export class RemoteConnectionService {
           request,
           { onPhase: notePhase },
         );
+        if (gaveUp()) return result;
         this.mergeStatus(targetId, {
           state: "connected",
           lastError: null,
@@ -1697,7 +1700,7 @@ export class RemoteConnectionService {
         this.clearAutomaticReconnectState(targetId);
         return result;
       } catch (error) {
-        this.markCallFailure(targetId, error);
+        if (!gaveUp()) this.markCallFailure(targetId, error);
         throw error;
       }
     });

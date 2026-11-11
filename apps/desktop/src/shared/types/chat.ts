@@ -2317,6 +2317,13 @@ export type AgentChatEvent =
       voiceSession?: AgentChatVoiceSession;
       /** A notice about a provider sign-in; see `AgentChatProviderLoginNotice`. */
       providerLogin?: AgentChatProviderLoginNotice;
+      /**
+       * Present only on `status: "history_row_omitted"`: the transcript row
+       * this display-only stand-in replaces. `offset` (the row's byte offset)
+       * makes two stand-ins with the same text distinct; `eventType` is absent
+       * when the row was too large to parse.
+       */
+      omittedRow?: { offset: number; bytes: number; eventType?: string };
       steerId?: string;
       turnId?: string;
     }

@@ -1,4 +1,5 @@
 import {
+  CHAT_PANE_BUCKETS,
   HEAP_MB_BUCKETS,
   HEAP_PCT_BUCKETS,
   NO_TRANSCRIPT_BUCKET,
@@ -177,7 +178,7 @@ const STRING_PROPERTIES = new Set([
   "tool_error_kind", "crash_reason", "count_bucket",
   "action_domain", "error_code", "refusal_code", "brain_action", "expected_kind", "cause",
   "kind", "severity", "emulator_count", "top_table", "ram_gb_bucket",
-  "heap_mb_bucket", "heap_pct_bucket", "transcript_bucket",
+  "heap_mb_bucket", "heap_pct_bucket", "transcript_bucket", "chat_pane_bucket",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
@@ -528,7 +529,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   // whether session replay was recording. Exact numbers go to Sentry only.
   ade_renderer_recovered: new Set([
     "crash_reason", "recovered", "heap_mb_bucket", "heap_pct_bucket", "duration_bucket",
-    "chat_session_count", "transcript_bucket", "replay_active",
+    "chat_pane_bucket", "transcript_bucket", "replay_active",
   ]),
   ade_publish_failing: new Set(["failing_minutes", "leg", "code", "cause"]),
   ade_relay_suppressed: new Set(["attempt", "code"]),
@@ -779,6 +780,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   // high-cardinality dimension.
   count_bucket: new Set(["1", "2_5", "6_plus"]),
   heap_mb_bucket: bucketLabels(HEAP_MB_BUCKETS, UNKNOWN_BUCKET),
+  chat_pane_bucket: bucketLabels(CHAT_PANE_BUCKETS),
   heap_pct_bucket: bucketLabels(HEAP_PCT_BUCKETS, UNKNOWN_BUCKET),
   transcript_bucket: bucketLabels(TRANSCRIPT_EVENT_BUCKETS, NO_TRANSCRIPT_BUCKET, UNKNOWN_BUCKET),
   route_kind: new Set(["desktop", "web"]),

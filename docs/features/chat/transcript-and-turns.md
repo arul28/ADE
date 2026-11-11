@@ -1772,12 +1772,24 @@ malformed, is dropped as it always was. Because the notice has no sequence, a
 durable log keyed on sequence never stores it as the real row.
 
 A reply to a sequence cursor (`beforeSequence`, `chat.getChatEvents`) always
-holds a sequenced row older than the cursor, or `hasMore: false`: it steps over
-a run of oversized rows without parsing the later ones. If the file shrinks
-while an oversized row is being read, the page fails with the retryable
-`chat_history_changed_during_read`; the caller's cursor has not moved. The
-stand-in folds into the status stand-in in `agentChatService`'s transcript
-reads rather than counting as conversation.
+holds a sequenced row older than the cursor that the caller will show, or
+`hasMore: false`. It keeps reading older pages past oversized rows (without
+parsing the later ones), past legacy rows with no sequence, and past rows the
+service hides (Codex subagent rows, through the `isVisible` filter the service
+passes in). If the file shrinks while an oversized row is being read, the page
+fails with the retryable `chat_history_changed_during_read`; the caller's
+cursor has not moved.
+
+The notice carries `omittedRow: { offset, bytes, eventType? }`. The offset is
+its identity: the renderer and the phone key on it, so two notices with the
+same text or timestamp stay separate. `eventType` is missing when the row was
+too large to parse. A transcript read (`getChatTranscript`,
+`getChatTranscriptPage`, and so `ade chat read` and handoff briefs) reports
+`truncated: true` when the omitted row may have held a message (a user
+message, a text reply, or an unknown kind) inside the returned window; an
+omitted tool result does not, because it is never a transcript entry.
+`getChatEventHistoryPage` returns `envelopeStartOffsets` lined up with the
+events it returns.
 
 Desktop and personal chat request 256 KiB pages; the desktop
 background fill requests 512 KiB. Desktop and

@@ -4442,15 +4442,15 @@ export async function createAdeRuntime(args: {
     const bootTotalMs = bootClock.totalMs();
     if (bootTotalMs >= PROJECT_OPEN_SLOW_MS) {
       // A warn line: on disk, and a Sentry Log plus breadcrumb where Sentry
-      // runs. The file system is read only on this slow path. No folder path.
-      const filesystem = projectFilesystemKind(projectRoot);
-      logger.warn("project.open_slow", {
-        totalMs: bootTotalMs,
-        phases: bootClock.summary(),
-        filesystemKind: filesystem.kind,
-        filesystemType: filesystem.fsType,
-        runtimeProfile: runtimeProfileLabel,
-        hadAdeDb,
+      // runs. No folder path. The open does not wait for the file system
+      // lookup; the line follows it.
+      const slowOpen = { totalMs: bootTotalMs, phases: bootClock.summary(), runtimeProfile: runtimeProfileLabel, hadAdeDb };
+      void projectFilesystemKind(projectRoot).then((filesystem) => {
+        logger.warn("project.open_slow", {
+          ...slowOpen,
+          filesystemKind: filesystem.kind,
+          filesystemType: filesystem.fsType,
+        });
       });
     }
     runtimeCreated = true;

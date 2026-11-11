@@ -1,4 +1,5 @@
 import {
+  CHAT_PANE_BUCKETS,
   HEAP_MB_BUCKETS,
   HEAP_PCT_BUCKETS,
   NO_TRANSCRIPT_BUCKET,
@@ -25,6 +26,14 @@ export type RendererMemoryRecord = RendererMemorySnapshot & {
 };
 
 const records = new Map<number, RendererMemoryRecord>();
+/** When each window's current page loaded, so a crash knows how long it was open. */
+const pageStartedAtMs = new Map<number, number>();
+
+/**
+ * A snapshot older than this does not describe the crash: snapshots come
+ * every 30 s while the window is visible and stop while it is hidden.
+ */
+const STALE_SNAPSHOT_MS = 2 * 60_000;
 
 function clampNumber(value: unknown, max: number): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.min(max, Math.round(value)) : null;
@@ -49,18 +58,42 @@ export function noteRendererMemory(webContentsId: number, raw: unknown): void {
   });
 }
 
-/**
- * The window's last record, then forgotten: the reloaded renderer is a new
- * process and starts its own peak.
- */
-export function takeRendererMemory(webContentsId: number): RendererMemoryRecord | null {
-  const record = records.get(webContentsId) ?? null;
+/** A page loaded in this window (first load, reload, recovery): it starts a fresh record and peak. */
+export function noteRendererPageStarted(webContentsId: number): void {
   records.delete(webContentsId);
-  return record;
+  pageStartedAtMs.set(webContentsId, Date.now());
+}
+
+/** What is known about a window's renderer at the moment it was lost. */
+export type RendererCrashState = {
+  /** The last snapshot, or null when there was none or it was stale. */
+  record: RendererMemoryRecord | null;
+  /** How old the last snapshot was, stale or not; null with no snapshot. */
+  snapshotAgeSec: number | null;
+  /** How long the page was open when it was lost, from its load. */
+  openForSec: number | null;
+};
+
+/** The window's state at a crash, then forgotten: the reloaded page starts its own. */
+export function takeRendererCrashState(webContentsId: number): RendererCrashState {
+  const now = Date.now();
+  const last = records.get(webContentsId) ?? null;
+  const startedAt = pageStartedAtMs.get(webContentsId) ?? null;
+  records.delete(webContentsId);
+  pageStartedAtMs.delete(webContentsId);
+  const ageMs = last ? Math.max(0, now - last.reportedAtMs) : null;
+  return {
+    record: last && ageMs != null && ageMs <= STALE_SNAPSHOT_MS ? last : null,
+    snapshotAgeSec: ageMs == null ? null : Math.round(ageMs / 1000),
+    openForSec: startedAt != null
+      ? Math.round((now - startedAt) / 1000)
+      : last && ageMs != null ? last.openForSec + Math.round(ageMs / 1000) : null,
+  };
 }
 
 export function forgetRendererMemory(webContentsId: number): void {
   records.delete(webContentsId);
+  pageStartedAtMs.delete(webContentsId);
 }
 
 function bucketOf(value: number | null, table: BucketTable): string {
@@ -72,7 +105,7 @@ export type RendererMemoryAnalytics = {
   heap_mb_bucket: string;
   heap_pct_bucket: string;
   duration_bucket?: string;
-  chat_session_count?: number;
+  chat_pane_bucket?: string;
   transcript_bucket: string;
   replay_active?: boolean;
 };
@@ -80,18 +113,24 @@ export type RendererMemoryAnalytics = {
 /** What `ade_renderer_recovered` carries. */
 export type RendererRecoveryOutcome = { crash_reason: string; recovered: boolean } & RendererMemoryAnalytics;
 
-/** Closed buckets for `ade_renderer_recovered`; never the exact numbers. */
-export function rendererMemoryAnalytics(record: RendererMemoryRecord | null): RendererMemoryAnalytics {
+/**
+ * Closed buckets for `ade_renderer_recovered`; never the exact numbers. How
+ * long the page was open is measured at the crash; the rest comes from a
+ * fresh snapshot only, and reads `unknown` without one.
+ */
+export function rendererMemoryAnalytics(state: RendererCrashState): RendererMemoryAnalytics {
+  const duration = state.openForSec != null ? { duration_bucket: bucketOf(state.openForSec, OPEN_FOR_SEC_BUCKETS) } : {};
+  const record = state.record;
   if (!record) {
-    return { heap_mb_bucket: UNKNOWN_BUCKET, heap_pct_bucket: UNKNOWN_BUCKET, transcript_bucket: UNKNOWN_BUCKET };
+    return { heap_mb_bucket: UNKNOWN_BUCKET, heap_pct_bucket: UNKNOWN_BUCKET, transcript_bucket: UNKNOWN_BUCKET, ...duration };
   }
   const heap = record.peakHeapUsedMb ?? record.heapUsedMb;
   const pct = heap != null && record.heapLimitMb ? (heap / record.heapLimitMb) * 100 : null;
   return {
     heap_mb_bucket: bucketOf(heap, HEAP_MB_BUCKETS),
     heap_pct_bucket: bucketOf(pct, HEAP_PCT_BUCKETS),
-    duration_bucket: bucketOf(record.openForSec, OPEN_FOR_SEC_BUCKETS),
-    chat_session_count: Math.min(record.openChatPanes, 50),
+    ...duration,
+    chat_pane_bucket: bucketOf(record.openChatPanes, CHAT_PANE_BUCKETS),
     transcript_bucket: record.openChatPanes === 0
       ? NO_TRANSCRIPT_BUCKET
       : bucketOf(record.largestTranscriptEvents, TRANSCRIPT_EVENT_BUCKETS),
