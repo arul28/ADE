@@ -52,6 +52,7 @@
 		E20000000000000000000F31 /* SettingsMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F31 /* SettingsMachines.swift */; };
 		E2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */; };
 		E2000000000000000000A620 /* SettingsProviderAccountSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */; };
+		E5C0000000000000000C5001 /* SettingsProviderSignIns.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5C0000000000000000C5001 /* SettingsProviderSignIns.swift */; };
 		E2000000000000000000A610 /* SettingsProviderAccounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A610 /* SettingsProviderAccounts.swift */; };
 		E2000000000000000000A611 /* SettingsProviderAccountSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A611 /* SettingsProviderAccountSettings.swift */; };
 		E2000000000000000000A600 /* ProviderAccountsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000A600 /* ProviderAccountsStore.swift */; };
@@ -184,6 +185,7 @@
 		E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */; };
 		E10000000000000000C0A7A1 /* WorkChatAccountNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7A1 /* WorkChatAccountNote.swift */; };
 		E10000000000000000C0A7B9 /* WorkProviderSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7B9 /* WorkProviderSignIn.swift */; };
+		E5C0000000000000000C5002 /* WorkProviderSignInSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5C0000000000000000C5002 /* WorkProviderSignInSteps.swift */; };
 		E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002D /* WorkChatRichCardViews.swift */; };
 		E20000000000000000000F06 /* WorkTurnWorkDisclosure.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F06 /* WorkTurnWorkDisclosure.swift */; };
 		F10000000000000000000103 /* WorkRemoteToolResultAffordance.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */; };
@@ -567,6 +569,7 @@
 		D20000000000000000000F31 /* SettingsMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsMachines.swift; path = ADE/Views/Settings/SettingsMachines.swift; sourceTree = "<group>"; };
 		D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountsPreviews.swift; path = ADE/Views/Settings/SettingsProviderAccountsPreviews.swift; sourceTree = "<group>"; };
 		D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountSignIn.swift; path = ADE/Views/Settings/SettingsProviderAccountSignIn.swift; sourceTree = "<group>"; };
+		D5C0000000000000000C5001 /* SettingsProviderSignIns.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderSignIns.swift; path = ADE/Views/Settings/SettingsProviderSignIns.swift; sourceTree = "<group>"; };
 		D2000000000000000000A610 /* SettingsProviderAccounts.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccounts.swift; path = ADE/Views/Settings/SettingsProviderAccounts.swift; sourceTree = "<group>"; };
 		D2000000000000000000A611 /* SettingsProviderAccountSettings.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsProviderAccountSettings.swift; path = ADE/Views/Settings/SettingsProviderAccountSettings.swift; sourceTree = "<group>"; };
 		D2000000000000000000A600 /* ProviderAccountsStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProviderAccountsStore.swift; path = ADE/Services/ProviderAccountsStore.swift; sourceTree = "<group>"; };
@@ -656,6 +659,7 @@
 		D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatHeaderAndMessageViews.swift; path = ADE/Views/Work/WorkChatHeaderAndMessageViews.swift; sourceTree = "<group>"; };
 		D10000000000000000C0A7A1 /* WorkChatAccountNote.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAccountNote.swift; path = ADE/Views/Work/WorkChatAccountNote.swift; sourceTree = "<group>"; };
 		D10000000000000000C0A7B9 /* WorkProviderSignIn.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProviderSignIn.swift; path = ADE/Views/Work/WorkProviderSignIn.swift; sourceTree = "<group>"; };
+		D5C0000000000000000C5002 /* WorkProviderSignInSteps.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProviderSignInSteps.swift; path = ADE/Views/Work/WorkProviderSignInSteps.swift; sourceTree = "<group>"; };
 		D1000000000000000000002D /* WorkChatRichCardViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatRichCardViews.swift; path = ADE/Views/Work/WorkChatRichCardViews.swift; sourceTree = "<group>"; };
 		D20000000000000000000F06 /* WorkTurnWorkDisclosure.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTurnWorkDisclosure.swift; path = ADE/Views/Work/WorkTurnWorkDisclosure.swift; sourceTree = "<group>"; };
 		F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRemoteToolResultAffordance.swift; path = ADE/Views/Work/WorkRemoteToolResultAffordance.swift; sourceTree = "<group>"; };
@@ -1383,6 +1387,7 @@
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D10000000000000000C0A7A1 /* WorkChatAccountNote.swift */,
 				D10000000000000000C0A7B9 /* WorkProviderSignIn.swift */,
+				D5C0000000000000000C5002 /* WorkProviderSignInSteps.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
 				D20000000000000000000F06 /* WorkTurnWorkDisclosure.swift */,
 				F10000000000000000000104 /* WorkRemoteToolResultAffordance.swift */,
@@ -1471,6 +1476,7 @@
 				D20000000000000000000F31 /* SettingsMachines.swift */,
 				D2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift */,
 				D2000000000000000000A620 /* SettingsProviderAccountSignIn.swift */,
+				D5C0000000000000000C5001 /* SettingsProviderSignIns.swift */,
 				D2000000000000000000A610 /* SettingsProviderAccounts.swift */,
 				D2000000000000000000A611 /* SettingsProviderAccountSettings.swift */,
 				D2000000000000000000A600 /* ProviderAccountsStore.swift */,
@@ -2259,6 +2265,7 @@
 				E20000000000000000000F31 /* SettingsMachines.swift in Sources */,
 				E2000000000000000000A630 /* SettingsProviderAccountsPreviews.swift in Sources */,
 				E2000000000000000000A620 /* SettingsProviderAccountSignIn.swift in Sources */,
+				E5C0000000000000000C5001 /* SettingsProviderSignIns.swift in Sources */,
 				E2000000000000000000A610 /* SettingsProviderAccounts.swift in Sources */,
 				E2000000000000000000A611 /* SettingsProviderAccountSettings.swift in Sources */,
 				E2000000000000000000A600 /* ProviderAccountsStore.swift in Sources */,
@@ -2390,6 +2397,7 @@
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E10000000000000000C0A7A1 /* WorkChatAccountNote.swift in Sources */,
 				E10000000000000000C0A7B9 /* WorkProviderSignIn.swift in Sources */,
+				E5C0000000000000000C5002 /* WorkProviderSignInSteps.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
 				E20000000000000000000F06 /* WorkTurnWorkDisclosure.swift in Sources */,
 				F10000000000000000000103 /* WorkRemoteToolResultAffordance.swift in Sources */,

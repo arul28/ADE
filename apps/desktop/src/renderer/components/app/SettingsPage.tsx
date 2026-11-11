@@ -124,6 +124,7 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "secrets",
   "behaviour",
   "ade-mcp",
+  "ade-cloud",
   "agents",
   "lanes-git",
   "project-agents",

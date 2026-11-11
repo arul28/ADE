@@ -16,6 +16,9 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
   case chat
   case providers
   case integrations
+  /// The account's ADE Cloud (the desktop's own sidebar tab). Listed only
+  /// with access (`cloudAvailable && cloudSupported`).
+  case adeCloud
   case notifications
   case appearance
   case lanes
@@ -31,6 +34,7 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     case .chat: return "Chat"
     case .providers: return "Providers"
     case .integrations: return "Integrations"
+    case .adeCloud: return "ADE Cloud"
     case .notifications: return "Notifications"
     case .appearance: return "Appearance"
     case .lanes: return "Lanes"
@@ -47,6 +51,7 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     case .usage: return "Spend and pacing across your providers and machines."
     case .chat: return "How agents behave in chat, and what they may spend."
     case .integrations: return "GitHub, Linear, Jira and webhooks: the services ADE and your agents use."
+    case .adeCloud: return nil
     case .notifications: return "What ADE tells you about running work, and where."
     case .appearance: return "How ADE looks on this \(UIDevice.current.model)."
     case .lanes: return "How new lanes start in this project."
@@ -62,6 +67,7 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     case .chat: return "bubble.left"
     case .providers: return "cpu"
     case .integrations: return "square.grid.2x2"
+    case .adeCloud: return "cloud"
     case .notifications: return "bell"
     case .appearance: return "circle.lefthalf.filled"
     case .lanes: return "arrow.triangle.branch"
@@ -79,6 +85,7 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     case .chat: return .blue
     case .providers: return .violet
     case .integrations: return .orange
+    case .adeCloud: return .blue
     case .notifications: return .red
     case .appearance: return .teal
     case .lanes: return .amber
@@ -91,7 +98,7 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     switch self {
     case .machines, .general: return .overview
     case .account, .usage: return .you
-    case .chat, .providers, .integrations, .notifications, .appearance: return .app
+    case .chat, .providers, .integrations, .adeCloud, .notifications, .appearance: return .app
     case .lanes: return .project
     case .advanced: return .system
     }
