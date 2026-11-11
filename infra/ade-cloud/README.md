@@ -69,7 +69,9 @@ new revision; boxes already made keep their image, and `ade brain update`
 updates their ADE.
 
 ADE's server creates from the exact template version pinned in `cloud_settings`
-(`template_version`, like `ade@8`); bare `ade` means newest and is never sent.
+for the computer's update channel (`template_version_stable` or
+`template_version_beta`, like `ade@8`; `template_version` is the older single
+setting and the fallback). Bare `ade` means newest and is never sent.
 
 ## Every release builds it
 
@@ -77,32 +79,63 @@ ADE's server creates from the exact template version pinned in `cloud_settings`
 release's tag once that release's files are public: on stable publish (the
 `release` trigger, when the release skill undrafts it) and from `beta.yml`
 beside the feed job. Previews do not build one. Each build gets the next build
-number, `ade@N`, written to the run's summary. It changes nothing else: the job
-is allowed to fail, nothing waits on it, and ADE's server keeps creating
-computers from the version it has pinned (bare `ade` means newest and is never
-sent). A build needs the repository secret `AGENT37_API_KEY`; without it the job
-skips with a warning. Rerun it by hand from the Actions tab (it takes a tag).
+number, `ade@N`, written to the run's summary.
+
+A second job, `promote-template`, then tests that build with
+`promote-template.mjs` (below) and, only on a pass, moves the image of the
+tag's channel: a tag with `-` (beta, alpha, rc) moves Beta, any other tag moves
+Stable. Stable never moves to a prerelease. It also checks that the computer
+runs exactly the tag's ADE. A failed test moves nothing. Both jobs are allowed
+to fail and nothing waits on them. The build needs the secret
+`AGENT37_API_KEY`, and the test also `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` (for `wrangler d1 execute`); without them the job skips
+with a warning. Rerun it by hand from the Actions tab (it takes a tag).
+
+Once a channel's image moves, the computers on that channel update themselves
+the next time they are idle or asleep (`apps/account-directory/src/cloud/updates.ts`,
+and "Updates" in `docs/features/ade-cloud/README.md`).
 
 ## Testing a build and moving the version
 
 `infra/ade-cloud/promote-template.mjs` tests one build on a real computer: it
 creates one from `ade@N` (tagged `created_by: ade-template-check`), checks ADE is there and
-its version, that a command runs and that ADE's brain answers, that a project
-opens, its lanes list and a terminal runs a command (`ade@9` passed without this
-check and could not open a project), that a file in
-`/home/node` survives sleep and wake and then stop and start, and deletes the
-computer in a `finally` (Ctrl-C included). It prints first-start timings.
+its version (with `--expect-version`, exactly that release), that a command
+runs and that ADE's brain answers, that a real repository (a tiny public one,
+cloned) opens as a project, its lanes list, a new lane appears in that list and
+a terminal runs a command (`ade@9` passed without a project check and could not
+open a project), that a file in `/home/node` survives sleep and wake and then
+stop and start, and deletes the computer in a `finally` (Ctrl-C included). The
+whole test gives up after 20 minutes, and deletes the computer then too. It
+prints first-start timings.
 
 ```sh
 AGENT37_API_KEY=sk_live_... node infra/ade-cloud/promote-template.mjs 9                       # test only
-AGENT37_API_KEY=sk_live_... node infra/ade-cloud/promote-template.mjs 9 --move --env production  # test, then move
-AGENT37_API_KEY=sk_live_... node infra/ade-cloud/promote-template.mjs --move-back 8 --env production
+AGENT37_API_KEY=sk_live_... node infra/ade-cloud/promote-template.mjs 9 --move --channel beta --expect-version v1.2.130-beta.1 --env production
+AGENT37_API_KEY=sk_live_... node infra/ade-cloud/promote-template.mjs --move-back 8 --channel stable --env production
 ```
 
-`--move` runs only after a passing test and sets `cloud_settings.template_version`
-through `wrangler d1 execute` (`--env` is `production`, `development` or `local`).
-`--move-back` is the same step for a previous build and runs no test. Add
-`--min-version vX.Y.Z` to time the first-start install of a newer ADE.
+`--move` runs only after a passing test and writes, through
+`wrangler d1 execute` (`--env` is `production`, `development` or `local`):
+
+- `--channel beta`: `template_version_beta` and `auto_update_beta`.
+- `--channel stable`: `template_version_stable`, `template_version` and
+  `auto_update_stable`. It refuses a prerelease build.
+
+`auto_update_<channel>` is the image a passed test lets that channel's
+computers update to on their own; a person's "Update this computer" goes to
+the channel's image whatever it says. `--move-back` is the same step for a
+previous build and runs no test: the channel's computers then move back to
+that build when idle or asleep. Add `--min-version vX.Y.Z` to time the
+first-start install of a newer ADE.
+
+To stop automatic updates for a channel (new computers and a person's update
+still use the channel's image), set its marker to `off`:
+
+```sh
+cd apps/account-directory
+npx wrangler d1 execute ade-account-directory-production --remote --env production \
+  --command "UPDATE cloud_settings SET value = 'off', updated_at = $(date +%s000) WHERE key = 'auto_update_stable';"
+```
 
 Measured on 2026-11-08 with `ade@8` (ADE 1.2.129-beta.24, a 2 CPU / 4 GB computer
 on a 4 GB disk): create answered in 0.8 s, first command at 1.1 s, `ade --version`

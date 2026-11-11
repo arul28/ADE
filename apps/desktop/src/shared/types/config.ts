@@ -9,6 +9,7 @@ import type { LaneType } from "./lanes";
 import type { ModelConfig, ThinkingLevel } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
 import type { LocalProviderFamily } from "../modelRegistry";
+import type { CloudTierId } from "../cloudTiers";
 
 export type TestRunStatus = "running" | "passed" | "failed" | "canceled" | "timed_out";
 export type TestSuiteTag = "unit" | "lint" | "integration" | "e2e" | "custom";
@@ -888,8 +889,21 @@ export type AutomationLaneNamePreset =
   | "pr-title-author"
   | "custom";
 
+/**
+ * Each run's lane on its own new ADE Cloud computer, instead of on the
+ * machine that runs the rule. That machine still watches the trigger and
+ * keeps the run history; the lane and the agent's chat live on the computer.
+ * See `shared/automationCloud.ts` for what such a rule may hold.
+ */
+export type AutomationCloudTarget = {
+  /** The computer's size; null or absent = the size the person saved for new lanes. */
+  sizeId?: CloudTierId | null;
+};
+
 export type AutomationExecution = {
   kind: AutomationExecutionKind;
+  /** Set: every run makes its lane on ADE Cloud (`laneMode` "create" or "pr-branch"). */
+  cloud?: AutomationCloudTarget | null;
   /**
    * Whether each run should spawn a fresh lane (`"create"`) or reuse the
    * configured / trigger / primary lane (`"reuse"`), or require the trigger

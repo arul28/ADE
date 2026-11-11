@@ -444,6 +444,7 @@ export function ManageLaneDialog({
   onAppearanceChanged,
   runtimePin,
   initialTab,
+  cloudLaneIds,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -466,17 +467,29 @@ export function ManageLaneDialog({
   runtimePin?: OpenProjectBinding | null;
   /** Tab to open on, e.g. "archive" for the sidebar's "Archive all". Defaults to Delete. */
   initialTab?: ManageLaneTab | null;
+  /**
+   * The lanes here that live on their own ADE Cloud computer. A cloud lane
+   * goes with its computer (no worktree or branch to pick, no 30-day copy,
+   * no Force delete): the caller's delete warns once, only when work isn't
+   * on GitHub. The local form applies to the other lanes only.
+   */
+  cloudLaneIds?: ReadonlySet<string> | null;
 }) {
   const lanes = managedLanes?.length ? managedLanes : managedLane ? [managedLane] : [];
   const isBatch = lanes.length > 1;
   const allPrimary = lanes.length > 0 && lanes.every((l) => l.laneType === "primary");
-  const hasAnyDirty = lanes.some((l) => l.status.dirty);
+  const cloudLanes = cloudLaneIds?.size ? lanes.filter((l) => cloudLaneIds.has(l.id) && l.laneType !== "primary") : [];
+  const localLanes = cloudLanes.length ? lanes.filter((l) => !cloudLaneIds?.has(l.id)) : lanes;
+  const onlyCloud = cloudLanes.length > 0 && localLanes.every((l) => l.laneType === "primary");
+  const hasAnyDirty = localLanes.some((l) => l.status.dirty);
   // A batch never takes a lane's uncommitted work because one box was ticked
   // for the rest: without Force it deletes the clean lanes and skips these.
-  const dirtyLanes = lanes.filter((l) => l.status.dirty && l.laneType !== "primary");
+  const dirtyLanes = localLanes.filter((l) => l.status.dirty && l.laneType !== "primary");
   const skippedDirtyCount = isBatch && !deleteForce ? dirtyLanes.length : 0;
-  const deleteCount = lanesToDelete(lanes, deleteForce).length;
+  const localDeleteCount = lanesToDelete(localLanes, deleteForce).length;
+  const deleteCount = localDeleteCount + cloudLanes.length;
   const singleLane = !isBatch ? lanes[0] ?? null : null;
+  const singleCloud = singleLane != null && cloudLanes.length === 1;
 
   const singleLaneId = singleLane?.id ?? null;
   const singleLaneType = singleLane?.laneType ?? null;
@@ -548,7 +561,7 @@ export function ManageLaneDialog({
 
   // Fetch pre-flight risk for the single-lane case.
   useEffect(() => {
-    if (!open || !singleLaneId || singleLaneType === "primary") {
+    if (!open || !singleLaneId || singleLaneType === "primary" || singleCloud) {
       setDeleteRisk(null);
       return;
     }
@@ -579,7 +592,7 @@ export function ManageLaneDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, runtimePin, singleLaneId, singleLaneType]);
+  }, [open, runtimePin, singleCloud, singleLaneId, singleLaneType]);
 
   // Stream live delete progress for the active lane.
   useEffect(() => {
@@ -596,10 +609,13 @@ export function ManageLaneDialog({
     };
   }, [open, runtimePin, singleLaneId]);
 
-  const hasDeleteSelection = laneDeleteSelectionHasAny(deleteSelection);
+  // Cloud lanes need no pick: the lane and its computer go together.
+  const hasDeleteSelection = onlyCloud || laneDeleteSelectionHasAny(deleteSelection);
   // A lane with uncommitted work only deletes with Force on; say so at the
   // button. A batch deletes its clean lanes without it.
-  const needsForce = isBatch ? deleteCount === 0 && dirtyLanes.length > 0 && !deleteForce : hasAnyDirty && !deleteForce;
+  const needsForce = onlyCloud
+    ? false
+    : isBatch ? deleteCount === 0 && dirtyLanes.length > 0 && !deleteForce : hasAnyDirty && !deleteForce;
   const deleteHint = !hasDeleteSelection
     ? "Pick what to delete"
     : needsForce
@@ -879,12 +895,21 @@ export function ManageLaneDialog({
 
           {activeTab === "delete" ? (
             <ManageLaneTabPanel tone="delete">
+              {onlyCloud ? (
+                <CloudLaneDeleteNote count={cloudLanes.length} />
+              ) : (
+              <>
               <p className="text-xs text-red-200/70">
                 Stops lane activity and removes what you pick. Work that only this lane holds is kept for {DELETED_LANE_KEEP_DAYS} days in Recently deleted.
                 {!isBatch && reclaimRisk && reclaimRisk.reclaimableBytes > 0 ? (
                   <span className="text-muted-fg/70"> Frees about <strong className="text-fg">{formatBytes(reclaimRisk.reclaimableBytes)}</strong>.</span>
                 ) : null}
               </p>
+              {cloudLanes.length ? (
+                <p className="mt-2 text-xs text-muted-fg/80">
+                  {cloudLanes.map((lane) => lane.name).join(", ")} {cloudLanes.length === 1 ? "is an ADE Cloud lane. It goes" : "are ADE Cloud lanes. They go"} with {cloudLanes.length === 1 ? "its" : "their"} computer; the choices below do not apply. If work there isn&apos;t on GitHub, ADE shows it first.
+                </p>
+              ) : null}
 
               {/* Uncommitted changes are named once, by the header chip; the
                   Force delete row and the button's reason carry the rest. */}
@@ -917,6 +942,8 @@ export function ManageLaneDialog({
                     <span className="block text-muted-fg/50">ADE keeps a copy for {DELETED_LANE_KEEP_DAYS} days. Restore it from Settings › Storage › Recently deleted.</span>
                   </span>
                 </label>
+              )}
+              </>
               )}
 
               {deleteProgress ? (
@@ -972,6 +999,25 @@ export function ManageLaneDialog({
         </div>
       )}
     </LaneDialogShell>
+  );
+}
+
+/**
+ * The delete tab for ADE Cloud lanes only: nothing to pick, no 30-day copy
+ * (the computer goes), no Force delete. The delete itself warns once, only
+ * when work on the computer isn't on GitHub.
+ */
+function CloudLaneDeleteNote({ count }: { count: number }) {
+  const one = count === 1;
+  return (
+    <div className="space-y-1.5 text-xs leading-relaxed">
+      <p className="text-red-200/80">
+        {one ? "Deletes the lane and its ADE Cloud computer." : `Deletes the ${count} lanes and their ADE Cloud computers.`} Everything on {one ? "that computer" : "those computers"} goes for good.
+      </p>
+      <p className="text-muted-fg/80">
+        If work there isn&apos;t on GitHub, ADE shows it first and offers to push it. {one ? "The lane's chats stay" : "Their chats stay"} readable.
+      </p>
+    </div>
   );
 }
 

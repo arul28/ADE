@@ -35,8 +35,9 @@ import {
   type CloudMachineKind,
   type CloudShapeId,
 } from "../../../shared/adeCloud";
-import { CLOUD_MADE_BY_CHAT_METADATA } from "../../../shared/adeCloud";
+import { CLOUD_MADE_BY_AGENT_METADATA, CLOUD_MADE_BY_CHAT_METADATA, cloudMadeByMetadata, type CloudAgentMaker } from "../../../shared/adeCloud";
 import { CLOUD_READY_METADATA } from "../../../shared/cloudReady";
+import { CLOUD_LANE_METADATA_KEYS } from "../../../shared/cloudLaneLaunch";
 import { getErrorMessage } from "../shared/utils";
 import { CloudProviderError, type CloudProvider, type CloudInstance, type CloudLogger } from "./cloudProvider";
 import {
@@ -76,6 +77,7 @@ const MOVE_HOLD_MS = 45 * 60_000;
 const NOT_COPIED_METADATA = new Set<string>([
   CLOUD_MACHINE_KEY_METADATA,
   CLOUD_MADE_BY_CHAT_METADATA,
+  CLOUD_MADE_BY_AGENT_METADATA,
   "ade_request_id",
   ...Object.values(CLOUD_READY_METADATA),
 ]);
@@ -86,6 +88,16 @@ function copyMetadata(source: CloudInstance, requestId: string, extra: Record<st
     if (!NOT_COPIED_METADATA.has(key)) metadata[key] = value;
   }
   return { ...metadata, ...extra, created_by: "ade", ade_request_id: requestId };
+}
+
+/** The lane facts a computer carries (`CLOUD_LANE_METADATA_KEYS`), for the computer that replaces it. */
+function laneMetadataOf(source: CloudInstance): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of CLOUD_LANE_METADATA_KEYS) {
+    const value = source.metadata[key];
+    if (typeof value === "string" && value) out[key] = value;
+  }
+  return out;
 }
 
 async function waitForRunning(client: CloudProvider, instanceId: string, signal: AbortSignal | undefined, sleep: (ms: number) => Promise<void>): Promise<CloudInstance> {
@@ -106,7 +118,7 @@ async function waitForRunning(client: CloudProvider, instanceId: string, signal:
  */
 export async function copyCloudMachine(
   deps: CloudCopyDeps,
-  args: { instanceId: string; name?: string | null; shape?: CloudShapeId | null; requestId?: string; madeByChat?: string | null },
+  args: { instanceId: string; name?: string | null; shape?: CloudShapeId | null; requestId?: string; madeByChat?: string | null; madeByAgent?: CloudAgentMaker | null },
   onProgress: (progress: CloudCreateProgress) => void,
   options: { signal?: AbortSignal } = {},
 ): Promise<CloudCreateMachineResult & { copiedFrom: string; forkMs: number }> {
@@ -148,7 +160,7 @@ export async function copyCloudMachine(
         ...(shape ? { resources: { cpu: shape.cpu, memory: shape.memoryGb } } : {}),
         metadata: copyMetadata(source, requestId, {
           ade_copied_from: source.id,
-          ...(args.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: args.madeByChat } : {}),
+          ...cloudMadeByMetadata(args),
         }),
       }, options.signal);
     } catch (error) {
@@ -257,9 +269,13 @@ export type CloudMoveResult = CloudCreateMachineResult & {
  */
 export async function moveCloudMachine(
   deps: CloudCopyDeps,
-  args: { instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null; requestId?: string; madeByChat?: string | null },
+  args: { instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null; requestId?: string; madeByChat?: string | null; madeByAgent?: CloudAgentMaker | null },
   onProgress: (progress: CloudCreateProgress) => void,
-  options: { signal?: AbortSignal } = {},
+  options: {
+    signal?: AbortSignal;
+    /** The copy is done and the new machine is whole: called before the old one is deleted, so a caller can save it first. */
+    onCopied?: (target: { instanceId: string; machineKey: string | null; name: string }) => void;
+  } = {},
 ): Promise<CloudMoveResult> {
   if (!isCloudMachineKind(args.to)) throw new Error("Move it to a standard or a full computer.");
   const requestId = args.requestId ?? randomUUID();
@@ -292,7 +308,13 @@ export async function moveCloudMachine(
   }, onProgress, {
     signal: options.signal,
     moveFromInstanceId: source.id,
-    metadata: { ade_moved_from: source.id, ...(args.madeByChat ? { [CLOUD_MADE_BY_CHAT_METADATA]: args.madeByChat } : {}) },
+    metadata: {
+      // The lane moves with its computer: pickers, the dashboard and a later
+      // delete read the lane from here with no wake.
+      ...laneMetadataOf(source),
+      ade_moved_from: source.id,
+      ...cloudMadeByMetadata(args),
+    },
   });
 
   let transferMs = 0;
@@ -357,6 +379,8 @@ export async function moveCloudMachine(
     }
     throw new Error(`ADE couldn't move ${sourceName}: ${getErrorMessage(error)} ${sourceName} is as it was, and the new machine was deleted.`);
   }
+
+  options.onCopied?.({ instanceId: target.instanceId, machineKey: target.machineKey ?? null, name: target.name });
 
   // 4. The old box goes; the new one takes its name.
   let sourceDeleted = false;

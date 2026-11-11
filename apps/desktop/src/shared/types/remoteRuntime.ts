@@ -456,6 +456,8 @@ export type RemoteRuntimeCapabilities = {
   machineProjects: Partial<Record<RemoteRuntimeMachineProjectCapability, boolean>>;
   /** `chat.sendMessage` recognizes a repeat of a `clientSendId`. Absent on an older brain. */
   clientSendDedupe?: boolean;
+  /** The chat launch kinds the brain runs (`CHAT_LAUNCH_KINDS`). Absent on an older brain. */
+  chatLaunchKinds?: string[];
 };
 
 export type RemoteRuntimeHandoffStoragePreflightArgs = {

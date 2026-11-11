@@ -2128,9 +2128,12 @@ still-live button invites a second spend.
   strip closed with Not now and reads the status again, forced. A blocked
   press brings back the one-line strip, never the card, so focus stays in
   the prompt box. A turn that failed on its sign-in keeps its own flow and
-  does not turn Send off. A draft bound for Cursor Cloud or Devin does not
-  use this computer's login, and a CLI draft signs in inside the CLI: no
-  strip, no card, Send stays on (`draftSkipsLocalSignIn`). An open Cursor
+  does not turn Send off. A draft bound for ADE Cloud, Cursor Cloud or
+  Devin does not use this computer's login, and a CLI draft signs in inside
+  the CLI: no strip, no card, Send stays on (`draftSkipsLocalSignIn`). An
+  ADE Cloud draft that can't run now shows its label above the box instead,
+  and the same `sendBlockedReason` holds Send off with the label's text (a
+  sign-in reason comes first). An open Cursor
   Cloud or Devin chat is not held off either. In an open chat the check
   follows the picked model's provider, not the chat's first one. It also
   follows the route (`signInLoginProvider`): a stored key or a picked
@@ -3139,6 +3142,134 @@ jumps ahead on reload so clients do not discard that snapshot as stale.
 Finished and cancelled launches are dropped (`launch-removed`) ten minutes
 after they end — unless a completed launch still has an undelivered queued
 message, in which case the record is kept and delivery resumes after a restart.
+
+### ADE Cloud lanes
+
+A launch whose args carry `cloud: { sizeId }` (a tier id from
+`shared/cloudTiers.ts`) gets one new ADE Cloud computer for its one new lane.
+Nothing is made before Send. The desktop's main process owns the launch first
+(`services/adeCloud/cloudLaneLaunchService.ts`), so it does not depend on a
+window. Three stages come before the brain's own:
+
+1. **Make computer**: the create carries the launch id as its request id,
+   the lane's name, and the lane facts in metadata (`shared/cloudLaneLaunch.ts`).
+   The stage finishes when the computer's ADE answers.
+2. **Join your account**: the computer's sign-in, approved in the approval
+   window, then its account row.
+3. **Clone repository**: pair, connect, and clone the project's GitHub origin
+   with the computer's own Git sign-in. A project that is already there is used.
+
+The hand-off then calls `chat.startLaunch` on the computer's brain through
+its pin. The call keeps the same `launchId` and `laneId`, forces the lane
+start to `on: "remote"`, and passes the three finished stages as
+`priorStages`. The brain shows them first and never runs them
+(`normalizeChatLaunchPriorStages`). Messages queued before the hand-off go to
+the brain in order, one at a time, and the record is written after each one.
+After the hand-off the brain owns the launch and finishes it with the desktop
+closed.
+
+- **One id.** A second start with the same id returns the same launch. The
+  server answers a repeated create request id with the same computer (see
+  `apps/account-directory/src/cloud/routes.ts`, `replayRequest`).
+- **Routing.** The renderer keeps `window.ade.chatLaunch.*`. A start with
+  `cloud` goes to main (`IPC.cloudLaneLaunchCall`). Each call by id asks main
+  first, and main forwards it to the computer's brain after the hand-off. An
+  id main does not own takes the ordinary runtime route. `list` merges both.
+  Snapshots carry `cloud` (size, computer, account machine key, the pin, and
+  `handedOff`), and each project's views show only launches for their origin.
+- **Failures.** A failed stage shows one sentence. Retry runs that stage again
+  on the same computer. A computer that failed before it joined is put to
+  sleep while it waits. Cancel deletes only computers whose `ade_request_id`
+  is this launch, then removes the account row. If no computer was found yet,
+  it watches for a late one for 10 minutes. After the hand-off, Cancel goes to
+  the brain first, and the brain refuses once the agent has started.
+- **Restarts.** Records live in `<userData>/cloud-lane-launches/`. When ADE
+  opens again, a launch that was setting up continues from its unfinished
+  stage. A handed-off one is read and followed again, and a cancel finishes
+  its cleanup.
+- **Limits.** Only GitHub origins, no local file attachments before the
+  hand-off, and no uncommitted start.
+- **Kinds.** Any kind can start a cloud lane. A `chat` starts its agent there.
+  A `cli` parks at `awaiting-client` on the computer's brain, and the
+  launching window's `useChatLaunchCliDriver` starts the tracked CLI session
+  through `snapshot.cloud.binding`. Its `completeClient` goes to main, which
+  forwards it to the brain. A `lane` (`ade lanes create --machine cloud`) has
+  no `agent` stage and completes when its environment stage ends. It takes no
+  queued messages.
+  A brain advertises the kinds it runs as the `chatLaunchKinds` capability of
+  `ade/initialize` (`CHAT_LAUNCH_KINDS`). Before it hands off a `cli` or
+  `lane` launch, the launch owner reads that list from its connection (the
+  connect result in the app, the bridge's open connection in a brain). A
+  brain that does not list the kind would read it as `chat`, so the step
+  fails with "too old, update it, then retry". A list that can't be read is
+  not refused.
+
+The lane setup card (`LaneSetupCard.tsx`) and the ADE Cloud job card
+(`CloudLaneJobCard.tsx`) draw their step rows from one parts module,
+`components/chat/launch/stepCardParts.tsx`: the status tones, the stage line and
+the error callout. A failed step is amber on both, never red.
+
+#### Run on ADE Cloud in the composer
+
+The draft's launch shelf has three controls for ADE Cloud
+(`AgentChatPane.tsx`, with `useAdeCloudDraft.ts`, `AdeCloudComposerParts.tsx`
+and `remoteTargets/cloudBrand.tsx`):
+
+- **Run on.** The machine picker (`DraftMachinePicker.tsx`) always lists one
+  **ADE Cloud** row when the account has access, also with no lanes yet and
+  before the account answers. The row shows the cloud mark, "3 lanes · 1
+  awake", and a small skyline with one building for each lane (awake ones
+  lit). Lane computers do not get rows of their own. The old "New ADE Cloud
+  machine" row is gone from the composer.
+- **Lane.** With ADE Cloud picked, the lane list is Auto-create lane (or the
+  "+" lane's name), then this project's lanes on ADE Cloud by name. The names
+  come from the computers' metadata (`CloudLaneMachine.lane`, filled by
+  `toCloudMachine`), so nothing wakes. ADE Cloud has no Primary.
+- **Size.** For a new lane only, an icon button shows the cloud mark filled a
+  quarter to full for Small to X-Large. The menu lists `cloudTiers(catalog)`
+  with the catalog's rate, and "Change the default…" saves the default size.
+  The default is the account preference `cloudDefaultTier` (Small at first),
+  in the preferences blob and synced by `accountSettingsSync.ts`.
+
+Send:
+
+- A new lane calls `chatLaunch.start` with `cloud: { sizeId }`, a client-made
+  `launchId`, and the tab's project as the pin (it only names the
+  repository). The setup card shows at once. A second press of Send in the
+  same moment does nothing: the request key is held.
+- An existing ADE Cloud lane sends through the pin of its computer
+  (`adeCloudLaneBinding.ts`). A paired computer's binding is used at once and
+  the send wakes it. Otherwise ADE pairs and connects it first and says
+  "Waking <lane>…".
+- After the clone step, the launch row's `binding` is `snapshot.cloud.binding`
+  (`chatLaunchRowSourcesNow`), so the Work router sends the chat's calls to the
+  new computer. The row stays listed under the tab it started in.
+
+Before Send, a label sits on top of the prompt box and Send is off while ADE
+Cloud can't take the message. The typed text stays. The label shows an account
+fact (out of hours, all computers in use, disk full, from
+`CloudAccountState`), or a start refusal the composer can see: a local file,
+an "uncommitted" start, no GitHub origin, a CLI draft, or parallel models. The
+sentences come from `cloudLaneLaunchStartProblem` in `shared/cloudLaneLaunch.ts`,
+which main also uses, so none appears as an error after Send. "Upgrade" and
+"Free up space" open Settings › ADE Cloud. When the sign-in strip also shows,
+the strip is on top and the ADE Cloud label is nearest the box. Both are tabs
+on the box at the same inset. In a narrow box (520 px or less) the label shows
+its short form on one line and only its first action. A CLI draft or parallel
+models keeps the ADE Cloud pick, with the label and Send off, for a new or an
+existing lane. A draft bound for ADE Cloud shows no sign-in strip or card for
+this computer.
+
+The setup card of an ADE Cloud launch has the cloud mark and the blue tone in
+its tile while it runs, and a short drift of cloud behind the header while the
+computer is made (CSS only, once, off with reduced motion). A failed launch
+stays amber and offers Retry, Cancel (which deletes the computer) and Copy
+details (launch id, step and sentence). The tier-change and move card
+(`cloudLane/CloudLaneJobCard.tsx`) is built from the same parts
+(`chat/launch/stepCardParts.tsx`) and follows the same tone: a failed step is
+amber, never red. A chat on an ADE Cloud lane shows
+"ADE Cloud" on its machine chip, with "ADE Cloud · <lane>" in the tooltip
+(`state/adeCloudLaneIndex.ts`).
 
 ## Session lifecycle
 

@@ -72,6 +72,7 @@ import {
   type ScheduledLook,
 } from "../theme/appearanceSchedule";
 import { captureError } from "../../shared/sentry/capture";
+import { isCloudTierId, type CloudTierId } from "../../shared/cloudTiers";
 import {
   AppearanceStoreContext,
   USER_PREFERENCES_STORAGE_KEY,
@@ -1109,6 +1110,12 @@ type PersistedUserPreferences = {
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
   /**
+   * The size a new ADE Cloud lane starts with (the composer's size button).
+   * Small until the person changes it. An account preference: it follows
+   * the person to every computer they sign in on.
+   */
+  cloudDefaultTier: CloudTierId;
+  /**
    * Saved harness presets — a body (the harness) plus a brain (the model
    * source), named and given a logo. They live in the preferences blob rather
    * than in their own store because they are an account preference like any
@@ -1159,6 +1166,13 @@ export type ActiveDictationTarget = {
   focus: () => void;
 };
 
+/** A new ADE Cloud lane starts Small until the person picks another default. */
+const DEFAULT_CLOUD_TIER: CloudTierId = "small";
+
+function normalizeCloudDefaultTier(value: unknown): CloudTierId {
+  return isCloudTierId(value) ? value : DEFAULT_CLOUD_TIER;
+}
+
 function readUnifiedUserPreferences(): PersistedUserPreferences | null {
   try {
     const raw = window.localStorage.getItem(USER_PREFERENCES_STORAGE_KEY);
@@ -1184,6 +1198,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatTranscriptDensity: normalizeChatTranscriptDensity(parsed.chatTranscriptDensity),
       chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
+      cloudDefaultTier: normalizeCloudDefaultTier(parsed.cloudDefaultTier),
       harnessPresets: readHarnessPresetList(parsed.harnessPresets),
       appleDevice: normalizeAppleDevicePreferences(
         (parsed as { apple?: unknown; appleDevice?: unknown }).apple
@@ -1240,6 +1255,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     chatTranscriptDensity: "comfortable",
     chatChromeTint: "colored",
     chatShellGeometry: "default",
+    cloudDefaultTier: DEFAULT_CLOUD_TIER,
     harnessPresets: [],
     appleDevice: { ...DEFAULT_APPLE_DEVICE_PREFERENCES },
     androidDevice: { ...DEFAULT_ANDROID_DEVICE_PREFERENCES },
@@ -1283,6 +1299,7 @@ function persistUserPreferencesFrom(state: {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  cloudDefaultTier: CloudTierId;
   harnessPresets: HarnessPreset[];
   appleDevice: AppleDevicePreferences;
   androidDevice: AndroidDevicePreferences;
@@ -1310,6 +1327,7 @@ function persistUserPreferencesFrom(state: {
     chatTranscriptDensity: state.chatTranscriptDensity,
     chatChromeTint: state.chatChromeTint,
     chatShellGeometry: state.chatShellGeometry,
+    cloudDefaultTier: state.cloudDefaultTier,
     // Stored with the rows this build cannot read; the loader normalizes and
     // sets those aside again, so only storage ever holds them.
     // `PersistedUserPreferences` types the list as read back (normalized), so
@@ -1654,6 +1672,7 @@ export type AppState = {
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
   draftsButtonEnabled: boolean;
+  cloudDefaultTier: CloudTierId;
   voiceInputEnabled: boolean;
   codexVoice: CodexVoicePreferences;
   // ── Ephemeral voice-dictation session state (root store only; not persisted) ──
@@ -1832,6 +1851,7 @@ export type AppState = {
   setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
   setCtoAttention: (snapshot: CtoAttentionState) => void;
   setSmartTooltipsEnabled: (enabled: boolean) => void;
+  setCloudDefaultTier: (tier: CloudTierId) => void;
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   setDraftsButtonEnabled: (enabled: boolean) => void;
@@ -2295,6 +2315,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   launchPromptClipboardEnabled: initialUserPreferences.launchPromptClipboardEnabled,
   launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
   draftsButtonEnabled: initialUserPreferences.draftsButtonEnabled,
+  cloudDefaultTier: initialUserPreferences.cloudDefaultTier,
   voiceInputEnabled: initialUserPreferences.voiceInputEnabled,
   codexVoice: initialUserPreferences.codexVoice,
   dictationPhase: "idle",
@@ -2978,6 +2999,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, draftsButtonEnabled: enabled });
       return { draftsButtonEnabled: enabled };
+    }),
+  setCloudDefaultTier: (tier) =>
+    set((prev) => {
+      const next = normalizeCloudDefaultTier(tier);
+      if (prev.cloudDefaultTier === next) return {};
+      persistUserPreferencesFrom({ ...prev, cloudDefaultTier: next });
+      return { cloudDefaultTier: next };
     }),
   setVoiceInputEnabled: (enabled) =>
     set((prev) => {

@@ -1,4 +1,6 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import { CLOUD_DEFAULT_TIER_SETTING_KEY } from "../../../shared/cloudTiers";
 import {
   resolveContinueAfterRestart,
   writeSavedContinueAfterRestart,
@@ -13,6 +15,7 @@ import path from "node:path";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import type { IntegrationConnectRequestResult } from "../../../shared/integrationConnect";
+import type { AdeCardPayload } from "../../../shared/adeCard";
 import { readImageFileAsDataUrl } from "../chat/imageAttachmentConverter";
 import { createHash } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -282,11 +285,13 @@ import {
 import type { AdeActionDomain } from "./domains";
 import { ADE_ACTION_ALLOWLIST, isAutomationAllowedAdeAction } from "./actionPolicy";
 import type { AutomationAdeActionRegistry } from "../automations/automationService";
+import { readGitOriginUrl } from "../projects/recentProjectSummary";
 import {
   asActionRecord,
   optionalNonEmptyString,
   readBranchDriftResolution,
   readChatHistoryActionArgs,
+  readCloudStartBranchArgs,
   readObjectActionArg,
   readOptionalIntegerActionField,
   readRuntimeFileWatchSenderId,
@@ -304,7 +309,7 @@ import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
-import { observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
+import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
 import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import { cloudMachineEnv, type CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
@@ -312,7 +317,14 @@ import { claudePassVaultFromStore } from "../adeCloud/claudePassStore";
 import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
 import { buildCloudReadyActions } from "../adeCloud/cloudReadyActions";
 import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
-import { createCloudBrainMaker, type CloudBrainMaker } from "../adeCloud/cloudBrainMaker";
+import { createCloudBrainMaker, type CloudBrainMaker, type CloudBrainMakerBase } from "../adeCloud/cloudBrainMaker";
+import {
+  cloudLaneLaunchRecordsDir,
+  cloudLaneLaunchTransportSet,
+  createCloudLaneLaunchBrainHost,
+  hasCloudLaneLaunchRecords,
+  type CloudLaneLaunchBrainHost,
+} from "../adeCloud/cloudLaneLaunchBrainHost";
 import { approveInHeadlessChromium, findHeadlessChromium } from "../adeCloud/cloudHeadlessApproval";
 import { createCloudMachines } from "../adeCloud/cloudMachines";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
@@ -620,7 +632,7 @@ type OpaqueService = Record<string, unknown>;
  * (buildMachineAccountDomainServices).
  */
 export type AccountDomainRuntime = Pick<AdeRuntime, "logger">
-  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService">>
+  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "accountSettingsStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService">>
   & { projectRoot?: string | null };
 
 function toService(value: unknown): OpaqueService | null {
@@ -2249,6 +2261,11 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     },
     getDeleteRisk: async (args?: unknown) =>
       runtime.laneService.getDeleteRisk(readLaneIdActionArg(args, "lane.getDeleteRisk")),
+    // "Push this branch?" before an ADE Cloud launch, on the machine that has the project.
+    cloudStartBranch: async (args?: unknown) =>
+      runtime.laneService.cloudStartBranch(readCloudStartBranchArgs(args, "lane.cloudStartBranch")),
+    pushCloudStartBranch: async (args?: unknown) =>
+      runtime.laneService.pushCloudStartBranch(readCloudStartBranchArgs(args, "lane.pushCloudStartBranch")),
     cancelDelete: async (args?: unknown) =>
       runtime.laneService.cancelDelete(readLaneIdActionArg(args, "lane.cancelDelete")),
     listSnapshots: async (args?: ListLanesArgs): Promise<LaneListSnapshot[]> => {
@@ -4110,11 +4127,52 @@ const cloudBrainMakers = new WeakMap<AccountDomainRuntime, CloudBrainMaker | nul
 
 function cloudBrainMakerFor(runtime: AccountDomainRuntime, machines: ReturnType<typeof createCloudMachines>): CloudBrainMaker | null {
   if (cloudBrainMakers.has(runtime)) return cloudBrainMakers.get(runtime) ?? null;
+  const base = cloudBrainMakerBase(runtime, machines);
+  const maker = base ? createCloudBrainMaker({ base, logger: runtime.logger }) : null;
+  cloudBrainMakers.set(runtime, maker);
+  return maker;
+}
+
+/**
+ * The brain's ADE Cloud lane launches. One per process, not per runtime: the
+ * records live in the machine's ADE folder, and two owners would resume each
+ * launch twice. Built on first use, or at the brain's start when a quit left
+ * launches to resume (`resumeCloudLaneLaunches`). Null in a process that can't
+ * reach other machines (no transport), or with no account here.
+ */
+let cloudLaneLaunchHost: CloudLaneLaunchBrainHost | null = null;
+
+function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnType<typeof createCloudMachines>): CloudLaneLaunchBrainHost | null {
+  if (cloudLaneLaunchHost) return cloudLaneLaunchHost;
+  if (!cloudLaneLaunchTransportSet()) return null;
+  const base = cloudBrainMakerBase(runtime, machines);
+  if (!base) return null;
+  cloudLaneLaunchHost = createCloudLaneLaunchBrainHost({
+    base,
+    recordsDir: cloudLaneLaunchRecordsDir(resolveMachineAdeLayout().adeDir),
+    logger: runtime.logger,
+    // A lane's computer is made here, not by the maker: the sign-in renewal learns of it the same way.
+    onComputerCreated: noteCloudComputerMade,
+  });
+  return cloudLaneLaunchHost;
+}
+
+/** At a brain's start: picks up the ADE Cloud lane launches a quit left, when there are any. */
+export function resumeCloudLaneLaunches(runtime: AccountDomainRuntime): void {
+  if (!hasCloudLaneLaunchRecords(cloudLaneLaunchRecordsDir(resolveMachineAdeLayout().adeDir), runtime.logger)) return;
+  const credentials = cloudAccessDeps(runtime);
+  cloudLaneLaunchHostFor(runtime, createCloudMachines({
+    client: () => getCloudProvider(credentials),
+    whyNoClient: () => cloudNoProviderSentence(credentials),
+    removeAccountMachine: async () => undefined,
+    logger: runtime.logger,
+  }));
+}
+
+/** The creator's deps a brain fills in (no window), or null with no account here. */
+function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType<typeof createCloudMachines>): CloudBrainMakerBase | null {
   const account = runtime.accountAuthService ?? null;
-  if (!account) {
-    cloudBrainMakers.set(runtime, null);
-    return null;
-  }
+  if (!account) return null;
   const credentials = cloudAccessDeps(runtime);
   const directoryBaseUrl = () => {
     try {
@@ -4130,30 +4188,25 @@ function cloudBrainMakerFor(runtime: AccountDomainRuntime, machines: ReturnType<
   // Only a brain on a cloud machine approves the machines it makes; anywhere
   // else a person has a browser, and the sign-in link goes to them.
   const chromium = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ? findHeadlessChromium() : null;
-  const maker = createCloudBrainMaker({
-    base: {
-      client: () => requireCloudProvider(credentials),
-      getAccountToken: async () => (account.getStatus().signedIn ? await account.getAccessToken().catch(() => null) : null),
-      directoryBaseUrl,
-      listAccountMachines: () => directory().listMachines(),
-      renameMachine: (machineKey, name) => directory().renameMachine(machineKey, name),
-      // The person's provider sign-ins, so they are signed in on the new machine (cloudSignInStore.ts).
-      machineEnv: () => cloudMachineEnv(cloudSignInVaults(runtime), runtime.logger),
-      // This brain's release: a machine made from an older template installs it on boot.
-      // Only a released build: a development build's version may not be published.
-      minAdeVersion: () => stampedAdeVersion(),
-      account: () => machines.account(),
-      removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
-      // No window here: the sign-in of a machine this brain made with an
-      // unattended yes opens in a headless Chromium (the template ships one).
-      ...(chromium ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
-        approveInHeadlessChromium({ url, signal, binary: chromium, logger: runtime.logger }) } : {}),
-      logger: runtime.logger,
-    },
+  return {
+    client: () => requireCloudProvider(credentials),
+    getAccountToken: async () => (account.getStatus().signedIn ? await account.getAccessToken().catch(() => null) : null),
+    directoryBaseUrl,
+    listAccountMachines: () => directory().listMachines(),
+    renameMachine: (machineKey, name) => directory().renameMachine(machineKey, name),
+    // The person's provider sign-ins, so they are signed in on the new machine (cloudSignInStore.ts).
+    machineEnv: () => cloudMachineEnv(cloudSignInVaults(runtime), runtime.logger),
+    // This brain's release: a machine made from an older template installs it on boot.
+    // Only a released build: a development build's version may not be published.
+    minAdeVersion: () => stampedAdeVersion(),
+    account: () => machines.account(),
+    removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
+    // No window here: the sign-in of a machine this brain made with an
+    // unattended yes opens in a headless Chromium (the template ships one).
+    ...(chromium ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
+      approveInHeadlessChromium({ url, signal, binary: chromium, logger: runtime.logger }) } : {}),
     logger: runtime.logger,
-  });
-  cloudBrainMakers.set(runtime, maker);
-  return maker;
+  };
 }
 
 /**
@@ -4213,6 +4266,14 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
     readySettings: settings,
     desktop: () => runtime.getCloudDesktop?.() ?? null,
     maker,
+    laneLaunch: () => cloudLaneLaunchHostFor(runtime, machines),
+    // The project's GitHub origin, for a lane launch that names none (the CTO, an automation).
+    projectOriginUrl: () => (runtime.projectRoot ? readGitOriginUrl(runtime.projectRoot) : null),
+    // The size the person picked for new lanes (Settings, the composer's size
+    // button), synced through the account settings. No store: can't read it.
+    savedDefaultTier: runtime.accountSettingsStore
+      ? () => runtime.accountSettingsStore!.get(ACCOUNT_SCOPE_ALL, CLOUD_DEFAULT_TIER_SETTING_KEY)
+      : null,
     // A runtime with no chat service of its own (the CLI's in-process
     // fallback) has no chat to ask in; costly actions are then refused.
     approvals: agentChatService && typeof agentChatService.requestChatInput === "function"
@@ -4220,6 +4281,9 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
           requestChatInput: (input) => agentChatService.requestChatInput(input),
           permissionLevel: (chatSessionId) => agentChatService.getPermissionCeiling?.({ actor: { kind: "agent", chatSessionId } }) ?? null,
           isAutomationRun: async (chatSessionId) => Boolean((await agentChatService.getSessionSummary(chatSessionId).catch(() => null))?.automationRunId),
+          ...(typeof agentChatService.emitAdeCard === "function"
+            ? { postCard: (chatSessionId: string, card: AdeCardPayload) => agentChatService.emitAdeCard({ sessionId: chatSessionId, card }) }
+            : {}),
           notice: (chatSessionId, message) => {
             try {
               agentChatService.recordSystemNotice({ sessionId: chatSessionId, message });

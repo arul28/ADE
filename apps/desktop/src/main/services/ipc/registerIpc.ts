@@ -948,6 +948,9 @@ import {
 } from "../account/accountBridge";
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
 import { cloudAccountChanged, registerCloudIpc } from "../adeCloud/registerCloudIpc";
+import { registerCloudLaneLifeIpc } from "../adeCloud/registerCloudLaneLifeIpc";
+import { registerCloudLaneLaunchIpc } from "../adeCloud/registerCloudLaneLaunchIpc";
+import { getMachineMainLogger } from "../logging/machineLogger";
 import { registerCloudSavedChatsIpc } from "../cloudChats/registerCloudSavedChatsIpc";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
 import type { McpRegistryServer } from "../../../shared/mcpRegistry";
@@ -12548,7 +12551,7 @@ export function registerIpc({
   });
 
   // the provider: the account-wide key and new machines made on it (no pin; see the module).
-  registerCloudIpc({
+  const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient } = registerCloudIpc({
     // Its items in this computer's brain, also with no project here: then the
     // brain opens only those (`accountVault.call`).
     vaultBridge: createAccountVaultBridge({ ...vaultBridgeOptions, machineFallback: true }),
@@ -12630,6 +12633,35 @@ export function registerIpc({
       });
     },
     logger: { info: (event, meta) => getCtx().logger.info(event, meta), warn: (event, meta) => getCtx().logger.warn(event, meta) },
+  });
+
+  // "ADE Cloud" picked for a new lane: this app makes the computer, then
+  // hands the launch to that computer's brain. Machine-wide, so its log is
+  // the machine's own (desktop-main.jsonl), not a project's.
+  // Delete lane, keep a lane on a fresh computer, and tier changes: account
+  // level, in this process so a tier change goes on with the window closed.
+  registerCloudLaneLifeIpc({
+    machines: cloudMachines,
+    copyDeps: cloudCopyDeps,
+    client: cloudClient,
+    forgetMachineConnections: (machine) => {
+      runtimeBridge.removeTargetsForMachine({ machineKey: machine.machineKey, hostname: machine.instanceId });
+    },
+    pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
+    targetIdForMachine: (machineKey) => runtimeBridge.resolveTargetIdForMachineKey(machineKey),
+    remote: runtimeBridge.remoteForMain,
+    logger: getMachineMainLogger(),
+  });
+
+  registerCloudLaneLaunchIpc({
+    machineCreatorDeps: cloudMachineCreatorDeps,
+    removeAccountMachine: (machineKey) => accountBridge.removeMachine(machineKey),
+    forgetMachineConnections: (machine) => {
+      runtimeBridge.removeTargetsForMachine({ machineKey: machine.machineKey, hostname: machine.instanceId });
+    },
+    pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
+    remote: runtimeBridge.remoteForMain,
+    logger: getMachineMainLogger(),
   });
 
   const mcpRegistryService = createMcpRegistryService({

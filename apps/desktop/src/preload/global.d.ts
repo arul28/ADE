@@ -2344,6 +2344,16 @@ declare global {
         restoreDeleted: (args: RestoreDeletedLaneArgs, pin?: OpenProjectBinding | null) => Promise<RestoreDeletedLaneResult>;
         /** Drops a deleted lane's saved work for good. */
         removeDeleted: (args: RemoveDeletedLaneArgs, pin?: OpenProjectBinding | null) => Promise<{ removed: boolean }>;
+        /** "Push this branch?" before an ADE Cloud launch: is the start branch on GitHub? Runs on the pin's machine. */
+        cloudStartBranch?: (
+          args: import("../shared/types").CloudStartBranchArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types").CloudStartBranchCheck>;
+        /** Pushes that start branch to origin, then answers the check again. */
+        pushCloudStartBranch?: (
+          args: import("../shared/types").CloudStartBranchArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types").CloudStartBranchCheck>;
         getDeleteRisk: (
           args: { laneId: string },
           pin?: OpenProjectBinding | null,
@@ -4824,6 +4834,23 @@ declare global {
         reconnectMachine?: (args: { requestId: string; instanceId: string }) => Promise<{ started: boolean }>;
         personIsHere?: () => Promise<boolean>;
         pushAllWork?: (instanceId: string) => Promise<CloudMachineActionResult>;
+        /**
+         * The life of a lane's computer: work check, delete lane, keep the
+         * lane on a fresh computer, lanes without a computer, tier changes
+         * (`shared/cloudLaneLife.ts` has each method's args and answer).
+         * Account level: it names a computer of the account, so no pin.
+         */
+        laneLife?: <M extends import("../shared/cloudLaneLife").CloudLaneLifeMethod>(
+          request: import("../shared/cloudLaneLife").CloudLaneLifeCallRequest<M>,
+        ) => Promise<import("../shared/cloudLaneLife").CloudLaneLifeResults[M]>;
+        /** A tier change's steps as they move. */
+        onLaneJob?: (cb: (job: import("../shared/cloudLaneLife").CloudLaneJobSnapshot) => void) => () => void;
+        /**
+         * Clears a lane computer's caches (`cloud.clear_caches`) on THAT
+         * computer: `pin` is the lane's machine binding, `instanceId` its
+         * ADE Cloud id (the brain refuses a call that reached another one).
+         */
+        clearCaches?: (pin: OpenProjectBinding, instanceId: string) => Promise<{ freedGb: number }>;
       };
       /**
        * The account settings store (the `account_settings` action domain),

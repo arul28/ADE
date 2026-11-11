@@ -177,6 +177,8 @@ describe("accountSettingsSync (renderer)", () => {
       "chatTranscriptDensity",
       "chatChromeTint",
       "chatShellGeometry",
+      // The saved default size for new ADE Cloud lanes; it follows the account on purpose.
+      "cloudDefaultTier",
       "harnessPresets",
       // The Star on GitHub pill: its snooze and "already starred" flags must
       // follow the account, or a second machine re-asks after the user starred.

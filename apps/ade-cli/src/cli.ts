@@ -12,6 +12,7 @@ import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
+import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
 import type { CloudReadyPool } from "../../desktop/src/shared/cloudReady";
 import { cloudCatalogOf, cloudPlanLabelOf, formatCloudHours, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
@@ -33,8 +34,10 @@ import {
   flagNamesOutsideFreeText,
   formatMachineFanOut,
   formatMachinesRoster,
+  isCloudLaneMachineSelector,
   isMachineFanOutResult,
   locateChatOnOtherMachines,
+  runCloudLaneLaunch,
   withMachineColumns,
 } from "./cliMachineTargeting";
 import {
@@ -554,6 +557,7 @@ import {
   formatAppleWindow,
   shapeAppleLeaseAnswer,
 } from "./cliAppleFormat";
+import { formatCloudStatus } from "./cliCloudStatus";
 import {
   REMOTE_MCP_HELP,
   buildRemoteMcpPlan,
@@ -757,6 +761,8 @@ export type GlobalOptions = {
   machineProject?: string | null;
   /** `--clone`: set the repository up on that machine when it is missing. */
   machineClone?: boolean;
+  /** `--size` with `--machine cloud`: the new ADE Cloud computer's size (the person's saved size for new lanes when unset). */
+  cloudSize?: string | null;
   /**
    * Set by `cliMachineTargeting` when a `--machine` shell start or Apple call
    * runs in this chat's work copy there (no `--lane`): how a sync readies it
@@ -782,6 +788,33 @@ async function withAdeDefaultRole<T>(
 export type ParsedCli = {
   options: GlobalOptions;
   command: string[];
+};
+
+/** `ade chat create`'s choices, as `--machine cloud` turns them into a lane launch. */
+export type CloudLaneLaunchDraft = {
+  /** The `chat.createSession` args the command built. */
+  create: JsonObject;
+  /** The first message (`--prompt`), or null. */
+  prompt: string | null;
+  /** `--launch-id`: the same id again follows (or resumes) that launch. */
+  launchId: string | null;
+  /** `--from-linear-issue`: bound to the new lane on the computer, when it is the whole issue. */
+  linearIssue: JsonObject | null;
+  /** A choice a new ADE Cloud lane can't take yet; refused with its own line. */
+  notify: boolean;
+};
+
+/**
+ * `ade lanes create`'s choices, as `--machine cloud` turns them into a lane
+ * launch with no chat (kind `lane`; see `cliMachineTargeting.ts`).
+ */
+type CloudLaneCreateDraft = {
+  /** The lane launch args, without `launchId` and `cloud` (the CLI adds them). */
+  launch: JsonObject;
+  /** `--launch-id`: the same id again follows (or resumes) that launch. */
+  launchId: string | null;
+  /** A flag a new ADE Cloud lane can't take yet, refused with its own line; null when none. */
+  refused: string | null;
 };
 
 const DEFAULT_EPHEMERAL_RUNTIME_IDLE_EXIT_MS = 5 * 60 * 1000;
@@ -955,6 +988,7 @@ export type FormatterId =
   | "project-secrets"
   | "integrations"
   | "cloud-ready"
+  | "cloud-status"
   | "cloud-list"
   | "cloud-hours"
   | "cloud-result"
@@ -1073,6 +1107,16 @@ export type CliPlan =
       machineList?: "chats" | "inbox" | "lanes" | "projects" | "usageLimits";
       /** `--machine a,b` starts this plan once per machine (`chat create`). */
       machineFanOut?: boolean;
+      /**
+       * `chat create`: what a new lane on ADE Cloud needs when the command
+       * runs with `--machine cloud` (see `cliMachineTargeting.ts`). Ignored
+       * otherwise, except `launchId`, which only `--machine cloud` takes.
+       */
+      cloudLaunch?: CloudLaneLaunchDraft;
+      /** `lanes create`: the lane alone on ADE Cloud, when the command runs with `--machine cloud`. Ignored otherwise. */
+      cloudLaneCreate?: CloudLaneCreateDraft;
+      /** `chat launch-status|launch-cancel --machine cloud`: the brain's `cloud` action for it. */
+      cloudLaneCall?: { action: "lane_launch_status" | "lane_launch_cancel"; launchId: string };
       /**
        * `shell start --wait`: after the shell starts, follow its output until
        * it ends, and exit with its exit code (see `followShellToExit`).
@@ -1642,6 +1686,21 @@ const CHAT_CLOUD_READY_HELP = `    $ ade chat create --machine cloud:ready --pro
                                                     Start on this project's ready ADE Cloud machine (prepared and
                                                     asleep): ADE wakes it, waits until it is online, then sends.
                                                     No --lane needed; --json adds readyMachine. See ade cloud ready.
+    $ ade chat create --machine cloud --size medium --prompt "…"
+                                                    A new lane on its own new ADE Cloud computer: ADE makes the
+                                                    computer, gets the repository there (the pushed branch) and
+                                                    starts the chat there. --size small, medium, large, xlarge
+                                                    (default: the size you saved for new lanes). Asks you first. Ctrl-C stops only the waiting; the
+                                                    same --launch-id <id> again follows it or goes on from a
+                                                    failed step. ade chat launch-status|launch-cancel <id>
+                                                    --machine cloud checks it or stops it.
+`;
+
+const LANES_CLOUD_HELP = `  ade lanes create --machine cloud [--size small|medium|large|xlarge] [--launch-id <id>] --name <name> [...]
+                   (the lane alone, with no chat, on its own new ADE Cloud computer; asks you first.
+                   No --size: the size you saved for new lanes. The same --launch-id again follows it or
+                   goes on from a failed step. A Linear issue needs its whole JSON. No --description
+                   or --no-template yet.)
 `;
 
 /**
@@ -1651,7 +1710,7 @@ const CHAT_CLOUD_READY_HELP = `    $ ade chat create --machine cloud:ready --pro
 function withoutHiddenCloudHelp(text: string): string;
 function withoutHiddenCloudHelp(text: string | undefined): string | undefined;
 function withoutHiddenCloudHelp(text: string | undefined): string | undefined {
-  return text && !cliCloudEnabled ? text.replace(CHAT_CLOUD_READY_HELP, "") : text;
+  return text && !cliCloudEnabled ? text.replace(CHAT_CLOUD_READY_HELP, "").replace(LANES_CLOUD_HELP, "") : text;
 }
 
 function helpPagesWithoutCloud(): Record<string, string> {
@@ -2435,7 +2494,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                    [--template <id>|--no-template]
                    [--linear-issue-json '{...}' [--start-chat --type subagent|peer --provider <p> --model <m>]]
                    [--linear-issues-json '[{...},{...}]'] [--text|--json]
-  ade lanes defaults [--text|--json]
+${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
                          [--branch-pattern <pattern>]   (e.g. "ade/{slug}", "{user}/{slug}", "{slug}")
   ade lanes list | show | archive | unarchive | delete | deleted | appearance | templates | actions
@@ -4711,13 +4770,18 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
   medium, large, x-large (or 2x4, 4x8, 4x16, 4x32). --kind vm is a full
   computer: Android (medium or bigger) and Docker.
 
+    $ ade cloud status --text                     Everything in one read: can a new lane start (and why not),
+                                                    plan, hours, disk, computers, each lane, sizes, agent limits
     $ ade cloud list --text                       Computers, state, size, how fast each uses hours
     $ ade cloud hours --text                      Plan, hours left, reset date
     $ ade cloud create --kind vm --shape medium --name "android vm"
     $ ade cloud sleep <machine>                   Sleep now (uses no hours)
     $ ade cloud wake <machine>                    Wake (the server refuses it at 0 hours)
     $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
-    $ ade cloud update <machine>                  Restart on the current ADE; files stay
+    $ ade cloud resize --request --size large --reason "Android needs it"
+                                                    An agent asks the person (a card in its chat); nothing changes until they confirm
+    $ ade cloud update <machine>                  Move to its channel's image now and restart; files stay
+                                                    (each computer also updates itself when idle or asleep)
     $ ade cloud copy <machine> --name "lane box"  A new computer with the same files (a warm copy)
     $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat
     $ ade cloud delete <machine>                  Gone for good, files and all
@@ -4726,9 +4790,15 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
                                                     on takes --kind, --shape, --setup "npm ci"
     $ ade chat create --machine cloud:ready --prompt "…"
                                                     Start the chat on this project's ready machine
+    $ ade chat create --machine cloud --size medium --prompt "…"
+                                                    A new lane on its own new computer (sizes: small, medium,
+                                                    large, xlarge); the chat starts there
+    $ ade lanes create --machine cloud --name <n>  The lane alone on its own new computer, no chat
 
-  list, hours, limits (reading them), sleep and wake are the account's and
-  work from any folder; the rest run in this folder's project.
+  ade cloud alone is ade cloud status. status, list, hours, limits (reading
+  them), sleep and wake are the account's and work from any folder; the rest
+  run in this folder's project. A new lane, create and copy are refused at
+  once when status says no new lane can start, with the same sentence.
 
   Plans: \`ade cloud hours\` shows yours, with its hours, disk and computers.
   Change it in Settings › ADE Cloud › Plan and hours.
@@ -4737,12 +4807,15 @@ ${CHAT_CLOUD_READY_HELP}    $ ade chat actions --personal --text            List
   monthly limit you set. A grow past it is refused with a sentence that says why.
 
   Asks first: create, resize, update, copy, move, delete,
-  raising the limits, ready on. The card shows in your chat and gives up
+  raising the limits, ready on, a new lane (--machine cloud). The card shows in your chat and gives up
   after 5 minutes. In a full-auto chat or an automation ADE answers it with
   the person's limits (balanced: 3 new machines a day, up to 4x16), and says
   no to deleting a machine that chat didn't make. create, copy and move work
   from any of your signed-in machines; without an ADE window there, your chat
   gets a link to approve the new machine joining your account.
+  From a terminal with no ADE chat, what asks first is refused: ADE can't
+  tell a person there from an agent. Start a lane in the ADE app (Run on:
+  ADE Cloud) or ask for it in an ADE chat.
   To move one chat and its lane to another computer: ade chat move.
 `,
   "mcp servers": `${ADE_BANNER}
@@ -7360,6 +7433,8 @@ function buildLanePlan(args: string[]): CliPlan {
     return { kind: "execute", label: "lane defaults", steps, shapeResult: values => unwrapActionEnvelope(set ? values.result : values.defaults), formatText: formatLaneDefaultsText };
   }
   if (sub === "create") {
+    // Read first, so its value is never taken for the lane's name.
+    const cloudLaunchIdFlag = readValue(args, ["--launch-id"]);
     const existing = readValue(args, ["--existing-branch"]);
     const changes = readLaneStartFlags(args);
     const branchName = readValue(args, ["--branch-name"]);
@@ -7383,6 +7458,39 @@ function buildLanePlan(args: string[]): CliPlan {
     if (parsedIssue) input.linearIssue = parsedIssue;
     if (requestedTemplateId != null) input.templateId = requestedTemplateId;
     if (noTemplate) input.skipSetup = true;
+    // `--machine cloud`: the same choices as a lane launch with no chat. The
+    // computer's brain lays them over that project's own lane defaults.
+    // The computer binds a Linear issue to a new lane only when it carries the
+    // whole issue: it has no Linear lookup for a bare id.
+    const cloudLinearIssue = parsedIssue && !existing ? parseLaneLinearIssueValue(parsedIssue) : null;
+    const cloudLaneCreate: CloudLaneCreateDraft = {
+      launch: {
+        kind: "lane",
+        mode: "background",
+        prompt: "",
+        laneName: asString(input.name) ?? "",
+        title: asString(input.name) ?? "",
+        laneConfig: existing
+          ? { mode: "existing", branchRef: existing }
+          : {
+              mode: "new",
+              ...(changes.from || changes.on ? { start: mergeLaneStart(changes, null) } : {}),
+              ...(branchName ? { branchName } : {}),
+              ...(requestedTemplateId != null ? { templateId: requestedTemplateId } : {}),
+              ...(cloudLinearIssue ? { linearIssue: cloudLinearIssue } : {}),
+            },
+      },
+      launchId: cloudLaunchIdFlag ? requireCliUuid(cloudLaunchIdFlag, "--launch-id") : null,
+      refused: parsedIssue && existing
+        ? "--machine cloud binds a Linear issue only to a new branch. Leave out --existing-branch, or attach the issue from the lane."
+        : parsedIssue && !cloudLinearIssue
+          ? "--machine cloud needs the whole Linear issue (id, identifier, title, team and state) in --linear-issue-json."
+        : noTemplate
+          ? "--no-template doesn't work with --machine cloud yet: the new computer sets the lane up with the project's template."
+          : input.description != null
+            ? "--description doesn't work with --machine cloud yet. Make the lane, then add the description from it."
+            : null,
+    };
     const start = laneStartFromFlags(existing ? null : changes, "defaults");
     const steps: InvocationStep[] = [
       ...start.steps,
@@ -7390,7 +7498,7 @@ function buildLanePlan(args: string[]): CliPlan {
     ];
     // The new lane's template setup runs inside the create call; wait for it.
     const setupTimeoutMs = newLaneSetupTimeoutMs();
-    return { kind: "execute", label: "lane create", formatText: formatLaneCreateResultText, shapeResult: values => unwrapActionEnvelope(values.result), exitCodeFromResult: result => newLaneSetupFailed(result) ? 1 : 0, ...(setupTimeoutMs != null ? { minTimeoutMs: setupTimeoutMs } : {}), steps };
+    return { kind: "execute", label: "lane create", cloudLaneCreate, formatText: formatLaneCreateResultText, shapeResult: values => unwrapActionEnvelope(values.result), exitCodeFromResult: result => newLaneSetupFailed(result) ? 1 : 0, ...(setupTimeoutMs != null ? { minTimeoutMs: setupTimeoutMs } : {}), steps };
   }
   if (
     sub === "link-linear-issue" ||
@@ -11189,6 +11297,19 @@ async function runChatLaunchCommand(
   plan: CliPlan & { kind: "chat-launch" },
   options: GlobalOptions,
 ): Promise<{ output: string; exitCode: number }> {
+  if (isCloudLaneMachineSelector(options.machine)) {
+    // A new lane on its own ADE Cloud computer: the brain owns that launch (cliMachineTargeting.ts).
+    if (plan.notify) throw new CliUsageError("--notify-url doesn't work with --machine cloud yet.");
+    const launchArgs = plan.startOverrides
+      ? {
+          ...plan.launchArgs,
+          // The computer starts from the pushed branch; only the start point is this side's choice.
+          laneConfig: { mode: "new", start: mergeLaneStart(plan.startOverrides, null), ...(plan.launchArgs.laneName ? {} : { autoName: true }) },
+        }
+      : plan.launchArgs;
+    const result = await runCloudLaneLaunch(launchArgs, options);
+    return { output: formatOutput(result, options, "chat-launch"), exitCode: 0 };
+  }
   let connection: CliConnection;
   try {
     connection = await createConnection(options, { autoRegisterProject: true });
@@ -11307,8 +11428,14 @@ export function formatChatLaunch(value: unknown): string {
     return error === "launch_not_found" || !error ? "ADE chat launch\n(no launch)" : `ADE chat launch\n${error}`;
   }
   const queued = Array.isArray(snapshot.queuedMessages) ? snapshot.queuedMessages.length : 0;
-  return renderKeyValues(`ADE chat launch ${asString(snapshot.launchId) ?? ""} · ${asString(snapshot.phase) ?? "unknown"}`, [
+  const machine = wrapper && isRecord(wrapper.machine) ? wrapper.machine : null;
+  // A lane launch (`ade lanes create --machine cloud`) starts no chat.
+  const noun = snapshot.kind === "lane" ? "lane" : "chat";
+  return renderKeyValues(`ADE ${noun} launch ${asString(snapshot.launchId) ?? ""} · ${asString(snapshot.phase) ?? "unknown"}`, [
     ["lane", `${asString(snapshot.laneName) ?? ""} (${asString(snapshot.laneId) ?? ""})`],
+    // A lane on ADE Cloud: the computer made for it.
+    ["machine", machine ? `ADE Cloud · ${asString(machine.name) ?? ""}${asString(machine.machineKey) ? ` (${asString(machine.machineKey)})` : ""}` : null],
+    ["approve", wrapper?.approvalUrl],
     ["base", snapshot.baseRef],
     ["branch", snapshot.branchRef],
     ["chat", snapshot.sessionId],
@@ -12031,6 +12158,8 @@ function buildChatPlan(args: string[]): CliPlan {
       label: `chat ${sub}`,
       formatter: "chat-launch",
       steps: [actionStep("result", "chat", cancel ? "cancelLaunch" : "getLaunch", { launchId })],
+      // With --machine cloud: the launch this machine's brain owns for a new ADE Cloud lane.
+      cloudLaneCall: { action: cancel ? "lane_launch_cancel" : "lane_launch_status", launchId },
       // getLaunch answers null once the record is gone (unknown id, or a
       // finished launch past its retention window).
       exitCodeFromResult: (result) => (isRecord(result) && typeof result.launchId === "string" ? 0 : 1),
@@ -12095,6 +12224,8 @@ function buildChatPlan(args: string[]): CliPlan {
     const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, { provider, model: modelArg });
     const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
     const explicitLane = readLaneId(args);
+    // Only `--machine cloud` takes it: the same id again follows that launch.
+    const cloudLaunchIdFlag = readValue(args, ["--launch-id"]);
     const actionArgs = collectLaunchArgs(args, {
       laneId: explicitLane,
       ...lineageArgs,
@@ -12172,6 +12303,13 @@ function buildChatPlan(args: string[]): CliPlan {
     const kickoffText =
       explicitKickoff ??
       (linearIssue && !noKickoff ? deriveLinearKickoffPrompt(linearIssue) : null);
+    const cloudLaunch: CloudLaneLaunchDraft = {
+      create: actionArgs,
+      prompt: kickoffText,
+      launchId: cloudLaunchIdFlag ? requireCliUuid(cloudLaunchIdFlag, "--launch-id") : null,
+      linearIssue,
+      notify: notify != null,
+    };
     if (printConfig) {
       return {
         kind: "static",
@@ -12191,6 +12329,7 @@ function buildChatPlan(args: string[]): CliPlan {
           label: "chat create",
           machineFanOut: true,
           chatCreateCheck,
+          cloudLaunch,
           steps: [
             { ...createStep, key: "session" },
             ...notifySteps("session"),
@@ -12222,9 +12361,9 @@ function buildChatPlan(args: string[]): CliPlan {
         };
       }
       if (notify) {
-        return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, steps: [{ ...createStep, key: "session" }, ...notifySteps("session"), ...laneChatsSteps("session")] };
+        return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, cloudLaunch, steps: [{ ...createStep, key: "session" }, ...notifySteps("session"), ...laneChatsSteps("session")] };
       }
-      return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, steps: [createStep, ...laneChatsSteps("result")] };
+      return { kind: "execute", label: "chat create", machineFanOut: true, chatCreateCheck, cloudLaunch, steps: [createStep, ...laneChatsSteps("result")] };
     }
     const issueForKickoff = linearIssue;
     const steps: InvocationStep[] = [
@@ -12277,7 +12416,7 @@ function buildChatPlan(args: string[]): CliPlan {
         unwrapToolResult: true,
       });
     }
-    return { kind: "execute", label: "chat create from Linear issue", machineFanOut: true, chatCreateCheck, steps };
+    return { kind: "execute", label: "chat create from Linear issue", machineFanOut: true, chatCreateCheck, cloudLaunch, steps };
   }
   if (sub === "send") {
     const imageUrl = readValue(args, ["--image-url"]);
@@ -20714,12 +20853,32 @@ function cloudStep(label: string, action: string, input: JsonObject, formatter: 
   };
 }
 
-/** `ade cloud push-work --json`: every lane's work committed and pushed. With ADE's 25 s to answer first, this fits inside the 3-minute exec that runs it. */
-function buildCloudPushWorkPlan(): CliPlan {
+/**
+ * `ade cloud push-work --json`: every lane's work committed and pushed. With
+ * ADE's 25 s to answer first, this fits inside the 3-minute exec that runs
+ * it. `--check` is `work-state`.
+ */
+function buildCloudPushWorkPlan(args: string[]): CliPlan {
+  if (args.includes("--check")) return buildCloudWorkStatePlan();
   return {
     kind: "execute",
     label: "cloud push-work",
     steps: [{ key: "result", method: "cloud.pushWork", params: {} }],
+    machineOnly: true,
+    minTimeoutMs: 150_000,
+  };
+}
+
+/**
+ * `ade cloud work-state --json`: only reads which lanes have work that isn't
+ * on GitHub, and changes nothing. Its own command and brain method, so an
+ * older ADE refuses it instead of reading it as a push.
+ */
+function buildCloudWorkStatePlan(): CliPlan {
+  return {
+    kind: "execute",
+    label: "cloud work-state",
+    steps: [{ key: "result", method: "cloud.workState", params: {} }],
     machineOnly: true,
     minTimeoutMs: 150_000,
   };
@@ -20743,6 +20902,7 @@ function buildCloudPrepareStopPlan(args: string[]): CliPlan {
 const CLOUD_ON_COMPUTER_PLANS = new Map<string, (args: string[]) => CliPlan>([
   ["prepare-stop", buildCloudPrepareStopPlan],
   ["push-work", buildCloudPushWorkPlan],
+  ["work-state", buildCloudWorkStatePlan],
 ]);
 
 function buildCloudPlan(args: string[]): CliPlan {
@@ -20754,9 +20914,11 @@ function buildCloudPlan(args: string[]): CliPlan {
   const shape = readValue(args, ["--shape", "--size"]);
   const name = readValue(args, ["--name"]);
   const to = readValue(args, ["--to"]);
+  const reason = readValue(args, ["--reason"]);
   const setup = readValue(args, ["--setup"]);
   const origin = readValue(args, ["--origin"]);
-  const sub = firstPositional(args) ?? "list";
+  // `ade cloud` alone is the whole picture, like `ade cloud status`.
+  const sub = firstPositional(args) ?? "status";
   const target = () => {
     const machine = firstPositional(args);
     if (!machine) throw new CliUsageError(`ade cloud ${sub} needs the machine: its name or id (ade cloud list).`);
@@ -20764,6 +20926,8 @@ function buildCloudPlan(args: string[]): CliPlan {
   };
   const originUrl = () => origin ?? getGitRemote(process.cwd());
   switch (sub) {
+    case "status":
+      return cloudStep("status", "status", {}, "cloud-status");
     case "list":
     case "ls":
     case "machines":
@@ -20779,6 +20943,13 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "start":
       return cloudStep("wake", "wake", { machine: target() });
     case "resize": {
+      // An agent asks; the person confirms on the card in its chat.
+      if (args.includes("--request")) {
+        const size = shape;
+        if (!size || !reason) throw new CliUsageError("ade cloud resize [machine] --request --size large --reason \"why\"");
+        const machine = firstPositional(args);
+        return cloudStep("resize request", "tier_request", { size, reason, ...(machine ? { machine } : {}) });
+      }
       const machine = target();
       const size = shape ?? firstPositional(args);
       if (!size) throw new CliUsageError("ade cloud resize <machine> --shape 4x8");
@@ -20831,10 +21002,8 @@ function buildCloudPlan(args: string[]): CliPlan {
       if (verb === "retry") return cloudStep("ready retry", "ready_retry", { originUrl: url }, "cloud-result", true);
       throw new CliUsageError(`Unknown cloud ready command "${verb}". Use: status, on, off, retry.`);
     }
-    case "status":
-      return cloudStep("ready", "ready_status", {}, "cloud-ready");
     default:
-      throw new CliUsageError(`Unknown cloud command "${sub}". Use: list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, ready, prepare-stop, push-work.`);
+      throw new CliUsageError(`Unknown cloud command "${sub}". Use: status, list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, ready, prepare-stop, push-work, work-state.`);
   }
 }
 
@@ -25443,6 +25612,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "cloud.call" ||
     method === "cloud.prepareStop" ||
     method === "cloud.pushWork" ||
+    method === "cloud.workState" ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
@@ -29001,15 +29171,40 @@ async function runServe(
     ]).then(([{ createCloudBrainAccess }, { cloudAccessDepsFor }]) => createCloudBrainAccess(cloudAccessDepsFor({
       account: () => brainAccountAuthService,
       directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl(),
+      // A computer this brain makes follows this brain's update track.
+      runningVersion: () => VERSION,
       logger: headlessProjectLogger,
     })));
     return cloudBrainAccess;
   };
+  // This computer's ADE Cloud id, on a cloud computer; empty elsewhere.
+  const cloudInstanceId = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
   const cloudDiskGrower = cloudKeepAwakeModule?.isCloudMachine()
     ? (await import("./services/power/cloudDiskGrow")).createCloudDiskGrower({
-        instanceId: process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "",
+        instanceId: cloudInstanceId,
         client: async () => (await getCloudBrainAccess()).client(),
         path: os.homedir(),
+        logger: headlessProjectLogger,
+      })
+    : null;
+  // What this computer tells ADE Cloud at its idle step: its lanes' work, its disk, an update, its boot.
+  const cloudComputerReports = cloudKeepAwakeModule?.isCloudMachine()
+    ? (await import("./services/power/cloudComputerReports")).createCloudComputerReports({
+        instanceId: cloudInstanceId,
+        projectRegistry,
+        scopeRegistry: () => scopeRegistry,
+        getCloudBrainAccess,
+        version: VERSION,
+      })
+    : null;
+  // What uses this computer's disk, and its last work: sent at the idle step for the dashboard.
+  const cloudDiskUsageReporter = cloudComputerReports
+    ? (await import("../../desktop/src/main/services/adeCloud/cloudDiskUsage")).createCloudDiskUsageReporter({
+        instanceId: cloudInstanceId,
+        stateFile: path.join(layout.adeDir, "cloud", "disk-usage.json"),
+        projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
+        readWork: cloudComputerReports.readWork,
+        send: cloudComputerReports.send,
         logger: headlessProjectLogger,
       })
     : null;
@@ -29037,6 +29232,10 @@ async function runServe(
           await client.requestIdleSleep(instanceId);
         },
         growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
+        reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
+        // Idle and behind its channel's checked image: update now (it restarts), not sleep.
+        updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
+        reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
           if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
@@ -30114,9 +30313,13 @@ async function runServe(
   let machineAccountRuntime: Promise<AccountDomainRuntime> | null = null;
   const machineAccountDomains = async () => {
     const { buildMachineAccountDomainServices } = await import("../../desktop/src/main/services/adeActions/registry");
+    return buildMachineAccountDomainServices(await getMachineAccountRuntime());
+  };
+  const getMachineAccountRuntime = (): Promise<AccountDomainRuntime> => {
     machineAccountRuntime ??= (async () => {
       const { getMachineAccountStores } = await import("./services/account/machineAccountStores");
-      const vault = syncEnabled ? getMachineAccountStores(headlessProjectLogger).vault : null;
+      const stores = syncEnabled ? getMachineAccountStores(headlessProjectLogger) : null;
+      const vault = stores?.vault ?? null;
       if (vault) {
         // With no project open, no project runtime keeps the vault in step
         // with the account. Join (or start) its background sync for the life
@@ -30149,11 +30352,38 @@ async function runServe(
         logger: headlessProjectLogger,
         accountAuthService: brainAccountAuthService,
         accountVaultStore: vault,
+        // Read from its local copy only (cloud.status reads the default lane size).
+        accountSettingsStore: stores?.settings ?? null,
         productAnalyticsService: brainProductAnalytics,
       };
     })();
-    return buildMachineAccountDomainServices(await machineAccountRuntime);
+    return machineAccountRuntime;
   };
+
+  // ADE Cloud lane launches (`ade chat create --machine cloud`) are owned
+  // here, in the brain, and reach the new computer over the agents' machine
+  // bridge. Set off the boot path; a launch a quit left behind goes on once
+  // the brain is up.
+  if (!embedded) {
+    void import("../../desktop/src/main/services/adeCloud/cloudLaneLaunchBrainHost").then(({ setCloudLaneLaunchTransport }) => {
+      setCloudLaneLaunchTransport({
+        call: async (input) => await (await getAgentMachineBridge()).call(input),
+        setUpRepository: async (input) => await (await getAgentMachineBridge()).setUpRepository(input),
+        chatLaunchKinds: async (machine) => await (await getAgentMachineBridge()).chatLaunchKinds(machine),
+      });
+      const resumeTimer = setTimeout(() => {
+        void (async () => {
+          const { resumeCloudLaneLaunches } = await import("../../desktop/src/main/services/adeActions/registry");
+          resumeCloudLaneLaunches(await getMachineAccountRuntime());
+        })().catch((error: unknown) => {
+          headlessProjectLogger.warn("cloud_lane_launch.resume_failed", { error: error instanceof Error ? error.message : String(error) });
+        });
+      }, 5_000);
+      resumeTimer.unref?.();
+    }).catch((error: unknown) => {
+      headlessProjectLogger.warn("cloud_lane_launch.transport_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+  }
 
   // Work another machine does here (a command, a chat or CLI send, a file
   // copied in) keeps a cloud machine awake (cloudKeepAwake). Reads, lists
@@ -30181,9 +30411,10 @@ async function runServe(
     withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
       holdCloudWork,
       pushCloudWork: holdCloudWork
-        ? async () => {
+        ? async ({ check }: { check: boolean }) => {
             const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
             return await holdCloudWork("push_work", 10 * 60_000, () => pushCloudComputerWork({
+              check,
               projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
               logger: headlessProjectLogger,
             }));
@@ -37834,6 +38065,8 @@ function formatTextOutput(
       return formatIntegrations(value);
     case "cloud-ready":
       return formatCloudReady(value);
+    case "cloud-status":
+      return formatCloudStatus(value);
     case "cloud-list":
       return formatCloudList(value);
     case "cloud-hours":

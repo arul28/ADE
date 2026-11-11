@@ -390,8 +390,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   archive: ["delete"],
   // Dropping a deleted lane's saved work means it can no longer be restored.
   lane: ["removeDeletedLane"],
-  // Only the person's desktop saves a key or runs Claude's sign-in for new machines.
-  cloud: CLOUD_SIGN_IN_WRITES,
+  // Only the person's desktop saves a key or runs Claude's sign-in for new machines,
+  // and only the person clears a computer's caches (it deletes files there).
+  cloud: [...CLOUD_SIGN_IN_WRITES, "clear_caches"],
   // An agent asking to move a chat or batch must not approve its own request.
   // Only a person's client hosts an MCP App, so only it may pass an app's call on.
   chat: [
@@ -431,7 +432,7 @@ export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): bo
  * items (cloudVaultItems.ts).
  */
 export const ADE_ACTION_MACHINE_SCOPED = {
-  cloud: ["access", "list", "hours", "limits", "sleep", "wake", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
+  cloud: ["access", "status", "list", "hours", "limits", "sleep", "wake", "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES],
   account_vault: ["get", "set", "remove"],
   // The account's sign-ins, from a window with no project here (`providerLogins.call`).
   provider_logins: PROVIDER_LOGIN_ACTIONS,
@@ -591,6 +592,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "diagnosticsRunFullCheck",
     "diagnosticsRunHealthCheck",
     "checkBranchName",
+    "cloudStartBranch",
+    "pushCloudStartBranch",
     "getBranchDrift",
     "getDefaultTemplate",
     "getNewLaneDefaults",
@@ -1150,8 +1153,16 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // give an unused claim back) and the machine verbs. What spends money or
   // deletes asks the person first (the RPC server stamps who asks). Never the key.
   cloud: [
-    "access", "ready_status", "claim_ready", "release_ready", "list", "hours", "create", "sleep", "wake", "resize", "update",
+    // `status` is the whole account in one read (plan, hours, disk, lanes,
+    // sizes, agent limits, canStartLane); no key, no wake, no spend.
+    "access", "status", "ready_status", "claim_ready", "release_ready", "list", "hours", "create", "sleep", "wake", "resize", "update",
     "copy", "move", "delete", "ready_set", "ready_off", "ready_retry", "make_status", "limits", "set_limits",
+    // A new lane on its own new computer (`ade chat create --machine cloud`).
+    "lane_launch", "lane_launch_status", "lane_launch_cancel",
+    // An agent asks the person for a tier change: a card in its chat; it changes nothing.
+    "tier_request",
+    // The person clears a cloud computer's caches from the dashboard (user-only, below).
+    "clear_caches",
     // Sign-ins for new machines: which are kept (never a value), and the
     // person's own saves and Claude sign-in (user-only, below).
     "cloud_sign_in_status", ...CLOUD_SIGN_IN_WRITES,

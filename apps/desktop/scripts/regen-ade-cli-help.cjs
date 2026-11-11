@@ -3,6 +3,7 @@
 
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const { spawnSync } = require("child_process");
 
 const SUBCOMMANDS = [
@@ -40,11 +41,25 @@ const cliPath = path.resolve(repoRoot, "apps", "ade-cli", "dist", "cli.cjs");
 const outDir = path.resolve(__dirname, "..", "resources");
 const outPath = path.join(outDir, "ade-cli-help.txt");
 
+/**
+ * Help changes with what this machine's brain answers (an account with ADE
+ * Cloud gets more lines). The digest is the help of a machine with no brain
+ * and no account, so it is the same on every machine and in CI.
+ */
+function isolatedEnv() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-help-"));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ADE_")));
+  return { home, env: { ...env, HOME: home, USERPROFILE: home } };
+}
+
+const isolated = isolatedEnv();
+
 function runHelp(args) {
   const res = spawnSync(process.execPath, [cliPath, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 15000,
+    env: isolated.env,
   });
   if (res.error) return null;
   const out = `${res.stdout || ""}${res.stderr || ""}`.trim();
@@ -119,4 +134,8 @@ function main() {
   process.stderr.write(`[regen-ade-cli-help] wrote ${outPath} (${parts.length} sections)\n`);
 }
 
-main();
+try {
+  main();
+} finally {
+  fs.rmSync(isolated.home, { recursive: true, force: true });
+}

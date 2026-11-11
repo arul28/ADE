@@ -21,6 +21,10 @@ import type { WorkPtyLaunchArgs, WorkPtyLaunchResult } from "./cliLaunch";
  * Mounted at the Work page level next to `useWorkSessions` — not in the draft
  * pane — so a launch still completes after the user navigates away from the
  * draft or the pane unmounts.
+ *
+ * An ADE Cloud launch parks the same way on its new computer's brain after
+ * the hand-off: the terminal starts there, through the computer's pin
+ * (`snapshot.cloud.binding`), never on the machine the launch came from.
  */
 
 // Launches whose PTY start is in flight. Module-level so a Work remount cannot
@@ -74,11 +78,13 @@ export function useChatLaunchCliDriver(
         continue;
       }
       const snapshot = entry.snapshot;
+      // The lane lives where the launch set it up: on ADE Cloud, the new computer.
+      const ptyPin = snapshot.cloud?.binding ?? record.pin;
       void launchRef.current({
         ...record.cli,
         laneId: snapshot.laneId,
         disposition: snapshot.mode,
-        pin: record.pin,
+        pin: ptyPin,
       }).then(
         async (result) => {
           const snapshot = await report({ sessionId: result.sessionId });
@@ -86,7 +92,7 @@ export function useChatLaunchCliDriver(
           // while the PTY started, so the host did not take this session:
           // close it rather than leave a terminal in a lane that is gone.
           if (!snapshot || snapshot.sessionId !== result.sessionId || snapshot.phase === "cancelled") {
-            await window.ade.pty.dispose({ ptyId: result.ptyId, sessionId: result.sessionId }, record.pin)
+            await window.ade.pty.dispose({ ptyId: result.ptyId, sessionId: result.sessionId }, ptyPin)
               .catch((disposeError: unknown) => console.warn("chat launch orphan pty cleanup failed", disposeError));
           }
         },

@@ -202,6 +202,8 @@ import {
   type ComposerAtChipKind,
 } from "./mentionChipMark";
 import { ComposerMachineChipPopover } from "./MachineChipCard";
+import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
+import { AdeCloudMachineChip, useComposerAdeCloudLane, type ComposerAdeCloudLane } from "./AdeCloudComposerParts";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
@@ -969,12 +971,18 @@ const MACHINE_CHIP_WRAPPER = "min-w-[1.5rem] shrink-[8] overflow-hidden";
 function ComposerMachineChip({
   machineName,
   cloud = false,
+  adeCloudLane = null,
   action = null,
 }: {
   machineName: string;
   cloud?: boolean;
+  /** Set for a chat on an ADE Cloud lane: the chip wears the cloud mark and names the lane. */
+  adeCloudLane?: ComposerAdeCloudLane | null;
   action?: ComposerMachineChipAction | null;
 }) {
+  if (adeCloudLane) {
+    return <AdeCloudMachineChip machineName={machineName} lane={adeCloudLane} wrapperClassName={MACHINE_CHIP_WRAPPER} />;
+  }
   if (action) {
     return (
       <>
@@ -5990,10 +5998,14 @@ function AgentChatComposerImpl({
      stash are pinned to, so this label can never disagree with where a file you
      drop actually lands. Its absence is meaningful rather than unknown: a chat
      with no remote binding is running on this Mac. */
+  // A chat on an ADE Cloud lane says "ADE Cloud", not its computer's name, also once its lane has no computer.
+  const adeCloudLane = useComposerAdeCloudLane(composerMachineBinding, Boolean(sessionId) && cursorRuntime !== "cloud");
   const composerMachineName = sessionId
     ? cursorRuntime === "cloud"
       ? cloudTargetLabel
-      : chatPaneScope?.machineName
+      : adeCloudLane
+        ? ADE_CLOUD_NAME
+        : chatPaneScope?.machineName
         ?? (composerMachineBinding?.kind === "remote"
           ? composerMachineBinding.runtimeName
           : THIS_MACHINE_NAME)
@@ -8159,11 +8171,12 @@ function AgentChatComposerImpl({
         <ComposerMachineChip
           machineName={composerMachineName}
           cloud={cursorRuntime === "cloud"}
-          action={cursorRuntime === "cloud" ? null : machineChipAction}
+          adeCloudLane={adeCloudLane}
+          action={cursorRuntime === "cloud" || adeCloudLane ? null : machineChipAction}
         />
       ) : null}
     </div>
-  ), [activeHarnessPreset, activeHarnessPresetId, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, runtimeCatalogTick, turnActive, ultrathinkControl]);
+  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, runtimeCatalogTick, turnActive, ultrathinkControl]);
   const contextUsageDial = useMemo(() => (!parallelChatMode && usageViewModel ? (
 
       <ContextUsageDial
@@ -8533,7 +8546,9 @@ function AgentChatComposerImpl({
       {aboveComposerSlot ? (
         <div
           data-composer-above-slot="true"
-          className={cn("mb-1.5 min-w-0", layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]")}
+          // A slot whose parts all render nothing (an ADE Cloud lane with no change running) takes no room.
+          // Its parts stack (a sign-in card above a cloud lane's card).
+          className={cn("mb-1.5 flex min-w-0 flex-col gap-1.5 empty:hidden", layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]")}
         >
           {aboveComposerSlot}
         </div>

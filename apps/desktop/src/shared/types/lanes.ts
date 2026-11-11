@@ -814,6 +814,29 @@ export type LaneLifecycleEvent = {
   autoArchive?: { reason: string; projectRoot?: string };
 };
 
+/**
+ * "Push this branch?" before an ADE Cloud launch: the new computer clones
+ * from GitHub, so the branch the lane starts from must be there
+ * (`lane.cloudStartBranch`). `push` is set when it should be pushed first.
+ */
+export type CloudStartBranchCheck = {
+  /** The plain branch name the lane starts from, or null when it is the project's default branch. */
+  branch: string | null;
+  /** The branch is on the origin remote. */
+  onRemote: boolean;
+  /** Commits on the local branch that no remote has: they stay here unless pushed. */
+  unpushedCommits: number;
+  /** True when the launch should offer "Push this branch?" first. */
+  push: boolean;
+};
+
+export type CloudStartBranchArgs = {
+  /** A new lane's start (`laneConfig.start`), or the project's default start when left out. */
+  start?: LaneStart | null;
+  /** An existing-branch lane's branch (`laneConfig.branchRef`); wins over `start`. */
+  branchRef?: string | null;
+};
+
 export type LaneDeleteRisk = {
   laneId: string;
   branchRef: string | null;

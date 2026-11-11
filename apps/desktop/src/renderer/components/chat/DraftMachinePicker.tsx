@@ -1,9 +1,9 @@
 import { CaretDown, Check, CloudArrowUp, DesktopTower, Scales } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { useState } from "react";
+import { useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { DevinLogo } from "../shared/ProviderLogos";
-import { CloudMark } from "../remoteTargets/cloudBrand";
+import { CloudMark, CloudSkyline, type CloudSkylineLane } from "../remoteTargets/cloudBrand";
 import { cn } from "../ui/cn";
 import { MENU_ITEM_CLASS, MENU_SCROLL_CLASS, POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { usePortalContainer } from "../ui/portalContainer";
@@ -25,6 +25,19 @@ export type DraftMachineOption = {
   unavailableReason?: string | null;
   /** A second line under the name: what picking it does first ("Clone the project here"). */
   detail?: string | null;
+  /**
+   * ADE Cloud's entry: a tiny skyline of the person's cloud lanes (awake ones
+   * lit) at the row's end. The row has one fixed size, lanes or none.
+   */
+  skyline?: readonly CloudSkylineLane[] | null;
+  /**
+   * The row's facts are not known yet (ADE Cloud before the first account
+   * read): the second line and the skyline keep their space, empty, so the
+   * answer fills them in place without a claim before it.
+   */
+  detailPending?: boolean;
+  /** Draw a divider above this row (ADE Cloud sits apart from the computers). */
+  separatorBefore?: boolean;
 };
 
 const CLOUD_VIOLET = "#A78BFA";
@@ -34,13 +47,38 @@ function machineIcon(option: DraftMachineOption) {
     return <DevinLogo size={12} className="shrink-0 rounded-[2px]" />;
   }
   if (option.kind === "cloud" && option.cloudProvider === "cloud") {
-    return <CloudMark size={12} />;
+    return <CloudMark size={13} brand />;
   }
   return option.kind === "cloud" ? (
     <CloudArrowUp size={12} weight="fill" className="shrink-0" style={{ color: CLOUD_VIOLET }} aria-hidden />
   ) : (
     <DesktopTower size={12} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
   );
+}
+
+/**
+ * Arrow keys, Home and End over every row that can be picked: "Least loaded"
+ * and the machines, in menu order, wrapping at the ends.
+ */
+function moveAmongRows(event: ReactKeyboardEvent<HTMLElement>) {
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
+  event.preventDefault();
+  event.stopPropagation();
+  const items = Array.from(
+    event.currentTarget.closest('[role="menu"]')?.querySelectorAll<HTMLElement>(
+      '[role="menuitem"]:not([aria-disabled="true"]):not([data-disabled]), [role="menuitemradio"]:not(:disabled):not([aria-disabled="true"])',
+    ) ?? [],
+  );
+  if (items.length === 0) return;
+  const currentIndex = items.indexOf(event.currentTarget);
+  const nextIndex = event.key === "Home"
+    ? 0
+    : event.key === "End"
+      ? items.length - 1
+      : event.key === "ArrowDown"
+        ? (currentIndex + 1) % items.length
+        : (currentIndex - 1 + items.length) % items.length;
+  items[nextIndex]?.focus();
 }
 
 /**
@@ -68,6 +106,9 @@ export function DraftMachinePicker({
   showWhenSingle = false,
   side = "top",
   autoPick = null,
+  autoPickUnavailableReason = null,
+  menuLabel = null,
+  onPointerClose,
 }: {
   machines: readonly DraftMachineOption[];
   selectedMachineId: string | null;
@@ -95,8 +136,25 @@ export function DraftMachinePicker({
    * Picking it picks that machine; nothing moves later by itself.
    */
   autoPick?: { machineId: string; summary: string } | null;
+  /**
+   * Shows "Least loaded" off with this sentence, so the menu keeps the same
+   * rows in the same places when the pick makes it not apply.
+   */
+  autoPickUnavailableReason?: string | null;
+  /** A small heading at the top of the menu ("Run on"). */
+  menuLabel?: string | null;
+  /**
+   * The menu closed after a pointer press in it. The caller puts focus where
+   * the person works (the prompt box); without it focus stays where it is.
+   */
+  onPointerClose?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  // The last input in the open menu was the pointer: closing then keeps focus where it is.
+  const closedByPointerRef = useRef(false);
+  // The menu is about to give focus back to the trigger after a keyboard pick
+  // or Escape: that focus must not open the trigger's tooltip over the prompt.
+  const returningFocusRef = useRef(false);
   // Inside a modal dialog, a body portal sits under the dialog's scrim (and the
   // dialog blocks clicks outside its content). Portal into the panel instead,
   // the same way the lane combobox and composer chips do.
@@ -140,9 +198,24 @@ export function DraftMachinePicker({
     triggerAriaLabel = `${triggerLabel}, current machine unavailable; fallback ${displayed.name}`;
   }
   const hasCloudOption = machines.some((machine) => machine.kind === "cloud");
-  const defaultTriggerDescription = hasCloudOption
-    ? "Pick this computer, another paired computer, or Cursor Cloud. The lane list beside it follows your choice."
+  // The width depends on whether a skyline row exists, never on its data, so
+  // the menu keeps one width while the lane list updates.
+  const hasSkylineRow = machines.some((machine) => machine.skyline != null);
+  const adeCloudSelected = selected?.kind === "cloud" && selected.cloudProvider === "cloud";
+  const cloudNames = [
+    ...(machines.some((machine) => machine.kind === "cloud" && machine.cloudProvider === "cloud") ? ["ADE Cloud"] : []),
+    ...(machines.some((machine) => machine.kind === "cloud" && machine.cloudProvider === "cursor") ? ["Cursor Cloud"] : []),
+    ...(machines.some((machine) => machine.kind === "cloud" && machine.cloudProvider === "devin") ? ["Devin Cloud"] : []),
+  ];
+  const defaultTriggerDescription = hasCloudOption && cloudNames.length
+    ? `Pick this computer, another paired computer, or ${cloudNames.join(", ")}. The lane list beside it follows your choice.`
     : "Pick this computer or another paired computer. The lane list beside it follows your choice.";
+  // The pick itself comes first, so the tooltip says where this draft runs now.
+  const selectedLine = adeCloudSelected
+    ? "Runs on ADE Cloud: a new lane gets its own computer, and a lane you pick runs on the computer it has."
+    : selected && !selected.unavailableReason
+      ? `Runs on ${selected.name}.`
+      : null;
 
   return (
     <DropdownMenu.Root
@@ -157,7 +230,7 @@ export function DraftMachinePicker({
         forceEnabled
         content={{
           label: tooltipLabel,
-          description: tooltipDescription ?? defaultTriggerDescription,
+          description: tooltipDescription ?? (selectedLine ? `${selectedLine} ${defaultTriggerDescription}` : defaultTriggerDescription),
         }}
       >
         <DropdownMenu.Trigger asChild>
@@ -167,6 +240,13 @@ export function DraftMachinePicker({
             aria-label={triggerAriaLabel}
             disabled={disabled}
             onPointerDown={(event) => event.preventDefault()}
+            onFocus={(event) => {
+              if (!returningFocusRef.current) return;
+              returningFocusRef.current = false;
+              // Keep the tooltip (SmartTooltip listens on its wrapper) for a
+              // hover or a real keyboard move onto the trigger.
+              event.stopPropagation();
+            }}
             onClick={() => {
               const nextOpen = !open;
               setOpen(nextOpen);
@@ -185,6 +265,7 @@ export function DraftMachinePicker({
               open
                 ? "border-fg/[0.12] bg-fg/[0.06] text-fg/85"
                 : "border-fg/[0.07] bg-fg/[0.03] text-muted-fg/75 hover:bg-fg/[0.06] hover:text-fg/85",
+              adeCloudSelected && "adec-pill",
               disabled && "cursor-not-allowed opacity-45",
             )}
           >
@@ -204,35 +285,70 @@ export function DraftMachinePicker({
           aria-label="Choose a machine"
           onFocusCapture={(event) => {
             if (event.target !== event.currentTarget) return;
-            const selected = event.currentTarget.querySelector<HTMLElement>(
-              '[role="menuitemradio"][aria-checked="true"]:not([aria-disabled="true"])',
-            );
-            const firstAvailable = event.currentTarget.querySelector<HTMLElement>(
-              '[role="menuitemradio"]:not([aria-disabled="true"])',
-            );
-            (selected ?? firstAvailable)?.focus();
+            const content = event.currentTarget;
+            const focusSelected = () => {
+              const selected = content.querySelector<HTMLElement>(
+                '[role="menuitemradio"][aria-checked="true"]:not([aria-disabled="true"])',
+              );
+              const firstAvailable = content.querySelector<HTMLElement>(
+                '[role="menuitemradio"]:not([aria-disabled="true"])',
+              );
+              (selected ?? firstAvailable)?.focus();
+            };
+            focusSelected();
+            // A keyboard open: the menu's own entry focus runs after this
+            // handler and moves to the first row. Put focus back on the
+            // selected row once that event is done (a microtask, no timer).
+            queueMicrotask(focusSelected);
           }}
-          className={cn(POPOVER_SURFACE_CLASS, MENU_SCROLL_CLASS, "w-[220px] p-1 font-sans text-[11px] text-fg/82")}
+          onPointerDownCapture={() => { closedByPointerRef.current = true; }}
+          onKeyDownCapture={() => { closedByPointerRef.current = false; }}
+          onCloseAutoFocus={(event) => {
+            // A pick with the mouse puts focus back in the prompt box (or
+            // leaves it where it is), so the trigger's tooltip does not open
+            // over the prompt. A keyboard pick or Escape returns focus to the
+            // trigger as usual, with no tooltip.
+            if (closedByPointerRef.current) {
+              event.preventDefault();
+              closedByPointerRef.current = false;
+              onPointerClose?.();
+              return;
+            }
+            returningFocusRef.current = true;
+            // The menu focuses the trigger in this same event. If it does not,
+            // the next real focus still shows the tooltip.
+            queueMicrotask(() => { returningFocusRef.current = false; });
+          }}
+          className={cn(POPOVER_SURFACE_CLASS, MENU_SCROLL_CLASS, hasSkylineRow ? "w-[264px]" : "w-[220px]", "p-1 font-sans text-[11px] text-fg/82")}
           style={{ zIndex: portalContainer ? Z_LAYERS.dialogPopover : Z_LAYERS.popover }}
           side={side}
           align="start"
           sideOffset={4}
           collisionPadding={8}
         >
+          {menuLabel ? <div className="adec-menu-label" aria-hidden>{menuLabel}</div> : null}
           {autoPick ? (
             <>
-              <DropdownMenu.Item
-                className={cn(MENU_ITEM_CLASS, "items-start text-[11px] text-fg/75")}
-                onSelect={() => {
-                  if (autoPick.machineId !== selectedMachineId) onChange(autoPick.machineId);
-                }}
+              <SmartTooltip
+                forceEnabled={Boolean(autoPickUnavailableReason)}
+                wrapperStyle={{ display: "flex", width: "100%" }}
+                content={{ label: "Least loaded", description: autoPickUnavailableReason ?? "" }}
               >
-                <Scales size={12} weight="duotone" className="mt-[1px] shrink-0 text-muted-fg/80" aria-hidden />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">Least loaded</span>
-                  <span className="block truncate text-[10px] text-muted-fg/60">{autoPick.summary}</span>
-                </span>
-              </DropdownMenu.Item>
+                <DropdownMenu.Item
+                  disabled={Boolean(autoPickUnavailableReason)}
+                  className={cn(MENU_ITEM_CLASS, "w-full items-start text-left text-[11px] text-fg/75")}
+                  onSelect={() => {
+                    if (autoPick.machineId !== selectedMachineId) onChange(autoPick.machineId);
+                  }}
+                  onKeyDown={moveAmongRows}
+                >
+                  <Scales size={12} weight="duotone" className="mt-[1px] shrink-0 text-muted-fg/80" aria-hidden />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">Least loaded</span>
+                    <span className="block truncate text-[10px] tabular-nums text-muted-fg/60">{autoPick.summary}</span>
+                  </span>
+                </DropdownMenu.Item>
+              </SmartTooltip>
               <DropdownMenu.Separator className="my-1 h-px bg-fg/[0.06]" />
             </>
           ) : null}
@@ -245,62 +361,64 @@ export function DraftMachinePicker({
             {machines.map((machine) => {
               const active = machine.id === selectedMachineId;
               const reason = machine.unavailableReason?.trim() || null;
+              const secondLine = machine.detail?.trim() || null;
               const row = (
                 <DropdownMenu.RadioItem
                   asChild
-                  key={machine.id}
                   value={machine.id}
                   disabled={Boolean(reason)}
-                  className={cn(MENU_ITEM_CLASS, "text-[11px]", active ? "text-fg/90" : "text-fg/65")}
+                  className={cn(
+                    MENU_ITEM_CLASS,
+                    // Full width, text at the start: the skyline and the check
+                    // sit at the row's end whatever the text says, and the
+                    // highlight covers the whole row.
+                    "w-full text-left text-[11px]",
+                    machine.skyline != null && "min-h-[38px]",
+                    active ? "text-fg/90" : "text-fg/65",
+                  )}
                 >
                   <button
                     type="button"
                     disabled={Boolean(reason)}
-                    onKeyDown={(event) => {
-                      if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      const items = Array.from(
-                        event.currentTarget.closest('[role="menu"]')?.querySelectorAll<HTMLButtonElement>(
-                          '[role="menuitemradio"]:not(:disabled):not([aria-disabled="true"])',
-                        ) ?? [],
-                      );
-                      if (items.length === 0) return;
-                      const currentIndex = items.indexOf(event.currentTarget);
-                      const nextIndex = event.key === "Home"
-                        ? 0
-                        : event.key === "End"
-                          ? items.length - 1
-                          : event.key === "ArrowDown"
-                            ? (currentIndex + 1) % items.length
-                            : (currentIndex - 1 + items.length) % items.length;
-                      items[nextIndex]?.focus();
-                    }}
+                    onKeyDown={moveAmongRows}
                   >
                     {machineIcon(machine)}
-                    {machine.detail ? (
+                    {secondLine || machine.detailPending ? (
                       <span className="min-w-0 flex-1">
                         <span className="block truncate">{machine.name}</span>
-                        <span className="block truncate text-[10px] text-muted-fg/60">{machine.detail}</span>
+                        <span className="block truncate text-[10px] tabular-nums text-muted-fg/60" aria-hidden={secondLine ? undefined : true}>
+                          {secondLine ?? "\u00a0"}
+                        </span>
                       </span>
                     ) : (
                       <span className="min-w-0 flex-1 truncate">{machine.name}</span>
                     )}
-                    <DropdownMenu.ItemIndicator>
-                      <Check size={11} weight="bold" className="shrink-0" aria-hidden />
-                    </DropdownMenu.ItemIndicator>
+                    {machine.skyline != null ? (
+                      <CloudSkyline lanes={machine.detailPending ? [] : machine.skyline} className={machine.detailPending ? "invisible" : undefined} />
+                    ) : null}
+                    {/* The check keeps its place when not shown, so names never shift. */}
+                    <span className="flex w-[11px] shrink-0 justify-end">
+                      <DropdownMenu.ItemIndicator>
+                        <Check size={11} weight="bold" className={cn("shrink-0", machine.skyline != null && "adec-check")} aria-hidden />
+                      </DropdownMenu.ItemIndicator>
+                    </span>
                   </button>
                 </DropdownMenu.RadioItem>
               );
-              if (!reason) return row;
+              // Every row keeps the same wrapper whether or not it has a
+              // reason: swapping the element type remounted the row (and
+              // dropped keyboard focus) each time a reason came or went.
               return (
-                <SmartTooltip
-                  key={machine.id}
-                  forceEnabled
-                  content={{ label: machine.name, description: reason }}
-                >
-                  {row}
-                </SmartTooltip>
+                <div key={machine.id} className="contents">
+                  {machine.separatorBefore ? <DropdownMenu.Separator className="my-1 h-px bg-fg/[0.06]" /> : null}
+                  <SmartTooltip
+                    forceEnabled={Boolean(reason)}
+                    wrapperStyle={{ display: "flex", width: "100%" }}
+                    content={{ label: machine.name, description: reason ?? "" }}
+                  >
+                    {row}
+                  </SmartTooltip>
+                </div>
               );
             })}
           </DropdownMenu.RadioGroup>

@@ -96,6 +96,62 @@ selections are split by owner before their actions run. The shared router lives
 in `renderer/state/laneMachineRouting.ts`; unknown and unroutable targets fail
 closed instead of falling back to the tab's current machine.
 
+### One lane per ADE Cloud computer
+
+People manage lanes, not computers, so each ADE Cloud computer holds one
+lane, counted across every project on the computer. An archived lane counts:
+it keeps its computer for a one-click restore. The primary lane of a project
+never counts. A normal computer is not affected.
+
+A lane can also start on ADE Cloud, where its launch makes one new computer for
+that lane (see [ADE Cloud lanes](../chat/README.md#ade-cloud-lanes)). Deleting
+the lane deletes its computer. Keeping the lane frees the computer instead, and
+the lane stays without one (`cloud_lanes_without_computer`, see
+[ADE Cloud](../ade-cloud/README.md#the-life-of-a-lanes-computer)).
+
+- **Where it is checked.** In `laneService.ts`, at every place a lane row
+  comes to exist: `create`, `importBranch`, and the adoption of a worktree
+  found on disk (`recoverManagedWorktreeRows`). `create` and `importBranch`
+  check once before any git work, and again right before the insert, under
+  the database's write lock. The adoption skips a worktree it may not adopt
+  and logs `laneService.cloud_computer_adoption_skipped`; the folder stays.
+- **Across projects.** `adeCloud/cloudComputerLaneHold.ts` reads the lanes of
+  every other project on the computer (the machine's `projects.json` and
+  every project that ever claimed a lane there), read-only, without starting
+  it. A database that exists but cannot be read counts as holding a lane.
+- **Two creates at once.** The check before the insert holds a lock file
+  (`cloud-computer-lanes.lock` in the machine's ADE folder) and writes a
+  claim (`cloud-computer-lanes.json`), so a second process (a one-shot
+  `ade --headless`) sees the lane before its row exists. The insert gives the
+  claim back when it ends; a claim a dead process left behind stops counting
+  after two minutes.
+- **The signal.** `cloudComputerLaneRuleApplies`: the `ADE_CLOUD_INSTANCE_ID`
+  variable, or on Linux the file only the machine template installs
+  (`/usr/local/bin/ade-entrypoint.sh`), so a process with a filtered
+  environment still meets the rule.
+- **The sentences** are in `adeCloud/cloudComputerRules.ts`, and the UI and
+  the CLI show them as is. The refusal is `CloudComputerLaneLimitError`, an
+  expected `user` error. For an active lane: "This ADE Cloud computer already
+  holds a lane, and each cloud computer holds one. Start a new lane on ADE
+  Cloud instead: it gets its own computer." For an archived lane: "This ADE
+  Cloud computer belongs to the archived lane "<name>". Restore that lane to
+  use this computer again, or start a new lane on ADE Cloud: it gets its own
+  computer."
+- **Early answers.** `chat.startLaunch` refuses before it makes a launch
+  record (`laneService.assertRoomForNewLane`), unless the launch's reserved
+  lane already exists (a retry). The destination check of a hand-off
+  (`preflightCrossMachineDestination`) lists the sentence as a blocking error
+  when the move would make a new lane, so the source sends nothing.
+- **Not refused:** the cloud launch's first lane (the computer is new), a
+  chat moved or copied to a new computer (its lanes arrive as files, not as
+  new rows), an unarchive (the archived lane already holds the computer), a
+  rename or a new parent, and a launch retried with the same launch id.
+  A restore of a deleted lane brings it back when the computer holds no
+  other lane: the restored lane's own row does not count.
+- **A computer from the older flow** that holds several lanes keeps them all
+  and works as before. It cannot get one more lane, from any project, a
+  restore of a deleted lane included.
+
 ## Default-branch auto-pull
 
 The primary checkout's default branch stays current without a manual pull.

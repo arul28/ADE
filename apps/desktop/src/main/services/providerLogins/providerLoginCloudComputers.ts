@@ -67,6 +67,11 @@ type CloudMakerLike = {
   status(requestId: string): { done: boolean; stage: string } | null;
 };
 
+/** A path other than the maker made a cloud computer here (a brain's lane launch): "at least one". */
+export function noteCloudComputerMade(): void {
+  noteCloudComputerCount(1);
+}
+
 /** The brain's maker, with each finished make sent to the checks as "at least one". */
 export function observeCloudComputerMakes<T extends CloudMakerLike | null>(maker: T): T {
   if (!maker) return maker;

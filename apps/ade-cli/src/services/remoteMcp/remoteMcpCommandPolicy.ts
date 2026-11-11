@@ -211,7 +211,7 @@ export function checkRemoteAdeCommand(
   }
   // Only ADE's server runs these, over exec on a cloud computer: one interrupts
   // all its work, the other commits and pushes every lane.
-  if (command === "cloud" && (words[0] === "prepare-stop" || words[0] === "push-work")) {
+  if (command === "cloud" && (words[0] === "prepare-stop" || words[0] === "push-work" || words[0] === "work-state")) {
     return { ok: false, reason: `\`ade cloud ${words[0]}\` is not available remotely. ADE's server runs it on a computer it is about to stop or free-wake.` };
   }
   // Renaming, removing or re-pairing account machines outlives revoking the

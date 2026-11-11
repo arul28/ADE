@@ -1,4 +1,5 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import { parseAutomationCloudTarget } from "../../../shared/automationCloud";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -676,10 +677,12 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
   const laneNameTemplate = laneNamePreset === "custom"
     ? asString(value.laneNameTemplate)?.trim() || undefined
     : undefined;
+  const cloud = parseAutomationCloudTarget(value.cloud);
   const sharedLaneFields = {
     ...(laneMode ? { laneMode } : {}),
     ...(laneNamePreset ? { laneNamePreset } : {}),
     ...(laneNameTemplate ? { laneNameTemplate } : {}),
+    ...(cloud ? { cloud } : {}),
   };
 
   if (kind === "agent-session") {

@@ -427,6 +427,38 @@
   color: var(--kit-text-2, rgba(255, 255, 255, 0.7));
 }
 .ade-cx-cloud-note { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--kit-text-3, rgba(255, 255, 255, 0.5)); }
+/* A cloud computer's update line, where other machines have an Update button.
+   Quiet while it keeps itself current; only a failure asks for attention. */
+.ade-cx-cloud-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--kit-text-3, rgba(255, 255, 255, 0.5));
+}
+.ade-cx-cloud-update[data-tone="busy"] { color: var(--kit-text-2, rgba(255, 255, 255, 0.7)); }
+.ade-cx-cloud-update[data-tone="error"] { color: var(--color-error, #f87171); align-items: flex-start; }
+.ade-cx-cloud-update-text { min-width: 0; overflow-wrap: anywhere; }
+.ade-cx-cloud-update-retry {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 16%, transparent);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ade-cx-cloud-update-retry:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+.ade-cx-cloud-update-retry:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.ade-cx-cloud-update-retry:disabled { opacity: 0.5; cursor: default; }
 .ade-cx-cloud-avatar {
   display: inline-grid;
   place-items: center;

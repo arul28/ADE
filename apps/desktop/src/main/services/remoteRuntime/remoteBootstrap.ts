@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { readChatLaunchKindsCapability } from "../../../shared/chatLaunch";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -149,6 +150,8 @@ export function validateRemoteRuntimeInitializeResult(args: {
   }
   const runtimeInfo = isRecord(args.result.runtimeInfo) ? args.result.runtimeInfo : {};
   const capabilities = isRecord(args.result.capabilities) ? args.result.capabilities : {};
+  // The launch kinds it runs; absent from an older brain (cloudLaneLaunchService's hand-off check).
+  const chatLaunchKinds = readChatLaunchKindsCapability(capabilities);
   if (runtimeInfo.multiProject !== true || capabilities.projects !== true) {
     throw new Error("Remote ADE service does not support multi-project mode. Update the ADE service on that machine.");
   }
@@ -197,6 +200,7 @@ export function validateRemoteRuntimeInitializeResult(args: {
       projects: true,
       machineProjects: normalizedMachineProjects,
       ...(capabilities.clientSendDedupe === true ? { clientSendDedupe: true } : {}),
+      ...(chatLaunchKinds.length ? { chatLaunchKinds } : {}),
     },
     compatibilityWarnings,
   };

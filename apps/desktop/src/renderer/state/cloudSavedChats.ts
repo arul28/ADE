@@ -168,6 +168,8 @@ type SavedChatsBridge = NonNullable<NonNullable<Window["ade"]["cloud"]>["savedCh
  * The chat API, with reads answered from the saved copy while the chat's
  * machine isn't connected. Everything else, sends included, goes through
  * untouched; a send to a computer that no longer exists says so plainly.
+ * A chat whose lane is kept without a computer never sends here: the chat
+ * pane gives that lane a new computer and starts a new chat on it.
  */
 export function withSavedChatReads(
   api: AgentChatApi,

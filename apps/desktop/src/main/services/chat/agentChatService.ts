@@ -1061,6 +1061,7 @@ import {
 } from "../../../shared/modelRegistry";
 import { piSdkToolPolicyForPermissionMode, piThinkingLevel, type PiSdkMcpPolicy } from "../../../shared/cliLaunch";
 import { codexAppServerApprovalPolicy } from "../../../shared/codexApprovalPolicy";
+import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
 import { stripHostRuntimeEnv, userProcessEnv } from "../shared/hostRuntimeEnv";
 import { isProviderDisabled } from "../../../shared/providerEnablement";
@@ -10613,6 +10614,53 @@ function resolveSessionCodexConfigSource(
   return session.codexConfigSource
     ?? legacyPermissionModeToCodexConfigSource(session.permissionMode)
     ?? "flags";
+}
+
+/**
+ * Codex on an ADE Cloud computer runs with full access (no approvals, no
+ * sandbox): the cloud computer is the sandbox, and nobody is there to answer
+ * an approval while the laptop is closed. Only Codex, only on a cloud
+ * computer (`isAdeCloudComputer`). These keep the mode they have, because an
+ * existing guard set it:
+ *
+ * - Plan (a read-only sandbox): a mode that changes nothing stays that way,
+ *   and a side chat is read-only for its whole life;
+ * - a chat an agent started or spawned (`launchedBySessionId`,
+ *   `orchestrationParentSessionId`), and a recovery chat
+ *   (`recoveredFromSessionId`, which copies the mode of the chat it
+ *   continues): the permission ceiling keeps it at or below the level it was
+ *   given;
+ * - a chat driven by a host permission policy, which needs approvals to run.
+ *
+ * The rule writes the session's own fields, so the mode every client shows
+ * is the mode Codex runs with.
+ */
+function codexGetsCloudFullAccess(
+  session: Pick<
+    AgentChatSession,
+    | "provider" | "codexSandbox" | "codexConfigSource" | "permissionMode" | "sideChatParentSessionId"
+    | "permissionPolicy" | "launchedBySessionId" | "orchestrationParentSessionId" | "recoveredFromSessionId"
+  >,
+): boolean {
+  if (session.provider !== "codex" || !isAdeCloudComputer()) return false;
+  if (session.sideChatParentSessionId || session.permissionPolicy) return false;
+  if (session.launchedBySessionId || session.orchestrationParentSessionId || session.recoveredFromSessionId) return false;
+  if (resolveSessionCodexConfigSource(session) === "config-toml") return true;
+  return resolveSessionCodexSandbox(session, "workspace-write") !== "read-only";
+}
+
+/** Applies {@link codexGetsCloudFullAccess} to the session's own fields. */
+function applyCodexCloudFullAccess(
+  session: Parameters<typeof codexGetsCloudFullAccess>[0] & Pick<
+    AgentChatSession,
+    "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "opencodePermissionMode" | "droidPermissionMode" | "copilotPermissionMode" | "musePermissionMode" | "cursorModeId"
+  >,
+): void {
+  if (!codexGetsCloudFullAccess(session)) return;
+  session.codexConfigSource = "flags";
+  session.codexApprovalPolicy = "never";
+  session.codexSandbox = "danger-full-access";
+  session.permissionMode = syncLegacyPermissionMode(session) ?? session.permissionMode;
 }
 
 function isSessionCodexFullAuto(
@@ -30008,6 +30056,8 @@ export function createAgentChatService(args: {
     );
     managed.historyGeneration = normalizeHistoryGeneration(persisted?.historyGeneration);
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
+    // A Codex chat saved before the cloud rule shows full access from load.
+    applyCodexCloudFullAccess(managed.session);
     refreshReconstructionContext(managed);
     if (typeof persisted?.pendingTranscriptReplay === "string" && persisted.pendingTranscriptReplay.trim()) {
       managed.pendingTranscriptReplay = persisted.pendingTranscriptReplay;
@@ -46586,6 +46636,9 @@ export function createAgentChatService(args: {
     codexPolicy: CodexPolicy;
   } => {
     const config = resolveChatConfig();
+    // Every Codex thread start, resume and turn reads its policy here, so the
+    // cloud computer's full access holds for what runs.
+    applyCodexCloudFullAccess(managed.session);
     const codexConfigSource = resolveSessionCodexConfigSource(managed.session);
     managed.session.codexConfigSource = codexConfigSource;
     const codexPolicy = codexConfigSource === "config-toml"
@@ -51465,7 +51518,7 @@ export function createAgentChatService(args: {
     effectivePermissionMode = localHarnessPermissions.requestedPermissionMode;
     requestedOpenCodePermissionMode = localHarnessPermissions.requestedOpenCodePermissionMode;
 
-      const nativePermissionFields = (() => {
+      const requestedNativePermissionFields = (() => {
       if (effectiveProvider === "claude") {
         const interactionMode = effectiveInteractionMode
           ?? (effectiveClaudePermissionMode === "plan" ? "plan" : undefined)
@@ -51566,6 +51619,22 @@ export function createAgentChatService(args: {
         ...(requestedAcpPermissionMode ? { acpPermissionMode: requestedAcpPermissionMode } : {}),
       };
       })();
+      // Codex on an ADE Cloud computer starts with full access (see
+      // `codexGetsCloudFullAccess`). Before the ceiling below, so a chat an
+      // agent starts is still held to that agent's level.
+      const codexCloudFullAccess = effectiveProvider === "codex" && !permissionsPinned && codexGetsCloudFullAccess({
+        provider: "codex",
+        ...("codexSandbox" in requestedNativePermissionFields ? { codexSandbox: requestedNativePermissionFields.codexSandbox } : {}),
+        ...("codexConfigSource" in requestedNativePermissionFields ? { codexConfigSource: requestedNativePermissionFields.codexConfigSource } : {}),
+        ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
+        ...(callerPermissionPolicy ? { permissionPolicy: callerPermissionPolicy } : {}),
+        ...(launchedBySessionId ? { launchedBySessionId } : {}),
+        ...(normalizedParentSessionId ? { orchestrationParentSessionId: normalizedParentSessionId } : {}),
+        ...(recoveredFromSessionId?.trim() ? { recoveredFromSessionId: recoveredFromSessionId.trim() } : {}),
+      });
+      const nativePermissionFields = codexCloudFullAccess
+        ? { codexApprovalPolicy: "never" as const, codexSandbox: "danger-full-access" as const, codexConfigSource: "flags" as const }
+        : requestedNativePermissionFields;
       // A spawned chat never runs with more freedom than the chat that spawned
       // it, and an agent never starts a chat with more than its own (see
       // `resolvePermissionCeiling`). Identity-pinned sessions are locked to
@@ -53819,6 +53888,15 @@ export function createAgentChatService(args: {
           blockingErrors.push(`Destination lane '${existingLane.name}' is not at the source commit.`);
         }
       } else {
+        // No lane here holds the branch, so the move makes one. An ADE Cloud
+        // computer that already holds a lane refuses it: say so before the
+        // source sends anything. The lane import checks again on arrival.
+        try {
+          // Optional: a lane service without it skips only this early answer.
+          laneService.assertRoomForNewLane?.();
+        } catch (error) {
+          blockingErrors.push(error instanceof Error ? error.message : String(error));
+        }
         const localHead = await runGit(["rev-parse", "--verify", `refs/heads/${branchRef}`], {
           cwd: projectRoot,
           timeoutMs: 8_000,
@@ -73918,6 +73996,9 @@ export function createAgentChatService(args: {
       // The same normalization the update ends with (Claude rebuilds its
       // access mode from the generic word here).
       normalizeSessionNativePermissionControls(after, resolveChatConfig());
+      // On a cloud computer a Codex mode that writes runs with full access,
+      // so the ceiling judges that, not the word the agent sent.
+      applyCodexCloudFullAccess(after);
       const clamp = ceiling ? permissionCeilingClamp(after, ceiling) : null;
       if (clamp) {
         throw new Error(
@@ -74748,6 +74829,9 @@ export function createAgentChatService(args: {
       }
     }
 
+    // A cloud computer's Codex chat keeps full access through any update (a
+    // switch to Codex, a mode pick); the agent check above already counted it.
+    applyCodexCloudFullAccess(managed.session);
     const modeFieldsTouched = hasExplicitNativeModeUpdate;
     if (modeFieldsTouched) {
       enforceManagedLocalHarnessPermissionMode(managed);

@@ -266,7 +266,7 @@ export function normalizeCloudMachineName(raw: string): string {
 }
 
 /** A published release a machine can install (`ade brain update --version`), or null. */
-function cloudMinAdeVersion(version: string | null | undefined): string | null {
+export function cloudMinAdeVersion(version: string | null | undefined): string | null {
   const trimmed = version?.trim().replace(/^v/, "") ?? "";
   // 0.0.0 is an unstamped development build; alpha builds are not published.
   if (trimmed === "0.0.0" || !/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(trimmed)) return null;

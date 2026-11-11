@@ -1,6 +1,11 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { chatLaunchStatusLine } from "../../desktop/src/shared/chatLaunch";
+import { followCloudLaneLaunch } from "../../desktop/src/shared/cloudLaneLaunch";
+import { CLOUD_TIER_IDS, isCloudTierId } from "../../desktop/src/shared/cloudTiers";
+import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
 import { pullFileFromWorkCopy, pushFileToWorkCopy, withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
 import { CLOUD_READY_WAKE_WAIT_MS, isCloudReadyMachineSelector } from "../../desktop/src/shared/cloudReady";
@@ -20,6 +25,7 @@ import {
   connectMachineRuntimeDaemon,
   executePlan,
   firstStandalonePositional,
+  formatChatLaunch,
   firstArray,
   getGitRemote,
   isMachineRuntimeScopedMethod,
@@ -30,6 +36,7 @@ import {
   sessionIdFromCreateChatValue,
   unwrapToolResult,
   withProjectId,
+  type CloudLaneLaunchDraft,
   type CliConnection,
   type CliPlan,
   type GlobalOptions,
@@ -160,6 +167,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   let machineProject: string | null = null;
   let projectAlias: string | null = null;
   let machineClone = false;
+  let cloudSize: string | null = null;
   let workCopySync: "none" | "discard" | null = null;
   let terminatorArgs: string[] | null = null;
   const command = parsed.command;
@@ -199,6 +207,8 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     if (flag === "--machine-project") { machineProject = takeValue(); continue; }
     if (flag === "--all-machines" && inline == null) { allMachines = true; continue; }
     if (flag === "--clone" && inline == null && primary === "chat") { machineClone = true; continue; }
+    // The size of a new ADE Cloud computer (`--machine cloud`); no chat or lane verb has a --size of its own.
+    if (flag === "--size" && MACHINE_PROJECT_ALIAS_PRIMARIES.has(primary)) { cloudSize = takeValue(); continue; }
     if ((flag === "--no-sync" || flag === "--discard") && inline == null && workCopyVerb) {
       if (workCopySync) throw new CliUsageError("Use --no-sync or --discard, not both.");
       workCopySync = flag === "--no-sync" ? "none" : "discard";
@@ -220,6 +230,23 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     throw new CliUsageError("--no-sync and --discard are for this chat's work copy there; leave out --lane to use it.");
   }
   if (machineProject && !machine && !allMachines) throw new CliUsageError("--machine-project needs --machine <name>.");
+  const cloudLane = isCloudLaneMachineSelector(machine);
+  if (cloudSize !== null && !cloudLane) {
+    throw new CliUsageError("--size picks the size of a new ADE Cloud computer: add --machine cloud.");
+  }
+  const sizeId = cloudSize === null ? null : cloudSize.toLowerCase().replace(/[\s-]+/g, "");
+  if (sizeId !== null && !isCloudTierId(sizeId)) {
+    throw new CliUsageError(`--size must be one of: ${CLOUD_TIER_IDS.join(", ")}.`);
+  }
+  if (cloudLane && (machineProject || projectAlias)) {
+    throw new CliUsageError("--machine cloud makes a new lane for this project on its own computer: leave out --project and --machine-project.");
+  }
+  if (cloudLane && machineClone) {
+    throw new CliUsageError("--machine cloud always gets the repository on the new computer: leave out --clone.");
+  }
+  if (machine && !cloudLane && machine.split(",").some((entry) => isCloudLaneMachineSelector(entry))) {
+    throw new CliUsageError("--machine cloud makes one new computer for one lane: don't list other machines with it.");
+  }
   if (!machine && primary === "shell") {
     const flags = flagNamesOutsideFreeText(parsed.command);
     if (subcommand === "clean") {
@@ -239,6 +266,8 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       allMachines,
       machineProject: machineProject ?? projectAlias,
       machineClone,
+      // No --size stays null: the brain picks the person's saved size for new lanes.
+      ...(cloudLane ? { cloudSize: sizeId } : {}),
       ...(usesWorkCopy
         ? {
             machineWorkCopy: {
@@ -1236,6 +1265,223 @@ async function executePlanOnCloudReadyMachine(
   }
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+   ADE CLOUD LANES: `--machine cloud [--size <size>]`.
+
+   One new ADE Cloud computer for one new lane, the repository there, and the
+   chat started there. This machine's brain owns the launch (`cloud.lane_launch`
+   in cloudAgentActions.ts, the core in cloudLaneLaunchService.ts): it holds
+   the account and the provider key, which this process never has. The CLI
+   starts it and follows it. A Ctrl-C stops the following only; the launch
+   goes on in the brain, and the same `--launch-id` again follows it, or goes
+   on from a failed step, never with a second computer.
+   ────────────────────────────────────────────────────────────────────────── */
+
+const CLOUD_LANE_MACHINE = "cloud";
+const CLOUD_LANE_POLL_MS = 2_000;
+/** Covers a new computer, the 10 minutes a join may wait for the person, and a large clone. */
+const CLOUD_LANE_WAIT_MS = 30 * 60_000;
+
+/** `--machine cloud`: a new lane on its own new ADE Cloud computer (not `cloud:ready`). */
+export function isCloudLaneMachineSelector(machine: string | null | undefined): boolean {
+  return machine?.trim().toLowerCase() === CLOUD_LANE_MACHINE;
+}
+
+/** `ade chat create`'s choices as a lane launch: a chat in a new lane with the project's lane defaults. */
+function cloudLaunchArgsFromChatCreate(draft: CloudLaneLaunchDraft): JsonObject {
+  // The computer binds the issue to the new lane; it has no Linear lookup for a bare id.
+  const linearIssue = draft.linearIssue ? parseLaneLinearIssueValue(draft.linearIssue) : null;
+  if (draft.linearIssue && !linearIssue) {
+    throw new CliUsageError("--machine cloud needs the whole Linear issue (id, identifier, title, team and state) in --linear-issue-json.");
+  }
+  if (draft.notify) throw new CliUsageError("--notify-url doesn't work with --machine cloud yet.");
+  if (asString(draft.create.laneId)) {
+    throw new CliUsageError("--machine cloud makes a new lane for the chat: leave out --lane.");
+  }
+  const prompt = draft.prompt?.trim() ? draft.prompt : null;
+  if (!prompt) throw new CliUsageError("A chat on ADE Cloud starts with its first message: pass --prompt or --prompt-file.");
+  // The lane is the launch's; a parent on this machine can't follow a chat on another computer.
+  const {
+    laneId: _laneId,
+    sessionId: _sessionId,
+    orchestrationParentSessionId: parent,
+    spawnKind,
+    ...create
+  } = draft.create;
+  const provider = asString(create.provider) ?? "codex";
+  if (process.env.ADE_CHAT_SESSION_ID?.trim() && (parent || spawnKind)) {
+    process.stderr.write("note: a chat on ADE Cloud starts as its own chat, so it doesn't report back to you. Read it with ade chat read --machine <its computer>.\n");
+  }
+  const modelId = asString(create.modelId) ?? asString(create.model);
+  return {
+    kind: "chat",
+    mode: "background",
+    launchId: draft.launchId ?? randomUUID(),
+    prompt,
+    provider,
+    ...(modelId ? { modelId } : {}),
+    ...(asString(create.title) ? { title: asString(create.title) } : {}),
+    ...(linearIssue ? { laneConfig: { mode: "new", linearIssue } } : {}),
+    chat: {
+      create: { ...create, provider, model: asString(create.model) ?? "" },
+      message: { text: prompt },
+    },
+  };
+}
+
+/** The result a caller reads: the launch, and where the lane and its chat are. */
+function cloudLaneResult(status: JsonObject): JsonObject {
+  const launch = isRecord(status.launch) ? status.launch : {};
+  const machine = isRecord(status.machine) ? status.machine : {};
+  return {
+    ok: launch.phase !== "failed" && launch.phase !== "cancelled",
+    launchId: asString(launch.launchId),
+    phase: asString(launch.phase),
+    laneId: asString(launch.laneId),
+    laneName: asString(launch.laneName),
+    // A lane launch starts no chat; a chat launch's chat id is its launch id.
+    sessionId: launch.kind === "lane" ? null : asString(launch.sessionId) ?? asString(launch.launchId),
+    machine: {
+      name: asString(machine.name),
+      instanceId: asString(machine.instanceId),
+      machineKey: asString(machine.machineKey),
+    },
+    approvalUrl: asString(status.approvalUrl),
+    launch,
+  };
+}
+
+/** One connection to this machine's brain for a run of `cloud` actions, in the project the CLI runs in. */
+async function withCloudActions<T>(
+  options: GlobalOptions,
+  projectRoot: string,
+  run: (call: (action: string, args: JsonObject) => Promise<unknown>) => Promise<T>,
+): Promise<T> {
+  return await withMachineBrain(options, async (client) => {
+    const registered = await client.request("projects.add", automaticProjectRegistrationParams(projectRoot));
+    const projectId = isRecord(registered) ? asString(registered.projectId) : null;
+    if (!projectId) throw new Error("This machine's brain did not register the project.");
+    return await run(async (action, args) => {
+      const answer = unwrapToolResult(await client.request("ade/actions/call", withProjectId({
+        name: "run_ade_action",
+        arguments: { domain: "cloud", action, args },
+      }, projectId)));
+      return isRecord(answer) && "result" in answer && ("domain" in answer || "action" in answer) ? answer.result : answer;
+    });
+  });
+}
+
+/**
+ * Starts a lane launch on ADE Cloud in this machine's brain and follows it
+ * until the agent starts there. Progress goes to stderr (not with --json).
+ * A failure throws the sentence the lane's card shows; the launch id rides
+ * along so the same command can go on from it.
+ */
+export async function runCloudLaneLaunch(launchArgs: JsonObject, options: GlobalOptions): Promise<JsonObject> {
+  const laneConfig = isRecord(launchArgs.laneConfig) ? launchArgs.laneConfig : null;
+  const start = laneConfig && isRecord(laneConfig.start) ? laneConfig.start : null;
+  if (start?.on === "uncommitted") {
+    throw new CliUsageError("An ADE Cloud lane starts from the pushed copy of its branch, so it can't bring uncommitted changes.");
+  }
+  if (start?.on === "local") {
+    throw new CliUsageError("An ADE Cloud lane starts from the pushed copy of its branch, so it can't start from this computer's copy. Leave out --on.");
+  }
+  if (options.machineProject) {
+    throw new CliUsageError("--machine cloud makes a new lane for this project on its own computer: leave out --project and --machine-project.");
+  }
+  const roots = resolveRoots(options);
+  const originUrl = getGitRemote(roots.projectRoot);
+  if (!originUrl) {
+    throw new CliUsageError("--machine cloud needs a project with a GitHub origin: ADE Cloud gets the repository from there.");
+  }
+  const launchId = asString(launchArgs.launchId) ?? randomUUID();
+  // No --size: the brain uses the size the person saved for new lanes (Small when none).
+  const sizeId = options.cloudSize ?? null;
+  const launch: JsonObject = { ...launchArgs, launchId, cloud: sizeId ? { sizeId } : {} };
+  const say = (line: string) => {
+    if (!options.json) process.stderr.write(`ade: ${line}\n`);
+  };
+  // The launch is the brain's: an interrupt here leaves it running there, and says how to reach it.
+  const onInterrupt = () => {
+    process.stderr.write(
+      `\nade: the lane keeps starting on ADE Cloud. Check it: ade chat launch-status ${launchId} --machine cloud`
+      + ` · stop it and delete its computer: ade chat launch-cancel ${launchId} --machine cloud\n`,
+    );
+    process.exit(130);
+  };
+  process.once("SIGINT", onInterrupt);
+  try {
+    // Always, --json too (stderr), before anything waits: the id is what follows or resumes this launch.
+    process.stderr.write(`ade: starting a lane on ADE Cloud (${sizeId ?? "your default size"}). Launch id ${launchId}.\n`);
+    return await withCloudActions(options, roots.projectRoot, async (call) => {
+      let lastLine = "";
+      const { outcome, status, answer } = await followCloudLaneLaunch({
+        start: () => call("lane_launch", { launch, originUrl }),
+        read: () => call("lane_launch_status", { launchId }),
+        onStatus: ({ launch: snapshot }) => {
+          const line = chatLaunchStatusLine(snapshot);
+          if (line !== lastLine) say(line);
+          lastLine = line;
+        },
+        onApprovalLink: (link) => say(`Approve the new computer joining your ADE account: open ${link} on your phone or in a browser signed in to ADE.`),
+        pollMs: CLOUD_LANE_POLL_MS,
+        waitMs: CLOUD_LANE_WAIT_MS,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      });
+      switch (outcome) {
+        case "missing":
+          throw new CliExecutionError("This computer's ADE no longer has the ADE Cloud lane launch.", { launchId });
+        case "succeeded":
+          return cloudLaneResult(answer as JsonObject);
+        case "failed":
+          throw new CliExecutionError(status?.launch.error?.trim() || "The lane didn't start on ADE Cloud.", {
+            launchId,
+            phase: "failed",
+            nextAction: `Run the same command with --launch-id ${launchId} to go on from the failed step.`,
+          });
+        case "cancelled":
+          throw new CliExecutionError("The lane launch was cancelled, and its computer deleted.", { launchId, phase: "cancelled" });
+        case "timeout":
+          throw new CliExecutionError(`The lane is still starting on ADE Cloud after ${CLOUD_LANE_WAIT_MS / 60_000} minutes.`, {
+            launchId,
+            nextAction: `ade chat launch-status ${launchId} --machine cloud`,
+          });
+      }
+    });
+  } finally {
+    process.removeListener("SIGINT", onInterrupt);
+  }
+}
+
+/** `--machine cloud` on an execute plan: `chat create`, or a launch's status or cancel. */
+async function executePlanOnCloudLane(plan: CliPlan & { kind: "execute" }, options: GlobalOptions): Promise<unknown> {
+  if (plan.cloudLaneCall) {
+    const { action, launchId } = plan.cloudLaneCall;
+    const roots = resolveRoots(options);
+    const status = await withCloudActions(options, roots.projectRoot, (call) => call(action, { launchId }));
+    if (!isRecord(status)) throw new CliExecutionError("This computer's ADE has no ADE Cloud lane launch with that id.", { launchId });
+    return cloudLaneResult(status);
+  }
+  if (plan.cloudLaunch) {
+    const result = await runCloudLaneLaunch(cloudLaunchArgsFromChatCreate(plan.cloudLaunch), options);
+    // `chat create` has no launch formatter: text mode gets the launch view (a string passes the formatters as it is).
+    return options.text ? formatChatLaunch(result) : result;
+  }
+  if (plan.cloudLaneCreate) {
+    // The lane alone: no chat, so no agent stage. Same launch, same id rules.
+    if (plan.cloudLaneCreate.refused) throw new CliUsageError(plan.cloudLaneCreate.refused);
+    const result = await runCloudLaneLaunch({
+      ...plan.cloudLaneCreate.launch,
+      ...(plan.cloudLaneCreate.launchId ? { launchId: plan.cloudLaneCreate.launchId } : {}),
+    }, options);
+    return options.text ? formatChatLaunch(result) : result;
+  }
+  throw new CliUsageError(
+    "--machine cloud starts a new lane on ADE Cloud: use it with ade chat create, ade chat launch, or ade lanes create (the lane alone). "
+    + "To reach a lane already there, use --machine with its computer's name.",
+  );
+}
+
 /**
  * The machine routing `executePlan` applies first: `--all-machines`, or a
  * comma list of machines. Null for a plan that runs once, here or on one
@@ -1245,6 +1491,13 @@ export async function executePlanAcrossMachines(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
 ): Promise<{ value: unknown } | null> {
+  if (plan.cloudLaunch?.launchId && !isCloudLaneMachineSelector(options.machine)) {
+    throw new CliUsageError("--launch-id on chat create is for a new lane on ADE Cloud: add --machine cloud.");
+  }
+  if (plan.cloudLaneCreate?.launchId && !isCloudLaneMachineSelector(options.machine)) {
+    throw new CliUsageError("--launch-id on lanes create is for a new lane on ADE Cloud: add --machine cloud.");
+  }
+  if (isCloudLaneMachineSelector(options.machine)) return { value: await executePlanOnCloudLane(plan, options) };
   if (options.allMachines) return { value: await executePlanOnAllMachines(plan, options) };
   if (isCloudReadyMachineSelector(options.machine)) return { value: await executePlanOnCloudReadyMachine(plan, options) };
   const machineList = [...new Set((options.machine ?? "").split(",").map((entry) => entry.trim()).filter(Boolean))];

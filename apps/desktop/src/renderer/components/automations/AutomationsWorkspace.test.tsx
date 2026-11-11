@@ -62,6 +62,9 @@ describe("New automation", () => {
       lanes: new Proxy({ list: vi.fn(async () => []) }, { get: (target, key) => (key in target ? target[key as keyof typeof target] : vi.fn(async () => [])) }),
       projectConfig: { get: vi.fn(async () => ({})) },
       ai: { getStatus: vi.fn(async () => ({})) },
+      // The real preload returns an unsubscribe function from onChanged.
+      cloudAccess: { read: vi.fn(async () => ({ enabled: false })), onChanged: vi.fn(() => () => {}) },
+      cloud: { onCloudSignInChanged: vi.fn(() => () => {}) },
     }, { get: (target, key) => (key in target ? target[key as keyof typeof target] : new Proxy({}, { get: () => vi.fn(async () => null) })) });
     Object.defineProperty(window, "ade", { configurable: true, writable: true, value: ade });
 

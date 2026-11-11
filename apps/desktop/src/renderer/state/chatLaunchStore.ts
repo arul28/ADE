@@ -770,7 +770,13 @@ export function useChatLaunchSelector<T>(select: (state: ChatLaunchState) => T, 
 
 export type ChatLaunchRowSource = {
   snapshot: ChatLaunchSnapshot;
+  /**
+   * Where the chat runs: the entry's binding, or for an ADE Cloud launch the
+   * project on its new computer once it is cloned there (`cloud.binding`).
+   * The chat's calls route by this.
+   */
   binding: OpenProjectBinding | null;
+  /** The binding the launch is listed under (the project tab it started in). */
   bindingKey: string;
   pendingEndedAtMs?: number | null;
   bridgeRetired?: boolean;
@@ -781,7 +787,9 @@ export function chatLaunchRowSourcesNow(state: ChatLaunchState = chatLaunchStore
   return Object.values(state.entries)
     .map((entry) => ({
       snapshot: entry.snapshot,
-      binding: entry.binding,
+      // An ADE Cloud launch is listed where it started, and its chat lives on
+      // the new computer: route there as soon as the project is cloned.
+      binding: entry.snapshot.cloud?.binding ?? entry.binding,
       bindingKey: entry.bindingKey,
       pendingEndedAtMs: entry.pendingEndedAtMs,
       bridgeRetired: Boolean(state.bridgeRetired[entry.launchId]),
@@ -809,6 +817,7 @@ function rowSignature(source: ChatLaunchRowSource): string {
     source.pendingEndedAtMs ?? "",
     source.bridgeRetired ? "retired" : "",
     source.bindingKey,
+    source.binding?.key ?? "",
   ].join("\u0001");
 }
 
