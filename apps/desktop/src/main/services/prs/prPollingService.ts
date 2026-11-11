@@ -87,8 +87,7 @@ function rememberChecksFailure(
 }
 
 type ReviewAnnouncement = {
-  headSha: string | null;
-  /** The review verdict already announced for this head, if one was. */
+  /** The review verdict already announced for the current round, if one was. */
   announcedStatus: "requested" | "changes_requested" | null;
 };
 
@@ -101,9 +100,11 @@ type ReviewAnnouncement = {
  * `requested`. Treating that dip as the end of the round re-announced the same
  * review request on every poll — a toast the user could not keep dismissed.
  *
- * So a round ends only on evidence: the head commit changed, or a reviewer
- * actually reached a verdict (`approved`). A verdict that moves between
- * `requested` and `changes_requested` is a new round and announces again.
+ * A review request belongs to the pull request, not to a commit, so a new head
+ * does not start a round: pushing to a PR that is already waiting for review
+ * does not ask anyone again. A round ends when a reviewer reaches a verdict
+ * (`approved`) or when the verdict moves between `requested` and
+ * `changes_requested`, which announces the new one.
  *
  * The first observation of a PR never announces: `previous === null`. If it is
  * already waiting on a review, that is remembered, so a later unknown-verdict
@@ -117,27 +118,22 @@ function rememberReviewAnnouncement(
   announceRequested: boolean;
   announceChangesRequested: boolean;
 } {
-  const headSha = normalizeHeadSha(pr.headSha) ?? previous?.headSha ?? null;
-  const headChanged = previous != null
-    && previous.headSha != null
-    && headSha !== previous.headSha;
   let announcedStatus = previous?.announcedStatus ?? null;
-  if (headChanged || pr.reviewStatus === "approved") announcedStatus = null;
+  // A real verdict ends the round; the next request is news again.
+  if (pr.reviewStatus === "approved") announcedStatus = null;
   const open = pr.state === "open" || pr.state === "draft";
   const announceRequested = open
     && previous != null
-    && !headChanged
     && pr.reviewStatus === "requested"
     && announcedStatus !== "requested";
   const announceChangesRequested = open
     && previous != null
-    && !headChanged
     && pr.reviewStatus === "changes_requested"
     && announcedStatus !== "changes_requested";
   if (pr.reviewStatus === "requested" || pr.reviewStatus === "changes_requested") {
     announcedStatus = pr.reviewStatus;
   }
-  return { memory: { headSha, announcedStatus }, announceRequested, announceChangesRequested };
+  return { memory: { announcedStatus }, announceRequested, announceChangesRequested };
 }
 
 function summarizeNotification(kind: PrNotificationKind): { title: string; message: string } {
@@ -504,9 +500,7 @@ export function createPrPollingService({
           pr,
         );
         const review = rememberReviewAnnouncement(
-          prev
-            ? { headSha: prev.headSha, announcedStatus: prev.reviewAnnouncedStatus }
-            : null,
+          prev ? { announcedStatus: prev.reviewAnnouncedStatus } : null,
           pr,
         );
         // An announced failure is a change even when no field moved: a new

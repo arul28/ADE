@@ -887,16 +887,19 @@ function computeReviewStatus(args: {
   if (args.verdictUnavailable) {
     const stillApproved = Array.from(args.reviewStatesByUser.values()).includes("APPROVED");
     if (args.verdictUnavailable.previousStatus === "approved" && stillApproved) return "approved";
+    // A reviewer named in the REST payload is current evidence, even with no
+    // verdict. Trust it before falling back to the last status.
+    if (args.requestedReviewers.length > 0 || (args.requestedTeams?.length ?? 0) > 0) return "requested";
     // GitHub could not be asked, so a missing verdict is not evidence of a
     // change. Keep the last real status instead of inventing `none`: a branch
     // that requires a review but names no reviewer flipped to `none` on every
     // failed read (the REST payload has an empty `requested_reviewers`) and
     // back to `requested` on the next good one, re-announcing the same review
-    // request each time. A row with no prior status still guesses from the
-    // requested reviewers, because a first read has nothing to keep.
+    // request each time. A row with no prior status still answers `none`,
+    // because a first read has nothing to keep.
     const previous = args.verdictUnavailable.previousStatus;
     if (previous === "requested" || previous === "changes_requested" || previous === "none") return previous;
-    return args.requestedReviewers.length > 0 || (args.requestedTeams?.length ?? 0) > 0 ? "requested" : "none";
+    return "none";
   }
   for (const state of args.reviewStatesByUser.values()) {
     if (state === "APPROVED") return "approved";

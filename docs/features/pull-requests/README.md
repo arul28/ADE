@@ -1774,11 +1774,12 @@ new head SHA, so the old red result stays paired with the commit it belongs to.
 to `none` does not end the round: `none` is also what an unknown verdict looks
 like — a failed GraphQL read, or a lane backfill mapping a PR from a pull list
 that carries no verdict — and re-announcing on its return produced a toast
-that came back every few seconds no matter how often it was dismissed. A round
-ends on evidence: the head commit changes, or a reviewer reaches a verdict
-(`approved`). A verdict that moves between `requested` and `changes_requested`
-is a new round and announces again. A PR already waiting on the first poll
-after start is remembered, not announced.
+that came back every few seconds no matter how often it was dismissed. A
+review request belongs to the pull request, not to a commit, so pushing does
+not start a new round. A round ends when a reviewer reaches a verdict
+(`approved`), and a verdict that moves between `requested` and
+`changes_requested` announces the new one. A PR already waiting on the first
+poll after start is remembered, not announced.
 
 The lane backfill in `getGitHubSnapshot` is a mapping step, not a status read.
 For a PR that already has a live row it keeps `checks_status`, `review_status`,
