@@ -3241,6 +3241,11 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// scan: that scan is bounded to a window near the tail, and a row the
   /// reader paged back to can sit outside it.
   var sourceOffset: Int?
+  /// Set only on a stand-in for a transcript row too large to page: that
+  /// row's byte offset. Not decoded; the thread engine stamps it on. Two
+  /// stand-ins can match in every shown field, so this keeps each one's own
+  /// identity through the transcript merge.
+  var omittedRowOffset: Int?
 
   init(
     sessionId: String,

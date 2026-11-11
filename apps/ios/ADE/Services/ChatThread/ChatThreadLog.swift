@@ -95,6 +95,7 @@ extension ChatThreadEngine {
         // a gap so the older rows are never shown out of order.
         let hole = cachedBelow.map { $0 < firstSequence - 1 } ?? false
         let dropBelow = input.gap || hole
+        if dropBelow { clearOmittedRowNotices() }
         let before = sequenced.count
         sequenced.removeAll { entry in
           guard let sequence = entry.sequence else { return false }
@@ -121,6 +122,7 @@ extension ChatThreadEngine {
           olderCursor: input.hostSupportsChatLogV2 ? nil : snapshotByteCursor(input)
         ))
       } else if input.gap {
+        clearOmittedRowNotices()
         if !sequenced.isEmpty { outcomes.append(.rewritten) }
         sequenced.removeAll()
         enqueuePersist(.drop)
@@ -254,9 +256,20 @@ extension ChatThreadEngine {
     // Unsequenced rows on a page (very old hosts) have no key; they are only
     // kept when the log has nothing sequenced to order them against.
     if sequenced.isEmpty {
-      for event in page.events where event.envelope.sequence == nil {
+      for event in page.events where event.envelope.sequence == nil && !chatThreadIsOmittedHistoryRowNotice(event) {
         appendUnsequenced(event.envelope, raw: event.raw, outcomes: &outcomes, appended: &appended)
       }
+    }
+    // A stand-in for a row too large to page has no sequence, so the rule
+    // above would drop it and the reader would scroll past the hole unwarned.
+    // Kept in memory only, at its row's place in time.
+    for event in page.events where chatThreadIsOmittedHistoryRowNotice(event) {
+      let noticeKey = chatThreadOmittedHistoryRowKey(event)
+      guard omittedRowNoticeKeys.insert(noticeKey).inserted else { continue }
+      var envelope = event.envelope
+      envelope.omittedRowOffset = chatThreadOmittedHistoryRowOffset(event)
+      omittedRowNotices.append(LogEntry(envelope: envelope, raw: event.raw, sequence: nil))
+      outcomes.append(.rewritten)
     }
     hasOlderHistory = page.hasMore
     if !hostSupportsChatLogV2 {
@@ -298,10 +311,16 @@ extension ChatThreadEngine {
     if notify { sink?(.needsSnapshot(reason: reason)) }
   }
 
+  func clearOmittedRowNotices() {
+    omittedRowNotices.removeAll()
+    omittedRowNoticeKeys.removeAll()
+  }
+
   func clearLog() {
     sequenced.removeAll()
     unsequenced.removeAll()
     unsequencedKeys.removeAll()
+    clearOmittedRowNotices()
     pendingTranscript = .full
     pendingTimeline = .rebuild
   }

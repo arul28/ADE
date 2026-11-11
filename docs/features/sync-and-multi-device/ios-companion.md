@@ -4670,7 +4670,11 @@ the stats and shows update guidance.
   its range, extending the cached rows). Summary, session row and proof
   artifacts load in parallel and never gate rows. Older history pages from disk
   first, then `chat_history` (`beforeSequence`, or the byte cursor on older
-  hosts). The Work list warms engines for its top rows and every live turn, and
+  hosts). A host stand-in for a row too large to page (a `system_notice` with
+  `status: "history_row_omitted"` and no sequence) is kept in the engine's memory
+  only, placed by timestamp between its neighbours: never written to `ChatLogStore`,
+  never a paging cursor, never keyed by sequence, and cleared when the engine's
+  history is reset. The Work list warms engines for its top rows and every live turn, and
   launch warms the 5 most recently opened chats. The legacy fallback transcript
   fetch (`chat.getTranscript`), the terminal-buffer parse, the presentation
   cache, the `chatEventEnvelopesBySession` ring and its idle prune are gone.

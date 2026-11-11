@@ -1428,7 +1428,7 @@ describe("registerRuntimeBridge", () => {
       localUrl: "http://127.0.0.1:49152",
     });
 
-    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteConnectMock).toHaveBeenCalledWith(target, { initiatedBy: "background" });
     expect(remoteEnsureLocalPortForwardMock).toHaveBeenCalledWith(
       target.id,
       {
@@ -1559,14 +1559,13 @@ describe("registerRuntimeBridge", () => {
     });
 
     expect(remoteStreamEventsForTargetMock).not.toHaveBeenCalled();
-    expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledWith(
+    // The machine, project and request the subscription went out with.
+    expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledTimes(1);
+    expect(remoteSubscribeEventsForTargetMock.mock.calls[0]?.slice(0, 3)).toEqual([
       target,
       "project-1",
       { cursor: 0, limit: 100, category: undefined, replay: false },
-      expect.any(Function),
-      expect.any(Function),
-      expect.any(Function),
-    );
+    ]);
   });
 
   it("normalizes malformed remote event stream requests before forwarding", async () => {
@@ -1592,12 +1591,13 @@ describe("registerRuntimeBridge", () => {
       ),
     ).resolves.toEqual({ events: [], nextCursor: 0, hasMore: false });
 
-    expect(remoteStreamEventsForTargetMock).toHaveBeenCalledWith(
+    // The read and the subscription both go out with the request normalized.
+    expect(remoteStreamEventsForTargetMock.mock.calls[0]?.slice(0, 3)).toEqual([
       target,
       "project-1",
       {},
-    );
-    expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledWith(
+    ]);
+    expect(remoteSubscribeEventsForTargetMock.mock.calls[0]?.slice(0, 3)).toEqual([
       target,
       "project-1",
       {
@@ -1606,10 +1606,7 @@ describe("registerRuntimeBridge", () => {
         category: undefined,
         replay: undefined,
       },
-      expect.any(Function),
-      expect.any(Function),
-      expect.any(Function),
-    );
+    ]);
   });
 
   it("cleans a remote event subscription before disconnecting that target", async () => {
@@ -1809,6 +1806,7 @@ describe("registerRuntimeBridge", () => {
 
     expect(remoteConnectMock).toHaveBeenCalledWith(target, {
       bypassFailureBackoff: true,
+      initiatedBy: "user",
     });
     expect(remoteProjectsForTargetMock).toHaveBeenCalledWith(target);
     expect(bindRemoteProject).toHaveBeenCalledWith(7, {

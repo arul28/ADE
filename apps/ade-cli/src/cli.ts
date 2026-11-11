@@ -460,6 +460,12 @@ import {
   type JsonRpcTransport,
 } from "./jsonrpc";
 import {
+  brainConnectionLostError,
+  describeBrainConnectionLoss,
+  jsonRpcErrorFromReply,
+  type DescribeBrainConnectionLoss,
+} from "./lib/brainConnectionLoss";
+import {
   ADE_RPC_AUTH_PARAM,
   generateRpcAuthToken,
   parseRpcUrlAuthToken,
@@ -25058,13 +25064,20 @@ class SocketJsonRpcClient {
     private readonly socket: net.Socket,
     private readonly timeoutMs: number,
     private readonly authToken: string | null,
+    /** Set by a relay that wants a lost connection explained to its caller. */
+    private readonly describeLoss: DescribeBrainConnectionLoss | null,
   ) {
     socket.on("data", (chunk) => this.onData(Buffer.from(chunk)));
+    // One terminal error: the socket's own failure (with its errno) is what
+    // pending calls, later calls and close listeners all hear; the `close`
+    // that follows it finds the connection already failed.
     socket.on("error", (error) =>
-      this.rejectAll(error instanceof Error ? error : new Error(String(error))),
+      this.failConnection(brainConnectionLostError(error instanceof Error ? error : new Error(String(error)), this.describeLoss)),
     );
     socket.on("close", () =>
-      this.failConnection(new Error("ADE runtime endpoint closed.")),
+      this.failConnection(this.pending.size > 0 || this.describeLoss
+        ? brainConnectionLostError(null, this.describeLoss)
+        : new Error("ADE runtime endpoint closed.")),
     );
   }
 
@@ -25072,13 +25085,18 @@ class SocketJsonRpcClient {
     socketPath: string,
     timeoutMs: number,
     label = "ADE endpoint",
-    connectWindowMs?: number,
+    options: {
+      connectWindowMs?: number;
+      /** A relay's explanation for calls in flight when the brain's socket goes. */
+      describeLoss?: DescribeBrainConnectionLoss | null;
+    } = {},
   ): Promise<SocketJsonRpcClient> {
-    const socket = await connectSocket(socketPath, timeoutMs, label, connectWindowMs);
+    const socket = await connectSocket(socketPath, timeoutMs, label, options.connectWindowMs);
     return new SocketJsonRpcClient(
       socket,
       timeoutMs,
       parseRpcUrlAuthToken(socketPath),
+      options.describeLoss ?? null,
     );
   }
 
@@ -25105,7 +25123,7 @@ class SocketJsonRpcClient {
         if (!error) return;
         clearTimeout(timer);
         this.pending.delete(pendingKey);
-        reject(error);
+        reject(brainConnectionLostError(error, this.describeLoss));
       });
     });
   }
@@ -25210,11 +25228,7 @@ class SocketJsonRpcClient {
     this.pending.delete(pendingKey);
     clearTimeout(pending.timer);
     if (isRecord(parsed.error)) {
-      pending.reject(
-        new Error(
-          asString(parsed.error.message) ?? "ADE JSON-RPC request failed.",
-        ),
-      );
+      pending.reject(jsonRpcErrorFromReply(parsed.error));
       return;
     }
     pending.resolve(parsed.result);
@@ -27335,6 +27349,7 @@ async function repairMachineRuntimeServiceConnection(args: {
   options: GlobalOptions;
   expectedBuildHash: string | null;
   enforceBuildCompatibility: boolean;
+  describeLoss: DescribeBrainConnectionLoss | null;
 }): Promise<SocketJsonRpcClient | null> {
   let client: SocketJsonRpcClient | null = null;
   try {
@@ -27365,6 +27380,7 @@ async function repairMachineRuntimeServiceConnection(args: {
         args.socketPath,
         args.options.timeoutMs,
         "ADE runtime endpoint",
+        { describeLoss: args.describeLoss },
       ),
     });
     const runtimeInfo = await initializeMachineRuntimeDaemon(
@@ -27500,9 +27516,14 @@ async function spawnMachineRuntimeDaemon(
 async function connectMachineRuntimeDaemon(
   options: GlobalOptions,
   socketPathOverride?: string | null,
-  connectOptions: { allowSpawn?: boolean } = {},
+  connectOptions: {
+    allowSpawn?: boolean;
+    /** A relay's explanation for calls in flight when the brain's socket goes (`lib/brainConnectionLoss.ts`). */
+    describeLoss?: DescribeBrainConnectionLoss;
+  } = {},
 ): Promise<SocketJsonRpcClient> {
   const socketPath = await resolveMachineRuntimeSocketPath(socketPathOverride);
+  const describeLoss = connectOptions.describeLoss ?? null;
   const label = "ADE runtime endpoint";
   const allowSpawn = connectOptions.allowSpawn ?? !options.requireSocket;
   const isTcpSocket = socketPath.startsWith("tcp://");
@@ -27524,6 +27545,7 @@ async function connectMachineRuntimeDaemon(
       options,
       expectedBuildHash,
       enforceBuildCompatibility,
+      describeLoss,
     });
   };
   try {
@@ -27531,6 +27553,7 @@ async function connectMachineRuntimeDaemon(
       socketPath,
       options.timeoutMs,
       label,
+      { describeLoss },
     );
     const runtimeInfo = await initializeMachineRuntimeDaemon(
       client,
@@ -27608,7 +27631,7 @@ async function connectMachineRuntimeDaemon(
         socketPath,
         options.timeoutMs,
         label,
-        SPAWNED_RUNTIME_CONNECT_WINDOW_MS,
+        { connectWindowMs: SPAWNED_RUNTIME_CONNECT_WINDOW_MS, describeLoss },
       );
       const restartedInfo = await initializeMachineRuntimeDaemon(
         restarted,
@@ -27665,7 +27688,7 @@ async function connectMachineRuntimeDaemon(
         socketPath,
         options.timeoutMs,
         label,
-        SPAWNED_RUNTIME_CONNECT_WINDOW_MS,
+        { connectWindowMs: SPAWNED_RUNTIME_CONNECT_WINDOW_MS, describeLoss },
       );
       const runtimeInfo = await initializeMachineRuntimeDaemon(
         client,
@@ -28703,7 +28726,12 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
   let stop: ReturnType<typeof startJsonRpcServer> | null = null;
   let unsubscribeNotifications: (() => void) | null = null;
   try {
-    client = await connectMachineRuntimeDaemon(options);
+    // The brain pid the desktop's own `ade/initialize` reports, so a lost
+    // connection can say whether that process is still alive.
+    let brainPid: number | null = null;
+    client = await connectMachineRuntimeDaemon(options, undefined, {
+      describeLoss: () => describeBrainConnectionLoss(brainPid),
+    });
     const handler: JsonRpcHandler = async (request) => {
       const method = typeof request.method === "string" ? request.method : "";
       if (!method) return null;
@@ -28715,7 +28743,12 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
         throw new Error("ADE runtime is not connected.");
       }
       try {
-        return await client.request(method, request.params);
+        const result = await client.request(method, request.params);
+        if (method === "ade/initialize" && isRecord(result) && isRecord(result.runtimeInfo)) {
+          const pid = result.runtimeInfo.pid;
+          if (typeof pid === "number" && Number.isInteger(pid) && pid > 0) brainPid = pid;
+        }
+        return result;
       } catch (error) {
         if (
           (method === "shutdown" || method === "exit") &&

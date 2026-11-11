@@ -1,3 +1,4 @@
+import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type {
   ProjectRemovalOutcome,
@@ -1414,6 +1415,8 @@ declare global {
           event: string,
           payload?: Record<string, unknown>,
         ) => void;
+        /** This window's memory snapshot (`renderer/lib/rendererMemorySnapshot.ts`). */
+        reportRendererMemory?: (snapshot: RendererMemorySnapshot) => void;
       };
       storage: {
         getPressure: () => Promise<DiskPressureSnapshot>;

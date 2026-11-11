@@ -664,6 +664,52 @@ final class ChatThreadEngineTests: XCTestCase {
     XCTAssertNil(fields["chatLogV2"])
   }
 
+  // MARK: - 22b. Stand-in for a row too large to page
+
+  func testOlderPageShowsOmittedRowNoticeInPlaceWithoutPersistingIt() async {
+    let store = makeStore()
+    let engine = makeEngine(store: store)
+    await engine.ingest(snapshot([user(10, "newer question")], hasOlder: true))
+    _ = await engine.flush()
+
+    // Two stand-ins identical in every shown field (timestamp, message,
+    // detail) and with no page offsets (a service-backed page): only their
+    // rows' offsets differ, and each keeps its own warning.
+    let notices = [100, 9_000_000].map { offset in
+      event(nil, [
+        "type": "system_notice",
+        "noticeKind": "info",
+        "status": "history_row_omitted",
+        "message": "fixture-omitted-row",
+        "detail": "The entry is 3.0 MB.",
+        "omittedRow": ["offset": offset, "bytes": 3_000_000],
+      ], at: 8)
+    }
+    await engine.ingest(.olderPage(ChatThreadOlderPageInput(
+      sessionId: sessionId,
+      events: [user(7, "older question")] + notices,
+      hasMore: true
+    )))
+    let frame = await engine.flush()
+    let order = (frame?.transcript ?? []).map { entry -> String in
+      if case .systemNotice(_, let message, _, _, _) = entry.event { return "notice:\(message)" }
+      return "seq:\(entry.sequence ?? -1)"
+    }
+    XCTAssertEqual(order, ["seq:7", "notice:fixture-omitted-row", "notice:fixture-omitted-row", "seq:10"])
+    let noticeIds = (frame?.transcript ?? []).filter {
+      if case .systemNotice = $0.event { return true }
+      return false
+    }.map(\.id)
+    XCTAssertEqual(Set(noticeIds).count, 2, "each warning keeps its own list identity")
+
+    // Display-only: not in the durable log, and not the next cursor.
+    await engine.flushPersistence()
+    let sequences = await storedSequences(store)
+    XCTAssertEqual(sequences, [7, 10])
+    let request = await engine.beginOlderHostRequest()
+    XCTAssertEqual(request, .beforeSequence(7))
+  }
+
   // MARK: - 23. Local echo and optimistic steer
 
   func testLocalEchoAndOptimisticSteerAreInTheOverlayFrame() async {

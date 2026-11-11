@@ -1322,6 +1322,7 @@ import { createAgentCliWakes } from "./agentCliWakes";
 import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS, parseClaudeGoalCommand } from "../../../shared/chatGoals";
 import {
   CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
+  omittedHistoryRowMayHoldMessage,
   readTranscriptHistoryPage,
   readEnvelopesBackToSequence,
   readTranscriptHistoryPageBeforeSequence,
@@ -15659,12 +15660,44 @@ export function createAgentChatService(args: {
   const readTranscriptEntries = async (
     managed: ManagedChatSession,
     signal?: AbortSignal,
-  ): Promise<{ entries: AgentChatTranscriptEntry[]; turnFailures: AgentChatTranscriptTurnFailure[] }> => {
+  ): Promise<{
+    entries: AgentChatTranscriptEntry[];
+    /** File position (envelope index) of each entry, aligned with `entries`. */
+    entryPositions: Array<number | null>;
+    turnFailures: AgentChatTranscriptTurnFailure[];
+    /** File positions of messages too large to page (see `omittedHistoryRowMayHoldMessage`). */
+    omittedMessagePositions: number[];
+  }> => {
     const envelopes = await readRecentTranscriptEnvelopesForSessionIdAsync(managed.session.id, signal);
+    const positionByEnvelope = new Map(envelopes.map((envelope, index) => [envelope, index]));
+    const entryPositions: Array<number | null> = [];
     return {
-      entries: transcriptEntriesFromEnvelopes(managed.session.id, envelopes),
+      entries: transcriptEntriesFromEnvelopes(managed.session.id, envelopes, {
+        sourceOffsetForEnvelope: (envelope) => positionByEnvelope.get(envelope) ?? null,
+        onEntrySourceOffset: (position) => entryPositions.push(position),
+      }),
+      entryPositions,
       turnFailures: transcriptTurnFailuresFromEnvelopes(managed.session.id, envelopes),
+      omittedMessagePositions: envelopes.flatMap((envelope, index) =>
+        omittedHistoryRowMayHoldMessage(envelope) ? [index] : []),
     };
+  };
+
+  /**
+   * True when a message too large to page lies inside a read's window, the
+   * last `returned` of the entries at `entryPositions`: after the oldest
+   * returned entry in file order. Positions are any file-ordered measure (an
+   * envelope index, a byte offset); never timestamps, which an unparsed row
+   * may not have.
+   */
+  const omittedMessageInWindow = (
+    omittedPositions: readonly number[],
+    entryPositions: ReadonlyArray<number | null>,
+    returned: number,
+  ): boolean => {
+    if (omittedPositions.length === 0) return false;
+    const oldest = returned > 0 ? entryPositions[entryPositions.length - returned] : null;
+    return oldest == null || omittedPositions.some((position) => position > oldest);
   };
 
   /** The failed turns at or after `oldest` (every one with no oldest), newest kept within the limit. */
@@ -15856,7 +15889,12 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
     // Flush any pending buffered text so the transcript includes all content
     flushBufferedText(managed);
-    const { entries: transcriptEntries, turnFailures: allTurnFailures } = await readTranscriptEntries(managed, signal);
+    const {
+      entries: transcriptEntries,
+      entryPositions,
+      turnFailures: allTurnFailures,
+      omittedMessagePositions,
+    } = await readTranscriptEntries(managed, signal);
     const fallbackEntries = transcriptEntries.length
       ? transcriptEntries
       : managed.recentConversationEntries.map((entry) => ({
@@ -15893,12 +15931,19 @@ export function createAgentChatService(args: {
     }
 
     bounded.reverse();
+    // A message too large to page, inside the returned window, is missing from
+    // it: say so (a handoff brief then marks its excerpt incomplete).
+    const missingMessage = omittedMessageInWindow(
+      omittedMessagePositions,
+      transcriptEntries.length ? entryPositions : [],
+      bounded.length,
+    );
     const failureWindow = turnFailuresForWindow(allTurnFailures, bounded, normalizedLimit, failureReserve + remainingChars);
     const turnFailures = failureWindow.turnFailures;
     return {
       sessionId: managed.session.id,
       entries: bounded,
-      truncated: truncated || failureWindow.truncated,
+      truncated: truncated || missingMessage || failureWindow.truncated,
       totalEntries: fallbackEntries.length,
       ...(turnFailures.length ? { turnFailures } : {}),
     };
@@ -16032,13 +16077,20 @@ export function createAgentChatService(args: {
         nextCursor = oldestSourceOffset > 0 ? oldestSourceOffset : null;
       }
     }
+    // A message too large to page, inside the returned entries, is missing
+    // from this page.
+    const missingMessage = omittedMessageInWindow(
+      collected.flatMap((row) => omittedHistoryRowMayHoldMessage(row.envelope) ? [row.offset] : []),
+      convertedEntryOffsets,
+      entries.length,
+    );
     const failureWindow = turnFailuresForWindow(pageTurnFailures, entries, normalizedLimit, failureReserve + remainingChars);
     const turnFailures = failureWindow.turnFailures;
     return {
       sessionId,
       entries,
       ...(turnFailures.length ? { turnFailures } : {}),
-      truncated: charTruncated || failureWindow.truncated || nextCursor != null,
+      truncated: charTruncated || missingMessage || failureWindow.truncated || nextCursor != null,
       // Byte-cursor consumers must treat this as the count resident in this
       // bounded page, not as a global transcript index.
       totalEntries: entries.length,
@@ -16785,25 +16837,15 @@ export function createAgentChatService(args: {
     const maxRetainedFailureEvents = 2_000;
     const maxRetainedChars = 4_000_000;
     for (let pageCount = 0; cursor > 0 && pageCount < 8; pageCount += 1) {
-      let page: TranscriptHistoryPageRead;
-      try {
-        page = await readTranscriptHistoryPage({
-          transcriptPath,
-          sessionId,
-          beforeOffset: cursor,
-          maxBytes: CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
-          signal,
-        });
-      } catch (error) {
-        if (
-          error instanceof Error
-          && error.message === "chat_history_row_too_large"
-          && newestFirst.length > 0
-        ) {
-          break;
-        }
-        throw error;
-      }
+      // A row too large to page comes back as a `system_notice` stand-in
+      // (not conversational, so it folds into the status stand-in below).
+      const page = await readTranscriptHistoryPage({
+        transcriptPath,
+        sessionId,
+        beforeOffset: cursor,
+        maxBytes: CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
+        signal,
+      });
       cursor = page.startOffset;
       for (let index = page.envelopes.length - 1; index >= 0; index -= 1) {
         const envelope = page.envelopes[index]!;
@@ -16830,6 +16872,10 @@ export function createAgentChatService(args: {
           newestFirst.push(envelope);
           retainedFailureEvents += 1;
           retainedChars += envelopeChars;
+        } else if (omittedHistoryRowMayHoldMessage(envelope)) {
+          // A message too large to page: kept as is (small), so a transcript
+          // read can report the gap instead of joining both sides of it.
+          newestFirst.push(envelope);
         } else if (newestFirst.length > 0 && newestFirst.at(-1)?.event.type !== "status") {
           newestFirst.push({
             sessionId: envelope.sessionId,
@@ -17429,6 +17475,10 @@ export function createAgentChatService(args: {
     let transcriptPath = await resolveTranscriptPathForSessionId(trimmedId, options.signal);
     if (!transcriptPath) return emptyPage(true);
 
+    // Rows this page shows the client. The pager's sequence-cursor invariant
+    // (a usable next cursor or `hasMore: false`) holds only if it judges rows
+    // by this same predicate.
+    const visibleToClient = (entry: AgentChatEventEnvelope): boolean => !isCodexSubagentTranscriptEnvelope(entry);
     const readPage = async (readPath: string): Promise<TranscriptHistoryPageRead> =>
       beforeSequence != null
         ? await readTranscriptHistoryPageBeforeSequence({
@@ -17437,6 +17487,7 @@ export function createAgentChatService(args: {
           beforeSequence,
           maxBytes: options?.maxBytes,
           signal: options.signal,
+          isVisible: visibleToClient,
         })
         : await readTranscriptHistoryPage({
           transcriptPath: readPath,
@@ -17464,10 +17515,15 @@ export function createAgentChatService(args: {
       transcriptPath = replacementPath;
       page = await readPage(transcriptPath);
     }
+    const visible = page.envelopes.map(visibleToClient);
+    const offsetsAligned = page.envelopeStartOffsets.length === page.envelopes.length;
     return {
       sessionId: trimmedId,
-      events: page.envelopes.filter((entry) => !isCodexSubagentTranscriptEnvelope(entry)),
+      events: page.envelopes.filter((_, index) => visible[index]),
       startOffset: page.startOffset,
+      // Row locations, aligned with `events` (exact `chat_tool_result` reads,
+      // distinct keys for stand-ins that share a timestamp).
+      ...(offsetsAligned ? { envelopeStartOffsets: page.envelopeStartOffsets.filter((_, index) => visible[index]) } : {}),
       hasMore: page.hasMore,
       sessionFound: true,
     };

@@ -4,6 +4,15 @@ Opening or creating a project goes straight to Work. There is no blocking
 project-setup dashboard. `.ade` layout and `ade.db` are created as soon as ADE
 knows the folder (create/clone scaffold, then the normal project bind).
 
+The create/clone scaffold (`projectScaffoldService.ts`) never makes a folder that
+already exists, so a Windows drive root (`D:\`), where Node's recursive `mkdir`
+fails with `EPERM`, is accepted as it is. A folder the account may not create or
+read (`EACCES`, `EPERM`, `EROFS`; `isFsAccessRefusal` in
+`shared/fsAccessRefusal.ts`, shared with the project registry) is an expected
+user error that names the folder: "ADE can't create a folder in <path>. Pick
+another location.", "ADE can't find <path> on this computer." for a missing
+drive, or "ADE can't read the folder <path>. Choose a folder you can open."
+
 A fresh launch requires an ADE account sign-in before account-backed work is
 shown. If a phone or desktop already has a paired/local connection, its access
 gate offers the explicit recovery path while signed out; that is not a guest

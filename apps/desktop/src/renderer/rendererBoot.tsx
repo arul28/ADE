@@ -19,6 +19,7 @@ import { trackWindowsCaptionInset } from "./lib/windowControlsOverlay";
 import { installScrollingIndicator } from "./lib/scrollingIndicator";
 import { captureError } from "../shared/sentry/capture";
 import { installAnimationPhaseAlignment } from "./lib/animationPhaseAlignment";
+import { reportRendererMemorySnapshot } from "./lib/rendererMemorySnapshot";
 
 // Error tracking, loaded as its own chunk and only when main's Sentry client is
 // running (the preload installs the bridge in that case alone), so dev builds
@@ -144,6 +145,9 @@ window.addEventListener("unhandledrejection", (event) => {
 
 let rendererWatchdogLastTick = performance.now();
 let rendererWatchdogIntervalId: number | null = null;
+let rendererWatchdogTicks = 0;
+/** On the first watchdog tick, then every 30th (30 s while visible), main gets what this window holds. */
+const RENDERER_MEMORY_SNAPSHOT_TICKS = 30;
 
 function startWatchdog() {
   if (rendererWatchdogIntervalId !== null) return;
@@ -152,6 +156,9 @@ function startWatchdog() {
     const now = performance.now();
     const driftMs = now - rendererWatchdogLastTick - 1000;
     rendererWatchdogLastTick = now;
+    rendererWatchdogTicks += 1;
+    // The first tick reports too, so a window lost early still left a snapshot.
+    if (rendererWatchdogTicks % RENDERER_MEMORY_SNAPSHOT_TICKS === 1) reportRendererMemorySnapshot();
     if (driftMs < 1500) return;
     logRendererDebugEvent("renderer.event_loop_stall", {
       driftMs: Math.round(driftMs),

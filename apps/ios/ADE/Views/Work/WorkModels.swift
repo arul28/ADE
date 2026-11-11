@@ -2332,6 +2332,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     default:
       break
     }
+    if let omittedRowOffset {
+      return "\(sessionId):omitted-row:\(omittedRowOffset)"
+    }
     return "\(sessionId):\(sequence ?? -1):\(timestamp):\(event.typeKey)"
   }
   let sessionId: String
@@ -2351,6 +2354,10 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// event keeps `detail` as text; this is the part the self-healed-failure fold
   /// and the quiet reconnect lines read.
   var continuityNotice: WorkContinuityNotice?
+  /// Set on a stand-in for a transcript row too large to page: that row's
+  /// byte offset (`AgentChatEventEnvelope.omittedRowOffset`). Part of `id` and
+  /// of the merge key, so two stand-ins that read the same both stay.
+  var omittedRowOffset: Int?
   /// Set on an `error` whose `errorInfo.agentCli` says the chat's agent is
   /// signed out (category `unauthenticated`): the agent id, e.g. `claude`.
   /// The event keeps only the presented text; the sign-in card reads this.

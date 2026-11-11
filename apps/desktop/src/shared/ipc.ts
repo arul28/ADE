@@ -95,6 +95,7 @@ export const IPC = {
   appWriteClipboardImage: "ade.app.writeClipboardImage",
   appOpenPathInEditor: "ade.app.openPathInEditor",
   appLogDebugEvent: "ade.app.logDebugEvent",
+  appReportRendererMemory: "ade.app.reportRendererMemory",
   captureGestureUpdateSettings: "ade.captureGesture.updateSettings",
   captureGestureGetHealth: "ade.captureGesture.getHealth",
   captureGestureRetry: "ade.captureGesture.retry",

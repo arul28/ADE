@@ -42,6 +42,20 @@ export const LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 3_000;
  */
 export const TAILNET_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 5_000;
 
+/**
+ * Event reads and subscription acknowledgements fail fast enough to notice a
+ * peer that disappeared during sleep, while still allowing a cold remote
+ * runtime a reasonable response window.
+ */
+export const REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS = 30_000;
+
+/**
+ * How long the paired runtime gets to answer `ade/initialize` and the first
+ * `projects.list`, once its socket is open and its hello came back. The hello
+ * proves the brain there is up, so this is the same window an event read gets.
+ */
+export const PAIRED_RUNTIME_HANDSHAKE_TIMEOUT_MS = REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS;
+
 /** The shorter connect deadline for a direct route with another route behind it, or null. */
 export function pairedRouteConnectTimeoutMs(
   kind: PairedRuntimeEndpointCandidate["kind"],
@@ -127,7 +141,7 @@ const NETWORK_ERRNOS = [
 const NETWORK_ERRNO_IN_MESSAGE = new RegExp(`\\b(${NETWORK_ERRNOS.join("|")})\\b`);
 
 /** The first value `pick` finds on an error or the errors that caused it. */
-function findInErrorCauses<T>(error: unknown, pick: (candidate: object) => T | undefined): T | undefined {
+export function findInErrorCauses<T>(error: unknown, pick: (candidate: object) => T | undefined): T | undefined {
   let current: unknown = error;
   for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
     const found = pick(current);
@@ -475,6 +489,8 @@ export function pairedRuntimeFailureMessage(
   failure: RemoteRuntimeConnectionAttemptFailure,
   machineNameValue: string | null | undefined,
   accountHelloCode?: PairedRuntimeAccountHelloCode | null,
+  /** A route opened and said hello, then its runtime never answered `ade/initialize`. */
+  options: { handshakeTimedOut?: boolean } = {},
 ): string {
   const machine = machineNameValue?.trim() || "that computer";
   switch (failure) {
@@ -495,7 +511,16 @@ export function pairedRuntimeFailureMessage(
       return `${machine} is running an older ADE — update it there, then try again.`;
     case "superseded":
       return `Another connection to ${machine} took over — try again.`;
+    case "timeout":
+      if (options.handshakeTimedOut) {
+        return `Could not reach ${machine}: it did not answer the connection handshake. ADE there may be busy or stuck — try again, or restart ADE on that computer.`;
+      }
+      return pairedRuntimeUnreachableMessage(machine);
     default:
-      return `Can't reach ${machine} — it may be asleep or ADE may be stopped there.`;
+      return pairedRuntimeUnreachableMessage(machine);
   }
+}
+
+function pairedRuntimeUnreachableMessage(machine: string): string {
+  return `Can't reach ${machine} — it may be asleep or ADE may be stopped there.`;
 }

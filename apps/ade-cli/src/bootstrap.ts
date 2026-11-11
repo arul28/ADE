@@ -390,6 +390,8 @@ import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationA
 import { shouldIsolateEmbeddedProviderLogins } from "../../desktop/src/shared/providerLoginIsolation";
 import { createWebhookRemoteSource } from "../../desktop/src/main/services/automations/webhookAutomationFactory";
 import { readMachineIdFile } from "./services/sync/machineIdFile";
+import { projectFilesystemKind } from "./services/projects/projectFilesystemKind";
+import { createPhaseClock } from "../../desktop/src/shared/phaseClock";
 
 /** One warm-runtime budget for every project scope this brain opens. */
 const chatRuntimeBudget = createChatRuntimeBudget();
@@ -1023,6 +1025,9 @@ function projectDbOpenFailureMessage(
   }
 }
 
+/** A project open slower than this logs which of its steps took the time. */
+const PROJECT_OPEN_SLOW_MS = 5_000;
+
 export async function createAdeRuntime(args: {
   projectRoot: string;
   /** Control endpoint this runtime actually bound, for chat ownership stamps. */
@@ -1066,6 +1071,10 @@ export async function createAdeRuntime(args: {
   const chatOnlyRuntime = resolvedArgs.runtimeProfile === "chat" || embeddedRuntime;
   const runtimeProfileLabel = embeddedRuntime ? "embedded" : chatOnlyRuntime ? "chat" : "full";
   const publishPushEvents = resolvedArgs.publishPushEvents !== false;
+  // How long each step of opening the project took. Every action on a project
+  // waits for this open, so a slow one (a folder on a network mount) shows up
+  // as many calls timing out together; the log line below names the step.
+  const bootClock = createPhaseClock<"root_check" | "base_ref" | "db_open" | "services">("root_check");
   if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {
     throw new Error(`Project root does not exist: ${projectRoot}`);
   }
@@ -1089,6 +1098,7 @@ export async function createAdeRuntime(args: {
     }
     throw error;
   }
+  bootClock.enter("base_ref");
   assertLocalProjectDataAvailable(projectRoot);
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
   // On Windows each project's credential store is sealed with its own DPAPI
@@ -1103,6 +1113,7 @@ export async function createAdeRuntime(args: {
       ? readExistingOsBoundKeyMaterialAsync(path.join(projectRoot, ".ade", "secrets")).catch(() => null)
       : null,
   ]);
+  bootClock.enter("db_open");
   const paths = ensureAdePaths(projectRoot);
   const runtimeSocketPath = typeof resolvedArgs.runtimeSocketPath === "string"
     ? resolvedArgs.runtimeSocketPath.trim() || paths.socketPath
@@ -1145,6 +1156,7 @@ export async function createAdeRuntime(args: {
     // The app and the brain's project scope record it too, so a project used
     // only from the CLI is protected the same way as one opened in the app.
     recordLocalProjectDatabaseIdentity(projectRoot, logger);
+    bootClock.enter("services");
   } catch (error) {
     // The path corroborates a bare errno: SQLite failures often carry no
     // `syscall`, and without a path the classifier refuses to call them
@@ -4442,6 +4454,20 @@ export async function createAdeRuntime(args: {
     runtimeForCtoActions = runtime;
 
     usageTrackingService.start();
+    const bootTotalMs = bootClock.totalMs();
+    if (bootTotalMs >= PROJECT_OPEN_SLOW_MS) {
+      // A warn line: on disk, and a Sentry Log plus breadcrumb where Sentry
+      // runs. No folder path. The open does not wait for the file system
+      // lookup; the line follows it.
+      const slowOpen = { totalMs: bootTotalMs, phases: bootClock.summary(), runtimeProfile: runtimeProfileLabel, hadAdeDb };
+      void projectFilesystemKind(projectRoot).then((filesystem) => {
+        logger.warn("project.open_slow", {
+          ...slowOpen,
+          filesystemKind: filesystem.kind,
+          filesystemType: filesystem.fsType,
+        });
+      });
+    }
     runtimeCreated = true;
     return runtime;
   } finally {

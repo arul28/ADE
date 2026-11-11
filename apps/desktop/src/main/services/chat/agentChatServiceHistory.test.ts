@@ -232,6 +232,39 @@ describe("createAgentChatService", () => {
       expect(transcript.truncated).toBe(true);
     });
 
+    // A row too large to page stands in as a notice. When it may have been a
+    // message, a transcript read joining both sides of it must say it is
+    // incomplete (a handoff brief then flags its excerpt).
+    it.each([
+      { omittedEventType: "text" as string | undefined, truncated: true },
+      { omittedEventType: undefined, truncated: true },
+      { omittedEventType: "tool_result", truncated: false },
+      // An unparsed row whose start did not give a timestamp is dated at the
+      // epoch; it still sits between the two messages in the file.
+      { omittedEventType: undefined, at: "1970-01-01T00:00:00.000Z", truncated: true },
+    ])("reports a missing message ($omittedEventType, $at) as truncated: $truncated", async ({ omittedEventType, at, truncated }) => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([
+        { sessionId: session.id, timestamp: "2026-08-01T00:00:01.000Z", sequence: 1, event: { type: "user_message", text: "question" } },
+        {
+          sessionId: session.id,
+          timestamp: at ?? "2026-08-01T00:00:02.000Z",
+          event: {
+            type: "system_notice",
+            noticeKind: "info",
+            status: "history_row_omitted",
+            message: "One very large entry was left out of this chat's history.",
+            omittedRow: { offset: 100, bytes: 3_000_000, ...(omittedEventType ? { eventType: omittedEventType } : {}) },
+          },
+        },
+        { sessionId: session.id, timestamp: "2026-08-01T00:00:03.000Z", sequence: 3, event: { type: "user_message", text: "follow-up" } },
+      ]);
+      const transcript = await service.getChatTranscript({ sessionId: session.id });
+      expect(transcript.entries.map((entry) => entry.text)).toEqual(["question", "follow-up"]);
+      expect(transcript.truncated).toBe(truncated);
+    });
+
     // `ade chat read` is how one agent learns that the chat it handed work to
     // failed. The failure must survive the bounded read, inside one budget.
     it.each([

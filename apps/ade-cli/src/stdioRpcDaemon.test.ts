@@ -7,6 +7,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { createFileLogger } from "../../desktop/src/main/services/logging/logger";
+import { BRAIN_CONNECTION_LOST_CODE } from "../../desktop/src/shared/brainConnectionLoss";
 
 type JsonRpcResponse = {
   id?: number;
@@ -46,8 +48,18 @@ function fileSha256(filePath: string): string {
  * `path.join(adeHome, "sock", "ade.sock")` off win32 — while giving Windows the
  * address the runtime actually listens on.
  */
+/**
+ * This process's environment without any `ADE_*` variable. Run inside an ADE
+ * chat or terminal, the parent's `ADE_RPC_URL`, `ADE_RPC_SOCKET_PATH`, caller
+ * identity and role point the CLI under test at that machine's real brain;
+ * each test names the ADE variables it means to set.
+ */
+function environmentWithoutAde(): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ADE_")));
+}
+
 function machineRuntimeSocketPath(adeHome: string): string {
-  return resolveMachineAdeLayout({ ...process.env, ADE_HOME: adeHome }).socketPath;
+  return resolveMachineAdeLayout({ ...environmentWithoutAde(), ADE_HOME: adeHome }).socketPath;
 }
 
 /**
@@ -287,7 +299,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const expectedProjectRoot = projectRoot;
     const socketPath = machineRuntimeSocketPath(adeHome);
     const env = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
@@ -345,7 +357,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-version-"));
     const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
@@ -400,7 +412,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-build-"));
     const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
@@ -461,7 +473,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const tcpPort = await getFreeTcpPort();
     const tcpUrl = `tcp://127.0.0.1:${tcpPort}`;
     const baseEnv = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
       ADE_CLI_VERSION: "2.0.0",
@@ -521,7 +533,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-role-"));
     const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
@@ -580,7 +592,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-placeholder-version-"));
     const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
@@ -634,7 +646,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-placeholder-role-"));
     const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
-      ...process.env,
+      ...environmentWithoutAde(),
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
@@ -684,6 +696,137 @@ describe("ade rpc --stdio daemon bridge", () => {
     } finally {
       proxy?.kill();
       if (!realDaemon.killed) realDaemon.kill();
+    }
+  }, DAEMON_TEST_TIMEOUT_MS);
+
+  /**
+   * A remote desktop reaches a machine's brain only through this proxy
+   * (`ade --socket … rpc --stdio` over SSH). The brain's typed answers cross
+   * it whole, and a brain that drops the socket under pending calls reads as
+   * a lost connection, with structured facts about why and no free text.
+   */
+  it.skipIf(process.platform === "win32")("passes the brain's typed errors through, and names a dropped brain socket", async () => {
+    const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const cliPath = path.join(packageRoot, "src", "cli.ts");
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-errors-"));
+    // TCP, so the brain can reset the connection the way a crashed process's
+    // socket does; the proxy treats both transports the same.
+    const port = await getFreeTcpPort();
+    const socketPath = `tcp://127.0.0.1:${port}`;
+    const brainSockets = new Set<net.Socket>();
+    const heldIds: unknown[] = [];
+    // The brain the relay talks to "dies": its pid is one that has exited, and
+    // its log's last lines say why. Their message text (with a path) must not cross.
+    const exited = spawn(process.execPath, ["-e", ""]);
+    await new Promise((resolve) => exited.once("exit", resolve));
+    const deadBrainPid = exited.pid!;
+    const runtimeDir = resolveMachineAdeLayout({ ...environmentWithoutAde(), ADE_HOME: adeHome }).runtimeDir;
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    // Written by the file logger the brain's logger wraps (`createBrainLogger`
+    // adds only a stderr copy), so the lines have the shape a real brain
+    // writes. Its own level, whatever ADE_LOG_LEVEL this test runs under, and
+    // `flushSync` so the lines are on disk before the relay reads them.
+    const inheritedLogLevel = process.env.ADE_LOG_LEVEL;
+    process.env.ADE_LOG_LEVEL = "info";
+    const brainLog = createFileLogger(path.join(runtimeDir, "brain.jsonl"));
+    if (inheritedLogLevel === undefined) delete process.env.ADE_LOG_LEVEL;
+    else process.env.ADE_LOG_LEVEL = inheritedLogLevel;
+    brainLog.info("brain.started");
+    brainLog.error("process.uncaught_exception", {
+      err: Object.assign(new Error("ENOSPC: no space left on device, write '/home/tiger/.ade/ade.db-wal'"), { code: "ENOSPC" }),
+    });
+    expect(brainLog.flushSync, "the file logger writes queued lines synchronously").toBeTypeOf("function");
+    brainLog.flushSync!();
+    const brain = net.createServer((socket) => {
+      brainSockets.add(socket);
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        for (let newline = buffer.indexOf("\n"); newline >= 0; newline = buffer.indexOf("\n")) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          const request = JSON.parse(line) as { id?: unknown; method?: string };
+          if (request.id === undefined) continue;
+          const reply = (body: Record<string, unknown>) =>
+            socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...body })}\n`);
+          if (request.method === "ade/initialize") {
+            reply({ result: { runtimeInfo: { version: "2.0.0", multiProject: true, pid: deadBrainPid, defaultRole: "cto" } } });
+          } else if (request.method === "typed") {
+            reply({ error: { code: -32010, message: "Not allowed here.", data: { code: "policy" }, expected: "user" } });
+          } else {
+            heldIds.push(request.id);
+            if (heldIds.length === 3) socket.resetAndDestroy();
+          }
+        }
+      });
+      socket.on("error", () => {});
+    });
+    await new Promise<void>((resolve) => brain.listen(port, "127.0.0.1", resolve));
+    const child = spawn(process.execPath, [cliPath, "--socket", socketPath, "rpc", "--stdio"], {
+      cwd: packageRoot,
+      env: { ...environmentWithoutAde(), ADE_HOME: adeHome, ADE_RUNTIME_SOCKET_PATH: socketPath, ADE_CLI_VERSION: "2.0.0", ADE_DEFAULT_ROLE: "cto", NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS) },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const replies = new Map<number, { result?: unknown; error?: { code?: number; message?: string; data?: unknown; expected?: unknown } }>();
+    let stdout = "";
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+    const replied = (id: number) => new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`No reply to ${id}. stderr=${stderr}`)), REQUEST_TIMEOUT_MS);
+      const check = () => {
+        if (!replies.has(id)) return;
+        clearTimeout(timer);
+        child.stdout.off("data", check);
+        resolve();
+      };
+      child.stdout.on("data", check);
+      check();
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+      for (let newline = stdout.indexOf("\n"); newline >= 0; newline = stdout.indexOf("\n")) {
+        const line = stdout.slice(0, newline).trim();
+        stdout = stdout.slice(newline + 1);
+        if (!line) continue;
+        const parsed = JSON.parse(line) as { id?: number };
+        if (typeof parsed.id === "number") replies.set(parsed.id, parsed as never);
+      }
+    });
+    const send = (id: number, method: string) =>
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params: {} })}\n`);
+    try {
+      send(1, "ade/initialize");
+      await replied(1);
+      send(2, "typed");
+      await replied(2);
+      expect(replies.get(2)?.error).toEqual({
+        code: -32010,
+        message: "Not allowed here.",
+        data: { code: "policy" },
+        expected: "user",
+      });
+
+      for (const id of [3, 4, 5]) send(id, "ade/actions/call");
+      await Promise.all([replied(3), replied(4), replied(5)]);
+      for (const id of [3, 4, 5]) {
+        const error = replies.get(id)?.error;
+        expect(error?.data).toEqual({
+          code: BRAIN_CONNECTION_LOST_CODE,
+          socketError: "ECONNRESET",
+          brainState: "exited",
+          heartbeatAgeSec: null,
+          brainLogTail: [
+            { level: "info", event: "brain.started" },
+            { level: "error", event: "process.uncaught_exception", code: "ENOSPC" },
+          ],
+        });
+        expect(JSON.stringify(error)).not.toContain("/home/tiger");
+      }
+    } finally {
+      child.kill();
+      for (const socket of brainSockets) socket.destroy();
+      brain.close();
     }
   }, DAEMON_TEST_TIMEOUT_MS);
 });

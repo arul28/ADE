@@ -12,6 +12,8 @@ import type {
   MyGitHubRepoSummary,
 } from "../../../shared/types/core";
 import { codedError } from "../../../shared/codedError";
+import { AdeExpectedError } from "../../../shared/expectedError";
+import { isFsAccessRefusal } from "../../../shared/fsAccessRefusal";
 import { gitCommandError, runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { createGithubService } from "../github/githubService";
@@ -65,8 +67,52 @@ function isDirectoryNonEmpty(dirPath: string): boolean {
     return entries.length > 0;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if (isFsAccessRefusal(error)) {
+      throw new AdeExpectedError(`ADE can't read the folder ${dirPath}. Choose a folder you can open.`, "user", { cause: error });
+    }
     throw error;
   }
+}
+
+function isExistingDirectory(dirPath: string): boolean {
+  try {
+    return fs.statSync(dirPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Make sure `dirPath` is a folder, creating it and its parents when it is not.
+ * On Windows, Node's recursive mkdir of a drive root that is there (`D:\`)
+ * fails with EPERM, so a folder that exists is never made again; a folder this
+ * account may not create is a plain answer naming it.
+ */
+function ensureDirectory(dirPath: string): void {
+  if (isExistingDirectory(dirPath)) return;
+  try {
+    fs.mkdirSync(dirPath, { recursive: true });
+  } catch (error) {
+    // Made meanwhile by someone else, or a root Node refused to make: it is there.
+    if (isExistingDirectory(dirPath)) return;
+    if (isFsAccessRefusal(error)) throw new AdeExpectedError(folderRefusalMessage(dirPath, error), "user", { cause: error });
+    throw error;
+  }
+}
+
+/**
+ * Name the folder the refusal was about: the deepest one that is there, where
+ * the new folder would have gone. A drive that is not there (`D:\projects` with
+ * no `D:`) is named as missing.
+ */
+function folderRefusalMessage(dirPath: string, error: unknown): string {
+  let existing = path.resolve((error as NodeJS.ErrnoException | null)?.path || dirPath);
+  while (!isExistingDirectory(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) return `ADE can't find ${existing} on this computer. Pick another location.`;
+    existing = parent;
+  }
+  return `ADE can't create a folder in ${existing}. Pick another location.`;
 }
 
 type CloneTarget = {
@@ -182,7 +228,7 @@ export function createProjectScaffoldService({
     // Without this, a partial scaffold (git init or README write) leaves a
     // non-empty dir that the `target_exists` guard rejects on retry.
     const preexisted = fs.existsSync(rootPath);
-    fs.mkdirSync(rootPath, { recursive: true });
+    ensureDirectory(rootPath);
 
     try {
       const initRes = await runGit(["init", "--initial-branch=main"], { cwd: rootPath, timeoutMs: 15_000 });
@@ -295,7 +341,7 @@ export function createProjectScaffoldService({
       throw codedError("A folder already exists at that path.", "target_exists");
     }
 
-    fs.mkdirSync(parentDir, { recursive: true });
+    ensureDirectory(parentDir);
 
     // `git clone` may create rootPath and partially populate it before failing
     // (auth prompt aborted, network drop, signature check). Without rollback,
