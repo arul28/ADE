@@ -29,6 +29,7 @@ const WEBHOOK_SECRET = "whsec_cloud_test";
 const PROVIDER = "https://api.agent37.com/v1";
 const SANDBOX = "https://sandbox.agent37.app/v1";
 const STRIPE = "https://api.stripe.com/v1";
+const RESEND = "https://api.resend.com";
 
 type SqliteStatement = {
   run(...params: unknown[]): { changes: number | bigint };
@@ -127,6 +128,7 @@ function fakeNetwork() {
       return reply({ error: { message: "no such item" } }, 404);
     }
     if (url.startsWith(STRIPE)) return reply({});
+    if (url.startsWith(RESEND)) return reply({ id: "email_1" });
     const rest = url.replace(PROVIDER, "").replace(SANDBOX, "");
     if (method === "GET" && rest === "/instances") return reply({ data: [...instances.values()].map(instanceJson) });
     if (method === "GET" && rest.startsWith("/usage")) return reply({ instances: [] });
@@ -163,7 +165,7 @@ function fakeNetwork() {
 
   const fetchStub = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input instanceof Request ? input.url : input);
-    if (!url.startsWith(PROVIDER) && !url.startsWith(SANDBOX) && !url.startsWith(STRIPE)) return realFetch(input as RequestInfo, init);
+    if (![PROVIDER, SANDBOX, STRIPE, RESEND].some((prefix) => url.startsWith(prefix))) return realFetch(input as RequestInfo, init);
     const method = init?.method ?? "GET";
     // JSON to the provider, a form to Stripe.
     const body = typeof init?.body !== "string" ? null
@@ -865,10 +867,57 @@ describe("ADE Cloud account", () => {
       await harness.tick();
       expect((await harness.send(OWNER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 } })).status).toBe(201);
     }],
+    ["the owner hears once per $50 the month's cost passes: once on crossing, never inside a step, and with no limit set", async () => {
+      await costChecks([[40, 0], [60, 1], [90, 1]]);
+      expect(stepEmails()[0]).toContain("$50");
+    }],
+    ["a jump over several $50 steps sends one email, for the highest below the limit", async () => {
+      harness.insert("cloud_settings", { key: "owner_cost_limit_usd", value: "1000", updated_at: NOW });
+      await costChecks([[40, 0], [170, 1]]);
+      expect(stepEmails()[0]).toContain("$150");
+    }],
+    ["two owner checks at once send one email for a step", async () => {
+      setMonthCost(60);
+      clock += 11 * 60_000;
+      await Promise.all([harness.tick(), harness.tick()]);
+      expect(stepEmails()).toHaveLength(1);
+    }],
+    ["a step email that fails is sent again by the next check", async () => {
+      harness.net.once.push({ match: /POST https:\/\/api\.resend\.com\/emails$/, reply: harness.net.reply({ message: "busy" }, 503) });
+      await costChecks([[60, 1], [60, 2]]);
+    }],
+    ["a new month starts the steps again at $50", async () => {
+      await costChecks([[60, 1]]);
+      clock = Date.UTC(2026, 11, 1, 12) - 11 * 60_000;
+      harness.exec("update cloud_settings set value = '2026-12-01' where key = 'last_daily_day'");
+      harness.insert("cloud_computer_days", { instance_id: INSTANCE, day: "2026-12-01", user_id: OWNER, multiplier_milli: 1000, cost_micros: 55_000_000 });
+      await costChecks([[null, 2]]);
+      expect(stepEmails()[1]).toContain("$50");
+    }],
   ])("plans and billing: %s", async (_label, run) => {
-    Object.assign(harness.env, MONEY_ENV);
+    Object.assign(harness.env, MONEY_ENV, { RESEND_API_KEY: "resend-key", CLOUD_ALERT_EMAIL: "owner@example.test" });
     await run();
   });
+
+  // The owner's step emails: every email but the daily report (the day's run is marked done, so only a new day sends one).
+  const stepEmails = () => providerCalls(harness, /POST https:\/\/api\.resend\.com\/emails$/)
+    .map((call) => String(call.body?.subject)).filter((subject) => !/daily report/i.test(subject));
+  /** This month's settled cost, all on day one. */
+  function setMonthCost(usd: number): void {
+    if (!harness.rows("select 1 from cloud_accounts where user_id = ?", OWNER).length) seedAccount(harness, OWNER, plusAccount);
+    if (!harness.rows("select 1 from cloud_settings where key = 'last_daily_day'").length) harness.insert("cloud_settings", { key: "last_daily_day", value: DAY_ONE, updated_at: NOW });
+    harness.exec("delete from cloud_computer_days where day = ?", DAY_ONE);
+    harness.insert("cloud_computer_days", { instance_id: INSTANCE, day: DAY_ONE, user_id: OWNER, multiplier_milli: 1000, cost_micros: usd * 1_000_000 });
+  }
+  /** One owner check (ten minutes on) per step, each with the step emails expected after it; null keeps the cost. */
+  async function costChecks(steps: Array<[number | null, number]>): Promise<void> {
+    for (const [usd, emails] of steps) {
+      if (usd != null) setMonthCost(usd);
+      clock += 11 * 60_000;
+      await harness.tick();
+      expect(stepEmails()).toHaveLength(emails);
+    }
+  }
 
   it.each<[string, string, string, Row, number, string | null, RegExp]>([
     ["a new computer", "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 } }, 503, "unavailable", /POST .*\/instances$/],

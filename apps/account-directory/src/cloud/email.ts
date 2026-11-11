@@ -83,18 +83,21 @@ async function accountEmail(env: CloudEmailEnv, userId: string): Promise<string 
   return typeof primary?.email_address === "string" ? primary.email_address : null;
 }
 
-export async function sendCloudEmail(env: CloudEmailEnv, email: CloudEmail): Promise<void> {
+/** `skipped`: no sender or no address is set up, so trying again won't help. `failed`: refused or not reached. */
+export type CloudEmailResult = "sent" | "skipped" | "failed";
+
+export async function sendCloudEmail(env: CloudEmailEnv, email: CloudEmail): Promise<CloudEmailResult> {
   const target = "owner" in email ? "owner" : "account";
   const resendKey = env.RESEND_API_KEY?.trim();
   if (!resendKey) {
     logEmail("cloud.email_skipped", { target, subject: email.subject });
-    return;
+    return "skipped";
   }
   try {
     const to = "owner" in email ? env.CLOUD_ALERT_EMAIL?.trim() || null : await accountEmail(env, email.userId);
     if (!to) {
       logEmail("cloud.email_no_recipient", { target, subject: email.subject });
-      return;
+      return "skipped";
     }
     const response = await fetch(RESEND_URL, {
       method: "POST",
@@ -103,7 +106,9 @@ export async function sendCloudEmail(env: CloudEmailEnv, email: CloudEmail): Pro
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     logEmail(response.ok ? "cloud.email_sent" : "cloud.email_refused", { target, subject: email.subject, status: response.status });
+    return response.ok ? "sent" : "failed";
   } catch {
     logEmail("cloud.email_failed", { target, subject: email.subject });
+    return "failed";
   }
 }
