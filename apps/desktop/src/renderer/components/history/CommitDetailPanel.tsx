@@ -112,7 +112,7 @@ export function CommitDetailPanel({
 
   // A commit deep link may arrive with only a sha; fill in the rest.
   useEffect(() => {
-    if (!laneId || !commit?.sha || (commit.subject && commit.authorName)) return;
+    if (!laneId || !pin || !commit?.sha || (commit.subject && commit.authorName)) return;
     let cancelled = false;
     void window.ade.git.getCommit({ laneId, commitSha: commit.sha }, pin)
       .then((found) => {
@@ -125,7 +125,7 @@ export function CommitDetailPanel({
   }, [laneId, commit, pin]);
 
   useEffect(() => {
-    if (!laneId) {
+    if (!laneId || !pin) {
       setHeadSha(null);
       return;
     }
@@ -149,7 +149,7 @@ export function CommitDetailPanel({
 
   const sha = resolvedCommit?.sha ?? null;
   useEffect(() => {
-    if (!laneId || !sha) {
+    if (!laneId || !sha || !pin) {
       setFullMessage(null);
       setFiles(null);
       return;
@@ -219,11 +219,12 @@ export function CommitDetailPanel({
   const createLane = actions.find((action) => action.id === "create_lane") ?? null;
 
   const runAction = (actionId: HistoryGitActionId) => {
-    if (!laneId || !resolvedCommit) return;
+    if (!laneId || !resolvedCommit || !pin) return;
     setNotice(null);
     void runHistoryGitAction({
       actionId,
       laneId,
+      pin,
       commit: resolvedCommit,
       navigate,
       onNotice: (message) => setNotice({ text: message, error: false }),

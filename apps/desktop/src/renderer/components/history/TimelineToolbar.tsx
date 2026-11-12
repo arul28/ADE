@@ -16,7 +16,8 @@ import {
   Clock,
   Export,
 } from "@phosphor-icons/react";
-import type { ExportHistoryResult, GitConflictState } from "../../../shared/types";
+import type { ExportHistoryResult, GitConflictState, OpenProjectBinding } from "../../../shared/types";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { useAppStore } from "../../state/appStore";
 import {
   foreignLaneKey,
@@ -108,13 +109,18 @@ function isHistoryExportResult(value: unknown): value is ExportHistoryResult {
 export function TimelineToolbar({
   onCommitGitActionComplete,
   commitListControls = true,
+  lanePin = null,
 }: {
   onCommitGitActionComplete?: () => void;
+  /** The focused lane's machine. Null: the lane cannot be reached, so its git actions do nothing. */
+  lanePin?: OpenProjectBinding | null;
   /** False while a commit's changes fill the page: search, scope, fold and columns do nothing there. */
   commitListControls?: boolean;
 } = {}) {
   const lanes = useAppStore((s) => s.lanes ?? []);
   const laneStatusStale = useAppStore((s) => s.laneStatusStale);
+  // Export reads the tab machine's history.
+  const tabPin = useTabCopyPin();
   const [exportNotice, setExportNotice] = useAutoDismiss<string | null>(null, 5000);
   /* ── Store ─────────────────────────────────────────────────── */
   const surface = useTimelineStore((s) => s.surface);
@@ -186,6 +192,10 @@ export function TimelineToolbar({
       setExportNotice("Export unavailable (headless)");
       return;
     }
+    if (!tabPin) {
+      setExportNotice("No computer with this project is online.");
+      return;
+    }
     let chosenLimit = 500;
     const raw = await promptDialog({
       title: "Export how many rows? (1–10000, default 500)",
@@ -210,7 +220,7 @@ export function TimelineToolbar({
         // Export reads this machine's history; a lane on another machine is not in it.
         ...(focusLaneId && !focusLaneMachineId ? { laneId: focusLaneId } : {}),
         ...(filters.statuses.length === 1 ? { status: filters.statuses[0] } : {}),
-      });
+      }, tabPin);
       if (!isHistoryExportResult(result)) {
         setExportNotice("Export unavailable (headless)");
         return;
@@ -222,7 +232,7 @@ export function TimelineToolbar({
         `Export failed: ${extractError(err)}`,
       );
     }
-  }, [focusLaneId, focusLaneMachineId, filters.statuses, setExportNotice]);
+  }, [focusLaneId, focusLaneMachineId, filters.statuses, setExportNotice, tabPin]);
 
   /* ── Render ────────────────────────────────────────────────── */
   const showActivityControls = surface === "activity";
@@ -318,11 +328,13 @@ export function TimelineToolbar({
             ) : null}
             <CommitFetchButton
               laneId={focusLaneMachineId ? null : focusLaneId}
+              pin={lanePin}
               disabledReason={focusLaneMachineId ? "Fetch runs on the lane's own machine" : focusLane && !focusLaneHasWorktree ? "Lane worktree is missing" : null}
               onFetched={() => onCommitGitActionComplete?.()}
             />
             {focusLaneMachineId ? null : <LaneGitActionsMenu
               laneId={focusLaneId}
+              pin={lanePin}
               laneName={focusLane?.name ?? null}
               laneHasWorktree={focusLaneHasWorktree}
               onComplete={onCommitGitActionComplete}
@@ -598,11 +610,13 @@ export function TimelineToolbar({
 
 function LaneGitActionsMenu({
   laneId,
+  pin,
   laneName,
   laneHasWorktree,
   onComplete,
 }: {
   laneId: string | null;
+  pin: OpenProjectBinding | null;
   laneName: string | null;
   laneHasWorktree: boolean;
   onComplete?: () => void;
@@ -615,16 +629,16 @@ function LaneGitActionsMenu({
   const actions = buildHistoryLaneActions({ hasLane: Boolean(laneId) && laneHasWorktree, conflictState });
 
   const refreshConflictState = useCallback(async () => {
-    if (!laneId) {
+    if (!laneId || !pin) {
       setConflictState(null);
       return;
     }
     try {
-      setConflictState(await window.ade.git.getConflictState(laneId));
+      setConflictState(await window.ade.git.getConflictState(laneId, pin));
     } catch {
       setConflictState(null);
     }
-  }, [laneId]);
+  }, [laneId, pin]);
 
   useEffect(() => {
     void refreshConflictState();
@@ -637,13 +651,14 @@ function LaneGitActionsMenu({
 
   const run = useCallback(
     async (actionId: HistoryLaneActionId) => {
-      if (!laneId) return;
+      if (!laneId || !pin) return;
       setRunningAction(actionId);
       setError(null);
       try {
         await runHistoryLaneAction({
           actionId,
           laneId,
+          pin,
           laneName,
           onNotice: (message) => {
             setNotice(message);
@@ -661,7 +676,7 @@ function LaneGitActionsMenu({
         setRunningAction(null);
       }
     },
-    [handleComplete, laneId, laneName, navigate, setError, setNotice],
+    [handleComplete, laneId, laneName, navigate, pin, setError, setNotice],
   );
   const actionGroups = groupHistoryLaneActions(actions);
 
