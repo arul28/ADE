@@ -884,6 +884,7 @@ import {
 } from "../../../shared/types/chat";
 
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
+import { attachAgentStderrTail, readAgentStderrTail } from "./agentProcessStderr";
 import {
   classifyProviderRetryCause,
   formatProviderRetryActivityDetail,
@@ -29832,12 +29833,41 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * The error fields for a failure whose agent process left a stderr tail: the
+   * card leads with its meaningful line (as an ACP failure does) and keeps the
+   * tail behind Details. Nothing when there is no tail.
+   */
+  const processStderrErrorFields = (
+    managed: ManagedChatSession,
+    message: string,
+    stderrTail: string | null | undefined,
+  ) => {
+    const tail = stderrTail?.trim();
+    if (!tail) return {};
+    const provider = managed.session.provider;
+    const providerLabel = providerDisplayLabel(provider, String(provider));
+    const card = presentChatFailure({ kind: "unknown", message, provider: providerLabel, stderrTail: tail });
+    // The exit line ("… exited (code=1)") stays in Details above the tail,
+    // even when the tail's own line leads the card.
+    const technicalDetail = [message, card.technicalDetail]
+      .filter((part, index, parts): part is string => Boolean(part) && parts.indexOf(part) === index)
+      .join("\n\n");
+    const presented = { ...card, technicalDetail };
+    return {
+      detail: technicalDetail,
+      errorInfo: { category: "unknown" as const, provider: providerLabel, presentation: presented },
+    };
+  };
+
   const keepChatSessionOpen = (
     managed: ManagedChatSession,
     args: {
       message: string;
       turnId?: string | null;
       turnStatus?: "failed" | "interrupted";
+      /** The dead process's stderr, already redacted: shown behind the failure's Details. */
+      stderrTail?: string | null;
     },
   ): void => {
     if (managed.closed) return;
@@ -29855,6 +29885,7 @@ export function createAgentChatService(args: {
       type: "error",
       message: args.message,
       ...(resolvedTurnId ? { turnId: resolvedTurnId } : {}),
+      ...processStderrErrorFields(managed, args.message, args.stderrTail),
     });
 
     if (resolvedTurnId && args.turnStatus) {
@@ -46166,11 +46197,13 @@ export function createAgentChatService(args: {
     const download = pinnedToolDownload(tool);
     if (!download) return null;
     if (managed) {
+      // An expected wait, not a failure: the turn starts once the copy is in
+      // place (the caller awaits this before it spawns anything).
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
-        message: `Downloading ${label} for this machine`,
-        detail: "ADE downloads each agent the first time this machine uses it. The chat continues when it finishes.",
+        message: `Getting ${label} ready`,
+        detail: `ADE downloads each agent the first time this machine uses it. This turn starts when ${label} is ready.`,
       });
     }
     // onDemand.ts logs the outcome; a failure leaves resolution as it was.
@@ -46185,6 +46218,12 @@ export function createAgentChatService(args: {
   /** The app-server process each Codex runtime talks through, and its seat on it. */
   const codexHostByRuntime = new WeakMap<CodexRuntime, { host: CodexAppServerHost; client: CodexAppServerClient }>();
   const codexRedactionByClient = new WeakMap<CodexAppServerClient, (text: string) => string>();
+  /** What the app-server printed last, redacted for the chat that will show it. */
+  const codexStderrTailFor = (host: CodexAppServerHost, client: CodexAppServerClient): string => {
+    const raw = host.stderrTail().trim();
+    if (!raw) return "";
+    return codexRedactionByClient.get(client)?.(raw) ?? raw;
+  };
   /**
    * A chat that left a shared app-server releases its thread there
    * (interrupt + unsubscribe); its next runtime waits for that, so a resume
@@ -46639,6 +46678,7 @@ export function createAgentChatService(args: {
         message,
         turnId: runtime.activeTurnId,
         ...(runtime.activeTurnId ? { turnStatus: "failed" as const } : {}),
+        stderrTail: codexStderrTailFor(host, hostClient),
       });
     };
 
@@ -46691,8 +46731,11 @@ export function createAgentChatService(args: {
       }, CODEX_REQUEST_TIMEOUT_MS);
     } catch (error) {
       runtime.suppressExitError = true;
+      // A process that died before it answered: what it printed is the only
+      // account of why, so the turn's Details shows it.
+      const tail = host.isGone() ? codexStderrTailFor(host, hostClient) : "";
       host.detach(hostClient);
-      throw error;
+      throw error instanceof Error ? attachAgentStderrTail(error, tail) : error;
     }
     runtime.serverVersion = parseCodexServerVersion(initializeResponse?.userAgent);
 
@@ -49683,6 +49726,8 @@ export function createAgentChatService(args: {
   };
 
   const listCodexModelsFromAppServer = async (): Promise<AgentChatModelInfo[]> => {
+    // A model list never downloads Codex: until a turn fetches it, ADE's own list.
+    if (!resolveCodexExecutable().path) return codexFallbackModels();
     const tempSession: ManagedChatSession = {
       session: {
         id: randomUUID(),
@@ -57088,9 +57133,15 @@ export function createAgentChatService(args: {
     const presentation = managed.session.provider === "codex"
       ? presentCodexModelProviderError(asRecord(error)?.data, message) ?? undefined
       : undefined;
+    // An agent process that died while the runtime started (Codex's
+    // app-server exiting before it answered): its stderr goes behind Details.
+    const stderrFields = !resumeFailure && !presentation
+      ? processStderrErrorFields(managed, message, readAgentStderrTail(error))
+      : {};
     emitChatEvent(managed, {
       type: "error",
       message,
+      ...stderrFields,
       ...(resumeFailure || presentation
         ? {
             errorInfo: {
@@ -72638,18 +72689,21 @@ export function createAgentChatService(args: {
           ...(args.activateRuntime ? { force: true } : {}),
         });
         const cli = cliStatuses.find((entry) => entry.cli === provider) ?? null;
-        if (!cli?.installed) return [];
+        // A copy downloaded on first use still lists the curated rows, so a
+        // signed-in provider can start the chat whose turn fetches it.
+        if (!cli || (!cli.installed && !cli.pinnedDownloadPending)) return [];
         let health = getProviderRuntimeHealth(provider);
         let authReady = health ? health.state === "ready" : cli.authenticated;
-        if (!authReady && !health && args.activateRuntime) {
+        if (!authReady && !health && args.activateRuntime && cli.installed) {
           const probe = await probeAcpProviderAuth({ provider, cwd: projectRoot, logger });
           health = getProviderRuntimeHealth(provider);
           authReady = probe.state === "ready" || health?.state === "ready";
         }
         if (!authReady) return [];
         // The provider's live list is the picker once it exists; refresh it in
-        // the background when missing or old (never blocks this read).
-        warmAcpModelCatalog(provider, { logger });
+        // the background when missing or old (never blocks this read, and
+        // only from a copy already here).
+        if (cli.installed) warmAcpModelCatalog(provider, { logger });
         if (provider === "qwen") {
           const settings = await loadQwenUserSettings();
           if (settings.models.length) {
