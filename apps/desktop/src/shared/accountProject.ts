@@ -231,8 +231,9 @@ export type AccountProjectLinkTarget =
  * 4. Then the first reachable copy in `machineOrder` (the desktop puts this
  *    computer first, then the connected computers, then the online ones).
  *
- * A copy counts only on a computer `reachable` accepts; with none, the
- * answer is `noCopy` and the desktop opens the repository tab with no machine.
+ * Steps 2 and 3 do not ask `reachable`, as on the phone. Step 4 counts a copy
+ * only on a computer `reachable` accepts; with none, the answer is `noCopy`
+ * and the desktop opens the repository tab with no machine.
  */
 export function resolveAccountProjectLink(
   id: string,
@@ -255,11 +256,18 @@ export function resolveAccountProjectLink(
     return row && row.removedAt !== null && !row.mergedInto ? { kind: "removed", name: row.name } : { kind: "unknown" };
   }
   const mainFirst = (left: AccountProjectCopyView, right: AccountProjectCopyView) => Number(right.isMain) - Number(left.isMain);
-  if (owner && reachable(owner.accountMachineKey)
-    && project.copies.some((copy) => copy.machineKey === owner.accountMachineKey && copy.checkoutId === owner.projectId)) {
+  // The phone's order (DeepLinkURLParsing.swift `resolveAccountProjectLink`):
+  // the link's own pair, then a copy on the link's machine, whether or not it
+  // answers now (the owner routing says when it is offline); only the
+  // fallback copies must be reachable.
+  if (owner && project.copies.some((copy) => copy.machineKey === owner.accountMachineKey && copy.checkoutId === owner.projectId)) {
     return { kind: "copy", project, machineKey: owner.accountMachineKey, checkoutId: owner.projectId };
   }
-  for (const machineKey of [...(owner ? [owner.accountMachineKey] : []), ...machineOrder]) {
+  if (owner) {
+    const copy = project.copies.filter((entry) => entry.machineKey === owner.accountMachineKey).sort(mainFirst)[0];
+    if (copy) return { kind: "copy", project, machineKey: owner.accountMachineKey, checkoutId: copy.checkoutId };
+  }
+  for (const machineKey of machineOrder) {
     if (!reachable(machineKey)) continue;
     const copy = project.copies.filter((entry) => entry.machineKey === machineKey).sort(mainFirst)[0];
     if (copy) return { kind: "copy", project, machineKey, checkoutId: copy.checkoutId };
