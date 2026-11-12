@@ -13,6 +13,7 @@ import { showToast } from "../../app/toast/toastStore";
 import { CloneLocallyDialog, type CloneLocallyTarget } from "../../projects/CloneLocallyDialog";
 import { openProjectCopy } from "../../projects/AddProjectForm";
 import { formatLaneShareEnd } from "../laneShareModel";
+import { LaneShareMeta, LaneShareState } from "../laneShareUi";
 import { laneShareGuestStatusLabel, type LaneShareGuestConnection, type LaneShareGuestConnectionState, type LaneShareGuestSession } from "./laneShareGuestConnection";
 import {
   clearLaneShareGuestNotice,
@@ -159,7 +160,7 @@ function GuestTerminal({
         {live ? (
           <div className="flex min-w-0 items-center gap-2">
             <input
-              className="min-w-0 flex-1 rounded-md border border-fg/10 bg-transparent px-2 py-1 font-mono text-[12px] text-fg/85 outline-none focus:border-fg/25"
+              className="kit-input kit-num min-w-0 flex-1" data-size="sm"
               value={line}
               disabled={typing}
               placeholder="Type a line for the CLI"
@@ -263,7 +264,7 @@ function GuestStartPanel({
     <label className="flex items-center gap-1.5 text-[11.5px] text-fg/60">
       <span>{label}</span>
       <select
-        className="max-w-[200px] rounded-md border border-fg/10 bg-transparent px-1.5 py-0.5 text-[11.5px] text-fg/85"
+        className="kit-input max-w-[200px]" data-size="sm"
         value={value}
         aria-label={label}
         onChange={(event) => onChange(event.target.value)}
@@ -287,7 +288,7 @@ function GuestStartPanel({
       )}
       {canTypeFirst && models.length > 0 ? (
         <input
-          className="min-w-0 rounded-md border border-fg/10 bg-transparent px-2 py-1 text-[12px] outline-none focus:border-fg/25"
+          className="kit-input min-w-0" data-size="sm"
           value={firstLine}
           placeholder="First line for the CLI (optional, counts as one message)"
           aria-label="First line for the CLI"
@@ -399,21 +400,23 @@ export function LaneShareGuestView({
             {laneName ?? "Shared lane"}
             {selected ? <span className="text-fg/50"> / {selected.title}</span> : null}
           </span>
-          <span className="min-w-0 truncate text-[11px] text-fg/50">
-            Shared by {ownerLabel}
-            {entry.projectLabel ? ` · ${entry.projectLabel}` : ""}
-            {machineName ? ` · on ${machineName}` : ""}
-            {` · ${formatLaneShareEnd(entry.endsAt)}`}
-          </span>
+          <LaneShareMeta
+            parts={[
+              `Shared by ${ownerLabel}`,
+              entry.projectLabel,
+              machineName ? `on ${machineName}` : null,
+              entry.endsAt != null ? formatLaneShareEnd(entry.endsAt) : null,
+            ]}
+          />
         </div>
-        <span className="kit-tag shrink-0" data-tone={label.tone ?? undefined}>{label.text}</span>
+        <LaneShareState label={label.text} tone={label.tone} />
         {selected ? (
-          <button type="button" className="kit-btn" data-size="sm" onClick={() => onSelectSession(null)}>All sessions</button>
+          <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={() => onSelectSession(null)}>All sessions</button>
         ) : null}
         {repoUrl ? (
           <button
             type="button"
-            className="kit-btn"
+            className="kit-btn kit-btn-ghost"
             data-size="sm"
             title="Add the repository of this lane on this computer. The share works without it."
             onClick={openAddProject}
@@ -422,13 +425,13 @@ export function LaneShareGuestView({
             Add this project
           </button>
         ) : null}
-        <button type="button" className="kit-btn" data-size="sm" onClick={() => { void leave(); }}>
+        <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={() => { void leave(); }}>
           <SignOut size={13} />
           Leave
         </button>
         {onClose ? (
-          <button type="button" className="kit-btn" data-size="sm" aria-label="Close the shared lane" onClick={onClose}>
-            <X size={13} />
+          <button type="button" className="kit-icon-btn" aria-label="Close the shared lane" title="Close" onClick={onClose}>
+            <X size={14} />
           </button>
         ) : null}
       </div>

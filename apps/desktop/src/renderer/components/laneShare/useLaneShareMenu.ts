@@ -5,12 +5,15 @@ import { stopSharingLaneWithAll } from "./laneShareActions";
 import { isLiveLaneShare } from "./laneShareModel";
 import { openLaneShareSheet, useLaneShareList } from "./laneShareStore";
 
+const CLOUD_REASON = { short: "Not on ADE Cloud yet", detail: "Lanes on ADE Cloud can't be shared yet." } as const;
+const PRIMARY_REASON = { short: "Main checkout", detail: "The main checkout can't be shared. Share a lane instead." } as const;
+
 /** The share entries a lane menu offers (`buildLaneMenuGroups`' `share`). */
 export type LaneMenuShareArgs = {
   /** Live shares (pending and active) of the lane. */
   liveCount: number;
-  /** Set when this lane cannot be shared: "Share lane…" shows disabled with this reason. */
-  disabledReason: string | null;
+  /** Set when this lane cannot be shared: "Share lane…" shows disabled with the short reason, the detail on hover. */
+  disabledReason: { short: string; detail: string } | null;
   onShare: () => void;
   onManage: () => void;
   onStopAll: () => void;
@@ -35,11 +38,7 @@ export function useLaneShareMenu(args: {
   // Sharing is for lanes on the person's own computers for now: a lane's ADE
   // Cloud computer would wake and spend the owner's hours for a guest.
   const onCloud = useAdeCloudLaneForBinding(args.pin ?? null) != null;
-  const disabledReason = onCloud
-    ? "Lanes on ADE Cloud can't be shared yet."
-    : args.laneType === "primary"
-      ? "The main checkout can't be shared. Share a lane instead."
-      : null;
+  const disabledReason = onCloud ? CLOUD_REASON : args.laneType === "primary" ? PRIMARY_REASON : null;
   const pin = args.pin ?? null;
   const pinKey = pin?.key ?? null;
   const shares = entry?.shares;

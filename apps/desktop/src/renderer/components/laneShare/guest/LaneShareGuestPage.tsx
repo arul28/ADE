@@ -16,6 +16,7 @@ import {
   type LaneShareGuestProblem,
 } from "./laneShareGuestStore";
 import { LaneShareGuestView } from "./LaneShareGuestView";
+import { LaneShareMeta } from "../laneShareUi";
 import { LANE_SHARE_GUEST_ROUTE, laneShareGuestPath } from "./laneShareGuestRoute";
 
 /**
@@ -71,11 +72,13 @@ function AcceptCard({
           {entry.laneLabel ?? "A lane"}
           {entry.projectLabel ? ` in ${entry.projectLabel}` : ""}
         </span>
-        <span className="flex flex-wrap items-center gap-2 text-[11.5px] text-fg/55">
-          <span>{laneSharePresetText(entry.preset)}</span>
-          {entry.risk ? <span className="kit-tag">{LANE_SHARE_RISK_LABELS[entry.risk]}</span> : null}
-          <span>{formatLaneShareEnd(entry.endsAt)}</span>
-        </span>
+        <LaneShareMeta
+          parts={[
+            `${laneSharePresetText(entry.preset)} access`,
+            entry.risk ? <span key="risk">{LANE_SHARE_RISK_LABELS[entry.risk]}</span> : null,
+            formatLaneShareEnd(entry.endsAt),
+          ]}
+        />
       </div>
       {expired ? (
         <div className="text-[12.5px] text-fg/70">This invite expired. Ask {entry.giverLabel ?? "the owner"} to send it again.</div>
@@ -264,7 +267,7 @@ export function LaneShareGuestPage() {
   return (
     <div className="flex h-full min-h-0 w-full" data-testid="lane-share-guest-page">
       <aside className="flex w-[260px] shrink-0 flex-col border-r border-fg/[0.06]">
-        <div className="px-3 pb-2 pt-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-fg/50">Shared with me</div>
+        <h2 className="ade-ls-pane-title px-3 pb-2 pt-3">Shared with me</h2>
         {receivedProblem && !signedOut && !unavailable ? (
           <div className="px-3 pb-2 text-[11.5px] text-fg/60">{receivedProblem.message}</div>
         ) : null}
@@ -283,7 +286,7 @@ export function LaneShareGuestPage() {
                 {liveLaneNames[entry.grantId] ?? entry.laneLabel ?? "Shared lane"}
               </span>
               <span className="min-w-0 truncate text-[11px] text-fg/50">
-                {entry.giverLabel ?? "Another account"} · {laneShareGrantStateLabel(entry).label}
+                From {entry.giverLabel ?? "another account"} · {laneShareGrantStateLabel(entry).label}
               </span>
             </button>
           ))}

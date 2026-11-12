@@ -1,0 +1,132 @@
+/*
+ * Lane sharing surfaces: the share sheet, the rights panel, Settings › Sharing
+ * and the guest's view. Built from the surface kit (kit-seg, kit-dot, kit-btn,
+ * ModernRows) with only the layout here: no new panel, tag or colour style.
+ */
+
+/* ── Rights panel ─────────────────────────────────────────────────────────── */
+.ade-ls-rights { display: flex; min-width: 0; flex-direction: column; gap: 10px; }
+.ade-ls-groups { display: flex; min-width: 0; flex-direction: column; gap: 14px; }
+.ade-ls-group { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+.ade-ls-group-title {
+  margin: 0;
+  padding-left: 2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--kit-text-2);
+}
+.ade-ls-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 4px 2px;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--kit-text-2);
+  cursor: pointer;
+}
+.ade-ls-disclosure:hover { color: var(--color-fg); }
+.ade-ls-disclosure:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; border-radius: 4px; }
+.ade-ls-models { display: flex; flex: 1 1 100%; min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; }
+.ade-ls-model { display: flex; width: 100%; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--color-fg); }
+.ade-ls-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-ls-limit { width: 96px; text-align: right; }
+/* A pick row under its row's title, wrapping as one control rather than a row of tokens. */
+.ade-ls-multipick { flex: 1 1 100%; flex-wrap: wrap; justify-content: flex-start; }
+
+/* The access level: one segmented control, full width of its column. */
+.ade-ls-preset { width: 100%; }
+.ade-ls-preset > button { flex: 1 1 0; }
+
+/* Risk: a dot, the level in its tone, then the plain sentence. */
+.ade-ls-risk { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; line-height: 1.5; }
+.ade-ls-risk > .kit-dot { flex: none; transform: translateY(-1px); }
+.ade-ls-risk-level { font-weight: 500; margin-right: 6px; }
+.ade-ls-risk-level[data-tone="ok"] { color: var(--kit-ok); }
+.ade-ls-risk-level[data-tone="warn"] { color: var(--kit-warn); }
+.ade-ls-risk-level[data-tone="crit"] { color: var(--kit-crit); }
+.ade-ls-risk-detail { color: var(--kit-text-2); }
+
+/* ── Share sheet ──────────────────────────────────────────────────────────── */
+.ade-ls-sheet { display: grid; min-width: 0; grid-template-columns: minmax(0, 270px) minmax(0, 1fr); gap: 20px; }
+.ade-ls-people { display: flex; min-width: 0; flex-direction: column; gap: 8px; }
+.ade-ls-pane-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--kit-text-2);
+}
+.ade-ls-pane-title .kit-num { font-weight: 400; color: var(--kit-text-3); }
+.ade-ls-invite { display: flex; min-width: 0; gap: 6px; }
+.ade-ls-invite > .kit-input { min-width: 0; flex: 1 1 auto; }
+.ade-ls-person-list { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.ade-ls-person {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: var(--radius-md, 8px);
+  cursor: pointer;
+}
+.ade-ls-person[aria-selected="true"] { background: var(--kit-active); }
+.ade-ls-person:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.ade-ls-person-glyph { flex: none; color: var(--kit-text-3); }
+.ade-ls-person-text { min-width: 0; flex: 1 1 auto; }
+.ade-ls-person-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--color-fg); }
+.ade-ls-person-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+.ade-ls-person-meta > span { overflow: hidden; text-overflow: ellipsis; }
+.ade-ls-person-meta [data-tone="warn"] { color: var(--kit-warn); }
+.ade-ls-person-meta [data-tone="crit"] { color: var(--kit-crit); }
+.ade-ls-empty { padding: 6px 8px; font-size: 12px; color: var(--kit-text-3); }
+.ade-ls-access { display: flex; min-width: 0; flex-direction: column; gap: 12px; }
+.ade-ls-access-head { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.ade-ls-access-who { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.ade-ls-access-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; color: var(--color-fg); }
+.ade-ls-access-actions { display: flex; flex: none; gap: 6px; margin-left: auto; }
+.ade-ls-line { font-size: 12px; line-height: 1.45; color: var(--kit-text-2); }
+.ade-ls-scroll { min-height: 0; max-height: 46vh; overflow-y: auto; padding-right: 4px; }
+
+/* ── Guest view ───────────────────────────────────────────────────────────── */
+/* A connection state as a dot and a word, never a pill. */
+.ade-ls-state { display: inline-flex; flex: none; align-items: center; gap: 6px; font-size: 11.5px; color: var(--kit-text-2); white-space: nowrap; }
+/* One quiet line of facts under the guest's composer: it truncates, never wraps. */
+.ade-ls-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+.ade-ls-meta > span { overflow: hidden; text-overflow: ellipsis; }
+.ade-ls-meta > svg { flex: none; }
+.ade-ls-meta-sep { flex: none; color: var(--kit-text-3); opacity: 0.6; }
+
+/* Rows inside a dialog or the guest view: the settings row, one step tighter. */
+.ade-ls-rights .ade-ap-rowcard { padding-top: 9px; padding-bottom: 9px; }
+.ade-ls-rights .ade-ap-rowtitle { font-size: 12.5px; }
+.ade-ls-rights .ade-ap-rowhint { font-size: 11.5px; }
+.ade-ls-state[data-tone="ok"] { color: var(--kit-text-2); }
+.ade-ls-state[data-tone="warn"] { color: var(--kit-warn); }
+.ade-ls-state[data-tone="crit"] { color: var(--kit-crit); }
+.ade-ls-lock { display: inline-block; margin-right: 3px; vertical-align: -1px; }
+.ade-ls-meta [data-tone="warn"] { color: var(--kit-warn); }

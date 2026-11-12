@@ -1,6 +1,6 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import fs from "node:fs";
-import { isCloudMachine } from "../power/cloudKeepAwake";
+import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import path from "node:path";
 import { randomInt } from "node:crypto";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
@@ -722,7 +722,7 @@ export function createSyncService(args: SyncServiceArgs) {
       getDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [args.projectRoot] }),
     },
     getMachineKey: () => cloudRelayStore.getMachineIdentity().machineKey,
-    isCloudComputer: () => isCloudMachine(),
+    isCloudComputer: () => isAdeCloudComputer(),
     store: laneShareRights,
     getHost: () => hostService,
     getRepoKey: readLaneShareRepoKey,

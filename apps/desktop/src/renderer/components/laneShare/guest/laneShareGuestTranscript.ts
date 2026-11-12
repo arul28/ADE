@@ -48,7 +48,8 @@ export function buildLaneShareGuestTranscript(
       case "user_message": {
         const author = parseMessageAuthor(event.metadata?.author);
         const mine = Boolean(author && author.kind === "guest" && options.selfUserId && author.userId === options.selfUserId);
-        const name = mine ? "You" : author?.kind === "guest" ? (author.name ?? "A guest") : (author?.name ?? options.ownerLabel);
+        const ownerName = options.ownerLabel ? options.ownerLabel.charAt(0).toUpperCase() + options.ownerLabel.slice(1) : "The owner";
+        const name = mine ? "You" : author?.kind === "guest" ? (author.name ?? "A guest") : (author?.name ?? ownerName);
         rows.push({ kind: "user", key, author: name, mine, text: clip(event.displayText ?? event.text ?? "") });
         lastAssistantKey = null;
         return;

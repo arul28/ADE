@@ -41,23 +41,22 @@ import { branchNameProblem } from "../../../shared/laneBranchName";
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import type { LaneMenuShareArgs } from "../laneShare/useLaneShareMenu";
 
-/** A menu row that cannot be used here, with the reason under its label. */
-function LaneMenuDisabledRow({ icon, label, reason }: { icon: Icon; label: string; reason: string }) {
+/** A menu row that cannot be used here: dimmed, a short reason on the right, the full one on hover. */
+function LaneMenuDisabledRow({ icon, label, reason, detail }: { icon: Icon; label: string; reason: string; detail: string }) {
   return (
     <button
       type="button"
       role="menuitem"
       disabled
       aria-disabled="true"
-      title={reason}
-      className="flex w-full items-start gap-2 px-3 py-1.5 text-left text-[12px] text-fg opacity-60"
+      title={detail}
+      aria-description={detail}
+      className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-1.5 text-left text-[12px] text-fg opacity-50"
       style={{ fontFamily: SANS_FONT }}
     >
       <LaneMenuGlyph icon={icon} />
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span>{label}</span>
-        <span className="text-[11px] text-muted-fg">{reason}</span>
-      </span>
+      <span className="flex-1">{label}</span>
+      <span className="text-[11px] text-muted-fg">{reason}</span>
     </button>
   );
 }
@@ -514,7 +513,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
   if (share && lane) {
     const shareEntries: LaneMenuEntry[] = [
       share.disabledReason
-        ? { kind: "custom", key: "share-lane", node: <LaneMenuDisabledRow icon={ShareNetwork} label="Share lane…" reason={share.disabledReason} /> }
+        ? { kind: "custom", key: "share-lane", node: <LaneMenuDisabledRow icon={ShareNetwork} label="Share lane…" reason={share.disabledReason.short} detail={share.disabledReason.detail} /> }
         : { kind: "action", key: "share-lane", label: "Share lane…", icon: ShareNetwork, onSelect: () => { onClose(); share.onShare(); } },
     ];
     if (share.liveCount > 0) {

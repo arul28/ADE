@@ -1,6 +1,6 @@
 import React from "react";
 import { logRendererDebugEvent } from "../../../lib/debugLog";
-import { ChatText, Clock, Cpu, Desktop, Lock, PaperPlaneRight, ShieldCheck, Stop, Users } from "@phosphor-icons/react";
+import { ChatText, Lock, PaperPlaneRight, Stop } from "@phosphor-icons/react";
 import type { AgentChatEventEnvelope } from "../../../../shared/types/chat";
 import {
   collapseWhitespace,
@@ -12,8 +12,9 @@ import type { LaneShareGuestState } from "../../../../shared/laneShareRights";
 import { LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE, leadingPromptCommandCharacter, parseMessageAuthor } from "../../../../shared/messageAuthor";
 import { parseCodedErrorMessage } from "../../../../shared/codedError";
 import { ChatMarkdown } from "../../chat/chatMarkdown";
-import { Banner, StatusChip, StatusStrip } from "../../ui/notice";
-import { formatLaneShareEnd } from "../laneShareModel";
+import { Banner } from "../../ui/notice";
+import { resolveModelDescriptor } from "../../../../shared/modelRegistry";
+import { LaneShareMeta, laneShareModeTitle } from "../laneShareUi";
 import type { LaneShareGuestConnection } from "./laneShareGuestConnection";
 import { refreshLaneShareGuestState } from "./laneShareGuestStore";
 import { buildLaneShareGuestTranscript, LANE_SHARE_GUEST_MAX_ROWS, type LaneShareGuestRow } from "./laneShareGuestTranscript";
@@ -133,7 +134,7 @@ function GuestReplyComments({
         open ? (
           <div className="flex min-w-0 items-end gap-2">
             <textarea
-              className="min-h-[32px] min-w-0 flex-1 resize-none rounded-md border border-fg/10 bg-transparent px-2 py-1 text-[12px] outline-none focus:border-fg/25"
+              className="kit-input min-h-[32px] min-w-0 flex-1"
               rows={Math.min(4, Math.max(1, body.split("\n").length))}
               value={body}
               maxLength={MAX_THREAD_COMMENT_BODY_CHARS}
@@ -213,7 +214,7 @@ function GuestRow({
       ) : row.question ? (
         <div className="flex min-w-0 items-center gap-2">
           <input
-            className="min-w-0 flex-1 rounded-md border border-fg/10 bg-transparent px-2 py-1 text-[12px]"
+            className="kit-input min-w-0 flex-1" data-size="sm"
             value={answer}
             placeholder="Your answer"
             aria-label="Your answer"
@@ -234,22 +235,31 @@ function GuestRow({
 }
 
 /** A picker of the values the owner allows. Nothing else is listed. */
-function GuestPicker({ label, values, onPick }: { label: string; values: readonly string[]; onPick: (value: string) => void }) {
+/** One choice the owner allows more than one value for, as a segmented control. The current value is pressed. */
+function GuestPicker({
+  label,
+  values,
+  current,
+  title,
+  onPick,
+}: {
+  label: string;
+  values: readonly string[];
+  current: string | null;
+  title: (value: string) => string;
+  onPick: (value: string) => void;
+}) {
   return (
-    <label className="flex items-center gap-1">
-      <span>{label}</span>
-      <select
-        className="max-w-[180px] rounded-md border border-fg/10 bg-transparent px-1.5 py-0.5 text-[11.5px]"
-        value=""
-        aria-label={label}
-        onChange={(event) => {
-          if (event.target.value) onPick(event.target.value);
-        }}
-      >
-        <option value="">Change…</option>
-        {values.map((value) => <option key={value} value={value}>{value}</option>)}
-      </select>
-    </label>
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="text-[11.5px] text-fg/55">{label}</span>
+      <div className="kit-seg" data-case="sentence" role="group" aria-label={label}>
+        {values.map((value) => (
+          <button key={value} type="button" aria-pressed={value === current} onClick={() => { if (value !== current) onPick(value); }}>
+            {title(value)}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -476,11 +486,11 @@ export function LaneShareGuestChat({
           ) : reached && mode !== "none" ? (
             <div className="text-[12px] text-fg/60" role="status">{reached}</div>
           ) : mode === "none" ? (
-            <div className="text-[12px] text-fg/55">{rights ? "You can watch this chat. The owner did not give you a right to send." : "Reading your access…"}</div>
+            <div className="ade-ls-line">{rights ? "You're watching. Only people the owner allows can send here." : "Reading your access…"}</div>
           ) : (
             <div className="flex min-w-0 items-end gap-2">
               <textarea
-                className="min-h-[38px] min-w-0 flex-1 resize-none rounded-lg border border-fg/10 bg-transparent px-3 py-2 text-[13px] outline-none focus:border-fg/25"
+                className="kit-input min-h-[38px] min-w-0 flex-1"
                 rows={Math.min(6, Math.max(1, text.split("\n").length))}
                 value={text}
                 disabled={!connected || sending}
@@ -514,29 +524,56 @@ export function LaneShareGuestChat({
           )}
           {commandChar && mode !== "none" ? <div className="text-[11.5px] text-[var(--color-warning)]">{LANE_SHARE_PLAIN_TEXT_ONLY_MESSAGE}</div> : null}
           {rights && mode === "send" && !paused && (guestState?.models.length || rights.run.permissionModes.length || rights.run.reasoningLevels.length) ? (
-            <div className="flex min-w-0 flex-wrap items-center gap-2 text-[11.5px] text-fg/60">
-              {guestState && guestState.models.length > 0 ? (
-                <GuestPicker label="Model" values={guestState.models} onPick={(modelId) => { void run("chat.updateSession", { sessionId, modelId }); }} />
+            <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+              {guestState && guestState.models.length > 1 ? (
+                <GuestPicker
+                  label="Model"
+                  values={guestState.models}
+                  current={current.modelId ?? null}
+                  title={(id) => resolveModelDescriptor(id)?.displayName ?? id}
+                  onPick={(modelId) => { void run("chat.updateSession", { sessionId, modelId }); }}
+                />
               ) : null}
-              {rights.run.reasoningLevels.length > 0 ? (
-                <GuestPicker label="Reasoning" values={rights.run.reasoningLevels} onPick={(reasoningEffort) => { void run("chat.updateSession", { sessionId, reasoningEffort }); }} />
+              {rights.run.reasoningLevels.length > 1 ? (
+                <GuestPicker
+                  label="Reasoning"
+                  values={rights.run.reasoningLevels}
+                  current={null}
+                  title={(level) => level.charAt(0).toUpperCase() + level.slice(1)}
+                  onPick={(reasoningEffort) => { void run("chat.updateSession", { sessionId, reasoningEffort }); }}
+                />
               ) : null}
-              {rights.run.permissionModes.length > 0 ? (
-                <GuestPicker label="Mode" values={rights.run.permissionModes} onPick={(permissionMode) => { void run("chat.updateSession", { sessionId, permissionMode }); }} />
+              {rights.run.permissionModes.length > 1 ? (
+                <GuestPicker
+                  label="Mode"
+                  values={rights.run.permissionModes}
+                  current={current.permissionMode ?? null}
+                  title={laneShareModeTitle}
+                  onPick={(permissionMode) => { void run("chat.updateSession", { sessionId, permissionMode }); }}
+                />
               ) : null}
             </div>
           ) : null}
           {guestState ? (
-            <StatusStrip>
-              {modelLabel ? <StatusChip tone="neutral" icon={<Cpu size={11} />} label={modelLabel} /> : null}
-              {current.permissionMode ? <StatusChip tone="neutral" icon={<ShieldCheck size={11} />} label={`Mode: ${current.permissionMode}`} /> : null}
-              {lockedModel ? <StatusChip tone="neutral" icon={<Lock size={11} />} label="Model locked" /> : null}
-              {lockedMode ? <StatusChip tone="neutral" icon={<Lock size={11} />} label="Mode locked" /> : null}
-              {left ? <StatusChip tone={reached ? "warning" : "neutral"} icon={<PaperPlaneRight size={11} />} label={left} /> : null}
-              {guestState.machine ? <StatusChip tone="neutral" icon={<Desktop size={11} />} label={guestState.machine.name} /> : null}
-              {presence ? <StatusChip tone="neutral" icon={<Users size={11} />} label={presence} /> : null}
-              <StatusChip tone="neutral" icon={<Clock size={11} />} label={formatLaneShareEnd(guestState.endsAt)} />
-            </StatusStrip>
+            <LaneShareMeta
+              testId="lane-share-guest-meta"
+              parts={[
+                modelLabel ? (
+                  <span title={lockedModel ? "The owner fixed the model of this chat." : undefined}>
+                    {lockedModel ? <Lock size={10} className="ade-ls-lock" aria-label="Fixed by the owner" /> : null}
+                    {resolveModelDescriptor(modelLabel)?.displayName ?? modelLabel}
+                  </span>
+                ) : null,
+                current.permissionMode ? (
+                  <span title={lockedMode ? "The owner fixed the mode of this chat." : undefined}>
+                    {lockedMode ? <Lock size={10} className="ade-ls-lock" aria-label="Fixed by the owner" /> : null}
+                    {laneShareModeTitle(current.permissionMode)}
+                  </span>
+                ) : null,
+                left ? <span className="kit-num" data-tone={reached ? "warn" : undefined}>{left}</span> : null,
+                presence,
+              ]}
+            />
           ) : null}
         </div>
       </div>

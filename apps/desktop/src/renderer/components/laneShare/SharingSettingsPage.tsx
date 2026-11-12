@@ -2,7 +2,6 @@ import React from "react";
 import { ArrowSquareOut, ArrowsClockwise, DotsThree, PencilSimple, SignOut, UserMinus } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
-  LANE_SHARE_PRESET_NAMES,
   laneSharePresetLabel,
   laneSharePresetRights,
   type LaneSharePresetName,
@@ -15,12 +14,12 @@ import { ContextMenu, type ContextMenuEntry, type ContextMenuState } from "../ui
 import { Banner } from "../ui/notice";
 import { confirmDialog } from "../ui/dialog";
 import { showToast } from "../app/toast/toastStore";
-import { LaneShareRightsPanel, LaneShareRiskSummary } from "./LaneShareRightsPanel";
+import { LaneSharePresetPicker, LaneShareRightsPanel, LaneShareRiskSummary, laneShareRightsPreset } from "./LaneShareRightsPanel";
+import { LaneShareMeta, LaneShareRiskWord, LaneShareState } from "./laneShareUi";
 import { revokeLaneShares } from "./laneShareActions";
 import { useLaneShareDefaults, writeLaneShareDefaults, type LaneShareDefaults } from "./laneShareDefaults";
 import {
   LANE_SHARE_PRESET_LABELS,
-  LANE_SHARE_RISK_LABELS,
   formatLaneShareEnd,
   isLiveLaneShare,
   laneSharePresetText,
@@ -56,10 +55,6 @@ import { laneShareGuestPath } from "./guest/laneShareGuestRoute";
  */
 
 type ListState<T> = { status: "loading" | "ready" | "error"; data: T | null; problem: LaneShareProblem | null };
-
-function riskTone(level: string | null | undefined): "ok" | "warn" | "crit" | undefined {
-  return level === "high" ? "crit" : level === "medium" ? "warn" : level === "low" ? "ok" : undefined;
-}
 
 function projectTitle(entry: { projectLabel: string | null; repoKey: string | null }): string {
   if (entry.projectLabel) return entry.projectLabel;
@@ -235,18 +230,21 @@ function SharedByMe() {
                     key={entry.grantId}
                     title={<span className="block min-w-0 truncate" title={entry.receiverEmail ?? undefined}>{entry.receiverEmail ?? "Guest"}</span>}
                     hint={
-                      <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-                        <span className="min-w-0 truncate" title={entry.laneLabel ?? undefined}>{entry.laneLabel ?? "Lane"}</span>
-                        <span>{preset}</span>
-                        {risk ? <span className="kit-tag" data-tone={riskTone(risk)}>{LANE_SHARE_RISK_LABELS[risk]}</span> : null}
-                        {usage ? <span className="kit-num">{usage}</span> : null}
-                        <span>{formatLaneShareEnd(entry.endsAt)}</span>
-                        <span className="kit-tag" data-tone={state.tone ?? undefined}>{state.label}</span>
-                        {entry.createdBy === "agent" ? <span data-testid="lane-share-made-by-agent">Made by an agent</span> : null}
-                        {!entry.local ? <span className="text-fg/40">On another computer</span> : null}
-                      </span>
+                      <LaneShareMeta
+                        parts={[
+                          entry.laneLabel ?? "Lane",
+                          preset,
+                          risk === "medium" || risk === "high" ? <LaneShareRiskWord key="risk" level={risk} /> : null,
+                          usage ? <span className="kit-num">{usage}</span> : null,
+                          entry.endsAt != null ? formatLaneShareEnd(entry.endsAt) : null,
+                          entry.createdBy === "agent" ? <span data-testid="lane-share-made-by-agent">Made by an agent</span> : null,
+                          !entry.local ? "On another computer" : null,
+                        ]}
+                      />
                     }
                     control={
+                      <>
+                      <LaneShareState label={state.label} tone={state.tone ?? (entry.connectedDevices > 0 ? "ok" : null)} />
                       <button
                         type="button"
                         className="kit-icon-btn"
@@ -258,6 +256,7 @@ function SharedByMe() {
                       >
                         <DotsThree size={16} weight="bold" />
                       </button>
+                      </>
                     }
                   />
                 );
@@ -359,18 +358,21 @@ function SharedWithMe() {
                   key={entry.grantId}
                   title={<span className="block min-w-0 truncate" title={entry.laneLabel ?? undefined}>{entry.laneLabel ?? "Lane"}</span>}
                   hint={
-                    <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-                      <span className="min-w-0 truncate">From {entry.giverLabel ?? "another account"}</span>
-                      <span>{laneSharePresetText(entry.preset)}</span>
-                      {entry.risk ? <span className="kit-tag" data-tone={riskTone(entry.risk)}>{LANE_SHARE_RISK_LABELS[entry.risk]}</span> : null}
-                      <span>{formatLaneShareEnd(entry.endsAt)}</span>
-                      <span className="kit-tag" data-tone={stateLabel.tone ?? undefined}>{stateLabel.label}</span>
-                      {connection?.kind === "host_offline" ? <span className="kit-tag" data-tone="warn">Owner offline</span> : null}
-                      {connection?.kind === "stopped" && connection.reason === "paused" ? <span className="kit-tag" data-tone="warn">Paused</span> : null}
-                    </span>
+                    <LaneShareMeta
+                      parts={[
+                        `From ${entry.giverLabel ?? "another account"}`,
+                        laneSharePresetText(entry.preset),
+                        entry.risk === "medium" || entry.risk === "high" ? <LaneShareRiskWord key="risk" level={entry.risk} /> : null,
+                        entry.endsAt != null ? formatLaneShareEnd(entry.endsAt) : null,
+                      ]}
+                    />
                   }
                   control={
                     <span className="flex items-center gap-1.5">
+                      <LaneShareState
+                        label={connection?.kind === "host_offline" ? "Owner offline" : connection?.kind === "stopped" && connection.reason === "paused" ? "Paused" : stateLabel.label}
+                        tone={connection?.kind === "host_offline" || (connection?.kind === "stopped" && connection.reason === "paused") ? "warn" : stateLabel.tone ?? null}
+                      />
                       {entry.state === "pending" && !expired ? (
                         <button type="button" className="kit-btn kit-btn-primary" data-size="sm" disabled={busy === entry.grantId} onClick={() => { void accept(entry); }}>
                           Accept
@@ -413,27 +415,17 @@ function DefaultRights() {
   const pickPreset = (preset: LaneSharePresetName) => setDraft({ preset, rights: laneSharePresetRights(preset) });
   return (
     <div className="flex min-w-0 flex-col gap-3" data-testid="sharing-defaults">
-      <div className="kit-seg" data-case="sentence" role="radiogroup" aria-label="Default preset">
-        {LANE_SHARE_PRESET_NAMES.map((preset) => (
-          <button key={preset} type="button" role="radio" aria-checked={draft.preset === preset} onClick={() => pickPreset(preset)}>
-            {LANE_SHARE_PRESET_LABELS[preset]}
-          </button>
-        ))}
-      </div>
+      <LaneSharePresetPicker value={draft.preset} label="Default access" onChange={pickPreset} />
       <LaneShareRiskSummary rights={draft.rights} />
-      <div className="kit-panel p-3">
-        <LaneShareRightsPanel
-          rights={draft.rights}
-          endsAt={null}
-          now={Date.now()}
-          onChange={(rights) => {
-            const label = laneSharePresetLabel(rights);
-            setDraft({ preset: sameLaneShareRights(rights, laneSharePresetRights(label)) ? label : "custom", rights });
-          }}
-          // A default carries no end: each share picks its own.
-          onEndsAtChange={() => {}}
-        />
-      </div>
+      <LaneShareRightsPanel
+        rights={draft.rights}
+        endsAt={null}
+        now={Date.now()}
+        showEnd={false}
+        onChange={(rights) => setDraft({ preset: laneShareRightsPreset(rights), rights })}
+        // A default carries no end: each share picks its own.
+        onEndsAtChange={() => {}}
+      />
       <div className="flex items-center gap-2">
         <button
           type="button"
