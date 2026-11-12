@@ -105,6 +105,15 @@ struct ProjectLocationScreen: View {
     }
     // Online and offline come from the account; read it once on open.
     .task { await account.loadMachines() }
+    // A choice the list now shows is the list's again: a later change from
+    // another device must win over it.
+    .onChange(of: project) { _, next in
+      guard let next, !chosenMain.isEmpty else { return }
+      for computer in projectLocationComputers(next, machines: account.machines)
+      where computer.folders.first(where: \.isMain)?.checkoutId == chosenMain[computer.accountMachineKey] {
+        chosenMain[computer.accountMachineKey] = nil
+      }
+    }
   }
 
   @ViewBuilder

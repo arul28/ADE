@@ -442,7 +442,13 @@ extension SyncService {
       do {
         let raw = try await sendMachineCommand(action: accountProjectSetMainAction, args: ["checkoutId": checkoutId], onMachine: callKey)
         let answer = raw as? [String: Any] ?? [:]
-        if answer["ok"] as? Bool == true { return .success(()) }
+        if answer["ok"] as? Bool == true {
+          // Saved on the computer, but your account does not have it yet.
+          if answer["published"] as? Bool == false {
+            return .failure(SyncPairAlongsideFailure(message: "\(machineName) saved this, but could not send it to your ADE account yet. It tries again on its own."))
+          }
+          return .success(())
+        }
         let message = (answer["message"] as? String).flatMap { $0.isEmpty ? nil : $0 }
           ?? "\(machineName) did not change the folder for new lanes."
         return .failure(SyncPairAlongsideFailure(message: message))

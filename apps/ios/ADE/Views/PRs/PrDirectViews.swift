@@ -348,8 +348,21 @@ struct PrDirectPullRows: View {
   let repo: GitHubDirectRepoRef
   let computerName: String?
   @ObservedObject var model: PrDirectPullsModel
+  /// The PRs header's search, applied to the open PRs read from GitHub.
+  var searchText = ""
   let onOpen: (GitHubDirectPull) -> Void
   @ObservedObject private var connection = GitHubAccountConnection.shared
+
+  private var shown: [GitHubDirectPull] {
+    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !query.isEmpty else { return model.pulls }
+    return model.pulls.filter { pull in
+      pull.title.lowercased().contains(query)
+        || "#\(pull.number)".contains(query)
+        || pull.headRef.lowercased().contains(query)
+        || (pull.author?.lowercased().contains(query) ?? false)
+    }
+  }
 
   var body: some View {
     Section {
@@ -364,20 +377,32 @@ struct PrDirectPullRows: View {
         Spacer(minLength: 0)
       }
       .adeFlatRow(separator: .hidden)
-      if let error = model.error, let copy = githubDirectStateCopy(error, owner: repo.owner, name: repo.name, githubLogin: connection.state.login) {
-        GitHubStateCard(copy: copy)
-          .adeFlatRow(separator: .hidden)
+      if let error = model.error {
+        if let copy = githubDirectStateCopy(error, owner: repo.owner, name: repo.name, githubLogin: connection.state.login) {
+          GitHubStateCard(copy: copy)
+            .adeFlatRow(separator: .hidden)
+        } else {
+          // A failure with no state of its own (GitHub refused the request).
+          Text("GitHub did not return this list. Pull down to try again.")
+            .font(.footnote)
+            .foregroundStyle(ADEColor.warning)
+            .fixedSize(horizontal: false, vertical: true)
+            .adeFlatRow(separator: .hidden)
+        }
       }
       if !model.loaded && model.error == nil {
         ForEach(0..<3, id: \.self) { _ in PrRowCardSkeleton().adeFlatRow() }
       } else if model.loaded && model.error == nil && model.pulls.isEmpty {
         PrFlatEmptyRow(title: "No open pull requests", message: "\(repo.fullName) on GitHub")
           .adeFlatRow(separator: .hidden)
+      } else if !model.pulls.isEmpty && shown.isEmpty {
+        PrFlatEmptyRow(title: "No open pull request matches", message: "\"\(searchText)\" in \(repo.fullName)")
+          .adeFlatRow(separator: .hidden)
       }
     }
-    if !model.pulls.isEmpty {
+    if !shown.isEmpty {
       Section {
-        ForEach(model.pulls) { pull in
+        ForEach(shown) { pull in
           Button {
             onOpen(pull)
           } label: {
@@ -395,7 +420,8 @@ struct PrDirectPullRows: View {
           .adeFlatRow(separator: .hidden)
         }
       } header: {
-        ADEFlatSectionHeader("Open on GitHub", detail: "\(model.pulls.count)")
+        // Rows kept from an earlier read while the last one failed.
+        ADEFlatSectionHeader("Open on GitHub", detail: model.error == nil ? "\(shown.count)" : "\(shown.count) · may be out of date")
       }
     }
   }

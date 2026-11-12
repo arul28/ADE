@@ -190,6 +190,7 @@ struct RemoteProjectAddSheet: View {
                 computerName: targetName ?? syncService.focusedMachineDisplayName,
                 isSubmitting: isSubmitting,
                 onPick: { repo in Task { await addGitHubRepo(repo) } },
+                onAccountConnected: governsAccount ? { gitHubDirect = true } : nil,
                 onCloneURL: {
                   cloneTab = .url
                   screen = .clone

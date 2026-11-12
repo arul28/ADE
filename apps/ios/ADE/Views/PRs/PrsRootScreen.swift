@@ -481,7 +481,8 @@ struct PRsTabView: View, Equatable {
         PrDirectPullRows(
           repo: directRepo,
           computerName: inputs.directComputerName,
-          model: directPrs
+          model: directPrs,
+          searchText: searchText
         ) { directOpened = $0 }
       } else {
         noticeRows
@@ -573,7 +574,7 @@ struct PRsTabView: View, Equatable {
     PrListHeaderBar(
       searchText: $searchText,
       prompt: "Search PRs",
-      filterActive: hasActiveFilters,
+      filterActive: directRepo == nil && hasActiveFilters,
       canCreate: canCreatePr,
       onCreate: {
         createInitialLaneId = nil
@@ -582,6 +583,7 @@ struct PRsTabView: View, Equatable {
       onOpenActivity: { syncService.attentionDrawerPresented = true },
       onOpenSettings: { syncService.settingsPresented = true }
     ) {
+      if directRepo == nil {
         Picker("Show", selection: selectedGitHubScopeFilter) {
           ForEach(PrGitHubScopeFilter.allCases) { scope in
             Text(scope.title).tag(scope)
@@ -594,9 +596,14 @@ struct PRsTabView: View, Equatable {
           }
         }
         .pickerStyle(.inline)
-
+      } else {
+        // The list read from GitHub has open PRs only, newest first.
+        Text("Show and Sort work when the computer is online.")
+      }
     } category: {
-      githubCategoryPicker
+      if directRepo == nil {
+        githubCategoryPicker
+      }
     }
   }
 

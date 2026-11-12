@@ -31858,7 +31858,9 @@ async function runServe(
         await publisher.publishNow();
         await sync.idle();
       }
-      return result;
+      // Saved here either way; say when the account does not have it yet.
+      const published = sync.runCount() !== before && !sync.publishPending();
+      return { ...result, published };
     });
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;

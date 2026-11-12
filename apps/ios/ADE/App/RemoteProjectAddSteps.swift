@@ -21,6 +21,9 @@ struct ProjectGitHubRepoPicker: View {
   let computerName: String
   let isSubmitting: Bool
   let onPick: (MobileGitHubRepoSummary) -> Void
+  /// The account's GitHub sign-in finished here: the sheet moves to the
+  /// account's own list, which this computer's list cannot show.
+  var onAccountConnected: (() -> Void)?
   /// Opens the clone form, for a repository the list does not hold (a
   /// public one, or a computer with no GitHub sign-in).
   let onCloneURL: () -> Void
@@ -47,7 +50,12 @@ struct ProjectGitHubRepoPicker: View {
           message: "Connect GitHub to your ADE account to list your repositories from this phone.",
           tone: .neutral,
           actionTitle: accountGitHub.connecting ? "Connecting…" : "Connect GitHub",
-          action: { Task { await accountGitHub.connect() } }
+          action: {
+            Task {
+              await accountGitHub.connect()
+              if accountGitHub.state.isConnected { onAccountConnected?() }
+            }
+          }
         )
       }
       if loading && repos.isEmpty {
@@ -131,6 +139,8 @@ struct ProjectAccountGitHubRepoPicker: View {
   @State private var loaded = false
   @State private var error: GitHubDirectError?
   @State private var pickedId: String?
+  /// The GitHub sign-in the list belongs to.
+  @State private var listedFor: String?
 
   private var shown: [GitHubDirectRepository] {
     let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -191,6 +201,15 @@ struct ProjectAccountGitHubRepoPicker: View {
   }
 
   private func load() async {
+    // Another GitHub sign-in: the old list is not theirs, so nobody picks from it.
+    let login = connection.state.login
+    if listedFor != login {
+      listedFor = login
+      repos = []
+      loaded = false
+      error = nil
+      pickedId = nil
+    }
     switch await GitHubDirectClient.shared.listRepositories() {
     case .success(let next):
       repos = next

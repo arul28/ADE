@@ -221,6 +221,9 @@ final class GitHubAccountConnection: ObservableObject {
   /// A token answer that needs no new request before `until`.
   private var negative: (failure: GitHubAccountTokenFailure, until: Date)?
   private var tokenTask: Task<Result<String, GitHubAccountTokenFailure>, Never>?
+  /// Bumps when the sign-in changes (account switch, connect, disconnect): a
+  /// token answer asked for before it is dropped.
+  private var grantGeneration = 0
   private var lastStatusAt: Date?
   private var statusTask: Task<Void, Never>?
   private var webSession: ASWebAuthenticationSession?
@@ -259,6 +262,7 @@ final class GitHubAccountConnection: ObservableObject {
   }
 
   private func resetMemory() {
+    grantGeneration &+= 1
     tokenTask?.cancel()
     tokenTask = nil
     statusTask?.cancel()
@@ -276,9 +280,15 @@ final class GitHubAccountConnection: ObservableObject {
   /// Reads `GET /github/app/status`. A screen calls it on appear; `force`
   /// is for the person's own act (pull to refresh, back from GitHub).
   func refreshStatus(force: Bool = false) async {
-    if let statusTask {
-      await statusTask.value
-      return
+    if let joined = statusTask {
+      await joined.value
+      // A forced read wants an answer from after the person's act (a
+      // finished sign-in): the joined read may have started before it.
+      guard force else { return }
+      if let newer = statusTask, newer != joined {
+        await newer.value
+        return
+      }
     }
     if !force, let lastStatusAt, Date().timeIntervalSince(lastStatusAt) < Self.statusFloor { return }
     let task = Task { @MainActor [weak self] in
@@ -366,13 +376,16 @@ final class GitHubAccountConnection: ObservableObject {
     var body: [String: Any] = ["reason": rejected == nil ? "expired" : "rejected"]
     if let rejected { body["rejectedTokenSha256"] = Self.sha256Hex(rejected) }
     let requestedUserId = userId
+    let requestedGeneration = grantGeneration
     let receivedAt = Date()
     let answer: GitHubAccountClient.Answer
     switch await call("POST", path: "github/app/token", body: body) {
     case .failure(let failure): return .failure(failure)
     case .success(let value): answer = value
     }
-    guard userId == requestedUserId, let requestedUserId else { return .failure(.accountChanged) }
+    guard userId == requestedUserId, let requestedUserId, grantGeneration == requestedGeneration else {
+      return .failure(.accountChanged)
+    }
     if answer.status == 200, let token = try? JSONDecoder().decode(GitHubAppTokenAnswer.self, from: answer.data) {
       let next = GitHubAccountTokenRecord(
         accountUserId: requestedUserId,
@@ -408,7 +421,11 @@ final class GitHubAccountConnection: ObservableObject {
     return .failure(failure)
   }
 
+  /// Drops the token, and any token answer still on its way.
   private func dropToken() {
+    grantGeneration &+= 1
+    tokenTask?.cancel()
+    tokenTask = nil
     record = nil
     keychain.clearGitHubAccountToken()
   }

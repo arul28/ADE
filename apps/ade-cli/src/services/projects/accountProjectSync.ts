@@ -146,10 +146,13 @@ export type AccountProjectSync = {
   setMainCheckout: (checkoutId: string) => Promise<AccountProjectMainResult>;
   /** Runs started so far. A caller compares two reads to see that a run happened. */
   runCount: () => number;
+  /** The last copy upload failed and waits for its retry: the account does not have this machine's copies yet. */
+  publishPending: () => boolean;
 };
 
 export type AccountProjectMainResult =
-  | { ok: true; checkoutId: string; changed: boolean }
+  /** `published: false`: saved on this machine; the account gets it on the upload's retry. */
+  | { ok: true; checkoutId: string; changed: boolean; published?: boolean }
   | { ok: false; code: "signed_out" | "not_a_copy" | "not_publishing" | "write_failed"; message: string };
 
 // ---------------------------------------------------------------------------
@@ -755,6 +758,7 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
     queued = null;
     running = drain(next).finally(() => {
       running = null;
+      drainQueued();
     });
   };
 
@@ -828,6 +832,11 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
     },
     setMainCheckout,
     runCount: () => runs,
+    publishPending() {
+      const userId = options.getAccountUserId();
+      if (!userId) return false;
+      return stateForAccount(readAccountProjectState(options.adeDir, logger), userId).publishFailures !== null;
+    },
     async idle() {
       while (running) await running;
     },
