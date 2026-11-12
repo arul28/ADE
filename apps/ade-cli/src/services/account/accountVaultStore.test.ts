@@ -743,6 +743,42 @@ describe("account vault store", () => {
       );
     });
 
+    // After a VAULT_ENCRYPTION_KEY rotation the account's row is unreadable,
+    // the cache keeps its readable value and old revision, and a sync that
+    // reads that revision again would resend the same refused write each tick.
+    it("holds checked writes over a row the relay cannot open, for 1 minute and then 2, until a write lands", async () => {
+      let clock = Date.parse("2026-09-16T00:00:00.000Z");
+      const store = makeStore({ now: () => clock });
+      store.set("all", "provider_key", "github", "readable-here");
+      await store.sync();
+      const unreadable = { ...item("github", null, "2026-09-16T00:00:05.000Z") };
+      relay.putAccountVault.mockImplementation(async (items: unknown[]) => ({
+        updatedAt: null,
+        results: items.map(() => ({ status: "stale", current: unreadable })),
+      }));
+      const revision = () => store.list("all").find((row) => row.key === "github")!.revision;
+      const checkedWrite = () => store.trySet("all", "provider_key", "github", "rotated-here", { expectedRevision: revision() });
+
+      expect(checkedWrite()).toBe("queued");
+      await store.sync();
+      expect(relay.putAccountVault).toHaveBeenCalledTimes(2);
+
+      clock += 59_000;
+      expect(checkedWrite()).toBe("stale");
+      clock += 2_000;
+      expect(checkedWrite()).toBe("queued");
+      await store.sync();
+      clock += 119_000;
+      expect(checkedWrite(), "the second refusal doubles the wait").toBe("stale");
+      expect(relay.putAccountVault).toHaveBeenCalledTimes(3);
+
+      // A write that reaches the account ends the hold.
+      relay.putAccountVault.mockResolvedValue({ updatedAt: LANDED });
+      store.set("all", "provider_key", "github", "fixed-elsewhere");
+      await store.sync();
+      expect(checkedWrite()).toBe("queued");
+    });
+
     // An older relay cannot refuse it, so the store reads what changed since
     // the queued write first. A write newer than the account's row still goes.
     // A relay that refuses stale writes itself (learned before a restart) is

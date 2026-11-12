@@ -740,11 +740,11 @@ describe("multi-project RPC server", () => {
       ]);
       const store = {
         get: vi.fn((scope: string, kind: string, key: string) => rows.get(`${scope}|${kind}|${key}`) ?? null),
-        set: vi.fn((scope: string, kind: string, key: string, value: string) => {
+        trySet: vi.fn((scope: string, kind: string, key: string, value: string) => {
           rows.set(`${scope}|${kind}|${key}`, value);
-          return true;
+          return "queued" as const;
         }),
-        remove: vi.fn((scope: string, kind: string, key: string) => rows.delete(`${scope}|${kind}|${key}`)),
+        tryRemove: vi.fn((scope: string, kind: string, key: string) => (rows.delete(`${scope}|${kind}|${key}`) ? "queued" as const : "refused" as const)),
         list: vi.fn(() => []),
         sync: vi.fn(),
         pendingKeys: vi.fn(() => []),
@@ -760,7 +760,7 @@ describe("multi-project RPC server", () => {
         expect(rows).toEqual(before);
       } else {
         const answer = await call as { result: unknown };
-        expect(store[action as "get" | "set"]).toHaveBeenCalledTimes(1);
+        expect(action === "get" ? store.get : store.trySet).toHaveBeenCalledTimes(1);
         expect(answer.result).toBe(action === "get" ? before.get(argsList.slice(0, 3).join("|")) : true);
         if (action === "set") expect(rows.get("all|integration|cloud-budget")).toBe("{\"capUsd\":5}");
       }

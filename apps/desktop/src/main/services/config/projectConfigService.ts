@@ -4,6 +4,7 @@ import { ADE_CLOUD_HOME_DEVICE_ID, ADE_CLOUD_HOME_NAME, isAdeCloudHome } from ".
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import YAML from "yaml";
 import cron from "node-cron";
 import { z } from "zod";
@@ -3186,13 +3187,20 @@ export function createProjectConfigService({
   adeDir,
   projectId,
   db,
-  logger
+  logger,
+  storeOfferedApiKey
 }: {
   projectRoot: string;
   adeDir: string;
   projectId: string;
   db: AdeDb;
   logger: Logger;
+  /**
+   * Saves a provider key that a config write offers (a new or changed
+   * `ai.apiKeys` entry) in the API key store instead of the file. Throws when
+   * it cannot. Without it, such a write is refused.
+   */
+  storeOfferedApiKey?: (provider: string, key: string) => void;
 }) {
   const sharedPath = path.join(adeDir, "ade.yaml");
   const localPath = path.join(adeDir, "local.yaml");
@@ -3480,15 +3488,63 @@ export function createProjectConfigService({
     automationRuleSync?.stamp(snapshot.effective.automations, automationNotes);
   };
 
-  const writeLocalFile = (local: ProjectConfigFile): void => {
-    initializeOrRepairAdeProject(projectRoot, { logger });
-    fs.mkdirSync(path.dirname(localPath), { recursive: true });
-    writeFileAtomicSync(localPath, toCanonicalYaml(local));
-    cachedLocalFile = null;
-  };
-
   /** The file's own config, without the account's rules. */
   const readLocalFileConfig = (): ProjectConfigFile => normalizeConfigFilePaths(readConfigFile(localPath).config, projectRoot);
+
+  /**
+   * `.ade/local.yaml` never gets a new provider key (account project plan,
+   * slice Y1). A write keeps an `ai.apiKeys` entry only when the file already
+   * holds that exact value: a key still waiting to move to the key store
+   * (`localYamlApiKeys.ts`). A new or changed key goes to the key store
+   * through `storeOfferedApiKey`, before anything is written; without that
+   * hook the write is refused, so the caller still has the key. The dead
+   * `providers` block keeps only the entries the file already has.
+   */
+  const withoutNewPlaintextKeys = (local: ProjectConfigFile): ProjectConfigFile => {
+    const offeredKeys = local.ai?.apiKeys ?? {};
+    if (Object.keys(offeredKeys).length === 0 && !local.providers) return local;
+    const onDisk = readLocalFileConfig();
+    const diskKeys = onDisk.ai?.apiKeys ?? {};
+    const keptKeys: Record<string, string> = {};
+    const offered: Array<[string, string]> = [];
+    for (const [provider, value] of Object.entries(offeredKeys)) {
+      if (diskKeys[provider] === value) keptKeys[provider] = value;
+      else offered.push([provider, value]);
+    }
+    if (offered.length > 0) {
+      if (!storeOfferedApiKey) {
+        throw new Error("Provider API keys are not saved in .ade/local.yaml any more. Add the key in ADE Settings.");
+      }
+      for (const [provider, value] of offered) storeOfferedApiKey(provider, value);
+      logger.info("projectConfig.api_key_saved_to_store", { providers: offered.map(([provider]) => provider) });
+    }
+    let ai = local.ai;
+    if (ai?.apiKeys) {
+      const { apiKeys: _offered, ...rest } = ai;
+      ai = Object.keys(keptKeys).length > 0 ? { ...rest, apiKeys: keptKeys } : rest;
+    }
+    let providers = local.providers;
+    if (providers) {
+      const diskProviders = onDisk.providers ?? {};
+      const kept: Record<string, unknown> = {};
+      const refused: string[] = [];
+      for (const [name, entry] of Object.entries(providers)) {
+        if (isDeepStrictEqual(diskProviders[name], entry)) kept[name] = entry;
+        else refused.push(name);
+      }
+      if (refused.length > 0) logger.warn("projectConfig.providers_write_refused", { providers: refused });
+      providers = Object.keys(kept).length > 0 ? kept : undefined;
+    }
+    return { ...local, ...(ai ? { ai } : {}), providers };
+  };
+
+  const writeLocalFile = (local: ProjectConfigFile): void => {
+    const safeLocal = withoutNewPlaintextKeys(local);
+    initializeOrRepairAdeProject(projectRoot, { logger });
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+    writeFileAtomicSync(localPath, toCanonicalYaml(safeLocal));
+    cachedLocalFile = null;
+  };
 
   const validateCandidate = (shared: ProjectConfigFile, local: ProjectConfigFile): ProjectConfigValidationResult => {
     const sharedHash = hashContent(toCanonicalYaml(shared));
@@ -3508,9 +3564,10 @@ export function createProjectConfigService({
       throw invalidConfigError(validation);
     }
     // Account rules never land in the file; a new one is filed in the account.
-    const local = options.divert === false || !automationRuleSync
+    const diverted = options.divert === false || !automationRuleSync
       ? candidateLocal
       : { ...candidateLocal, automations: automationRuleSync.divert(candidateLocal.automations ?? []) };
+    const local = withoutNewPlaintextKeys(diverted);
 
     const localYaml = toCanonicalYaml(local);
 

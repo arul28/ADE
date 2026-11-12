@@ -8,8 +8,9 @@
  * account-origin so sign-out (or a removal on another machine) drops that copy
  * and never one pasted here.
  *
- * The GitHub App sign-in and `gh` / environment tokens are not touched: they
- * belong to the machine they were made on.
+ * The GitHub App sign-in and environment tokens are not touched: they belong
+ * to the machine they were made on. A `gh` login follows the account through
+ * its own vault item (`githubGhAccountSync.ts`).
  */
 
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
@@ -81,10 +82,14 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
 
   /**
    * Share a token pasted here with the account's other machines. Resolves
-   * once the account's copy settled (written, or every attempt failed), for a
-   * caller that tells others to read it again; never rejects.
+   * once the account's copy settled (written, refused as stale, or every
+   * attempt failed), for a caller that tells others to read it again; never
+   * rejects. With `expectedRevision` (a sync deciding from what it read), the
+   * vault writes only while the item is still what was read; otherwise
+   * nothing is written and the next sync decides again. A token the person
+   * saved names no revision and replaces what is there.
    */
-  const publish = async (token: string): Promise<void> => {
+  const publishToAccount = async (token: string, expectedRevision?: string): Promise<void> => {
     if (!accountUserId()) return;
     const clean = token.trim();
     if (!clean) return;
@@ -93,8 +98,10 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
       ACCOUNT_GITHUB_VAULT_KIND,
       GITHUB_PAT_VAULT_KEY,
       JSON.stringify({ v: 1, token: clean }),
+      expectedRevision !== undefined ? { expectedRevision } : undefined,
     ));
   };
+  const publish = (token: string): Promise<void> => publishToAccount(token);
 
   /**
    * Before this machine's token is cleared: remove the account's copy too,
@@ -108,7 +115,14 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
     void (async () => {
       const read = await readAccountVaultItem(vault, vaultRef, decodeAccountGithubToken, logFailure);
       if (read?.value !== previous) return;
-      fireAndForgetVaultWrite(vaultOptions, "remove", (target) => target.remove(vaultRef.scope, vaultRef.kind, vaultRef.key));
+      // Only the copy that was read: one another machine saved since stays.
+      const expectedRevision = read.revision;
+      fireAndForgetVaultWrite(vaultOptions, "remove", (target) => target.remove(
+        vaultRef.scope,
+        vaultRef.kind,
+        vaultRef.key,
+        expectedRevision !== undefined ? { expectedRevision } : undefined,
+      ));
     })();
   };
 
@@ -125,6 +139,16 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
 
     publish,
     unpublish,
+
+    /** Whether the machine's stored token is the account's copy, not one pasted here. */
+    isFromAccount(): boolean {
+      try {
+        return Boolean(readLocal()) && localIsFromAccount();
+      } catch (error) {
+        args.logger?.warn?.("github.pat_account_read_failed", { error: (error as NodeJS.ErrnoException | null)?.code ?? "unknown" });
+        return false;
+      }
+    },
 
     /**
      * Reconcile at account sign-in and on vault sync ticks. The vault's token
@@ -166,7 +190,7 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
         }
         if (!remote) {
           if (present && remoteRaw !== null) return;
-          if (local && !fromAccount) void publish(local);
+          if (local && !fromAccount) void publishToAccount(local, read.revision);
           return;
         }
         if (!local) {

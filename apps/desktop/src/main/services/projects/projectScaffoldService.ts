@@ -21,7 +21,7 @@ import { codedError } from "../../../shared/codedError";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { isFsAccessRefusal } from "../../../shared/fsAccessRefusal";
 import { gitCommandError, runGit } from "../git/git";
-import { githubAuthHeaderGitEnv } from "../git/gitTransportAuth";
+import { githubAuthHeaderGitEnv, githubHttpsRemoteOwner } from "../git/gitTransportAuth";
 import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import type { Logger } from "../logging/logger";
 import type { createGithubService } from "../github/githubService";
@@ -342,10 +342,14 @@ export function createProjectScaffoldService({
     }
   };
 
-  /** Whether this computer has a GitHub sign-in git can use (environment, gh, or the saved token). */
-  const hasOwnGithubSignIn = async (): Promise<boolean> => {
+  /**
+   * Whether this computer has a GitHub sign-in git can use for this owner's
+   * repository: environment, gh, the saved token, or the account's sign-ins
+   * (the App sign-in only where the owner's installation lets it write).
+   */
+  const hasOwnGithubSignIn = async (owner: string | null): Promise<boolean> => {
     try {
-      await githubService.getGitTransportTokenOrThrowAsync();
+      await githubService.getGitTransportTokenOrThrowAsync({ owner });
       return true;
     } catch (error) {
       logger.info("project_scaffold.clone_no_own_github_sign_in", { error: error instanceof Error ? error.name : "unknown" });
@@ -413,7 +417,7 @@ export function createProjectScaffoldService({
     const borrowedHeader = authHeader.length > 0;
     if (!authHeader) {
       try {
-        const storedToken = await githubService.getGitTransportTokenOrThrowAsync();
+        const storedToken = await githubService.getGitTransportTokenOrThrowAsync({ owner: githubHttpsRemoteOwner(url) });
         const basic = Buffer.from(`x-access-token:${storedToken}`, "utf8").toString("base64");
         authHeader = `basic ${basic}`;
       } catch {
@@ -452,7 +456,7 @@ export function createProjectScaffoldService({
 
       // Cloned with another computer's header: without a sign-in of its own,
       // this computer's fetch and push won't sign in. The caller says so.
-      if (borrowedHeader && !await hasOwnGithubSignIn()) return { rootPath, githubSignInMissing: true };
+      if (borrowedHeader && !await hasOwnGithubSignIn(githubHttpsRemoteOwner(url))) return { rootPath, githubSignInMissing: true };
       return { rootPath };
     } catch (err) {
       if (!preexistedRoot) {

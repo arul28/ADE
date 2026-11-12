@@ -987,7 +987,7 @@ import { createAccountSettingsSyncService } from "../account/accountSettingsSync
 import { createDesktopProjectRecords } from "../projects/desktopProjectRecords";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { captureAutomationTestAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { captureAutomationTestAnalytics, captureGhAccountSharingAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -12225,6 +12225,17 @@ export function registerIpc({
   handle(IPC.githubClearToken, async (): Promise<GitHubStatus> => {
     const ctx = getCtx();
     ctx.githubService.clearToken();
+    const status = await ctx.githubService.getStatus();
+    broadcastGithubStatus(status);
+    return status;
+  });
+
+  handle(IPC.githubSetGhAccountSharing, async (_event, arg: { enabled?: boolean }): Promise<GitHubStatus> => {
+    const ctx = getCtx();
+    const enabled = arg?.enabled === true;
+    await ctx.githubService.setGhAccountSharing({ enabled });
+    // Reached only after the vault accepted the change; a refusal throws above.
+    captureGhAccountSharingAnalytics({ analytics: productAnalyticsService, surface: "desktop", enabled });
     const status = await ctx.githubService.getStatus();
     broadcastGithubStatus(status);
     return status;

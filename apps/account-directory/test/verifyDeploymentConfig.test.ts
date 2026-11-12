@@ -197,7 +197,9 @@ describe("account directory deployment preflight", () => {
     // false gate; saying nothing would hide why phone approval does not work.
     const result = verify({
       environments: ["production"],
-      secretsByEnvironment: { production: [...REQUIRED_SECRETS, "CLOUD_LAUNCH_JOIN_KEY"] },
+      secretsByEnvironment: {
+        production: [...REQUIRED_SECRETS, ...OPTIONAL_SECRETS.map(({ name }) => name).filter((name) => name !== "CLERK_SECRET_KEY")],
+      },
     });
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain("CLERK_SECRET_KEY is not set for the production environment");

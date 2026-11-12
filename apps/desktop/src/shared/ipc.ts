@@ -1097,6 +1097,7 @@ export const IPC = {
   githubGetRemoteStatus: "ade.github.getRemoteStatus",
   githubSetToken: "ade.github.setToken",
   githubClearToken: "ade.github.clearToken",
+  githubSetGhAccountSharing: "ade.github.setGhAccountSharing",
   githubStatusChanged: "ade.github.statusChanged",
   githubGetRequestBudget: "ade.github.getRequestBudget",
   githubIsRepoStarred: "ade.github.isRepoStarred",
@@ -1104,6 +1105,15 @@ export const IPC = {
   githubStartAppUserDeviceAuth: "ade.github.startAppUserDeviceAuth",
   githubPollAppUserDeviceAuth: "ade.github.pollAppUserDeviceAuth",
   githubClearAppUserAuth: "ade.github.clearAppUserAuth",
+  // The ADE account's GitHub App sign-in. Account-scoped: no machine pin.
+  githubGetAccountAppStatus: "ade.github.getAccountAppStatus",
+  githubStartAccountAppSignIn: "ade.github.startAccountAppSignIn",
+  githubReadAccountAppSignIn: "ade.github.readAccountAppSignIn",
+  githubSignOutAccountApp: "ade.github.signOutAccountApp",
+  // Direct GitHub reads with the account's GitHub App sign-in. Account-scoped:
+  // no machine pin (githubDirectIpc.ts).
+  githubDirectRequest: "ade.githubDirect.request",
+  githubDirectGetState: "ade.githubDirect.getState",
   githubGetAppInstallationStatus: "ade.github.getAppInstallationStatus",
   githubListRepoAutolinks: "ade.github.listRepoAutolinks",
   githubCreateRepoAutolink: "ade.github.createRepoAutolink",

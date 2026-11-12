@@ -2722,6 +2722,7 @@ export function createPtyService({
   jevService,
   getLaneRuntimeEnv,
   getSessionLinearEnv,
+  getSessionGithubEnv,
   getAdeCliAgentEnv,
   runtimeSocketPath,
   sessionActivityReportingEnabled,
@@ -2755,6 +2756,12 @@ export function createPtyService({
    * Linear creds, mirroring the SDK chat path's `buildAgentRuntimeEnv`.
    */
   getSessionLinearEnv?: (args: { sessionId: string; chatSessionId: string | null }) => Record<string, string> | null;
+  /**
+   * `GH_TOKEN` for `gh` from the ADE account's GitHub App sign-in, when the
+   * shell's environment and `gh` have no GitHub sign-in of their own
+   * (githubSessionEnv.ts). Given the environment the shell would get.
+   */
+  getSessionGithubEnv?: (env: NodeJS.ProcessEnv) => Promise<Record<string, string> | null>;
   getAdeCliAgentEnv?: (baseEnv?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   /** Exact RPC endpoint served by this runtime; absent endpoints disable activity reporting. */
   runtimeSocketPath?: string | null;
@@ -7308,6 +7315,10 @@ export function createPtyService({
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
         { preserveNoColor: explicitNoColor },
       );
+      // The account's GitHub App token for `gh`, only when nothing else signs
+      // `gh` in; checked against the environment this shell gets.
+      const sessionGithubEnv = await getSessionGithubEnv?.(launchEnv).catch(() => null);
+      if (sessionGithubEnv) Object.assign(launchEnv, sessionGithubEnv);
       // ADE renders this PTY, so it names itself rather than the terminal the
       // host happened to start in. A caller or lane that set TERM_PROGRAM keeps
       // it, unless the value is only a copy of the host's (App Control passes

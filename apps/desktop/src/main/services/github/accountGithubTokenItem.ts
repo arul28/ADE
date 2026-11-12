@@ -12,9 +12,8 @@ export const ACCOUNT_GITHUB_VAULT_KIND = "integration";
 export const GITHUB_PAT_VAULT_KEY = "github";
 
 /**
- * A `gh` CLI login copied to the account. Written by PR #2186
- * (`githubGhAccountSync.ts`), which imports this key; until that lands
- * nothing writes the item, and readers find none.
+ * A `gh` CLI login copied to the account. Written by `githubGhAccountSync.ts`
+ * in the same `{ v: 1, token }` / `{ v: 1, removed: true }` format.
  */
 export const GITHUB_CLI_VAULT_KEY = "github-cli";
 

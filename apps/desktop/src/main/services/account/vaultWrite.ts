@@ -29,7 +29,8 @@ function defaultSchedule(callback: () => void, delayMs: number): void {
 /**
  * Queue a vault mutation without making local credential persistence wait on
  * the brain. The returned promise is for a caller that wants to act once the
- * write settled: true when it landed, false when every attempt failed. It
+ * write settled: true when it landed, false when every attempt failed or the
+ * account refused it as stale (a newer revision replaced the one it named). It
  * never rejects, so nobody has to await it.
  */
 export function fireAndForgetVaultWrite(
@@ -88,6 +89,13 @@ export function fireAndForgetVaultWrite(
     void Promise.resolve(pending).then((result) => {
       if (result && typeof result === "object" && "ok" in result && result.ok === true) {
         settle(true);
+        return;
+      }
+      // A write that named a revision the item no longer has is an answer, not
+      // a failure: the same write again would be refused again. It did not
+      // land; the caller reads again on its next sync and decides again.
+      if (result && typeof result === "object" && "stale" in result && result.stale === true) {
+        settle(false);
         return;
       }
       fail(result);

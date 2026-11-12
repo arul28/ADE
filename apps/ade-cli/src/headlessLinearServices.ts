@@ -5,7 +5,9 @@ import { createRepeatedFailureGate } from "../../desktop/src/main/services/loggi
 import { resolveGithubRepoRef } from "../../desktop/src/main/services/github/githubSshAlias";
 import { gitPushError } from "../../desktop/src/main/services/git/gitPushFailure";
 import { githubRepoRefFromRemoteUrl } from "../../desktop/src/shared/githubRemote";
-import { issueWriteCandidates } from "../../desktop/src/main/services/github/githubIssueWriteAccess";
+import { appGrantAllowsCapability, gateAppCandidates } from "../../desktop/src/shared/github/githubAppGrant";
+import { createGithubAccountAppCredential } from "../../desktop/src/main/services/github/githubAccountAppCredential";
+import { createGithubSessionEnv, readOwnEnvironmentGithubToken } from "../../desktop/src/main/services/github/githubSessionEnv";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -158,6 +160,7 @@ import {
 } from "../../desktop/src/main/services/github/githubCredentialHealth";
 import { githubAutolinksAccessError } from "../../desktop/src/shared/githubAutolinks";
 import { createGithubPatAccountSync } from "../../desktop/src/main/services/github/githubPatAccountSync";
+import { createGithubGhAccountSync, readGithubAccountCredentialState } from "../../desktop/src/main/services/github/githubGhAccountSync";
 
 type HeadlessGitHubStatus = GitHubStatus;
 export type HeadlessGitHubService = GithubService;
@@ -213,9 +216,11 @@ type HeadlessLinearDeps = {
   conflictService: ReturnType<typeof createConflictService>;
   openExternal?: (url: string) => Promise<void>;
   onGitHubStatusChanged?: (status: HeadlessGitHubStatus) => void;
-  getAccountAccessToken?: () => Promise<string | null>;
+  getAccountAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string | null>;
   getAccountVault?: () => AccountVaultBridge | null | undefined;
   getAccountUserId?: () => string | null;
+  /** The account directory address, for the account's GitHub App sign-in. */
+  getAccountDirectoryBaseUrl?: () => string | null;
   getDeviceId?: () => string | null;
   refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
   /** A PR entered or left the hot-refresh set; wakes the PR poller, as desktop main does. */
@@ -331,14 +336,6 @@ type HeadlessLinearServices = {
   };
   dispose: () => void;
 };
-
-function envToken(...names: string[]): string | null {
-  for (const name of names) {
-    const value = process.env[name]?.trim() ?? "";
-    if (value.length) return value;
-  }
-  return null;
-}
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -872,7 +869,7 @@ export function createHeadlessGitHubService(
   options: {
     onStatusChanged?: (status: HeadlessGitHubStatus) => void;
     githubRelaySecretReader?: GitHubRelaySecretReader | null;
-    getAccountAccessToken?: (() => Promise<string | null>) | null;
+    getAccountAccessToken?: ((options?: { forceRefresh?: boolean }) => Promise<string | null>) | null;
     ghAuthTokenProvider?: (() => Pick<
       HeadlessGitHubTokenLookup,
       "token" | "ghCliPath" | "ghAuthError"
@@ -881,6 +878,11 @@ export function createHeadlessGitHubService(
     /** For a pasted token to follow the owner's ADE account to their other machines. */
     getAccountVault?: () => AccountVaultBridge | null | undefined;
     getAccountUserId?: () => string | null;
+    /**
+     * The account directory address. With the account token and user id, it
+     * turns on the account's GitHub App sign-in (`account_app`).
+     */
+    getAccountDirectoryBaseUrl?: (() => string | null | undefined) | null;
   } = {},
 ): HeadlessGitHubService {
   configureGithubRequestAccounting(getBrainRequestAccountingLogger);
@@ -899,6 +901,27 @@ export function createHeadlessGitHubService(
     fetchImpl: (input, init) => requestGitHub(input, init ?? {}, { tokenSource: "app" }),
     userAgent: "ade-cli",
   });
+  // --- account_app: the ADE account's GitHub App sign-in (see githubAccountAppCredential.ts).
+  let lastAccountAppToken: string | null = null;
+  const accountApp = createGithubAccountAppCredential({
+    credentialStore,
+    logger,
+    appUserAuth,
+    clientKind: "cli",
+    getAccountAccessToken: options.getAccountAccessToken,
+    getAccountUserId: options.getAccountUserId,
+    getAccountDirectoryBaseUrl: options.getAccountDirectoryBaseUrl,
+    fetchImpl: options.fetchImpl,
+    onChanged: () => {
+      const previous = lastAccountAppToken;
+      lastAccountAppToken = accountApp.lastToken();
+      if (previous) clearGithubCredentialHealth(previous);
+      if (lastAccountAppToken && lastAccountAppToken !== previous) clearGithubCredentialHealth(lastAccountAppToken);
+      credentialRevision += 1;
+      invalidateStatusCache();
+    },
+  });
+  // --- end account_app
   const tokenKey = "github.token.v1";
   let cachedStatus: Awaited<
     ReturnType<HeadlessGitHubService["getStatus"]>
@@ -946,11 +969,16 @@ export function createHeadlessGitHubService(
     build: buildAppCredentialAsync,
   });
 
-  const invalidateStatusCache = (): void => {
+  /** Forgets the cached status only; this machine's own gh lookup stays cached. */
+  const resetStatusCache = (): void => {
     cachedStatus = null;
     cachedAt = 0;
     cachedStatusBinding = null;
     statusLookupGeneration += 1;
+  };
+
+  const invalidateStatusCache = (): void => {
+    resetStatusCache();
     // A re-authorization or a sign-out just replaced the App credential this
     // cache holds, so it cannot outlive the status it fed.
     appCredentialCache.clear();
@@ -981,7 +1009,7 @@ export function createHeadlessGitHubService(
     };
     return selectGithubOperationCredential<HeadlessGitHubTokenLookup>({
       environment: () => {
-        const token = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
+        const token = readOwnEnvironmentGithubToken();
         return token
           ? { token, source: "environment", patTokenStored, ghCliPath: null, ghAuthError: null }
           : null;
@@ -995,6 +1023,15 @@ export function createHeadlessGitHubService(
       pat: () => patToken
         ? { ...ghFallback, token: patToken, source: "pat", patTokenStored }
         : null,
+      // A write with no repository owner cannot check the App installation,
+      // so the account's App sign-in never serves this ownerless pick.
+      account_app: () => null,
+      account_gh: () => {
+        const token = ghAccountSync.readAccountToken();
+        return token
+          ? { ...ghFallback, token, source: "account_gh", patTokenStored }
+          : null;
+      },
     }, "write") ?? ghFallback;
   };
 
@@ -1029,13 +1066,19 @@ export function createHeadlessGitHubService(
     // mutable state: another caller reading the same store during the awaits
     // below would otherwise hand this inventory somebody else's outcome.
     const storeUnreadableForThisRead = credentialStoreUnreadable;
-    const environmentToken = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
-    const [appResult, gh] = await Promise.all([
+    const environmentToken = readOwnEnvironmentGithubToken();
+    const [appResult, gh, accountAppToken] = await Promise.all([
       readAppCredentialAsync(),
       Promise.resolve(options.ghAuthTokenProvider?.() ?? ghAuthTokenAsync()),
+      accountApp.readToken(),
     ]);
+    lastAccountAppToken = accountAppToken;
     const appStatus = appResult.status;
     const appToken = appResult.token;
+    // A different gh token than last time (a sign-in, sign-out or switch) is
+    // reconciled with the account now; the same token costs nothing.
+    ghAccountSync.noteLocalGhToken(gh.token);
+    const accountGhToken = ghAccountSync.readAccountToken();
     const candidates: HeadlessGitHubTokenCandidate[] = [];
     if (environmentToken) {
       candidates.push({
@@ -1078,6 +1121,28 @@ export function createHeadlessGitHubService(
         capabilities: ["read", "write", "issue-write"],
       });
     }
+    if (accountAppToken) {
+      candidates.push({
+        token: accountAppToken,
+        source: "account_app",
+        patTokenStored,
+        ghCliPath: gh.ghCliPath,
+        ghAuthError: gh.ghAuthError,
+        // Writes are gated per repository owner in `apiRequest` (githubAppGrant.ts).
+        capabilities: ["read", "write", "issue-write"],
+        userLogin: accountApp.client?.peek().githubLogin ?? null,
+      });
+    }
+    if (accountGhToken) {
+      candidates.push({
+        token: accountGhToken,
+        source: "account_gh",
+        patTokenStored,
+        ghCliPath: gh.ghCliPath,
+        ghAuthError: gh.ghAuthError,
+        capabilities: ["read", "write", "issue-write"],
+      });
+    }
     return {
       candidates,
       availableSources: new Set(candidates.map((candidate) => candidate.source)),
@@ -1090,12 +1155,27 @@ export function createHeadlessGitHubService(
     };
   };
 
+  /**
+   * The inventory's candidates for `capability`, with each App credential the
+   * installation on `owner` would refuse taken out (githubAppGrant.ts).
+   */
+  const gatedInventoryCandidates = async (
+    inventory: HeadlessGitHubCredentialInventory,
+    capability: GithubOperationCredentialCapability | "git",
+    owner: string | null,
+  ): Promise<HeadlessGitHubTokenCandidate[]> => {
+    const ordered = githubOperationCredentialCandidates(inventory.candidates, capability === "git" ? "write" : capability);
+    if (capability === "read") return ordered;
+    return await gateAppCandidates(ordered, { capability, owner, readGrant: (...grantArgs) => readAppIssueGrant(...grantArgs) });
+  };
+
   const readTokenAsync = async (
     capability: GithubOperationCredentialCapability = "write",
+    owner: string | null = null,
   ): Promise<HeadlessGitHubTokenLookup> => {
     const inventory = await readCredentialInventoryAsync();
     return resolveGithubOperationCredentialCandidate({
-      candidates: inventory.candidates,
+      candidates: await gatedInventoryCandidates(inventory, capability, owner),
       capability,
       isAvailable: (candidate) => !githubCredentialCooldown(
         candidate,
@@ -1112,10 +1192,10 @@ export function createHeadlessGitHubService(
       };
   };
 
-  const readGitTransportTokenAsync = async (): Promise<HeadlessGitHubTokenLookup> => {
+  const readGitTransportTokenAsync = async (owner: string | null = null): Promise<HeadlessGitHubTokenLookup> => {
     const inventory = await readCredentialInventoryAsync();
     return resolveGithubOperationCredentialCandidate({
-      candidates: inventory.candidates,
+      candidates: await gatedInventoryCandidates(inventory, "git", owner),
       capability: "write",
       isAvailable: (candidate) => !githubCredentialNonRateLimitCooldown(
         candidate,
@@ -1132,7 +1212,8 @@ export function createHeadlessGitHubService(
   };
 
   /** ADE's GitHub credential for git transport, or null; the git fallback's reader. */
-  const readGitTransportToken = async (): Promise<string | null> => (await readGitTransportTokenAsync()).token;
+  const readGitTransportToken = async (context?: { owner?: string | null }): Promise<string | null> =>
+    (await readGitTransportTokenAsync(context?.owner ?? null)).token;
   setGitTransportTokenReader(readGitTransportToken, logger);
 
   const getToken = (): string => readToken().token ?? "";
@@ -1221,6 +1302,19 @@ export function createHeadlessGitHubService(
         value?: HeadlessGithubStatusProbe;
       };
 
+  // account_app: whether the installation on the status repository's owner
+  // lets the account's App sign-in write, read before the status probes.
+  let accountAppWriteVerdict: { token: string; owner: string; allowed: boolean } | null = null;
+  const noteAccountAppWriteGrant = async (
+    candidates: readonly HeadlessGitHubTokenCandidate[],
+    repo: { owner: string; name: string } | null,
+  ): Promise<void> => {
+    const candidate = candidates.find((entry) => entry.source === "account_app");
+    if (!candidate || !repo) return;
+    const grant = await readAppIssueGrant(repo.owner, candidate.token, { identity: "account_app" }).catch(() => null);
+    accountAppWriteVerdict = { token: candidate.token, owner: repo.owner.toLowerCase(), allowed: appGrantAllowsCapability(grant, "write") };
+  };
+
   const validatedCredentialCapabilities = (
     candidate: HeadlessGitHubTokenCandidate,
     probe: HeadlessGithubStatusProbe,
@@ -1232,6 +1326,10 @@ export function createHeadlessGitHubService(
     userLogin: probe.validated.userLogin,
     repositoryPresent: repo != null,
     repositoryReadValidated: probe.repoAccessOk,
+    appWriteAllowed: candidate.source === "account_app"
+      && accountAppWriteVerdict?.token === candidate.token
+      && accountAppWriteVerdict.owner === repo?.owner.toLowerCase()
+      && accountAppWriteVerdict.allowed,
   });
 
   const probeRepoAccess = async (
@@ -1334,7 +1432,7 @@ export function createHeadlessGitHubService(
       const validated = await validateToken(candidate.token, candidate.source);
       let repoAccessOk: boolean | null = null;
       let repoAccessError: string | null = null;
-      if (repo && (candidate.source === "app" || validated.tokenType === "fine-grained")) {
+      if (repo && (candidate.source === "app" || candidate.source === "account_app" || validated.tokenType === "fine-grained")) {
         const repoProbe = await probeRepoAccess(candidate, repo, forceRefresh);
         validated.rateLimit = repoProbe.rateLimit ?? validated.rateLimit;
         repoAccessOk = repoProbe.ok;
@@ -1451,16 +1549,16 @@ export function createHeadlessGitHubService(
           (await readCredentialInventoryAsync()).candidates,
           capability,
         ).filter((candidate) => !args.credentialSource || candidate.source === args.credentialSource);
-    // An issue write uses the App only when its installation grants
-    // `Issues: write`; otherwise it would 403 on every edit (see
-    // `githubIssueWriteAccess.ts`).
-    const candidates = capability === "issue-write" && !explicitToken
-      ? await issueWriteCandidates(
-        candidatePool,
-        args.repo?.owner ?? classifyGitHubRepositoryApiPath(args.path)?.owner ?? null,
-        readAppIssueGrant,
-      )
-      : candidatePool;
+    // An App credential serves a write only where the installation on the
+    // repository owner accepted the right; otherwise it would 403 on every
+    // write (see `githubAppGrant.ts`).
+    const candidates = (capability === "issue-write" || capability === "write") && !explicitToken
+      ? await gateAppCandidates(candidatePool, {
+        capability,
+        owner: args.repo?.owner ?? classifyGitHubRepositoryApiPath(args.path)?.owner ?? null,
+        readGrant: readAppIssueGrant,
+      })
+      : [...candidatePool];
     if (candidates.length === 0) {
       throw new Error(
         "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
@@ -1487,7 +1585,8 @@ export function createHeadlessGitHubService(
     let lastAttemptError: HeadlessGithubCredentialAttemptError | null = null;
     let firstRateLimitError: HeadlessGithubCredentialAttemptError | null = null;
 
-    for (const candidate of candidates) {
+    for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+      const candidate = candidates[candidateIndex]!;
       if (
         !args.token
         && repositoryPath
@@ -1619,6 +1718,12 @@ export function createHeadlessGitHubService(
         lastAttemptError = attemptError;
         if (attemptError.authFailure.kind === "rate_limited") {
           firstRateLimitError ??= attemptError;
+        }
+        // account_app: GitHub refused the account's token. Ask the account
+        // directory once for the current one and try it next.
+        if (response.status === 401 && !args.token && candidate.source === "account_app") {
+          const replacement = await accountApp.onRejected(candidate.token);
+          if (replacement) candidates.splice(candidateIndex + 1, 0, { ...candidate, token: replacement });
         }
         const canTryNext = !args.token
           && (
@@ -1816,6 +1921,13 @@ export function createHeadlessGitHubService(
     },
   });
   const readAppIssueGrant = issueOps.readAppIssueGrant;
+  // --- account_app: `GH_TOKEN` for `gh` in shells and chats (githubSessionEnv.ts).
+  const sessionGithubEnv = createGithubSessionEnv({
+    readAccountAppToken: () => accountApp.readToken(),
+    peekAccountAppToken: () => accountApp.peekToken(),
+    readGrant: readAppIssueGrant,
+    readRepoOwner: async () => (await detectGitHubRepoAsync(projectRoot).catch(() => null))?.owner ?? null,
+  });
 
   const getIssue: HeadlessGitHubService["getIssue"] = async (
     owner,
@@ -2025,6 +2137,33 @@ export function createHeadlessGitHubService(
     },
   });
 
+  // The account's copy of a gh login made on another machine (see the desktop
+  // service). Adopting or dropping it resets the status only: this machine's
+  // own gh lookup stays cached, so a vault change starts no gh process.
+  let lastAccountGhToken: string | null = null;
+  const ghAccountSync = createGithubGhAccountSync({
+    credentialStore,
+    getAccountVault: options.getAccountVault,
+    getAccountUserId: options.getAccountUserId,
+    logger,
+    // The shared lookup is keyed on hosts.yml, so after a gh sign-in or
+    // sign-out it already answers fresh; `fresh` needs nothing more here.
+    readLocalGhToken: async () => {
+      const gh = await Promise.resolve(options.ghAuthTokenProvider?.() ?? ghAuthTokenAsync());
+      return gh.token;
+    },
+    onChanged: () => {
+      const previous = lastAccountGhToken;
+      lastAccountGhToken = ghAccountSync.readAccountToken();
+      if (previous) clearGithubCredentialHealth(previous);
+      if (lastAccountGhToken) clearGithubCredentialHealth(lastAccountGhToken);
+      credentialRevision += 1;
+      resetStatusCache();
+      emitStatusChanged();
+    },
+  });
+  lastAccountGhToken = ghAccountSync.readAccountToken();
+
   // One warn per credential source and cause; a status read probes every
   // credential, so a repeat would otherwise warn on every read.
   const tokenValidationFailures = createRepeatedFailureGate();
@@ -2112,6 +2251,7 @@ export function createHeadlessGitHubService(
     }
 
     const lookup = (async (): Promise<HeadlessGitHubStatus> => {
+      await noteAccountAppWriteGrant(inventory.candidates, repo);
       const readCandidates = githubOperationCredentialCandidates(inventory.candidates, "read");
       const writeCandidates = githubOperationCredentialCandidates(inventory.candidates, "write");
       const statusCooldown = (candidate: HeadlessGitHubTokenCandidate) => forceRefresh
@@ -2326,6 +2466,7 @@ export function createHeadlessGitHubService(
     }
 
     invalidateStatusCache();
+    accountApp.clearNegative();
     const generation = statusLookupGeneration;
     const lookup = performStatusLookup(true, generation);
     forcedStatusLookupInFlight = { generation, promise: lookup };
@@ -2366,7 +2507,12 @@ export function createHeadlessGitHubService(
           return null;
         }),
       ]);
-      return { ...status, gitTransport };
+      return {
+        ...status,
+        gitTransport,
+        accountCredentials: readGithubAccountCredentialState(patAccountSync, ghAccountSync),
+        accountApp: await accountApp.statusFor(status.repo, readAppIssueGrant),
+      };
     },
     async getBackgroundRequestPauseUntilMs() {
       const inventory = await readCredentialInventoryAsync();
@@ -2395,13 +2541,18 @@ export function createHeadlessGitHubService(
     async detectRepo() {
       return detectGitHubRepoAsync(projectRoot);
     },
+    /** `GH_TOKEN` for a process about to start, from the account App, or null. */
+    sessionGithubEnv: (env: NodeJS.ProcessEnv) => sessionGithubEnv.forSession(env),
+    /** The same from cached values only (a synchronous environment build). */
+    peekSessionGithubEnv: (env: NodeJS.ProcessEnv) => sessionGithubEnv.peekForSession(env),
     async getAppInstallationStatus(args = {}) {
       const owner = args.owner?.trim();
       const name = args.name?.trim();
       const repo = owner && name ? { owner, name } : await detectGitHubRepoAsync(projectRoot);
       return await fetchAppInstallationStatusForRepo({
         repo,
-        appUserAuth,
+        // This machine's own App sign-in first; the account's when it has none.
+        appUserAuth: accountApp.relayAppUserAuth,
         logger,
         secretReader: options.githubRelaySecretReader,
         forceRefresh: args.forceRefresh,
@@ -2432,6 +2583,9 @@ export function createHeadlessGitHubService(
       if (previousToken) clearGithubCredentialHealth(previousToken);
       credentialRevision += 1;
       invalidateStatusCache();
+      // account_app: delete the removed token at GitHub through the account
+      // directory (best effort; the record here is already gone).
+      accountApp.retireLegacyToken(previousToken);
       return status;
     },
     async getRepoOrThrow() {
@@ -2468,8 +2622,9 @@ export function createHeadlessGitHubService(
       }
       return token;
     },
-    async getGitTransportTokenOrThrowAsync() {
-      const token = (await readGitTransportTokenAsync()).token ?? "";
+    /** `owner`: the remote's GitHub owner, when the caller knows it (the App installation check). */
+    async getGitTransportTokenOrThrowAsync(opts: { owner?: string | null } = {}) {
+      const token = (await readGitTransportTokenAsync(opts.owner ?? null)).token ?? "";
       if (!token) {
         throw new Error(
           "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
@@ -2478,7 +2633,7 @@ export function createHeadlessGitHubService(
       return token;
     },
     async getAppUserTokenForRelay() {
-      return await appUserAuth.getValidTokenForRelay();
+      return await accountApp.relayAppUserAuth.getValidTokenForRelay();
     },
     parseGitHubRepoFromRemoteUrl: githubRepoRefFromRemoteUrl,
     parseNextLink: parseNextGitHubLink,
@@ -2528,10 +2683,37 @@ export function createHeadlessGitHubService(
       invalidateStatusCache();
       emitStatusChanged();
     },
-    /** See the desktop service. */
-    hydratePatFromVault: () => patAccountSync.hydrate(),
-    purgeAccountPat: () => patAccountSync.purgeAccountCredentials(),
+    /** See the desktop service: the pasted token and the `gh` login. */
+    hydratePatFromVault: async (): Promise<void> => {
+      await patAccountSync.hydrate();
+      await ghAccountSync.hydrate();
+      // account_app: hand this machine's own App sign-in to the account.
+      await accountApp.adoptLocalSignIn();
+    },
+    purgeAccountPat: (): void => {
+      try {
+        patAccountSync.purgeAccountCredentials();
+      } finally {
+        try {
+          ghAccountSync.purgeAccountCredentials();
+        } finally {
+          // account_app: the cached token of the account's App sign-in goes too.
+          const previous = lastAccountAppToken;
+          accountApp.purge();
+          lastAccountAppToken = null;
+          if (previous) clearGithubCredentialHealth(previous);
+          credentialRevision += 1;
+          invalidateStatusCache();
+        }
+      }
+    },
     getPatCredentialStorage: () => patAccountSync.storage(),
+    /** See the desktop service. */
+    async setGhAccountSharing(args: { enabled: boolean }): Promise<void> {
+      if (args?.enabled === true) await ghAccountSync.shareWithAccount();
+      else await ghAccountSync.removeFromAccount();
+      // A change reaches onChanged above, which resets and pushes the status.
+    },
     /** See the desktop service: a signed-URL cache keys on the effective token. */
     async getCredentialRevision(): Promise<string> {
       const revision = credentialRevision;
@@ -3293,6 +3475,7 @@ export function createHeadlessLinearServices(
       getAccountAccessToken: args.getAccountAccessToken,
       getAccountVault: args.getAccountVault,
       getAccountUserId: args.getAccountUserId,
+      getAccountDirectoryBaseUrl: args.getAccountDirectoryBaseUrl,
     },
   );
   const linearClient = createLinearClientImpl({

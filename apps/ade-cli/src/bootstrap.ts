@@ -140,7 +140,16 @@ import { createJevService, type JevService } from "../../desktop/src/main/servic
 import { jevTallyFileStore } from "../../desktop/src/main/services/jev/jevTally";
 import { jevEnabled } from "../../desktop/src/shared/jevSettings";
 import { createSettleNudgeSweep } from "../../desktop/src/main/services/chat/settleNudgeSweep";
-import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
+import {
+  adoptPlaintextApiKey,
+  initApiKeyStore,
+  isKnownApiKeyProvider,
+  saveOfferedApiKey,
+} from "../../desktop/src/main/services/ai/apiKeyStore";
+import {
+  moveLocalYamlApiKeys,
+  moveLocalYamlApiKeysForProject,
+} from "../../desktop/src/main/services/config/localYamlApiKeys";
 import type { createSyncService } from "./services/sync/syncService";
 import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
 import { createSyncStatusEventPublisher } from "./services/sync/syncStatusEventPublisher";
@@ -1541,6 +1550,8 @@ export async function createAdeRuntime(args: {
       projectId,
       db,
       logger,
+      // A key a config write offers goes to the key store, never the file.
+      storeOfferedApiKey: saveOfferedApiKey,
     });
     registerAccountConfigProjectRoot(projectRoot);
     const accountAuthService = getSharedAccountAuthService({
@@ -1627,6 +1638,32 @@ export async function createAdeRuntime(args: {
       logger,
       analytics: productAnalyticsService,
     });
+    // Provider keys in plain text in `.ade/local.yaml` move to this store
+    // (localYamlApiKeys.ts). Only the runtime does it: its store is the one
+    // chats read and Settings writes, while the desktop's own store (Electron
+    // safeStorage) is one this runtime cannot read. The project's file first,
+    // now; then the copies in its lane worktrees, once the lane list is read.
+    moveLocalYamlApiKeys({
+      localPath: path.join(paths.adeDir, "local.yaml"),
+      adopt: adoptPlaintextApiKey,
+      isKnownProvider: isKnownApiKeyProvider,
+      logger,
+    });
+    void laneService
+      .list({ includeArchived: true, includeStatus: false })
+      .then((lanes) => moveLocalYamlApiKeysForProject({
+        projectRoot,
+        worktreePaths: lanes.map((lane) => lane.worktreePath).filter((worktreePath) => worktreePath && worktreePath !== projectRoot),
+        adopt: adoptPlaintextApiKey,
+        isKnownProvider: isKnownApiKeyProvider,
+        logger,
+      }))
+      .catch((error: unknown) => {
+        logger.warn("projectConfig.api_keys_move_failed", {
+          scope: "lane_worktrees",
+          error: error instanceof Error ? error.name : "unknown",
+        });
+      });
     const projectSecretService = createProjectSecretService(projectRoot, {
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
@@ -1959,6 +1996,8 @@ export async function createAdeRuntime(args: {
         });
       },
       getAdeCliAgentEnv: (baseEnv) => withoutWithheldAgentSkillsEnv(createHeadlessAdeCliAgentEnv(baseEnv)),
+      // The GitHub service starts after this one; until then shells get no token.
+      getSessionGithubEnv: async (env) => (await githubServiceRef?.sessionGithubEnv(env)) ?? null,
       releaseChatBrowser,
       appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
       terminalShellPreferences: terminalShellPreferenceStoreFor(resolveMachineAdeLayout().adeDir, logger),
@@ -2800,6 +2839,7 @@ export async function createAdeRuntime(args: {
       getAccountAccessToken,
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
       getAccountUserId: () => accountAuthService.getStatus().userId,
+      getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null,
       getDeviceId: readSyncDeviceId,
       onPrHotRefreshChanged: () => prPollingServiceForHotRefresh?.poke(),
       refreshDefaultBranchAfterMerge: embeddedRuntime
@@ -3130,6 +3170,7 @@ export async function createAdeRuntime(args: {
         logger,
         appVersion: "ade-cli",
         getAdeCliAgentEnv: (baseEnv) => withoutWithheldAgentSkillsEnv(createHeadlessAdeCliAgentEnv(baseEnv)),
+        getSessionGithubEnv: (env) => headlessLinearServices.githubService.peekSessionGithubEnv(env),
         getLocalGitHubToken: () => headlessLinearServices.githubService.getGitTransportTokenOrThrowAsync(),
         onLinearIssueChatLinked: publishLinearChatLink,
         onEvent: (event) => {

@@ -27,6 +27,12 @@
  * keeps an old copy from replacing a newer one, and `refresh_owner` is stored
  * and returned for the clients to read, never enforced. Each kind has an
  * explicit owner in the item-kind allowlist below.
+ *
+ * A row's `updated_at` is also its revision. Every change moves it forward, so
+ * a revision never comes back, and a write or delete can name the revision it
+ * replaces (`ifRevision`). The Worker refuses it as `stale`, with the stored
+ * row, when the row changed since then. That is what keeps a machine that
+ * decided on an old copy from writing over a newer one, a removal included.
  */
 import {
   accountPageResult,
@@ -199,7 +205,38 @@ type ParsedVaultWrite = {
   refreshOwner: string | null;
   /** Client clock; see `staleWriteThreshold`. */
   writtenAt: unknown;
+  /** The revision this write replaces, `VAULT_REVISION_ABSENT`, or null for a write that names none. */
+  ifRevision: string | null;
 };
+
+/**
+ * `ifRevision` for "the client read no row at all". A tombstone is a row: it
+ * has a revision, and a client that read one names that.
+ */
+export const VAULT_REVISION_ABSENT = "absent";
+
+/**
+ * A client's `ifRevision`: null when it named none (the write before revisions
+ * existed), undefined when what it named is not a revision. A revision is an
+ * `updated_at` this Worker returned, so anything that does not parse as a time
+ * can never match one and is refused instead of quietly failing every time.
+ */
+function parseIfRevision(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (value === VAULT_REVISION_ABSENT) return VAULT_REVISION_ABSENT;
+  if (typeof value !== "string" || value.length > 40 || Number.isNaN(Date.parse(value))) return undefined;
+  return value;
+}
+
+/**
+ * The next `updated_at` of a row that changes: the Worker clock, or one
+ * millisecond past the stored stamp when that is not earlier. Two writes in one
+ * millisecond (or on two Worker clocks a little apart) would otherwise leave
+ * the same stamp, and a client holding that revision would replace the second
+ * write without having seen it. Binds the new stamp twice.
+ */
+const NEXT_UPDATED_AT =
+  "max(?, coalesce(strftime('%Y-%m-%dT%H:%M:%fZ', account_vault_items.updated_at, '+0.001 seconds'), ?))";
 
 /**
  * Item keys: one or more `/`-separated segments. The first is the original
@@ -237,7 +274,12 @@ function checkWriteItem(value: unknown): ItemVerdict {
     return { ok: false, reason: "value too large" };
   }
   const refreshOwner = requiredString(value.refreshOwner, 128);
-  return { ok: true, write: { scope, kind, key, value: plaintext, refreshOwner, writtenAt: value.writtenAt } };
+  const ifRevision = parseIfRevision(value.ifRevision);
+  if (ifRevision === undefined) return { ok: false, reason: "invalid revision" };
+  return {
+    ok: true,
+    write: { scope, kind, key, value: plaintext, refreshOwner, writtenAt: value.writtenAt, ifRevision },
+  };
 }
 
 type VaultRowRecord = {
@@ -334,6 +376,93 @@ async function handleRead(
   });
 }
 
+/**
+ * The statement for one write.
+ *
+ * - `ifRevision` names a revision: change the row only while it still has
+ *   that revision. A row this same device wrote last also passes, because the
+ *   newer revision is this device's own earlier write (still in flight when
+ *   this one was made); another machine's write in between leaves another
+ *   device as the last writer. No row at all is refused too: the client read
+ *   one, so this is not the row it decided on.
+ * - `ifRevision` is `absent`: insert only when there is no row, a tombstone
+ *   included. There is no same-device pass here: a client that read no row
+ *   may have an empty cache (just signed in), and the row it would replace can
+ *   be this device's own older one, a removal included.
+ * - No `ifRevision`: the write before revisions existed. The upsert's `where`
+ *   refuses only a write made before the stored row (`writtenAt`, with
+ *   `itemResults`). A row this same device wrote last is never "newer" than
+ *   its own write: its earlier write may still have been in flight when this
+ *   one was made. (No `deviceId`: SQL's `= null` is never true, so the full
+ *   check holds.)
+ */
+function vaultWriteStatement(
+  env: VaultEnv,
+  userId: string,
+  write: ParsedVaultWrite,
+  sealedValue: string,
+  updatedAt: string,
+  writerDeviceId: string | null,
+  itemResults: boolean,
+  clock: ReturnType<typeof writeClock>,
+): D1PreparedStatement {
+  if (write.ifRevision === VAULT_REVISION_ABSENT) {
+    return env.DB.prepare(`
+      insert into account_vault_items(
+        user_id, scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner, deleted
+      )
+      values (?, ?, ?, ?, ?, ?, ?, ?, 0)
+      on conflict(user_id, scope_key, item_kind, item_key) do nothing
+    `).bind(userId, write.scope, write.kind, write.key, sealedValue, updatedAt, writerDeviceId, write.refreshOwner);
+  }
+  if (write.ifRevision !== null) {
+    return env.DB.prepare(`
+      update account_vault_items
+      set ciphertext = ?, updated_at = ${NEXT_UPDATED_AT}, writer_device_id = ?, refresh_owner = ?, deleted = 0
+      where user_id = ? and scope_key = ? and item_kind = ? and item_key = ?
+        and (updated_at = ? or writer_device_id = ?)
+    `).bind(
+      sealedValue,
+      updatedAt,
+      updatedAt,
+      writerDeviceId,
+      write.refreshOwner,
+      userId,
+      write.scope,
+      write.kind,
+      write.key,
+      write.ifRevision,
+      writerDeviceId,
+    );
+  }
+  return env.DB.prepare(`
+    insert into account_vault_items(
+      user_id, scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner, deleted
+    )
+    values (?, ?, ?, ?, ?, ?, ?, ?, 0)
+    on conflict(user_id, scope_key, item_kind, item_key) do update set
+      ciphertext = excluded.ciphertext,
+      updated_at = ${NEXT_UPDATED_AT},
+      writer_device_id = excluded.writer_device_id,
+      refresh_owner = excluded.refresh_owner,
+      deleted = 0
+    where account_vault_items.updated_at <= ? or account_vault_items.writer_device_id = ?
+  `).bind(
+    userId,
+    write.scope,
+    write.kind,
+    write.key,
+    sealedValue,
+    updatedAt,
+    writerDeviceId,
+    write.refreshOwner,
+    updatedAt,
+    updatedAt,
+    itemResults ? staleWriteThreshold(clock, write.writtenAt) : staleWriteThreshold(clock, null),
+    writerDeviceId,
+  );
+}
+
 async function handleWrite(
   request: Request,
   env: VaultEnv,
@@ -354,13 +483,16 @@ async function handleWrite(
     return json({ ok: false, error: "too many items in one write" }, { status: 413 });
   }
   const writerDeviceId = requiredString(body.deviceId, 128);
-  // Per-item answers are opt-in. A client that does not ask treats a 200 as
-  // "every item landed", so it keeps the all-or-nothing answer: a partial
-  // success it could not see would drop the refused items from its queue.
-  const itemResults = body.itemResults === true;
   const clock = writeClock(body.sentAt);
 
   const verdicts = body.items.map(checkWriteItem);
+  // Per-item answers are opt-in. A client that does not ask treats a 200 as
+  // "every item landed", so it keeps the all-or-nothing answer: a partial
+  // success it could not see would drop the refused items from its queue.
+  // A write that names a revision can be refused on its own, so naming one
+  // asks for them too.
+  const itemResults = body.itemResults === true
+    || verdicts.some((verdict) => verdict.ok && verdict.write.ifRevision !== null);
   const firstRefusal = verdicts.find((verdict) => !verdict.ok);
   if (firstRefusal && !itemResults) {
     // All or nothing, same reasoning as settings: a caller that believes its
@@ -398,36 +530,10 @@ async function handleWrite(
   // Indexed by position, not by a recomputed composite key: the batch below
   // walks the same array in the same order, so position is already the join.
   const sealed = await Promise.all(parsed.map((write) => sealValue(key, write.value)));
-  // The conflict check is the upsert's own `where`: atomic per row, so a write
-  // racing another machine's newer one cannot slip between a read and a write.
-  // Without `itemResults` (or `writtenAt`) the threshold is never reached.
-  // A row this same device wrote last is never "newer" than its own write:
-  // its earlier write may still have been in flight when this one was made.
-  // (No `deviceId`: SQL's `= null` is never true, so the full check holds.)
-  const outcomes = await env.DB.batch(parsed.map((write, index) => env.DB.prepare(`
-    insert into account_vault_items(
-      user_id, scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner, deleted
-    )
-    values (?, ?, ?, ?, ?, ?, ?, ?, 0)
-    on conflict(user_id, scope_key, item_kind, item_key) do update set
-      ciphertext = excluded.ciphertext,
-      updated_at = excluded.updated_at,
-      writer_device_id = excluded.writer_device_id,
-      refresh_owner = excluded.refresh_owner,
-      deleted = 0
-    where account_vault_items.updated_at <= ? or account_vault_items.writer_device_id = ?
-  `).bind(
-    userId,
-    write.scope,
-    write.kind,
-    write.key,
-    sealed[index]!,
-    updatedAt,
-    writerDeviceId,
-    write.refreshOwner,
-    itemResults ? staleWriteThreshold(clock, write.writtenAt) : staleWriteThreshold(clock, null),
-    writerDeviceId,
-  )));
+  // Each check is its statement's own `where`: atomic per row, so a write
+  // racing another machine's cannot slip between a read and a write.
+  const outcomes = await env.DB.batch(parsed.map((write, index) =>
+    vaultWriteStatement(env, userId, write, sealed[index]!, updatedAt, writerDeviceId, itemResults, clock)));
 
   if (!itemResults) return json({ ok: true, written: parsed.length, updatedAt });
 
@@ -447,6 +553,12 @@ async function handleWrite(
  * a write: a machine back after days offline must not delete a value another
  * machine set since. A row the deleting device (`?deviceId=`) wrote last is
  * not refused: its own earlier write may have landed after this delete was made.
+ *
+ * With `?ifRevision=`, the rule is the write's (see `vaultWriteStatement`): the
+ * delete goes only while the row still has that revision, or this device wrote
+ * it last. `absent` deletes nothing; it answers `stale` when a live row exists.
+ * A row that is already a tombstone is not refused: what the delete wanted is
+ * already true.
  */
 async function handleDelete(
   env: VaultEnv,
@@ -462,20 +574,37 @@ async function handleDelete(
   if (!scope || !key || !kind || !ITEM_KINDS.has(kind)) {
     return json({ ok: false, error: "invalid item" }, { status: 400 });
   }
+  const ifRevision = parseIfRevision(url.searchParams.get("ifRevision"));
+  if (ifRevision === undefined) return json({ ok: false, error: "invalid revision" }, { status: 400 });
   const clock = writeClock(url.searchParams.get("sentAt"));
   const threshold = staleWriteThreshold(clock, url.searchParams.get("writtenAt"));
   const deviceId = requiredString(url.searchParams.get("deviceId"), 128);
   const updatedAt = new Date(clock.nowMs).toISOString();
-  const result = await env.DB.prepare(`
-    update account_vault_items
-    set deleted = 1, ciphertext = '', updated_at = ?, writer_device_id = ?, refresh_owner = null
-    where user_id = ? and scope_key = ? and item_kind = ? and item_key = ? and deleted = 0
-      and (updated_at <= ? or writer_device_id = ?)
-  `).bind(updatedAt, deviceId, userId, scope, kind, key, threshold, deviceId).run();
-  const deleted = (result.meta?.changes ?? 0) > 0;
-  if (!deleted && url.searchParams.has("writtenAt")) {
+  let deleted = false;
+  if (ifRevision !== VAULT_REVISION_ABSENT) {
+    const result = await env.DB.prepare(`
+      update account_vault_items
+      set deleted = 1, ciphertext = '', updated_at = ${NEXT_UPDATED_AT}, writer_device_id = ?, refresh_owner = null
+      where user_id = ? and scope_key = ? and item_kind = ? and item_key = ? and deleted = 0
+        and (updated_at ${ifRevision === null ? "<=" : "="} ? or writer_device_id = ?)
+    `).bind(
+      updatedAt,
+      updatedAt,
+      deviceId,
+      userId,
+      scope,
+      kind,
+      key,
+      ifRevision ?? threshold,
+      deviceId,
+    ).run();
+    deleted = (result.meta?.changes ?? 0) > 0;
+  }
+  const checked = ifRevision !== null || url.searchParams.has("writtenAt");
+  if (!deleted && checked) {
     const row = await readVaultRow(env, userId, { scope, kind, key });
-    if (row && !row.deleted && row.updated_at > threshold) {
+    const newer = ifRevision !== null || (row !== null && row.updated_at > threshold);
+    if (row && !row.deleted && newer) {
       const sealKey = await vaultKey(env);
       if (!sealKey) return vaultUnavailable();
       return json(

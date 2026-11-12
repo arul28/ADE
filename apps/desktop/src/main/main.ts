@@ -95,6 +95,9 @@ import { registerDatabaseCopiesIpc } from "./services/startupRecovery/registerDa
 import type { StartupRecovery } from "./services/startupRecovery/startupRecovery";
 import { isStartupRecoveryWindow } from "./services/startupRecovery/startupRecoveryWindow";
 import { registerMusicIpc } from "./services/music/registerMusicIpc";
+import { registerGithubAccountAppIpc } from "./services/github/registerGithubAccountAppIpc";
+import { registerGithubDirectIpc } from "./services/github/githubDirectIpc";
+import { configureGithubShellShim } from "./services/github/githubShellShim";
 import { createMusicTokenStore } from "./services/music/musicTokenStore";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
@@ -419,7 +422,7 @@ import { createAutomationService } from "./services/automations/automationServic
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
 import { createProjectSecretService } from "./services/secrets/projectSecretService";
-import { initApiKeyStore } from "./services/ai/apiKeyStore";
+import { initApiKeyStore, saveOfferedApiKey } from "./services/ai/apiKeyStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "./services/automations/automationIngressService";
 import { createLinearAccessTokenGetter, createLinearIngressService } from "./services/automations/linearIngressService";
 import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
@@ -4123,7 +4126,9 @@ app.whenReady().then(async () => {
       logger,
       analytics: productAnalyticsService,
     });
-    const getAccountAccessToken = () => getSignedInAccountAccessToken(accountAuthService);
+    const getAccountAccessToken = (
+      options?: Parameters<typeof getSignedInAccountAccessToken>[1],
+    ) => getSignedInAccountAccessToken(accountAuthService, options);
     const diskPressureMonitor = createDiskPressureMonitor({
       roots: [projectRoot, machineAdeLayout.adeDir],
       logger,
@@ -4449,6 +4454,8 @@ app.whenReady().then(async () => {
       projectId,
       db,
       logger,
+      // A key a config write offers goes to the key store, never the file.
+      storeOfferedApiKey: saveOfferedApiKey,
     });
     const projectSecretService = createProjectSecretService(projectRoot, {
       getAccountVault: () => accountVaultBridge,
@@ -4633,6 +4640,8 @@ app.whenReady().then(async () => {
       // A pasted token follows the owner's ADE account to their other machines.
       getAccountVault: () => accountVaultBridge,
       getAccountUserId: () => accountAuthService.getStatus().userId,
+      // The account's GitHub App sign-in (`account_app`), served by the account directory.
+      getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }) || null,
       // A repaired or removed App credential ends the relay's auth-pending
       // cooldown at once. Wired here rather than inside either service: the
       // ingress loop must stay free of GitHub internals, and only this owner
@@ -4939,6 +4948,7 @@ app.whenReady().then(async () => {
       projectConfigService,
       getLaneRuntimeEnv,
       getSessionLinearEnv,
+      getSessionGithubEnv: (env) => githubService.sessionGithubEnv(env),
       getAdeCliAgentEnv: adeCliService.agentEnv,
       logger,
       broadcastData: (ev) => {
@@ -5216,6 +5226,7 @@ app.whenReady().then(async () => {
       logger,
       appVersion: app.getVersion(),
       getAdeCliAgentEnv: adeCliService.agentEnv,
+      getSessionGithubEnv: (env) => githubService.peekSessionGithubEnv(env),
       getLocalGitHubToken: () => githubService.getGitTransportTokenOrThrowAsync(),
       onLinearIssueChatLinked: publishLinearChatLink,
       onEvent: (event) => {
@@ -7131,11 +7142,18 @@ app.whenReady().then(async () => {
     // github services even before a project is opened. Build minimal versions
     // here that share the user-data token store. detectRepo / publishCurrent
     // require an active project and will throw clearly when called dormant.
+    // The account's GitHub App sign-in, so a welcome-screen clone works on a
+    // machine with no GitHub sign-in of its own.
+    const dormantAccountAuthService = getSharedAccountAuthService({ secretsDir: machineAdeLayout.secretsDir, logger });
     const dormantGithubService = createGithubService({
       logger,
       projectRoot: normalizedRoot,
       appDataDir: app.getPath("userData"),
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+      getAccountAccessToken: (options?: Parameters<typeof getSignedInAccountAccessToken>[1]) =>
+        getSignedInAccountAccessToken(dormantAccountAuthService, options),
+      getAccountUserId: () => dormantAccountAuthService.getStatus().userId,
+      getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }) || null,
     });
     const dormantProjectScaffoldService = createProjectScaffoldService({
       logger,
@@ -10594,6 +10612,28 @@ app.whenReady().then(async () => {
       const found = builtInBrowserService.locateWebContents(wc);
       return found?.collection === "personal" ? found.tabId : null;
     },
+  });
+
+  // Settings' controls for the ADE account's GitHub App sign-in. Account-scoped:
+  // no machine pin (see registerGithubAccountAppIpc).
+  const accountGithubAppClient = registerGithubAccountAppIpc({
+    credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+    getDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }) || null,
+    getAccountAccessToken: (options) => getSignedInAccountAccessToken(getSharedAccountAuthService({
+      secretsDir: machineAdeLayout.secretsDir,
+    }), options),
+    getAccountUserId: () => getSharedAccountAuthService({ secretsDir: machineAdeLayout.secretsDir }).getStatus().userId,
+    analytics: productAnalyticsService,
+    logger: getMachineMainLogger(),
+  });
+  // `gh` and `git` in this window's agent shells and chats ask for the current
+  // account token on every run (githubShellShim.ts); off, they get a frozen one.
+  configureGithubShellShim({ env: process.env, logger: getMachineMainLogger() });
+  // Direct GitHub reads with that sign-in (no machine). Account-scoped: no pin.
+  registerGithubDirectIpc({
+    tokenClient: accountGithubAppClient,
+    getAccountUserId: () => getSharedAccountAuthService({ secretsDir: machineAdeLayout.secretsDir }).getStatus().userId,
+    logger: getMachineMainLogger(),
   });
 
   // The Music tab: Apple Music through an on-demand player host, or Spotify as

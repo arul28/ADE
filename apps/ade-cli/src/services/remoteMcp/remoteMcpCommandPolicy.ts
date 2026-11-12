@@ -350,7 +350,7 @@ const ANDROID_SDK_REASON =
  * runs full access as `cto`, which these actions otherwise allow.
  */
 const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> = new Map<string, ReadonlySet<string> | true>([
-  ["github", new Set(["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"])],
+  ["github", new Set(["setToken", "clearToken", "setGhAccountSharing", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"])],
   ["linear_credentials", true],
   ["linear_oauth", true],
   ["jira", new Set(["connect", "disconnect"])],

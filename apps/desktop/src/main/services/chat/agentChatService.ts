@@ -12245,6 +12245,12 @@ export function createAgentChatService(args: {
   nativeTitleWaitMs?: number;
   appVersion: string;
   getAdeCliAgentEnv?: (baseEnv?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+  /**
+   * `GH_TOKEN` for `gh` from the ADE account's GitHub App sign-in, from cached
+   * values only, when the chat's environment and `gh` have no GitHub sign-in
+   * of their own (githubSessionEnv.ts).
+   */
+  getSessionGithubEnv?: (env: NodeJS.ProcessEnv) => Record<string, string> | null;
   /** Resolves credentials owned by this runtime only; never supplied by a handoff capsule. */
   getLocalGitHubToken?: () => string | null | undefined | Promise<string | null | undefined>;
   resolveCodexComputerUseMcp?: () =>
@@ -12453,6 +12459,7 @@ export function createAgentChatService(args: {
     logger,
     appVersion,
     getAdeCliAgentEnv,
+    getSessionGithubEnv,
     getLocalGitHubToken,
     resolveCodexComputerUseMcp: resolveCodexComputerUseMcpOverride,
     resolveCodexConfiguredMcpServerNames: resolveCodexConfiguredMcpServerNamesOverride,
@@ -13650,6 +13657,12 @@ export function createAgentChatService(args: {
       // variables. Pin every selector so child commands cannot follow a stale
       // channel URL or RPC socket from the provider preset.
       Object.assign(env, buildAdeRuntimeSocketEnv(activityRuntime.runtimeSocketPath));
+    }
+    // The account's GitHub App token for `gh`, after the preset (whose own
+    // GitHub key wins). A project chat only: its repository decides.
+    if (!personalSession) {
+      const githubEnv = getSessionGithubEnv?.(env);
+      if (githubEnv) Object.assign(env, githubEnv);
     }
     // ADE runs its own pinned copy of the provider and moves that pin itself,
     // so the copy must never update itself in place.

@@ -579,6 +579,16 @@ import type {
   GitHubIssueCreateResult,
   GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
+  GitHubAccountAppAccountStatus,
+  GitHubAccountAppSignInReadResult,
+  GitHubAccountAppSignInStartResult,
+  GitHubAccountAppSignOutResult,
+  GithubDirectClientState,
+  GithubDirectData,
+  GithubDirectOp,
+  GithubDirectRequest,
+  GithubDirectRequestOptions,
+  GithubDirectResult,
   GitHubAutolink,
   GitHubRemoteStatus,
   GitHubRepoStarState,
@@ -12996,6 +13006,17 @@ const adeBridge = {
       ),
     onEvent: subscribeConflictEvents,
   },
+  // Direct GitHub reads with the ADE account's GitHub App sign-in. Account-
+  // scoped: no machine is involved, so no pin; this window's main process
+  // reads api.github.com and keeps the token (githubDirectIpc.ts).
+  githubDirect: {
+    request: async <O extends GithubDirectOp>(
+      request: Extract<GithubDirectRequest, { op: O }>,
+      options?: GithubDirectRequestOptions,
+    ): Promise<GithubDirectResult<GithubDirectData[O]>> =>
+      ipcRenderer.invoke(IPC.githubDirectRequest, request, options ?? {}),
+    getState: async (): Promise<GithubDirectClientState> => ipcRenderer.invoke(IPC.githubDirectGetState),
+  },
   github: {
     getStatus: async (opts?: {
       forceRefresh?: boolean;
@@ -13072,6 +13093,23 @@ const adeBridge = {
             ipcRenderer.invoke(IPC.githubClearToken),
           ),
       ),
+    // Shares this machine's gh login with the ADE account, or takes the gh
+    // login off the account. Runs on the pinned machine: its gh login, its
+    // credential store, its brain's account vault.
+    setGhAccountSharing: async (
+      args: { enabled: boolean },
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitHubStatus> =>
+      clearAround(
+        () => {
+          githubStatusCache.clear();
+          githubRemoteStatusCache.clear();
+        },
+        () =>
+          callPinnedOrBoundRuntimeActionOr(pin, "github", "setGhAccountSharing", { args }, () =>
+            ipcRenderer.invoke(IPC.githubSetGhAccountSharing, args),
+          ),
+      ),
     getAppUserAuthStatus: async (pin?: OpenProjectBinding | null): Promise<GitHubAppUserAuthStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "github", "getAppUserAuthStatus", {}, () =>
         ipcRenderer.invoke(IPC.githubGetAppUserAuthStatus),
@@ -13102,6 +13140,29 @@ const adeBridge = {
           callPinnedOrBoundRuntimeActionOr(pin, "github", "clearAppUserAuth", {}, () =>
             ipcRenderer.invoke(IPC.githubClearAppUserAuth),
           ),
+      ),
+    // The ADE account's GitHub App sign-in. Account-scoped: it lives in the
+    // account directory, not on a machine, so these take no pin and always
+    // go to this window's main process (registerGithubAccountAppIpc.ts).
+    getAccountAppStatus: async (): Promise<GitHubAccountAppAccountStatus> =>
+      ipcRenderer.invoke(IPC.githubGetAccountAppStatus),
+    startAccountAppSignIn: async (): Promise<GitHubAccountAppSignInStartResult> =>
+      ipcRenderer.invoke(IPC.githubStartAccountAppSignIn),
+    readAccountAppSignIn: async (args: { signInId: string }): Promise<GitHubAccountAppSignInReadResult> => {
+      const result = await ipcRenderer.invoke(IPC.githubReadAccountAppSignIn, args) as GitHubAccountAppSignInReadResult;
+      if (result.ok && result.status === "done") {
+        githubStatusCache.clear();
+        githubAppInstallationStatusCache.clear();
+      }
+      return result;
+    },
+    signOutAccountApp: async (): Promise<GitHubAccountAppSignOutResult> =>
+      clearAround(
+        () => {
+          githubStatusCache.clear();
+          githubAppInstallationStatusCache.clear();
+        },
+        () => ipcRenderer.invoke(IPC.githubSignOutAccountApp),
       ),
     detectRepo: async (pin?: OpenProjectBinding | null): Promise<{ owner: string; name: string } | null> => {
       if (pin) {

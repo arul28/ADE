@@ -109,6 +109,7 @@ function createRuntime() {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     productAnalyticsService: {
       capture: vi.fn(() => ({ accepted: true, reason: "accepted" })),
+      captureInternal: vi.fn(() => ({ accepted: true, reason: "accepted" })),
       identifyAccount: vi.fn(() => ({ accepted: true, reason: "accepted" })),
       resetAccountIdentity: vi.fn(() => true),
       getStatus: vi.fn(() => ({ configured: true, enabled: true, effective: true })),
@@ -4605,8 +4606,8 @@ describe("adeRpcServer", () => {
         readable: true,
       }]),
       get: vi.fn(() => "sk-test"),
-      set: vi.fn(() => true),
-      remove: vi.fn(() => true),
+      trySet: vi.fn(() => "queued" as const),
+      tryRemove: vi.fn(() => "queued" as const),
       sync: vi.fn(async () => undefined),
     };
     (fixture.runtime as any).accountSettingsStore = accountSettingsStore;
@@ -4680,7 +4681,7 @@ describe("adeRpcServer", () => {
     });
     expect(vaultSet?.isError).toBeUndefined();
     expect(vaultSet.structuredContent.result).toBe(true);
-    expect(accountVaultStore.set).toHaveBeenCalledWith(
+    expect(accountVaultStore.trySet).toHaveBeenCalledWith(
       "all",
       "provider_api_key",
       "openai",
@@ -6306,10 +6307,12 @@ describe("adeRpcServer", () => {
     ["changing a lane share's rights", "lane_share", "updateRights"],
     ["sending a lane share invite again", "lane_share", "resendInvite"],
     ["moving a chat to the other person of a share", "lane_share", "moveStart"],
+    ["sharing this computer's gh sign-in with the account", "github", "setGhAccountSharing"],
   ])("user-only verbs (%s) go to the desktop's own client names and to no other caller", async (_label, domain, action) => {
     const fixture = createRuntime();
     const verb = vi.fn(async () => ({ ok: true }));
     fixture.runtime.iosSimulatorService = { deviceDeleteInstalled: verb };
+    fixture.runtime.githubService = { ...fixture.runtime.githubService, setGhAccountSharing: verb } as any;
     fixture.runtime.syncService = {
       getLaneShareService: () => ({ updateRights: verb, resendInvite: verb }),
       getLaneShareMoveService: () => ({ start: verb }),

@@ -81,6 +81,14 @@ export const OPTIONAL_SECRETS = [
     effect: "approving a sign-in from the ADE phone app answers 503, and the app offers the browser page",
   },
   {
+    name: "GITHUB_APP_CLIENT_SECRET",
+    effect: "connecting the ADE GitHub App to an ADE account answers 503 (/github/app/*)",
+  },
+  {
+    name: "GITHUB_APP_TOKEN_KEY",
+    effect: "connecting the ADE GitHub App to an ADE account answers 503 (/github/app/*)",
+  },
+  {
     name: "CLOUD_LAUNCH_JOIN_KEY",
     effect: "starting an ADE Cloud lane from the web, the phone or an automation (POST /cloud/launches) answers 503",
   },

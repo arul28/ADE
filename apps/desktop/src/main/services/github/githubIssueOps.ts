@@ -20,7 +20,7 @@ import {
   type GitHubIssueListState,
 } from "../../../shared/githubIssueList";
 import type { GitHubIssue, GitHubIssueComment, GitHubIssueUpdate, GitHubMilestone } from "./githubService";
-import { createAppIssueGrantReader, describeIssueWriteAccess } from "./githubIssueWriteAccess";
+import { createAppInstallationGrantReader, describeIssueWriteAccess } from "../../../shared/github/githubAppGrant";
 import {
   parseGitHubIssueTemplate,
   parseGitHubIssueTemplateConfig,
@@ -114,7 +114,7 @@ export function createGithubIssueOps(deps: {
   // The ADE App's issues permission on an owner, read from the user's
   // installations (one request, cached). The service's `apiRequest` uses it
   // too, to skip an App that cannot write issues.
-  const readAppIssueGrant = createAppIssueGrantReader(async (appToken) => {
+  const readAppIssueGrant = createAppInstallationGrantReader(async (appToken) => {
     const { data } = await apiRequest<unknown>({
       method: "GET",
       path: "/user/installations",

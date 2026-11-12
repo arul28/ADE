@@ -677,6 +677,16 @@ import type {
   GitHubIssueCreateResult,
   GitHubIssueTypeOption,
   GitHubAppUserAuthStatus,
+  GitHubAccountAppAccountStatus,
+  GitHubAccountAppSignInReadResult,
+  GitHubAccountAppSignInStartResult,
+  GitHubAccountAppSignOutResult,
+  GithubDirectClientState,
+  GithubDirectData,
+  GithubDirectOp,
+  GithubDirectRequest,
+  GithubDirectRequestOptions,
+  GithubDirectResult,
   GitHubAutolink,
   GitHubRemoteStatus,
   GitHubRepoStarState,
@@ -4665,6 +4675,18 @@ declare global {
         ) => Promise<ConflictProposal>;
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
       };
+      /**
+       * Direct GitHub reads with the ADE account's GitHub App sign-in
+       * (`shared/github/directClient.ts`). Account-scoped: no machine, so no
+       * pin. Optional: an older ADE does not have it.
+       */
+      githubDirect?: {
+        request: <O extends GithubDirectOp>(
+          request: Extract<GithubDirectRequest, { op: O }>,
+          options?: GithubDirectRequestOptions,
+        ) => Promise<GithubDirectResult<GithubDirectData[O]>>;
+        getState: () => Promise<GithubDirectClientState>;
+      };
       github: {
         getStatus: (opts?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getRemoteStatus: (opts?: {
@@ -4672,12 +4694,26 @@ declare global {
         }) => Promise<GitHubRemoteStatus>;
         setToken: (token: string, pin?: OpenProjectBinding | null) => Promise<GitHubSetTokenResult>;
         clearToken: (pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
+        /**
+         * Optional: an older ADE does not have it. `enabled: false` takes the
+         * gh login off the ADE account; `enabled: true` shares this machine's.
+         */
+        setGhAccountSharing?: (args: { enabled: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getAppUserAuthStatus: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
         startAppUserDeviceAuth: (pin?: OpenProjectBinding | null) => Promise<GitHubAppDeviceAuthStartResult>;
         pollAppUserDeviceAuth: (args: {
           sessionId: string;
         }, pin?: OpenProjectBinding | null) => Promise<GitHubAppDeviceAuthPollResult>;
         clearAppUserAuth: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
+        /**
+         * The ADE account's GitHub App sign-in. Account-scoped (no pin): it
+         * lives in the account directory, not on a machine. Optional: an older
+         * ADE, and the web client before it has them, do not.
+         */
+        getAccountAppStatus?: () => Promise<GitHubAccountAppAccountStatus>;
+        startAccountAppSignIn?: () => Promise<GitHubAccountAppSignInStartResult>;
+        readAccountAppSignIn?: (args: { signInId: string }) => Promise<GitHubAccountAppSignInReadResult>;
+        signOutAccountApp?: () => Promise<GitHubAccountAppSignOutResult>;
         // Optional: an older remote runtime does not implement the budget read.
         // Callers must feature-detect and fall back to their own local backoff.
         getRequestBudget?: () => Promise<GitHubRequestBudget>;

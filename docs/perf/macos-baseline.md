@@ -1530,6 +1530,21 @@ Mac Studio against a private test repo, 2026-11-09:
 | `#` references for a repo: GraphQL requests | 1 per repo per 2 minutes, however many writers type | not set yet; needs approval |
 | Opening a PR with task boxes when the viewer is not its author | 1 permission read, shared with the mention cache; 0 otherwise | not set yet; needs approval |
 
+Account PR list read straight from GitHub (`useAccountGithubPulls`, the
+direct client with the account's GitHub App sign-in), 2026-11-11. No screen
+draws it yet, so this is the request budget only: the store driven by a
+virtual clock for one hour against a local fake GitHub that answers ETags
+like GitHub (scratch harness, not committed). Not the baseline machine.
+
+| Metric | Measured | Ceiling |
+|---|---|---|
+| Visible, list unchanged, one page (40 PRs), two components on it | 61 requests per hour, 1 counts (60 are `304`) | not set yet; needs approval |
+| Visible, list unchanged, three pages (120 PRs) | 180 requests per hour, 0 count | not set yet; needs approval |
+| Visible, three pages, a change every 10 minutes | 180 requests per hour, 18 count | not set yet; needs approval |
+| Window hidden | 0 requests and no timer; one read when it shows again | 0 |
+| App not installed on the owner, visible | 14 requests per hour (a retry every 5 minutes, diagnosis cached 5 minutes) | not set yet; needs approval |
+| Requests in flight | at most 6 (the desktop shares the main-process gate) | 6 |
+
 ## iOS app: Lanes and PRs (simulator)
 
 The iOS app is measured on its own columns: a simulator on the Mac Studio

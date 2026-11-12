@@ -24592,6 +24592,29 @@ function hasProjectCredentialStoreValue(
   }
 }
 
+/**
+ * Providers with a default key in this machine's API key store (the file the
+ * runtime and the CLI share), by name. Keys that moved out of
+ * `.ade/local.yaml` live here now, so readiness counts them too. Reads only the
+ * provider index, never a key.
+ */
+function readStoredApiKeyProviders(secretsDir: string): string[] {
+  const credentialsPath = path.join(secretsDir, "credentials.json.enc");
+  const machineKeyPath = path.join(secretsDir, ".machine-key");
+  if (!fs.existsSync(credentialsPath) || !fs.existsSync(machineKeyPath)) return [];
+  try {
+    const raw = new EncryptedFileCredentialStore({ credentialsPath, machineKeyPath }).getSync("ai.api_key.index.v1");
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      : [];
+  } catch (error) {
+    // Readiness still answers from local.yaml.
+    captureError(error, { fingerprint: ["doctor-api-key-index-unreadable", error instanceof Error ? error.name : "unknown"] });
+    return [];
+  }
+}
+
 function checkProviderReadiness(value: unknown): ReadinessCheck {
   const configResult =
     isRecord(value) && isRecord(value.result) ? value.result : value;
@@ -24611,9 +24634,10 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
     cursor: resolvePinnedCursorAgentCli() != null,
     droid: resolveDroidExecutable().source !== "fallback-command",
   };
-  const apiKeyProviders = Object.keys(apiKeys).filter((key) =>
-    Boolean(asString(apiKeys[key])),
-  );
+  const apiKeyProviders = [...new Set([
+    ...Object.keys(apiKeys).filter((key) => Boolean(asString(apiKeys[key]))),
+    ...readStoredApiKeyProviders(resolveMachineAdeLayout().secretsDir),
+  ])];
   const ready = Boolean(
     defaultProvider ||
     apiKeyProviders.length ||
@@ -29415,6 +29439,12 @@ async function runServe(
   // A launchd brain gets no --socket and no socket env, only ADE_HOME. Record
   // the socket it serves so the `ade` shim it hands its agents names it.
   publishServedRuntimeSocket(socketPath);
+  // `gh` and `git` in this brain's agent shells and chats ask for the current
+  // account token on every run (githubShellShim.ts); off, they get a frozen one.
+  {
+    const { configureGithubShellShim } = await import("../../desktop/src/main/services/github/githubShellShim");
+    configureGithubShellShim({ env: process.env, logger: headlessProjectLogger });
+  }
   // Only the machine brain publishes the machine heartbeat; see the helper.
   const servesMachineEndpoint = servesMachineRuntimeEndpoint(rawSocketPath, machineRuntimeNames);
   if (servesMachineEndpoint) {

@@ -5,9 +5,11 @@ import {
   createAccountStoreResultHelpers,
 } from "../../../../desktop/src/shared/types/accountStore";
 import type { AccountVaultBridge } from "../../../../desktop/src/main/services/account/accountVaultBridge";
-import type {
-  AccountVaultItem,
-  AccountVaultResult,
+import {
+  ACCOUNT_VAULT_STALE_MESSAGE,
+  type AccountVaultItem,
+  type AccountVaultResult,
+  type AccountVaultWriteResult,
 } from "../../../../desktop/src/shared/types/accountVault";
 import {
   createAccountMigrationRunner,
@@ -25,6 +27,7 @@ import {
   getSharedAccountVaultStore,
   type AccountVaultRelay,
   type AccountVaultStore,
+  type AccountVaultWriteAnswer,
 } from "./accountVaultStore";
 import type { AccountVaultItemKind } from "../push/accountRelayRows";
 import { createPushRegistrationStore } from "../push/pushRegistrationStore";
@@ -71,6 +74,12 @@ export function createHeadlessAccountVaultBridge(
     rejectedMessage: HEADLESS_ACCOUNT_VAULT_REJECTED_MESSAGE,
   });
 
+  const writeResult = (answer: AccountVaultWriteAnswer): AccountVaultWriteResult => {
+    if (answer === "queued") return { ok: true, value: null };
+    if (answer === "stale") return { ok: false, rejected: true, stale: true, message: ACCOUNT_VAULT_STALE_MESSAGE };
+    return rejected();
+  };
+
   return {
     async list(scope): Promise<AccountVaultResult<AccountVaultItem[]>> {
       const store = getStore();
@@ -85,6 +94,7 @@ export function createHeadlessAccountVaultBridge(
           updatedAt: item.updatedAt,
           refreshOwner: item.refreshOwner,
           ...(item.deleted === true ? { deleted: true } : {}),
+          revision: item.revision,
         })),
       };
     },
@@ -99,16 +109,12 @@ export function createHeadlessAccountVaultBridge(
     async set(scope, kind, key, value, options) {
       const store = getStore();
       if (!store) return unavailable();
-      return store.set(scope, kind as AccountVaultItemKind, key, value, options)
-        ? { ok: true, value: null }
-        : rejected();
+      return writeResult(store.trySet(scope, kind as AccountVaultItemKind, key, value, options));
     },
     async remove(scope, kind, key, options) {
       const store = getStore();
       if (!store) return unavailable();
-      return store.remove(scope, kind as AccountVaultItemKind, key, options)
-        ? { ok: true, value: null }
-        : rejected();
+      return writeResult(store.tryRemove(scope, kind as AccountVaultItemKind, key, options));
     },
     async sync(options) {
       const store = getStore();
