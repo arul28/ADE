@@ -713,6 +713,7 @@ import {
 } from "./services/runtime/brainLoopWatchdog";
 import { recordHostStall } from "./services/runtime/hostStallRecord";
 import { installSyncFsCallTracker, isStallCapablePath } from "./services/runtime/syncFsCallTracker";
+import { expectedErrorKind } from "../../desktop/src/shared/expectedError";
 import { StorageNotAnsweringError } from "../../desktop/src/main/services/state/unansweringRoots";
 import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import {
@@ -25692,6 +25693,19 @@ function describeDiagnosticError(error: unknown): string {
     : `[thrown ${label}]`;
 }
 
+/**
+ * A fast failure that stands in for a wait on a drive that is not answering,
+ * as itself or carried by a wrapper (`carryExpected` keeps its mark, and ADE's
+ * own code travels with it).
+ */
+function isStorageWaitError(error: unknown): boolean {
+  if (error instanceof StorageNotAnsweringError) return true;
+  return (
+    (error as { code?: unknown } | null)?.code === "storage_read_failed" &&
+    expectedErrorKind(error) === "environment"
+  );
+}
+
 function installRuntimeProcessErrorBoundary(label: string): () => void {
   const rejectionWindowMs = 60_000;
   const rejectionLogLimit = 5;
@@ -25736,7 +25750,9 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
     // restarted brain would walk back into the wait, and the loop is what the
     // fast failure exists to stop. The throw happened before the call did
     // anything, so carrying on is as safe as a caught error.
-    if (error instanceof StorageNotAnsweringError) {
+    // A wrapper that adds context (the SQL of a statement, say) keeps the
+    // code and the expected mark but not the class, so both are read here.
+    if (isStorageWaitError(error)) {
       write("storage wait", error);
       return;
     }

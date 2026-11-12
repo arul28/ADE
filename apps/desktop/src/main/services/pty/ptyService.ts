@@ -3127,10 +3127,12 @@ export function createPtyService({
     const mirror = entry.terminalSnapshot;
     if (!mirror) return;
     if (mirror.writeDisabled) return;
-    const snapshot = buildTerminalSnapshot(entry);
-    if (!snapshot) return;
     let tmpPath: string | null = null;
     try {
+      // Inside the try: it reads the session row, and a drive that is not
+      // answering makes that read throw.
+      const snapshot = buildTerminalSnapshot(entry);
+      if (!snapshot) return;
       fs.mkdirSync(terminalSnapshotDir, { recursive: true });
       const finalPath = safeTerminalSnapshotPathFor(entry.sessionId);
       tmpPath = `${finalPath}.${process.pid}.${randomUUID()}.tmp`;

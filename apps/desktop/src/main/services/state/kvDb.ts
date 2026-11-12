@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType, StatementSync } from "node:sqlite";
 import { codedError, isCodedError, isErrnoLikeCode } from "../../../shared/codedError";
 import { carryExpected, expectedErrorKind, markExpected } from "../../../shared/expectedError";
+import { StorageNotAnsweringError } from "./unansweringRoots";
 import type { Logger } from "../logging/logger";
 import { isSqliteBusyOrLockedError, isSqliteIoError } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
@@ -691,8 +692,14 @@ function preparedStatement(db: DatabaseSyncType, sql: string): StatementSync {
  * travel with it (a drive that is not answering stays `storage_read_failed`
  * and an answer, not an issue); a platform code is left behind with the
  * original error.
+ *
+ * A drive that is not answering keeps its own error, unwrapped. A timer that
+ * reads the database has no catch, and the brain's uncaught handler lets only
+ * that class pass; a plain wrapper made the brain exit and take every chat
+ * and terminal with it (Mac Studio, 2026-11-12, twice in one day).
  */
 function statementError(error: unknown, sql: string): Error {
+  if (error instanceof StorageNotAnsweringError) return error;
   const statement = sql.replace(/\s+/g, " ").trim();
   const message = error instanceof Error ? error.message : String(error);
   const wrapped = new Error(`${message} [sql=${statement}]`);
