@@ -232,13 +232,16 @@ function setup(options: Setup = {}) {
   return { iosSimulator, app, deviceStart, settleStart: () => settleStart?.() };
 }
 
+/** The lane's machine: the pane always runs against one. */
+const PANE_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 function renderPane(overrides: Partial<React.ComponentProps<typeof AppleDevicePane>> = {}) {
   return render(
     <AppleDevicePane
       sessionId="chat-1"
       laneId="lane-1"
       projectRoot="/repo"
-      runtimePin={null}
+      runtimePin={PANE_PIN}
       ignoreChatOwnership
       {...overrides}
     />,
@@ -304,7 +307,7 @@ describe("AppleDevicePane states", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Start iPhone 17 Pro Max" }));
     expect(deviceStart).toHaveBeenCalledWith(
       { laneId: "lane-1", chatSessionId: "chat-1", udid: "max" },
-      null,
+      PANE_PIN,
     );
     expect(document.querySelector("[role='dialog']")).toBeNull();
     // The loading card is what stands between the click and the device.
@@ -406,7 +409,7 @@ describe("AppleDevicePane states", () => {
       fireEvent.click(screen.getByRole("button", { name: "Start" }));
       expect(deviceStart).toHaveBeenCalledWith(
         { laneId: "lane-1", chatSessionId: "chat-1", udid: "pro" },
-        null,
+        PANE_PIN,
       );
     });
 
@@ -423,7 +426,7 @@ describe("AppleDevicePane states", () => {
       iosSimulator.deviceList = vi.fn(async () => ({ installed: [{ ...PRO, state: "Shutdown" }, MAX], lane: null }));
       fireEvent.click(screen.getByRole("button", { name: "Choose another device" }));
       expect(screen.queryByText("Give up this device and pick another? It stays installed.")).toBeNull();
-      await waitFor(() => expect(iosSimulator.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true, udid: "pro" }, null));
+      await waitFor(() => expect(iosSimulator.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true, udid: "pro" }, PANE_PIN));
       expect(iosSimulator.deviceDelete).not.toHaveBeenCalled();
       await waitFor(() => expect(paneState()).toBe("no-device"));
     });
@@ -440,7 +443,7 @@ describe("AppleDevicePane states", () => {
       });
       render(
         <>
-          <AppleDevicePane sessionId="chat-1" laneId="lane-1" projectRoot="/repo" runtimePin={null} ignoreChatOwnership />
+          <AppleDevicePane sessionId="chat-1" laneId="lane-1" projectRoot="/repo" runtimePin={PANE_PIN} ignoreChatOwnership />
           <DialogHost />
         </>,
       );
@@ -452,7 +455,7 @@ describe("AppleDevicePane states", () => {
       fireEvent.click(screen.getByRole("button", { name: "Release" }));
       await waitFor(() => expect(iosSimulator.deviceDetach).toHaveBeenCalledWith(
         { laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true, udid: "pro", keep: true },
-        null,
+        PANE_PIN,
       ));
       expect(iosSimulator.deviceDelete).not.toHaveBeenCalled();
     });
@@ -555,14 +558,14 @@ describe("AppleDevicePane states", () => {
 
     iosSimulator.deviceList = vi.fn(() => new Promise<never>(() => {}));
     view.rerender(
-      <AppleDevicePane sessionId="chat-1" laneId="lane-2" projectRoot="/repo" runtimePin={null} ignoreChatOwnership />,
+      <AppleDevicePane sessionId="chat-1" laneId="lane-2" projectRoot="/repo" runtimePin={PANE_PIN} ignoreChatOwnership />,
     );
 
     expect(paneState()).toBe("no-device");
     expect(screen.queryByTestId("apple-stage")).toBeNull();
     expect(iosSimulator.deviceList).toHaveBeenCalledWith(
       expect.objectContaining({ laneId: "lane-2" }),
-      null,
+      PANE_PIN,
     );
   });
 
@@ -577,7 +580,7 @@ describe("AppleDevicePane states", () => {
     fireEvent.click(screen.getByRole("button", { name: "Switch device" }));
     expect(iosSimulator.deviceDelete).toHaveBeenCalledWith(
       { laneId: "lane-1", chatSessionId: "chat-1", force: true, ignoreOwnership: true },
-      null,
+      PANE_PIN,
     );
   });
 });
@@ -644,7 +647,7 @@ describe("AppleDevicePane viewport (round 4 §A1–§A4)", () => {
     expect(await screen.findByTestId("apple-inspect-overlay")).toBeTruthy();
     expect(iosSimulator.getScreenSnapshot).toHaveBeenCalledWith(
       { deviceUdid: "pro", laneId: "lane-1", projectRoot: "/repo" },
-      null,
+      PANE_PIN,
     );
     // Inspect works in 3D too: the round-3 "Inspect is flat-view only" rule,
     // which silently forced the view, is gone.
@@ -723,7 +726,7 @@ describe("AppleDevicePane orientation honesty", () => {
 
     expect(iosSimulator.rotate).toHaveBeenCalledWith(
       { orientation: "landscape-left", laneId: "lane-1", deviceUdid: "pro" },
-      null,
+      PANE_PIN,
     );
     await waitFor(() => expect(
       screen.getByRole("button", { name: /^Orientation: / }).getAttribute("aria-label"),
@@ -860,7 +863,7 @@ describe("AppleDevicePane after a restart (owner's 2026-09-23 reports)", () => {
     expect(streamArgs.last?.deviceUdid).toBeNull();
     expect(deviceStart).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
-    expect(deviceStart).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", udid: "pro" }, null);
+    expect(deviceStart).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", udid: "pro" }, PANE_PIN);
   });
 
   it("a start whose reply never arrives leaves the loading card on the streaming event", async () => {
@@ -894,7 +897,7 @@ describe("AppleDevicePane after a restart (owner's 2026-09-23 reports)", () => {
       iosSimulator.getStreamStatus = vi.fn(async () => ({ running: true }));
       await recheck.tick();
       await waitFor(() => expect(paneState()).toBe("live"));
-      expect(iosSimulator.getStreamStatus).toHaveBeenCalledWith(null, { laneId: "lane-1", chatSessionId: "chat-1" });
+      expect(iosSimulator.getStreamStatus).toHaveBeenCalledWith(PANE_PIN, { laneId: "lane-1", chatSessionId: "chat-1" });
     } finally {
       recheck.restore();
     }

@@ -37,7 +37,9 @@ import { useAppStore } from "../../state/appStore";
 
 const LANE = "lane-1";
 const UDID = "device-1";
-const KEY = appleStreamLeaseKey({ pin: null, bound: null, laneId: LANE, deviceUdid: UDID });
+/** The tab's copy: a null pin names it. */
+const TAB = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+const KEY = appleStreamLeaseKey({ pin: null, bound: TAB, laneId: LANE, deviceUdid: UDID });
 
 const LANE_DEVICE = {
   laneId: LANE,
@@ -70,7 +72,7 @@ function installDeviceList(state: "Booted" | "Shutdown" | null) {
 
 /** The pane, open on a live device: a stream lease plus the cached name. */
 function paneIsStreaming() {
-  acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
+  acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: TAB.key });
   noteAppleMiniPlayerLaneDevice({ laneId: LANE, runtimePin: null }, { udid: UDID, name: "ADE Repro", runtime: "iOS 26.3", family: "iphone" });
 }
 
@@ -79,9 +81,11 @@ const handoffAsync = () => handoffAppleMiniPlayerAsync({ laneId: LANE, chatSessi
 
 beforeEach(() => {
   resetAppleStreamLeases();
+  useAppStore.setState({ projectBinding: TAB });
 });
 
 afterEach(() => {
+  useAppStore.setState({ projectBinding: null });
   resetAppleMiniPlayerForTests();
   resetAppleStreamLeases();
   window.localStorage.clear();
@@ -120,7 +124,7 @@ describe("handoffAppleMiniPlayer", () => {
     expect(stopStream).not.toHaveBeenCalled();
 
     // The player mounts, takes its own, and hands the hold back.
-    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
+    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: TAB.key });
     releaseAppleMiniPlayerHandoverHold();
     expect(appleStreamLeaseCount(KEY)).toBe(1);
     expect(stopStream).not.toHaveBeenCalled();
@@ -136,7 +140,7 @@ describe("handoffAppleMiniPlayer", () => {
 
     await vi.advanceTimersByTimeAsync(APPLE_STREAM_HANDOVER_HOLD_MS + 1);
     expect(appleStreamLeaseCount(KEY)).toBe(0);
-    expect(stopStream).toHaveBeenCalledWith(null, { laneId: LANE, chatSessionId: "chat-1" });
+    expect(stopStream).toHaveBeenCalledWith(TAB, { laneId: LANE, chatSessionId: "chat-1" });
   });
 
   it("the hold's expiry leaves alone a second device the player moved to on the same lane", async () => {
@@ -146,8 +150,8 @@ describe("handoffAppleMiniPlayer", () => {
     handoff();
     releaseAppleStreamLease(KEY);
     // The player moves to device B on the same lane while the hold on A is live.
-    const other = appleStreamLeaseKey({ pin: null, bound: null, laneId: LANE, deviceUdid: "device-2" });
-    acquireAppleStreamLease(other, { laneId: LANE, deviceUdid: "device-2", pinKey: "bound" });
+    const other = appleStreamLeaseKey({ pin: null, bound: TAB, laneId: LANE, deviceUdid: "device-2" });
+    acquireAppleStreamLease(other, { laneId: LANE, deviceUdid: "device-2", pinKey: TAB.key });
 
     await vi.advanceTimersByTimeAsync(APPLE_STREAM_HANDOVER_HOLD_MS + 1);
     expect(appleStreamLeaseCount(KEY)).toBe(0);
@@ -164,7 +168,7 @@ describe("handoffAppleMiniPlayer", () => {
 
   it("floats with a fallback name when the pane never cached one", () => {
     installDeviceList("Booted");
-    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
+    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: TAB.key });
     expect(handoff()).toBe(true);
     // The name is only ever read aloud: a missing cache is a worse label, not a
     // worse picture, and the picture is what the handover is for.
@@ -269,7 +273,7 @@ describe("the cold path", () => {
   it("asks the runtime when the lane has no live stream, and caches what it learns", async () => {
     const { deviceList } = installDeviceList("Booted");
     await handoffAsync();
-    expect(deviceList).toHaveBeenCalledWith({ laneId: LANE, installed: true }, null);
+    expect(deviceList).toHaveBeenCalledWith({ laneId: LANE, installed: true }, TAB);
     expect(getAppleMiniPlayerTarget()).toMatchObject({ deviceUdid: UDID, deviceName: "ADE Repro" });
     expect(getAppleMiniPlayerLaneDevice({ laneId: LANE, runtimePin: null })).toEqual({
       udid: UDID, name: "ADE Repro", runtime: "iOS 26.3", family: "iphone",
@@ -313,7 +317,7 @@ describe("floating on the agent's activity", () => {
   it("floats the chat's lane device by default, asking the runtime which one it is", async () => {
     const { deviceList } = installDeviceList("Booted");
     await expect(float(true)).resolves.toBe(true);
-    expect(deviceList).toHaveBeenCalledWith({ laneId: LANE, installed: true }, null);
+    expect(deviceList).toHaveBeenCalledWith({ laneId: LANE, installed: true }, TAB);
     expect(getAppleMiniPlayerTarget()).toMatchObject({ laneId: LANE, chatSessionId: "chat-1", deviceUdid: UDID });
   });
 
@@ -398,7 +402,7 @@ describe("floating on another machine's lane of the same id", () => {
     // An explicit ask asks this machine which device the lane holds.
     await expect(floatAppleMiniPlayerForChat({ laneId: LANE, chatSessionId: "chat-1", runtimePin: null, auto: false }))
       .resolves.toBe(true);
-    expect(deviceList).toHaveBeenCalledWith({ laneId: LANE, installed: true }, null);
+    expect(deviceList).toHaveBeenCalledWith({ laneId: LANE, installed: true }, TAB);
     expect(getAppleMiniPlayerTarget()?.deviceUdid).toBe(UDID);
   });
 });
@@ -442,7 +446,7 @@ describe("the lane device cache", () => {
 
   it("gives the floating player the family the pane was drawing", () => {
     installDeviceList("Booted");
-    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
+    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: TAB.key });
     noteAppleMiniPlayerLaneDevice({ laneId: LANE, runtimePin: null }, { udid: UDID, name: "iPad Pro", runtime: "iPadOS 26", family: "ipad" });
     handoff();
     expect(getAppleMiniPlayerTarget()).toMatchObject({ family: "ipad", deviceName: "iPad Pro" });

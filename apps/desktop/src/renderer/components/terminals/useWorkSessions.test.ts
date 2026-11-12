@@ -27,9 +27,18 @@ const routerLocation = {
   hash: "",
 };
 
+const FAKE_TAB_BINDING = {
+  kind: "local" as const,
+  key: "local:/fake/project",
+  rootPath: "/fake/project",
+  displayName: "project",
+};
+
 function resetFakeAppStoreState() {
   fakeAppStoreState = {
     project: { rootPath: "/fake/project" },
+    // Work sits under an open project; its calls go to that copy.
+    projectBinding: FAKE_TAB_BINDING,
     lanes: [{ id: "lane-1", name: "Lane 1" }],
     focusSession: focusSessionSpy,
     focusedSessionId: null,
@@ -297,7 +306,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
     });
 
     act(() => {
-      applyChatLaunchSnapshot(null, launch());
+      applyChatLaunchSnapshot(FAKE_TAB_BINDING, launch());
     });
     const pending = result.current.sessionsById.get("launch-1");
     expect(pending).toMatchObject({ laneId: "lane-new", laneName: "Fix Login Redirect", title: "Fix the login redirect" });
@@ -319,7 +328,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
       await new Promise((r) => setTimeout(r, 10));
     });
     act(() => {
-      applyChatLaunchSnapshot(null, launch());
+      applyChatLaunchSnapshot(FAKE_TAB_BINDING, launch());
     });
     expect(result.current.sessionsById.has("launch-1")).toBe(true);
 
@@ -327,7 +336,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
     // closes the tab — no separate scan at tab-prune time.
     setWorkViewStateSpy.mockClear();
     act(() => {
-      applyChatLaunchSnapshot(null, launch({ phase: "cancelled", sequence: 4 }));
+      applyChatLaunchSnapshot(FAKE_TAB_BINDING, launch({ phase: "cancelled", sequence: 4 }));
     });
     expect(result.current.sessionsById.has("launch-1")).toBe(false);
     // The close notice is posted synchronously with the store write, so its
@@ -377,7 +386,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
 
     // The active binding's own failed launch keeps its row until the host lists the chat.
     act(() => {
-      applyChatLaunchSnapshot(null, launch({ launchId: "launch-2", sessionId: "launch-2", phase: "failed", sequence: 2 }));
+      applyChatLaunchSnapshot(FAKE_TAB_BINDING, launch({ launchId: "launch-2", sessionId: "launch-2", phase: "failed", sequence: 2 }));
     });
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
 
@@ -386,7 +395,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
     // or archived then cannot come back as a ghost (see chatLaunchAwaitsHostRow).
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     act(() => {
-      applyChatLaunchSnapshot(null, launch({
+      applyChatLaunchSnapshot(FAKE_TAB_BINDING, launch({
         launchId: "launch-2",
         sessionId: "launch-2",
         phase: "completed",
@@ -413,7 +422,7 @@ describe("useWorkSessions — pending new-lane chat launches", () => {
     await act(async () => {
       await result.current.refresh({ showLoading: false });
     });
-    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, { force: true });
+    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, { force: true }, FAKE_TAB_BINDING);
     expect(result.current.sessionsById.has("launch-2")).toBe(true);
     await act(async () => {
       await result.current.refresh({ showLoading: false });
@@ -514,7 +523,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       expect.objectContaining({
         initialInput: "queued prompt",
         initialInputDelayMs: 750,
-      }),
+      }), FAKE_TAB_BINDING,
     );
     expect((window as any).ade.pty.create.mock.calls.at(-1)?.[0]).not.toHaveProperty("awaitInitialInput");
 
@@ -598,7 +607,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       laneId: "lane-1",
       toolType: "codex",
       startupCommand: expect.stringContaining("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request"),
-    }));
+    }), FAKE_TAB_BINDING);
   });
 
   it("routes provider launch intent for the runtime host to materialize", async () => {
@@ -628,7 +637,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
         provider: "droid",
         initialPrompt: "Inspect the remote lane.",
       }),
-    }));
+    }), FAKE_TAB_BINDING);
     const createArgs = (window as any).ade.pty.create.mock.calls.at(-1)?.[0];
     expect(createArgs).not.toHaveProperty("command");
     expect(createArgs).not.toHaveProperty("startupCommand");
@@ -706,7 +715,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       });
     });
 
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true }, FAKE_TAB_BINDING);
     expect(result.current.sessions).toEqual([
       expect.objectContaining({
         id: "new-pty-session",
@@ -743,12 +752,12 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     await waitFor(() => {
-      expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+      expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true }, FAKE_TAB_BINDING);
     });
     expect((window as any).ade.pty.dispose).toHaveBeenCalledWith({
       ptyId: "pty-stop",
       sessionId: "session-stop",
-    });
+    }, FAKE_TAB_BINDING);
     expect(result.current.sessions[0]).toMatchObject({
       id: "session-stop",
       ptyId: null,
@@ -791,7 +800,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
         runtimeState: "running",
       });
     });
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true }, FAKE_TAB_BINDING);
   });
 
   it("keeps a runtime row stopped when dispose reports the pty is already gone", async () => {
@@ -828,7 +837,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
         exitCode: null,
       });
     });
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true }, FAKE_TAB_BINDING);
   });
 
   it("restores a runtime row when dispose reports a session mismatch", async () => {
@@ -864,7 +873,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
         runtimeState: "running",
       });
     });
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true }, FAKE_TAB_BINDING);
   });
 
   it("launchPtySession can start a terminal in the background without changing the active tab", async () => {
@@ -2539,7 +2548,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     await waitFor(() => {
       expect(listSessionsCachedMock).toHaveBeenCalled();
     });
-    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, undefined, FAKE_TAB_BINDING);
   });
 
   it("recomputes snooze filing when Work re-enters after the deadline elapsed off-route", async () => {
@@ -3478,7 +3487,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       await new Promise((r) => setTimeout(r, 120));
     });
 
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined, FAKE_TAB_BINDING);
     expect(invalidateSessionListCache).toHaveBeenCalled();
   });
 
@@ -3516,7 +3525,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       await new Promise((r) => setTimeout(r, 60));
     });
 
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined, FAKE_TAB_BINDING);
   });
 
   it("refetches visible Work when the window regains focus", async () => {
@@ -3535,7 +3544,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(invalidateSessionListCache).toHaveBeenCalled();
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined, FAKE_TAB_BINDING);
   });
 
   it("does not refetch remote Work on focus without hidden changes", async () => {
@@ -3568,7 +3577,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
   });
 
   it("does not subscribe or refresh while the kept-alive Work surface is inactive", async () => {
-    const windowAddEventListenerSpy = vi.spyOn(window, "addEventListener");
     const documentAddEventListenerSpy = vi.spyOn(document, "addEventListener");
 
     renderHook(() => useWorkSessions({ active: false }));
@@ -3581,10 +3589,14 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect((window as any).ade.pty.onExit).not.toHaveBeenCalled();
     expect((window as any).ade.agentChat.onEvent).not.toHaveBeenCalled();
     expect((window as any).ade.sessions.onChanged).not.toHaveBeenCalled();
-    expect(windowAddEventListenerSpy).not.toHaveBeenCalledWith("focus", expect.any(Function));
     expect(documentAddEventListenerSpy).not.toHaveBeenCalledWith("visibilitychange", expect.any(Function));
+    // Focus wakes app-wide watchers, but never an inactive Work list.
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await new Promise((r) => setTimeout(r, 140));
+    });
+    expect(listSessionsCachedMock).not.toHaveBeenCalled();
 
-    windowAddEventListenerSpy.mockRestore();
     documentAddEventListenerSpy.mockRestore();
   });
 
@@ -3613,7 +3625,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(invalidateSessionListCache).toHaveBeenCalled();
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined, FAKE_TAB_BINDING);
   });
 
   it("shows an announced headless chat before session-list propagation completes", async () => {
@@ -3678,7 +3690,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       });
 
       expect(invalidateSessionListCache).toHaveBeenCalled();
-      expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+      expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined, FAKE_TAB_BINDING);
       expect(unhandled).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener("unhandledrejection", unhandled);
@@ -4037,8 +4049,8 @@ describe("useWorkSessions — chip filters and lane ordering", () => {
     await waitFor(() => {
       expect(setWorkViewStateSpy.mock.calls.some(([, next]) => typeof next === "function")).toBe(true);
     });
-    expect(updateMeta).toHaveBeenCalledWith({ sessionId: "session-running", pinned: true });
-    expect(updateMeta).toHaveBeenCalledWith({ sessionId: "session-snoozed", pinned: true });
+    expect(updateMeta).toHaveBeenCalledWith({ sessionId: "session-running", pinned: true }, FAKE_TAB_BINDING);
+    expect(updateMeta).toHaveBeenCalledWith({ sessionId: "session-snoozed", pinned: true }, FAKE_TAB_BINDING);
     // A row not loaded yet (another machine's) is not written now.
     expect(updateMeta.mock.calls.some(([args]) => args.sessionId === "session-not-loaded")).toBe(false);
     const updater = setWorkViewStateSpy.mock.calls.filter(([, next]) => typeof next === "function").at(-1)?.[1] as

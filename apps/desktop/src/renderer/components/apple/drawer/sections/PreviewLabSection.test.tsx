@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { IosSimulatorPreviewTarget } from "../../../../../shared/types";
 import { changeMatchesTarget, groupPreviewTargets, PreviewLabSection } from "./PreviewLabSection";
-import { installAdeMock, makeCtx } from "../drawerTestHarness";
+import { installAdeMock, makeCtx, DRAWER_PIN } from "../drawerTestHarness";
 
 afterEach(() => {
   cleanup();
@@ -44,7 +44,7 @@ describe("PreviewLabSection", () => {
     expect(screen.getByRole("button", { name: "Open in Xcode" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Reveal workspace" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Refresh previews" })).toBeTruthy();
-    expect(iosSimulator.listPreviewTargets).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
+    expect(iosSimulator.listPreviewTargets).toHaveBeenCalledWith({ laneId: "lane-1" }, DRAWER_PIN);
   });
 
   it("opens and reveals the lane's Xcode workspace, and re-reads the previews on demand", async () => {
@@ -53,9 +53,9 @@ describe("PreviewLabSection", () => {
     render(<PreviewLabSection ctx={makeCtx()} onPreviewRendered={vi.fn()} />);
     await waitFor(() => expect(iosSimulator.listPreviewTargets).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "Open in Xcode" }));
-    await waitFor(() => expect(iosSimulator.ensurePreviewWorkspace).toHaveBeenCalledWith({ laneId: "lane-1", openIfNeeded: true }, null));
+    await waitFor(() => expect(iosSimulator.ensurePreviewWorkspace).toHaveBeenCalledWith({ laneId: "lane-1", openIfNeeded: true }, DRAWER_PIN));
     fireEvent.click(screen.getByRole("button", { name: "Reveal workspace" }));
-    await waitFor(() => expect(iosSimulator.openPreviewWorkspace).toHaveBeenCalledWith({ laneId: "lane-1" }, null));
+    await waitFor(() => expect(iosSimulator.openPreviewWorkspace).toHaveBeenCalledWith({ laneId: "lane-1" }, DRAWER_PIN));
     fireEvent.click(screen.getByRole("button", { name: "Refresh previews" }));
     await waitFor(() => expect(iosSimulator.listPreviewTargets).toHaveBeenCalledTimes(2));
   });
@@ -86,7 +86,7 @@ describe("PreviewLabSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Render" }));
     await waitFor(() => expect(iosSimulator.renderPreview).toHaveBeenCalledWith(
       { laneId: "lane-1", sourceFilePath: "apps/ios/Views/SignIn.swift", previewDefinitionIndexInFile: 0, timeoutSec: 120 },
-      null,
+      DRAWER_PIN,
     ));
     await waitFor(() => expect(onPreviewRendered).toHaveBeenCalledWith({ dataUrl: "data:image/png;base64,AAA", targetLabel: "SignInView" }));
     const back = screen.getByRole("button", { name: "Back to device" }) as HTMLButtonElement;
@@ -121,18 +121,18 @@ describe("PreviewLabSection", () => {
     const { unmount } = render(<PreviewLabSection ctx={makeCtx()} onPreviewRendered={onPreviewRendered} />);
     await waitFor(() => expect((screen.getByRole("switch", { name: "Watch file" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("switch", { name: "Watch file" }));
-    await waitFor(() => expect(files.watchChanges).toHaveBeenCalledWith({ workspaceId: "ws-1" }, null));
+    await waitFor(() => expect(files.watchChanges).toHaveBeenCalledWith({ workspaceId: "ws-1" }, DRAWER_PIN));
     expect(listener).not.toBeNull();
     act(() => { listener!({ workspaceId: "ws-1", path: "/r/apps/ios/Views/Other.swift" }); });
     act(() => { listener!({ workspaceId: "ws-1", path: "/r/apps/ios/Views/SignIn.swift" }); });
     await waitFor(() => expect(iosSimulator.renderCurrentPreview).toHaveBeenCalledTimes(1), { timeout: 2000 });
     expect(iosSimulator.renderCurrentPreview).toHaveBeenCalledWith(
       { laneId: "lane-1", sourceFile: "Views/SignIn.swift", sourceLine: 40, timeoutSec: 120 },
-      null,
+      DRAWER_PIN,
     );
     await waitFor(() => expect(onPreviewRendered).toHaveBeenCalledWith({ dataUrl: "data:image/png;base64,BBB", targetLabel: "SignInView" }));
     unmount();
-    expect(files.stopWatching).toHaveBeenCalledWith({ workspaceId: "ws-1" }, null);
+    expect(files.stopWatching).toHaveBeenCalledWith({ workspaceId: "ws-1" }, DRAWER_PIN);
   });
 
   it("matches a change against the target's absolute, project-relative and short paths", () => {
