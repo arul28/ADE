@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import type { OpenProjectBinding } from "../shared/types";
+
+/** The browser mock has one machine, so any pin reaches it. */
+const TEST_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "Repo" };
 
 vi.mock("./browserRuntimeBridge", () => ({
   attachBrowserRuntimeBridge: vi.fn(async () => false),
@@ -24,7 +28,7 @@ describe("browserMock prompt stashes", () => {
       attachments: [{ path: imageUrl, type: "image-url", url: imageUrl }],
       provider: "codex",
       modelId: "openai/gpt-5.6-sol",
-    });
+    }, TEST_PIN);
 
     expect(created).toMatchObject({
       text: "Use this reference",
@@ -32,25 +36,25 @@ describe("browserMock prompt stashes", () => {
       attachmentCount: 1,
       attachmentsAvailable: true,
     });
-    await expect(window.ade.agentChat.drafts.list()).resolves.toContainEqual(created);
-    await expect(window.ade.agentChat.drafts.delete({ id: created.id })).resolves.toBe(true);
-    await expect(window.ade.agentChat.drafts.list()).resolves.not.toContainEqual(created);
+    await expect(window.ade.agentChat.drafts.list(TEST_PIN)).resolves.toContainEqual(created);
+    await expect(window.ade.agentChat.drafts.delete({ id: created.id }, TEST_PIN)).resolves.toBe(true);
+    await expect(window.ade.agentChat.drafts.list(TEST_PIN)).resolves.not.toContainEqual(created);
   });
 
   it("returns valid image data and round-trips a saved local image attachment", async () => {
-    const { dataUrl } = await window.ade.agentChat.getImageDataUrl("/tmp/reference.png");
+    const { dataUrl } = await window.ade.agentChat.getImageDataUrl("/tmp/reference.png", TEST_PIN);
     expect(dataUrl).toMatch(/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/);
 
     const saved = await window.ade.agentChat.saveTempAttachment({
       data: dataUrl.slice(dataUrl.indexOf(",") + 1),
       filename: "reference.png",
-    });
+    }, TEST_PIN);
     const created = await window.ade.agentChat.drafts.create({
       text: "",
       attachments: [{ path: saved.path, type: "image" }],
-    });
+    }, TEST_PIN);
 
-    await expect(window.ade.agentChat.drafts.list()).resolves.toContainEqual(
+    await expect(window.ade.agentChat.drafts.list(TEST_PIN)).resolves.toContainEqual(
       expect.objectContaining({
         id: created.id,
         attachments: [{ path: saved.path, type: "image" }],
@@ -58,14 +62,14 @@ describe("browserMock prompt stashes", () => {
         attachmentsAvailable: true,
       }),
     );
-    await expect(window.ade.agentChat.drafts.delete({ id: created.id })).resolves.toBe(true);
-    await expect(window.ade.agentChat.drafts.list()).resolves.not.toContainEqual(created);
+    await expect(window.ade.agentChat.drafts.delete({ id: created.id }, TEST_PIN)).resolves.toBe(true);
+    await expect(window.ade.agentChat.drafts.list(TEST_PIN)).resolves.not.toContainEqual(created);
   });
 });
 
 describe("browserMock proof contracts", () => {
   it("returns complete delete, prune, and recovery results", async () => {
-    await expect(window.ade.computerUse.deleteArtifacts({ artifactId: "proof-1" })).resolves.toEqual({
+    await expect(window.ade.computerUse.deleteArtifacts({ artifactId: "proof-1" }, TEST_PIN)).resolves.toEqual({
       deleted: [],
       missing: [],
       failed: [],
@@ -77,7 +81,7 @@ describe("browserMock proof contracts", () => {
       failed: [],
       freedBytes: 0,
     });
-    await expect(window.ade.computerUse.recoverArtifact({ artifactId: "proof-1" })).resolves.toMatchObject({
+    await expect(window.ade.computerUse.recoverArtifact({ artifactId: "proof-1" }, TEST_PIN)).resolves.toMatchObject({
       id: "browser-proof-recovered",
       availability: "available",
       links: [],
@@ -92,7 +96,7 @@ describe("browserMock iOS Simulator bridge", () => {
     // The window-capture era's methods — window state, window sources, the
     // parking holds, Reveal, and the Screen Recording pane opener — are gone
     // from the bridge along with the backend that needed them.
-    await expect(window.ade.iosSimulator.getStreamStatus()).resolves.toMatchObject({ streaming: false });
-    await expect(window.ade.iosSimulator.tap({ x: 1, y: 1 })).resolves.toEqual({ ok: true });
+    await expect(window.ade.iosSimulator.getStreamStatus(TEST_PIN)).resolves.toMatchObject({ streaming: false });
+    await expect(window.ade.iosSimulator.tap({ x: 1, y: 1 }, TEST_PIN)).resolves.toEqual({ ok: true });
   });
 });
