@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="preconnect" href="https://clerk.ade-app.dev" crossorigin />
     <link rel="preconnect" href="https://ade-account-directory-production.arulsharma1028.workers.dev" crossorigin />
+    <!-- No favicon ships, so the browser's own /favicon.ico request fell
+         through the SPA fallback and downloaded this page again (twice on a
+         cold load). An empty icon stops that request. -->
+    <link rel="icon" href="data:," />
     <title>ADE</title>
     <style>
       /* The app shell sizes itself with `h-full`, a percentage that resolves to
