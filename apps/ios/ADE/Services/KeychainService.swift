@@ -163,7 +163,9 @@ final class KeychainService {
     return nil
   }
 
-  private func clearString(account: String) {
+  /// Returns whether the item is gone (deleted, or not there).
+  @discardableResult
+  private func clearString(account: String) -> Bool {
     let cacheKey = self.cacheKey(account)
     defer { invalidate(cacheKey) }
     let query: [String: Any] = [
@@ -171,7 +173,8 @@ final class KeychainService {
       kSecAttrService as String: service,
       kSecAttrAccount as String: account,
     ]
-    _ = backend.delete(query)
+    let status = backend.delete(query)
+    return status == errSecSuccess || status == errSecItemNotFound
   }
 
   func saveToken(_ token: String) {
@@ -259,7 +262,9 @@ final class KeychainService {
   private let githubAccountTokenAccount = "github-account-app.v1"
 
   /// This device only: a backup restored on another phone does not carry it.
-  func saveGitHubAccountToken(_ json: String) {
+  /// Returns whether the keychain stored it.
+  @discardableResult
+  func saveGitHubAccountToken(_ json: String) -> Bool {
     saveString(json, account: githubAccountTokenAccount, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
   }
 
@@ -267,7 +272,9 @@ final class KeychainService {
     readString(account: githubAccountTokenAccount)
   }
 
-  func clearGitHubAccountToken() {
+  /// Returns whether the record is gone. A locked keychain can refuse the delete.
+  @discardableResult
+  func clearGitHubAccountToken() -> Bool {
     clearString(account: githubAccountTokenAccount)
   }
 

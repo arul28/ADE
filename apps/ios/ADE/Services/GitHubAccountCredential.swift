@@ -234,19 +234,28 @@ final class GitHubAccountConnection: ObservableObject {
   /// token stays in memory only, so nothing is written over the stored one;
   /// the phone reads it again when protected data becomes available.
   private var storedTokenUnreadable = false
-  private var keychainObserver: NSObjectProtocol?
+  /// A dropped token whose keychain delete failed (a locked keychain refuses
+  /// it). The record must be deleted, never loaded: a disconnect, a sign-in
+  /// that ended, an account switch or a sign-out never comes back. The marker
+  /// is also in `defaults`, so it outlives an app restart. It names the one
+  /// keychain slot, not an account: any record in that slot is a dropped one
+  /// until a delete or a save of a new token succeeds.
+  private var droppedTokenPendingDeleteInMemory = false
+  private let defaults: UserDefaults
+  static let droppedTokenPendingDeleteKey = "ade.githubAccount.droppedTokenPendingDelete"
+  private var keychainObservers: [NSObjectProtocol] = []
 
-  init(keychain: KeychainService = KeychainService()) {
+  init(keychain: KeychainService = KeychainService(), defaults: UserDefaults = .standard) {
     self.keychain = keychain
-    keychainObserver = NotificationCenter.default.addObserver(
-      forName: UIApplication.protectedDataDidBecomeAvailableNotification,
-      object: nil,
-      queue: .main
-    ) { [weak self] _ in
-      MainActor.assumeIsolated {
-        guard let self, self.storedTokenUnreadable else { return }
-        self.loadStoredToken()
-      }
+    self.defaults = defaults
+    // No timer: the phone tries again when the keychain can answer.
+    for name in [UIApplication.protectedDataDidBecomeAvailableNotification, UIApplication.didBecomeActiveNotification] {
+      keychainObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        MainActor.assumeIsolated {
+          guard let self, self.storedTokenUnreadable || self.droppedTokenPendingDelete else { return }
+          self.loadStoredToken()
+        }
+      })
     }
   }
 
@@ -264,8 +273,13 @@ final class GitHubAccountConnection: ObservableObject {
   }
 
   /// Reads the stored token for the signed-in account. A token fetched while
-  /// the keychain could not be read is newer: it replaces the stored one.
+  /// the keychain could not be read is newer: it replaces the stored one. A
+  /// dropped token still in the keychain is deleted first and never read.
   private func loadStoredToken() {
+    guard deleteDroppedTokenIfPending() else {
+      githubAccountLog.notice("github_account.dropped_token_delete_pending")
+      return
+    }
     guard let userId else { return }
     let stored: String
     switch keychain.readGitHubAccountToken() {
@@ -283,7 +297,7 @@ final class GitHubAccountConnection: ObservableObject {
     }
     guard let decoded = try? JSONDecoder().decode(GitHubAccountTokenRecord.self, from: Data(stored.utf8)) else { return }
     guard decoded.accountUserId == userId else {
-      keychain.clearGitHubAccountToken()
+      dropStoredToken()
       if let record { saveToKeychain(record) }
       return
     }
@@ -299,7 +313,37 @@ final class GitHubAccountConnection: ObservableObject {
     guard !storedTokenUnreadable,
           let data = try? JSONEncoder().encode(record),
           let text = String(data: data, encoding: .utf8) else { return }
-    keychain.saveGitHubAccountToken(text)
+    // A stored new token writes over the dropped one in the same slot.
+    if keychain.saveGitHubAccountToken(text) { clearDroppedTokenPendingDelete() }
+  }
+
+  private var droppedTokenPendingDelete: Bool {
+    droppedTokenPendingDeleteInMemory || defaults.bool(forKey: Self.droppedTokenPendingDeleteKey)
+  }
+
+  /// Deletes the stored token for good. The marker goes first, so a delete
+  /// that fails (or a crash) leaves it set; the next load deletes again.
+  private func dropStoredToken() {
+    droppedTokenPendingDeleteInMemory = true
+    defaults.set(true, forKey: Self.droppedTokenPendingDeleteKey)
+    if keychain.clearGitHubAccountToken() {
+      clearDroppedTokenPendingDelete()
+    } else {
+      githubAccountLog.notice("github_account.dropped_token_delete_failed")
+    }
+  }
+
+  /// True when no dropped token is left in the keychain.
+  private func deleteDroppedTokenIfPending() -> Bool {
+    guard droppedTokenPendingDelete else { return true }
+    guard keychain.clearGitHubAccountToken() else { return false }
+    clearDroppedTokenPendingDelete()
+    return true
+  }
+
+  private func clearDroppedTokenPendingDelete() {
+    droppedTokenPendingDeleteInMemory = false
+    defaults.removeObject(forKey: Self.droppedTokenPendingDeleteKey)
   }
 
   /// The account signed out (or the app left the account). The token goes
@@ -307,7 +351,7 @@ final class GitHubAccountConnection: ObservableObject {
   func deactivate() {
     resetMemory()
     userId = nil
-    keychain.clearGitHubAccountToken()
+    dropStoredToken()
     state = .signedOut
   }
 
@@ -478,7 +522,7 @@ final class GitHubAccountConnection: ObservableObject {
     tokenTask?.cancel()
     tokenTask = nil
     record = nil
-    keychain.clearGitHubAccountToken()
+    dropStoredToken()
   }
 
   static func sha256Hex(_ value: String) -> String {

@@ -159,15 +159,77 @@ final class PairedHostCredentialStateTests: XCTestCase {
     XCTAssertEqual(backend.writes, [])
     XCTAssertEqual(backend.items["connection-token:machine:abc"], "secret-abc")
   }
+
+  /// A dropped GitHub token never comes back. A locked keychain refuses the
+  /// delete; a later unlock, sign-in or app restart must delete the record,
+  /// never load it, and a token saved by a new connect is used again.
+  @MainActor
+  func testADroppedGitHubTokenNeverComesBack() async throws {
+    let backend = RefusingKeychainBackend()
+    let keychain = KeychainService(backend: backend)
+    let suite = "PairedHostCredentialStateTests.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    func encoded(_ token: String, login: String) throws -> String {
+      String(decoding: try JSONEncoder().encode(GitHubAccountTokenRecord(
+        accountUserId: "user-1", accessToken: token, useUntil: Date().timeIntervalSince1970 + 3_600,
+        generation: 1, githubLogin: login
+      )), as: UTF8.self)
+    }
+    let slot = "github-account-app.v1"
+    backend.items = [slot: try encoded("old-token", login: "octo")]
+    func unlock() async {
+      let deleted = expectation(description: "the dropped token's delete is tried again")
+      deleted.assertForOverFulfill = false  // each live connection tries it
+      backend.onDelete = { deleted.fulfill() }
+      NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+      await fulfillment(of: [deleted], timeout: 5)
+      backend.onDelete = nil
+    }
+
+    // A launch before the first unlock, then a sign-out: the delete fails.
+    backend.refuseReads = true
+    let github = GitHubAccountConnection(keychain: keychain, defaults: defaults)
+    github.activate(userId: "user-1")
+    github.deactivate()
+    XCTAssertNotNil(backend.items[slot])
+
+    // The app restarts. Reads work, deletes still fail.
+    backend.refuseReads = false
+    backend.refuseDeletes = true
+    let relaunched = GitHubAccountConnection(keychain: keychain, defaults: defaults)
+    relaunched.activate(userId: "user-1")
+    XCTAssertNil(relaunched.state.login, "a dropped token is not loaded after a restart")
+    if case .success = await relaunched.token() { XCTFail("token() never answers a dropped token") }
+    await unlock()
+    XCTAssertNil(relaunched.state.login, "an unlock never loads a dropped token")
+    XCTAssertNotNil(backend.items[slot])
+
+    backend.refuseDeletes = false
+    await unlock()
+    XCTAssertNil(backend.items[slot], "the delete is tried again and succeeds")
+    XCTAssertNil(relaunched.state.login)
+
+    // A new connect saves a new token: it is used again.
+    XCTAssertTrue(keychain.saveGitHubAccountToken(try encoded("new-token", login: "octo2")))
+    let afterConnect = GitHubAccountConnection(keychain: keychain, defaults: defaults)
+    afterConnect.activate(userId: "user-1")
+    XCTAssertEqual(afterConnect.state.login, "octo2")
+    let served = try await afterConnect.token().get()
+    XCTAssertEqual(served, "new-token")
+  }
 }
 
 /// The keychain at the securityd boundary. With `refuseReads` every read
 /// answers `errSecInteractionNotAllowed`, as before the first unlock, and a
-/// write is recorded and refused; `refusedAccounts` refuses some reads only.
+/// write is recorded and refused; `refusedAccounts` refuses some reads only;
+/// `refuseDeletes` refuses deletes only.
 private final class RefusingKeychainBackend: KeychainBackend, @unchecked Sendable {
   var items: [String: String] = [:]
   var refuseReads = false
   var refusedAccounts: Set<String> = []
+  var refuseDeletes = false
+  var onDelete: (() -> Void)?
   private(set) var writes: [String] = []
 
   func copyMatching(_ query: [String: Any]) -> (status: OSStatus, item: CFTypeRef?) {
@@ -194,7 +256,12 @@ private final class RefusingKeychainBackend: KeychainBackend, @unchecked Sendabl
   }
 
   func delete(_ query: [String: Any]) -> OSStatus {
-    write("delete", query, value: nil)
+    defer { onDelete?() }
+    if refuseDeletes {
+      writes.append("delete \(query[kSecAttrAccount as String] as? String ?? "?")")
+      return errSecInteractionNotAllowed
+    }
+    return write("delete", query, value: nil)
   }
 
   private func write(_ kind: String, _ query: [String: Any], value: Data?) -> OSStatus {

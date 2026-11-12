@@ -1653,7 +1653,12 @@ computer on.
   `/github/app/token` for a token. It keeps the token in the keychain
   (this device only, not in backups) for one account only, until
   `useForSec` runs out. An account switch, a disconnect or a new sign-in
-  drops the token and any token answer still on its way. After a 401 it asks once more
+  drops the token and any token answer still on its way. A dropped token
+  never comes back: when the keychain refuses the delete (it is locked), a
+  marker in `UserDefaults` (`ade.githubAccount.droppedTokenPendingDelete`)
+  keeps the delete pending across a restart. Each load (account start,
+  unlock, app active) deletes the record first and never reads it. The
+  marker clears when the delete or a save of a new token succeeds. After a 401 it asks once more
   with the rejected token's hash; a second 401 shows "GitHub connection
   ended".
 - `GitHubDirectClient` (`Services/GitHubDirectClient.swift`) reads
