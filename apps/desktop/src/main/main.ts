@@ -4944,6 +4944,7 @@ app.whenReady().then(async () => {
       projectConfigService,
       getLaneRuntimeEnv,
       getSessionLinearEnv,
+      getSessionGithubEnv: (env) => githubService.sessionGithubEnv(env),
       getAdeCliAgentEnv: adeCliService.agentEnv,
       logger,
       broadcastData: (ev) => {
@@ -5221,6 +5222,7 @@ app.whenReady().then(async () => {
       logger,
       appVersion: app.getVersion(),
       getAdeCliAgentEnv: adeCliService.agentEnv,
+      getSessionGithubEnv: (env) => githubService.peekSessionGithubEnv(env),
       getLocalGitHubToken: () => githubService.getGitTransportTokenOrThrowAsync(),
       onLinearIssueChatLinked: publishLinearChatLink,
       onEvent: (event) => {

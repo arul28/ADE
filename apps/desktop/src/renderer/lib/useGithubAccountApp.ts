@@ -21,7 +21,17 @@ export type GithubAccountAppSignInPhase =
   | { kind: "starting" }
   | { kind: "waiting"; signInId: string; until: number }
   | { kind: "done"; githubLogin: string | null }
-  | { kind: "failed"; reason: "denied" | "expired" | "error" | "unsupported" | "signed_out" | "rate_limited"; message: string | null };
+  | {
+    kind: "failed";
+    /**
+     * - `denied`: the person cancelled on GitHub.
+     * - `refused`: GitHub ended the sign-in with an error after it started.
+     * - `expired`: the link ran out, or ten minutes passed.
+     * - `error`: the sign-in could not start.
+     */
+    reason: "denied" | "refused" | "expired" | "error" | "unsupported" | "signed_out" | "rate_limited";
+    message: string | null;
+  };
 
 type Store = {
   status: GitHubAccountAppAccountStatus | null;
@@ -106,9 +116,15 @@ function schedulePoll(signInId: string, until: number, onDone: () => void): void
     if (result?.ok && (result.status === "failed" || result.status === "expired")) {
       setPhase({
         kind: "failed",
-        reason: result.status === "expired" ? "expired" : result.resultCode === "denied" ? "denied" : "error",
+        reason: result.status === "expired" ? "expired" : result.resultCode === "denied" ? "denied" : "refused",
         message: null,
       });
+      return;
+    }
+    // The server no longer knows the sign-in (it ran out), or this window
+    // left the ADE account: polling longer cannot end differently.
+    if (result && !result.ok && (result.error === "not_found" || result.error === "signed_out")) {
+      setPhase({ kind: "failed", reason: result.error === "not_found" ? "expired" : "signed_out", message: null });
       return;
     }
     if (Date.now() >= until) {

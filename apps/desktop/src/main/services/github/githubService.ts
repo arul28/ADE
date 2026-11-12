@@ -3,6 +3,7 @@ import { createGithubIssueOps } from "./githubIssueOps";
 import { createRepeatedFailureGate } from "../logging/repeatedFailure";
 import { appGrantAllowsCapability, gateAppCandidates } from "./githubAppGrant";
 import { createGithubAccountAppCredential } from "./githubAccountAppCredential";
+import { createGithubSessionEnv, readOwnEnvironmentGithubToken } from "./githubSessionEnv";
 import type { GitHubIssueLike, GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
 import path from "node:path";
 import { safeStorage } from "electron";
@@ -973,13 +974,9 @@ export function createGithubService({
   };
 
   const readEnvToken = (): string | null => {
-    const envToken = (
-      process.env.ADE_GITHUB_TOKEN ??
-      process.env.GITHUB_TOKEN ??
-      process.env.GH_TOKEN ??
-      ""
-    ).trim();
-    return envToken.length > 0 ? envToken : null;
+    // A `GH_TOKEN` ADE added for `gh` (githubSessionEnv.ts) is not this
+    // process's own environment token.
+    return readOwnEnvironmentGithubToken(process.env);
   };
 
   const readGhAuthToken = async (): Promise<GitHubCliAuthResult> => {
@@ -2486,6 +2483,13 @@ export function createGithubService({
     },
   });
   const readAppIssueGrant = issueOps.readAppIssueGrant;
+  // --- account_app: `GH_TOKEN` for `gh` in shells and chats (githubSessionEnv.ts).
+  const sessionGithubEnv = createGithubSessionEnv({
+    readAccountAppToken: () => accountApp.readToken(),
+    peekAccountAppToken: () => accountApp.peekToken(),
+    readGrant: readAppIssueGrant,
+    readRepoOwner: async () => (await detectRepo().catch(() => null))?.owner ?? null,
+  });
 
   const getIssue = async (owner: string, name: string, number: number): Promise<GitHubIssue | null> => {
     try {
@@ -2884,6 +2888,10 @@ export function createGithubService({
     }),
 
     getStatus,
+    /** `GH_TOKEN` for a process about to start, from the account App, or null. */
+    sessionGithubEnv: (env: NodeJS.ProcessEnv) => sessionGithubEnv.forSession(env),
+    /** The same from cached values only (a synchronous environment build). */
+    peekSessionGithubEnv: (env: NodeJS.ProcessEnv) => sessionGithubEnv.peekForSession(env),
     verifyStoredPat,
 
     async getBackgroundRequestPauseUntilMs(): Promise<number | null> {
