@@ -94,6 +94,7 @@
 		AC760000000000000000000A /* LaneManageRenameTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC750000000000000000000A /* LaneManageRenameTests.swift */; };
 		AC7600000000000000000004 /* ActivityWidgetPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */; };
 		AC7600000000000000000002 /* HubProjectPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000002 /* HubProjectPresentationTests.swift */; };
+		AC7600000000000000000AF1 /* AccountProjectsJoinTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000AF1 /* AccountProjectsJoinTests.swift */; };
 		AA1100000000000000000003 /* ADESharedTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000003 /* ADESharedTheme.swift */; };
 		AA1100000000000000000011 /* ADESharedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000001 /* ADESharedContainer.swift */; };
 		AA1100000000000000000012 /* ADESharedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000002 /* ADESharedModels.swift */; };
@@ -370,6 +371,7 @@
 		F10000000000000000000003 /* SettingsPairingSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000003 /* SettingsPairingSection.swift */; };
 		AD0000000000000000000B01 /* AccountService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A01 /* AccountService.swift */; };
 		AD0000000000000000000B02 /* AccountDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0000000000000000000A02 /* AccountDirectory.swift */; };
+		E2000000000000000000DE07 /* AccountProjects.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE07 /* AccountProjects.swift */; };
 		E2000000000000000000DE01 /* DeviceSignInApproval.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE01 /* DeviceSignInApproval.swift */; };
 		E2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift */; };
 		E2000000000000000000DE03 /* WebAuthPresentationAnchor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE03 /* WebAuthPresentationAnchor.swift */; };
@@ -493,6 +495,8 @@
 		E2000000000000000000AD03 /* SyncService+AndroidDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000AD03 /* SyncService+AndroidDevice.swift */; };
 		E20000000000000000000F02 /* MachineFleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F02 /* MachineFleet.swift */; };
 		E20000000000000000000F03 /* HubMachineSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F03 /* HubMachineSections.swift */; };
+		E2000000000000000000DE09 /* HubAccountPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE09 /* HubAccountPreviews.swift */; };
+		E2000000000000000000DE08 /* HubAccountProjects.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE08 /* HubAccountProjects.swift */; };
 		E20000000000000000000F04 /* WorkRemoteMachineRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F04 /* WorkRemoteMachineRows.swift */; };
 		5E0000000000000000000B01 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 5E0000000000000000000A02 /* Sentry */; };
 		5E0000000000000000000B02 /* CrashReporting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E0000000000000000000C01 /* CrashReporting.swift */; };
@@ -616,6 +620,7 @@
 		AC750000000000000000000A /* LaneManageRenameTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneManageRenameTests.swift; path = ADETests/LaneManageRenameTests.swift; sourceTree = "<group>"; };
 		AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityWidgetPresentationTests.swift; path = ADETests/ActivityWidgetPresentationTests.swift; sourceTree = "<group>"; };
 		AC7500000000000000000002 /* HubProjectPresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubProjectPresentationTests.swift; path = ADETests/HubProjectPresentationTests.swift; sourceTree = "<group>"; };
+		AC7500000000000000000AF1 /* AccountProjectsJoinTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountProjectsJoinTests.swift; path = ADETests/AccountProjectsJoinTests.swift; sourceTree = "<group>"; };
 		AA1000000000000000000003 /* ADESharedTheme.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedTheme.swift; path = ADE/Shared/ADESharedTheme.swift; sourceTree = "<group>"; };
 		AA0000000000000000000002 /* ADEWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ADEWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA5000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = ADEWidgets/Info.plist; sourceTree = "<group>"; };
@@ -914,6 +919,7 @@
 		F20000000000000000000003 /* SettingsPairingSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPairingSection.swift; path = ADE/Views/Settings/SettingsPairingSection.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A01 /* AccountService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountService.swift; path = ADE/Services/AccountService.swift; sourceTree = "<group>"; };
 		AD0000000000000000000A02 /* AccountDirectory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountDirectory.swift; path = ADE/Services/AccountDirectory.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE07 /* AccountProjects.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountProjects.swift; path = ADE/Services/AccountProjects.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE01 /* DeviceSignInApproval.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceSignInApproval.swift; path = ADE/Services/DeviceSignInApproval.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeviceSignInApprovalSheet.swift; path = ADE/Views/Account/DeviceSignInApprovalSheet.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE03 /* WebAuthPresentationAnchor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WebAuthPresentationAnchor.swift; path = ADE/Views/Components/WebAuthPresentationAnchor.swift; sourceTree = "<group>"; };
@@ -1015,6 +1021,8 @@
 		D2000000000000000000AD03 /* SyncService+AndroidDevice.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+AndroidDevice.swift"; path = "ADE/Services/SyncService+AndroidDevice.swift"; sourceTree = "<group>"; };
 		D20000000000000000000F02 /* MachineFleet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachineFleet.swift; path = ADE/Services/MachineFleet.swift; sourceTree = "<group>"; };
 		D20000000000000000000F03 /* HubMachineSections.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubMachineSections.swift; path = ADE/Views/Hub/HubMachineSections.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE09 /* HubAccountPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubAccountPreviews.swift; path = ADE/Views/Hub/HubAccountPreviews.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE08 /* HubAccountProjects.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubAccountProjects.swift; path = ADE/Views/Hub/HubAccountProjects.swift; sourceTree = "<group>"; };
 		D20000000000000000000F04 /* WorkRemoteMachineRows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRemoteMachineRows.swift; path = ADE/Views/Work/WorkRemoteMachineRows.swift; sourceTree = "<group>"; };
 		5E0000000000000000000C01 /* CrashReporting.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CrashReporting.swift; path = ADE/Services/CrashReporting.swift; sourceTree = "<group>"; };
 		5F0000000000000000000C01 /* SessionReplay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SessionReplay.swift; path = ADE/Services/SessionReplay.swift; sourceTree = "<group>"; };
@@ -1233,6 +1241,8 @@
 			children = (
 				D20000000000000000000050 /* HubScreen.swift */,
 				D20000000000000000000F03 /* HubMachineSections.swift */,
+				D2000000000000000000DE09 /* HubAccountPreviews.swift */,
+				D2000000000000000000DE08 /* HubAccountProjects.swift */,
 				AC8000000000000000000001 /* ProjectHostRecoveryScreen.swift */,
 				D20000000000000000000051 /* HubComponents.swift */,
 				5E77000000000000000A0009 /* HubHeaderRow.swift */,
@@ -1574,6 +1584,7 @@
 				AD0000000000000000000A01 /* AccountService.swift */,
 				AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */,
 				AD0000000000000000000A02 /* AccountDirectory.swift */,
+				D2000000000000000000DE07 /* AccountProjects.swift */,
 				D2000000000000000000DE01 /* DeviceSignInApproval.swift */,
 				C5A000000000000000000001 /* MobileTrustResetPolicy.swift */,
 				C5A00000000000000000001F /* PairedHostCredentialState.swift */,
@@ -1775,6 +1786,7 @@
 				AC750000000000000000000A /* LaneManageRenameTests.swift */,
 				AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */,
 				AC7500000000000000000002 /* HubProjectPresentationTests.swift */,
+				AC7500000000000000000AF1 /* AccountProjectsJoinTests.swift */,
 				AC7100000000000000000001 /* ActivityContractDecodingTests.swift */,
 				AC71000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift */,
 				AC71000000000000000000B7 /* ProviderAccountsMachineTests.swift */,
@@ -2256,6 +2268,8 @@
 				CA1A00000000000000000011 /* ChatLaunchModels.swift in Sources */,
 				E20000000000000000000050 /* HubScreen.swift in Sources */,
 				E20000000000000000000F03 /* HubMachineSections.swift in Sources */,
+				E2000000000000000000DE09 /* HubAccountPreviews.swift in Sources */,
+				E2000000000000000000DE08 /* HubAccountProjects.swift in Sources */,
 				AC8100000000000000000001 /* ProjectHostRecoveryScreen.swift in Sources */,
 				E20000000000000000000051 /* HubComponents.swift in Sources */,
 				5E77000000000000000B0009 /* HubHeaderRow.swift in Sources */,
@@ -2302,6 +2316,7 @@
 				AD0000000000000000000B01 /* AccountService.swift in Sources */,
 				AD0000000000000000000B05 /* AccountEmailAuthFlow.swift in Sources */,
 				AD0000000000000000000B02 /* AccountDirectory.swift in Sources */,
+				E2000000000000000000DE07 /* AccountProjects.swift in Sources */,
 				E2000000000000000000DE01 /* DeviceSignInApproval.swift in Sources */,
 				E2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift in Sources */,
 				E2000000000000000000DE03 /* WebAuthPresentationAnchor.swift in Sources */,
@@ -2537,6 +2552,7 @@
 				AC760000000000000000000A /* LaneManageRenameTests.swift in Sources */,
 				AC7600000000000000000004 /* ActivityWidgetPresentationTests.swift in Sources */,
 				AC7600000000000000000002 /* HubProjectPresentationTests.swift in Sources */,
+				AC7600000000000000000AF1 /* AccountProjectsJoinTests.swift in Sources */,
 				AC7200000000000000000001 /* ActivityContractDecodingTests.swift in Sources */,
 				AC72000000000000000000A1 /* UsageQuotaAccountDecodingTests.swift in Sources */,
 				AC72000000000000000000B7 /* ProviderAccountsMachineTests.swift in Sources */,

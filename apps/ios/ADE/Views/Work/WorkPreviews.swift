@@ -1560,6 +1560,11 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// Settings › Account signed in, with three account machines. See
   /// `SettingsAccountPreviewHost`.
   case settingsAccount = "settings-account"
+  /// The real Hub over a seeded account project list
+  /// (`-adeHubAccountState <state>`). See `HubAccountPreviews.swift`.
+  case hubAccount = "hub-account"
+  /// Every Hub status line and empty grid of the account project list.
+  case hubAccountStates = "hub-account-states"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1810,6 +1815,10 @@ struct ADEPreviewScreenHost: View {
       WorkProviderSignInPreviewHost(beforeSend: true)
     case .settingsAccount:
       SettingsAccountPreviewHost()
+    case .hubAccount:
+      HubAccountPreviewHost()
+    case .hubAccountStates:
+      HubAccountStatesPreviewHost()
     }
   }
 }

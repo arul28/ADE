@@ -167,6 +167,8 @@ struct ADEApp: App {
           // register(); this covers warm foregrounds).
           Task { await ADEIntentCommandRegistry.drainPendingCommands() }
           Task { await accountService.refreshAttentionSnapshot() }
+          // The account's project list: the changes since the last read.
+          AccountProjectStore.shared.refreshOnForeground()
           guard didBootstrapSync else { return }
           let now = Date()
           guard now.timeIntervalSince(lastActivationSyncAt) > 1.0 else { return }

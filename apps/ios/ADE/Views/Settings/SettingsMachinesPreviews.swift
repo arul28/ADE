@@ -54,7 +54,7 @@ struct SettingsMachinesPreviewHost: View {
       } else {
         let sections = settingsMachineSections(Self.machines)
         ADESettingsPage(title: "Settings") {
-          ADESettingsSection("Connected", hint: "2 of 4 live") {
+          ADESettingsSection("Connected", hint: "2 of 8 live") {
             ADESettingsRows {
               ForEach(sections.connected) { SettingsMachineRow(machine: $0) }
             }

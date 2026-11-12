@@ -523,6 +523,16 @@ final class DeepLinkRouter {
     }
   }
 
+  /// Opens one folder of an account project from the Hub: connects the
+  /// computer that holds it (the owned-link path, so a sleeping Mac gets the
+  /// same Wake & open card), waits for its catalog, and opens the folder by
+  /// that computer's registry id. A failure lands on the Hub with one line.
+  func openAccountProjectCopy(accountMachineKey: String, checkoutId: String) {
+    routeOwned(ADEDeeplinkOwnership(accountMachineKey: accountMachineKey, projectId: checkoutId)) { _ in
+      SyncService.shared?.closeProjectHub()
+    }
+  }
+
   private func performOwnedRoute(
     _ ownership: ADEDeeplinkOwnership,
     open: @MainActor (MobileProjectSummary) -> Void
