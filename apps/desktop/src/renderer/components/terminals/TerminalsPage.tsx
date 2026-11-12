@@ -524,7 +524,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         waitingReason?: WorkBoardWaitingReason | null;
       } = {},
     ) => {
-      const { binding, machineName, laneActions, openIn, laneType, waitingReason } = extras;
+      const { machineName, laneActions, openIn, laneType, waitingReason } = extras;
+      // The row's machine, the tab's own copy included: a row of that copy
+      // carries no binding, and the menu's snooze, settle and rule reads go
+      // straight to the pin it is given.
+      const binding = extras.binding ?? resolveSessionRuntimePin(session);
       setBulkMenu(null);
       setContextMenu({
         session,
