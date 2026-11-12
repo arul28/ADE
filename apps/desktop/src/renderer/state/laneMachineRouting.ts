@@ -143,9 +143,8 @@ export type AdeCloudLaneGroup = {
 };
 
 /**
- * The machine-chip rule shared by every tab: when the project spans more than
- * one known machine, EVERY row shows a machine chip (this machine's included)
- * and the machine filter chips appear. With one machine, no chips.
+ * When the project spans more than one known machine, the machine filter
+ * chips appear. A row's own chip follows `rowMachineChip`.
  */
 export function shouldShowMachineChips(machineCount: number): boolean {
   return machineCount > 1;
@@ -154,7 +153,7 @@ export function shouldShowMachineChips(machineCount: number): boolean {
 /** What a machine chip renders. */
 export type MachineChipModel = Pick<LaneMachine, "machineId" | "machineName" | "online" | "isThisMachine">;
 
-/** The chip for a machine. Callers gate it with `shouldShowMachineChips`. */
+/** The chip for a machine (a filter chip names every machine). */
 export function machineChipFor(machine: MachineChipModel): MachineChipModel {
   return {
     machineId: machine.machineId,
@@ -162,6 +161,15 @@ export function machineChipFor(machine: MachineChipModel): MachineChipModel {
     online: machine.online,
     isThisMachine: machine.isThisMachine,
   };
+}
+
+/**
+ * The chip of a row (a lane, a PR's lane, a rule, an event): a row names its
+ * computer only when that computer is not this one. The rule is the same in
+ * every tab, and it never depends on the machine the tab reads from.
+ */
+export function rowMachineChip(machine: MachineChipModel | null | undefined): MachineChipModel | null {
+  return machine && !machine.isThisMachine ? machineChipFor(machine) : null;
 }
 
 /**

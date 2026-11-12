@@ -5,6 +5,7 @@ import {
   createLaneMachineRouter,
   machineBlockedReason,
   machineChipFor,
+  rowMachineChip,
   shouldShowMachineChips,
   useAllMachineLanes,
   type MachineChipModel,
@@ -221,18 +222,19 @@ export function useLanesPageMachines({
     }
     return byMachineId;
   }, [allMachineLanes.machines, allViewLanes, machineIdForKey]);
-  // One machine, or the list filtered down to one: every row would carry the
-  // same chip, so none do (the active filter chip already names the machine).
+  // A row names its computer only when it is not this one (`rowMachineChip`).
+  // A list filtered down to one machine carries no chips: the active filter
+  // chip already names it.
   const machineChipByLaneId = useMemo(() => {
-    if (!multiMachine || effectiveMachineFilter !== "all") return undefined;
+    if (effectiveMachineFilter !== "all") return undefined;
     const map = new Map<string, MachineChipModel>();
     for (const lane of allViewLanes) {
       const machineId = machineIdForKey(lane.id);
-      const chip = machineId ? machineFilterChips.get(machineId) : undefined;
+      const chip = rowMachineChip(machineId ? machineFilterChips.get(machineId) : null);
       if (chip) map.set(lane.id, chip);
     }
-    return map;
-  }, [allViewLanes, effectiveMachineFilter, machineFilterChips, machineIdForKey, multiMachine]);
+    return map.size > 0 ? map : undefined;
+  }, [allViewLanes, effectiveMachineFilter, machineFilterChips, machineIdForKey]);
   /** Why a row on an unreachable machine can't be acted on, by row key. */
   const disabledReasonByLaneId = useMemo(() => {
     const map = new Map<string, string>();

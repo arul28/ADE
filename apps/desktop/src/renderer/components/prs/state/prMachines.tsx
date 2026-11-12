@@ -19,9 +19,8 @@ import { createContext, useContext, useMemo } from "react";
 import type { GitHubPrListItem, LaneSummary, OpenProjectBinding, PrSummary } from "../../../../shared/types";
 import {
   machineBlockedReason,
-  machineChipFor,
+  rowMachineChip,
   routableMachines,
-  shouldShowMachineChips,
   useAllMachineLanes,
   type AllMachineLanes,
   type LaneMachine,
@@ -72,10 +71,7 @@ const NO_PRS: readonly PrSummary[] = [];
 
 export function buildPrMachineIndex(all: AllMachineLanes): PrMachineIndex {
   const machines = routableMachines(all.machines);
-  // The chip rule counts the machines this index can route to, not every
-  // machine the union knows: an unaddressable machine holds no PR's lane here.
-  const showChips = shouldShowMachineChips(machines.length);
-  const chipFor = (machine: LaneMachine | null) => (machine && showChips ? machineChipFor(machine) : null);
+  const chipFor = (machine: LaneMachine | null) => rowMachineChip(machine);
   const boundMachine = machines.find((machine) => machine.isActiveBinding) ?? null;
   const foreignByCoord = new Map<string, ForeignPrLink>();
   const allLanes: LaneSummary[] = [];

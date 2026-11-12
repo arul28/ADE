@@ -130,13 +130,15 @@ export function useProjectCopyPage(scope: string, active = true): ProjectCopyPag
 
 /**
  * The line above a project page that names the computer it reads, with a
- * picker when the project has copies on more than one online computer.
+ * picker when the project has copies on more than one online computer. With
+ * no picker, it names the computer only when it is not this one.
  */
 export function ProjectCopyBar({ copy }: { copy: ProjectCopyPage }) {
   const { page, pick, choices, thisMachineName } = copy;
   if (!page) return null;
-  const name = page.isThisMachine ? (thisMachineName ?? page.machineName) : page.machineName;
   const pickable = choices.length >= 2;
+  if (!pickable && page.isThisMachine) return null;
+  const name = page.isThisMachine ? (thisMachineName ?? page.machineName) : page.machineName;
   return (
     <div className="ade-copy-scope" data-testid="settings-copy-scope">
       <span className="ade-copy-scope-label">{pickable ? "Showing the copy on" : "Copy on"}</span>

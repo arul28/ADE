@@ -751,22 +751,24 @@ function FilesWorkbenchOnCopy({
   // Liveness for the pinned machine, read from the same cross-machine slices
   // the Work sidebar uses. A machine that has gone away keeps its chip and says
   // so; nothing else in here can explain why the tree stopped answering.
+  // The bar names the computer the files are on when it is not this one, the
+  // same rule as every other tab. It never compares with the tab's copy.
   const pinnedMachineOnline = useRootAppStore((state) => {
-    if (!machinePin || machinePin.kind !== "remote") return true;
-    return state.crossMachineLanesByMachineId[machinePin.targetId]?.online ?? true;
+    if (projectBinding.kind !== "remote") return true;
+    return state.crossMachineLanesByMachineId[projectBinding.targetId]?.online ?? true;
   });
   const pinnedMachineMarker = useMemo<CrossMachineLaneMarker | null>(() => {
-    if (!machinePin) return null;
-    const machineName = machinePin.kind === "remote" ? machinePin.runtimeName : machinePin.displayName;
+    if (projectBinding.kind !== "remote") return null;
+    const machineName = projectBinding.runtimeName;
     return {
-      machineId: machinePin.kind === "remote" ? machinePin.targetId : "local",
+      machineId: projectBinding.targetId,
       machineName,
       online: pinnedMachineOnline,
       mode: "name",
       title: machineName,
       sameBranchElsewhere: false,
     };
-  }, [machinePin, pinnedMachineOnline]);
+  }, [projectBinding, pinnedMachineOnline]);
 
   useEffect(() => {
     if (!active || dirtyTabIds.size === 0) return;
@@ -1831,14 +1833,14 @@ function FilesWorkbenchOnCopy({
           </span>
           {/* The routed tab changes machine by picking a lane in the picker;
               only the embedded pane (no picker) keeps an explicit way back. */}
-          {embedded ? (
+          {embedded && machinePin ? (
             <button
               type="button"
               onClick={clearMachinePin}
               className="shrink-0 text-[11px] underline-offset-2 hover:underline"
               style={{ color: COLORS.textMuted }}
             >
-              Back to this computer
+              {boundProjectBinding.kind === "remote" ? `Back to ${boundProjectBinding.runtimeName}` : "Back to this computer"}
             </button>
           ) : null}
         </div>
