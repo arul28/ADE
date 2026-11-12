@@ -688,7 +688,8 @@ import {
   recordLastFailure,
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
-import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
+import { createDiskPressureMonitor, diskPressureThresholdsForSize } from "../../desktop/src/main/services/storage/diskPressure";
+import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
 import { markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
@@ -24578,6 +24579,8 @@ function checkStorageReadiness(projectRoot: string): ReadinessCheck {
   try {
     const monitor = createDiskPressureMonitor({
       roots: [projectRoot, resolveMachineAdeLayout().adeDir],
+      // The brain's own guard follows an ADE Cloud computer's disk size (`cloudDiskGuard.ts`).
+      ...(isAdeCloudComputer() ? { thresholdsForSize: diskPressureThresholdsForSize } : {}),
     });
     const snap = monitor.getSnapshot({ maxAgeMs: 0 });
     const urgent = isUrgentDiskPressure(snap.state);
@@ -29419,11 +29422,16 @@ async function runServe(
   };
   // This computer's ADE Cloud id, on a cloud computer; empty elsewhere.
   const cloudInstanceId = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
-  const cloudDiskGrower = cloudKeepAwakeModule?.isCloudMachine()
-    ? (await import("./services/power/cloudDiskGrow")).createCloudDiskGrower({
+  const cloudDiskGrowModule = cloudKeepAwakeModule?.isCloudMachine()
+    ? await import("./services/power/cloudDiskGrow")
+    : null;
+  const cloudDiskGrower = cloudDiskGrowModule
+    ? cloudDiskGrowModule.createCloudDiskGrower({
         instanceId: cloudInstanceId,
         client: async () => (await getCloudBrainAccess()).client(),
         path: os.homedir(),
+        // The storage guard's refusal reads it (`cloudDiskGuardOptions` in bootstrap).
+        stateFile: cloudDiskGrowModule.cloudDiskGrowStatePath(layout.adeDir),
         logger: headlessProjectLogger,
       })
     : null;
@@ -29472,6 +29480,7 @@ async function runServe(
           await client.requestIdleSleep(instanceId);
         },
         growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
+        diskGrowDueNow: () => cloudDiskGrower?.growDueNow() ?? false,
         reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,

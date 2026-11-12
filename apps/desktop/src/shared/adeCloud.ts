@@ -548,24 +548,37 @@ export function cloudDiskFullMessage(
   catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK,
   exactReason?: string | null,
 ): string | null {
-  const head = "This computer's disk is full.";
+  const wayOut = cloudDiskGrowRefusedWayOut(reason, catalog, exactReason);
+  return wayOut ? `This computer's disk is full. ${wayOut}` : null;
+}
+
+/**
+ * Why a cloud computer's disk can't grow and the way out, without the "disk
+ * is full" head (the chat's refusal and the card each say that their own
+ * way), or null with no reason. The exact reason wins over the older one.
+ */
+export function cloudDiskGrowRefusedWayOut(
+  reason: string | null | undefined,
+  catalog: CloudCatalog = CLOUD_CATALOG_FALLBACK,
+  exactReason?: string | null,
+): string | null {
   // A server before Pro keeps each free computer at its own few GB; a newer one shares the free disk.
   const freeRule = cloudCatalogHasPro(catalog)
-    ? `${head} Free computers share ${catalog.plans.free.diskGb} GB of disk at one time. A paid plan gives more.`
-    : `${head} Free computers stay at ${catalog.plans.free.diskGb} GB each; a paid plan lets it grow.`;
+    ? `Free computers share ${catalog.plans.free.diskGb} GB of disk at one time. A paid plan gives more.`
+    : `Free computers stay at ${catalog.plans.free.diskGb} GB each; a paid plan lets it grow.`;
   const known: Partial<Record<CloudDiskRefusalReason | CloudDiskFullReason, string>> = {
     plan_disk: freeRule,
-    needs_approval: `${head} Turn on extra disk in Settings to let it grow.`,
-    extra_off: `${head} Delete a computer you no longer use, or turn on extra disk in Settings.`,
-    monthly_limit: `${head} Extra disk reached the monthly limit you set. Raise it in Settings.`,
-    tier_limit: `${head} This size can't have a bigger disk. Move it to a bigger size.`,
-    unavailable: `${head} ADE Cloud can't grow it right now.`,
+    needs_approval: "Turn on extra disk in Settings to let it grow.",
+    extra_off: "Delete a computer you no longer use, or turn on extra disk in Settings.",
+    monthly_limit: "Extra disk reached the monthly limit you set. Raise it in Settings.",
+    tier_limit: "This size can't have a bigger disk. Move it to a bigger size.",
+    unavailable: "ADE Cloud can't grow it right now.",
     free_limit: freeRule,
-    account_limit: `${head} Your computers use all your plan's disk at one time.`,
+    account_limit: "Your computers use all your plan's disk at one time. Delete a computer you no longer use, turn on extra disk, or pick a bigger plan in Settings.",
   };
   for (const value of [exactReason, reason]) {
     if (!value) continue;
-    return known[value as keyof typeof known] ?? `${head} It can't grow right now.`;
+    return known[value as keyof typeof known] ?? "It can't grow right now.";
   }
   return null;
 }

@@ -102,6 +102,16 @@ export function formatCloudStatus(value: unknown): string {
     return cells.map((row) => `  ${row.map((cell, column) => cell.padEnd(widths[column]!)).join("  ").trimEnd()}`);
   };
   lines.push(...table(laneRows));
+  // A computer whose disk is full and can't grow: the reason and the way out
+  // (`cloudDiskFullMessage`), so an agent can explain why its turns stop.
+  for (const box of lanes) {
+    const disk = isRecord(box.disk) ? box.disk : null;
+    if (typeof disk?.full !== "string" || !disk.full.trim()) continue;
+    const lane = isRecord(box.lane) ? box.lane : null;
+    const name = lane && typeof lane.name === "string" && lane.name ? lane.name : String(box.name ?? box.instanceId ?? "computer");
+    const size = typeof disk.sizeGb === "number" ? ` (${disk.sizeGb} GB disk)` : "";
+    lines.push(`  ${name}${size}: ${disk.full.trim()}`);
+  }
   if (sizeRows.length) lines.push("", "Sizes (ade chat create --machine cloud --size <id>)", ...table(sizeRows));
   return lines.join("\n");
 }

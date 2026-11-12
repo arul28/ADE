@@ -95,6 +95,7 @@ import {
 import { createOAuthRedirectService } from "../../desktop/src/main/services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
+import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { registerRemoteWorkShellCheck } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import {
@@ -1124,8 +1125,14 @@ export async function createAdeRuntime(args: {
   const sessionActivityReportingEnabled = !embeddedRuntime && Boolean(runtimeSocketPath);
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   if (!embeddedRuntime) removeAdeCodeLeftovers(projectRoot, logger);
+  // On an ADE Cloud computer the guard follows the computer's own small,
+  // growing disk and names it in its refusal (`cloudDiskGuard.ts`).
+  const cloudDiskGuard = isAdeCloudComputer()
+    ? (await import("./services/power/cloudDiskGuard")).cloudDiskGuardOptions(machineRuntimeLayout.adeDir)
+    : null;
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, machineRuntimeLayout.adeDir],
+    ...(cloudDiskGuard ?? {}),
   });
   // An embedded runtime is a guest inside an external process. It must never
   // take machine-brain authority, host a sync listener, or answer for the

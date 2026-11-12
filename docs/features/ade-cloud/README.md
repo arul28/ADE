@@ -832,11 +832,25 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   without ADE Cloud access.
 - `ade cloud prepare-stop --timeout 40` (the server runs it before a stop at 0 hours)
   interrupts running chat turns and agent CLIs and writes the saved chat copy.
-- Disk (`cloudDiskGrow.ts`): when idle and at 85% used, a computer grows 4 GB
-  through `POST /resize` with `computerIdle: true` and `origin: "auto"`. Refused
-  (the plan's disk at one time, extra disk, its monthly limit, or the size's limit)
-  and full at 95%, the computer writes the exact reason to `ade_disk_full_reason`
-  and the older `ade_disk_full`, and its card says so in a plain sentence.
+- Disk (`cloudDiskGrow.ts`, `cloudDiskGuard.ts`): ADE's storage guard runs on
+  every computer, and on a cloud computer its lines follow that computer's own
+  disk (`diskPressureThresholdsForSize`, read from the disk at each sample):
+  agent turns stop at 5% free, heavy jobs at 10%, the warning at 15%, each
+  between a floor and the desktop's own value (1 GB, 4 GB, 12 GB). The disk
+  grows 4 GB through `POST /resize` with `computerIdle: true` and
+  `origin: "auto"`: at the idle point once it is at 85% used or the warning
+  line, and at the next keep-awake check once it is at the 10% line, when
+  nothing but someone's use (`in_use`) keeps it busy (checked again right
+  before the grow, which restarts the computer). One grow at a time, none for
+  10 minutes after one starts, a refused one again after an hour. Refused (the
+  plan's disk at one time, extra disk, its monthly limit, or the size's limit)
+  and at the 10% line, the computer writes the exact reason to
+  `ade_disk_full_reason` and the older `ade_disk_full`: its card says so, and
+  `ade cloud status` prints it under the lanes. The grower's last step is in
+  `$ADE_HOME/cloud/disk-grow.json`, and a refused turn's sentence reads it: it
+  names the cloud computer's disk (not the disk of the computer the person is
+  on), then the grow under way, or the refusal's reason and way out (a bigger
+  size, extra disk, a plan, Clear caches).
 
 Waking: `WorkSidebar` wraps tool panels in `CloudToolGate`
 (`terminals/cloudToolGate.tsx`): a person's click on a tool that needs the computer

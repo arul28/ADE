@@ -141,7 +141,15 @@ export type CloudKeepAwakeOptions = {
   /** Asks ADE's server to sleep this machine now (three minutes idle). Rejects when it couldn't; the provider's timer is the backstop. */
   requestIdleSleep?: (instanceId: string) => Promise<void>;
   /** Grows the disk if it's near full (it restarts the machine). True when it did, so sleep waits for the restart. */
-  growDiskIfNeeded?: (stillIdle: () => boolean) => Promise<boolean>;
+  growDiskIfNeeded?: (stillIdle: () => boolean | Promise<boolean>) => Promise<boolean>;
+  /**
+   * The disk is close to the storage guard's stop line (a local read, no
+   * server call): grow at the next check that finds nothing really running,
+   * not at the three-minute idle point, so the grow comes before the guard
+   * refuses a turn. Someone's use alone (`in_use`, a refused send, a watched
+   * tool) doesn't hold it back.
+   */
+  diskGrowDueNow?: () => boolean;
   /**
    * Moves the machine to its channel's newer image when the server says it is
    * behind (it restarts the machine). True when an update started, so sleep
@@ -358,6 +366,31 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
     }
   };
 
+  /**
+   * The early grow (`diskGrowDueNow`): only when nothing but someone's use
+   * keeps the machine busy, checked again right before the grow. True when a
+   * grow started (the machine restarts).
+   */
+  const growDiskEarlyIfDue = async (state: CloudKeepAwakeBusy): Promise<boolean> => {
+    if (!options.growDiskIfNeeded || !options.diskGrowDueNow?.()) return false;
+    if (!state.reasons.every((reason) => reason === "in_use")) return false;
+    const nothingRuns = async (): Promise<boolean> => {
+      try {
+        return !(await options.readBusy()).busy;
+      } catch {
+        return false;
+      }
+    };
+    try {
+      const grew = await options.growDiskIfNeeded(nothingRuns);
+      if (grew) options.logger?.info("cloud.disk_grow_early", { reasons: state.reasons });
+      return grew;
+    } catch (error) {
+      options.logger?.warn("cloud.disk_grow_early_failed", { error: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  };
+
   /** A ping within the interval already holds the idle timer back. */
   const pingIsDue = (): boolean => lastPingAt == null || now() - lastPingAt >= intervalMs;
 
@@ -406,7 +439,11 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       if (state.busy || wasBusy) lastBusyAt = at;
       if (state.busy) lastWorkAt = at;
       wasBusy = state.busy;
-      if (!state.busy) await sleepIfIdleLongEnough(at);
+      if (await growDiskEarlyIfDue(state)) {
+        lastBusyAt = now();
+      } else if (!state.busy) {
+        await sleepIfIdleLongEnough(at);
+      }
       if (!url && state.busy && !warnedNoUrl) {
         warnedNoUrl = true;
         options.logger?.info("cloud.keep_awake_no_wake_url", {});
