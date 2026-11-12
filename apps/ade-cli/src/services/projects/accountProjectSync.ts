@@ -399,7 +399,12 @@ function buildCopies(args: {
   for (const candidate of ordered) {
     if (!mainByGroup.has(groupKey(candidate))) mainByGroup.set(groupKey(candidate), candidate.record.projectId);
   }
-  const copies = ordered.map((candidate): AccountProjectCopyInput => {
+  // The server reads the copies in order and adds a project only for an
+  // `auto` copy. Copies the first fill may add go first, so a newer hidden
+  // copy of the same repository finds the project they add. The order
+  // depends on the folder only, so it stays the same after the fill.
+  const sent = [...ordered].sort((left, right) => Number(right.autoFill) - Number(left.autoFill));
+  const copies = sent.map((candidate): AccountProjectCopyInput => {
     const lookup = state.repoLookups[candidate.identity.repoKey];
     const found = lookup?.repoId ? lookup : null;
     const owner = found?.owner ?? candidate.identity.owner;

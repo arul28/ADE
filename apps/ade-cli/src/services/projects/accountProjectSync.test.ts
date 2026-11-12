@@ -78,6 +78,9 @@ describe("account project sync", () => {
   it("counts a project opened on purpose as a copy in a hidden folder, but the first fill adds only real folders", async () => {
     const records = ([
       // [folder, source, name]
+      // A newer hidden copy of `app`: the server adds a project only for an
+      // `auto` copy and reads the copies in order, so this one goes after it.
+      ["/home/dev/.config/app", "desktop", "app"],
       ["/home/dev/work/app", "desktop", "app"],
       ["/home/dev/.dotfiles", "desktop", "dotfiles"],
       ["C:\\Users\\dev\\.config\\nvim", "cli-explicit", "nvim"],
@@ -102,7 +105,7 @@ describe("account project sync", () => {
       setAccountLinks: () => 0,
       resolveMovedProjectId: () => null,
     } as unknown as Pick<ProjectRegistry, "list" | "setAccountLinks" | "resolveMovedProjectId" | "path">;
-    const published: Array<{ name: string; add: string }> = [];
+    const published: Array<{ rootPath: string; add: string }> = [];
     const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
       if (init?.method === "PUT") published.push(...JSON.parse(String(init.body)).copies);
       return new Response(JSON.stringify({ projects: [], cursor: 0, reset: true, copies: [] }), { status: 200 });
@@ -121,12 +124,13 @@ describe("account project sync", () => {
     sync.afterHeartbeat({ baseUrl: "https://directory.test", accessToken: tokenFor("account-a"), machineKey: "machine-1", accountOwnerId: null, accountProjectsCursor: 0 });
     await sync.idle();
 
-    expect(Object.fromEntries(published.map((copy) => [copy.name, copy.add]))).toEqual({
-      app: "auto",
-      dotfiles: "none",
-      nvim: "none",
-      tool: "none",
-    });
+    expect(published.map((copy) => [copy.rootPath, copy.add])).toEqual([
+      ["/home/dev/work/app", "auto"],
+      ["/home/dev/.config/app", "none"],
+      ["/home/dev/.dotfiles", "none"],
+      ["C:\\Users\\dev\\.config\\nvim", "none"],
+      ["/home/dev/scratch/tool", "none"],
+    ]);
   });
 
   // What a phone or another computer receives for a linked folder: the link
