@@ -182,7 +182,8 @@ export function CommitDetailPanel({
 
   const agent = resolvedCommit ? commitAgentProvider(resolvedCommit) : null;
   // The chat that made it: only looked up for a commit an agent co-authored.
-  const sessionLaneId = agent ? ownerLane?.id ?? laneId : null;
+  // With no machine for the lane there is nothing to read.
+  const sessionLaneId = agent && pin ? ownerLane?.id ?? laneId : null;
   const sessions = useLaneSessions(sessionLaneId, "", pin);
   const chat = useMemo(() => {
     if (!agent || !resolvedCommit || !sessionLaneId) return null;
