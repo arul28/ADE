@@ -2,8 +2,9 @@
  * What ADE knows about an Antigravity sign-in without starting the agent.
  *
  * The agy CLI (`agy acp` for chats, the TUI for terminals) keeps its state in
- * `<home>/.gemini/antigravity-cli/` whatever GEMINI_HOME says. ADE never
- * writes there; the CLI does:
+ * `<home>/.gemini/antigravity-cli/` whatever GEMINI_HOME says. The CLI writes
+ * there; ADE writes one value only, on the person's own Google sign-in
+ * (`pointAntigravitySettingsAtGoogle`):
  *
  *   settings.json             the CLI's settings (the recorded sign-in
  *                             method, when it keeps one)
@@ -86,7 +87,7 @@ export function isAntigravityAuthMethod(value: unknown): value is AntigravityAut
   return typeof value === "string" && (ANTIGRAVITY_AUTH_METHODS as readonly string[]).includes(value);
 }
 
-/** The CLI's own directory. ADE reads it and never writes it. GEMINI_HOME does not move it. */
+/** The CLI's own directory. GEMINI_HOME does not move it. */
 export function antigravityCliDir(): string {
   return path.join(homedir(), ".gemini", "antigravity-cli");
 }
@@ -95,16 +96,12 @@ export function antigravityCliDir(): string {
 export const ANTIGRAVITY_TOKEN_FILE = "antigravity-oauth-token";
 
 /**
- * The settings file is Hjson to the agent (comments, trailing commas). ADE
- * only needs two string fields, so it strips comments and trailing commas and
- * parses JSON; anything it still cannot read is "no method".
+ * agy reads settings.json as strict JSON: a comment or a trailing comma makes
+ * it ignore the whole file, auth method included (verified 1.5.6). ADE reads it
+ * the same way, so a file agy ignores names no method here either.
  */
-function parseLooseJson(raw: string): unknown {
-  const withoutComments = raw
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:"'\\])\/\/[^\n]*/g, "$1");
-  const withoutTrailingCommas = withoutComments.replace(/,(\s*[}\]])/g, "$1");
-  return JSON.parse(withoutTrailingCommas);
+function parseSettingsJson(raw: string): unknown {
+  return JSON.parse(raw);
 }
 
 type SettingsRead = { method: AntigravityAuthMethod | null; gcpProject: string | null; gcpLocation: string | null };
@@ -129,7 +126,7 @@ export function readAntigravitySettings(_env: NodeJS.ProcessEnv = process.env): 
   }
   let value = empty;
   try {
-    const parsed = parseLooseJson(fs.readFileSync(file, "utf8")) as {
+    const parsed = parseSettingsJson(fs.readFileSync(file, "utf8")) as {
       auth?: { type?: unknown };
       gcp?: { project?: unknown; location?: unknown };
     };
@@ -333,6 +330,48 @@ export function antigravityKeyringItemExists(
 /** The last keyring answer, without asking again (null before the first). */
 export function peekAntigravityKeyringPresent(): boolean | null {
   return keyringCache ? keyringCache.present : null;
+}
+
+/** The settings value of a key method, as agy or a user may have written it. */
+const KEY_METHOD_SETTING = /("auth"\s*:\s*\{[^{}]*?"type"\s*:\s*")(gemini-api-key|agent-platform|vertex-ai)(")/;
+
+/**
+ * After a Google-account sign-in: when agy's settings still name a key method
+ * from an earlier sign-in, agy ignores the new login and answers
+ * "Authentication required" (verified 1.5.6; `agy acp --login` leaves the
+ * setting as it was). The person's own Google sign-in is the one time ADE
+ * writes agy's settings, and it changes only that value to `oauth-personal`;
+ * every other byte of the file stays.
+ *
+ * - "unchanged": no settings file, or it names no key method.
+ * - "switched": the value now reads `oauth-personal`.
+ * - "failed": it names a key method ADE could not rewrite in place (an
+ *   unusual layout, or the file could not be written).
+ */
+export function pointAntigravitySettingsAtGoogle(): "unchanged" | "switched" | "failed" {
+  const file = path.join(antigravityCliDir(), "settings.json");
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch {
+    return "unchanged";
+  }
+  settingsCache = null;
+  const method = readAntigravitySettings().method;
+  if (method !== "gemini-api-key" && method !== "agent-platform") return "unchanged";
+  if (!KEY_METHOD_SETTING.test(raw)) return "failed";
+  const next = raw.replace(KEY_METHOD_SETTING, "$1oauth-personal$3");
+  const temp = `${file}.ade-${process.pid}.tmp`;
+  try {
+    const mode = fs.statSync(file).mode & 0o777;
+    fs.writeFileSync(temp, next, { mode });
+    fs.renameSync(temp, file);
+  } catch {
+    fs.rmSync(temp, { force: true });
+    return "failed";
+  }
+  settingsCache = null;
+  return "switched";
 }
 
 /** Forget the cached answers so the next status read after a sign-in is fresh. */

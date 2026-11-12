@@ -138,9 +138,10 @@ function json(contents: ReadonlyMap<string, Buffer>, rel: string): Record<string
 }
 
 /**
- * Antigravity's `settings.json` is Hjson to its agent (comments, trailing
- * commas). The same loose read as `antigravityAuth.ts`: comments and trailing
- * commas out, then JSON. Anything still unreadable is null.
+ * Antigravity's `settings.json`, read leniently: comments and trailing commas
+ * out, then JSON, so ADE can still take out fields it wrote. agy itself reads
+ * strict JSON and ignores a file with a comment (`antigravityAuth.ts`).
+ * Anything still unreadable is null.
  */
 export function parseAntigravitySettings(raw: string): Record<string, unknown> | null {
   try {

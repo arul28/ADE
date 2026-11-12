@@ -264,6 +264,16 @@ with the carried login (the Windows keyring item, written as that file) it
 opened a session in 1.9 s and finished a turn in 3.3 s. agy rewrites the file
 as it refreshes the access token.
 
+agy records the sign-in method twice: `settings.json` `auth.type` (written by
+`authenticate` for a key method) and `cache/acp-auth-state.json` (written by
+`agy acp --login`). The setting wins: a key method left there from an earlier
+sign-in makes agy refuse a fresh Google login with "Authentication required"
+(verified 1.5.6). So a Google sign-in in ADE changes that one value to
+`oauth-personal` (`pointAntigravitySettingsAtGoogle`), the only time ADE writes
+agy's settings; when it cannot, the sign-in fails with what to change. agy reads
+`settings.json` as strict JSON and ignores a file with a comment or a trailing
+comma, so ADE reads it strictly too.
+
 Users of the old standalone server sign in again: its
 `~/.gemini/antigravity-acp/` login is neither read nor migrated.
 

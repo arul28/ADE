@@ -57,6 +57,7 @@ import {
   inspectAntigravityCredentials,
   invalidateAntigravityAuthCache,
   isAntigravityAuthMethod,
+  pointAntigravitySettingsAtGoogle,
   readAdeAntigravityAgentPlatformConfig,
   storedAntigravityGeminiKey,
   writeAdeAntigravityAgentPlatformConfig,
@@ -236,6 +237,7 @@ function failureSentence(method: AntigravityAuthMethod, error: unknown): string 
   const text = error instanceof AcpRpcError
     ? `${error.message} ${typeof error.data === "string" ? error.data : JSON.stringify(error.data ?? "")}`
     : getErrorMessage(error);
+  if (text === GOOGLE_SETTING_BLOCKED) return text;
   if (/SUBSCRIPTION_REQUIRED/i.test(text)) return "Google requires an eligible Antigravity subscription for this account.";
   if (/access_denied|denied access|cancelled|canceled/i.test(text)) return "Google sign-in was not approved. Start sign-in again.";
   if (/invalid_grant|code.*(invalid|expired)/i.test(text)) return "Google did not accept that code. Start sign-in again and paste the new code.";
@@ -350,6 +352,10 @@ function runTerminalLogin(flow: Flow, executable: AcpExecutableResolution): Prom
   });
 }
 
+/** agy's settings name a key method ADE could not switch: the person can. */
+const GOOGLE_SETTING_BLOCKED = "Antigravity is set to sign in with an API key, so it would ignore your Google login. "
+  + "In ~/.gemini/antigravity-cli/settings.json, set auth.type to \"oauth-personal\", then sign in again.";
+
 async function runFlow(flow: Flow): Promise<void> {
   try {
     const executable = await pinnedExecutable();
@@ -359,6 +365,10 @@ async function runFlow(flow: Flow): Promise<void> {
       if (flow.done) return;
       if (!flow.codeSent) throw new Error("antigravity login ended before a code was entered");
       stopChild(flow);
+      // A key method left in agy's settings would hide the new login.
+      const settings = pointAntigravitySettingsAtGoogle();
+      if (settings === "failed") throw new Error(GOOGLE_SETTING_BLOCKED);
+      if (settings === "switched") logger?.info("antigravity.sign_in_settings_switched", { to: "oauth-personal" });
     } else if (flow.method === "oauth-business") {
       flow.message = "Finish the Gemini Enterprise sign-in in the browser Antigravity opened on this computer.";
     }
