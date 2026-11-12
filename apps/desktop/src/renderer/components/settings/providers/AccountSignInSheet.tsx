@@ -269,11 +269,12 @@ function AccountSignInSheet({
         ? "failed"
         : !login
           ? "starting"
-          : login.state === "verifying" ? "verifying" : "waiting";
+          : login.state === "verifying" || login.checkingCode ? "verifying" : "waiting";
   useSuccessHold(stage, close);
 
   const view: SignInSheetView = {
     stage,
+    verifyingHint: login?.checkingCode ? "Checking the code…" : null,
     url: login?.url ?? null,
     deviceCode: login?.deviceCode ?? null,
     codeHint: login?.deviceCode

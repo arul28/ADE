@@ -207,7 +207,7 @@ export function ClaudePassSignInSheet({
     starting ? "starting"
     : !flow
       ? (status ? (needsPick ? "pick" : error ? "failed" : "starting") : "reading")
-      : flow.state === "running" ? (flow.url || flow.awaitingCode ? "waiting" : "starting")
+      : flow.state === "running" ? (flow.checkingCode ? "verifying" : flow.url || flow.awaitingCode ? "waiting" : "starting")
         : flow.state === "verifying" ? "verifying"
           : flow.state === "saving" ? "saving"
             : flow.state === "mismatch" ? "mismatch"
@@ -262,7 +262,7 @@ export function ClaudePassSignInSheet({
       closeOnScrimClick={!running && !waitingOnPerson}
       closeLabel={closeLabel}
       onClose={close}
-      footerStatus={stage === "saving" ? "Saving to your ADE account…" : stage === "verifying" ? "Checking the account…" : stage === "starting" ? "Starting the sign-in…" : "Waiting for you to approve in the browser"}
+      footerStatus={stage === "saving" ? "Saving to your ADE account…" : stage === "verifying" ? (flow?.checkingCode ? "Checking the code…" : "Checking the account…") : stage === "starting" ? "Starting the sign-in…" : "Waiting for you to approve in the browser"}
       actions={actions}
       testId="claude-pass-sign-in"
     >

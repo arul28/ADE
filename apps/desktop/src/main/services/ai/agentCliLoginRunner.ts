@@ -209,6 +209,8 @@ type LoginRecord = {
   submittedCodes: string[];
   /** Output since the last pasted code; null before one. Only it can show the code prompt again. */
   rawSinceSubmit: string | null;
+  /** The CLI's reason for refusing the pasted code, once it printed one. */
+  codeRejection?: string | null;
   keypressSent: boolean;
   polling: boolean;
   /** A failed read of the saved login was reported once; the polls after it stay quiet. */
@@ -269,7 +271,7 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
     record.timers.clear();
     if (record.poll) clearInterval(record.poll);
     record.poll = null;
-    Object.assign(record.status, patch, { awaitingCode: false, downloading: null, endedAt: now().toISOString() });
+    Object.assign(record.status, patch, { awaitingCode: false, checkingCode: false, downloading: null, endedAt: now().toISOString() });
     stopPty(record, options);
     if (record.cleanup) clearTimeout(record.cleanup);
     record.cleanup = setTimeout(() => logins.delete(record.status.loginId), LOGIN_FINISHED_RETENTION_MS);
@@ -322,6 +324,7 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
     record.poll = null;
     record.status.state = "verifying";
     record.status.awaitingCode = false;
+    record.status.checkingCode = false;
     const spec = SPECS[record.status.provider];
     const label = spec.label;
     try {
@@ -366,6 +369,11 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
       pasteCode: spec.pasteCode ? "while-waiting" : false,
       promptTailLines: PROMPT_TAIL_LINES,
     });
+    // A CLI that refuses the code and keeps running ends now, in its words.
+    if (record.codeRejection) {
+      finish(record, { state: "failed", message: record.codeRejection });
+      return;
+    }
     const tail = lastTextLines(text, PROMPT_TAIL_LINES);
     if (spec.keypress && !record.keypressSent && spec.keypress.when.test(tail)) {
       record.keypressSent = true;

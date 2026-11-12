@@ -52,6 +52,8 @@ type LoginRecord = {
   submittedCodes: string[];
   /** Output since the last pasted code; null before one. Only it can show the code prompt again. */
   rawSinceSubmit: string | null;
+  /** The CLI's reason for refusing the pasted code, once it printed one. */
+  codeRejection?: string | null;
   timeout: ReturnType<typeof setTimeout> | null;
   cleanup: ReturnType<typeof setTimeout> | null;
 };
@@ -78,7 +80,7 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
   ): void {
     if (record.timeout) clearTimeout(record.timeout);
     record.timeout = null;
-    Object.assign(record.status, patch, { endedAt: now().toISOString() });
+    Object.assign(record.status, patch, { checkingCode: false, endedAt: now().toISOString() });
     stopPty(record, options);
     if (record.cleanup) clearTimeout(record.cleanup);
     record.cleanup = setTimeout(() => logins.delete(record.status.loginId), LOGIN_FINISHED_RETENTION_MS);
@@ -94,6 +96,7 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
     record.pty = null;
     record.status.state = "verifying";
     record.status.awaitingCode = false;
+    record.status.checkingCode = false;
     try {
       const instance = deps.getInstance(record.status.instanceId);
       const verified = instance ? await deps.verify(instance) : null;
@@ -168,6 +171,8 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
         pasteCode: instance.provider === "claude" ? "while-waiting" : "prompt",
         promptTailLines: 4,
       });
+      // A CLI that refuses the code and keeps running ends now, in its words.
+      if (record.codeRejection) finish(record, { state: "failed", awaitingCode: false, message: record.codeRejection });
     });
     pty.onExit(({ exitCode }) => {
       void onExit(record, exitCode);

@@ -223,7 +223,7 @@ export function CliSignInSheet({ provider, providerLabel, pin, isThisMachine, ma
   }, [applyLogin, code]);
 
   // After a pasted code the CLI checks it.
-  const verifying = login?.state === "verifying" || (codeSent && login?.state === "running" && !login.awaitingCode);
+  const verifying = login?.state === "verifying" || (login?.state === "running" && (login.checkingCode === true || (codeSent && !login.awaitingCode)));
   const host = linkHost(login?.url ?? null);
   const signedInAs = login?.email?.trim() || null;
   const wrongAccount = phase === "success" && signInAccountMismatch(expectedAccount, signedInAs);
@@ -247,6 +247,7 @@ export function CliSignInSheet({ provider, providerLabel, pin, isThisMachine, ma
       : login.downloading
         ? login.downloading
         : `Waiting for ${providerLabel}'s sign-in link…`,
+    verifyingHint: login?.checkingCode ? "Checking the code…" : null,
     url: login?.url ?? null,
     deviceCode: login?.deviceCode ?? null,
     codeHint: login?.deviceCode

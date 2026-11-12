@@ -84,8 +84,10 @@ export type ClaudeSignInStartOptions = {
 };
 
 type SignInRecord = {
-  status: { state: ClaudeState["state"]; output: string; url: string | null; awaitingCode: boolean };
+  status: { state: ClaudeState["state"]; output: string; url: string | null; awaitingCode: boolean; checkingCode?: boolean };
   message: string | null;
+  /** Claude Code's reason for refusing the pasted code, once it printed one. */
+  codeRejection?: string | null;
   pty: AgentCliLoginPty | null;
   rawOutput: string;
   submittedCodes: string[];
@@ -143,6 +145,7 @@ export function createCloudClaudeSignIn(deps: CloudClaudeSignInDeps) {
   function end(target: SignInRecord, state: ClaudeState["state"], message: string | null = null, options: { sync?: boolean } = {}) {
     target.status.state = state;
     target.status.awaitingCode = false;
+    target.status.checkingCode = false;
     target.message = message;
     target.heldToken = null;
     if (target.timeout) clearTimeout(target.timeout);
@@ -276,7 +279,17 @@ export function createCloudClaudeSignIn(deps: CloudClaudeSignInDeps) {
       // The printed link ends in a code to paste, so the box stays up while it waits.
       const text = readLoginOutput(target, data, { hosts: AUTH_HOSTS, deviceCode: false, pasteCode: "while-waiting", promptTailLines: 4 });
       const token = COMPLETE_CLAUDE_TOKEN_PATTERN.exec(text)?.[0] ?? null;
-      if (token) take(target, token);
+      if (token) {
+        take(target, token);
+        return;
+      }
+      // A wrong, expired or mistyped code: Claude Code prints "OAuth error: …"
+      // and waits on "Press Enter to retry". Its words end the sign-in now,
+      // with Try again, instead of the 10-minute timeout.
+      if (target.codeRejection) {
+        deps.logger?.info?.("cloud.claude_code_rejected");
+        end(target, "failed", target.codeRejection);
+      }
     });
     pty.onExit(({ exitCode }) => {
       // Forget the process first, whatever the state: a later end() must never
@@ -303,6 +316,7 @@ export function createCloudClaudeSignIn(deps: CloudClaudeSignInDeps) {
           state: current.status.state,
           url: current.status.url,
           awaitingCode: current.status.awaitingCode,
+          checkingCode: current.status.checkingCode === true,
           message: current.message,
           forEmail: current.options.forEmail?.trim() || null,
           foundEmail: current.foundEmail,
