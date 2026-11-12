@@ -332,6 +332,9 @@ export function buildAllMachineLanes(input: {
     // The active machine is represented by the tab's own lane list above; the
     // union may still hold a (stale) slice for it.
     if (entry.machineId === active.machineId) continue;
+    // A computer that is gone from the account holds no copy of the repository.
+    // The union keeps it only for its saved chats, so no lane surface lists it.
+    if (entry.computerGone === true) continue;
     const binding = entry.binding ?? null;
     const connection = connectionById.get(entry.targetId ?? entry.machineId);
     const isThisMachine = entry.machineId === THIS_MACHINE_ID;
