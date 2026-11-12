@@ -8,6 +8,7 @@
 
 import type { LaneSummary, OpenProjectBinding } from "../../shared/types";
 import { rootAppStoreApi } from "../state/appStore";
+import { navigateToAppTarget } from "./openExternal";
 import {
   buildAllMachineLanes,
   connectionOnline,
@@ -116,20 +117,18 @@ function unionListsSession(machines: CrossMachineLanes, sessionId: string): bool
  * paired. Best effort: this computer's own key, or a failure, only logs.
  */
 async function connectAccountMachine(machineKey: string): Promise<void> {
-  const sameKey = (key: string | null | undefined) => key?.trim().toLowerCase() === machineKey.toLowerCase();
-  try {
-    const local = (await window.ade.account.getLocalMachineIdentity?.())?.machineKey ?? null;
-    if (sameKey(local)) return;
-    const runtime = window.ade.remoteRuntime;
-    const live = (await runtime.getConnectionSnapshot()).connections
-      .find((connection) => sameKey(connection.target.pairedMachine?.machineKey));
-    if (live && (live.state === "connected" || live.state === "connecting")) return;
-    const saved = live?.target ?? (await runtime.listTargets()).find((target) => sameKey(target.pairedMachine?.machineKey));
-    const targetId = saved?.id ?? (await window.ade.account.pairMachine(machineKey)).targetId;
-    await runtime.connect(targetId);
-  } catch (error) {
-    console.warn("[otherMachineNavigation] could not connect the machine the chat moved to", error);
-  }
+  // Contract C2: a saved connection is reused, a new machine paired through the account.
+  const result = await window.ade.machines.connect(machineKey).catch((error: unknown) => ({ ok: false as const, message: String(error) }));
+  if (!result.ok) console.warn("[otherMachineNavigation] could not connect the machine the chat moved to", result.message);
+}
+
+/**
+ * Opens the chat in Work once the machine `machineKey` lists it: after a send
+ * reached that machine for the first time, or after the chat's lane moved
+ * there. The chat keeps its id; only the machine that shows it changes.
+ */
+export function followSessionToMachine(sessionId: string, machineKey: string | null): () => void {
+  return openWhenOtherMachineListsSession(sessionId, () => navigateToAppTarget({ kind: "work", sessionId }), machineKey);
 }
 
 /**

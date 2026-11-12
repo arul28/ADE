@@ -171,10 +171,22 @@ type SavedChatsBridge = NonNullable<NonNullable<Window["ade"]["cloud"]>["savedCh
  * A chat whose lane is kept without a computer never sends here: the chat
  * pane gives that lane a new computer and starts a new chat on it.
  */
+/**
+ * Reaches the computer of a saved chat that this window has no connection to
+ * (contract C2): the pin to send with, or null to send with the pin as it is.
+ * `reached` runs after a send that went through it, so the window can follow
+ * the chat to its live machine.
+ */
+export type SavedChatReach = {
+  pinFor: (location: SavedChatLocation) => Promise<OpenProjectBinding | null>;
+  reached?: (location: SavedChatLocation) => void;
+};
+
 export function withSavedChatReads(
   api: AgentChatApi,
   bridge: SavedChatsBridge | null | undefined,
   machineOnline: (machineId: string) => boolean,
+  reach?: SavedChatReach | null,
 ): AgentChatApi {
   if (!bridge) return api;
   const locate = (sessionId: string, pin?: OpenProjectBinding | null) => savedChatLocation(pin, sessionId, machineOnline);
@@ -200,7 +212,15 @@ export function withSavedChatReads(
     send: async (args, pin) => {
       const location = locate(args.sessionId, pin);
       if (location?.computerGone) throw new Error(SAVED_CHAT_COMPUTER_GONE_MESSAGE);
-      return api.send(args, pin);
+      // A computer this window never connected to (another desktop made it):
+      // reach it by its machine key, which wakes it, then send there.
+      const reachedPin = location && reach && isSavedChatsMachineId(location.machineId)
+        ? await reach.pinFor(location)
+        : null;
+      if (!reachedPin) return api.send(args, pin);
+      const result = await api.send(args, reachedPin);
+      reach?.reached?.(location!);
+      return result;
     },
     delete: async (args, pin) => {
       const location = locate(args.sessionId, pin);

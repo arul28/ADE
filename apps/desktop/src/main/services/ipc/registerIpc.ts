@@ -12683,6 +12683,8 @@ export function registerIpc({
   });
 
   // Contract C2: any machine of the account by its key (machineConnector.ts).
+  // Set once ADE Cloud's handlers exist (just below): a sleeping cloud computer is woken before a pairing.
+  let cloudWakeForPair: ((machineKey: string) => Promise<{ state: "not_cloud" | "awake" | "woken" } | { state: "refused"; message: string }>) | null = null;
   const machineConnector = registerMachineConnectIpc({
     localMachineKey: () => runtimeBridge.getLocalMachineIdentity()?.machineKey ?? null,
     signedIn: () => accountBridge.status().signedIn,
@@ -12699,11 +12701,12 @@ export function registerIpc({
     },
     pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
     connect: (targetId) => runtimeBridge.remoteForMain.connect(targetId),
+    wake: (machineKey) => cloudWakeForPair?.(machineKey) ?? Promise.resolve({ state: "not_cloud" as const }),
     logger: getMachineMainLogger(),
   });
 
   // the provider: the account-wide key and new machines made on it (no pin; see the module).
-  const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient } = registerCloudIpc({
+  const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient, wakeForPair: cloudWakeForPairFn } = registerCloudIpc({
     machineConnector: () => machineConnector,
     // Its items in this computer's brain, also with no project here: then the
     // brain opens only those (`accountVault.call`).
@@ -12782,6 +12785,7 @@ export function registerIpc({
     },
     logger: { info: (event, meta) => getCtx().logger.info(event, meta), warn: (event, meta) => getCtx().logger.warn(event, meta) },
   });
+  cloudWakeForPair = cloudWakeForPairFn;
 
   // "ADE Cloud" picked for a new lane: this app makes the computer, then
   // hands the launch to that computer's brain. Machine-wide, so its log is

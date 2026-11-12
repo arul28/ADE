@@ -119,6 +119,8 @@ export function registerCloudIpc(args: {
   machines: ReturnType<typeof createCloudMachines>;
   copyDeps: CloudCopyDeps;
   client: () => Promise<CloudProvider>;
+  /** Contract C2's wake before a pairing (`machines/machineConnector.ts`). */
+  wakeForPair: (machineKey: string) => Promise<{ state: "not_cloud" | "awake" | "woken" } | { state: "refused"; message: string }>;
 } {
   const { logger } = args;
   const account = () => getSharedAccountAuthService();
@@ -627,7 +629,16 @@ export function registerCloudIpc(args: {
   });
 
   // The ADE Cloud lane launch makes its computer with these same pieces.
-  return { machineCreatorDeps, machines, copyDeps, client: () => requireCloudProvider(credentials) };
+  /** Contract C2's wake before a pairing: a sleeping cloud computer of this account, by machine key. */
+  const wakeForPair = async (machineKey: string): Promise<{ state: "not_cloud" | "awake" | "woken" } | { state: "refused"; message: string }> => {
+    if (!(await machines.knowsBox(machineKey))) return { state: "not_cloud" };
+    const client = await savedClient().catch(() => null);
+    if (!client) return { state: "not_cloud" };
+    const result = await wakeCloudMachineForUse(client, { machineKey }, { logger });
+    if (result.state === "woken") sendToAllWindows(IPC.cloudStatusChanged);
+    return result.state === "refused" ? { state: "refused", message: result.message } : { state: result.state };
+  };
+  return { machineCreatorDeps, machines, copyDeps, client: () => requireCloudProvider(credentials), wakeForPair };
 }
 
 /** This app's ADE release, or null for a development build (whose version may not be published). */

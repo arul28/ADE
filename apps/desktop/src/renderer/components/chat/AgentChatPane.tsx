@@ -422,6 +422,7 @@ import { autoLaneMachine, isAdeCloudLaneComputer, originUrlForBinding } from "..
 import { draftCloneRowTargetId, useDraftMachineSetup } from "./useDraftMachineSetup";
 import { ADE_CLOUD_MACHINE_ID, useAdeCloudComposer, useAdeCloudDraft, type AdeCloudSend } from "./useAdeCloudDraft";
 import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
+import { useFollowLaneMoves } from "../cloudLane/useFollowLaneMoves";
 import { AdeCloudTray, CloudSizeButton, useCloudLaneWithoutComputerForChat } from "./AdeCloudComposerParts";
 import { cloudLaneRestartBranchRef, cloudLaneRestartProblem, cloudLaneRestartTier } from "../cloudLane/CloudLaneWithoutComputer";
 import type { CloudAccountState } from "../../../shared/adeCloud";
@@ -5621,6 +5622,8 @@ export function AgentChatPane({
   // as a `useRef` result and stops demanding it as a dependency.
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
+  // A cloud lane's chat follows its lane to a new computer (contract C3).
+  useFollowLaneMoves({ sessionId: selectedSessionId, laneId: selectedSession?.laneId ?? null, pin: chatRuntimePin });
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
   // Another machine's chat: pinned there, or on the machine this project tab
   // itself is bound to.

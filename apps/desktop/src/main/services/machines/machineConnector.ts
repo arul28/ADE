@@ -18,6 +18,7 @@
  */
 
 import { getErrorMessage } from "../shared/utils";
+import { isCloudInstanceId } from "../../../shared/adeCloud";
 import {
   sameMachineKey,
   type MachineAddress,
@@ -45,6 +46,14 @@ export type MachineConnectorDeps = {
   pairMachine: (machineKey: string) => Promise<{ targetId: string; name: string }>;
   /** Opens a saved connection; wakes a sleeping cloud computer. Throws on failure. */
   connect: (targetId: string) => Promise<unknown>;
+  /**
+   * Wakes the machine when it is a sleeping cloud computer, before a pairing
+   * (a pairing is a live hello with its ADE, which a sleeping computer can't
+   * answer). `woken`: a start was asked for and its ADE answers soon.
+   */
+  wake?: (machineKey: string) => Promise<{ state: "not_cloud" | "awake" | "woken" } | { state: "refused"; message: string }>;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
   logger?: {
     info?: (event: string, meta?: Record<string, unknown>) => void;
     warn?: (event: string, meta?: Record<string, unknown>) => void;
@@ -59,6 +68,18 @@ export type MachineConnector = {
 };
 
 const FALLBACK_NAME = "your computer";
+
+/** A display name, never a cloud computer's raw id. */
+function displayName(...names: Array<string | null | undefined>): string {
+  for (const name of names) {
+    const trimmed = name?.trim();
+    if (trimmed && !isCloudInstanceId(trimmed)) return trimmed;
+  }
+  return names.some((name) => name?.trim()) ? "your ADE Cloud computer" : FALLBACK_NAME;
+}
+/** A cloud computer just woken takes this long at most for its ADE to answer a pairing. */
+export const WOKEN_PAIR_WAIT_MS = 120_000;
+const WOKEN_PAIR_RETRY_MS = 4_000;
 
 function failure(
   machineKey: string,
@@ -79,13 +100,15 @@ function reasonText(error: unknown): string {
 
 export function createMachineConnector(deps: MachineConnectorDeps): MachineConnector {
   const inFlight = new Map<string, Promise<MachineConnectResult>>();
+  const now = deps.now ?? (() => Date.now());
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
   const addressFor = (machineKey: string): MachineAddress | null => {
     const key = machineKey.trim();
     if (!key) return null;
     if (sameMachineKey(deps.localMachineKey(), key)) return { kind: "this", machineKey: key };
     const saved = deps.savedTarget(key);
-    return saved ? { kind: "remote", machineKey: key, targetId: saved.id, name: saved.name || FALLBACK_NAME } : null;
+    return saved ? { kind: "remote", machineKey: key, targetId: saved.id, name: displayName(saved.name) } : null;
   };
 
   const run = async (key: string, wantConnected: boolean): Promise<MachineConnectResult> => {
@@ -104,16 +127,38 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
         return failure(key, "unreachable", `ADE couldn't read your account's computers: ${reasonText(error)}.`);
       }
       if (!row) return failure(key, "not_in_account", "That computer is no longer on your ADE account.");
-      const name = row.name?.trim() || FALLBACK_NAME;
-      try {
-        const paired = await deps.pairMachine(key);
-        address = { kind: "remote", machineKey: key, targetId: paired.targetId, name: paired.name?.trim() || name };
-        deps.logger?.info?.("machines.connect_paired", { targetId: paired.targetId });
-      } catch (error) {
-        deps.logger?.warn?.("machines.connect_pair_failed", { error: getErrorMessage(error) });
-        return failure(key, "unreachable", `ADE couldn't reach ${name}: ${reasonText(error)}.`);
+      const name = displayName(row.name);
+      // Pairing needs the machine's ADE to answer: a sleeping cloud computer
+      // is woken first, but only when the caller asked to connect.
+      let woken = false;
+      if (wantConnected && deps.wake) {
+        try {
+          const wake = await deps.wake(key);
+          if (wake.state === "refused") return failure(key, "unreachable", wake.message);
+          woken = wake.state === "woken";
+        } catch (error) {
+          return failure(key, "unreachable", `ADE couldn't wake ${name}: ${reasonText(error)}.`);
+        }
+      }
+      const deadline = now() + (woken ? WOKEN_PAIR_WAIT_MS : 0);
+      for (;;) {
+        try {
+          const paired = await deps.pairMachine(key);
+          address = { kind: "remote", machineKey: key, targetId: paired.targetId, name: displayName(row.name, paired.name) };
+          deps.logger?.info?.("machines.connect_paired", { targetId: paired.targetId, woken });
+          break;
+        } catch (error) {
+          // A computer that is still starting answers within a minute or two.
+          if (now() < deadline) {
+            await sleep(WOKEN_PAIR_RETRY_MS);
+            continue;
+          }
+          deps.logger?.warn?.("machines.connect_pair_failed", { error: getErrorMessage(error), woken });
+          return failure(key, "unreachable", `ADE couldn't reach ${name}: ${reasonText(error)}.`);
+        }
       }
     }
+    if (!address) return failure(key, "unreachable", "ADE couldn't reach that computer.");
     if (!wantConnected || deps.isConnected(address.targetId)) return { ok: true, address };
     try {
       await deps.connect(address.targetId);

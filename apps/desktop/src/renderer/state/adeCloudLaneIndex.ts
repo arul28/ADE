@@ -105,6 +105,11 @@ function subscribe(listener: () => void): () => void {
 
 const readState = () => state;
 
+/** Whether any read (or the saved copy) filled the list: only then does a missing lane computer mean anything. */
+export function cloudLaneIndexKnown(): boolean {
+  return state.known;
+}
+
 /** The lane computers as last read, and whether any read filled the list yet. */
 export function useAdeCloudLaneComputers(): IndexState {
   return useSyncExternalStore(subscribe, readState, readState);
