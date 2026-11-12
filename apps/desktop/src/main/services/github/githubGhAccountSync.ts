@@ -178,12 +178,13 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
     safeVault(args.getAccountVault, (error) => logFailure("resolve_vault", error));
   // A read that fails on every tick warns once, and its repeats log at info
   // until a different cause shows up (docs/logging.md, Sentry Logs budget).
-  let lastReadFailure: string | null = null;
+  // Kept per operation: one lasting cause (a `gh` folder ADE may not read)
+  // fails two reads on each sync, and one shared slot would warn for both.
+  const lastReadFailure = new Map<string, string>();
   const logReadFailure = (operation: string, error: unknown): void => {
     const code = errorCode(error);
-    const key = `${operation}:${code}`;
-    const repeat = key === lastReadFailure;
-    lastReadFailure = key;
+    const repeat = lastReadFailure.get(operation) === code;
+    lastReadFailure.set(operation, code);
     const meta = { operation, error: code };
     if (repeat) args.logger?.info?.("github.gh_account_read_failed", meta);
     else args.logger?.warn?.("github.gh_account_read_failed", meta);
