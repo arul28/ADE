@@ -28,7 +28,7 @@ import {
 } from "./acpSession";
 import type { AcpPendingPermission } from "./acpPermissionBridge";
 import type { AcpSessionConfigOption } from "./acpProtocolTypes";
-import { behaviorOf, type AcpDialect, type AcpSlashCommand, type AcpSpawnPlan } from "./acpHostTypes";
+import { behaviorOf, type AcpBackgroundWork, type AcpDialect, type AcpSlashCommand, type AcpSpawnPlan } from "./acpHostTypes";
 
 export type AcpRuntimeState<TSteer = unknown> = {
   kind: "acp";
@@ -66,6 +66,8 @@ export type AcpRuntimeState<TSteer = unknown> = {
   openPermissionIds: Set<string>;
   /** The reset the agent named for the usage limit that failed its last turn. */
   usageLimitResetAt?: string | null;
+  /** The dialect's background-work watcher, when it has one. */
+  backgroundWork?: AcpBackgroundWork | null;
 };
 
 export type AcpRuntimeOwner = {

@@ -13,6 +13,9 @@ into the CLI at 1.5.0, so ADE pins the CLI.
 | Dialect (spawn plan, capabilities, mode mapping, system prompt, account tier) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravity.ts` |
 | A turn's real outcome (quota and API errors from the session log) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravityTurnOutcome.ts` |
 | Tool-call fixes (edit paths and hunks, new-file text, command output) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravitySessionUpdates.ts` |
+| Read-only session-log reader (steps, conversation metadata) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravitySessionLog.ts` |
+| Background subagents (cards, progress, results, agy's reply) | `apps/desktop/src/main/services/chat/acpHost/acpDialects/antigravityChildWork.ts` |
+| Import of past agy conversations | `apps/desktop/src/main/services/externalSessions/discoverAntigravity.ts`, `externalSessions/events/antigravity.ts` |
 | Captured `initialize` (1.5.6) | `apps/desktop/src/main/services/chat/acpHost/fixtures/antigravity.initialize.json` |
 | Per-launch temp directories | `apps/desktop/src/main/services/chat/acpHost/acpScratchDirs.ts` |
 | Signed-in check, credential environment, ADE's own settings | `apps/desktop/src/main/services/ai/antigravityAuth.ts` |
@@ -114,8 +117,10 @@ unreadable or not a plain file leaves the turn as the agent answered it.
 - A PDF sent as a resource (link or blob) never reaches the model, but agy's
   `read_file` reads one from a path, so binary attachments are handed over by
   path (`readsBinaryAttachments`).
-- `ask_question` ends the turn and shows the question and its options as
-  text; the next message is the answer.
+- `ask_question` (`{ questions: [{ question, options, is_multi_select }] }`,
+  an option may start "(Recommended) ") ends the turn and writes the question
+  as text. ADE raises a question card from the tool call
+  (`dialect.asyncQuestions`); the answer goes back as the next message.
 
 ### Modes
 
@@ -130,13 +135,58 @@ unreadable or not a plain file leaves the turn as the agent answered it.
 The CLI has no full-access mode over ACP, so Full access is ADE approving each
 request and recording it in the transcript.
 
+### Subagents
+
+`invoke_subagent` (`{ Prompt, Role, TypeName, Model, Workspace }`) returns at
+once, and the turn ends while the subagent runs on in agy's process with its
+own conversation log. Its result goes to agy as a message, and agy writes a
+reply, but none of that comes over ACP. ADE reads it from the logs instead
+(`dialect.backgroundWork`, `antigravityChildWork.ts`):
+
+- When a turn ends, each launch in the steps it added becomes a subagent card.
+  The child's conversation id is in the launch's result.
+- While a child is open, a 2-second poll reads the child's log for progress
+  and the parent's for the result and agy's reply. It runs only then, and
+  skips a log whose size and time have not changed. The reply shows as a turn
+  of its own, or in the running turn when the user has already sent another
+  message.
+- A chat with an open subagent is not closed for idling. A child that writes
+  nothing for 30 minutes is reported stopped, and so is every open child when
+  the chat's agy process exits.
+
+### Session log
+
+Every agy conversation, from the TUI or ACP, is
+`~/.gemini/antigravity-cli/conversations/<id>.db` (SQLite, with a WAL while
+agy has it open). `antigravitySessionLog.ts` reads it read-only and bounded
+(`busy_timeout` 50 ms, payloads capped), and never throws: a field it cannot
+read is left out. The `steps` table holds protobuf payloads. The fields ADE
+reads (1.5.6) are listed in the file's header: the user's text, the reply's
+text, thinking and tool calls, a tool's result (`140.2.1`), a message from
+another conversation, and the step's time. `trajectory_metadata_blob` holds
+the workspace (`file://` URL), the creation time, and the system prompt an
+ACP client opened the conversation with.
+
+### Import
+
+Past agy conversations list in the session importer as "Antigravity". A
+conversation's folder is its recorded workspace; one with none (a TUI started
+outside a workspace) lists only when the import is not scoped to a project.
+Left out: subagents (their log opens with the parent's message), and
+conversations an ADE chat opened (their system prompt is ADE's `## ADE`
+guidance; a live ADE chat is also matched by its `acpSessionId`).
+
+- CLI continue runs `agy --conversation <id>` in the conversation's folder.
+  agy has no fork, so there is no CLI copy.
+- Chat copy replays the conversation into a new ADE chat. The preview and the
+  copy page backwards through the steps (user messages, replies, thinking,
+  tool calls and their results). Chat continue is off, as for the other ACP
+  providers.
+
 ### Gaps
 
 - **No rewind or edit of earlier turns.** Continue with a follow-up or start a
   new chat.
-- **Subagents run in the background.** `invoke_subagent` returns at once and
-  the turn ends; the subagent writes its own session log, and its result
-  reaches agy, not ACP. agy's reply to it waits for the next message.
 - **No usage limits.** Google's quota API needs the account's OAuth token,
   which ADE does not read in the background.
 

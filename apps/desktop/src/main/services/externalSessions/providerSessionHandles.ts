@@ -134,6 +134,8 @@ export function providerSessionRoots(args: {
     { provider: "grok", root: path.join(grokConfigHome(providerHome), "sessions") },
     { provider: "copilot", root: path.join(copilotConfigHome(providerHome), "session-state") },
     { provider: "kimi", root: path.join(kimiCodeConfigHome(providerHome), "sessions") },
+    // agy: <conversations>/<id>.db, held open (with its WAL) while it runs.
+    { provider: "antigravity", root: path.join(homeDir, ".gemini", "antigravity-cli", "conversations") },
   ];
 }
 
@@ -423,7 +425,7 @@ function isProviderCliCommandLine(
   nodeCliMarkers: ReadonlyArray<{ packageDir: string; script: string }>,
 ): boolean {
   // A bare name or any absolute path to it, ADE's pinned native entries included.
-  if (/(?:^|[\\/\s])(?:claude|codex|droid|opencode|cursor-agent|qwen|grok|copilot|kimi|muse)(?:\.exe)?(?:\s|$)/u.test(lowerArgs)) {
+  if (/(?:^|[\\/\s])(?:claude|codex|droid|opencode|cursor-agent|qwen|grok|copilot|kimi|muse|agy|antigravity)(?:\.exe)?(?:\s|$)/u.test(lowerArgs)) {
     return true;
   }
   const normalized = lowerArgs.replace(/\\/g, "/");

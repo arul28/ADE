@@ -383,6 +383,38 @@ export type AcpTurnFailure = {
   resetAt: string | null;
 };
 
+/** What background work reports. `agent_reply` is a reply written outside any turn. */
+export type AcpBackgroundEvent =
+  | {
+    kind: "subagent_started";
+    taskId: string;
+    label: string;
+    description: string;
+    agentType: string | null;
+    parentToolUseId: string | null;
+  }
+  | { kind: "subagent_progress"; taskId: string; summary: string; lastToolName: string | null }
+  | { kind: "subagent_result"; taskId: string; status: "completed" | "stopped"; summary: string }
+  | { kind: "agent_reply"; text: string; thinking: string };
+
+export type AcpBackgroundWork = {
+  /** A prompt is about to start: report what was written while idle. */
+  turnStarting(): void;
+  /** The prompt answered: report the turn's launches, then watch them. */
+  turnEnded(): void;
+  /** True while something it watches is still running. */
+  hasOpenWork(): boolean;
+  /** The runtime is going away. Open work is reported stopped. */
+  dispose(): void;
+};
+
+/** One question an agent's question tool asks; its answer is the next message. */
+export type AcpAsyncQuestion = {
+  question: string;
+  options: Array<{ label: string; recommended?: boolean }>;
+  multiSelect: boolean;
+};
+
 /** Reads one turn's real outcome after `session/prompt` answers. Never throws. */
 export type AcpTurnOutcomeCheck = (response: AcpPromptResponse | null) => Promise<AcpTurnFailure | null>;
 
@@ -545,6 +577,22 @@ export type AcpDialectBase = {
    * ADE reads it. Pure, and returns the update unchanged when nothing applies.
    */
   readonly normalizeSessionUpdate?: (update: AcpSessionUpdate) => AcpSessionUpdate;
+
+  /**
+   * The agent's question tool, when its answer is simply the next user
+   * message: returns the questions a tool call asks, or null for any other
+   * tool. ADE shows them as a question card whose answer it sends.
+   */
+  readonly asyncQuestions?: (toolName: string, args: unknown) => AcpAsyncQuestion[] | null;
+
+  /**
+   * Work the agent goes on doing after a turn ends (background subagents)
+   * that ADE learns of outside ACP. Created once per runtime.
+   */
+  readonly backgroundWork?: (args: {
+    sessionId: string;
+    emit: (events: AcpBackgroundEvent[]) => void;
+  }) => AcpBackgroundWork;
 
   /** The agent's read tool opens binary files (PDF, video) from a path. */
   readonly readsBinaryAttachments?: boolean;

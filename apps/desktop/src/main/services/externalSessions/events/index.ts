@@ -11,6 +11,7 @@ import {
   type ExternalChatHistoryImportOptions,
 } from "../../chat/externalChatHistoryImport";
 import type { ExternalSessionDiscoveryRecord } from "../discoveryUtils";
+import { loadAntigravityStorePage } from "./antigravity";
 import { claudeRecordsToEvents } from "./claude";
 import { codexRecordsToEvents } from "./codex";
 import { EnvelopeSink, type JsonlConverter } from "./common";
@@ -260,6 +261,7 @@ export async function loadExternalSessionEvents(
   const byteLimit = isImport ? MAX_IMPORT_TRANSCRIPT_BYTES : EXTERNAL_SESSION_PREVIEW_MAX_WINDOW_BYTES;
 
   const cursorStorePath = args.provider === "cursor" ? cursorStoreSourceFor(record) : null;
+  const antigravityStorePath = args.provider === "antigravity" ? record?.sourcePath?.trim() || null : null;
   let raw: RawPage | null = null;
   try {
     if (args.provider === "opencode") {
@@ -272,6 +274,15 @@ export async function loadExternalSessionEvents(
         fallbackBaseMs,
         ...(args.homeDir ? { homeDir: args.homeDir } : {}),
         ...(args.env ? { env: args.env } : {}),
+      });
+    } else if (antigravityStorePath) {
+      raw = loadAntigravityStorePage({
+        file: antigravityStorePath,
+        options,
+        cursor,
+        maxEvents,
+        maxBytes: byteLimit,
+        fallbackBaseMs,
       });
     } else if (cursorStorePath) {
       raw = loadCursorStorePage({

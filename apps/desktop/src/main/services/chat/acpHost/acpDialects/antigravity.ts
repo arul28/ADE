@@ -65,6 +65,7 @@ import {
   capabilityAbsent,
   defineAcpDialect,
   type AcpAccountReader,
+  type AcpAsyncQuestion,
   type AcpSpawnContext,
   type AcpUsageBehavior,
   type AcpSpawnPlan,
@@ -83,6 +84,7 @@ import {
 import { allocateAcpScratchDir } from "../acpScratchDirs";
 import { watchAntigravityTurnOutcome } from "./antigravityTurnOutcome";
 import { normalizeAntigravitySessionUpdate } from "./antigravitySessionUpdates";
+import { createAntigravityBackgroundWork } from "./antigravityChildWork";
 import { antigravityCredentialEnv, readAntigravitySettings } from "../../../ai/antigravityAuth";
 import type { AntigravityAuthMethod } from "../../../../../shared/types/config";
 
@@ -190,6 +192,33 @@ const readAntigravityAccount: AcpAccountReader = ({ env, sessionMeta }) => {
   return { provider: "antigravity", kind: "unknown" };
 };
 
+/**
+ * `ask_question` arguments (verified 1.5.6): `{ questions: [{ question,
+ * options: string[], is_multi_select }] }`. The agent marks its pick with a
+ * "(Recommended) " prefix on the option.
+ */
+function antigravityAskQuestions(toolName: string, args: unknown): AcpAsyncQuestion[] | null {
+  if (toolName !== "ask_question" || !args || typeof args !== "object") return null;
+  const raw = (args as Record<string, unknown>).questions;
+  if (!Array.isArray(raw)) return null;
+  const questions = raw.flatMap((entry): AcpAsyncQuestion[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const record = entry as Record<string, unknown>;
+    const question = typeof record.question === "string" ? record.question.trim() : "";
+    if (!question) return [];
+    const options = (Array.isArray(record.options) ? record.options : []).flatMap((option) => {
+      if (typeof option !== "string" || !option.trim()) return [];
+      const label = option.trim();
+      const recommended = /^\(recommended\)\s*/i.exec(label);
+      return [recommended
+        ? { label: label.slice(recommended[0].length) || label, recommended: true }
+        : { label }];
+    });
+    return [{ question: question.slice(0, 2_000), options: options.slice(0, 20), multiSelect: record.is_multi_select === true }];
+  });
+  return questions.length ? questions.slice(0, 8) : null;
+}
+
 export const antigravityDialect = defineAcpDialect({
   providerId: "antigravity",
   displayName: "Antigravity",
@@ -224,6 +253,10 @@ export const antigravityDialect = defineAcpDialect({
   // A PDF sent as a resource (link or blob) never reaches the model; its
   // `read_file` reads one from a path (verified with a PDF, 1.5.6).
   readsBinaryAttachments: true,
+  // `ask_question` ends the turn; the answer is the next message.
+  asyncQuestions: antigravityAskQuestions,
+  // Background subagents, read from agy's session logs (antigravityChildWork.ts).
+  backgroundWork: createAntigravityBackgroundWork,
 
   cancelStyle: "notification",
   // The recorded method is read at spawn, so two chats share a process only

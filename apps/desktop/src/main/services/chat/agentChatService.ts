@@ -1456,6 +1456,7 @@ import {
   type AcpSlashCommand,
   type AcpRuntimeState,
   type AcpTurnFailure,
+  type AcpBackgroundEvent,
 } from "./acpHost";
 import {
   codexConfigHome,
@@ -4875,6 +4876,9 @@ function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
         || runtime.pendingSteers.length > 0
         || runtime.runningBackgroundItems.size > 0
       );
+    case "acp":
+      // Background subagents live in the agent's process (Antigravity).
+      return runtime.backgroundWork?.hasOpenWork() === true;
     default:
       return false;
   }
@@ -29795,6 +29799,8 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "acp") {
       const rt = managed.runtime;
       rt.interrupted = true;
+      rt.backgroundWork?.dispose();
+      rt.backgroundWork = null;
       cancelQueuedSteers(managed, rt, "interrupted");
       cancelPendingInputsFrom(managed, "acp", "ade");
       // Persist before detaching: the ACP session id is this chat's only handle
@@ -37174,7 +37180,11 @@ export function createAgentChatService(args: {
       callbacks: {
         onEvents: (runtime, events) => {
           if (!runtime || managed.runtime !== runtime) return;
-          for (const event of events) emitChatEvent(managed, event);
+          for (const event of events) {
+            emitChatEvent(managed, event);
+            const question = acpAsyncQuestionRequest(managed, runtime, event);
+            if (question) raiseAsyncQuestion(managed, question);
+          }
         },
         onPermissionRequested: (runtime, pending) => {
           if (!runtime) {
@@ -37235,6 +37245,10 @@ export function createAgentChatService(args: {
           if (runtime.session.systemPromptAppended) {
             markLaneGuidanceDelivered(managed, runtime.session.sessionId, runtime.session.systemPromptAppended);
           }
+          runtime.backgroundWork = runtime.dialect.backgroundWork?.({
+            sessionId: runtime.session.sessionId,
+            emit: (events) => applyAcpBackgroundEvents(managed, runtime, events),
+          }) ?? null;
           if (devinCloud) {
             // The ACP id and the web id name one session; the panel,
             // the header link and `devin ssh` all key on the bare form.
@@ -37352,6 +37366,95 @@ export function createAgentChatService(args: {
       turnId,
       errorInfo: { category: "unknown", provider: providerLabel, presentation: presented },
     });
+  };
+
+  /** The turn whose end last reported this runtime's background work. */
+  const acpBackgroundTurnIds = new WeakMap<AcpRuntime, string>();
+  /** The turn each background subagent was launched in, so its card stays there. */
+  const acpBackgroundTaskTurns = new Map<string, string>();
+
+  /**
+   * Publish what an ACP dialect's background work saw (Antigravity's
+   * subagents). A reply the agent wrote outside any turn becomes a short turn
+   * of its own; one that lands while a turn runs is dropped, because the
+   * agent streams that turn itself.
+   */
+  const applyAcpBackgroundEvents = (
+    managed: ManagedChatSession,
+    runtime: AcpRuntime,
+    events: AcpBackgroundEvent[],
+  ): void => {
+    if (managed.closed) return;
+    let changed = false;
+    for (const event of events) {
+      if (event.kind === "agent_reply") {
+        if (managed.runtime !== runtime) continue;
+        const activeTurnId = runtime.busy ? acpBackgroundTurnIds.get(runtime) ?? runtime.activeTurnId : null;
+        if (activeTurnId) {
+          // Read as the next prompt starts: it leads that turn.
+          if (event.thinking.trim()) {
+            emitChatEvent(managed, { type: "reasoning", text: event.thinking, turnId: activeTurnId, itemId: `${activeTurnId}:late-thinking` });
+          }
+          if (event.text.trim()) {
+            emitChatEvent(managed, { type: "text", text: event.text, turnId: activeTurnId, itemId: `${activeTurnId}:late-text`, messageId: `${activeTurnId}:late-text` });
+          }
+          changed = true;
+          continue;
+        }
+        if (runtime.busy) continue;
+        const turnId = randomUUID();
+        emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+        if (event.thinking.trim()) {
+          emitChatEvent(managed, { type: "reasoning", text: event.thinking, turnId, itemId: `${turnId}:thinking` });
+        }
+        if (event.text.trim()) {
+          emitChatEvent(managed, { type: "text", text: event.text, turnId, itemId: `${turnId}:text`, messageId: `${turnId}:text` });
+        }
+        emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+        emitChatEvent(managed, { type: "done", turnId, status: "completed" });
+        changed = true;
+        continue;
+      }
+      const launchTurn = event.kind === "subagent_started"
+        ? acpBackgroundTurnIds.get(runtime)
+        : acpBackgroundTaskTurns.get(event.taskId);
+      if (event.kind === "subagent_started" && launchTurn) acpBackgroundTaskTurns.set(event.taskId, launchTurn);
+      const turn = launchTurn ? { turnId: launchTurn } : {};
+      if (event.kind === "subagent_started") {
+        emitChatEvent(managed, {
+          type: "subagent_started",
+          taskId: event.taskId,
+          ...(event.agentType ? { agentType: event.agentType } : {}),
+          label: event.label,
+          parentToolUseId: event.parentToolUseId,
+          description: event.description,
+          background: true,
+          taskType: "subagent",
+          ...turn,
+        });
+      } else if (event.kind === "subagent_progress") {
+        emitChatEvent(managed, {
+          type: "subagent_progress",
+          taskId: event.taskId,
+          summary: event.summary,
+          ...(event.lastToolName ? { lastToolName: event.lastToolName } : {}),
+          taskType: "subagent",
+          ...turn,
+        });
+      } else {
+        acpBackgroundTaskTurns.delete(event.taskId);
+        emitChatEvent(managed, {
+          type: "subagent_result",
+          taskId: event.taskId,
+          status: event.status,
+          summary: event.summary,
+          taskType: "subagent",
+          ...turn,
+        });
+      }
+      changed = true;
+    }
+    if (changed) persistChatState(managed);
   };
 
   /**
@@ -37626,6 +37729,8 @@ export function createAgentChatService(args: {
         readAttachmentBytes: readResolvedAttachmentBytes,
         agentReadsBinaryFiles: runtime.dialect.readsBinaryAttachments === true,
       });
+      acpBackgroundTurnIds.set(runtime, turnId);
+      runtime.backgroundWork?.turnStarting();
       const outcome = await runtime.session.prompt({
         turnId,
         blocks,
@@ -37640,6 +37745,8 @@ export function createAgentChatService(args: {
       // notifications, provider-local ledgers). A provider that reported
       // nothing yields no events, so no usage row is fabricated.
       for (const event of outcome.events) emitChatEvent(managed, event);
+      // Subagents the turn launched, inside the turn they belong to.
+      runtime.backgroundWork?.turnEnded();
 
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       if (acpLaneGuidance) markLaneGuidanceDelivered(managed, runtime.session.sessionId, acpLaneGuidance);
@@ -37684,6 +37791,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
+      runtime.backgroundWork?.turnEnded();
       const message = error instanceof Error ? error.message : String(error);
       void emitTurnDiffSummaryIfChanged(managed, turnId);
       if (runtime.interrupted && !runtime.processFailed) {
@@ -43559,7 +43667,7 @@ export function createAgentChatService(args: {
    * second `approval_request` for a card already on screen is a duplicate the
    * renderer would draw twice.
    */
-  const raiseCodexAsyncQuestion = (
+  const raiseAsyncQuestion = (
     managed: ManagedChatSession,
     request: PendingInputRequest,
   ): void => {
@@ -43583,9 +43691,56 @@ export function createAgentChatService(args: {
     }
     emitPendingInputRequest(managed, request, {
       kind: "tool_call",
-      description: request.description ?? CODEX_ASYNC_QUESTION_TITLE,
+      description: request.description ?? request.title ?? CODEX_ASYNC_QUESTION_TITLE,
       detail: { asyncQuestion: true },
     });
+  };
+
+  /**
+   * An ACP agent's question tool whose answer is the next user message
+   * (`dialect.asyncQuestions`): the same answer-by-sending card as a Codex
+   * async question. Nothing waits on it, so it is dismissible.
+   */
+  const acpAsyncQuestionRequest = (
+    managed: ManagedChatSession,
+    runtime: AcpRuntime,
+    event: AgentChatEvent,
+  ): PendingInputRequest | null => {
+    if (event.type !== "tool_call" || !runtime.dialect.asyncQuestions) return null;
+    const asked = runtime.dialect.asyncQuestions(event.tool, event.args);
+    if (!asked?.length) return null;
+    const title = `${runtime.dialect.displayName} has a question`;
+    const questions: PendingInputQuestion[] = asked.map((entry, index) => ({
+      id: String(index),
+      header: "Question",
+      question: entry.question,
+      options: entry.options.map((option) => ({
+        label: option.label,
+        value: option.label,
+        description: "",
+        ...(option.recommended ? { recommended: true } : {}),
+      })),
+      allowsFreeform: true,
+      multiSelect: entry.multiSelect,
+      ...(entry.multiSelect
+        ? { impact: "This question allows multiple selections. Pick more than one, or type them comma-separated." }
+        : {}),
+    }));
+    const itemId = `acp-question:${event.itemId}`;
+    return {
+      requestId: itemId,
+      itemId,
+      source: "acp",
+      kind: "structured_question",
+      title,
+      description: questions[0]?.question ?? title,
+      questions,
+      allowsFreeform: true,
+      blocking: false,
+      canProceedWithoutAnswer: true,
+      providerMetadata: { responseMode: "message", dismissible: true, itemId, tool: event.tool },
+      turnId: event.turnId ?? null,
+    };
   };
 
   const handleCodexItemEvent = (
@@ -44412,7 +44567,7 @@ export function createAgentChatService(args: {
         stringOrNull(item.threadId),
       );
       if (asyncRequest) {
-        raiseCodexAsyncQuestion(managed, asyncRequest);
+        raiseAsyncQuestion(managed, asyncRequest);
         return;
       }
     }
@@ -44522,7 +44677,7 @@ export function createAgentChatService(args: {
         stringOrNull(item.threadId),
       );
       if (asyncRequest) {
-        raiseCodexAsyncQuestion(managed, asyncRequest);
+        raiseAsyncQuestion(managed, asyncRequest);
         rememberReconciledItemSignature(runtime, turnId, signature);
         return true;
       }

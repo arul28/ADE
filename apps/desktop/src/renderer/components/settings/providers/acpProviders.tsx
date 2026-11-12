@@ -110,7 +110,7 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     logoFamily: "antigravity",
     credentialSource: "The agy CLI's own sign-in (Google account or Gemini Enterprise), kept in the OS keyring (Credential Manager, Keychain, Secret Service) or, where none works, ~/.gemini/antigravity-cli; or a Gemini API key / Agent Platform credentials. The same login as agy in your terminal.",
     setup: "ADE downloads the Antigravity CLI for this machine and signs it in here: pick a method and choose Sign in. For a Google account, approve in a browser on any computer and paste the code Google shows. ADE does not write ~/.gemini; the CLI saves its own login.",
-    degradation: "No rewind or edit of earlier turns. Subagent work shows as tool activity.",
+    degradation: "No rewind or edit of earlier turns.",
   },
 ];
 

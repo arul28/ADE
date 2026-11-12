@@ -59,6 +59,7 @@ function assertProvider(value: string): ExternalSessionProvider {
     case "kimi":
     case "grok":
     case "copilot":
+    case "antigravity":
       return value;
     default: {
       const _never: never = value as never;
