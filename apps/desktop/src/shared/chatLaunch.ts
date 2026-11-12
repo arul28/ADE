@@ -3,6 +3,8 @@ import { stripElectronErrorWrapper } from "./codedError";
 import type { LaneStart } from "./laneStart";
 import type {
   ChatLaunchArgs,
+  ChatLaunchChatArgs,
+  ChatLaunchChatSettings,
   ChatLaunchCloudStageId,
   ChatLaunchKind,
   ChatLaunchLaneConfig,
@@ -166,6 +168,33 @@ function clipLaunchTitle(text: string, max: number): string {
  * `start`; a client builds the identical optimistic copy before the host
  * answers, so the two never disagree about title, prompt, or stages.
  */
+const CHAT_LAUNCH_SETTING_KEYS = [
+  "reasoningEffort",
+  "fastMode",
+  "fastTier",
+  "interactionMode",
+  "permissionMode",
+  "claudePermissionMode",
+  "codexApprovalPolicy",
+  "codexSandbox",
+  "codexConfigSource",
+  "opencodePermissionMode",
+  "droidPermissionMode",
+  "copilotPermissionMode",
+  "musePermissionMode",
+  "cursorModeId",
+] as const satisfies ReadonlyArray<keyof ChatLaunchChatSettings>;
+
+/** The picked settings of a launch's chat, for display before the chat exists (only these keys, never routes or keys). */
+export function chatLaunchChatSettings(create: ChatLaunchChatArgs["create"]): ChatLaunchChatSettings {
+  const out: Record<string, unknown> = {};
+  for (const key of CHAT_LAUNCH_SETTING_KEYS) {
+    const value = create[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return out as ChatLaunchChatSettings;
+}
+
 export function createChatLaunchSnapshot(args: {
   launch: ChatLaunchArgs;
   laneId: string;
@@ -202,6 +231,7 @@ export function createChatLaunchSnapshot(args: {
       attachments: launch.attachments ?? chat?.message.attachments ?? [],
     },
     modelId: launch.modelId ?? chat?.create.modelId ?? null,
+    chatSettings: chat ? chatLaunchChatSettings(chat.create) : null,
     phase: "running",
     stages: [
       ...(args.priorStages ?? []).map((stage) => ({ ...stage })),

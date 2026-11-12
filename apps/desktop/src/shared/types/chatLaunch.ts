@@ -194,6 +194,13 @@ export type ChatLaunchSnapshot = {
   };
   /** Chat model id the launch runs with (for display). */
   modelId: string | null;
+  /**
+   * What the person picked at Send besides the model (effort, Fast,
+   * permissions), so every client shows it while the chat is set up, after a
+   * failed setup, and on Retry, before the chat's own settings exist. Absent
+   * on a launch from an older brain.
+   */
+  chatSettings?: ChatLaunchChatSettings | null;
   phase: ChatLaunchPhase;
   stages: ChatLaunchStage[];
   /** Failure summary when `phase === "failed"`. */
@@ -224,6 +231,25 @@ export type ChatLaunchEvent =
   | { type: "launch-updated"; launch: ChatLaunchSnapshot }
   /** The launch record expired: it finished (completed or cancelled) and its retention window ran out. */
   | { type: "launch-removed"; launchId: string };
+
+/** The settings a launch's chat starts with, as picked at Send (`ChatLaunchSnapshot.chatSettings`). */
+export type ChatLaunchChatSettings = Pick<
+  AgentChatCreateArgs,
+  | "reasoningEffort"
+  | "fastMode"
+  | "fastTier"
+  | "interactionMode"
+  | "permissionMode"
+  | "claudePermissionMode"
+  | "codexApprovalPolicy"
+  | "codexSandbox"
+  | "codexConfigSource"
+  | "opencodePermissionMode"
+  | "droidPermissionMode"
+  | "copilotPermissionMode"
+  | "musePermissionMode"
+  | "cursorModeId"
+>;
 
 export type ChatLaunchChatArgs = {
   /** Session args minus the lane, which the launch creates. */

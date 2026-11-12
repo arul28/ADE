@@ -248,6 +248,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     }
     record.snapshot = {
       ...next,
+      // An older ADE on the computer has no picked settings to show: keep this launch's.
+      chatSettings: next.chatSettings ?? local.chatSettings ?? null,
       sequence: Math.max(local.sequence, record.sequenceBase + brain.sequence),
       queuedMessages: [...clone(brain.queuedMessages), ...pending],
       cloud: { ...local.cloud, handedOff: true },

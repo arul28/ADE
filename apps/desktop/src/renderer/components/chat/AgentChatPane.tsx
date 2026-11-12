@@ -10361,7 +10361,20 @@ export function AgentChatPane({
   // (model, effort, Fast, permission mode), not the composer's defaults.
   const seedComposerFromLaunch = useCallback((launch: ChatLaunchSnapshot): boolean => {
     const picked = getChatLaunchLocalRecord(launch.launchId)?.draftSnapshot ?? null;
-    if (!picked?.modelId) return false;
+    if (!picked?.modelId) {
+      // Started in another window, on another computer, or before a reload:
+      // the launch itself carries what was picked at Send.
+      const settings = launch.chatSettings;
+      if (!settings || !launch.modelId) return false;
+      const config = buildLastLaunchConfig({ ...settings, modelId: launch.modelId as LaunchConfigSessionSource["modelId"] }, initialNativeControls);
+      if (!config) return false;
+      applyLaunchConfigToComposer({
+        ...config,
+        fastMode: settings.fastMode === true,
+        fastTier: settings.fastMode === true && settings.fastTier === "ultrafast" ? "ultrafast" : null,
+      }, { preserveFast: true });
+      return true;
+    }
     applyLaunchConfigToComposer({
       version: 1,
       modelId: picked.modelId,
@@ -10374,7 +10387,7 @@ export function AgentChatPane({
       updatedAt: new Date().toISOString(),
     }, { preserveFast: true });
     return true;
-  }, [applyLaunchConfigToComposer]);
+  }, [applyLaunchConfigToComposer, initialNativeControls]);
   useChatLaunchPaneLifecycle({
     chatLaunch,
     launchAwaitingSession,
@@ -19555,6 +19568,7 @@ export function AgentChatPane({
             onPromptHistoryNavigate={handlePromptHistoryNavigate}
             attachments={attachments}
             composerMachineBinding={composerMachineBinding}
+            composerMachineLabel={launchRunsOnAdeCloud ? ADE_CLOUD_NAME : null}
             machineChipAction={machineChipAction}
             cursorRuntime={composerCloudRuntime}
             modelRuntimePin={activeComposerRuntimeBinding}
