@@ -408,12 +408,11 @@ function WorkCliContinuationComposer({
     )) return () => {
       cancelled = true;
     };
-    // Native provider history is machine-local and externalSessions has no
-    // pinned surface. A foreign session keeps its durable stored launch instead
-    // of consulting unrelated history on the active machine.
+    // Native provider history is machine-local: the lookup reads the session's
+    // own machine. With no machine known, the stored launch stands.
     const request = runtimePin
-      ? null
-      : recoverImportedContinuationLaunch(provider, importedProvider, importedTargetId);
+      ? recoverImportedContinuationLaunch(provider, importedProvider, importedTargetId, runtimePin)
+      : null;
     if (!request) return () => {
       cancelled = true;
     };
