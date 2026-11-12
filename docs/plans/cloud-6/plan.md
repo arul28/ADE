@@ -24,13 +24,17 @@ The caller gets one `MachineAddress` and passes it with each call.
 
 - Types: `apps/desktop/src/shared/machineAddress.ts`
   - `MachineAddress` (`{ kind: "this", machineKey }` | `{ kind: "remote", machineKey, targetId, name }`)
-  - `MachineConnectFailure` (`reason`: `not_in_account` | `gone` | `unreachable` | `signed_out`) and `MachineConnectError`
+  - `MachineConnectResult`, `MachineConnectFailureReason` (`not_in_account` | `unreachable` | `signed_out` | `invalid`),
+    `MachineConnectOptions` (`connect: false` pairs without waking), `MachineConnectError`, `sameMachineKey`
   - `projectPinOn(address, project)` → the `OpenProjectBinding` pin for one project on that machine (null for `this`)
 - Main: `apps/desktop/src/main/services/machines/machineConnector.ts` — `createMachineConnector(deps)` →
-  `{ connect(machineKey, options?), addressFor(machineKey) }`. One flight per machine key. A saved
-  connection is reused; a machine this computer never saved is paired through the account first.
-- IPC / preload: `window.ade.machines.connect(machineKey)`, `window.ade.machines.addressFor(machineKey)`.
+  `{ connect(machineKey, options?), addressFor(machineKey) }`, `MachineWakeResult`. One flight per machine key; never
+  throws. A saved connection is reused; a machine this computer never saved is checked against the account, woken
+  first when asleep and the caller wants a connection, and paired through the account.
+- IPC / preload: `window.ade.machines.connect(machineKey, options?)`, `window.ade.machines.addressFor(machineKey)`.
 - Renderer: `apps/desktop/src/renderer/lib/machineConnect.ts` — `connectMachine(machineKey)`, `projectPinOnMachine(...)`.
+- Pins that outlive a connection: `main/services/machines/goneTargets.ts`. Only connections a move or a delete
+  removed are remembered (a person's own Remove is not); only a person's write re-pairs and wakes.
 
 ## C3 — a lane follows its computer
 

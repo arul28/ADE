@@ -109,6 +109,7 @@ function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudLa
     diskUsage: instance.diskUsage ?? null,
     laneWork: instance.laneWork ?? null,
     ...(lane ? { lane } : {}),
+    replacesInstanceId: instance.metadata.ade_moved_from ?? instance.metadata.ade_copied_from ?? null,
   };
 }
 

@@ -15,13 +15,15 @@ import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../shared/wokenMachine";
 import { rootAppStoreApi } from "./appStore";
 import { adeCloudLaneComputerForMachine, adeCloudLaneComputersNow, cloudLaneIndexKnown } from "./adeCloudLaneIndex";
 import { sameMachineKey } from "../../shared/machineAddress";
-import { MachineConnectError, projectPinOnMachine } from "../lib/machineConnect";
+import { projectPinOnMachine } from "../lib/machineConnect";
+import { MachineConnectError } from "../../shared/machineAddress";
 import { followSessionToMachine } from "../lib/otherMachineNavigation";
 import { adeCloudEnabled } from "./cloudAccess";
 import { cloudBoxForMachine } from "../components/remoteTargets/cloudMachineModel";
 import { watchedCloudMachines } from "../components/remoteTargets/useCloudMachines";
+import { SAVED_CHATS_MACHINE_PREFIX } from "../../shared/cloudSavedChats";
+import { isAdeAvailable } from "../lib/adeAvailability";
 import {
-  SAVED_CHATS_MACHINE_PREFIX,
   isSavedChatsMachineId,
   replaceSavedChatLocations,
   savedChatLane,
@@ -129,10 +131,13 @@ function routeSavedChatsToLaneComputers(rows: readonly CloudSavedChatRow[]): Rou
   const kept = new Map<string, RoutedSavedChatRow>();
   for (const row of rows) {
     const lane = row.laneId ? lanes.find((computer) => computer.laneId === row.laneId) : undefined;
-    const moved = lane?.machineKey && !sameMachineKey(lane.machineKey, row.machineKey)
-      && !lanes.some((computer) => sameMachineKey(computer.machineKey, row.machineKey));
-    const routed: RoutedSavedChatRow = moved
-      ? { ...row, machineKey: lane!.machineKey!, instanceId: lane!.instanceId, savedOnMachineKey: row.machineKey }
+    // Only a copy from a computer that is no longer any lane's moves.
+    const movedTo = lane?.machineKey && !sameMachineKey(lane.machineKey, row.machineKey)
+      && !lanes.some((computer) => sameMachineKey(computer.machineKey, row.machineKey))
+      ? { machineKey: lane.machineKey, instanceId: lane.instanceId }
+      : null;
+    const routed: RoutedSavedChatRow = movedTo
+      ? { ...row, machineKey: movedTo.machineKey, instanceId: movedTo.instanceId, savedOnMachineKey: row.machineKey }
       : row;
     const key = `${routed.machineKey.toLowerCase()}\u0000${routed.chatId}`;
     const current = kept.get(key);
@@ -262,7 +267,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
           pinKey: binding.key,
           location: {
             machineKey,
-            ...(row.savedOnMachineKey ? { readMachineKey: row.savedOnMachineKey } : {}),
+            readMachineKey: row.savedOnMachineKey ?? row.machineKey,
             chatId: row.chatId,
             machineId,
             computerGone: gone,
@@ -407,8 +412,9 @@ export function savedChatAwareAgentChatApi(api: AgentChatApi): AgentChatApi {
   if (cached) return cached;
   // A saved chat's computer this window never connected to is reached by its
   // machine key (contract C2), and the window follows the chat there.
-  // The web client has no `machines` yet (its fallback proxy answers with a bare function).
-  const reach: SavedChatReach | null = typeof (window.ade as Partial<Window["ade"]> | undefined)?.machines?.connect === "function"
+  // The web client has no `machines` yet: its fallback proxy answers every
+  // missing member with a stand-in, so only `isAdeAvailable` can tell.
+  const reach: SavedChatReach | null = isAdeAvailable(window.ade?.machines) && isAdeAvailable(window.ade.machines.connect)
     ? {
         pinFor: async (location) => {
           try {

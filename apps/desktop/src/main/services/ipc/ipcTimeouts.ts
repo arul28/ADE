@@ -1,3 +1,5 @@
+import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
+import { goneTargetMachineKey } from "../machines/goneTargets";
 import { MCP_SIGN_IN_TIMEOUT_MS } from "../mcp/mcpOAuth";
 import { IPC } from "../../../shared/ipc";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
@@ -144,6 +146,8 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   },
 };
 
+/** A runtime action through a gone connection: the pairing (woken computer, up to 2 min) and the action. */
+const GONE_PIN_ACTION_TIMEOUT_MS = 3 * 60_000;
 const REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 10 * 60_000;
 const REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS = 75_000;
 
@@ -202,6 +206,10 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     return builtInBrowserRemoteCallDoneTimeoutMs(typeof request.method === "string" ? request.method : "", request.input);
   }
   if (channel === IPC.remoteRuntimeCallAction) {
+    // A write through a pin whose connection is gone pairs again first, waking
+    // a sleeping cloud computer (machines/goneTargets.ts): up to two minutes.
+    const pinId = isRecord(args[0]) && typeof args[0].id === "string" ? args[0].id : null;
+    if (pinId && (savedChatsMachineKey(pinId) || goneTargetMachineKey(pinId))) return GONE_PIN_ACTION_TIMEOUT_MS;
     const actionTimeoutMs = runtimeActionTimeoutMs(args);
     if (actionTimeoutMs != null) return actionTimeoutMs;
     const retryableActionTimeoutMs = retryableRemoteActionTimeoutMs(args);

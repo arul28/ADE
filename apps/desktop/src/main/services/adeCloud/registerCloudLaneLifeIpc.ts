@@ -12,6 +12,7 @@ import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./clo
 import type { CloudCopyDeps } from "./cloudMachineCopy";
 import type { createCloudMachines } from "./cloudMachines";
 import type { CloudProvider } from "./cloudProvider";
+import type { MachineConnector } from "../machines/machineConnector";
 
 function textArg(args: Record<string, unknown>, key: string): string {
   const value = args[key];
@@ -30,9 +31,8 @@ export function registerCloudLaneLifeIpc(args: {
   copyDeps: CloudCopyDeps;
   client: () => Promise<CloudProvider>;
   forgetMachineConnections: (machine: { machineKey: string | null; instanceId: string }) => void;
-  pairMachine: (machineKey: string) => Promise<{ targetId: string }>;
-  /** This app's saved target for a machine already paired, or null. */
-  targetIdForMachine: (machineKey: string) => string | null;
+  /** Contract C2: reaches the lane's computer by its machine key. */
+  machineConnector: MachineConnector;
   remote: RuntimeBridgeRegistration["remoteForMain"];
   /** One coarse outcome per freed lane (cloudLaneAnalytics.ts). */
   analytics?: CloudLaneAnalyticsCapture;
@@ -46,10 +46,12 @@ export function registerCloudLaneLifeIpc(args: {
     copyDeps: args.copyDeps,
     forgetMachineConnections: args.forgetMachineConnections,
     connectMachine: async (machineKey) => {
-      // A moved lane's new computer is paired once; after that its saved target is reused.
-      const targetId = args.targetIdForMachine(machineKey) ?? (await args.pairMachine(machineKey)).targetId;
-      await remote.connect(targetId);
-      return { targetId };
+      // Contract C2: a moved lane's new computer is paired once (woken first
+      // when asleep); after that its saved connection is reused.
+      const result = await args.machineConnector.connect(machineKey);
+      if (!result.ok) throw new Error(result.message);
+      if (result.address.kind !== "remote") throw new Error("The lane's computer is this computer.");
+      return { targetId: result.address.targetId };
     },
     listProjects: (targetId) => remote.projects(targetId),
     emit: (job) => sendToAllWindows(IPC.cloudLaneJobEvent, job),

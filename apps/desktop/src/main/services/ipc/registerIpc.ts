@@ -961,7 +961,7 @@ import { createAccountVaultBridge } from "../account/accountVaultBridge";
 import { cloudAccountChanged, registerCloudIpc } from "../adeCloud/registerCloudIpc";
 import { registerCloudLaneLifeIpc } from "../adeCloud/registerCloudLaneLifeIpc";
 import { registerMachineConnectIpc } from "../machines/registerMachineConnectIpc";
-import { setGoneTargetReach } from "../machines/goneTargets";
+import type { MachineWakeResult } from "../machines/machineConnector";
 import { registerCloudLaneLaunchIpc } from "../adeCloud/registerCloudLaneLaunchIpc";
 import { getMachineMainLogger } from "../logging/machineLogger";
 import { registerCloudSavedChatsIpc } from "../cloudChats/registerCloudSavedChatsIpc";
@@ -12684,8 +12684,8 @@ export function registerIpc({
   });
 
   // Contract C2: any machine of the account by its key (machineConnector.ts).
-  // Set once ADE Cloud's handlers exist (just below): a sleeping cloud computer is woken before a pairing.
-  let cloudWakeForPair: ((machineKey: string) => Promise<{ state: "not_cloud" | "awake" | "woken" } | { state: "refused"; message: string }>) | null = null;
+  // ADE Cloud's handlers (just below) supply the wake before a pairing.
+  let cloudWakeForPair: ((machineKey: string) => Promise<MachineWakeResult>) | null = null;
   const machineConnector = registerMachineConnectIpc({
     localMachineKey: () => runtimeBridge.getLocalMachineIdentity()?.machineKey ?? null,
     signedIn: () => accountBridge.status().signedIn,
@@ -12694,12 +12694,7 @@ export function registerIpc({
       return id ? { id, name: runtimeBridge.resolveTargetNameForMachineKey(machineKey) ?? "" } : null;
     },
     isConnected: (targetId) => runtimeBridge.isTargetConnected(targetId),
-    accountMachine: async (machineKey) => {
-      const list = await accountBridge.listMachines();
-      if (list.state !== "ok") throw new Error(list.message ?? "Your account's computers can't be read right now.");
-      const row = list.machines.find((machine) => machine.machineKey.trim().toLowerCase() === machineKey.trim().toLowerCase());
-      return row ? { name: row.customName?.trim() || row.name } : null;
-    },
+    listAccountMachines: () => accountBridge.listMachines(),
     pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
     connect: (targetId) => runtimeBridge.remoteForMain.connect(targetId),
     wake: (machineKey) => cloudWakeForPair?.(machineKey) ?? Promise.resolve({ state: "not_cloud" as const }),
@@ -12787,13 +12782,6 @@ export function registerIpc({
     logger: { info: (event, meta) => getCtx().logger.info(event, meta), warn: (event, meta) => getCtx().logger.warn(event, meta) },
   });
   cloudWakeForPair = cloudWakeForPairFn;
-  // Pins to a connection that is gone reach their machine again (machines/goneTargets.ts).
-  // A call through a pin to a saved connection wakes its cloud computer; one
-  // through a gone connection does the same, so both behave alike.
-  setGoneTargetReach(async (machineKey) => {
-    const result = await machineConnector.connect(machineKey);
-    return result.ok && result.address.kind === "remote" ? result.address.targetId : null;
-  });
 
   // "ADE Cloud" picked for a new lane: this app makes the computer, then
   // hands the launch to that computer's brain. Machine-wide, so its log is
@@ -12807,8 +12795,7 @@ export function registerIpc({
     forgetMachineConnections: (machine) => {
       runtimeBridge.removeTargetsForMachine({ machineKey: machine.machineKey, hostname: machine.instanceId });
     },
-    pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
-    targetIdForMachine: (machineKey) => runtimeBridge.resolveTargetIdForMachineKey(machineKey),
+    machineConnector,
     remote: runtimeBridge.remoteForMain,
     analytics: productAnalyticsService ?? null,
     logger: getMachineMainLogger(),
@@ -14418,15 +14405,12 @@ export function registerIpc({
       const machineKey = args.machineKey.trim();
       if (!machineKey) throw new Error("Activity machine identity is required.");
       // Seeing the item already proves the machine is on this account, so an
-      // unknown machine is paired rather than refused.
-      let targetId = runtimeBridge.resolveTargetIdForMachineKey(machineKey);
-      if (!targetId) {
-        try {
-          targetId = (await accountBridge.pairMachine(machineKey)).targetId;
-        } catch (error) {
-          throw describeAttentionOpenFailure(error, "pair", args.machineName);
-        }
-      }
+      // unknown machine is paired rather than refused (contract C2; the open
+      // below connects).
+      const reached = await machineConnector.connect(machineKey, { connect: false });
+      if (!reached.ok) throw describeAttentionOpenFailure(new Error(reached.message), "pair", args.machineName);
+      if (reached.address.kind !== "remote") throw describeAttentionOpenFailure(new Error("That is this computer."), "pair", args.machineName);
+      const targetId = reached.address.targetId;
       try {
         return await runtimeBridge.openRemoteProjectForWindow({
           targetId,

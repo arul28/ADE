@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
-import type { CloudMachine, CloudMachineState } from "../../shared/adeCloud";
-import type { CloudLaneMachine, CloudMachineLaneFacts } from "../../shared/cloudLaneLaunch";
+import type { CloudMachine } from "../../shared/adeCloud";
+import type { CloudLaneMachine } from "../../shared/cloudLaneLaunch";
+import { laneComputersOf, parseSavedLaneComputers, savedLaneComputerRows, type LaneComputer } from "../../shared/laneComputer";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import { chatLaunchStore } from "./chatLaunchStore";
 
@@ -19,11 +20,8 @@ import { chatLaunchStore } from "./chatLaunchStore";
  * network or sets a timer.
  */
 
-export type AdeCloudLaneComputer = CloudMachineLaneFacts & {
-  instanceId: string;
-  machineKey: string | null;
-  state: CloudMachineState;
-};
+/** A lane and the computer it is on now (contract C3's `LaneComputer`). */
+export type AdeCloudLaneComputer = LaneComputer;
 
 const STORAGE_KEY = "ade.cloudLaneComputers.v1";
 
@@ -40,23 +38,7 @@ function readSaved(): IndexState {
   try {
     const raw = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
     if (!raw) return { computers: [], known: false };
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return { computers: [], known: false };
-    const computers = parsed.flatMap((row): AdeCloudLaneComputer[] => {
-      if (!row || typeof row !== "object") return [];
-      const value = row as Record<string, unknown>;
-      if (typeof value.instanceId !== "string" || typeof value.laneId !== "string" || typeof value.laneName !== "string") return [];
-      return [{
-        instanceId: value.instanceId,
-        laneId: value.laneId,
-        laneName: value.laneName,
-        projectOrigin: typeof value.projectOrigin === "string" ? value.projectOrigin : null,
-        machineKey: typeof value.machineKey === "string" ? value.machineKey : null,
-        // A saved copy is old: never show a computer as awake from it.
-        state: "asleep",
-      }];
-    });
-    return { computers, known: true };
+    return { computers: parseSavedLaneComputers(JSON.parse(raw) as unknown), known: true };
   } catch {
     return { computers: [], known: false };
   }
@@ -70,10 +52,10 @@ function signature(computers: readonly AdeCloudLaneComputer[]): string {
 
 /** Records the lane computers of a good read of the account's computers. */
 export function noteCloudLaneMachines(machines: readonly CloudMachine[]): void {
-  const computers = (machines as readonly CloudLaneMachine[]).flatMap((machine): AdeCloudLaneComputer[] => {
-    if (!machine.lane || machine.state === "deleting") return [];
-    return [{ ...machine.lane, instanceId: machine.instanceId, machineKey: machine.machineKey, state: machine.state }];
-  }).sort((a, b) => a.laneName.localeCompare(b.laneName) || a.instanceId.localeCompare(b.instanceId));
+  // One computer per lane, the same rule as the main process's follower: while
+  // a move runs, the lane stays on the old computer.
+  const computers = laneComputersOf(machines as readonly CloudLaneMachine[])
+    .sort((a, b) => a.laneName.localeCompare(b.laneName) || a.instanceId.localeCompare(b.instanceId));
   noteCloudLaneComputers(computers);
 }
 
@@ -81,7 +63,7 @@ function noteCloudLaneComputers(computers: readonly AdeCloudLaneComputer[]): voi
   if (state.known && signature(computers) === signature(state.computers)) return;
   state = { computers, known: true };
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(computers.map(({ state: _state, ...rest }) => rest)));
+    window.localStorage.setItem(STORAGE_KEY, savedLaneComputerRows(computers));
   } catch {
     // This computer's copy is a convenience; the next read fills it again.
   }

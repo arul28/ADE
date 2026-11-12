@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { followSessionToMachine } from "../../lib/otherMachineNavigation";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
@@ -27,6 +27,8 @@ export function useFollowLaneMoves(args: {
   const { computers } = useAdeCloudLaneComputers();
   // The lane's computer now. Only a cloud lane's chat follows anything.
   const current = laneId ? computers.find((computer) => computer.laneId === laneId) ?? null : null;
+  // Only a chat on a cloud lane listens for moves.
+  const isCloudLane = current != null;
   const { snapshot } = useRemoteConnectionSnapshot(Boolean(current && pinTarget));
   // The machine the chat's pin reaches, by its saved connection.
   const pinMachineKey = pinTarget
@@ -36,22 +38,21 @@ export function useFollowLaneMoves(args: {
     ? current.machineKey
     : null;
 
+  // The live move event names the new computer before the index is read again.
+  const [eventTo, setEventTo] = useState<string | null>(null);
   useEffect(() => {
-    if (!sessionId || !movedTo) return;
-    return followSessionToMachine(sessionId, movedTo);
-  }, [sessionId, movedTo, pinTarget]);
+    setEventTo(null);
+    if (!sessionId || !laneId || !isCloudLane) return;
+    return window.ade.cloud?.onLaneMoved?.((move) => {
+      if (move.laneId === laneId && move.to.machineKey) setEventTo(move.to.machineKey);
+    }) ?? undefined;
+  }, [sessionId, laneId, isCloudLane]);
 
+  // One follow per move, whichever told first.
+  const followTo = movedTo ?? (eventTo && !sameMachineKey(eventTo, pinMachineKey) ? eventTo : null);
   useEffect(() => {
-    if (!sessionId || !laneId) return;
-    let stop: (() => void) | null = null;
-    const off = window.ade.cloud?.onLaneMoved?.((move) => {
-      if (move.laneId !== laneId || !move.to.machineKey) return;
-      stop?.();
-      stop = followSessionToMachine(sessionId, move.to.machineKey);
-    }) ?? null;
-    return () => {
-      off?.();
-      stop?.();
-    };
-  }, [sessionId, laneId]);
+    if (!sessionId || !followTo) return;
+    // Looking at a moved chat opens no connection: its computer may sleep.
+    return followSessionToMachine(sessionId, followTo, { connect: false });
+  }, [sessionId, followTo]);
 }

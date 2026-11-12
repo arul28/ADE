@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../shared/types";
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../shared/wokenMachine";
 import { useAppStore } from "./appStore";
-import { SAVED_CHATS_MACHINE_PREFIX } from "./cloudSavedChats";
+import { SAVED_CHATS_MACHINE_PREFIX } from "../../shared/cloudSavedChats";
 import { markCloudWakeForSend, refreshCloudSavedChats, sendWithCloudWakeMark } from "./cloudSavedChatsSync";
 
 const originalAde = globalThis.window.ade;

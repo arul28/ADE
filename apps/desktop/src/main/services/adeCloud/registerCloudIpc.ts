@@ -61,11 +61,11 @@ import {
   wakeCloudMachineForUse,
 } from "./cloudSleep";
 import { openExternalUrl } from "../shared/externalLinks";
-import { getErrorMessage } from "../shared/utils";
+import { getErrorMessage, isRecord } from "../shared/utils";
 import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
 import { createCloudPendingCreateStore, sweepCloudPendingCreates } from "./cloudPendingCreates";
 import { createLaneFollower } from "./cloudLaneFollow";
-import type { MachineConnector } from "../machines/machineConnector";
+import type { MachineConnector, MachineWakeResult } from "../machines/machineConnector";
 
 type Logger = {
   info(event: string, meta?: Record<string, unknown>): void;
@@ -120,7 +120,7 @@ export function registerCloudIpc(args: {
   copyDeps: CloudCopyDeps;
   client: () => Promise<CloudProvider>;
   /** Contract C2's wake before a pairing (`machines/machineConnector.ts`). */
-  wakeForPair: (machineKey: string) => Promise<{ state: "not_cloud" | "awake" | "woken" } | { state: "refused"; message: string }>;
+  wakeForPair: (machineKey: string) => Promise<MachineWakeResult>;
 } {
   const { logger } = args;
   const account = () => getSharedAccountAuthService();
@@ -253,13 +253,13 @@ export function registerCloudIpc(args: {
   });
   readMachinesNow = async () => (await machines.list()).state === "ok";
   ipcMain.handle(IPC.cloudLaneComputer, async (event, raw: unknown) => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneComputer)) return null;
-    const laneId = raw && typeof raw === "object" && typeof (raw as { laneId?: unknown }).laneId === "string" ? (raw as { laneId: string }).laneId : "";
-    return await laneFollower.laneComputer(laneId);
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneComputer)) throw new Error("ADE can't do that from here.");
+    const request = isRecord(raw) ? raw : {};
+    return await laneFollower.laneComputer(typeof request.laneId === "string" ? request.laneId : "");
   });
   ipcMain.handle(IPC.cloudFollowLane, async (event, raw: unknown) => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudFollowLane)) throw new Error("ADE can't do that from here.");
-    const request = raw && typeof raw === "object" ? raw as { laneId?: unknown; connect?: unknown } : {};
+    const request = isRecord(raw) ? raw : {};
     return await laneFollower.follow(typeof request.laneId === "string" ? request.laneId : "", { connect: request.connect !== false });
   });
   // Off the list this asks nothing: access is read at sign-in and on focus only.
@@ -630,10 +630,13 @@ export function registerCloudIpc(args: {
 
   // The ADE Cloud lane launch makes its computer with these same pieces.
   /** Contract C2's wake before a pairing: a sleeping cloud computer of this account, by machine key. */
-  const wakeForPair = async (machineKey: string): Promise<{ state: "not_cloud" | "awake" | "woken" } | { state: "refused"; message: string }> => {
+  const wakeForPair = async (machineKey: string): Promise<MachineWakeResult> => {
     // Not `knowsBox`: it answers no until this app has read ADE Cloud access,
     // and a pairing is rare and started by a person. One bounded list read.
-    const client = await savedClient().catch(() => null);
+    const client = await savedClient().catch((error: unknown) => {
+      logger.warn("cloud.wake_for_pair_client_failed", { error: getErrorMessage(error) });
+      return null;
+    });
     if (!client) return { state: "not_cloud" };
     const result = await wakeCloudMachineForUse(client, { machineKey }, { logger });
     if (result.state === "woken") sendToAllWindows(IPC.cloudStatusChanged);

@@ -109,7 +109,14 @@ export function cloudMachineLaneFactsOf(metadata: Record<string, string> | null 
 }
 
 /** A computer of the account, with its lane facts when it was made for one lane. */
-export type CloudLaneMachine = CloudMachine & { lane?: CloudMachineLaneFacts | null };
+export type CloudLaneMachine = CloudMachine & {
+  lane?: CloudMachineLaneFacts | null;
+  /**
+   * The computer this one was made to replace or copy (`ade_moved_from`,
+   * `ade_copied_from`): while that one is still listed, the lane stays on it.
+   */
+  replacesInstanceId?: string | null;
+};
 
 /** A GitHub origin's identity (`github.com/owner/repo`, lowercased), owner and repository, or null for any other origin. */
 export function githubRepoOf(originUrl: string | null | undefined): { identity: string; owner: string; repo: string } | null {

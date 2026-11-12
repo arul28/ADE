@@ -17,8 +17,6 @@ import {
 import type { OpenProjectBinding } from "../../shared/types/core";
 import type { RemoteRuntimeProjectRecord } from "../../shared/types/remoteRuntime";
 
-export { MachineConnectError, projectPinOn, type MachineAddress } from "../../shared/machineAddress";
-
 /** The address of the machine; throws a `MachineConnectError` with the plain sentence when it can't. */
 export async function connectMachine(machineKey: string, options?: MachineConnectOptions): Promise<MachineAddress> {
   const result = await window.ade.machines.connect(machineKey, options);

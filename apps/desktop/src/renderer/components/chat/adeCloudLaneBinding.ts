@@ -6,6 +6,7 @@ import type { RemoteRuntimeConnectionStatus, RemoteRuntimeProjectRecord } from "
 import { ipcErrorMessage } from "../../lib/format";
 import type { AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { connectWithRetry } from "./connectWithRetry";
+import { connectMachine } from "../../lib/machineConnect";
 
 type RemoteBinding = OpenProjectBinding & { kind: "remote" };
 
@@ -73,11 +74,16 @@ export async function resolveAdeCloudLaneBinding(args: {
   let target: { id: string; name: string; hostname?: string | null } | null = connection?.target ?? null;
   if (!target) {
     if (!lane.machineKey) throw new Error(`ADE can't reach the computer of ${lane.laneName} yet. Try again in a minute.`);
-    const paired = await window.ade.account.pairMachine(lane.machineKey);
-    target = { id: paired.targetId, name: paired.name || lane.laneName, hostname: lane.instanceId };
+    // Never connected from here: contract C2 wakes a sleeping computer, pairs
+    // this one with it through the account, and connects.
+    args.onWaking();
+    const address = await connectMachine(lane.machineKey);
+    if (address.kind !== "remote") throw new Error(`The computer of ${lane.laneName} is this computer.`);
+    target = { id: address.targetId, name: address.name || lane.laneName, hostname: lane.instanceId };
+  } else {
+    args.onWaking();
   }
   if (!args.stillWanted()) throw new Error("Send cancelled.");
-  args.onWaking();
   const targetId = target.id;
   const { value: connected, lastError } = await connectWithRetry({
     connect: () => window.ade.remoteRuntime.connect(targetId),

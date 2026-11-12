@@ -23,6 +23,8 @@ import { cloudMachineLaneFactsOf } from "../../../shared/cloudLaneLaunch";
 import {
   laneComputerMoves,
   laneComputersOf,
+  parseSavedLaneComputers,
+  savedLaneComputerRows,
   type LaneComputer,
   type LaneComputerSource,
   type LaneFollowResult,
@@ -35,10 +37,10 @@ import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import type { CloudInstance } from "./cloudProvider";
 
 /** A read this recent answers a lane question without another read. */
-export const FRESH_READ_MS = 30_000;
+const FRESH_READ_MS = 30_000;
 
 export type LaneFollowerDeps = {
-  /** A fresh read of the account's cloud computers; it reaches `note` through `cloudMachines`. Null when it can't be read. */
+  /** A fresh read of the account's cloud computers; it reaches `note` through `cloudMachines`. False when it can't be read. */
   readNow: () => Promise<boolean>;
   connector: () => MachineConnector | null;
   /** Removes this computer's saved connections to a computer that is gone. */
@@ -62,7 +64,7 @@ export type LaneFollower = {
   follow(laneId: string, options?: { connect?: boolean }): Promise<LaneFollowResult>;
 };
 
-export function laneComputerSourceOf(instance: CloudInstance): LaneComputerSource {
+function laneComputerSourceOf(instance: CloudInstance): LaneComputerSource {
   return {
     instanceId: instance.id,
     machineKey: instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null,
@@ -75,22 +77,7 @@ export function laneComputerSourceOf(instance: CloudInstance): LaneComputerSourc
 
 function readSaved(statePath: string): LaneComputer[] {
   try {
-    const parsed = safeJsonParse<unknown>(fs.readFileSync(statePath, "utf8"), null);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.flatMap((row): LaneComputer[] => {
-      if (!row || typeof row !== "object") return [];
-      const value = row as Record<string, unknown>;
-      if (typeof value.laneId !== "string" || typeof value.instanceId !== "string") return [];
-      return [{
-        laneId: value.laneId,
-        laneName: typeof value.laneName === "string" ? value.laneName : "",
-        projectOrigin: typeof value.projectOrigin === "string" ? value.projectOrigin : null,
-        instanceId: value.instanceId,
-        machineKey: typeof value.machineKey === "string" ? value.machineKey : null,
-        // Old: never says awake.
-        state: "asleep",
-      }];
-    });
+    return parseSavedLaneComputers(safeJsonParse<unknown>(fs.readFileSync(statePath, "utf8"), null));
   } catch {
     return [];
   }
@@ -106,18 +93,33 @@ export function createLaneFollower(deps: LaneFollowerDeps): LaneFollower {
     return known;
   };
 
+  /** The rows last written, so an unchanged read writes nothing. */
+  let savedRows: string | null = null;
   const save = (computers: readonly LaneComputer[]): void => {
+    const rows = savedLaneComputerRows(computers);
+    if (rows === savedRows) return;
     try {
-      const rows = computers.map(({ laneId, laneName, projectOrigin, instanceId, machineKey }) => ({ laneId, laneName, projectOrigin, instanceId, machineKey }));
-      writeTextAtomic(deps.statePath, JSON.stringify(rows));
+      writeTextAtomic(deps.statePath, rows);
+      savedRows = rows;
     } catch (error) {
       deps.logger?.warn?.("cloud.lane_follow_save_failed", { error: getErrorMessage(error) });
     }
   };
 
-  const onMoved = (move: LaneMovedEvent): void => {
+  /**
+   * Moves whose new computer hasn't joined the account yet (no machine key):
+   * by lane id. They finish when that computer gets its key.
+   */
+  const pendingMoves = new Map<string, LaneMovedEvent>();
+
+  /**
+   * A lane's computer changed. The old computer's connections are forgotten,
+   * and pins to it redirected, only once it is really gone: a copy or a
+   * refused computer that still runs keeps its connection.
+   */
+  const onMoved = (move: LaneMovedEvent, liveInstanceIds: ReadonlySet<string>): void => {
     deps.logger?.info?.("cloud.lane_moved", { laneId: move.laneId, from: move.from?.instanceId ?? null, to: move.to.instanceId });
-    if (move.from) {
+    if (move.from && !liveInstanceIds.has(move.from.instanceId)) {
       try {
         deps.forgetMachine({ machineKey: move.from.machineKey, instanceId: move.from.instanceId });
       } catch (error) {
@@ -137,9 +139,12 @@ export function createLaneFollower(deps: LaneFollowerDeps): LaneFollower {
   };
 
   const note = (instances: readonly CloudInstance[]): void => {
-    const computers = laneComputersOf(instances.filter((instance) => instance.status !== "deleted").map(laneComputerSourceOf));
+    const live = instances.filter((instance) => instance.status !== "deleted");
+    const liveInstanceIds = new Set(live.filter((instance) => cloudMachineState(instance.status) !== "deleting").map((instance) => instance.id));
+    const computers = laneComputersOf(live.map(laneComputerSourceOf));
     const previous = baseline();
-    const moves = laneComputerMoves(previous, computers, new Date(now()).toISOString());
+    const at = new Date(now()).toISOString();
+    const moves = laneComputerMoves(previous, computers, at);
     // Lanes a read left out keep their last computer: one read that missed a
     // lane must not turn its next appearance into a move from nowhere.
     const listedLanes = new Set(computers.map((computer) => computer.laneId));
@@ -147,33 +152,49 @@ export function createLaneFollower(deps: LaneFollowerDeps): LaneFollower {
     const kept = previous.filter((computer) => !listedLanes.has(computer.laneId) && listedInstances.has(computer.instanceId));
     known = [...computers, ...kept];
     lastNoteAtMs = now();
-    const changed = moves.length > 0
-      || previous.length !== known.length
-      || known.some((computer) => {
-        const old = previous.find((entry) => entry.laneId === computer.laneId);
-        return !old || old.instanceId !== computer.instanceId || old.machineKey !== computer.machineKey || old.laneName !== computer.laneName;
-      });
-    if (changed) save(known);
-    for (const move of moves) onMoved(move);
+    save(known);
+    for (const move of moves) {
+      // A new computer that hasn't joined yet: finish the move once it has a key.
+      if (!move.to.machineKey) {
+        pendingMoves.set(move.laneId, move);
+        deps.emit(move);
+        continue;
+      }
+      pendingMoves.delete(move.laneId);
+      onMoved(move, liveInstanceIds);
+    }
+    for (const [laneId, pending] of pendingMoves) {
+      const laneNow = computers.find((computer) => computer.laneId === laneId);
+      if (!laneNow || laneNow.instanceId !== pending.to.instanceId) {
+        // The lane went elsewhere (or away) before that computer joined.
+        if (!laneNow) pendingMoves.delete(laneId);
+        continue;
+      }
+      if (!laneNow.machineKey) continue;
+      pendingMoves.delete(laneId);
+      onMoved({ ...pending, to: { instanceId: laneNow.instanceId, machineKey: laneNow.machineKey }, at }, liveInstanceIds);
+    }
   };
 
-  const laneComputer = async (laneId: string): Promise<LaneComputer | null> => {
+  /** The lane's computer, and whether ADE could read the account's computers at all. */
+  const lookup = async (laneId: string): Promise<{ computer: LaneComputer | null; unreadable: boolean }> => {
     const id = laneId.trim();
-    if (!id) return null;
+    if (!id) return { computer: null, unreadable: false };
     if (now() - lastNoteAtMs > FRESH_READ_MS) {
       const read = await deps.readNow().catch(() => false);
-      if (!read && known == null) return null;
+      const computer = baseline().find((entry) => entry.laneId === id) ?? null;
+      // A failed read that knows nothing of the lane can't tell "no computer" from "can't say".
+      if (!read && !computer) return { computer: null, unreadable: true };
+      return { computer, unreadable: false };
     }
-    return baseline().find((computer) => computer.laneId === id) ?? null;
+    return { computer: baseline().find((computer) => computer.laneId === id) ?? null, unreadable: false };
   };
 
+  const laneComputer = async (laneId: string): Promise<LaneComputer | null> => (await lookup(laneId)).computer;
+
   const follow = async (laneId: string, options?: { connect?: boolean }): Promise<LaneFollowResult> => {
-    let computer: LaneComputer | null;
-    try {
-      computer = await laneComputer(laneId);
-    } catch (error) {
-      return { ok: false, reason: "unreadable", computer: null, message: `ADE couldn't read your cloud computers: ${getErrorMessage(error)}` };
-    }
+    const { computer, unreadable } = await lookup(laneId);
+    if (unreadable) return { ok: false, reason: "unreadable", computer: null, message: "ADE couldn't read your cloud computers. Try again in a moment." };
     if (!computer) return { ok: false, reason: "no_lane", computer: null, message: "This lane has no cloud computer right now." };
     if (!computer.machineKey) {
       return { ok: false, reason: "joining", computer, message: `${computer.laneName || "The lane"}'s computer is still joining your account.` };
