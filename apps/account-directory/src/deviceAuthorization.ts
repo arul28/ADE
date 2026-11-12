@@ -1,3 +1,4 @@
+import { BRAND_IMG_SRC, brandDocument, escapeHtml } from "./brandPage";
 import { isLoopbackHostname, trustedHttpsOrigin } from "./trustedOrigin";
 import { boundedDisplayText } from "./displayText";
 import { readBoundedBody } from "./sinkUtils";
@@ -103,7 +104,7 @@ function html(value: string, status = 200): Response {
     status,
     headers: {
       "cache-control": "no-store",
-      "content-security-policy": "default-src 'none'; form-action 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+      "content-security-policy": `default-src 'none'; form-action 'self'; style-src 'unsafe-inline'; ${BRAND_IMG_SRC}; base-uri 'none'; frame-ancestors 'none'`,
       "content-type": "text/html; charset=utf-8",
       // Not `no-referrer`: under that policy a browser sends the text `null`
       // as the `Origin` of this page's own form POST, and the confirmation
@@ -180,27 +181,9 @@ function encodeQuery(entries: Array<[string, string]>): string {
   return entries.map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join("&");
 }
 
-function page(args: { title: string; body: string; status?: number; head?: string }): Response {
-  return html(`<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">${args.head ?? ""}
-    <title>${args.title}</title>
-    <style>
-      :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
-      body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101114; color: #f5f5f5; }
-      main { width: min(28rem, calc(100vw - 3rem)); padding: 2rem; border: 1px solid #34363c; border-radius: 1rem; background: #181a1f; }
-      h1 { margin-top: 0; font-size: 1.5rem; }
-      p { color: #c9cbd1; line-height: 1.5; }
-      label { display: block; margin: 1.5rem 0 .5rem; font-weight: 600; }
-      input { box-sizing: border-box; width: 100%; padding: .8rem; border: 1px solid #4d5058; border-radius: .5rem; background: #101114; color: inherit; font: inherit; letter-spacing: .12em; text-transform: uppercase; }
-      button { width: 100%; margin-top: 1rem; padding: .8rem; border: 0; border-radius: .5rem; background: #f5f5f5; color: #101114; font: inherit; font-weight: 700; cursor: pointer; }
-      a { color: #f5f5f5; }
-    </style>
-  </head>
-  <body><main>${args.body}</main></body>
-</html>`, args.status ?? 200);
+function page(args: { title: string; body: string; status?: number; head?: string; foot?: string }): Response {
+  // `same-origin`, like the header: the form check needs the real Origin.
+  return html(brandDocument({ title: args.title, card: args.body, head: args.head, foot: args.foot, referrer: "same-origin" }), args.status ?? 200);
 }
 
 /**
@@ -210,13 +193,13 @@ function page(args: { title: string; body: string; status?: number; head?: strin
 function approvalForm(userCode = ""): Response {
   return page({
     title: "Sign in to ADE",
-    body: `<h1>Sign in to ADE</h1>
-      <p>Enter the code shown by <code>ade login</code> in your terminal.</p>
+    body: `<p class="sub">Enter the code that <code>ade login</code> shows in your terminal.</p>
       <form method="post" action="/device">
-        <label for="user_code">Device code</label>
-        <input id="user_code" name="user_code" value="${userCode}" autocomplete="one-time-code" maxlength="9" required autofocus>
-        <button type="submit">Continue</button>
+        <label class="field-label" for="user_code">Device code</label>
+        <input id="user_code" name="user_code" value="${escapeHtml(userCode)}" autocomplete="one-time-code" maxlength="9" required autofocus>
+        <button class="primary" type="submit">Continue</button>
       </form>`,
+    foot: "Did not run <code>ade login</code>? Close this page.",
   });
 }
 
@@ -233,20 +216,19 @@ function confirmationPage(userCode: string, machineName: string | null): Respons
   // reader's own computer.
   const name = machineName?.trim();
   const who = name
-    ? `<p>A computer named <strong>${escapeHtml(name)}</strong> asked to sign in to ADE.</p>
-      <p>Continue only if you started this on that computer.</p>`
-    : `<p>A computer that did not give its name asked to sign in to ADE as you.</p>
-      <p>Continue only if you just started this yourself.</p>`;
+    ? `<p class="sub">A computer named <strong>${escapeHtml(name)}</strong> asked to sign in to ADE.</p>
+      <p class="sub">Continue only if you started this on that computer.</p>`
+    : `<p class="sub">A computer that did not give its name asked to sign in to ADE as you.</p>
+      <p class="sub">Continue only if you just started this yourself.</p>`;
   return page({
     title: "Confirm this sign-in",
-    body: `<h1>Confirm this sign-in</h1>
-      ${who}
-      <div style="margin:1.5rem 0 .5rem;font-weight:600">Device code</div>
-      <p style="margin:0 0 1rem;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:1.4rem;letter-spacing:.18em;color:#f5f5f5">${escapeHtml(userCode)}</p>
+    body: `${who}
+      <p class="code" aria-label="Device code">${escapeHtml(userCode)}</p>
       <form method="post" action="/device">
         <input type="hidden" name="user_code" value="${escapeHtml(userCode)}">
-        <button type="submit">Continue</button>
-      </form>`,
+        <button class="primary" type="submit">Continue</button>
+      </form>
+      <p class="stop"><strong>Did not start this?</strong> Close this page. Nothing signs in until you press Continue.</p>`,
   });
 }
 
@@ -264,22 +246,12 @@ function continueToSignIn(authorizeUrl: string): Response {
   return page({
     title: "Opening sign-in",
     head: `\n    <meta http-equiv="refresh" content="0;url=${href}">`,
-    body: `<h1>Opening sign-in</h1>
-      <p>If nothing happens, <a href="${href}">open the sign-in page</a>.</p>`,
+    body: `<p class="sub">If nothing happens, <a href="${href}">open the sign-in page</a>.</p>`,
   });
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 function approvalMessage(title: string, message: string, status = 200): Response {
-  return page({ title, status, body: `<h1>${title}</h1><p>${message}</p>` });
+  return page({ title, status, body: `<p class="sub">${escapeHtml(message)}</p>`, foot: "You can close this page." });
 }
 
 /**
