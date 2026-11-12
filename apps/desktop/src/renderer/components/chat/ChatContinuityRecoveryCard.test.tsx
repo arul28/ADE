@@ -3,9 +3,22 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { AgentChatNoticeDetail } from "../../../shared/types";
+import type { AgentChatNoticeDetail, OpenProjectBinding } from "../../../shared/types";
 import { expectNoJargon } from "../../../test/jargonGuard";
-import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
+import { ChatContinuityRecoveryCard as CardUnderTest } from "./ChatContinuityRecoveryCard";
+import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
+
+/** The chat's machine: recovery runs there. */
+const CHAT_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
+/** The card inside its chat's scope, as the chat pane renders it. */
+function ChatContinuityRecoveryCard(props: React.ComponentProps<typeof CardUnderTest>) {
+  return (
+    <ChatRuntimeScopeProvider pin={CHAT_PIN} binding={CHAT_PIN} laneId={null} sessionId={props.sessionId ?? null}>
+      <CardUnderTest {...props} />
+    </ChatRuntimeScopeProvider>
+  );
+}
 
 const originalAde = globalThis.window.ade;
 let recoverContinuity: ReturnType<typeof vi.fn>;
@@ -95,7 +108,7 @@ describe("ChatContinuityRecoveryCard", () => {
     fireEvent.click(tryAgain()!);
 
     await waitFor(() => expect(screen.getByTestId("continuity-reconnected")).toBeTruthy());
-    expect(recoverContinuity).toHaveBeenCalledWith({ sessionId: "chat-1", mode });
+    expect(recoverContinuity).toHaveBeenCalledWith({ sessionId: "chat-1", mode }, CHAT_PIN);
     expect(tryAgain()).toBeNull();
   });
 
@@ -133,7 +146,7 @@ describe("ChatContinuityRecoveryCard", () => {
       render(<ChatContinuityRecoveryCard detail={lostThread} sessionId="chat-1" turnActive={false} />);
       fireEvent.click(startNewChat()!);
       await waitFor(() => expect(selected.calls()).toEqual(["session-new"]));
-      expect(recoverContinuity).toHaveBeenCalledWith({ sessionId: "chat-1", mode: "start_new_chat" });
+      expect(recoverContinuity).toHaveBeenCalledWith({ sessionId: "chat-1", mode: "start_new_chat" }, CHAT_PIN);
       cleanup();
 
       render(<ChatContinuityRecoveryCard
