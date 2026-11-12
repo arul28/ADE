@@ -110,28 +110,31 @@ func workRemoteLaneMachineName(_ laneId: String, options: [WorkMachineFilterOpti
 /// out projects ADE registered on its own (`catalogVisibility == "system"`), so
 /// that part of desktop's rule is applied on the host. The Hub still lists
 /// every project separately.
-/// `accountCheckoutIds` maps a machine (fleet key) to the registry ids of its
+/// `accountCopies` maps a machine (fleet key) to the registry ids of its
 /// folders that the account names as copies of the project: they match even
 /// when the computer still names the repository by an old GitHub address.
+/// The account's main copy on that machine wins the pick, because new lanes
+/// go there (Location shows it as "Used for new lanes").
 func workRemoteMachineRepos(
   machines: [MachineFleet.Machine],
   identity: String?,
   folderKey: String? = nil,
-  accountCheckoutIds: ((String) -> Set<String>)? = nil
+  accountCopies: ((String) -> (ids: Set<String>, main: String?))? = nil
 ) -> [WorkRemoteMachineRepo] {
-  guard identity != nil || folderKey != nil || accountCheckoutIds != nil else { return [] }
+  guard identity != nil || folderKey != nil || accountCopies != nil else { return [] }
   var repos: [WorkRemoteMachineRepo] = []
   for machine in machines {
-    let accountCopies = accountCheckoutIds?(machine.machineKey) ?? []
+    let copies = accountCopies?(machine.machineKey) ?? (ids: [], main: nil)
     let matches = machine.projects.filter { project in
-      accountCopies.contains(project.projectId) || fleetProjectsMatch(
+      copies.ids.contains(project.projectId) || fleetProjectsMatch(
         identity: identity,
         folder: folderKey,
         otherIdentity: workRepoIdentity(originUrl: project.repoOriginUrl),
         otherFolder: hubProjectFolderKey(project.rootPath, displayName: project.displayName)
       )
     }
-    guard let project = workPickLiveCheckout(matches) else { continue }
+    let mainCopy = copies.main.flatMap { main in matches.first { $0.projectId == main } }
+    guard let project = mainCopy ?? workPickLiveCheckout(matches) else { continue }
     repos.append(WorkRemoteMachineRepo(
       machineKey: machine.machineKey,
       machineName: machine.name,

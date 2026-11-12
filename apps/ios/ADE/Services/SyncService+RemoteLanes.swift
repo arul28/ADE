@@ -103,9 +103,10 @@ extension SyncService {
       machines: fleet.machines,
       identity: identity,
       folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
-      accountCheckoutIds: copies.isEmpty ? nil : { fleetKey in
-        guard let accountKey = account.machine(forFleetKey: fleetKey)?.machineKey else { return [] }
-        return Set(copies.filter { $0.machineKey == accountKey }.map(\.checkoutId))
+      accountCopies: copies.isEmpty ? nil : { fleetKey in
+        guard let accountKey = account.machine(forFleetKey: fleetKey)?.machineKey else { return (ids: [], main: nil) }
+        let onMachine = copies.filter { $0.machineKey == accountKey }
+        return (ids: Set(onMachine.map(\.checkoutId)), main: onMachine.first(where: \.isMain)?.checkoutId)
       }
     )
   }
