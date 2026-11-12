@@ -93,7 +93,13 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
   const vaultRef = { scope: ACCOUNT_SCOPE_ALL, kind: GITHUB_PAT_VAULT_KIND, key: GITHUB_PAT_VAULT_KEY };
 
   /** Share a token pasted here with the account's other machines. */
-  const publish = (token: string): void => {
+  /**
+   * With `expectedRevision` (a sync deciding from what it read), the vault
+   * writes only while the item is still what was read; otherwise nothing is
+   * written and the next sync decides again. A token the person saved names
+   * no revision and replaces what is there.
+   */
+  const publishToAccount = (token: string, expectedRevision?: string): void => {
     if (!accountUserId()) return;
     const clean = token.trim();
     if (!clean) return;
@@ -102,8 +108,10 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
       GITHUB_PAT_VAULT_KIND,
       GITHUB_PAT_VAULT_KEY,
       JSON.stringify({ v: 1, token: clean }),
+      expectedRevision !== undefined ? { expectedRevision } : undefined,
     ));
   };
+  const publish = (token: string): void => publishToAccount(token);
 
   /**
    * Before this machine's token is cleared: remove the account's copy too,
@@ -117,7 +125,14 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
     void (async () => {
       const read = await readAccountVaultItem(vault, vaultRef, decodeToken, logFailure);
       if (read?.value !== previous) return;
-      fireAndForgetVaultWrite(vaultOptions, "remove", (target) => target.remove(vaultRef.scope, vaultRef.kind, vaultRef.key));
+      // Only the copy that was read: one another machine saved since stays.
+      const expectedRevision = read.revision;
+      fireAndForgetVaultWrite(vaultOptions, "remove", (target) => target.remove(
+        vaultRef.scope,
+        vaultRef.kind,
+        vaultRef.key,
+        expectedRevision !== undefined ? { expectedRevision } : undefined,
+      ));
     })();
   };
 
@@ -185,7 +200,7 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
         }
         if (!remote) {
           if (present && remoteRaw !== null) return;
-          if (local && !fromAccount) publish(local);
+          if (local && !fromAccount) publishToAccount(local, read.revision);
           return;
         }
         if (!local) {
