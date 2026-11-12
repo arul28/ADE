@@ -14,6 +14,10 @@ import { copyMachines, repoKeyForOriginIdentity } from "./projectCopies";
 import { startCopyJob, useCopyJobs } from "./projectCopyJobs";
 import { requestRemoveProject } from "./removeProjectRequest";
 import { ACCOUNT_PROJECT_ID_PATTERN } from "../../../shared/accountProject";
+import { repoRefForTab } from "../prs/state/prsReader";
+import { PullRequestsCard } from "./ProjectWelcomeHome";
+import { useDirectHomePullRequests } from "./useDirectHomePullRequests";
+import "./ProjectWelcomePage.css";
 
 /** The repository tab of a no-machine tab: the account project when the account knows it. */
 function repositoryTabOf(tab: NoMachineRepositoryTab, list: ReturnType<typeof useAccountProjectList>): RepositoryTab {
@@ -54,6 +58,11 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   const jobs = useCopyJobs(copyRepoKey);
   const adding = jobs.some((job) => job.status === "cloning" && job.machine.targetId == null);
   const failed = jobs.find((job) => job.status === "failed" && job.machine.targetId == null) ?? null;
+  // GitHub reads with the account's own sign-in, with no computer (S14): the
+  // project's pull requests, read only. Null for a folder or a non-GitHub host.
+  const githubRepo = typeof window !== "undefined" && window.ade?.githubDirect ? repoRefForTab(repositoryTab) : null;
+  const githubRepoKey = githubRepo ? `${githubRepo.owner}/${githubRepo.name}` : null;
+  const pullRequests = useDirectHomePullRequests(githubRepo);
 
   // A copy came online: open it. Once per copy, so a copy that fails to open
   // does not loop; the list still offers it.
@@ -92,7 +101,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     && typeof window.ade?.project?.accountRemove === "function";
 
   return (
-    <div className="flex h-full min-h-0 w-full items-center justify-center p-6">
+    <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-4 overflow-y-auto p-6">
       <section className="kit-card w-full max-w-[460px]" aria-label={`${tab.displayName}: no computer online`}>
         <header className="kit-card-head">
           {tab.iconDataUrl ? (
@@ -173,6 +182,11 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
           </div>
         </div>
       </section>
+      {githubRepoKey ? (
+        <div className="flex w-full max-w-[460px] shrink-0 flex-col" style={{ height: 300 }}>
+          <PullRequestsCard projectName={githubRepoKey} projectRoot={githubRepoKey} prs={pullRequests} />
+        </div>
+      ) : null}
     </div>
   );
 }
