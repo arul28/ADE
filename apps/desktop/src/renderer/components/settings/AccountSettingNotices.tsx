@@ -78,7 +78,9 @@ export function AccountSettingNotices({
             id: `account-setting-${notice.key}`,
             tone: "info",
             title: keptHereTitle(notice),
-            detail: "Until then it stays on this computer, and your other computers do not get it.",
+            detail: notice.reason === "secret"
+              ? "Until then it stays on this computer, and your other computers do not get it."
+              : "It stays on this computer, and your other computers do not get it.",
           }}
         />
       ) : (
@@ -88,7 +90,7 @@ export function AccountSettingNotices({
           model={{
             id: `account-setting-${notice.key}`,
             tone: "info",
-            title: `This computer had a different value for ${notice.label}.`,
+            title: `${notice.label}: this computer had a different value.`,
             detail: "ADE now uses the value saved in your account for this repository.",
             busy: busyKey === notice.key,
             error: busyKey === null && error ? error : undefined,
