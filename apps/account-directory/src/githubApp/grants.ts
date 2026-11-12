@@ -295,6 +295,12 @@ export async function renew(rt: GithubAppRuntime, row: GrantRow, now: number, op
     // next refresh finds the stored refresh token spent and the grant goes to
     // needs_reauth with `unpersisted_refresh`.
     const owner = await loadGrant(rt.db, row.user_id).catch(() => undefined);
+    // The update can commit while every read after it fails: then the row
+    // already holds this token, and it is served, never deleted.
+    if (owner && owner.access_token_sha256 === await sha256Hex(result.tokens.accessToken)) {
+      logGithubApp({ event: "github_app.refreshed", userId: row.user_id, generation: owner.generation, forced: options.force });
+      return { kind: "token", token: await serveRow(rt, owner, after), reason: "refreshed" };
+    }
     if (!owner || owner.access_token_sha256 !== row.access_token_sha256) {
       await deleteToken(rt.config, result.tokens.accessToken);
       logGithubApp({ event: "github_app.refresh_unpersisted_dropped", userId: row.user_id, generation: row.generation + 1, ownerKnown: owner !== undefined });

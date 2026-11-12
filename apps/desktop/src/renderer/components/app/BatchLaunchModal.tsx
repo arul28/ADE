@@ -15,7 +15,6 @@ import {
   defaultKickoffPrompt,
   defaultIssueKickoffPrompt,
   findIssueConflicts,
-  issueChatLaunchArgs,
   launchIssueIdentity,
   type BatchLaunchIssueConfig,
   type LaunchIssue,
@@ -569,7 +568,23 @@ export function BatchLaunchModal({
           <AccountSettingNotices
             pin={null}
             keys={LINEAR_PROMPT_ACCOUNT_KEYS}
-            onResolved={() => { void loadProjectDefaultPrompt(projectRoot).then(setProjectDefaultPrompt); }}
+            onResolved={() => {
+              const previous = projectDefaultPrompt;
+              void loadProjectDefaultPrompt(projectRoot).then((saved) => {
+                setProjectDefaultPrompt(saved);
+                if (!saved || previous == null || saved === previous) return;
+                // Rows still on the old default take the applied one; an edited prompt stays.
+                setPerIssue((current) => {
+                  let changed = false;
+                  const next: Record<string, PerIssueState> = {};
+                  for (const [id, state] of Object.entries(current)) {
+                    next[id] = state.kickoffPrompt === previous ? { ...state, kickoffPrompt: saved } : state;
+                    if (next[id] !== state) changed = true;
+                  }
+                  return changed ? next : current;
+                });
+              });
+            }}
           />
         </div>
       ) : null}

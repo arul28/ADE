@@ -5,7 +5,7 @@
  * so it stays readable — the CTO needs to know which secret a webhook trigger
  * depends on, and hiding the name protects nothing.
  */
-const CREDENTIAL_KEY_PATTERN = /(^|_)(token|secret|password|passphrase|apikey|api_key|credential|privatekey|private_key)($|_)/i;
+const CREDENTIAL_KEY_PATTERN = /(^|_)(token|secret|password|passwd|pass|pwd|passphrase|apikey|api_key|credential|privatekey|private_key)($|_)/i;
 
 /**
  * Keys that look credential-shaped but only NAME a credential. `secretRef`

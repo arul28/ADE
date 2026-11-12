@@ -940,8 +940,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["jev", "opencode", "zen", "sign in", "credit", "balance"],
     tab: "chat",
     anchor: "jev-zen-credit",
-    // Follows the account per repository (an `ai.chat.*` row).
-    scope: "account-repo",
+    // Stays on this computer: it spends this computer's own Zen sign-in.
+    scope: "machine-repo",
     web: "hidden",
     group: "Agent behavior",
   },

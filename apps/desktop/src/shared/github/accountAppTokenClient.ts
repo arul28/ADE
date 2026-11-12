@@ -388,6 +388,8 @@ export function createAccountAppTokenClient(options: AccountAppTokenClientOption
         await response.body?.cancel().catch(() => undefined);
       }
     }
+    // The account can change while the body is read: that answer is not this account's.
+    if (!sameAccount()) return { error: "signed_out" };
     return { status: response.status, body: parsed, retryAfterSec };
   };
 

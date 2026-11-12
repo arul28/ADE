@@ -69,6 +69,11 @@ export type GithubDirectMeta = {
   truncated: boolean;
   /** Epoch ms of the answer. */
   fetchedAt: number;
+  /**
+   * The ADE account the answer belongs to (opaque; "anonymous" with none).
+   * A cache of answers drops another account's data on a switch.
+   */
+  scope?: string;
 };
 
 export type GithubDirectResult<T> =

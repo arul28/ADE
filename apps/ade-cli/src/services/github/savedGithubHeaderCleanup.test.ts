@@ -59,6 +59,13 @@ describe("removeSavedGithubHeaders", () => {
     expect(logged).not.toContain("ghu_notarealtoken");
     expect(logged).not.toContain(adeHeader.split(" ").pop());
 
+    // A project can be a folder inside the repository: its config is the repository's.
+    const nested = path.join(repo, "packages", "app");
+    fs.mkdirSync(nested, { recursive: true });
+    git(repo, "config", "--local", "--add", githubKey, adeHeader);
+    expect(await removeSavedGithubHeaders([nested], { logger })).toBe(1);
+    expect(git(repo, "config", "--local", "--get-all", githubKey).trim().split("\n")).toEqual([personHeader]);
+
     // Once removed, the next open finds nothing to do.
     expect(await removeSavedGithubHeaders([repo, path.join(base, "not-a-repo")], { logger })).toBe(0);
   });

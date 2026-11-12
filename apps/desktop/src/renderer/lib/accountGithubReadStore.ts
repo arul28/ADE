@@ -26,6 +26,11 @@ import { isGithubDirectUserState } from "../../shared/github/directClient";
  * - A state only a person can fix (not connected, App not installed, ...)
  *   waits 5 minutes between reads; a rate limit or an outage waits until the
  *   time GitHub gives, at least 60 s.
+ *
+ * Each answer names the ADE account it belongs to (`meta.scope`). An answer
+ * for another account than the stored data's (a sign-out and a sign-in in the
+ * same window) drops every other entry's data, and a state only a person can
+ * fix drops the entry's data: one account's reads are never shown for another.
  */
 
 export const ACCOUNT_GITHUB_READ_REFRESH_MS = 60_000;
@@ -66,6 +71,8 @@ type Entry = {
   inFlight: Promise<void> | null;
   timer: unknown;
   nextAt: number;
+  /** The account the entry's data belongs to. */
+  scope: string | null;
 };
 
 const EMPTY: AccountGithubReadSnapshot<never> = { data: null, error: null, loading: true, refreshing: false, fetchedAt: null, truncated: false };
@@ -86,6 +93,8 @@ export function createAccountGithubReadStore(deps: AccountGithubReadStoreDeps) {
   const refreshMs = deps.refreshMs ?? ACCOUNT_GITHUB_READ_REFRESH_MS;
   const entries = new Map<string, Entry>();
   let stopVisibility: (() => void) | null = null;
+  /** The account of the latest answer. */
+  let currentScope: string | null = null;
 
   const emit = (entry: Entry, patch: Partial<AccountGithubReadSnapshot<unknown>>): void => {
     entry.snapshot = { ...entry.snapshot, ...patch };
@@ -119,6 +128,12 @@ export function createAccountGithubReadStore(deps: AccountGithubReadStoreDeps) {
       const result = await request(entry.request as Extract<GithubDirectRequest, { op: GithubDirectOp }>, { background })
         .catch((): GithubDirectResult<unknown> => ({ ok: false, error: { kind: "github_unavailable", message: "the read failed" } }));
       if (result.ok) {
+        const scope = result.meta.scope ?? null;
+        if (scope !== null && scope !== currentScope) {
+          currentScope = scope;
+          for (const other of entries.values()) if (other !== entry && other.scope !== scope) forget(other);
+        }
+        entry.scope = scope;
         entry.nextAt = now() + refreshMs;
         emit(entry, { data: result.data, error: null, loading: false, refreshing: false, fetchedAt: result.meta.fetchedAt, truncated: result.meta.truncated });
         return;
@@ -128,8 +143,14 @@ export function createAccountGithubReadStore(deps: AccountGithubReadStoreDeps) {
       entry.nextAt = isGithubDirectUserState(error.kind)
         ? now() + USER_STATE_RETRY_MS
         : Math.max(now() + refreshMs, retryAt ?? 0);
-      // A background read the client skipped (rate limit low) keeps the data.
-      emit(entry, { error, loading: false, refreshing: false });
+      // A background read the client skipped (rate limit low) keeps the data;
+      // a state only a person can fix (signed out, say) does not.
+      if (isGithubDirectUserState(error.kind)) {
+        entry.scope = null;
+        emit(entry, { data: null, error, loading: false, refreshing: false, fetchedAt: null, truncated: false });
+      } else {
+        emit(entry, { error, loading: false, refreshing: false });
+      }
     })();
     entry.inFlight = work;
     try {
@@ -138,6 +159,14 @@ export function createAccountGithubReadStore(deps: AccountGithubReadStoreDeps) {
       entry.inFlight = null;
       schedule(entry);
     }
+  };
+
+  /** Another account's data: gone, and read again when someone shows it. */
+  const forget = (entry: Entry): void => {
+    entry.scope = null;
+    entry.nextAt = 0;
+    emit(entry, EMPTY);
+    if (entry.listeners.size > 0 && deps.isVisible()) void read(entry, false);
   };
 
   const onVisibility = (): void => {
@@ -165,7 +194,7 @@ export function createAccountGithubReadStore(deps: AccountGithubReadStoreDeps) {
     const key = accountGithubReadKey(request);
     let entry = entries.get(key);
     if (!entry) {
-      entry = { request, snapshot: EMPTY, listeners: new Set(), inFlight: null, timer: null, nextAt: 0 };
+      entry = { request, snapshot: EMPTY, listeners: new Set(), inFlight: null, timer: null, nextAt: 0, scope: null };
       entries.set(key, entry);
     }
     return entry;

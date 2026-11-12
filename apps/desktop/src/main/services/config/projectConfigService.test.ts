@@ -1547,9 +1547,10 @@ describe("projectConfigService - settings that follow the account", () => {
     fs.writeFileSync(localPath, YAML.stringify({ version: 1, ...(typeof local === "function" ? local(root) : local) }), "utf8");
     const service = createProjectConfigService({ projectRoot: root, adeDir, projectId: name, db: makeDb(), logger });
     const origin = { url: ORIGIN };
+    const account = { id: "user_1", store };
     service.setAccountSettingsStore({
-      backend: () => store.backend,
-      accountUserId: () => "user_1",
+      backend: () => account.store.backend,
+      accountUserId: () => account.id,
       readOriginUrl: () => origin.url,
       statePath: path.join(adeDir, "account-settings-move.state.json"),
     });
@@ -1560,7 +1561,7 @@ describe("projectConfigService - settings that follow the account", () => {
       change(local);
       return service.save({ shared: snapshot.shared, local, baseLocalHash: snapshot.trust.localHash });
     };
-    return { service, file, edit, logger, root, origin };
+    return { service, file, edit, logger, root, origin, account };
   }
 
   it("moves settings write-if-absent, joins set-like lists, and keeps a different value in a notice the person can apply", () => {
@@ -1591,6 +1592,14 @@ describe("projectConfigService - settings that follow the account", () => {
     expect(store.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(90);
     // The other computer reads the applied value from the account.
     expect(a.service.get().effective.github?.prPollingIntervalSeconds).toBe(90);
+
+    // Signed in as another account, the values the file got from the first
+    // account are not this computer's own: nothing is copied to the new one.
+    const other = makeAccountStore();
+    b.account.id = "user_2";
+    b.account.store = other;
+    b.service.moveSettingsToAccount();
+    expect([...other.rows.keys()]).toEqual([]);
   });
 
   it("never loses this computer's values: before the first move, to a stale mirror, or its own writable folders", () => {
@@ -1602,6 +1611,23 @@ describe("projectConfigService - settings that follow the account", () => {
     fresh.edit((local) => { local.github.autoMapByBranch = true; });
     expect(fresh.file().github.prPollingIntervalSeconds).toBe(45);
     expect(fresh.service.moveSettingsToAccount().conflicts).toContain("prs.pollIntervalSeconds");
+
+    // Two computers move at once: both find the rows missing, and the account
+    // keeps the last write. The first writer keeps its value in a notice, and
+    // a list is joined, when the other write reaches it.
+    const racing = makeAccountStore();
+    const x = makeComputer("race-x", racing, { github: { prPollingIntervalSeconds: 30 }, issueTrackers: { jira: { projectKeys: ["WEB"] } } });
+    const y = makeComputer("race-y", racing, { github: { prPollingIntervalSeconds: 90 }, issueTrackers: { jira: { projectKeys: ["API"] } } });
+    x.service.moveSettingsToAccount();
+    y.account.store = { ...racing, backend: { ...racing.backend, get: () => undefined, list: () => [] } };
+    y.service.moveSettingsToAccount();
+    y.account.store = racing;
+    expect(racing.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(90);
+    x.service.moveSettingsToAccount();
+    expect(x.service.get().accountNotices).toEqual([expect.objectContaining({ kind: "account_setting", key: "prs.pollIntervalSeconds" })]);
+    expect(racing.rows.get(`${SCOPE}|jira.projectKeys`)).toEqual(["API", "WEB"]);
+    x.service.resolveAccountSettingNotice({ key: "prs.pollIntervalSeconds", choice: "use_local" });
+    expect(racing.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(30);
 
     // A list item removed on one computer does not come back from another's older copy.
     const store = makeAccountStore();
@@ -1638,7 +1664,7 @@ describe("projectConfigService - settings that follow the account", () => {
       return {
       testSuites: [
         { id: "unit", name: "Unit", command: ["npm", "test"], cwd: "." },
-        { id: "e2e", name: "E2E", command: ["npm", "run", "e2e"], cwd: ".", env: { API_TOKEN: "tok-not-a-real-value" } },
+        { id: "e2e", name: "E2E", command: ["npm", "run", "e2e"], cwd: ".", env: { API_TOKEN: "tok-not-a-real-value", DB_PASS: "pw-not-a-real-value" } },
         // The full path inside this computer's clone: it must reach the account relative.
         { id: "bench", name: "Bench", command: ["npm", "run", "bench"], cwd: path.join(root, "bench") },
       ],
@@ -1651,14 +1677,25 @@ describe("projectConfigService - settings that follow the account", () => {
     expect([...store.rows.keys()].sort()).toEqual([`${SCOPE}|tests.suite.bench`, `${SCOPE}|tests.suite.unit`]);
     expect(store.rows.get(`${SCOPE}|tests.suite.bench`)).toEqual(expect.objectContaining({ cwd: "bench" }));
     expect(a.service.get().accountNotices).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "kept_here", key: "tests.suite.e2e", reason: "secret", names: ["API_TOKEN"] }),
+      expect.objectContaining({ kind: "kept_here", key: "tests.suite.e2e", reason: "secret", names: ["API_TOKEN", "DB_PASS"] }),
       expect.objectContaining({ kind: "kept_here", key: "lanes.envInit", reason: "too_large" }),
     ]));
     // This computer still runs its own suites.
     expect(a.service.get().effective.testSuites.map((suite) => suite.id).sort()).toEqual(["bench", "e2e", "unit"]);
     const logged = JSON.stringify([...logger.info.mock.calls, ...logger.warn.mock.calls]);
     expect(logged).not.toContain("tok-not-a-real-value");
+    expect(logged).not.toContain("pw-not-a-real-value");
     expect(logged).not.toContain(a.root);
+
+    // A setup script outside the clone exists only on this computer.
+    const scriptHere = path.join(os.tmpdir(), "ade-elsewhere", "setup.sh");
+    const b = makeComputer("holds-script", store, { laneEnvInit: { setupScript: { scriptPath: scriptHere } } });
+    b.service.moveSettingsToAccount();
+    expect(store.rows.has(`${SCOPE}|lanes.envInit`)).toBe(false);
+    expect(b.service.get().accountNotices).toEqual([
+      expect.objectContaining({ kind: "kept_here", key: "lanes.envInit", reason: "machine_path" }),
+    ]);
+    expect(b.file().laneEnvInit.setupScript.scriptPath).toBe(scriptHere);
   });
 
   it("refuses a save from a snapshot read before another computer changed an account setting", () => {
@@ -1691,6 +1728,14 @@ describe("projectConfigService - settings that follow the account", () => {
     expect(b.file()).toEqual(before);
     expect(store.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(120);
     store.refuse = false;
+
+    // A save the key check refuses (a new key in the file) changes nothing in the account either.
+    expect(() => b.edit((local) => {
+      local.github.prPollingIntervalSeconds = 300;
+      local.ai = { ...local.ai, apiKeys: { anthropic: "sk-not-a-real-key" } };
+    })).toThrow();
+    expect(store.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(120);
+
     b.edit((local) => { local.github.prPollingIntervalSeconds = 300; });
     expect(a.service.get().effective.github?.prPollingIntervalSeconds).toBe(300);
   });

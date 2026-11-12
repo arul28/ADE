@@ -3610,9 +3610,12 @@ export function createProjectConfigService({
       throw changedOnDiskError();
     }
 
+    // Keys first: a refused or failed key store fails the save before any
+    // setting reaches the account (none of these keys is an account row).
+    const keyed = withoutNewPlaintextKeys(candidateLocal);
     // A changed setting that follows the account goes there; the file keeps
     // the account's values for older ADE processes on this computer.
-    const routing = accountLayer ? accountLayer.routeSave(candidateLocal, readLocalFileConfig()) : { local: candidateLocal, refused: [] };
+    const routing = accountLayer ? accountLayer.routeSave(keyed, readLocalFileConfig()) : { local: keyed, refused: [] };
     if (routing.refused.length > 0) {
       // Writing only the file would look saved, but the account's value
       // wins on the next read. Fail the save so the person can try again.
@@ -3620,10 +3623,9 @@ export function createProjectConfigService({
     }
     const routed = routing.local;
     // Account rules never land in the file; a new one is filed in the account.
-    const diverted = options.divert === false || !automationRuleSync
+    const local = options.divert === false || !automationRuleSync
       ? routed
       : { ...routed, automations: automationRuleSync.divert(routed.automations ?? []) };
-    const local = withoutNewPlaintextKeys(diverted);
 
     const localYaml = toCanonicalYaml(local);
 

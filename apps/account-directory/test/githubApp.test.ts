@@ -266,11 +266,16 @@ describe("GitHub App sign-in", () => {
     expect(other.status).toBe(409);
   });
 
-  it("a renewal whose save committed but lost its answer keeps and serves the saved token", async () => {
+  it.each([
+    ["the first answer", 1],
+    ["every retry's answer", 3],
+  ])("a renewal whose save committed but lost %s keeps and serves the saved token", async (_label, lost) => {
     const page = await toConfirmPage();
     await confirmForm({ signIn: page.signInId, confirm: page.confirm, choice: "connect" });
     db.raw.prepare("update github_app_grants set access_expires_at = ? where user_id = ?").run(Date.now() - 60_000, userId);
-    db.faults.push({ when: "after", match: (sql) => sql.includes("update github_app_grants set") && sql.includes("access_token_sealed = ?") });
+    for (let i = 0; i < lost; i += 1) {
+      db.faults.push({ when: "after", match: (sql) => sql.includes("update github_app_grants set") && sql.includes("access_token_sealed = ?") });
+    }
 
     const answer = await call("POST", "/github/app/token", {});
     const renewedToken = github.lastAccess();

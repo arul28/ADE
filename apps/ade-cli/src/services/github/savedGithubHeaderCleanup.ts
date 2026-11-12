@@ -58,47 +58,91 @@ const SAVED_VALUE_REGEX = `^[[:space:]]*[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt]
 }`;
 
 /**
- * The repository's local config file, or null when `root` is not a Git
- * checkout. Follows a `.git` file (`gitdir:`) and a linked worktree's
- * `commondir`, with Windows and POSIX paths alike.
+ * The repository's local config file, or null when `root` is in no Git
+ * checkout. Like Git, looks in `root` and then its parents for `.git` (a
+ * project can be a folder inside a repository), follows a `.git` file
+ * (`gitdir:`) and a linked worktree's `commondir`, with Windows and POSIX
+ * paths alike. Async: a project on a stalled drive must not block the brain.
  */
-function localConfigPath(root: string): string | null {
-  const dotGit = path.join(root, ".git");
-  let gitDir: string;
-  try {
-    const stat = fs.statSync(dotGit);
-    if (stat.isDirectory()) gitDir = dotGit;
-    else {
-      const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, "utf8"));
-      if (!pointer) return null;
-      gitDir = path.resolve(root, pointer[1]!);
+async function localConfigPath(root: string): Promise<string | null> {
+  let dir = path.resolve(root);
+  let gitDir: string | null = null;
+  for (;;) {
+    const dotGit = path.join(dir, ".git");
+    const stat = await fs.promises.stat(dotGit).catch(() => null);
+    if (stat?.isDirectory()) {
+      gitDir = dotGit;
+      break;
     }
-  } catch {
-    return null;
+    if (stat?.isFile()) {
+      const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(await fs.promises.readFile(dotGit, "utf8").catch(() => ""));
+      if (!pointer) return null;
+      gitDir = path.resolve(dir, pointer[1]!);
+      break;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
   }
-  try {
-    const common = fs.readFileSync(path.join(gitDir, "commondir"), "utf8").trim();
-    if (common) gitDir = path.resolve(gitDir, common);
-  } catch {
-    // Not a linked worktree: the config is in gitDir itself.
-  }
+  // Not a linked worktree when there is no `commondir`: the config is in gitDir itself.
+  const common = (await fs.promises.readFile(path.join(gitDir, "commondir"), "utf8").catch(() => "")).trim();
+  if (common) gitDir = path.resolve(gitDir, common);
   return path.join(gitDir, "config");
 }
 
 /** A cheap look at the file before any git process: most projects have no extraheader at all. */
-function mayHoldSavedHeader(root: string): boolean {
-  const file = localConfigPath(root);
+async function mayHoldSavedHeader(root: string): Promise<boolean> {
+  const file = await localConfigPath(root);
   if (!file) return false;
+  // An unreadable config: git cannot read it either, so there is nothing to do.
+  return /extraheader/i.test(await fs.promises.readFile(file, "utf8").catch(() => ""));
+}
+
+type ProjectCleanup = "none" | "removed" | "failed";
+
+async function cleanProject(root: string, runGit: RunGit, logger: CleanupLogger): Promise<ProjectCleanup> {
   try {
-    return /extraheader/i.test(fs.readFileSync(file, "utf8"));
-  } catch {
-    return false;
+    if (!(await mayHoldSavedHeader(root))) return "none";
+    const listed = await runGit(root, ["config", "--local", "--get-regexp", SAVED_KEY_REGEX]);
+    // Exit 1 is "no such key": nothing saved there. Any other failure
+    // (a config git cannot read, a lock) is reported and tried again later.
+    if (listed.code === 1) return "none";
+    if (listed.code !== 0) {
+      logger.warn("github.saved_header_cleanup_failed", { step: "list", code: listed.code });
+      return "failed";
+    }
+    const savedKeys = new Set<string>();
+    for (const line of listed.stdout.split(/\r?\n/)) {
+      const space = line.indexOf(" ");
+      if (space <= 0) continue;
+      if (isSavedAdeGithubHeader(line.slice(space + 1))) savedKeys.add(line.slice(0, space));
+    }
+    if (savedKeys.size === 0) return "none";
+    const removedKeys = new Set<string>();
+    let failed = false;
+    for (const key of savedKeys) {
+      const removed = await runGit(root, ["config", "--local", "--unset-all", key, SAVED_VALUE_REGEX]);
+      if (removed.code === 0) removedKeys.add(key);
+      else {
+        failed = true;
+        logger.warn("github.saved_header_cleanup_failed", { step: "remove", key, code: removed.code });
+      }
+    }
+    if (removedKeys.size > 0) {
+      // One line per project, never the value: the token is gone from the
+      // file, but GitHub may still accept it until it expires or is revoked.
+      logger.warn("github.saved_header_removed", { keys: [...removedKeys] });
+    }
+    return failed ? "failed" : removedKeys.size > 0 ? "removed" : "none";
+  } catch (error) {
+    logger.warn("github.saved_header_cleanup_failed", { error: error instanceof Error ? error.name : "unknown" });
+    return "failed";
   }
 }
 
 /**
  * Removes ADE's saved GitHub header from each project's local Git config.
- * Returns how many projects had one. Never throws.
+ * Returns how many projects had one removed. Never throws.
  */
 export async function removeSavedGithubHeaders(
   roots: readonly string[],
@@ -107,49 +151,36 @@ export async function removeSavedGithubHeaders(
   const runGit = deps.runGit ?? runGitDefault;
   let cleaned = 0;
   for (const root of roots) {
-    try {
-      if (!mayHoldSavedHeader(root)) continue;
-      // Exit 1 is "no such key": nothing saved there.
-      const listed = await runGit(root, ["config", "--local", "--get-regexp", SAVED_KEY_REGEX]);
-      if (listed.code !== 0) continue;
-      const savedKeys = new Set<string>();
-      for (const line of listed.stdout.split(/\r?\n/)) {
-        const space = line.indexOf(" ");
-        if (space <= 0) continue;
-        if (isSavedAdeGithubHeader(line.slice(space + 1))) savedKeys.add(line.slice(0, space));
-      }
-      if (savedKeys.size === 0) continue;
-      const removedKeys = new Set<string>();
-      for (const key of savedKeys) {
-        const removed = await runGit(root, ["config", "--local", "--unset-all", key, SAVED_VALUE_REGEX]);
-        if (removed.code === 0) removedKeys.add(key);
-        else deps.logger.warn("github.saved_header_cleanup_failed", { key, code: removed.code });
-      }
-      if (removedKeys.size > 0) {
-        cleaned += 1;
-        // One line per project, never the value: the token is gone from the
-        // file, but GitHub may still accept it until it expires or is revoked.
-        deps.logger.warn("github.saved_header_removed", { keys: [...removedKeys] });
-      }
-    } catch (error) {
-      deps.logger.warn("github.saved_header_cleanup_failed", { error: error instanceof Error ? error.name : "unknown" });
-    }
+    if ((await cleanProject(root, runGit, deps.logger)) === "removed") cleaned += 1;
   }
   return cleaned;
 }
 
+/** Tries per project and brain process: a lock or a slow drive can fail one, not every open. */
+const SWEEP_ATTEMPTS = 3;
+
 /**
- * Runs the clean-up once per project for this process, off the caller's
- * path. For the brain's project-open hook.
+ * Runs the clean-up for each project once per brain process, off the
+ * caller's path. A failed run is tried again on a later open, up to
+ * `SWEEP_ATTEMPTS` times. For the brain's project-open hook.
  */
 export function createSavedGithubHeaderSweep(deps: { logger: CleanupLogger; runGit?: RunGit }): (root: string) => void {
-  const seen = new Set<string>();
+  const runGit = deps.runGit ?? runGitDefault;
+  // Projects that need no more runs (clean, or out of tries), and the ones running now.
+  const done = new Set<string>();
+  const running = new Set<string>();
+  const attempts = new Map<string, number>();
   return (root) => {
     const key = path.resolve(root);
-    if (seen.has(key)) return;
-    seen.add(key);
+    if (done.has(key) || running.has(key)) return;
+    running.add(key);
     const timer = setTimeout(() => {
-      void removeSavedGithubHeaders([root], deps);
+      void cleanProject(root, runGit, deps.logger).then((outcome) => {
+        running.delete(key);
+        const tries = (attempts.get(key) ?? 0) + 1;
+        attempts.set(key, tries);
+        if (outcome !== "failed" || tries >= SWEEP_ATTEMPTS) done.add(key);
+      });
     }, 0);
     (timer as { unref?: () => void }).unref?.();
   };

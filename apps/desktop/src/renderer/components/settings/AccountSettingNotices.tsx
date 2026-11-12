@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Banner } from "../ui/notice";
 import { captureError } from "../../../shared/sentry/capture";
 import type { OpenProjectBinding, ProjectConfigAccountNotice } from "../../../shared/types";
@@ -27,12 +27,18 @@ export function AccountSettingNotices({
   const [error, setError] = useState<string | null>(null);
   const pinKey = pin?.key ?? null;
   const keyList = keys.join("|");
+  // Bumped when the computer or the keys change: an answer that finishes
+  // after that belongs to the old scope and must not touch this one.
+  const scopeGeneration = useRef(0);
   const shows = (notice: ProjectConfigAccountNotice) =>
     keys.some((key) => (key.endsWith(".") ? notice.key.startsWith(key) : notice.key === key));
 
   useEffect(() => {
     let cancelled = false;
+    scopeGeneration.current += 1;
     setNotices([]);
+    setBusyKey(null);
+    setError(null);
     // A host without project settings (or an older bridge) has no notices.
     const projectConfig = window.ade?.projectConfig;
     if (!projectConfig?.get) return;
@@ -52,10 +58,14 @@ export function AccountSettingNotices({
   }, [pinKey, keyList]);
 
   const answer = async (key: string, choice: "use_local" | "keep") => {
+    const generation = scopeGeneration.current;
+    const current = () => generation === scopeGeneration.current;
     setBusyKey(key);
     setError(null);
     try {
+      // The answer goes to the computer it was asked on, even if the scope changes meanwhile.
       const snapshot = await window.ade.projectConfig.resolveAccountSettingNotice({ key, choice }, pin);
+      if (!current()) return;
       setNotices((snapshot.accountNotices ?? []).filter(shows));
       if (choice === "use_local") onResolved?.();
     } catch (cause) {
@@ -64,9 +74,9 @@ export function AccountSettingNotices({
         fingerprint: ["project_config", "resolve_account_notice"],
         handled: true,
       });
-      setError(cause instanceof Error ? cause.message : String(cause));
+      if (current()) setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setBusyKey(null);
+      if (current()) setBusyKey(null);
     }
   };
 

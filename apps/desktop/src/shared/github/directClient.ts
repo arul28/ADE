@@ -875,7 +875,7 @@ export function createGithubDirectClient(options: GithubDirectClientOptions) {
       if (built.op === "diagnoseRepository") {
         const diagnosis = await diagnose(built.repo!, token, scope);
         if ("kind" in diagnosis) return fail(diagnosis);
-        return { ok: true, data: diagnosis as GithubDirectData[O], meta: { pagesRead: 2, notModified: 0, truncated: false, fetchedAt: now() } };
+        return { ok: true, data: diagnosis as GithubDirectData[O], meta: { pagesRead: 2, notModified: 0, truncated: false, fetchedAt: now(), scope } };
       }
       const answers: Array<Extract<StepAnswer, { ok: true }>> = [];
       for (const step of built.steps) {
@@ -900,6 +900,7 @@ export function createGithubDirectClient(options: GithubDirectClientOptions) {
         notModified: answers.reduce((sum, answer) => sum + answer.notModified, 0),
         truncated: answers.some((answer) => answer.truncated),
         fetchedAt: now(),
+        scope,
       };
       return { ok: true, data: data as GithubDirectData[O], meta };
     };

@@ -141,13 +141,14 @@ const AI_KEYS: readonly MovedKeySpec[] = [
     ["promptSuggestionsEnabled", "Prompt suggestions"],
     ["codexPromptSuggestionsEnabled", "Codex prompt suggestions"],
     ["smartDecisionsEnabled", "Smart decisions"],
-    ["jevZenCreditEnabled", "Jev Zen credit"],
     ["smartChatStatusEnabled", "Smart chat status"],
     ["smartSettleNudgeEnabled", "Settle nudges"],
     ["smartPaletteEnabled", "Smart palette"],
     ["smartLaneEmojiEnabled", "Lane emoji"],
     ["smartPlainTerminalsEnabled", "Plain terminals"],
     ["modelHintMode", "Model hint"],
+    // Not `jevZenCreditEnabled`: it lets ADE spend this computer's own Zen
+    // sign-in, a choice made on each computer (useZenCredit).
   ] as const).map(([field, label]): MovedKeySpec => ({ row: `ai.chat.${field}`, label, path: ["ai", "chat", field] })),
 ];
 
@@ -174,7 +175,7 @@ const COLLECTIONS: readonly CollectionSpec[] = [
 const MOVED_KEY_SPECS: readonly MovedKeySpec[] = [...PR_AND_TRACKER_KEYS, ...AI_KEYS, ...RECIPE_KEYS];
 
 /** Keys whose value is a path; an absolute one names a folder on this computer. */
-const PATH_KEYS = new Set(["cwd", "source", "dest", "composePath"]);
+const PATH_KEYS = new Set(["cwd", "source", "dest", "composePath", "scriptPath", "unixScriptPath", "windowsScriptPath"]);
 
 function holdsMachinePath(value: unknown, key?: string): boolean {
   if (typeof value === "string") {
