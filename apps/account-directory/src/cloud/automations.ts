@@ -244,6 +244,7 @@ export function parseRegistration(body: Record<string, unknown>): CloudAutomatio
       lane: { from },
       limits: { maxRunsPerHour: perHour, keepComputer: limits?.keepComputer === true },
       ...(typeof spec.timezone === "string" ? { timezone: spec.timezone } : {}),
+      ...(spec.channel === "beta" ? { channel: "beta" as const } : {}),
     },
   };
 }
@@ -507,15 +508,30 @@ async function handleRegister(request: Request, env: RelayEnv, userId: string, r
   if (existing && existing.rule_version > registration.ruleVersion) {
     return json({ ruleId, changed: false, current: false, nextFireAt: existing.next_fire_at, forward: await forwardOf(env, existing, origin) } satisfies CloudAutomationRegistered);
   }
-  const { spec } = registration;
+  // The update track only moves up within one version: a Stable (or older) brain sending the
+  // version a Beta brain sent never takes the rule back to the Stable image, which can't run it.
+  const sameVersion = existing != null && registration.ruleVersion === existing.rule_version;
+  const spec: CloudAutomationSpec = sameVersion && existing && specOf(existing)?.channel === "beta" && registration.spec.channel !== "beta"
+    ? { ...registration.spec, channel: "beta" }
+    : registration.spec;
   // Read on every registration (each version a brain sends, and each brain start), so a change of the
   // agent limits or the GitHub sign-in reaches rules that didn't change.
   const vault = await vaultColumns(await readVaultFacts(env, request.headers.get("authorization")), spec.project.origin, existing);
-  const digest = await sha256Hex(JSON.stringify({ enabled: registration.enabled, startsAt: registration.startsAt ?? 0, spec }));
+  // The update track is not part of what the rule is: a track change alone is never an edit
+  // (that would reschedule it), and it is stored on its own below.
+  const { channel: _channel, ...specWithoutTrack } = spec;
+  const digest = await sha256Hex(JSON.stringify({ enabled: registration.enabled, startsAt: registration.startsAt ?? 0, spec: specWithoutTrack }));
   // Only a real save (a newer version) turns a storm-paused rule back on; a brain's restart sends the same one.
   const newer = !existing || registration.ruleVersion > existing.rule_version;
   const unpausing = Boolean(existing?.paused_reason) && registration.enabled && newer;
   if (existing && existing.spec_digest === digest && !unpausing) {
+    // A Beta brain sending a rule a Stable brain registered moves it to the Beta image; never back.
+    if (spec.channel === "beta" && specOf(existing)?.channel !== "beta") {
+      // Only the version this registration read: a newer save made meanwhile chose its own track.
+      await env.DB.prepare("update cloud_automations set spec_json = json_set(spec_json, '$.channel', 'beta'), updated_at = ? where user_id = ? and rule_id = ? and rule_version = ?")
+        .bind(now, userId, ruleId, existing.rule_version).run();
+      logCloud("cloud.automation_track_beta", { userId, ruleId });
+    }
     // Nothing of the rule changed. A newer version is still recorded, so the same version sent again
     // later (a brain's restart) never reads as a save that lifts a storm pause.
     if (newer || vault.git_ok !== existing.git_ok || vault.limits_json !== existing.limits_json || vault.repo_visibility !== existing.repo_visibility) {
@@ -545,7 +561,14 @@ async function handleRegister(request: Request, env: RelayEnv, userId: string, r
         starts_at, hook_id, hook_salt, limits_json, git_ok, repo_visibility, max_runs_per_hour, keep_computer, paused_reason, paused_at, created_at, updated_at)
       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)
       on conflict (user_id, rule_id) do update set project_origin = excluded.project_origin, name = excluded.name,
-        spec_json = excluded.spec_json, rule_version = excluded.rule_version, spec_digest = excluded.spec_digest, cron = excluded.cron,
+        -- Within one version the track only moves up: a Stable brain's write racing a Beta brain's keeps Beta (same rule above, in the read).
+        spec_json = case
+          when excluded.rule_version = cloud_automations.rule_version
+            and json_extract(cloud_automations.spec_json, '$.channel') = 'beta'
+            and coalesce(json_extract(excluded.spec_json, '$.channel'), '') <> 'beta'
+          then json_set(excluded.spec_json, '$.channel', 'beta')
+          else excluded.spec_json end,
+        rule_version = excluded.rule_version, spec_digest = excluded.spec_digest, cron = excluded.cron,
         timezone = excluded.timezone, next_fire_at = excluded.next_fire_at, starts_at = excluded.starts_at, hook_id = excluded.hook_id,
         hook_salt = excluded.hook_salt, limits_json = excluded.limits_json, git_ok = excluded.git_ok, repo_visibility = excluded.repo_visibility,
         max_runs_per_hour = excluded.max_runs_per_hour, keep_computer = excluded.keep_computer,
@@ -743,7 +766,8 @@ async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: A
       prompt: runPrompt(spec, trigger, now),
     },
     madeBy: { kind: "automation", ruleId: rule.rule_id },
-    channel: "stable",
+    // The registering ADE's track: a Beta ADE's rule runs on the Beta image, which knows the join.
+    channel: spec.channel === "beta" ? "beta" : "stable",
   };
   // The lane id first: a start the Worker loses is tried again with the same lane.
   await env.DB.prepare("update cloud_automation_runs set lane_id = ?, updated_at = ? where run_id = ?").bind(laneId, now, run.run_id).run();

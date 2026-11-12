@@ -875,6 +875,13 @@ export const CLOUD_REMOTE_SIGN_IN: readonly CloudRemoteSignInRow[] = [
   { provider: "pi", label: "Pi", remoteSignIn: "none", reason: "Pi uses each model provider's own key or sign-in: set it on one of your computers." },
 ];
 
+/** Why a provider can't be signed in from here, with one way to do it: a reason that already says where adds nothing. */
+export function cloudRemoteSignInRefusal(row: CloudRemoteSignInRow): string {
+  const reason = row.reason?.trim() ?? "";
+  if (/Settings ›|one of your computers/.test(reason)) return reason;
+  return `${reason} ${CLOUD_REMOTE_SIGN_IN_ELSEWHERE}`.trim();
+}
+
 export function cloudRemoteSignInOf(provider: unknown): CloudRemoteSignInRow | null {
   if (typeof provider !== "string") return null;
   const id = provider.trim().toLowerCase();
@@ -965,6 +972,8 @@ export type CloudAutomationTrigger =
  * the trigger is added below it.
  */
 export type CloudAutomationSpec = {
+  /** The update track of the ADE that registered it: each run's computer is made on that track's image. Left out is `stable`. */
+  channel?: CloudUpdateChannel;
   name: string;
   project: { origin: string };
   triggers: CloudAutomationTrigger[];
