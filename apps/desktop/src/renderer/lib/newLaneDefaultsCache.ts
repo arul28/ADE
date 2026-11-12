@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { NewLaneDefaults } from "../../shared/laneStart";
 import type { NewLaneDefaultsSnapshot, OpenProjectBinding } from "../../shared/types";
+import { cacheScopePin } from "./tabBindingKey";
 
 /**
  * The project's new-lane defaults, per machine, read once and shared by every
@@ -29,8 +30,9 @@ const listeners = new Set<() => void>();
 const watchedKeys = new Map<string, number>();
 let stopAccountSettingsWatch: (() => void) | null = null;
 
-function cacheKey(projectRoot: string | null | undefined, pin: OpenProjectBinding | null | undefined): string {
-  const root = projectRoot?.trim() || pin?.rootPath?.trim() || "__no_project__";
+function cacheKey(projectRoot: string | null | undefined, rawPin: OpenProjectBinding | null | undefined): string {
+  const root = projectRoot?.trim() || rawPin?.rootPath?.trim() || "__no_project__";
+  const pin = cacheScopePin(rawPin);
   return pin?.key ? `${root}::pin:${pin.key}` : root;
 }
 

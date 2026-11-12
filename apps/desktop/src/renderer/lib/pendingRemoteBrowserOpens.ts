@@ -1,4 +1,5 @@
 import type { BuiltInBrowserRemoteRequest } from "../../shared/types/builtInBrowserRemote";
+import { cacheScopePin } from "./tabBindingKey";
 
 /**
  * Handoff for `ade browser open` while the Browser pane is unmounted.
@@ -40,7 +41,7 @@ export function setRemoteBrowserOpenClockForTests(ms: number | null): void {
 }
 
 function pinKeyFor(pin: { key: string } | null | undefined): string {
-  return pin?.key ?? "bound";
+  return cacheScopePin(pin)?.key ?? "bound";
 }
 
 function forgetOldestHandled(): void {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { GitHubAppUserAuthStatus, OpenProjectBinding } from "../../shared/types";
+import { cacheScopePin } from "./tabBindingKey";
 
 /**
  * The ADE GitHub App account status, shared by every surface that renders it.
@@ -39,7 +40,8 @@ type MachineAuthState = {
 const UNPINNED_KEY = "\u0000unpinned";
 const machines = new Map<string, MachineAuthState>();
 
-function machineKey(pin: OpenProjectBinding | null | undefined): string {
+function machineKey(rawPin: OpenProjectBinding | null | undefined): string {
+  const pin = cacheScopePin(rawPin);
   return pin ? pin.key : UNPINNED_KEY;
 }
 

@@ -9,6 +9,7 @@ import {
   useMachineEntryForBinding,
 } from "../../state/crossMachineLanes";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { isActiveBindingPin } from "../../lib/chatMachineRouting";
 
 /**
  * The one answer to "which machine is THIS chat on, and what does it look like
@@ -23,9 +24,10 @@ import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
  * reading every global `useAppStore` selector gives you.
  *
  * `useChatRuntimeScope()` is that answer, resolved once by `AgentChatPane` and
- * carried down the panel/drawer subtree. `pin === null` means, and only means,
- * "this chat lives on the tab's binding" — the unpinned path, byte-for-byte
- * what the surface did before per-chat routing.
+ * carried down the panel/drawer subtree. `pin` addresses the chat's copy, the
+ * tab's own included; "is this the tab's copy" is `isActiveBinding`, never a
+ * null pin. A pin that names the tab's copy costs what no pin cost (preload
+ * `isBoundCopyPin`).
  */
 /**
  * The machine half, answerable from a pin and a lane alone.
@@ -34,8 +36,14 @@ import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
  * more — which chat is being rendered is the provider's to add.
  */
 export type ChatMachineScope = {
-  /** Pass to any pin-aware preload call. Null = the tab's bound machine. */
+  /**
+   * Pass to any pin-aware preload call: the chat's copy, the tab's own
+   * included. Null only when the chat's machine is not known (the call then
+   * takes the tab's bound machine, as before).
+   */
   pin: OpenProjectBinding | null;
+  /** Whether the chat runs on the copy the tab is bound to (or its machine is unknown). */
+  isActiveBinding: boolean;
   /** The binding the chat actually runs on: `pin ?? projectBinding`. */
   binding: OpenProjectBinding | null;
   /** The chat's lane, on that machine. */
@@ -67,6 +75,7 @@ export type ChatRuntimeScope = ChatMachineScope & {
 
 const FALLBACK_SCOPE: ChatRuntimeScope = {
   pin: null,
+  isActiveBinding: true,
   binding: null,
   laneId: null,
   sessionId: null,
@@ -111,11 +120,11 @@ export function useChatMachineLanes(pin: OpenProjectBinding | null): LaneSummary
 }
 
 /**
- * Does the chat run on this computer, bound and unpinned? Only then do its
+ * Does the chat run on this computer, on the tab's own copy? Only then do its
  * file paths open here and does main's focus reconcile reach its project.
  */
-export function chatRunsOnThisComputer(scope: Pick<ChatMachineScope, "pin" | "isRemote">): boolean {
-  return !scope.isRemote && scope.pin == null;
+export function chatRunsOnThisComputer(scope: Pick<ChatMachineScope, "isActiveBinding" | "isRemote">): boolean {
+  return !scope.isRemote && scope.isActiveBinding;
 }
 
 export function useChatRuntimeScopeForPin(
@@ -134,18 +143,20 @@ export function useChatRuntimeScopeForPin(
   return useMemo<ChatMachineScope>(() => {
     const binding = bindingOverride !== undefined ? bindingOverride : (pin ?? boundBinding ?? null);
     const lane = laneId ? lanes.find((entry) => entry.id === laneId) ?? null : null;
+    const isActiveBinding = !pin || isActiveBindingPin(pin, boundBinding);
     return {
       pin,
+      isActiveBinding,
       binding,
       laneId,
       lane,
       laneWorktreePath: lane?.worktreePath ?? null,
-      rootPath: pin ? pin.rootPath : boundProjectRoot,
+      rootPath: pin && !isActiveBinding ? pin.rootPath : boundProjectRoot,
       isRemote: binding?.kind === "remote",
       machineName: machineNameForBinding(binding),
-      // Only a pinned machine can be known-offline. The bound machine's own
+      // Only another machine can be known-offline. The bound machine's own
       // liveness is the window's problem, not this chat's.
-      online: !pin || pinnedMachine?.online !== false,
+      online: isActiveBinding || pinnedMachine?.online !== false,
     };
   }, [
     bindingOverride,
@@ -184,7 +195,8 @@ export type ChatScopeDerivationInput = {
   projectBinding: OpenProjectBinding | null;
   /**
    * Host-resolved pin for a locked Work chat. `undefined` derives from the
-   * lane as before. `null` means this chat is on the tab's bound machine.
+   * lane as before. `null` means the host does not know the chat's machine
+   * (the tab's bound machine is used, as before).
    */
   pinOverride?: OpenProjectBinding | null;
   /** The tab machine's lanes, and the pane's preferred picker list. */
@@ -195,7 +207,7 @@ export type ChatScopeDerivationInput = {
 export type ChatScopeDerivation = {
   /** The lane this chat lives in, on its own machine. */
   chatScopeLaneId: string | null;
-  /** Pin for every chat-scoped call. Null = the tab's own binding. */
+  /** Pin for every chat-scoped call, the tab's own copy included. Null = unknown. */
   chatRuntimePin: OpenProjectBinding | null;
   /** `chatRuntimePin ?? projectBinding`. */
   chatEffectiveBinding: OpenProjectBinding | null;
@@ -244,9 +256,11 @@ export function useChatScopeDerivation({
    * pinned to a remote machine cannot — regardless of the tab.
    */
   const chatEffectiveBinding = chatRuntimePin ?? projectBinding ?? null;
-  // The chat machine's own lane list, or null for an unpinned chat — which
-  // keeps its existing tab-bound source (`availableLanes ?? lanes`) explicitly.
-  const pinnedLanes = useLanesForPin(chatRuntimePin);
+  // The chat machine's own lane list, or null for a chat on the tab's copy —
+  // which keeps its existing tab-bound source (`availableLanes ?? lanes`).
+  const pinnedLanes = useLanesForPin(
+    chatRuntimePin && !isActiveBindingPin(chatRuntimePin, projectBinding) ? chatRuntimePin : null,
+  );
   /**
    * A brief handoff lands in a lane on the CHAT's machine, so both the picker
    * and the auto-created lane have to target that machine. `availableLanes`/

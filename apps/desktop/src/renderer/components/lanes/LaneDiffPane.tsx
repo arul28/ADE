@@ -12,6 +12,7 @@ import { Banner } from "../ui/notice";
 import { getFileIcon } from "../files/filePresentation";
 import { createPinnedFilesApi } from "../files/v2/pinnedFilesApi";
 import { COLORS, MONO_FONT, outlineButton } from "./laneDesignTokens";
+import { usePinTargetsTab } from "../../state/crossMachineLanes";
 
 function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
@@ -91,7 +92,7 @@ export function LaneDiffPane({
   const pin = runtimePin ?? null;
   // A foreign lane's diff stays read-only. Live sync watches the lane's own
   // machine through the pinned Files API, so it follows edits made there.
-  const isForeign = pin != null;
+  const isForeign = !usePinTargetsTab(pin);
   const files = createPinnedFilesApi(pin);
   const diffRef = useRef<AdeDiffViewerHandle | null>(null);
   const workingDiffRequestSeq = useRef(0);

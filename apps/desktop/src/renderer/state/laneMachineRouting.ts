@@ -8,10 +8,10 @@
  * reason and the trailing pin argument. Work keeps its own session-aware router
  * in `components/terminals/useWorkMachineRouter.ts`.
  *
- * Pin semantics are the preload's: `null` means "the machine this project tab
- * is bound to" (the unpinned path). A non-null pin is a binding for another
- * machine. `LaneMachine.pin` is already null for the tab's own machine, so
- * callers pass it as is. Lane ids are unique per machine, not globally (lane
+ * A pin addresses one copy on one machine. `LaneMachine.pin` is set for every
+ * routable machine, the tab's own included; it is null only when nothing can
+ * be sent there. "Is this the tab's machine" is `isActiveBinding`, never a null
+ * pin. Lane ids are unique per machine, not globally (lane
  * rows sync between machines), so whenever a caller knows which machine a lane
  * came from it must say so; resolving a bare id prefers the tab's machine.
  *
@@ -61,7 +61,7 @@ export type LaneMachine = {
   online: boolean;
   /** The physical Mac this app runs on. */
   isThisMachine: boolean;
-  /** The machine the project tab is bound to (unpinned calls reach it). */
+  /** The machine the project tab is bound to. Read this, not a null pin. */
   isActiveBinding: boolean;
   /**
    * The binding that addresses this machine's checkout of the repo. For the
@@ -69,14 +69,12 @@ export type LaneMachine = {
    * open). For another machine, null means it cannot be addressed yet.
    */
   binding: OpenProjectBinding | null;
-  /** The pin to pass to preload calls: null for the active machine. */
-  pin: OpenProjectBinding | null;
   /**
-   * The address of this machine's copy of the repo, set for EVERY routable
-   * machine, the tab's own included (unlike `pin`). Null when nothing can be
-   * sent there. Nothing reads it yet: it is what `pin` becomes once callers
-   * stop treating null as "the tab's machine".
+   * The pin to pass to preload calls: this machine's copy of the repo, the
+   * tab's own included. Null only when nothing can be sent there.
    */
+  pin: OpenProjectBinding | null;
+  /** The same address as `pin`, under the repository-tab name. */
   address: MachineAddress | null;
   /** False for another machine that has no binding: nothing can be sent there. */
   routable: boolean;
@@ -180,8 +178,9 @@ export function machineBlockedReason(
 }
 
 /**
- * The trailing pin argument for a preload call: nothing for the tab's machine
- * (the unpinned call, arity included), `[pin]` for another machine.
+ * The trailing pin argument for a preload call: `[pin]`, or nothing when there
+ * is no address. A pin that names the tab's own copy costs what no pin cost
+ * (preload `isBoundCopyPin`).
  */
 export function pinArg(pin: OpenProjectBinding | null | undefined): [] | [OpenProjectBinding] {
   return pin ? [pin] : [];
@@ -305,7 +304,7 @@ export function buildAllMachineLanes(input: {
     isThisMachine: active.machineId === THIS_MACHINE_ID,
     isActiveBinding: true,
     binding: activeBinding,
-    pin: null,
+    pin: activeBinding,
     address: activeBinding,
     routable: true,
     hasRepo: activeBinding != null,
@@ -336,9 +335,7 @@ export function buildAllMachineLanes(input: {
     const binding = entry.binding ?? null;
     const connection = connectionById.get(entry.targetId ?? entry.machineId);
     const isThisMachine = entry.machineId === THIS_MACHINE_ID;
-    // Defensive: a slice whose binding IS the tab's binding takes the unpinned
-    // path, exactly like the chat router resolves it.
-    const pin = binding && binding.key === activeBinding?.key ? null : binding;
+    const pin = binding;
     const machine: LaneMachine = {
       machineId: entry.machineId,
       machineName: entry.machineName?.trim() || connection?.target.name?.trim() || entry.machineId,
@@ -466,9 +463,7 @@ export function useAllMachineLanes(active = true): AllMachineLanes {
 
 /** Where a call about one lane has to go. */
 export type LaneRoute =
-  /** The tab's machine: pass `pin: null` (the unpinned path). */
-  | { kind: "bound"; pin: null; machine: LaneMachine }
-  /** Another machine: pass this pin. */
+  /** Pass this pin; `machine.isActiveBinding` says whether it is the tab's machine. */
   | { kind: "pinned"; pin: OpenProjectBinding; machine: LaneMachine }
   /** The machine is known but cannot be addressed (no binding): do not send. */
   | { kind: "unroutable"; pin: null; machine: LaneMachine }
@@ -498,9 +493,6 @@ export function createLaneMachineRouter(all: AllMachineLanes): LaneMachineRouter
     if (!laneIndex.has(row.lane.id)) laneIndex.set(row.lane.id, row);
   }
   const toRoute = (machine: LaneMachine): LaneRoute => {
-    if (machine.isActiveBinding || (machine.routable && machine.pin == null)) {
-      return { kind: "bound", pin: null, machine };
-    }
     if (!machine.routable || !machine.pin) return { kind: "unroutable", pin: null, machine };
     return { kind: "pinned", pin: machine.pin, machine };
   };

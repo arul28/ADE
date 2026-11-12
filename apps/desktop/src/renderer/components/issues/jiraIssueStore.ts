@@ -21,6 +21,7 @@ import { jiraIssueToLaneIssue } from "../../../shared/laneJiraIssue";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { useActiveProjectRoot } from "../../state/appStore";
 import { createIssueEntryCache, type IssueEntry } from "./issueEntryCache";
+import { cacheScopePin } from "../../lib/tabBindingKey";
 
 const ISSUE_STALE_MS = 60_000;
 const LIST_STALE_MS = 60_000;
@@ -49,7 +50,7 @@ function subscribeThreadBindings(listener: () => void): () => void {
 }
 
 function scopeKey(projectRoot: string | null, pin?: OpenProjectBinding | null): string {
-  return pin?.key ?? projectRoot ?? "bound";
+  return cacheScopePin(pin)?.key ?? projectRoot ?? "bound";
 }
 
 function normalizeJiraSite(siteUrl: string): string {

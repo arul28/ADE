@@ -1,4 +1,5 @@
 import type { GitHubPrSnapshot, OpenProjectBinding, PrListConditionalReply, PrSummary } from "../../shared/types";
+import { cacheScopePin } from "./tabBindingKey";
 
 type InFlightEntry<T> = {
   promise: Promise<T>;
@@ -24,8 +25,9 @@ export const LINKED_PR_LIVE_REFRESH_COOLDOWN_MS = 5_000;
  */
 function projectKey(
   projectRoot: string | null | undefined,
-  pin?: OpenProjectBinding | null,
+  rawPin?: OpenProjectBinding | null,
 ): string {
+  const pin = cacheScopePin(rawPin);
   if (pin?.key) return `pin:${pin.key}`;
   return projectRoot?.trim() || "active";
 }

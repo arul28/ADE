@@ -82,6 +82,7 @@ import {
   traceCursorPoint,
 } from "./appControlTrace";
 import { isImeComposing } from "../../lib/imeComposition";
+import { usePinTargetsTab } from "../../state/crossMachineLanes";
 
 type ChatAppControlPanelProps = {
   sessionId: string | null;
@@ -476,7 +477,9 @@ export function ChatAppControlPanel({
   const canLaunch = launchCommand.trim().length > 0 && !hasActiveSession && !controlsDisabled;
   const canStop = hasActiveSession && !controlsDisabled;
   const canType = mode === "control" && typeText.trim().length > 0 && sessionConnected && !controlsDisabled;
-  const remoteLabel = remoteMachineLabel(runtimePin);
+  // The tab's own remote machine is not labelled, as when its pin was null.
+  const runsOnTab = usePinTargetsTab(runtimePin);
+  const remoteLabel = runsOnTab ? null : remoteMachineLabel(runtimePin);
   const activeDriver: AppControlDriver = activeSession?.driver ?? drivers?.activeDriver ?? "cdp";
 
   useEffect(() => {

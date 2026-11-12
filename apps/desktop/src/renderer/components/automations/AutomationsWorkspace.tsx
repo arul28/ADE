@@ -765,7 +765,7 @@ export function AutomationsWorkspace({
         );
         setManualRunRule(null);
         setManualRunLaneId("");
-        if (entry.machine.pin) refreshMachine(entry.machine.machineId);
+        if (!entry.machine.isActiveBinding) refreshMachine(entry.machine.machineId);
         else await refresh();
       } catch (err) {
         setError(explainError(err));
@@ -1036,6 +1036,7 @@ export function AutomationsWorkspace({
                 automationId={selectedRule.id}
                 ruleName={selectedRule.name}
                 pin={selectedEntry?.machine.pin ?? null}
+                isActiveBinding={selectedEntry?.machine.isActiveBinding ?? true}
                 machineName={selectedEntry?.machine.machineName ?? null}
                 offlineMessage={blockedReason(selectedEntry?.machine ?? null)}
               />
@@ -1134,7 +1135,7 @@ export function AutomationsWorkspace({
           onStarted={() => {
             setTestKind(null);
             setDetailView("history");
-            if (selectedEntry.machine.pin) refreshMachine(selectedEntry.machine.machineId);
+            if (!selectedEntry.machine.isActiveBinding) refreshMachine(selectedEntry.machine.machineId);
             else void refresh();
           }}
         />

@@ -153,6 +153,11 @@ function mergeExternalWorkspaces(next: FilesWorkspace[], previous: FilesWorkspac
 }
 
 
+/** The pin when it names another copy than the tab's own; null otherwise. */
+function otherCopyPin(pin: OpenProjectBinding | null | undefined, boundKey: string | null): OpenProjectBinding | null {
+  return pin && pin.key !== boundKey ? pin : null;
+}
+
 function pathIsAtOrUnder(path: string, target: string): boolean {
   return path === target || path.startsWith(`${target}/`) || path.startsWith(`${target}\\`);
 }
@@ -201,7 +206,12 @@ export function FilesWorkbench({
    * every file read/write follow the pin without the window rebinding — the
    * same per-call routing chats and PR reads already use.
    */
-  const [machinePin, setMachinePin] = useState<OpenProjectBinding | null>(seedPin);
+  // A pin that names the tab's own copy is not "another machine": the state
+  // below stays null for it, and every call still names the tab's copy.
+  const boundBindingKey = boundProjectBinding?.key ?? null;
+  const [machinePin, setMachinePin] = useState<OpenProjectBinding | null>(
+    () => otherCopyPin(seedPin, boundBindingKey),
+  );
   /**
    * A lane picked on some machine, waiting for that machine's roster. Picking
    * a lane moves Files to the lane's machine (`pinKey`, null = the tab's), and
@@ -215,8 +225,8 @@ export function FilesWorkbench({
   // The Files API with this machine already bound to it. Identity changes only
   // when the machine does, so every callback and effect below can depend on it
   // honestly — see `pinnedFilesApi.ts` for why a ref could not.
-  const files = useMemo(() => createPinnedFilesApi(machinePin), [machinePin]);
   const projectBinding = machinePin ?? boundProjectBinding;
+  const files = useMemo(() => createPinnedFilesApi(projectBinding), [projectBinding]);
   const projectRootPath = machinePin?.rootPath ?? boundProjectRootPath;
   const isRemoteProject = projectBinding?.kind === "remote";
   const projectCacheKey = filesProjectCacheKey(projectBinding, projectRootPath);
@@ -652,7 +662,7 @@ export function FilesWorkbench({
     if (!target) return;
     const machine = allMachineLanes.machinesById.get(target.machineId);
     if (!machine || !machine.online) return;
-    const nextPin = machine.pin;
+    const nextPin = machine.isActiveBinding ? null : machine.pin;
     if (!machine.isActiveBinding && !nextPin) return;
     setError(null);
     setMachinePin((current) => (current?.key === nextPin?.key ? current : nextPin));
@@ -1173,9 +1183,10 @@ export function FilesWorkbench({
   // A host-supplied pin (the Work tools pane following its chat's machine)
   // wins whenever it changes. Identity is compared by key so an equal binding
   // rebuilt each render does not thrash the roster.
-  const seedPinKey = seedPin?.key ?? null;
+  const seedPinKey = otherCopyPin(seedPin, boundBindingKey)?.key ?? null;
   useEffect(() => {
-    setMachinePin((current) => (current?.key === seedPinKey ? current : seedPin ?? null));
+    const next = otherCopyPin(seedPin, boundBindingKey);
+    setMachinePin((current) => (current?.key === seedPinKey ? current : next));
     // Only the machine identity should retrigger this, not a new object.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedPinKey]);
@@ -1186,9 +1197,9 @@ export function FilesWorkbench({
   useEffect(() => {
     if (!active || !navigationOpenRequest || appliedNavigationPinRef.current === navigationOpenRequest.nonce) return;
     appliedNavigationPinRef.current = navigationOpenRequest.nonce;
-    const requestedPin = navigationOpenRequest.pin ?? null;
+    const requestedPin = otherCopyPin(navigationOpenRequest.pin, boundBindingKey);
     setMachinePin((current) => (current?.key === requestedPin?.key ? current : requestedPin));
-  }, [active, navigationOpenRequest]);
+  }, [active, boundBindingKey, navigationOpenRequest]);
 
   // A request that names only a lane (and its machine): select that lane's
   // workspace once the machine's roster is in.
@@ -1199,8 +1210,8 @@ export function FilesWorkbench({
     const key = `navigation-lane:${navigationOpenRequest.nonce}:${laneId}`;
     if (handledOpenKeysRef.current.has(key)) return;
     markOpenRequestHandled(key);
-    setPendingLaneTarget({ pinKey: navigationOpenRequest.pin?.key ?? null, laneId });
-  }, [active, markOpenRequestHandled, navigationOpenRequest]);
+    setPendingLaneTarget({ pinKey: otherCopyPin(navigationOpenRequest.pin, boundBindingKey)?.key ?? null, laneId });
+  }, [active, boundBindingKey, markOpenRequestHandled, navigationOpenRequest]);
 
   useEffect(() => {
     if (!active || !navigationOpenRequest?.searchQuery || !workspacesLoaded) return;
@@ -1224,7 +1235,7 @@ export function FilesWorkbench({
     if (!active || !navigationOpenRequest?.path || navigationOpenRequest.searchQuery || !workspacesLoaded) return;
     // Still on the previous machine's roster; the pin effect above re-runs this
     // once the switch has landed.
-    if ((navigationOpenRequest.pin?.key ?? null) !== (machinePin?.key ?? null)) return;
+    if ((otherCopyPin(navigationOpenRequest.pin, boundBindingKey)?.key ?? null) !== (machinePin?.key ?? null)) return;
     const key = `navigation:${navigationOpenRequest.nonce}:${navigationOpenRequest.laneId ?? ""}:${navigationOpenRequest.path}:${navigationOpenRequest.line ?? ""}:${navigationOpenRequest.column ?? ""}`;
     if (handledOpenKeysRef.current.has(key)) return;
 
@@ -1255,6 +1266,7 @@ export function FilesWorkbench({
     });
   }, [
     active,
+    boundBindingKey,
     machinePin,
     markOpenRequestHandled,
     navigationOpenRequest,
