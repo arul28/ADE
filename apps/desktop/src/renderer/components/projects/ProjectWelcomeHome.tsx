@@ -12,6 +12,7 @@ import type {
 import { getGitHubSnapshotCoalesced, listPrsCoalesced } from "../../lib/prReadCache";
 import { useAccountStatus } from "../../lib/account";
 import { useAppStore } from "../../state/appStore";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { usageProviderLogo } from "../terminals/ToolLogos";
 import { providerColor } from "../usage/providerColors";
 import { usageLeftLevel, usageLeftLevelColor } from "../usage/usageDesign";
@@ -491,6 +492,10 @@ export type HomePullRequests = {
 
 export function usePullRequests(projectRoot: string | null): HomePullRequests {
   const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
+  // The copy the tab shows: the PR list goes to that machine on purpose.
+  const pin = useTabCopyPin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
   const [data, setData] = useState<{ snapshot: GitHubPrSnapshot | null; tracked: PrSummary[] } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
@@ -529,7 +534,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
       // week's merges with it; open PRs come in the same snapshot.
       const [snapshotResult, trackedResult] = await Promise.allSettled([
         getGitHubSnapshotCoalesced({ automaticRefresh: !force, force, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: projectBindingKey }),
-        listPrsCoalesced({ projectRoot }),
+        listPrsCoalesced({ projectRoot, pin: pinRef.current }),
       ]);
       if (requestRef.current !== request) return;
       if (force) forcedInFlightRef.current = false;
@@ -573,7 +578,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
       unsubscribe?.();
       window.removeEventListener("focus", soon);
     };
-  }, [projectRoot, projectBindingKey, reloadKey]);
+  }, [projectRoot, projectBindingKey, pin?.key, reloadKey]);
   return useMemo(() => {
     const snapshot = data?.snapshot ?? null;
     const trackedById = new Map((data?.tracked ?? []).map((pr) => [pr.id, pr]));
