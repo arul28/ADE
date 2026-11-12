@@ -91,16 +91,13 @@ import { PROJECT_TAB_KEY_ATTR } from "./useProjectTabDrag";
 import { pressActivation } from "../../lib/pressActivation";
 import { useProjectTabLifecycle } from "./useProjectTabLifecycle";
 import {
-  buildSavedWindowRepositoryTabs,
   carryRouteToCopy,
   readWindowStripMemory,
   renameInTabOrder,
+  reportStripRestoreFailure,
   restoredStripFromSaved,
-  useWindowRepositoryTabsSync,
-  useWindowStripMemory,
-  useNoMachineTabCleanup,
-  useOneCopyPerRepository,
   useRepositoryIdentity,
+  useRepositoryTabStrip,
 } from "./useRepositoryTabs";
 import { NoMachineRepositoryTabs } from "./NoMachineRepositoryTabs";
 import { useAccountProjectListClient } from "../../state/accountProjectListClient";
@@ -1336,10 +1333,11 @@ export function TopBar({
         : { ...current, [activeGroup.id]: activeTabBindingKey });
   }, [activeTabBindingKey, tabGroups]);
 
-  // A repository has one tab and one open copy. No rule moves the tab to this
-  // computer's copy: "Start on" picks the machine for new work.
-  useOneCopyPerRepository({
-    enabled: windowSessionRestored && !isProjectBusy,
+  // One tab and one open copy per repository, kept across a reload and a launch.
+  useRepositoryTabStrip({
+    windowSessionRestored,
+    projectBusy: isProjectBusy,
+    webMode,
     tabGroups,
     activeBindingKey: activeTabBindingKey,
     openProjectTabRoots,
@@ -1347,29 +1345,13 @@ export function TopBar({
     setOpenProjectTabRoots,
     setOpenRemoteProjectTabs,
     setTabOrder,
-  });
-  useNoMachineTabCleanup(tabGroups);
-  useWindowStripMemory({
-    enabled: windowSessionRestored,
-    remoteTabs: openRemoteProjectTabs,
     preferredBindingKeyByGroup,
     tabOrder,
+    noMachineTabs,
+    activeNoMachineTabId,
+    noTabInFront: showWelcome === true || isNewTabOpen === true,
+    recordNameFor,
   });
-  // Main saves the strip by repository and reopens it on the next launch (S5).
-  const savedRepositoryTabs = useMemo(
-    () => buildSavedWindowRepositoryTabs({
-      groups: tabGroups,
-      openLocal: new Set(openProjectTabRoots),
-      openRemote: new Set(openRemoteProjectTabs.map((entry) => entry.key)),
-      noMachineTabs,
-      activeBindingKey: activeTabBindingKey,
-      activeNoMachineTabId,
-      noTabInFront: showWelcome === true || isNewTabOpen === true,
-      nameFor: (group) => recordNameFor(group) ?? group.displayName,
-    }),
-    [activeNoMachineTabId, activeTabBindingKey, isNewTabOpen, noMachineTabs, openProjectTabRoots, openRemoteProjectTabs, recordNameFor, showWelcome, tabGroups],
-  );
-  useWindowRepositoryTabsSync(windowSessionRestored && !webMode, savedRepositoryTabs);
 
   useEffect(() => {
     let cancelled = false;
@@ -1449,9 +1431,9 @@ export function TopBar({
           if (!active.copy) {
             store.showNoMachineTab({ id: active.id, displayName: active.displayName, iconDataUrl: null });
           } else if (active.copy.kind === "local") {
-            void store.switchProjectToPath(active.copy.rootPath, { skipWorktreeGate: true }).catch(() => {});
+            void store.switchProjectToPath(active.copy.rootPath, { skipWorktreeGate: true }).catch(reportStripRestoreFailure);
           } else {
-            void store.switchRemoteProject(active.copy.binding.targetId, active.copy.binding.projectId).catch(() => {});
+            void store.switchRemoteProject(active.copy.binding.targetId, active.copy.binding.projectId).catch(reportStripRestoreFailure);
           }
         }
       })

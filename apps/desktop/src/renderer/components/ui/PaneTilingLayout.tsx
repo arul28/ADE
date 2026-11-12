@@ -208,6 +208,12 @@ export function PaneTilingLayout({
   onLeafDraggedOut?: (paneId: string) => void;
 }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  // The repository of the surface that owns this layout (its own store), so a
+  // delayed save stays with it after another tab comes to the front.
+  const layoutBinding = useAppStore((state) => state.projectBinding);
+  const layoutBindingRef = useRef(layoutBinding);
+  layoutBindingRef.current = layoutBinding;
+  const layoutBindingKey = layoutBinding?.key ?? null;
   const { layout, loaded, saveLayout } = useDockLayout(layoutId, {});
 
   /* ---- Mutable tree state (Phase D) ---- */
@@ -229,7 +235,7 @@ export function PaneTilingLayout({
     }
     setLiveTree(next);
     if (resetLayout) saveLayout({});
-    writeClientLayout("tiling", layoutId, next);
+    writeClientLayout("tiling", layoutId, next, layoutBindingRef.current);
   }, [layoutId, saveLayout]);
 
   // Load persisted tree on mount
@@ -237,7 +243,7 @@ export function PaneTilingLayout({
     let cancelled = false;
     setTreeLoaded(false);
     setLiveTree(tree);
-    void readClientLayout("tiling", layoutId)
+    void readClientLayout("tiling", layoutId, layoutBindingRef.current)
       .then((saved) => {
         if (cancelled) return;
         if (saved && typeof saved === "object" && (saved as PaneSplit).type === "split") {
@@ -257,7 +263,7 @@ export function PaneTilingLayout({
         }
       });
     return () => { cancelled = true; };
-  }, [layoutId, expectedPaneIds, tree]);
+  }, [layoutBindingKey, layoutId, expectedPaneIds, tree]);
 
   // Re-sync if prop tree changes shape (e.g., panes added/removed)
   useEffect(() => {
@@ -273,8 +279,9 @@ export function PaneTilingLayout({
       setLiveTree(next);
       saveLayout({});
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      const owner = layoutBindingRef.current;
       saveTimerRef.current = setTimeout(() => {
-        writeClientLayout("tiling", layoutId, next);
+        writeClientLayout("tiling", layoutId, next, owner);
       }, 300);
     },
     [layoutId, saveLayout]

@@ -7,32 +7,26 @@ import {
   CircleNotch,
   Desktop,
   DotsThree,
-  LockSimple,
   XCircle,
 } from "@phosphor-icons/react";
-import type {
-  ListMyGitHubReposResult,
-  MyGitHubRepoSummary,
-  RecentProjectSummary,
-} from "../../../shared/types";
+import type { RecentProjectSummary } from "../../../shared/types";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
-import { extractError, relativeWhen } from "../../lib/format";
+import { extractError } from "../../lib/format";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
 import { Banner } from "../ui/notice";
-import { noteAccountProjectChange } from "../../state/accountProjectListClient";
+import { useAddToAccount } from "./useAddToAccount";
 import {
   COLORS,
-  LABEL_STYLE,
   MONO_FONT,
   SANS_FONT,
   fgTint,
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
-import { ConnectGithubPrompt } from "./ConnectGithubPrompt";
+import { RepoField, inputStyle, sectionLabelStyle } from "./AddProjectRepoField";
 import {
   copyMachines,
   existingCopiesForRepo,
@@ -82,40 +76,6 @@ export type AddProjectFormProps = {
   onOpenProject: (target: CopyOpenTarget) => Promise<void>;
 };
 
-const inputStyle: CSSProperties = {
-  height: 36,
-  padding: "0 12px",
-  fontSize: 12,
-  fontFamily: MONO_FONT,
-  color: COLORS.textPrimary,
-  background: fgTint(4),
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 8,
-  outline: "none",
-  width: "100%",
-  boxSizing: "border-box",
-};
-
-const sectionLabelStyle: CSSProperties = { ...LABEL_STYLE, letterSpacing: "0.08em", textTransform: "uppercase" };
-
-/** The repository list gives up after 15 s, so a stalled GitHub call shows an error. */
-function withRepoListDeadline(promise: Promise<ListMyGitHubReposResult>): Promise<ListMyGitHubReposResult> {
-  return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      reject(new Error("Timed out loading repositories. Check GitHub auth and network access."));
-    }, 15_000);
-    promise.then(
-      (value) => {
-        window.clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        window.clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
 
 /** The machine the person last worked on, when the recent projects say so clearly. */
 function lastUsedMachineId(recents: readonly RecentProjectSummary[]): string | null {
@@ -217,6 +177,7 @@ export function AddProjectForm({
   const urlValid = isGitHubRepoUrl(repoUrl);
   const repoKey = urlValid ? repoKeyForUrl(repoUrl) : null;
   const folderName = urlValid ? repoNameForUrl(repoUrl) : "";
+  const { accountError, addingToAccount, canAddToAccount, addToAccount } = useAddToAccount({ webMode, folderName, onClose });
 
   useEffect(() => (repoKey ? watchCopyJobs(repoKey) : undefined), [repoKey]);
   const jobs = useCopyJobs(repoKey);
@@ -233,9 +194,6 @@ export function AddProjectForm({
     ),
     [existing, recents, snapshot, webMode],
   );
-  const [accountError, setAccountError] = useState<string | null>(null);
-  const [addingToAccount, setAddingToAccount] = useState(false);
-  const canAddToAccount = !webMode && typeof window.ade?.project?.accountAdd === "function";
   const jobByMachine = useMemo(() => new Map(jobs.map((job) => [job.machine.machineId, job])), [jobs]);
 
   const rowState = useCallback(
@@ -431,44 +389,11 @@ export function AddProjectForm({
     && !openOnlyCopy
     && !jobs.some((job) => job.status === "cloning");
 
-  /**
-   * Adds the repository to the account's project list. With no computer
-   * picked it is the whole add: the project is on the account with no copy,
-   * and opens as a tab that says no computer has it.
-   */
-  const addToAccount = async (options: { openTab: boolean }): Promise<boolean> => {
-    const accountAdd = window.ade?.project?.accountAdd;
-    if (typeof accountAdd !== "function") return false;
-    setAccountError(null);
-    setAddingToAccount(true);
-    const answer = await accountAdd(repoUrl).catch((error: unknown) => ({
-      ok: false as const,
-      code: "unavailable",
-      message: extractError(error),
-    }));
-    if (mountedRef.current) setAddingToAccount(false);
-    if (!answer.ok) {
-      // Signed out, or an ssh alias only the cloning machine can read: the
-      // copies still clone, as they did before the account kept projects.
-      if (!options.openTab && (answer.code === "signed_out" || answer.code === "invalid_repository")) return false;
-      if (mountedRef.current) setAccountError(answer.message);
-      else showToast({ tone: "error", title: `Couldn't add ${folderName} to your account`, message: answer.message });
-      return false;
-    }
-    noteAccountProjectChange({ added: answer.project });
-    if (options.openTab) {
-      useAppStore.getState().showNoMachineTab({ id: answer.project.id, displayName: answer.project.name, iconDataUrl: null });
-      showToast({ tone: "success", title: `Added ${answer.project.name} to your account`, message: "No computer has a copy yet." });
-      onClose();
-    }
-    return true;
-  };
-
   const handleAdd = () => {
     if (!repoKey) return;
     setOpenError(null);
     if (accountOnly) {
-      void addToAccount({ openTab: true });
+      void addToAccount(repoUrl, { openTab: true });
       return;
     }
     if (openOnlyCopy && openOn) {
@@ -478,7 +403,7 @@ export function AddProjectForm({
     }
     if (!canAdd) return;
     // The account lists the project too; a clone does not wait for it.
-    if (canAddToAccount) void addToAccount({ openTab: false });
+    if (canAddToAccount) void addToAccount(repoUrl, { openTab: false });
     const opensOnId = openOn?.machineId ?? null;
     for (const machine of cloneableTicked) {
       startCopyJob({
@@ -643,7 +568,7 @@ export function AddProjectForm({
             title: `Couldn't add ${folderName || "the project"} to your account`,
             detail: accountError,
             report: { surface: "add-project", code: "account_add_failed", technicalDetail: accountError },
-            actions: accountOnly ? [{ label: "Try again", onClick: () => void addToAccount({ openTab: true }) }] : [],
+            actions: accountOnly ? [{ label: "Try again", onClick: () => void addToAccount(repoUrl, { openTab: true }) }] : [],
           }}
         />
       ) : null}
@@ -864,176 +789,6 @@ function MachineRow({
           />
         </div>
       ) : null}
-    </div>
-  );
-}
-
-/**
- * The repository: a URL or `owner/repo`, or one picked from the person's
- * GitHub repositories (listed with this computer's GitHub sign-in).
- */
-function RepoField({
-  value,
-  onChange,
-  valid,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  valid: boolean;
-}) {
-  const [listOpen, setListOpen] = useState(false);
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <label htmlFor="add-project-repository" style={sectionLabelStyle}>Repository</label>
-      <div style={{ display: "flex", gap: 8 }}>
-        <input
-          id="add-project-repository"
-          autoFocus
-          type="text"
-          value={value}
-          placeholder="owner/repo or https://github.com/owner/repo"
-          onChange={(event) => onChange(event.target.value)}
-          style={inputStyle}
-        />
-        <button
-          type="button"
-          style={outlineButton({ minWidth: 44 })}
-          aria-label={listOpen ? "Hide your repositories" : "Show your repositories"}
-          aria-expanded={listOpen}
-          onClick={() => setListOpen((open) => !open)}
-        >
-          {listOpen ? <CaretUp size={12} weight="bold" /> : <CaretDown size={12} weight="bold" />}
-        </button>
-      </div>
-      {value.trim().length > 0 && !valid ? (
-        <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger }}>
-          Enter a GitHub repo, like owner/repo or https://github.com/owner/repo
-        </span>
-      ) : null}
-      {listOpen ? (
-        <RepoList
-          onPick={(repo) => {
-            onChange(repo.cloneUrl);
-            setListOpen(false);
-          }}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function RepoList({ onPick }: { onPick: (repo: MyGitHubRepoSummary) => void }) {
-  const [search, setSearch] = useState("");
-  const [debounced, setDebounced] = useState("");
-  const [repos, setRepos] = useState<MyGitHubRepoSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [reload, setReload] = useState(0);
-  const requestRef = useRef(0);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(search), 200);
-    return () => window.clearTimeout(timer);
-  }, [search]);
-
-  useEffect(() => {
-    const requestId = ++requestRef.current;
-    setLoading(true);
-    setError(null);
-    const list = window.ade.github?.listMyRepos;
-    const request: Promise<ListMyGitHubReposResult> = typeof list === "function"
-      ? list({ search: debounced || undefined })
-      : Promise.reject(new Error("GitHub is not available here."));
-    void withRepoListDeadline(request)
-      .then((result) => {
-        if (requestRef.current !== requestId) return;
-        setRepos([...result.repos].sort((a, b) => Date.parse(b.pushedAt ?? "") - Date.parse(a.pushedAt ?? "") || 0));
-      })
-      .catch((err) => {
-        if (requestRef.current !== requestId) return;
-        setError(extractError(err));
-        setRepos([]);
-      })
-      .finally(() => {
-        if (requestRef.current === requestId) setLoading(false);
-      });
-  }, [debounced, reload]);
-
-  if (error && /github_not_connected|not connected/i.test(error)) {
-    return (
-      <ConnectGithubPrompt
-        statusError={null}
-        onConnected={() => setReload((value) => value + 1)}
-        onCancel={() => setError(null)}
-      />
-    );
-  }
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: 10,
-        overflow: "hidden",
-      }}
-    >
-      <input
-        type="text"
-        value={search}
-        onChange={(event) => setSearch(event.target.value)}
-        placeholder="Filter your repositories…"
-        aria-label="Filter your repositories"
-        style={{ ...inputStyle, border: "none", borderBottom: `1px solid ${COLORS.border}`, borderRadius: 0, fontFamily: SANS_FONT }}
-      />
-      <div role="listbox" aria-label="Your repositories" style={{ maxHeight: 220, overflowY: "auto" }}>
-        {loading && repos.length === 0 ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px", fontSize: 12, color: COLORS.textMuted }}>
-            <CircleNotch size={12} weight="bold" className="animate-spin" />
-            Loading your repositories…
-          </div>
-        ) : error ? (
-          <div style={{ padding: "12px", fontSize: 12, color: COLORS.danger }}>{error}</div>
-        ) : repos.length === 0 ? (
-          <div style={{ padding: "12px", fontSize: 12, color: COLORS.textMuted }}>
-            {debounced ? "No repositories match." : "No repositories found."}
-          </div>
-        ) : (
-          repos.map((repo) => (
-            <button
-              key={repo.fullName}
-              type="button"
-              role="option"
-              aria-selected={false}
-              className="kit-row"
-              onClick={() => onPick(repo)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                width: "100%",
-                padding: "8px 12px",
-                background: "transparent",
-                border: "none",
-                textAlign: "left",
-                cursor: "pointer",
-                color: COLORS.textPrimary,
-                fontFamily: MONO_FONT,
-                fontSize: 12,
-              }}
-            >
-              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {repo.fullName}
-              </span>
-              {repo.isPrivate ? <LockSimple size={11} weight="fill" aria-label="Private" /> : null}
-              <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                {repo.pushedAt ? relativeWhen(repo.pushedAt) : ""}
-              </span>
-            </button>
-          ))
-        )}
-      </div>
     </div>
   );
 }

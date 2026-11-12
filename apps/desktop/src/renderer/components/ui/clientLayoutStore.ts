@@ -8,10 +8,13 @@
  *
  * A layout this client has never saved is read once from the tab's copy, where
  * older versions kept it, and then kept here. Nothing writes back to a machine.
+ *
+ * Callers pass the binding of the surface that owns the layout. A delayed save
+ * must not read the active tab at write time: by then another repository can
+ * be in front.
  */
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { useAppStore } from "../../state/appStore";
 
 export type ClientLayoutKind = "dock" | "tiling";
 
@@ -62,11 +65,15 @@ function importFromCopy(
 }
 
 /**
- * The saved layout for `layoutId` in the open repository, or null. Reads this
- * client's copy; a layout it has never saved comes once from the tab's copy.
+ * The saved layout for `layoutId` in the repository of `binding`, or null.
+ * Reads this client's copy; a layout it has never saved comes once from that
+ * copy.
  */
-export function readClientLayout(kind: ClientLayoutKind, layoutId: string): Promise<unknown> {
-  const binding = useAppStore.getState().projectBinding;
+export function readClientLayout(
+  kind: ClientLayoutKind,
+  layoutId: string,
+  binding: OpenProjectBinding | null,
+): Promise<unknown> {
   const scope = layoutScope(binding);
   if (!scope || !binding) return Promise.resolve(null);
   const key = storageKey(kind, scope, layoutId);
@@ -85,9 +92,14 @@ export function readClientLayout(kind: ClientLayoutKind, layoutId: string): Prom
   return request;
 }
 
-/** Saves the layout for `layoutId` in the open repository, on this client only. */
-export function writeClientLayout(kind: ClientLayoutKind, layoutId: string, value: unknown): void {
-  const scope = layoutScope(useAppStore.getState().projectBinding);
+/** Saves the layout for `layoutId` in the repository of `binding`, on this client only. */
+export function writeClientLayout(
+  kind: ClientLayoutKind,
+  layoutId: string,
+  value: unknown,
+  binding: OpenProjectBinding | null,
+): void {
+  const scope = layoutScope(binding);
   if (!scope) return;
   writeStored(storageKey(kind, scope, layoutId), value);
 }
