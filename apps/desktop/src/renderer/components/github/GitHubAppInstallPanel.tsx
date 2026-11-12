@@ -806,9 +806,11 @@ function accountFlowPhaseNote(phase: GithubAccountAppSignInPhase, compact: boole
   }
   if (phase.kind !== "failed") return null;
   const detail = phase.reason === "denied"
-    ? "GitHub says the sign-in was cancelled. Connect again to try once more."
+    ? "The sign-in was cancelled on GitHub, so nothing changed. Connect again to try once more."
+    : phase.reason === "refused"
+      ? "GitHub didn't finish the sign-in, so nothing changed. Connect again to try once more."
     : phase.reason === "expired"
-      ? "The sign-in took longer than ten minutes. Connect again to start a new one."
+      ? "The sign-in link ran out before it was finished. Connect again to start a new one."
       : phase.reason === "rate_limited"
         ? "Too many sign-ins in a short time. Wait a few minutes, then connect again."
         : phase.reason === "signed_out"

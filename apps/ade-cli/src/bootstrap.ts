@@ -1937,6 +1937,8 @@ export async function createAdeRuntime(args: {
         });
       },
       getAdeCliAgentEnv: (baseEnv) => withoutWithheldAgentSkillsEnv(createHeadlessAdeCliAgentEnv(baseEnv)),
+      // The GitHub service starts after this one; until then shells get no token.
+      getSessionGithubEnv: async (env) => (await githubServiceRef?.sessionGithubEnv(env)) ?? null,
       releaseChatBrowser,
       appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
       terminalShellPreferences: terminalShellPreferenceStoreFor(resolveMachineAdeLayout().adeDir, logger),
@@ -3109,6 +3111,7 @@ export async function createAdeRuntime(args: {
         logger,
         appVersion: "ade-cli",
         getAdeCliAgentEnv: (baseEnv) => withoutWithheldAgentSkillsEnv(createHeadlessAdeCliAgentEnv(baseEnv)),
+        getSessionGithubEnv: (env) => headlessLinearServices.githubService.peekSessionGithubEnv(env),
         getLocalGitHubToken: () => headlessLinearServices.githubService.getGitTransportTokenOrThrowAsync(),
         onLinearIssueChatLinked: publishLinearChatLink,
         onEvent: (event) => {

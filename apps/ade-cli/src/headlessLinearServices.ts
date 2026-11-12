@@ -7,6 +7,7 @@ import { gitPushError } from "../../desktop/src/main/services/git/gitPushFailure
 import { githubRepoRefFromRemoteUrl } from "../../desktop/src/shared/githubRemote";
 import { appGrantAllowsCapability, gateAppCandidates } from "../../desktop/src/main/services/github/githubAppGrant";
 import { createGithubAccountAppCredential } from "../../desktop/src/main/services/github/githubAccountAppCredential";
+import { createGithubSessionEnv, readOwnEnvironmentGithubToken } from "../../desktop/src/main/services/github/githubSessionEnv";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -335,14 +336,6 @@ type HeadlessLinearServices = {
   };
   dispose: () => void;
 };
-
-function envToken(...names: string[]): string | null {
-  for (const name of names) {
-    const value = process.env[name]?.trim() ?? "";
-    if (value.length) return value;
-  }
-  return null;
-}
 
 function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -1016,7 +1009,7 @@ export function createHeadlessGitHubService(
     };
     return selectGithubOperationCredential<HeadlessGitHubTokenLookup>({
       environment: () => {
-        const token = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
+        const token = readOwnEnvironmentGithubToken();
         return token
           ? { token, source: "environment", patTokenStored, ghCliPath: null, ghAuthError: null }
           : null;
@@ -1073,7 +1066,7 @@ export function createHeadlessGitHubService(
     // mutable state: another caller reading the same store during the awaits
     // below would otherwise hand this inventory somebody else's outcome.
     const storeUnreadableForThisRead = credentialStoreUnreadable;
-    const environmentToken = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
+    const environmentToken = readOwnEnvironmentGithubToken();
     const [appResult, gh, accountAppToken] = await Promise.all([
       readAppCredentialAsync(),
       Promise.resolve(options.ghAuthTokenProvider?.() ?? ghAuthTokenAsync()),
@@ -1928,6 +1921,13 @@ export function createHeadlessGitHubService(
     },
   });
   const readAppIssueGrant = issueOps.readAppIssueGrant;
+  // --- account_app: `GH_TOKEN` for `gh` in shells and chats (githubSessionEnv.ts).
+  const sessionGithubEnv = createGithubSessionEnv({
+    readAccountAppToken: () => accountApp.readToken(),
+    peekAccountAppToken: () => accountApp.peekToken(),
+    readGrant: readAppIssueGrant,
+    readRepoOwner: async () => (await detectGitHubRepoAsync(projectRoot).catch(() => null))?.owner ?? null,
+  });
 
   const getIssue: HeadlessGitHubService["getIssue"] = async (
     owner,
@@ -2541,6 +2541,10 @@ export function createHeadlessGitHubService(
     async detectRepo() {
       return detectGitHubRepoAsync(projectRoot);
     },
+    /** `GH_TOKEN` for a process about to start, from the account App, or null. */
+    sessionGithubEnv: (env: NodeJS.ProcessEnv) => sessionGithubEnv.forSession(env),
+    /** The same from cached values only (a synchronous environment build). */
+    peekSessionGithubEnv: (env: NodeJS.ProcessEnv) => sessionGithubEnv.peekForSession(env),
     async getAppInstallationStatus(args = {}) {
       const owner = args.owner?.trim();
       const name = args.name?.trim();

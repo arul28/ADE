@@ -147,11 +147,17 @@ export function appGrantAllowsCapability(
   }
 }
 
-export type AppGrantReader = (
+export type AppGrantReader = ((
   owner: string,
   appToken: string,
   options?: { force?: boolean; identity?: string },
-) => Promise<AppInstallationGrant | null>;
+) => Promise<AppInstallationGrant | null>) & {
+  /**
+   * The last answer for `owner`, with no request: `stale` once it is older
+   * than the cache time. Null when nothing was asked yet.
+   */
+  peek?: (owner: string, identity?: string) => { grant: AppInstallationGrant | null; checkedAt: number; stale: boolean } | null;
+};
 
 type GrantEntry = { grant: AppInstallationGrant | null; checkedAt: number; promise: Promise<AppInstallationGrant | null> | null };
 
@@ -167,8 +173,9 @@ export function createAppInstallationGrantReader(
   now: () => number = () => Date.now(),
 ): AppGrantReader {
   const entries = new Map<string, GrantEntry>();
-  return async (owner, appToken, options = {}) => {
-    const key = `${options.identity ?? "app"}:${owner.trim().toLowerCase()}`;
+  const keyOf = (owner: string, identity: string | undefined) => `${identity ?? "app"}:${owner.trim().toLowerCase()}`;
+  const read: AppGrantReader = async (owner, appToken, options = {}) => {
+    const key = keyOf(owner, options.identity);
     const current = entries.get(key);
     if (current?.promise) return current.promise;
     if (!options.force && current && now() - current.checkedAt < APP_GRANT_TTL_MS) return current.grant;
@@ -182,6 +189,12 @@ export function createAppInstallationGrantReader(
     entries.set(key, { grant: current?.grant ?? null, checkedAt: current?.checkedAt ?? 0, promise });
     return promise;
   };
+  read.peek = (owner, identity) => {
+    const current = entries.get(keyOf(owner, identity));
+    if (!current || current.checkedAt === 0) return null;
+    return { grant: current.grant, checkedAt: current.checkedAt, stale: now() - current.checkedAt >= APP_GRANT_TTL_MS };
+  };
+  return read;
 }
 
 const isAppSource = (source: GitHubCredentialSource): boolean => source === "app" || source === "account_app";
