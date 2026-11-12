@@ -1509,7 +1509,7 @@ declare global {
         initializeOrRepair: (pin?: OpenProjectBinding | null) => Promise<AdeCleanupResult>;
         runIntegrityCheck: (pin?: OpenProjectBinding | null) => Promise<AdeCleanupResult>;
         onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
-        onStateEvent: (cb: (event: AdeProjectEvent) => void) => () => void;
+        onStateEvent: (cb: (event: AdeProjectEvent) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       /**
        * Optional as a GROUP, because an older preload has no `diagnostics` at
@@ -2041,7 +2041,7 @@ declare global {
         clearRuntimeName: () => Promise<SyncRoleSnapshot>;
         setActiveLanePresence: (args: { laneIds: string[] }) => Promise<void>;
         getCloudRelayStatus: () => Promise<SyncCloudRelayStatus>;
-        onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
+        onEvent: (cb: (event: SyncStatusEventPayload) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       /** Devin Cloud sessions and Cursor Cloud agents, one contract for both panels. */
       cloudAgents: {
@@ -2157,7 +2157,7 @@ declare global {
             pin?: OpenProjectBinding | null,
           ) => Promise<AutomationWebhookTestResult>;
         };
-        onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
+        onEvent: (cb: (ev: AutomationsEventPayload) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       actions: {
         listRegistry: () => Promise<AdeActionRegistryEntry[]>;
@@ -2327,7 +2327,7 @@ declare global {
         }>;
         getBudgetConfig: (pin?: OpenProjectBinding | null) => Promise<BudgetCapConfig>;
         saveBudgetConfig: (config: BudgetCapConfig, pin?: OpenProjectBinding | null) => Promise<BudgetCapConfig>;
-        onUpdate: (cb: (snapshot: UsageSnapshot) => void) => () => void;
+        onUpdate: (cb: (snapshot: UsageSnapshot) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       lanes: {
         list: (
@@ -2415,7 +2415,7 @@ declare global {
           cb: (ev: LaneDeleteEvent) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
-        onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void) => () => void;
+        onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void, pin?: OpenProjectBinding | null) => () => void;
         attachLinearIssueToSession: (args: {
           chatSessionId: string;
           issues: LaneLinearIssue[];
@@ -2465,7 +2465,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<LaneEnvInitProgress | null>;
         getOverlay: (args: GetLaneOverlayArgs) => Promise<LaneOverlayOverrides>;
-        onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void) => () => void;
+        onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void, pin?: OpenProjectBinding | null) => () => void;
         listTemplates: (pin?: OpenProjectBinding | null) => Promise<LaneTemplate[]>;
         /** Lockfiles in the main checkout of the pinned (or tab's) machine and whether each install is current. */
         getDependencyStatus: (
@@ -2498,7 +2498,7 @@ declare global {
         portRelease: (args: ReleasePortLeaseArgs) => Promise<void>;
         portListConflicts: () => Promise<PortConflict[]>;
         portRecoverOrphans: () => Promise<PortLease[]>;
-        onPortEvent: (cb: (ev: PortAllocationEvent) => void) => () => void;
+        onPortEvent: (cb: (ev: PortAllocationEvent) => void, pin?: OpenProjectBinding | null) => () => void;
         proxyGetStatus: () => Promise<ProxyStatus>;
         proxyStart: (args?: StartProxyArgs) => Promise<ProxyStatus>;
         proxyStop: () => Promise<void>;
@@ -2508,7 +2508,7 @@ declare global {
           args: GetPreviewInfoArgs,
         ) => Promise<LanePreviewInfo | null>;
         proxyOpenPreview: (args: OpenPreviewArgs) => Promise<void>;
-        onProxyEvent: (cb: (ev: LaneProxyEvent) => void) => () => void;
+        onProxyEvent: (cb: (ev: LaneProxyEvent) => void, pin?: OpenProjectBinding | null) => () => void;
         oauthGetStatus: () => Promise<OAuthRedirectStatus>;
         oauthUpdateConfig: (
           args: UpdateOAuthRedirectConfigArgs,
@@ -2521,7 +2521,7 @@ declare global {
           args: DecodeOAuthStateArgs,
         ) => Promise<DecodeOAuthStateResult>;
         oauthListSessions: () => Promise<OAuthSession[]>;
-        onOAuthEvent: (cb: (ev: OAuthRedirectEvent) => void) => () => void;
+        onOAuthEvent: (cb: (ev: OAuthRedirectEvent) => void, pin?: OpenProjectBinding | null) => () => void;
         diagnosticsGetStatus: () => Promise<RuntimeDiagnosticsStatus>;
         diagnosticsGetLaneHealth: (
           args: GetLaneHealthArgs,
@@ -2538,6 +2538,7 @@ declare global {
         ) => Promise<void>;
         onDiagnosticsEvent: (
           cb: (ev: RuntimeDiagnosticsEvent) => void,
+          pin?: OpenProjectBinding | null,
         ) => () => void;
       };
       sessions: {
@@ -4649,7 +4650,7 @@ declare global {
         undoProposal: (
           args: UndoConflictProposalArgs,
         ) => Promise<ConflictProposal>;
-        onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
+        onEvent: (cb: (ev: ConflictEventPayload) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       github: {
         getStatus: (opts?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
@@ -4724,7 +4725,7 @@ declare global {
         publishCurrentProject: (
           input: PublishProjectInput,
         ) => Promise<PublishProjectResult>;
-        onStatusChanged: (cb: (status: GitHubStatus) => void) => () => void;
+        onStatusChanged: (cb: (status: GitHubStatus) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       jira: {
         getConnectionStatus: (pin?: OpenProjectBinding | null) => Promise<JiraConnectionStatus>;
@@ -5199,7 +5200,7 @@ declare global {
         stop: (args: StopTestRunArgs) => Promise<void>;
         listRuns: (args?: ListTestRunsArgs) => Promise<TestRunSummary[]>;
         getLogTail: (args: GetTestLogTailArgs) => Promise<string>;
-        onEvent: (cb: (ev: TestEvent) => void) => () => void;
+        onEvent: (cb: (ev: TestEvent) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       projectConfig: {
         get: (pin?: OpenProjectBinding | null) => Promise<ProjectConfigSnapshot>;

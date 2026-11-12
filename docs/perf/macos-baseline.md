@@ -2864,3 +2864,45 @@ branch alike: a dev build with Vite modules after page visits, not this
 change. One earlier branch run read 5.8 ms/s on Providers after a longer
 session with Work visits; the same-steps pair above is the comparison.
 The sync pass runs on the brain's existing 30 s tick; it adds no timer.
+
+### Events for many machines (S3, 2026-11-12)
+
+Dev app on `ade/account-projects-08-desktop-s3` (the S3 preload) against the
+S2 tip `ec1781a66` (the old preload, checked out over the same tree). Same Mac
+(Mac Studio M4 Max), same steps for both: a fresh launch with
+`--first-run --keep`, the account brain on its own socket, the dev test
+machine "tabs" connected, one local project tab, nothing streaming. The Work
+scene has the test machine's chat "PONG-R2 reply test" open. The Lanes scene
+has the test machine's lane `r-scratch` selected. IPC comes from a perf run
+(`ADE_PERF_RUN_ID`), 60 s per scene, counted from `events.jsonl`. CPU and RSS
+come from `process-cpu.mjs 15`, 3 runs per scene, with no perf run. The load
+average of the Mac was 7–17 in all runs, so read CPU as a range.
+
+| Row | Before (S2) | After (S3) | Ceiling |
+| --- | --- | --- | --- |
+| Idle, 2 machines, Work + Lanes open: runtime event IPC per minute, Work scene | 361 (local 79, remote 282) | 111 (local 79, remote 32) | 150 (proposed) |
+| Same, Lanes scene | 127 (local 80, remote 47) | 109 (local 79, remote 30) | 150 (proposed) |
+| Processes, Work scene, CPU main / renderer | 0.7–0.8% / 1.3–2.0% | 0.5–1.3% / 1.0–1.9% | the Processes table |
+| Same, RSS main / renderer | 187–241 / 224–362 MB | 188–269 / 241–464 MB | the Processes table |
+| Processes, Lanes scene, CPU main / renderer | 0.5–1.2% / 2.9–3.2% | 0.4–1.5% / 2.6–4.3% | the Processes table |
+| Same, RSS main / renderer | 238–250 / 358–406 MB | 178–279 / 252–460 MB | the Processes table |
+| Renderer JS heap after a forced GC, Lanes scene | 119.4 MB | 120.4 MB | the Processes table |
+
+The new row counts every `streamEvents` call (local and remote) in a
+60 s idle window. The local share stays at about 80 per minute: that is the
+active-binding pump at its 750 ms idle rate, which S3 does not change. The
+remote share was one pump for each listener (about 18 to 25 on the Work page).
+S3 runs one pump for each machine, so about 2 remote pumps poll at the 5 s
+idle rate. The ceiling of 150 is a proposal for the owner.
+
+CPU and RSS show no change outside the noise of the busy Mac. Two S3 samples
+on the same steps read renderer RSS 241–275 MB and 436–464 MB; the S2 samples
+read 224–362 MB. The renderer RSS is over the Processes table's 300 MB on S2
+and on S3 alike: a dev build after page visits. The JS heap after a forced
+GC moves by 1 MB.
+
+A stopped or disconnected test machine parks its pumps. After a stop, the log
+showed no remote `streamEvents` call from +15 s to +120 s. After a manual
+Disconnect, it showed none for 38 s. After Connect, the parked pumps polled
+again within 0.3 s and caught up on a reply that the test machine made while
+it was disconnected.

@@ -155,6 +155,7 @@ import {
   createRemoteRuntimeFanout,
   dispatchRemoteRuntimeFanouts,
   hasRemoteRuntimeFanoutSubscribers,
+  type RemoteRuntimeFanout,
   type RemoteRuntimeFanoutEntry,
 } from "./remoteRuntimeFanout";
 import {
@@ -2014,6 +2015,8 @@ const remoteTargetGate = createRemoteTargetGate({
       resumeRemoteRuntimeEventPollAfterReconnect();
     }
   },
+  // The pinned pumps parked while the machine was offline poll again at once.
+  onBackOnline: (targetId) => pinnedRuntimeEvents.resumePinnedRuntimeEventPumps(targetId),
 });
 
 function isValidPreviewTargetPort(value: unknown): value is number {
@@ -3557,6 +3560,7 @@ const pinnedRuntimeEvents = createPinnedRuntimeEvents({
   toWrappedEvent,
   syncPtyDataSubscriptions: () => syncPtyDataSubscriptions(),
   isPtyDataFilteringConfigured: () => ptyDataSubscriptionsConfigured,
+  isRemoteTargetOffline: (targetId) => remoteTargetGate.isOffline(targetId),
 });
 const startPinnedRuntimeEventPump =
   pinnedRuntimeEvents.startPinnedRuntimeEventPump;
@@ -4258,7 +4262,10 @@ function subscribePtyExitEvents(
 
 function subscribeUsageUpdateEvents(
   cb: (payload: UsageSnapshot) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
+  const removePinned = subscribePinnedFanoutEvents(pin, remoteUsageUpdateEventFanout, cb, "usage.onUpdate");
+  if (removePinned) return removePinned;
   const removeLocal = subscribeLocalUsageUpdateEvents((payload) => {
     if (!currentProjectBinding) cb(payload);
   });
@@ -4273,7 +4280,10 @@ function subscribeUsageUpdateEvents(
 
 function subscribeAutomationsEvents(
   cb: (payload: AutomationsEventPayload) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
+  const removePinned = subscribePinnedFanoutEvents(pin, remoteAutomationsEventFanout, cb, "automations.onEvent");
+  if (removePinned) return removePinned;
   const removeLocal = subscribeLocalAutomationsEvents(cb);
   const removeRemote = subscribeRemoteAutomationsEvents(cb);
   return () => {
@@ -4284,7 +4294,10 @@ function subscribeAutomationsEvents(
 
 function subscribeConflictEvents(
   cb: (payload: ConflictEventPayload) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
+  const removePinned = subscribePinnedFanoutEvents(pin, remoteConflictEventFanout, cb, "conflicts.onEvent");
+  if (removePinned) return removePinned;
   const removeLocal = subscribeLocalConflictEvents(cb);
   const removeRemote = subscribeRemoteConflictEvents(cb);
   return () => {
@@ -4325,6 +4338,28 @@ function subscribePinnedProjectRuntimeEvents<T>(
       cb(payload);
     },
   });
+}
+
+/**
+ * A domain that followed only the tab's machine, heard from `pin`'s machine:
+ * the copy's shared pump when the pin names another copy. Returns null for no
+ * pin or a pin that names the bound copy, and the caller keeps its unpinned
+ * path (main's push plus the active pump). A call with no pin is noted once in
+ * the dev tripwire as `sub:<member>`, like an unpinned call.
+ */
+function subscribePinnedFanoutEvents<T>(
+  pin: OpenProjectBinding | null | undefined,
+  fanout: RemoteRuntimeFanout<T>,
+  cb: (payload: T) => void,
+  member: string,
+): (() => void) | null {
+  if (!pin) noteDefaultMachineRoute("sub", member, `sub:${member}`);
+  return subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => (isRecord(payload) ? fanout.decode(payload) : null),
+    cb,
+    member,
+  );
 }
 
 function subscribeComputerUseEvents(
@@ -5514,7 +5549,9 @@ const adeBridge = {
       ipcRenderer.on(IPC.projectMissing, listener);
       return () => ipcRenderer.removeListener(IPC.projectMissing, listener);
     },
-    onStateEvent: (cb: (event: AdeProjectEvent) => void) => {
+    onStateEvent: (cb: (event: AdeProjectEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteProjectStateEventFanout, cb, "project.onStateEvent");
+      if (removePinned) return removePinned;
       const removeLocal = projectStateEventFanout(cb);
       const removeRemote = subscribeRemoteProjectStateEvents(cb);
       return () => {
@@ -6713,7 +6750,9 @@ const adeBridge = {
       callProjectRuntimeSyncOr("sync.getCloudRelayStatus", {}, () =>
         ipcRenderer.invoke(IPC.syncGetCloudRelayStatus),
       ),
-    onEvent: (cb: (event: SyncStatusEventPayload) => void) => {
+    onEvent: (cb: (event: SyncStatusEventPayload) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteSyncStatusEventFanout, cb, "sync.onEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: SyncStatusEventPayload,
@@ -7512,7 +7551,9 @@ const adeBridge = {
         ipcRenderer.removeListener(IPC.lanesDeleteEvent, listener);
       };
     },
-    onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void) => {
+    onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteLaneLifecycleEventFanout, cb, "lanes.onLifecycleEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: LaneLifecycleEvent,
@@ -7722,7 +7763,9 @@ const adeBridge = {
       callProjectRuntimeActionOr("lane", "getOverlay", { args }, () =>
         ipcRenderer.invoke(IPC.lanesGetOverlay, args),
       ),
-    onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void) => {
+    onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteLaneEnvEventFanout, cb, "lanes.onEnvEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: LaneEnvInitEvent,
@@ -7831,7 +7874,9 @@ const adeBridge = {
       callProjectRuntimeActionOr("lane", "portRecoverOrphans", {}, () =>
         ipcRenderer.invoke(IPC.lanesPortRecoverOrphans),
       ),
-    onPortEvent: (cb: (ev: PortAllocationEvent) => void) => {
+    onPortEvent: (cb: (ev: PortAllocationEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteLanePortEventFanout, cb, "lanes.onPortEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: PortAllocationEvent,
@@ -7914,7 +7959,9 @@ const adeBridge = {
       }
       await ipcRenderer.invoke(IPC.lanesProxyOpenPreview, args);
     },
-    onProxyEvent: (cb: (ev: LaneProxyEvent) => void) => {
+    onProxyEvent: (cb: (ev: LaneProxyEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteLaneProxyEventFanout, cb, "lanes.onProxyEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: LaneProxyEvent,
@@ -7963,7 +8010,9 @@ const adeBridge = {
       callProjectRuntimeActionOr("lane", "oauthListSessions", {}, () =>
         ipcRenderer.invoke(IPC.lanesOAuthListSessions),
       ),
-    onOAuthEvent: (cb: (ev: OAuthRedirectEvent) => void) => {
+    onOAuthEvent: (cb: (ev: OAuthRedirectEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteLaneOAuthEventFanout, cb, "lanes.onOAuthEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: OAuthRedirectEvent,
@@ -8021,7 +8070,9 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.lanesDiagnosticsDeactivateFallback, args),
       );
     },
-    onDiagnosticsEvent: (cb: (ev: RuntimeDiagnosticsEvent) => void) => {
+    onDiagnosticsEvent: (cb: (ev: RuntimeDiagnosticsEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteLaneDiagnosticsEventFanout, cb, "lanes.onDiagnosticsEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: RuntimeDiagnosticsEvent,
@@ -13310,7 +13361,9 @@ const adeBridge = {
             () => ipcRenderer.invoke(IPC.githubPublishCurrentProject, input),
           ),
       ),
-    onStatusChanged: (cb: (status: GitHubStatus) => void): (() => void) => {
+    onStatusChanged: (cb: (status: GitHubStatus) => void, pin?: OpenProjectBinding | null): (() => void) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteGitHubStatusChangedFanout, cb, "github.onStatusChanged");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: GitHubStatus,
@@ -14418,7 +14471,9 @@ const adeBridge = {
         ? runtime.result
         : ipcRenderer.invoke(IPC.testsGetLogTail, args);
     },
-    onEvent: (cb: (ev: TestEvent) => void) => {
+    onEvent: (cb: (ev: TestEvent) => void, pin?: OpenProjectBinding | null) => {
+      const removePinned = subscribePinnedFanoutEvents(pin, remoteTestEventFanout, cb, "tests.onEvent");
+      if (removePinned) return removePinned;
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: TestEvent,

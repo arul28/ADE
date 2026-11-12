@@ -20,6 +20,15 @@ export type RemoteTargetGate = {
    */
   invoke<T>(channel: string, targetId: string, payload: Record<string, unknown>): Promise<T>;
   isDisconnected(targetId: string): Promise<boolean>;
+  /**
+   * True while no call can reach the machine: it is disconnected, its link
+   * dropped and ADE waits for it to come back (state "error" with a
+   * `recovery`), or this computer does not know it (removed; main answers
+   * "Remote target was not found"). A reconnect attempt ("connecting") keeps
+   * it offline until it connects. Event pumps park on this; calls still go by
+   * `isDisconnected`.
+   */
+  isOffline(targetId: string): Promise<boolean>;
 };
 
 const SNAPSHOT_READ_RETRY_MS = 15_000;
@@ -28,8 +37,18 @@ export function createRemoteTargetGate(deps: {
   ipcRenderer: Pick<IpcRenderer, "invoke" | "on">;
   /** Called with a machine that was disconnected and now is not. */
   onReconnected: (targetId: string) => void;
+  /** Called with a machine that was offline (see `isOffline`) and now is not. */
+  onBackOnline: (targetId: string) => void;
 }): RemoteTargetGate {
   const disconnected = new Set<string>();
+  const offline = new Set<string>();
+  // Every machine the last snapshot listed. Main lists every saved machine,
+  // so one it does not list is one main refuses as not found.
+  const known = new Set<string>();
+  let snapshotApplied = false;
+  // Machines `isOffline` answered as unknown; one that a later snapshot lists
+  // is back online.
+  const askedWhileUnknown = new Set<string>();
   let updatedAt = 0;
   let firstRead: Promise<void> | null = null;
   let nextReadAfterFailureAt = 0;
@@ -40,14 +59,35 @@ export function createRemoteTargetGate(deps: {
     if (snapshot.updatedAt < updatedAt) return;
     updatedAt = snapshot.updatedAt;
     const wasDisconnected = new Set(disconnected);
+    const wasOffline = new Set(offline);
     disconnected.clear();
+    offline.clear();
+    known.clear();
+    snapshotApplied = true;
     for (const connection of snapshot.connections) {
-      if (connection?.reconnectBlocked === "disconnected" && connection.target?.id) {
-        disconnected.add(connection.target.id);
+      const targetId = connection?.target?.id;
+      if (!targetId) continue;
+      known.add(targetId);
+      const isDisconnected = connection.reconnectBlocked === "disconnected";
+      if (isDisconnected) disconnected.add(targetId);
+      if (
+        isDisconnected
+        || (connection.state === "error" && connection.recovery != null)
+        || (connection.state === "connecting" && wasOffline.has(targetId))
+      ) {
+        offline.add(targetId);
       }
     }
     for (const targetId of wasDisconnected) {
       if (!disconnected.has(targetId)) deps.onReconnected(targetId);
+    }
+    for (const targetId of wasOffline) {
+      if (!offline.has(targetId)) deps.onBackOnline(targetId);
+    }
+    for (const targetId of [...askedWhileUnknown]) {
+      if (!known.has(targetId)) continue;
+      askedWhileUnknown.delete(targetId);
+      if (!offline.has(targetId)) deps.onBackOnline(targetId);
     }
   };
 
@@ -55,9 +95,9 @@ export function createRemoteTargetGate(deps: {
     apply(payload as RemoteRuntimeConnectionSnapshot);
   });
 
-  const isDisconnected = async (targetId: string): Promise<boolean> => {
-    // One read per window covers a tab restored at launch for a machine that
-    // was already disconnected, before any push arrives.
+  // One read per window covers a tab restored at launch for a machine that
+  // was already disconnected, before any push arrives.
+  const readFirstSnapshot = async (): Promise<void> => {
     if (!firstRead && Date.now() >= nextReadAfterFailureAt) {
       firstRead = (
         deps.ipcRenderer.invoke(IPC.remoteRuntimeGetConnectionSnapshot) as Promise<RemoteRuntimeConnectionSnapshot>
@@ -70,11 +110,22 @@ export function createRemoteTargetGate(deps: {
       });
     }
     await firstRead;
+  };
+
+  const isDisconnected = async (targetId: string): Promise<boolean> => {
+    await readFirstSnapshot();
     return disconnected.has(targetId);
   };
 
   return {
     isDisconnected,
+    async isOffline(targetId: string): Promise<boolean> {
+      await readFirstSnapshot();
+      if (offline.has(targetId)) return true;
+      if (!snapshotApplied || known.has(targetId)) return false;
+      askedWhileUnknown.add(targetId);
+      return true;
+    },
     async invoke<T>(channel: string, targetId: string, payload: Record<string, unknown>): Promise<T> {
       if (await isDisconnected(targetId)) {
         throw new Error(

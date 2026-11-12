@@ -23,6 +23,13 @@ export type RemoteRuntimeFanoutEntry = {
 
 export type RemoteRuntimeFanout<T> = RemoteRuntimeFanoutEntry & {
   subscribe: (cb: (payload: T) => void) => () => void;
+  /**
+   * The domain payload of one runtime envelope, or null when the envelope is
+   * not this domain's. A match runs the cache invalidation, as `dispatch` does.
+   * A pinned listener (another machine's pump) decodes with this, so the
+   * domain keeps one shape in one place.
+   */
+  decode: (payload: Record<string, unknown>) => T | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -66,6 +73,12 @@ export function createRemoteRuntimeFanout<T>(args: {
       return () => {
         callbacks.delete(cb);
       };
+    },
+    decode(payload) {
+      const event = extract(payload);
+      if (event == null) return null;
+      args.invalidate?.();
+      return event;
     },
     dispatch(payload) {
       const event = extract(payload);
