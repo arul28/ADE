@@ -39,7 +39,9 @@ import { installWindowsCliLauncher, resolveWindowsCliLauncherSource } from "../c
  *     cmd.exe and Git Bash all find `gh.exe` through PATH and PATHEXT.
  *   - `git-credential-ade-github` (sh) or `git-credential-ade-github.exe`
  *     (launcher) answers git's `get` for https://github.com with the same
- *     token, so a `git push` typed in the shell works after a renewal.
+ *     token, so a `git push` typed in the shell works after a renewal. The
+ *     session also gets `GCM_INTERACTIVE=never`, so a Git Credential Manager
+ *     configured before it declines instead of opening a sign-in window.
  * - The shim steps aside (runs the real `gh` with the environment as it is)
  *   when the shell has its own GitHub token, `gh` has its own login, the
  *   endpoint is gone, or ADE has no token for the owner. With no real `gh`
@@ -57,6 +59,8 @@ export const GH_TOKEN_ENDPOINT_ENV = "ADE_GH_TOKEN_ENDPOINT";
 export const GH_SHIM_OWNER_ENV = "ADE_GH_SHIM_OWNER";
 const GIT_CREDENTIAL_HELPER_NAME = "git-credential-ade-github";
 const GIT_HELPER_CONFIG_KEY = "credential.https://github.com.helper";
+/** Git Credential Manager's switch for its sign-in prompts. */
+const GCM_INTERACTIVE_ENV = "GCM_INTERACTIVE";
 const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 /**
  * How long the endpoint waits for a token. Normally a cache hit
@@ -777,5 +781,13 @@ export function githubShellShimEnv(env: NodeJS.ProcessEnv, owner: string, platfo
   result[`GIT_CONFIG_KEY_${slot}`] = GIT_HELPER_CONFIG_KEY;
   result[`GIT_CONFIG_VALUE_${slot}`] = state.install.credentialHelper;
   result.GIT_CONFIG_COUNT = String(Math.max(existing, slot + 1));
+  // Git asks helpers in config order, so a system or global Git Credential
+  // Manager (`credential.helper=manager`, the Git for Windows default) runs
+  // before this helper. With nothing stored it would open a sign-in window in
+  // an agent's shell; never-interactive, it declines and git asks this helper.
+  // A credential the person stored in it still answers first. A value the
+  // environment already sets is the person's choice and stays.
+  const gcmKey = Object.keys(env).find((key) => (platform === "win32" ? key.toUpperCase() : key) === GCM_INTERACTIVE_ENV);
+  if (gcmKey === undefined || !env[gcmKey]?.trim()) result[gcmKey ?? GCM_INTERACTIVE_ENV] = "never";
   return result;
 }
