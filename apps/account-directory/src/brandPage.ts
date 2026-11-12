@@ -26,7 +26,7 @@ const STYLE = `
   --bg: #faf8f5;
   --fg: #1a1a1e;
   --text-2: color-mix(in srgb, var(--fg) 72%, transparent);
-  --text-3: color-mix(in srgb, var(--fg) 54%, transparent);
+  --text-3: color-mix(in srgb, var(--fg) 62%, transparent);
   --lobe-a: color-mix(in srgb, #a5b4fc 46%, transparent);
   --lobe-b: color-mix(in srgb, #c4b5fd 40%, transparent);
   --glass-fill: color-mix(in srgb, var(--bg) 40%, transparent);

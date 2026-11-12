@@ -61,10 +61,14 @@ export function confirmPage(input: {
   const formAction = ["'self'", input.returnTarget].filter(Boolean).join(" ");
   const document = brandDocument({
     title: "Connect GitHub to ADE?",
-    card: `<p class="sub">Check both accounts. Connect only if you started this in ADE.</p>
+    // Without a verified email the page cannot name the ADE account, so it
+    // sends the person to ADE to check which account is signed in.
+    card: `<p class="sub">${identity.adeAccount
+      ? "Check both accounts. Connect only if you started this in ADE."
+      : "Check the GitHub account. This page cannot show the ADE account, so check in ADE which account is signed in. Connect only if you started this in ADE."}</p>
 ${identityChain({
     github: { label: GITHUB_LABEL, value: `@${identity.githubLogin}` },
-    ade: { label: ADE_LABEL, value: identity.adeAccount ?? "The ADE account that started this", dim: !identity.adeAccount },
+    ade: { label: ADE_LABEL, value: identity.adeAccount ?? "Not shown here. Check in ADE.", dim: !identity.adeAccount },
     state: "pending",
   })}
 ${replaced}
@@ -103,7 +107,8 @@ ${replaced}
 
 export type FailureKind = "denied" | "error" | "expired" | "used" | "unknown" | "not_configured";
 
-const FAILURES: Record<FailureKind, { title: string; lead: string; next: string; status: number }> = {
+/** `connectionKnown: false`: the link may have connected GitHub already, so the page shows no "Not connected" chain. */
+const FAILURES: Record<FailureKind, { title: string; lead: string; next: string; status: number; connectionKnown?: false }> = {
   denied: {
     title: "GitHub was not connected",
     lead: "You cancelled, so nothing changed.",
@@ -127,6 +132,7 @@ const FAILURES: Record<FailureKind, { title: string; lead: string; next: string;
     lead: "A GitHub sign-in link works only once.",
     next: "If ADE shows GitHub as connected, you are done. If not, start again in ADE.",
     status: 410,
+    connectionKnown: false,
   },
   unknown: {
     title: "This link does not work",
@@ -147,7 +153,7 @@ export function failurePage(kind: FailureKind): Response {
   const document = brandDocument({
     title: copy.title,
     card: `<p class="sub">${escapeHtml(copy.lead)}</p>
-${identityChain({
+${copy.connectionKnown === false ? "" : identityChain({
     github: { label: GITHUB_LABEL, value: "Not connected", dim: true },
     ade: { label: ADE_LABEL, value: "No change", dim: true },
     state: "broken",
@@ -172,14 +178,16 @@ export function installedPage(): Response {
 
 /**
  * `ali…@example.com`: the full domain and the first characters of the local
- * part, enough to recognise the account. It shows 1 character of a local part
- * up to 3 long, 2 up to 6, and 3 after that, so at least half stays hidden.
+ * part, enough to recognise the account. It shows no character of a
+ * one-character local part, 1 of one up to 3 long, 2 up to 6, and 3 after
+ * that, so at least half stays hidden.
  */
 export function maskEmail(address: string | undefined): string | null {
   if (!address) return null;
   const at = address.lastIndexOf("@");
   if (at < 1) return null;
   const local = Array.from(address.slice(0, at));
-  const shown = local.length <= 3 ? 1 : local.length <= 6 ? 2 : 3;
+  // At most half of the local part, about a third of it, and never more than 3.
+  const shown = Math.min(3, Math.floor(local.length / 2), Math.ceil(local.length / 3));
   return `${local.slice(0, shown).join("")}…${address.slice(at)}`;
 }
