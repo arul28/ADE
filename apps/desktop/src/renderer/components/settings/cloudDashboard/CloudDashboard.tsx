@@ -43,7 +43,7 @@ import {
 import { clearCloudLaneCaches, cloudLaneLifeAvailable, freeCloudLane } from "../../cloudLane/cloudLaneActions";
 import { deleteCloudLaneWithCheck, useCloudLaneDeletes, type CloudLaneDeletePhase } from "../../cloudLane/deleteCloudLane";
 import { cloudLaneJobFor, cloudLaneJobVisible, refreshCloudLanesWithoutComputer, useCloudLaneJobs, useCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStores";
-import { CloudLaneJobCard, cloudLaneJobStepLine } from "../../cloudLane/CloudLaneJobCard";
+import { CloudLaneJobCard, cloudLaneJobPresentation } from "../../cloudLane/CloudLaneJobCard";
 import type { CloudLaneJobSnapshot } from "../../../../shared/cloudLaneLife";
 import { CloudLaneWithoutComputerNotice } from "../../cloudLane/CloudLaneWithoutComputer";
 import { CloudTierChangeDialog } from "../../cloudLane/CloudTierChangeDialog";
@@ -129,8 +129,8 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
     if (deleting) return deleteRowStatus(deleting);
     if (!lane.instanceId) return null;
     const job = cloudLaneJobFor(jobs, { instanceId: lane.instanceId, laneId: lane.machine?.lane?.laneId ?? null });
-    return job ? jobRowStatus(job) : null;
-  }, [deletes, jobs]);
+    return job ? jobRowStatus(job, account) : null;
+  }, [account, deletes, jobs]);
   const selected = lanes.find((lane) => lane.key === selectedKey) ?? null;
   const selectedJob = selected?.instanceId ? cloudLaneJobFor(jobs, { instanceId: selected.instanceId, laneId: selected.machine?.lane?.laneId ?? null }) : null;
   const otherJobs = useMemo(() => [...jobs.values()].filter((job) => cloudLaneJobVisible(job) && job.phase !== "online"
@@ -597,20 +597,9 @@ function deleteRowStatus(phase: CloudLaneDeletePhase): RowStatus {
     : { state: "starting", label: "Deleting", title: null };
 }
 
-function jobRowStatus(job: CloudLaneJobSnapshot): RowStatus | null {
-  const step = cloudLaneJobStepLine(job);
-  switch (job.phase) {
-    case "waiting":
-      return { state: "starting", label: "Changes when idle", title: step };
-    case "running":
-      return { state: "starting", label: job.kind === "move" ? "Moving" : "Changing size", title: step };
-    case "failed":
-      return { state: "failed", label: job.kind === "move" ? "Move stopped" : "Size change stopped", title: step };
-    case "online":
-      return { state: "awake", label: job.kind === "move" ? "Moved" : "Resized", title: step };
-    default:
-      return null;
-  }
+function jobRowStatus(job: CloudLaneJobSnapshot, account: CloudAccountState | null): RowStatus | null {
+  const { row, stepLine } = cloudLaneJobPresentation(job, account);
+  return row ? { ...row, title: stepLine } : null;
 }
 
 /** What uses a lane's disk, as its computer last measured itself while awake. */

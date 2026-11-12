@@ -13,59 +13,30 @@
  * one fails, or for a provider that signs in on the cloud computer itself
  * (nothing to know before that computer exists), there is no card.
  *
- * Swap point: the whole read is `readAdeCloudSignInState` below. The sign-in
- * backend is being reworked in parallel; when its read API changes, change
- * that one function.
+ * Swap point: the whole read is `readAdeCloudSignInParts`, beside the
+ * answer it feeds. The sign-in backend is being reworked in parallel; when its
+ * read API changes, change that one function.
  *
  * Cost: reads only while a draft is bound for ADE Cloud with a provider
  * picked, on open and on the two change events. No timer, no poll.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { CloudSignInStatus } from "../../../shared/cloudSignIns";
+import { isProviderLoginProvider, type ProviderLoginProvider } from "../../../shared/types/providerLogins";
+import { adeCloudSettingsSearch } from "../settings/SettingsMachineScope";
 import {
-  isProviderLoginProvider,
-  type ProviderLoginProvider,
-  type ProviderLoginStatus,
-} from "../../../shared/types/providerLogins";
-import { adeCloudProviderSignIn } from "../settings/providers/cloud/adeCloudProviderSignIn";
+  adeCloudProviderSignIn,
+  readAdeCloudSignInParts,
+  type AdeCloudSignInParts,
+} from "../settings/providers/cloud/adeCloudProviderSignIn";
+import { providerSignInSpec } from "./ProviderSignInCard";
 
 export type AdeCloudSignInNeed = {
   provider: ProviderLoginProvider;
   /** Claude needs a pass on ADE Cloud; any other provider needs a sign-in there. */
   kind: "claude-pass" | "sign-in";
-  /** Stable while the need holds, so a Not now stays dismissed. */
+  /** Changes with the need (provider and its line), so the strip remounts for a new one. */
   key: string;
 };
-
-type AdeCloudSignInState = {
-  account: ProviderLoginStatus | null;
-  accountFailed: boolean;
-  saved: CloudSignInStatus["saved"] | null;
-};
-
-/**
- * The account's ADE Cloud sign-ins, read once. Unpinned on purpose: these are
- * the account's choices, the same from any of the person's machines, and the
- * tab's machine is the one this window always reaches. Nothing here acts on a
- * chat, a lane or a computer.
- */
-async function readAdeCloudSignInState(): Promise<AdeCloudSignInState> {
-  const [account, saved] = await Promise.allSettled([
-    window.ade?.providerLogins?.status?.({}) ?? Promise.resolve(null),
-    window.ade?.cloud?.cloudSignInStatus?.() ?? Promise.resolve(null),
-  ]);
-  const signIns = saved.status === "fulfilled" ? saved.value : null;
-  const status = account.status === "fulfilled" ? account.value ?? null : null;
-  // A brain that cannot read the account (a dev brain, sync off, signed out,
-  // the vault unreadable) answers with no sign-ins at all. That is "not
-  // known", never "not signed in": no card from it.
-  const readsAccount = status != null && (status.thisComputer.capture === "on" || status.thisComputer.reason === "all_off");
-  return {
-    account: readsAccount ? status : null,
-    accountFailed: account.status === "rejected" || (status != null && !readsAccount),
-    saved: signIns && !signIns.unknown ? signIns.saved : null,
-  };
-}
 
 /** Subscribes to the two change events while `enabled`; returns an unsubscribe. */
 function onAdeCloudSignInChanged(listener: () => void): () => void {
@@ -80,14 +51,23 @@ function onAdeCloudSignInChanged(listener: () => void): () => void {
 export function useAdeCloudSignInNeed({
   enabled,
   provider,
+  navigate,
 }: {
   /** A draft bound for ADE Cloud, with nothing else holding its send. */
   enabled: boolean;
   /** The provider whose sign-in the picked model needs (null: its route brings its own). */
   provider: string | null;
-}): { need: AdeCloudSignInNeed | null; recheck: () => void } {
+  navigate: (to: string) => void;
+}): {
+  need: AdeCloudSignInNeed | null;
+  recheck: () => void;
+  /** Why Send is off while the need holds, for the composer. */
+  blockReason: string | null;
+  /** Opens Settings › Providers › ADE Cloud on the provider's page (Claude's has the pass sheet). */
+  openSignIn: () => void;
+} {
   const active = enabled && Boolean(provider);
-  const [state, setState] = useState<AdeCloudSignInState | null>(null);
+  const [state, setState] = useState<AdeCloudSignInParts | null>(null);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -98,7 +78,7 @@ export function useAdeCloudSignInNeed({
   useEffect(() => {
     if (!active) return undefined;
     let cancelled = false;
-    void readAdeCloudSignInState().then(
+    void readAdeCloudSignInParts().then(
       (next) => {
         if (!cancelled) setState(next);
       },
@@ -113,9 +93,7 @@ export function useAdeCloudSignInNeed({
 
   const need = useMemo<AdeCloudSignInNeed | null>(() => {
     if (!active || !state || !provider || !isProviderLoginProvider(provider)) return null;
-    const account = state.account
-      ? { state: "ok" as const, status: state.account }
-      : state.accountFailed ? { state: "failed" as const } : { state: "loading" as const };
+    const { account } = state;
     // Sign-ins switched off for ADE Cloud: the person signs in on each cloud
     // computer, a choice and not a missing sign-in.
     if (account.state === "ok" && !account.status.cloud.enabled) return null;
@@ -136,5 +114,15 @@ export function useAdeCloudSignInNeed({
   }, [active, provider, state]);
 
   const recheck = useCallback(() => setTick((value) => value + 1), []);
-  return { need, recheck };
+  const blockReason = need
+    ? need.kind === "claude-pass"
+      ? "Claude needs a pass on ADE Cloud first"
+      : `Sign in to ${providerSignInSpec(need.provider)?.label ?? need.provider} on ADE Cloud first`
+    : null;
+  const needProvider = need?.provider ?? null;
+  const openSignIn = useCallback(() => {
+    if (!needProvider) return;
+    navigate(`/settings${adeCloudSettingsSearch({ provider: needProvider })}`);
+  }, [navigate, needProvider]);
+  return { need, recheck, blockReason, openSignIn };
 }

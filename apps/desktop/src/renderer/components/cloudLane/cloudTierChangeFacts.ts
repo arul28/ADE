@@ -5,6 +5,7 @@ import {
   cloudCatalogOf,
   cloudPlanIdOf,
   type CloudAccountState,
+  type CloudMachine,
 } from "../../../shared/adeCloud";
 import { androidFirstStartNeedMb } from "../../../shared/androidDisk";
 import { cloudTierFacts, cloudTiers, type CloudTier } from "../../../shared/cloudTiers";
@@ -23,6 +24,11 @@ export type TierChangeComputer = {
   /** What uses it, from the computer's own last measure; null before one. */
   usedGb: number | null;
 };
+
+/** A cloud computer's disk facts for the change card. */
+export function tierChangeComputerOf(machine: Pick<CloudMachine, "resources" | "diskUsage">): TierChangeComputer {
+  return { diskGb: machine.resources?.diskGb ?? null, usedGb: machine.diskUsage?.totalGb ?? null };
+}
 
 const roundGb = (gb: number) => Math.max(0, Math.floor(gb * 10) / 10);
 

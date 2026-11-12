@@ -19,6 +19,16 @@ export function classifyProviderFailure(event: ErrorEvent): ProviderFailureRecov
   return null;
 }
 
+/**
+ * What recovery an error's own row offers (a sign-in card, the capacity or
+ * usage-limit help), or null for a plain failure.
+ */
+function recoveryKind(event: ErrorEvent): "auth" | ProviderFailureRecovery["kind"] | null {
+  const info = typeof event.errorInfo === "object" ? event.errorInfo : null;
+  if (info?.agentCli || info?.category === "auth" || info?.category === "agent_cli_auth") return "auth";
+  return classifyProviderFailure(event)?.kind ?? null;
+}
+
 function failureSignature(event: ErrorEvent): string {
   const category = typeof event.errorInfo === "string" ? event.errorInfo : event.errorInfo?.category ?? "";
   return `${category}\u0000${event.message.trim()}`;
@@ -68,7 +78,8 @@ function patchRow(row: GroupedRow, patch: RowPatch): GroupedRow {
  * - One failure line per turn. A second `error` of the same turn (a provider
  *   that reports the failure and then the turn's end, the launch hand-off and
  *   the brain both ending it) draws no row of its own: its words go under the
- *   first line's Details. An error-tone notice of that turn that says the same
+ *   first line's Details. One whose recovery differs (a sign-in, capacity or
+ *   usage limit the first line doesn't offer) keeps its row, so its card shows. An error-tone notice of that turn that says the same
  *   thing (the storage guard's notice next to its refusal) is dropped too.
  * - The turn-end line of a failed turn whose failure is already drawn says no
  *   second "FAILED": it reads like any other turn end (`failureShown`).
@@ -125,7 +136,8 @@ export function foldTurnFailureRows(rows: GroupedRow[]): GroupedRow[] {
     if (event.type === "error") {
       const turnId = rowTurnId(event);
       const line = turnId ? lineByTurn.get(turnId) : undefined;
-      if (line) {
+      const laterRecovery = line ? recoveryKind(event) : null;
+      if (line && (laterRecovery == null || laterRecovery === recoveryKind(line.event as ErrorEvent))) {
         // The same turn again: one line, the rest of its words under Details.
         dropped.add(row);
         const message = event.message.trim();
@@ -185,6 +197,11 @@ export function foldTurnFailureRows(rows: GroupedRow[]): GroupedRow[] {
         patchOf(row).failureShown = true;
       }
       if (open.count > 1) patchOf(row).repeatCount = open.count;
+      continue;
+    }
+    // Another turn's end: the failure before it can no longer fold with a later one.
+    if (event.type === "done" && open?.turnId && rowTurnId(event) && rowTurnId(event) !== open.turnId) {
+      open = null;
       continue;
     }
     // Anything but bookkeeping ends the run a repeat can fold into.

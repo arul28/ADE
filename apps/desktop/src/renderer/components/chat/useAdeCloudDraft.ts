@@ -223,8 +223,11 @@ export function useAdeCloudComposer(input: {
   // Asked before Send (account-level, no pin), once per repository, so a
   // private repository with no git credential that follows the account is a
   // label here, never a failed "Clone repository" step after the computer was
-  // made (C4, beta.12 #15).
+  // made (C4, beta.12 #15). Asked again when GitHub's connection changes,
+  // and while it refuses, on window focus and on a blocked Send: the Work tab
+  // stays mounted while the person connects GitHub in Settings.
   const [gitPreflight, setGitPreflight] = useState<{ originUrl: string; result: CloudGitPreflight | null } | null>(null);
+  const [gitPreflightRead, setGitPreflightRead] = useState(0);
   const preflightWanted = mode && newLane && input.showControls && Boolean(originUrl);
   useEffect(() => {
     if (!preflightWanted || !originUrl) return undefined;
@@ -243,10 +246,21 @@ export function useAdeCloudComposer(input: {
     return () => {
       cancelled = true;
     };
-  }, [originUrl, preflightWanted]);
+  }, [gitPreflightRead, originUrl, preflightWanted]);
   const gitRefusal = gitPreflight && gitPreflight.originUrl === originUrl && gitPreflight.result && !gitPreflight.result.ok
     ? gitPreflight.result
     : null;
+  const recheckGitPreflight = useCallback(() => setGitPreflightRead((count) => count + 1), []);
+  useEffect(() => {
+    if (!preflightWanted) return undefined;
+    return window.ade?.github?.onStatusChanged?.(() => recheckGitPreflight()) ?? undefined;
+  }, [preflightWanted, recheckGitPreflight]);
+  const refusedNow = gitRefusal != null;
+  useEffect(() => {
+    if (!preflightWanted || !refusedNow) return undefined;
+    window.addEventListener("focus", recheckGitPreflight);
+    return () => window.removeEventListener("focus", recheckGitPreflight);
+  }, [preflightWanted, recheckGitPreflight, refusedNow]);
   /**
    * Why Send can't go to ADE Cloud now, shown above the box before Send:
    * a fact of the account (out of hours, all computers in use, disk full) or
@@ -331,5 +345,10 @@ export function useAdeCloudComposer(input: {
           : settingsRouteFor("integrations.ade-cloud"));
   }, [navigate]);
 
-  return { shelfLanes, selectedLane, newLane, notice, openSettings };
+  /** A blocked Send: ask GitHub again when its refusal is what holds Send. */
+  const recheckSendBlock = useCallback(() => {
+    if (refusedNow) recheckGitPreflight();
+  }, [recheckGitPreflight, refusedNow]);
+
+  return { shelfLanes, selectedLane, newLane, notice, openSettings, recheckSendBlock };
 }

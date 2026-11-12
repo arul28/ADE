@@ -7,6 +7,7 @@ import { ipcErrorMessage } from "../../lib/format";
 import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
+import { noticeTone } from "../ui/notice/noticeTones";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, changeCloudLaneTier, cloudLaneLifeAvailable } from "./cloudLaneActions";
 import { tierChangeAndroidNote, tierChangeDiskChoices, tierChangeDiskLine, type TierChangeComputer } from "./cloudTierChangeFacts";
 import "./cloudLane.css";
@@ -198,7 +199,7 @@ export function CloudTierChangeCard({
               </dd>
             </>
           ) : null}
-          {android ? (<><dt>Android</dt><dd data-tone={android.fits ? undefined : "warn"}>{android.sentence}</dd></>) : null}
+          {android ? (<><dt>Android</dt><dd style={android.fits ? undefined : { color: noticeTone("warning").text }}>{android.sentence}</dd></>) : null}
           <dt>Wait</dt><dd>{waitText(move)}{growDiskGb ? " Growing the disk adds a few minutes." : ""}</dd>
         </dl>
       ) : null}

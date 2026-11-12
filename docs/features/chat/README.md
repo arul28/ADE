@@ -3165,7 +3165,10 @@ The hand-off then calls `chat.startLaunch` on the computer's brain through
 its pin. The call keeps the same `launchId` and `laneId`, forces the lane
 start to `on: "remote"`, and passes the three finished stages as
 `priorStages`. The brain shows them first and never runs them
-(`normalizeChatLaunchPriorStages`). Messages queued before the hand-off go to
+(`normalizeChatLaunchPriorStages`). It also passes its own start for the
+attempt as `setupStartedAt`, so the card's total counts those steps; a Retry
+on either side starts the clock again (the desktop resets its start, the brain
+clears `setupStartedAt`). Messages queued before the hand-off go to
 the brain in order, one at a time, and the record is written after each one.
 After the hand-off the brain owns the launch and finishes it with the desktop
 closed.

@@ -14,9 +14,9 @@ import { NoticeIcon } from "../ui/notice/NoticeParts";
 import { noticeTone, type NoticeTone } from "../ui/notice/noticeTones";
 import { ToastCard } from "../ui/notice/ToastCard";
 import { LaneIcon } from "../ui/vcsIcons";
-import { CloudLaneJobCard, cloudLaneJobStepLine, cloudLaneJobTitle } from "./CloudLaneJobCard";
+import { CloudLaneJobCard, cloudLaneJobPresentation, cloudLaneJobTitle } from "./CloudLaneJobCard";
 import { cloudLaneLifeAvailable, dismissCloudLaneJob } from "./cloudLaneActions";
-import { cloudLaneJobVisible, useCloudLaneJobs } from "./cloudLaneStores";
+import { cloudLaneJobMarks, cloudLaneJobVisible, cloudLaneJobsNow, subscribeCloudLaneJobs, useCloudLaneJobs, type CloudLaneJobMark } from "./cloudLaneStores";
 import "./cloudLane.css";
 
 /**
@@ -28,6 +28,7 @@ import "./cloudLane.css";
  *
  * - A running job stays while it runs. Closing the panel hides it here only:
  *   the job goes on (main runs it), and the chat and the dashboard still show it.
+ *   It comes back if it fails or starts again (a retry).
  * - A finished job this window saw running says so for a short beat ("Moved to
  *   a Large computer · your chat follows"), then leaves.
  * - A failed job stays with its reason until it is retried or dismissed. Its
@@ -36,51 +37,55 @@ import "./cloudLane.css";
  *
  * It reads the one job store (`listJobs` once, then `onLaneJob` events): no
  * read of its own, no poll; one timer only while a finished row is in view.
+ * The app shell reads only whether there is anything to show
+ * (`useCloudLaneJobsSlideOutVisible`), so a move's progress lines re-render
+ * this panel, never the shell.
  */
 
 /** How long a finished job stays in the panel after it ended. */
-export const CLOUD_LANE_JOB_PANEL_DONE_MS = 20_000;
+const CLOUD_LANE_JOB_PANEL_DONE_MS = 20_000;
 
 /* ── Which jobs this window shows ──────────────────────────────────────── */
 
-/** Jobs this window saw waiting or running: only these say "done" here. */
-const seenLive = new Set<string>();
-/** Jobs the person closed from this panel (live or finished); failures are dismissed for real instead. */
-const hiddenHere = new Set<string>();
+/**
+ * Jobs the person closed from this panel (live or finished), with the job's
+ * turn then (`CloudLaneJobMark.turn`): a hidden job shows again when it fails
+ * or starts again (a retry). Failures are dismissed for real instead.
+ */
+const hiddenHere = new Map<string, number>();
 const hiddenListeners = new Set<() => void>();
 let hiddenVersion = 0;
 
 function hideHere(jobIds: readonly string[]): void {
-  for (const id of jobIds) hiddenHere.add(id);
+  const marks = cloudLaneJobMarks();
+  for (const id of jobIds) hiddenHere.set(id, marks.get(id)?.turn ?? 0);
   hiddenVersion += 1;
   for (const listener of hiddenListeners) listener();
 }
 
+function subscribeHidden(listener: () => void): () => void {
+  hiddenListeners.add(listener);
+  return () => {
+    hiddenListeners.delete(listener);
+  };
+}
+
 function useHiddenVersion(): number {
-  return useSyncExternalStore(
-    (listener) => {
-      hiddenListeners.add(listener);
-      return () => hiddenListeners.delete(listener);
-    },
-    () => hiddenVersion,
-    () => 0,
-  );
+  return useSyncExternalStore(subscribeHidden, () => hiddenVersion, () => 0);
 }
 
 const isLive = (job: CloudLaneJobSnapshot) => job.phase === "waiting" || job.phase === "running";
 
-/**
- * The jobs the panel shows, oldest first. Pure apart from the `seen` set it
- * is handed (live jobs are added to it as they are seen).
- */
-export function selectPanelJobs(
+/** The jobs the panel shows, oldest first. Pure. */
+function selectPanelJobs(
   jobs: ReadonlyMap<string, CloudLaneJobSnapshot>,
-  input: { seen: Set<string>; hidden: ReadonlySet<string>; now: number },
+  input: { marks: ReadonlyMap<string, CloudLaneJobMark>; hidden: ReadonlyMap<string, number>; now: number },
 ): CloudLaneJobSnapshot[] {
   const shown: CloudLaneJobSnapshot[] = [];
   for (const job of jobs.values()) {
-    if (isLive(job)) input.seen.add(job.jobId);
-    if (input.hidden.has(job.jobId) || job.dismissedAt) continue;
+    const mark = input.marks.get(job.jobId);
+    const hiddenAt = input.hidden.get(job.jobId);
+    if ((hiddenAt != null && hiddenAt === (mark?.turn ?? 0)) || job.dismissedAt) continue;
     if (isLive(job)) {
       shown.push(job);
       continue;
@@ -90,12 +95,27 @@ export function selectPanelJobs(
       continue;
     }
     // Online or cancelled: only a finish this window watched, and only for a beat.
-    if (!input.seen.has(job.jobId)) continue;
+    if (!mark?.seenLive) continue;
     const endedAt = Date.parse(job.endedAt ?? job.updatedAt);
     if (Number.isFinite(endedAt) && input.now - endedAt <= CLOUD_LANE_JOB_PANEL_DONE_MS) shown.push(job);
   }
   return shown.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
 }
+
+/** When the first finished row of `shown` leaves the panel; null while every row runs or failed. */
+function nextExpiryOf(shown: readonly CloudLaneJobSnapshot[]): number | null {
+  let soonest: number | null = null;
+  for (const job of shown) {
+    if (isLive(job) || job.phase === "failed") continue;
+    const endedAt = Date.parse(job.endedAt ?? job.updatedAt);
+    if (!Number.isFinite(endedAt)) continue;
+    const at = endedAt + CLOUD_LANE_JOB_PANEL_DONE_MS;
+    if (soonest == null || at < soonest) soonest = at;
+  }
+  return soonest;
+}
+
+const panelJobsNow = (now: number) => selectPanelJobs(cloudLaneJobsNow(), { marks: cloudLaneJobMarks(), hidden: hiddenHere, now });
 
 /** The jobs the corner panel shows now, re-read when a finished row's beat ends. */
 function usePanelJobs(): CloudLaneJobSnapshot[] {
@@ -103,23 +123,13 @@ function usePanelJobs(): CloudLaneJobSnapshot[] {
   const hidden = useHiddenVersion();
   const [now, setNow] = useState(() => Date.now());
   const shown = useMemo(
-    () => selectPanelJobs(jobs, { seen: seenLive, hidden: hiddenHere, now: Math.max(now, Date.now()) }),
-    // `hidden` stands in for the module set it versions.
+    () => selectPanelJobs(jobs, { marks: cloudLaneJobMarks(), hidden: hiddenHere, now: Math.max(now, Date.now()) }),
+    // `hidden` stands in for the module map it versions; the marks change only with `jobs`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [jobs, hidden, now],
   );
   // One timer for the first finished row to leave; nothing while every row runs.
-  const nextExpiry = useMemo(() => {
-    let soonest: number | null = null;
-    for (const job of shown) {
-      if (isLive(job) || job.phase === "failed") continue;
-      const endedAt = Date.parse(job.endedAt ?? job.updatedAt);
-      if (!Number.isFinite(endedAt)) continue;
-      const at = endedAt + CLOUD_LANE_JOB_PANEL_DONE_MS;
-      if (soonest == null || at < soonest) soonest = at;
-    }
-    return soonest;
-  }, [shown]);
+  const nextExpiry = useMemo(() => nextExpiryOf(shown), [shown]);
   useEffect(() => {
     if (nextExpiry == null) return undefined;
     const timer = window.setTimeout(() => setNow(Date.now()), Math.max(0, nextExpiry - Date.now()) + 50);
@@ -128,21 +138,66 @@ function usePanelJobs(): CloudLaneJobSnapshot[] {
   return shown;
 }
 
+/*
+ * The app shell's boolean, kept apart from the job map: a move publishes every
+ * progress line, and the shell renders only when "anything to show" flips.
+ */
+let shellVisible = false;
+let shellTimer: number | null = null;
+let stopShell: (() => void) | null = null;
+const shellListeners = new Set<() => void>();
+
+function recomputeShellVisible(): void {
+  if (shellTimer != null) {
+    window.clearTimeout(shellTimer);
+    shellTimer = null;
+  }
+  const shown = panelJobsNow(Date.now());
+  const expiry = nextExpiryOf(shown);
+  if (expiry != null) shellTimer = window.setTimeout(recomputeShellVisible, Math.max(0, expiry - Date.now()) + 50);
+  const next = shown.length > 0;
+  if (next === shellVisible) return;
+  shellVisible = next;
+  for (const listener of shellListeners) listener();
+}
+
+function subscribeShellVisible(listener: () => void): () => void {
+  shellListeners.add(listener);
+  if (!stopShell) {
+    const offJobs = subscribeCloudLaneJobs(recomputeShellVisible);
+    const offHidden = subscribeHidden(recomputeShellVisible);
+    stopShell = () => {
+      offJobs();
+      offHidden();
+      if (shellTimer != null) window.clearTimeout(shellTimer);
+      shellTimer = null;
+      stopShell = null;
+    };
+    recomputeShellVisible();
+  }
+  return () => {
+    shellListeners.delete(listener);
+    if (shellListeners.size === 0) stopShell?.();
+  };
+}
+
+const readShellVisible = () => shellVisible;
+const readNotVisible = () => false;
+const subscribeNothing = () => () => undefined;
+
 /** Cheap boolean for the app shell: is there anything for the panel to show? */
 export function useCloudLaneJobsSlideOutVisible(): boolean {
-  return usePanelJobs().length > 0;
+  const available = cloudLaneLifeAvailable();
+  return useSyncExternalStore(
+    available ? subscribeShellVisible : subscribeNothing,
+    available ? readShellVisible : readNotVisible,
+    readNotVisible,
+  );
 }
 
 /* ── The panel ─────────────────────────────────────────────────────────── */
 
-function jobTone(job: CloudLaneJobSnapshot): NoticeTone {
-  if (job.phase === "failed") return "error";
-  if (job.phase === "online") return "success";
-  if (job.phase === "cancelled") return "neutral";
-  return "accent";
-}
-
-export function cloudLaneJobsHeadline(jobs: readonly CloudLaneJobSnapshot[], account: CloudAccountState | null): string {
+function cloudLaneJobsHeadline(jobs: readonly CloudLaneJobSnapshot[], account: CloudAccountState | null): string {
   if (jobs.length === 1) return cloudLaneJobTitle(jobs[0]!, account);
   const running = jobs.filter(isLive).length;
   if (running > 0) return `Changing ${running} cloud lane${running === 1 ? "" : "s"}…`;
@@ -165,8 +220,7 @@ const JobRow = React.memo(function JobRow({ job, account, single }: { job: Cloud
   useEffect(() => {
     if (failed) setExpanded(true);
   }, [failed]);
-  const tone = jobTone(job);
-  const line = cloudLaneJobStepLine(job);
+  const { title, tone, stepLine: line } = cloudLaneJobPresentation(job, account);
   const [dismissing, setDismissing] = useState(false);
   const dismiss = () => {
     if (!failed) {
@@ -174,8 +228,9 @@ const JobRow = React.memo(function JobRow({ job, account, single }: { job: Cloud
       return;
     }
     setDismissing(true);
-    void dismissCloudLaneJob(job.jobId).catch(() => {
+    void dismissCloudLaneJob(job.jobId).catch((error: unknown) => {
       // Hidden here at least; the dashboard keeps its own × for another try.
+      console.warn("[cloud] dismissing a lane job failed", error);
       hideHere([job.jobId]);
     }).finally(() => setDismissing(false));
   };
@@ -210,8 +265,8 @@ const JobRow = React.memo(function JobRow({ job, account, single }: { job: Cloud
               </span>
             </span>
             {/* With one job the panel's own title already says it; the row then leads with the lane. */}
-            <span className="line-clamp-2 min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-fg" title={single ? job.laneName : cloudLaneJobTitle(job, account)}>
-              {single ? job.laneName : cloudLaneJobTitle(job, account)}
+            <span className="line-clamp-2 min-w-0 flex-1 text-[12.5px] font-medium leading-snug text-fg" title={single ? job.laneName : title}>
+              {single ? job.laneName : title}
             </span>
             <CaretRight
               size={10}
@@ -244,8 +299,8 @@ const JobRow = React.memo(function JobRow({ job, account, single }: { job: Cloud
         {!live && !single ? (
           <button
             type="button"
-            className="adecl-job-fold"
-            aria-label={failed ? `Dismiss: ${cloudLaneJobTitle(job, account)}` : "Hide"}
+            className="adecl-job-dismiss"
+            aria-label={failed ? `Dismiss: ${title}` : "Hide"}
             title={failed ? "Dismiss" : "Hide"}
             disabled={dismissing}
             onClick={dismiss}
@@ -295,14 +350,18 @@ export function CloudLaneJobsSlideOut() {
           </ul>
         ),
         closeLabel: anyFailed ? "Dismiss" : "Hide",
-        closeTitle: anyFailed ? "Dismiss" : "Hide. The change goes on; its steps stay in the lane's chat and on the ADE Cloud page.",
+        closeTitle: anyFailed ? "Dismiss" : "Hide. The change goes on; its steps stay in the lane's chat and on the ADE Cloud page. A failure shows here again.",
         // Session replay: the lane names are the person's content.
         replayMask: { title: true },
       }}
       onClose={() => {
         // Failures are dismissed for real; running and finished jobs only leave this corner.
         for (const job of jobs) {
-          if (job.phase === "failed") void dismissCloudLaneJob(job.jobId).catch(() => undefined);
+          if (job.phase === "failed") {
+            void dismissCloudLaneJob(job.jobId).catch((error: unknown) => {
+              console.warn("[cloud] dismissing a lane job failed", error);
+            });
+          }
         }
         hideHere(jobs.map((job) => job.jobId));
       }}

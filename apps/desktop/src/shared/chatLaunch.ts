@@ -163,11 +163,6 @@ function clipLaunchTitle(text: string, max: number): string {
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
 }
 
-/**
- * The one constructor for a launch's first snapshot. The host builds it in
- * `start`; a client builds the identical optimistic copy before the host
- * answers, so the two never disagree about title, prompt, or stages.
- */
 const CHAT_LAUNCH_SETTING_KEYS = [
   "reasoningEffort",
   "fastMode",
@@ -186,15 +181,26 @@ const CHAT_LAUNCH_SETTING_KEYS = [
 ] as const satisfies ReadonlyArray<keyof ChatLaunchChatSettings>;
 
 /** The picked settings of a launch's chat, for display before the chat exists (only these keys, never routes or keys). */
-export function chatLaunchChatSettings(create: ChatLaunchChatArgs["create"]): ChatLaunchChatSettings {
-  const out: Record<string, unknown> = {};
-  for (const key of CHAT_LAUNCH_SETTING_KEYS) {
-    const value = create[key];
-    if (value !== undefined) out[key] = value;
-  }
-  return out as ChatLaunchChatSettings;
+function chatLaunchChatSettings(create: ChatLaunchChatArgs["create"]): ChatLaunchChatSettings {
+  const out: ChatLaunchChatSettings = {};
+  for (const key of CHAT_LAUNCH_SETTING_KEYS) copyChatSetting(out, create, key);
+  return out;
 }
 
+function copyChatSetting<K extends keyof ChatLaunchChatSettings>(
+  out: ChatLaunchChatSettings,
+  create: ChatLaunchChatArgs["create"],
+  key: K,
+): void {
+  const value = create[key];
+  if (value !== undefined) out[key] = value;
+}
+
+/**
+ * The one constructor for a launch's first snapshot. The host builds it in
+ * `start`; a client builds the identical optimistic copy before the host
+ * answers, so the two never disagree about title, prompt, or stages.
+ */
 export function createChatLaunchSnapshot(args: {
   launch: ChatLaunchArgs;
   laneId: string;
@@ -246,6 +252,7 @@ export function createChatLaunchSnapshot(args: {
     queuedMessages: [],
     originClientId: launch.originClientId ?? null,
     startedAt: args.nowIso,
+    setupStartedAt: optionalIso(launch.setupStartedAt),
     endedAt: null,
     updatedAt: args.nowIso,
     sequence: 0,
@@ -418,16 +425,28 @@ export function chatLaunchStageDurationMs(stage: Pick<ChatLaunchStage, "startedA
 }
 
 /**
- * When the launch really began: its own start, or an earlier step's. An ADE
- * Cloud launch makes the computer, joins it and clones there before the
- * computer's brain takes the launch over with a clock of its own, so the
- * brain's `startedAt` alone would leave those steps out of the total.
+ * When the launch's current attempt really began. An ADE Cloud launch makes
+ * the computer, joins it and clones there before the computer's brain takes
+ * the launch over with a clock of its own, so the brain's `startedAt` alone
+ * would leave those steps out of the total. The launching app's own start
+ * (`setupStartedAt`) covers them, and a retry on either host resets its clock.
+ * From an older brain without that field, the handed-over cloud steps' own
+ * start stands in (a retry there still counts from the first attempt); the
+ * brain's own finished steps never count, since they keep their first
+ * attempt's times.
  */
-export function chatLaunchStartedAt(snapshot: Pick<ChatLaunchSnapshot, "startedAt" | "stages">): string {
+export function chatLaunchStartedAt(snapshot: Pick<ChatLaunchSnapshot, "startedAt" | "setupStartedAt" | "stages">): string {
+  const startedMs = Date.parse(snapshot.startedAt);
+  if (snapshot.setupStartedAt !== undefined) {
+    const setupMs = snapshot.setupStartedAt ? Date.parse(snapshot.setupStartedAt) : Number.NaN;
+    return Number.isFinite(setupMs) && (!Number.isFinite(startedMs) || setupMs < startedMs)
+      ? snapshot.setupStartedAt!
+      : snapshot.startedAt;
+  }
   let earliest = snapshot.startedAt;
-  let earliestMs = Date.parse(snapshot.startedAt);
+  let earliestMs = startedMs;
   for (const stage of snapshot.stages) {
-    if (!stage.startedAt) continue;
+    if (!stage.startedAt || !isChatLaunchCloudStageId(stage.id)) continue;
     const ms = Date.parse(stage.startedAt);
     if (Number.isFinite(ms) && (!Number.isFinite(earliestMs) || ms < earliestMs)) {
       earliest = stage.startedAt;

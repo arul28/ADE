@@ -59,7 +59,7 @@ export function shownChatNotice(
   chatOnAnotherMachine: boolean,
   /** The chat's cloud computer was deleted (its saved copy says so): no reconnect is coming. */
   computerGone = false,
-  /** The chat's lane name: an ADE Cloud computer is called by it, never by its raw id. */
+  /** The chat's ADE Cloud lane name, only when its machine is an ADE Cloud lane computer: it is called by its lane, never by its raw id. */
   laneName: string | null = null,
 ): ChatNotice | null {
   if (!notice || !chatOnAnotherMachine || notice.kind !== "failure") return notice;

@@ -32,9 +32,33 @@ function publishJobs(next: ReadonlyMap<string, CloudLaneJobSnapshot>): void {
   for (const listener of jobListeners) listener();
 }
 
+/**
+ * What this window saw of each job, recorded as the events arrive (never
+ * while rendering): whether it was ever waiting or running here, and a turn
+ * that moves each time it fails or starts again (a retry keeps the job id).
+ */
+export type CloudLaneJobMark = { seenLive: boolean; turn: number };
+const jobMarks = new Map<string, CloudLaneJobMark>();
+
+function markJob(previous: CloudLaneJobSnapshot | undefined, job: CloudLaneJobSnapshot): void {
+  const mark = jobMarks.get(job.jobId) ?? { seenLive: false, turn: 0 };
+  const live = cloudLaneJobIsLive(job);
+  if (previous && previous.phase !== job.phase && (job.phase === "failed" || (live && !cloudLaneJobIsLive(previous)))) {
+    mark.turn += 1;
+  }
+  if (live) mark.seenLive = true;
+  jobMarks.set(job.jobId, mark);
+}
+
+/** This window's marks of the jobs, by job id (see `CloudLaneJobMark`). */
+export function cloudLaneJobMarks(): ReadonlyMap<string, CloudLaneJobMark> {
+  return jobMarks;
+}
+
 function noteJob(job: CloudLaneJobSnapshot): void {
   const previous = jobs.get(job.jobId);
   if (previous && previous.updatedAt > job.updatedAt) return;
+  markJob(previous, job);
   const next = new Map(jobs);
   next.set(job.jobId, job);
   publishJobs(next);
@@ -51,10 +75,23 @@ function startJobs(): void {
     const next = new Map(jobs);
     for (const job of list) {
       const previous = next.get(job.jobId);
-      if (!previous || previous.updatedAt <= job.updatedAt) next.set(job.jobId, job);
+      if (!previous || previous.updatedAt <= job.updatedAt) {
+        markJob(previous, job);
+        next.set(job.jobId, job);
+      }
     }
     publishJobs(next);
   }, () => undefined);
+}
+
+/** The job store's own subscription, for a reader that needs less than the whole map (the app shell). */
+export function subscribeCloudLaneJobs(listener: () => void): () => void {
+  return subscribeJobs(listener);
+}
+
+/** The jobs as the store holds them now. */
+export function cloudLaneJobsNow(): ReadonlyMap<string, CloudLaneJobSnapshot> {
+  return jobs;
 }
 
 function subscribeJobs(listener: () => void): () => void {

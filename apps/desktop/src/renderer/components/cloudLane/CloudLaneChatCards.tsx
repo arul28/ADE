@@ -1,7 +1,6 @@
 import { useState } from "react";
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import { cloudTierRequestOfCard, type CloudLaneJobSnapshot } from "../../../shared/cloudLaneLife";
-import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import { CHAT_CARD_WIDTH_CLASS } from "../chat/chatCardPrimitives";
@@ -10,6 +9,7 @@ import { cn } from "../ui/cn";
 import { CloudLaneJobCard } from "./CloudLaneJobCard";
 import { CloudLaneWithoutComputerNotice } from "./CloudLaneWithoutComputer";
 import { CloudTierChangeCard } from "./CloudTierChangeCard";
+import { tierChangeComputerOf } from "./cloudTierChangeFacts";
 import {
   cloudLaneJobFor,
   cloudLaneWithoutComputerForBinding,
@@ -79,9 +79,9 @@ export function CloudTierRequestCard({ card, sessionId }: { card: AdeCardPayload
   const machines = useCloudMachines(Boolean(request) && !dismissed);
   const account = machines.result?.state === "ok" ? machines.result.account : null;
   const box = request && machines.result?.state === "ok"
-    ? (machines.result.machines as CloudLaneMachine[]).find((entry) => entry.instanceId === request.instanceId) ?? null
+    ? machines.result.machines.find((entry) => entry.instanceId === request.instanceId) ?? null
     : null;
-  const computer = box ? { diskGb: box.resources?.diskGb ?? null, usedGb: box.diskUsage?.totalGb ?? null } : null;
+  const computer = box ? tierChangeComputerOf(box) : null;
 
   if (!request) {
     return <p className={cn(CHAT_CARD_WIDTH_CLASS, "adecl-muted px-3.5 py-2.5")}>{card.fallbackText}</p>;

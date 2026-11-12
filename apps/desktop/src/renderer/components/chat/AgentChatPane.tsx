@@ -422,7 +422,6 @@ import { autoLaneMachine, isAdeCloudLaneComputer, originUrlForBinding } from "..
 import { draftCloneRowTargetId, useDraftMachineSetup } from "./useDraftMachineSetup";
 import { ADE_CLOUD_MACHINE_ID, useAdeCloudComposer, useAdeCloudDraft, type AdeCloudSend } from "./useAdeCloudDraft";
 import { useAdeCloudSignInNeed } from "./useAdeCloudSignInNeed";
-import { adeCloudSettingsSearch } from "../settings/SettingsMachineScope";
 import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
 import { useFollowLaneMoves } from "../cloudLane/useFollowLaneMoves";
 import { AdeCloudTray, CloudSizeButton, useCloudLaneWithoutComputerForChat } from "./AdeCloudComposerParts";
@@ -458,6 +457,7 @@ import {
 } from "./draftAttachmentTransfer";
 import { chatNoticeReducer, shownChatNotice } from "./chatNotice";
 import { savedChatComputerGone } from "../../state/cloudSavedChats";
+import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
   LAUNCH_PROFILE_TITLE,
   type CliProvider,
@@ -5627,6 +5627,9 @@ export function AgentChatPane({
   // A cloud lane's chat follows its lane to a new computer (contract C3).
   useFollowLaneMoves({ sessionId: selectedSessionId, laneId: selectedSession?.laneId ?? null, pin: chatRuntimePin });
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
+  // An ADE Cloud lane computer is called by its lane in the notice; any other
+  // machine keeps the name it was given, short or not.
+  const chatCloudLane = useAdeCloudLaneForBinding(chatRuntimePin ?? projectBinding);
   // Another machine's chat: pinned there, or on the machine this project tab
   // itself is bound to.
   const shownNotice = shownChatNotice(
@@ -5636,7 +5639,7 @@ export function AgentChatPane({
     // cloud computer no longer exists (no connection, or gone from the list).
     chatNotice != null && selectedSessionId != null
       && savedChatComputerGone(chatRuntimePin, selectedSessionId),
-    laneLabel?.trim() || null,
+    chatCloudLane ? (chatCloudLane.laneName.trim() || laneLabel?.trim() || null) : null,
   );
   // A project chat on another machine, shown here: this desktop runs its
   // agent's browser commands in the browser the user can see, wherever the
@@ -8157,13 +8160,11 @@ export function AgentChatPane({
     const pin = composerPin && composerPin.key !== projectBinding?.key ? composerPin : null;
     void getAiStatusCached({ projectRoot: composerPin?.rootPath ?? projectRoot ?? null, pin })
       .then((status) => setDevinCloudAuthConfigured(status.providerConnections?.devin?.authAvailable === true))
-      .catch(() => setDevinCloudAuthConfigured(false));
+      .catch((error: unknown) => {
+        console.warn("[chat] reading Devin Cloud's sign-in failed", error);
+        setDevinCloudAuthConfigured(false);
+      });
   }, [projectBinding, projectRoot]);
-  useEffect(() => {
-    // Once per pane, and again when the chat moves to another machine (the
-    // pin is read from its ref; its key says when the machine changed).
-    refetchDevinCloudAuth();
-  }, [chatRuntimePinKey, refetchDevinCloudAuth]);
   // "Least loaded" reads machine stats only once the machine menu has opened.
   const [draftMachinePickerOpened, setDraftMachinePickerOpened] = useState(false);
   /** Set below, once the draft's machine routing exists: reads the machines' projects again. */
@@ -17031,6 +17032,7 @@ export function AgentChatPane({
     newLane: adeCloudNewLane,
     notice: adeCloudNotice,
     openSettings: openAdeCloudSettings,
+    recheckSendBlock: recheckAdeCloudSendBlock,
   } = useAdeCloudComposer({
     draft: adeCloud,
     mode: adeCloudMode,
@@ -17372,6 +17374,13 @@ export function AgentChatPane({
   draftBoundMachineIdRef.current = boundLaneMachineId;
   draftExecutionBindingRef.current = draftExecutionBinding;
   draftExecutionBindingRequiredRef.current = showDraftLaunchControls;
+  const draftExecutionBindingKey = draftExecutionBinding?.key ?? null;
+  useEffect(() => {
+    // Once per pane, and again when the chat moves to another machine or the
+    // draft's Run on changes (the pins are read from their refs; their keys
+    // say when the machine changed).
+    refetchDevinCloudAuth();
+  }, [chatRuntimePinKey, draftExecutionBindingKey, refetchDevinCloudAuth]);
   draftMachineUnavailableRef.current = draftMachineUnavailable;
   composerDriftLaneIdRef.current = composerDriftLaneId;
   const activeComposerRuntimeBinding = selectedSessionId
@@ -17561,20 +17570,16 @@ export function AgentChatPane({
    * Cloud sign-ins (`useAdeCloudSignInNeed`), not of this computer. Send stays
    * off until the provider is signed in there (or another model is picked).
    */
-  const { need: adeCloudSignInNeed, recheck: recheckAdeCloudSignIn } = useAdeCloudSignInNeed({
+  const {
+    need: adeCloudSignInNeed,
+    recheck: recheckAdeCloudSignIn,
+    blockReason: adeCloudSignInBlockReason,
+    openSignIn: openAdeCloudSignIn,
+  } = useAdeCloudSignInNeed({
     enabled: !selectedSessionId && adeCloudMode && !turnActive && !subagentView && !personalScope && !parallelDraftActive,
     provider: signInLoginProvider,
+    navigate,
   });
-  const adeCloudSignInBlockReason = adeCloudSignInNeed
-    ? adeCloudSignInNeed.kind === "claude-pass"
-      ? "Claude needs a pass on ADE Cloud first"
-      : `Sign in to ${providerSignInSpec(adeCloudSignInNeed.provider)?.label ?? adeCloudSignInNeed.provider} on ADE Cloud first`
-    : null;
-  const openAdeCloudSignIn = useCallback(() => {
-    if (!adeCloudSignInNeed) return;
-    // Settings › Providers › ADE Cloud, on that provider's page (Claude's has the pass sheet).
-    navigate(`/settings${adeCloudSettingsSearch({ provider: adeCloudSignInNeed.provider })}`);
-  }, [adeCloudSignInNeed, navigate]);
   // One status read at a time for the sign-in checks below.
   const signInRecheckInFlightRef = useRef(false);
   /**
@@ -17605,13 +17610,15 @@ export function AgentChatPane({
   const handleSendBlocked = useCallback(() => {
     // Signed in on ADE Cloud elsewhere (another window, the phone): read the account again.
     if (adeCloudSignInNeed) recheckAdeCloudSignIn();
+    // GitHub connected since the last check: ask whether the repository can be cloned again.
+    recheckAdeCloudSendBlock();
     if (!signInSendBlocked) return;
     // Back as the one-line strip, never the card: the card takes focus, and a
     // second Enter would then start a provider sign-in. Focus stays in the box.
     setSignInCardKey(null);
     setDismissedSignInKey(null);
     recheckProviderSignIn("press");
-  }, [adeCloudSignInNeed, recheckAdeCloudSignIn, recheckProviderSignIn, signInSendBlocked]);
+  }, [adeCloudSignInNeed, recheckAdeCloudSendBlock, recheckAdeCloudSignIn, recheckProviderSignIn, signInSendBlocked]);
   /**
    * Commands that need no login of the provider, or that are the login, still
    * run while Send is off for the sign-in. Each one is answered without a

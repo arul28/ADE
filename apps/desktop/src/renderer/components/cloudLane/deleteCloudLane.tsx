@@ -2,7 +2,7 @@ import { useMemo, useSyncExternalStore } from "react";
 import { CloudArrowUp } from "@phosphor-icons/react";
 import type { CloudLaneWorkLane, CloudLaneWorkState } from "../../../shared/cloudLaneLife";
 import type { OpenProjectBinding } from "../../../shared/types/core";
-import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { adeCloudLaneComputersNow, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { ipcErrorMessage } from "../../lib/format";
 import { READABLE_TOAST_DURATION_MS, dismissToast, getToasts, showToast } from "../app/toast/toastStore";
@@ -63,9 +63,11 @@ function dismissProgressToast(toastId: string): void {
  * ADE couldn't check), it warns first, with "Push all work to GitHub" and
  * "Delete anyway". Its chats stay readable from the saved copy.
  *
- * One flow with feedback from the click: the work check starts at once, and
- * the question (`askFirst`) shows at the same moment instead of after the
- * check; one progress toast ("Deleting fix-login…") then turns into the
+ * One flow with feedback from the click: on an awake computer the work check
+ * starts at once, and the question (`askFirst`) shows at the same moment
+ * instead of after the check. The check wakes a sleeping computer, so on one
+ * that is not known to be awake it starts only after the yes: a Cancel never
+ * spends hours on a wake. One progress toast ("Deleting fix-login…") then turns into the
  * result, and the lane's row says where the delete is (`useCloudLaneDeletes`).
  *
  * Every place that deletes a cloud lane calls this: the dashboard, the Lanes
@@ -113,18 +115,19 @@ export async function deleteCloudLaneWithCheck(input: {
     dismissible: false,
     replayMask: { title: true },
   });
-  const readWork = (): Promise<CloudLaneWorkState> => cloudLaneWorkState(instanceId).catch((error: unknown) => ({
+  const readWork = (): Promise<CloudLaneWorkState> => cloudLaneWorkState(instanceId).catch((error: unknown) => {
     // The check itself failed: warn as if there were work, never delete blind.
-    unpushed: null,
-    unpushedLanes: [],
-    message: ipcErrorMessage(error) || null,
-  }));
+    console.warn("[cloud] checking a lane's work before its delete failed", error);
+    return { unpushed: null, unpushedLanes: [], message: ipcErrorMessage(error) || null };
+  });
 
   let deleted = false;
   try {
     setDeletePhase(instanceId, "checking");
-    // The check runs while the question is up, so a yes rarely waits on it.
-    let checking = readWork();
+    // On an awake computer the check runs while the question is up, so a yes
+    // rarely waits on it. Anywhere else it would wake the computer, so it waits for the yes.
+    const awake = adeCloudLaneComputersNow().some((computer) => computer.instanceId === instanceId && computer.state === "running");
+    let checking: Promise<CloudLaneWorkState> | null = awake || !input.askFirst ? readWork() : null;
     if (input.askFirst) {
       const confirmed = await confirmDialog({
         title: `Delete ${laneName}?`,
@@ -138,6 +141,7 @@ export async function deleteCloudLaneWithCheck(input: {
 
     for (;;) {
       progress("Checking for work that isn't on GitHub…");
+      checking ??= readWork();
       const work = await checking;
       if (work.unpushed === false) break;
       dismissToast(toastId);

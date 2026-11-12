@@ -13250,6 +13250,8 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     args: Pick<AgentChatSendArgs, "text" | "displayText" | "attachments" | "contextAttachments" | "metadata">,
     turnId: string,
+    /** "failed": a message refused while another turn runs; it never reached that turn. */
+    deliveryState?: "failed",
   ): void => {
     emitChatEvent(managed, {
       type: "user_message",
@@ -13262,6 +13264,7 @@ export function createAgentChatService(args: {
       ...(args.metadata ? { metadata: args.metadata } : {}),
       turnId,
       messageId: randomUUID(),
+      ...(deliveryState ? { deliveryState } : {}),
     });
   };
 
@@ -57312,7 +57315,10 @@ export function createAgentChatService(args: {
   /**
    * A turn the storage guard refused: the person's message (when the refusal
    * is a send's), then one failure that says why. No notice beside it: the
-   * failure line is the turn's one state.
+   * failure line is the turn's one state. A send refused while another turn
+   * runs is recorded the way a refused steer is (`emitLaunchRouteSteerFailure`):
+   * the message marked not delivered and the failure, with no turn end, since
+   * the running turn goes on.
    */
   const emitDiskPressureSendFailure = (
     managed: ManagedChatSession,
@@ -57321,13 +57327,19 @@ export function createAgentChatService(args: {
     sent?: Pick<AgentChatSendArgs, "text" | "displayText" | "attachments" | "contextAttachments" | "metadata"> | null,
   ): void => {
     const turnId = randomUUID();
-    if (sent) emitRefusedUserMessage(managed, sent, turnId);
-    logger.info("agent_chat.disk_pressure_refused_turn", { sessionId: managed.session.id, state, turnId, recordedMessage: Boolean(sent) });
+    const midTurn = Boolean(sent) && (runtimeMidTurn(managed) || managed.session.status === "active");
+    if (sent) emitRefusedUserMessage(managed, sent, turnId, midTurn ? "failed" : undefined);
+    logger.info("agent_chat.disk_pressure_refused_turn", { sessionId: managed.session.id, state, turnId, recordedMessage: Boolean(sent), midTurn });
+    if (midTurn) {
+      emitRefusalError(managed, turnId, message, "disk_full", presentDiskFullRefusal(message));
+      persistChatState(managed);
+      return;
+    }
     emitRefusedTurnEnd(managed, turnId, message, "disk_full", presentDiskFullRefusal(message));
   };
 
-  /** The error, failed status and done that end a turn ADE refused to start. */
-  const emitRefusedTurnEnd = (
+  /** The error of a turn (or a message) ADE refused. */
+  const emitRefusalError = (
     managed: ManagedChatSession,
     turnId: string,
     message: string,
@@ -57346,6 +57358,17 @@ export function createAgentChatService(args: {
       },
       turnId,
     });
+  };
+
+  /** The error, failed status and done that end a turn ADE refused to start. */
+  const emitRefusedTurnEnd = (
+    managed: ManagedChatSession,
+    turnId: string,
+    message: string,
+    code?: AdeRecoveryErrorCode,
+    presentation?: ChatErrorPresentation,
+  ): void => {
+    emitRefusalError(managed, turnId, message, code, presentation);
     emitChatEvent(managed, { type: "status", turnStatus: "failed", message, turnId });
     emitChatEvent(managed, {
       type: "done",

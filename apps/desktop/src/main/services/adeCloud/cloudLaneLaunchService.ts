@@ -522,6 +522,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       laneName: record.snapshot.laneName,
       laneConfig: cloudLaneConfig(record.launch.laneConfig),
       priorStages,
+      // This app's clock for the attempt (reset by its Retry): the card's total counts the steps above.
+      setupStartedAt: record.snapshot.startedAt,
     };
     // Subscribed first, so no event between the start and the stream is missed.
     void follow(record);
@@ -851,6 +853,9 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     }
     record.snapshot.phase = "running";
     record.snapshot.error = null;
+    // A retry is a new attempt: its clock starts now, not at the first one
+    // (finished steps keep their own durations), and the brain is handed this start.
+    record.snapshot.startedAt = nowIso();
     record.snapshot.endedAt = null;
     publish(record);
     logger.info("cloud_lane_launch.retried", { launchId: record.snapshot.launchId });

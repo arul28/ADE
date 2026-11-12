@@ -219,6 +219,15 @@ export type ChatLaunchSnapshot = {
   /** Id of the device/window that started the launch (for "mine" filtering in the slide-out). */
   originClientId: string | null;
   startedAt: string;
+  /**
+   * When an earlier host began this attempt (an ADE Cloud launch's computer,
+   * join and clone ran on the launching app before this brain's clock
+   * started), or null when this host's `startedAt` is the whole launch. A
+   * retry here resets it to null, so its clock starts again. Absent on a
+   * launch from an older brain (`chatLaunchStartedAt` falls back to the cloud
+   * steps' own times).
+   */
+  setupStartedAt?: string | null;
   endedAt: string | null;
   updatedAt: string;
   /** Monotonic per launch; clients drop snapshots older than the one they hold. */
@@ -346,6 +355,12 @@ export type ChatLaunchArgs = {
    * statuses; the brain shows them first and keeps them on the card.
    */
   priorStages?: ChatLaunchStage[];
+  /**
+   * When the host before this brain began the launch's current attempt (an
+   * ADE Cloud launch: the launching app's own clock, reset by its Retry), so
+   * the card's total counts the steps that ran there (`setupStartedAt`).
+   */
+  setupStartedAt?: string | null;
 };
 
 export type ChatLaunchCloudTarget = {

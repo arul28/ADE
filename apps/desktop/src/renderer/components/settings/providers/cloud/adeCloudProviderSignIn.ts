@@ -2,12 +2,19 @@
  * "Is this provider signed in on ADE Cloud for this account?", for a caller
  * outside Settings (the pre-send sign-in card of a cloud chat, B14-15): the
  * same answer the ADE Cloud tiles give (`adeCloudTile`), from the account's
- * sign-ins, its saved ADE Cloud keys and its Claude passes, which the caller
- * reads (account-level, no pin: they are the same from every computer of the
- * account). Pure: no reads, no timer.
+ * sign-ins, its saved ADE Cloud keys and its Claude passes.
+ *
+ * Account-level: the reads take no pin. The account's sign-ins, keys and
+ * passes are the same from every computer of the account, so the answer
+ * does not depend on which machine the tab is bound to. Two reads per call,
+ * on demand; no timer and no poll.
+ *
+ *   const parts = await readAdeCloudSignInParts();
+ *   const answer = adeCloudProviderSignIn("codex", parts);
+ *   if (answer.state === "not_signed_in") showSignInCard(answer.line, answer.action);
  */
 import type { CloudSignInStatus } from "../../../../../shared/cloudSignIns";
-import { isProviderLoginProvider, type ProviderLoginProvider } from "../../../../../shared/types/providerLogins";
+import { isProviderLoginProvider, type ProviderLoginProvider, type ProviderLoginStatus } from "../../../../../shared/types/providerLogins";
 import {
   adeCloudTile,
   type AdeCloudAccountPart,
@@ -59,4 +66,38 @@ export function adeCloudProviderSignIn(
   }
   if (tile.state === "sign-in") return { state: "not_signed_in", provider, line, action: tile.action };
   return { state: "unknown", provider, line };
+}
+
+/** The account's half of an answer, read once for every provider (`readAdeCloudSignInParts`). */
+export type AdeCloudSignInParts = {
+  account: AdeCloudAccountPart;
+  saved: CloudSignInStatus["saved"] | null;
+};
+
+/**
+ * Reads the account's sign-ins and saved ADE Cloud keys (account-level, no
+ * pin), for `adeCloudProviderSignIn`. Never throws: a read that fails is
+ * `account: failed` or `saved: null`, and the reason is logged.
+ *
+ * A brain that cannot read the account (a dev brain, sync off, signed out,
+ * the vault unreadable) answers with no sign-ins at all. That is "not known",
+ * never "not signed in": it reads as `failed`, so no card comes from it.
+ */
+export async function readAdeCloudSignInParts(): Promise<AdeCloudSignInParts> {
+  const bridge = typeof window === "undefined" ? undefined : window.ade;
+  const [account, signIns] = await Promise.allSettled([
+    bridge?.providerLogins?.status?.({}) ?? Promise.resolve(null),
+    bridge?.cloud?.cloudSignInStatus?.() ?? Promise.resolve(null),
+  ]);
+  if (account.status === "rejected") console.warn("[cloud] reading the account's sign-ins failed", account.reason);
+  if (signIns.status === "rejected") console.warn("[cloud] reading the saved ADE Cloud keys failed", signIns.reason);
+  const status: ProviderLoginStatus | null = account.status === "fulfilled" ? account.value ?? null : null;
+  const readsAccount = status != null && (status.thisComputer.capture === "on" || status.thisComputer.reason === "all_off");
+  const saved: CloudSignInStatus | null = signIns.status === "fulfilled" ? signIns.value ?? null : null;
+  return {
+    account: status && readsAccount
+      ? { state: "ok", status }
+      : account.status === "rejected" || status != null ? { state: "failed" } : { state: "loading" },
+    saved: saved && !saved.unknown ? saved.saved : null,
+  };
 }

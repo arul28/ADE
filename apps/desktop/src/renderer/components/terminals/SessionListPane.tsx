@@ -1258,7 +1258,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   // Lanes of ADE Cloud computers that are really gone (`computerGone`, from the
   // account's computer list) are listed once, in the deleted-computers place
   // above the list (`CloudLanesOnDeletedComputers`), never among live lanes.
-  // Their saved chats stay openable: the roster still holds them.
+  // Each of their saved chats is listed under its lane there, newest first, and
+  // opens from the roster, which still holds them.
   const goneMachineIds = useRootAppStore((state) => {
     let key = "";
     for (const entry of Object.values(state.crossMachineLanesByMachineId)) {

@@ -1,10 +1,10 @@
 import { useMemo } from "react";
 import { cloudCatalogOf } from "../../../shared/adeCloud";
-import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { cloudTierOfMachine, cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
 import { Dialog } from "../ui/dialog";
 import { CloudTierChangeCard } from "./CloudTierChangeCard";
+import { tierChangeComputerOf } from "./cloudTierChangeFacts";
 
 /**
  * A person's tier change for one cloud lane, from the dashboard or the chat's
@@ -26,15 +26,12 @@ export function CloudTierChangeDialog({
   const machines = useCloudMachines(true);
   const result = machines.result?.state === "ok" ? machines.result : null;
   const account = result?.account ?? null;
-  const machine = (result?.machines as CloudLaneMachine[] | undefined)?.find((entry) => entry.instanceId === instanceId) ?? null;
+  const machine = result?.machines.find((entry) => entry.instanceId === instanceId) ?? null;
   const fromSizeId = useMemo<CloudTierId | null>(
     () => (machine ? cloudTierOfMachine(machine, cloudTiers(cloudCatalogOf(account)))?.id ?? null : null),
     [account, machine],
   );
-  const computer = useMemo(
-    () => (machine ? { diskGb: machine.resources?.diskGb ?? null, usedGb: machine.diskUsage?.totalGb ?? null } : null),
-    [machine],
-  );
+  const computer = useMemo(() => (machine ? tierChangeComputerOf(machine) : null), [machine]);
 
   return (
     <Dialog

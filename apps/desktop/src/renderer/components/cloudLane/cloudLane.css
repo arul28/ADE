@@ -97,7 +97,6 @@
 }
 .adecl-tier-facts dt { font-size: 11.5px; color: var(--kit-text-3); }
 .adecl-tier-facts dd { margin: 0; font-size: 12px; line-height: 1.45; color: var(--color-fg); }
-.adecl-tier-facts dd[data-tone="warn"] { color: var(--kit-warn); }
 .adecl-tier-grow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; color: var(--kit-text-2); }
 .adecl-tier-grow input[type="checkbox"] { accent-color: var(--adec-400); }
 .adecl-tier-grow .kit-input { width: auto; min-width: 84px; }
@@ -108,8 +107,9 @@
 /* The note takes its own line above the buttons, so the three buttons stay together on one. */
 .adecl-tier-when { flex: 1 0 100%; text-align: right; }
 
-/* The fold toggle of the job card above the prompt box. */
-.adecl-job-fold {
+/* The fold toggle of the job card above the prompt box, and a job's dismiss ×, which shares its look. */
+.adecl-job-fold,
+.adecl-job-dismiss {
   display: grid;
   place-items: center;
   flex: none;
@@ -119,8 +119,10 @@
   border-radius: 6px;
   color: var(--kit-text-3);
 }
-.adecl-job-fold:hover { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
-.adecl-job-fold:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.adecl-job-fold:hover,
+.adecl-job-dismiss:hover { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+.adecl-job-fold:focus-visible,
+.adecl-job-dismiss:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
 .adecl-job-fold svg { transition: transform 160ms ease; }
 .adecl-job-fold svg[data-open="0"] { transform: rotate(-90deg); }
 @media (prefers-reduced-motion: reduce) { .adecl-job-fold svg { transition: none; } }
@@ -175,6 +177,26 @@
 .adecl-deleted-head:hover { color: var(--color-fg); background: var(--kit-hover); }
 .adecl-deleted-head:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
 .adecl-deleted-rows { display: flex; flex-direction: column; gap: 6px; }
+/* A lane's saved chats, newest first, under its row. */
+.adecl-deleted-chats { display: flex; flex: 1 1 100%; flex-direction: column; gap: 1px; margin: 0; padding: 0 0 0 22px; list-style: none; }
+.adecl-deleted-chat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-fg);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.adecl-deleted-chat:hover:not(:disabled) { background: var(--kit-hover); }
+.adecl-deleted-chat:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.adecl-deleted-chat:disabled { cursor: default; opacity: 0.6; }
+.adecl-deleted-chat-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Connections: one row per lane's computer. */
 .adecl-cx-row { display: flex; flex-direction: column; }
