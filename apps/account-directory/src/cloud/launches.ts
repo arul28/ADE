@@ -818,7 +818,7 @@ export async function failUnjoinedLaunches(
     select * from cloud_launches where state in ('joining', 'needs_approval') and join_expires_at <= ? limit ?
   `).bind(now - JOIN_GIVE_UP_GRACE_MS, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
   const provider = deps.provider;
-  if (rows.length === 0 || !provider) return 0;
+  if (!provider) return 0;
   let ended = 0;
   for (const row of rows) {
     // Claimed first: a join that lands after this read finds the launch closed
@@ -832,13 +832,8 @@ export async function failUnjoinedLaunches(
     try {
       await deleteLaunchComputer(env, provider, row, now, { who: "launch_join", reason: "launch_never_joined" });
     } catch (error) {
-      // Put the launch back as it was, so the next tick tries the delete again.
-      await env.DB.prepare(`
-        update cloud_launches set state = ?, error = ?, approval_url = ?, updated_at = ?
-        where launch_id = ? and state = 'failed' and updated_at = ?
-      `).bind(row.state, row.error ?? null, row.approval_url ?? null, row.updated_at, row.launch_id, now).run();
+      // The read below tries the delete again on later ticks, until the computer is gone.
       reportCloudFailure("cloud.launch_never_joined_end_failed", { launchId: row.launch_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
-      continue;
     }
     try {
       ended += 1;
@@ -848,6 +843,17 @@ export async function failUnjoinedLaunches(
     } catch (error) {
       reportCloudFailure("cloud.launch_never_joined_end_failed", { launchId: row.launch_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
     }
+  }
+  // A launch failed here whose computer is still on the account (a delete that
+  // failed, or a Worker that stopped between the claim and the delete): delete again.
+  const left = (await env.DB.prepare(`
+    select l.* from cloud_launches l join cloud_computers c on c.instance_id = l.instance_id and c.user_id = l.user_id
+    where l.state = 'failed' and l.error = ? and c.deleted_at is null limit ?
+  `).bind(JOIN_NEVER_FINISHED, UNJOINED_PER_TICK).all<LaunchRow>()).results ?? [];
+  for (const row of left) {
+    await deleteLaunchComputer(env, provider, row, now, { who: "launch_join", reason: "launch_never_joined" }).catch((error: unknown) => {
+      reportCloudFailure("cloud.launch_never_joined_end_failed", { launchId: row.launch_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+    });
   }
   return ended;
 }
