@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { showToast } from "../app/toast/toastStore";
+import { pathElsewhereMessage } from "../files/pathOnThisComputer";
 import type { SimRecording } from "../../../main/services/ios/recording/simRecordingService";
 import {
   RECORDING_RECEIPT_MS,
@@ -97,7 +99,7 @@ export type UseAppleRecordingsArgs = {
   chatSessionId: string | null;
   /** False keeps the list unread. The drawer's Recording section is opt-in. */
   enabled: boolean;
-  runtimePinRef: MutableRefObject<OpenProjectBinding | null>;
+  runtimePinRef: MutableRefObject<OpenProjectBinding>;
   onError: (message: string | null) => void;
 };
 
@@ -236,11 +238,23 @@ export function useAppleRecordings({
     ));
   }, [chatSessionId, laneId, run, runtimePinRef]);
 
-  const openFile = useCallback((recordingPath: string) => {
-    void window.ade.app.openPath(recordingPath).catch((error: unknown) => {
+  // Finder and the default app run on this computer. A recording on another
+  // computer gets that computer's name and no call (`pathElsewhereMessage`).
+  const onThisComputer = useCallback((action: (pin: OpenProjectBinding) => Promise<unknown>) => {
+    const pin = runtimePinRef.current;
+    const refusal = pathElsewhereMessage(pin, "This recording");
+    if (refusal) {
+      showToast({ tone: "info", title: refusal, report: false });
+      return;
+    }
+    void action(pin).catch((error: unknown) => {
       onErrorRef.current(error instanceof Error ? error.message : String(error));
     });
-  }, []);
+  }, [runtimePinRef]);
+
+  const openFile = useCallback((recordingPath: string) => {
+    onThisComputer((pin) => window.ade.app.openPath(recordingPath, pin));
+  }, [onThisComputer]);
 
   const openProof = useCallback((recording: SimRecording) => {
     const artifactId = recording.proofArtifactId;
@@ -255,10 +269,8 @@ export function useAppleRecordings({
   }, [openFile]);
 
   const reveal = useCallback((recording: SimRecording) => {
-    void window.ade.app.revealPath(recording.path).catch((error: unknown) => {
-      onErrorRef.current(error instanceof Error ? error.message : String(error));
-    });
-  }, []);
+    onThisComputer((pin) => window.ade.app.revealPath(recording.path, pin));
+  }, [onThisComputer]);
 
   recordingsRef.current = recordings;
 

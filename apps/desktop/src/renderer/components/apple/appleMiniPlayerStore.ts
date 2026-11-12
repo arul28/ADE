@@ -40,6 +40,12 @@ export type AppleMiniPlayerTarget = {
   deviceName: string;
   deviceRuntime: string | null;
   family: "iphone" | "ipad";
+  /** The machine that owns the device. Fixed when the player opens. */
+  runtimePin: OpenProjectBinding;
+};
+
+/** What a caller asks to float: a null pin is the tab's copy (`devicePinFor`). */
+export type AppleMiniPlayerRequest = Omit<AppleMiniPlayerTarget, "runtimePin"> & {
   runtimePin: OpenProjectBinding | null;
 };
 
@@ -55,6 +61,14 @@ export const appleMiniPlayerBelongsToSurface: (
 /** The machine this window is bound to, which a null pin means. */
 function boundBinding(): OpenProjectBinding | null {
   return useAppStore.getState().projectBinding;
+}
+
+/**
+ * The device's machine as a pin: the caller's pin, else the tab's copy. Null
+ * only with no copy at all; then nothing floats and no call goes out.
+ */
+function devicePinFor(pin: OpenProjectBinding | null): OpenProjectBinding | null {
+  return effectiveRuntimeBinding(pin, boundBinding());
 }
 
 let current: AppleMiniPlayerTarget | null = null;
@@ -112,7 +126,9 @@ function emit(): void {
   for (const listener of listeners) listener();
 }
 
-export function openAppleMiniPlayer(target: AppleMiniPlayerTarget): void {
+export function openAppleMiniPlayer(target: AppleMiniPlayerRequest): void {
+  const runtimePin = devicePinFor(target.runtimePin);
+  if (!runtimePin) return;
   // Asking for it explicitly undoes an earlier dismissal: the rail's "Float
   // over chat" is the user changing their mind, not a request to be ignored.
   dismissed.delete(target.deviceUdid);
@@ -122,10 +138,7 @@ export function openAppleMiniPlayer(target: AppleMiniPlayerTarget): void {
   // machines: after that the player asked the NEW machine for a device it
   // does not have, and floated a black box (2026-09-23, Studio device shown
   // while the window was on a MacBook project).
-  current = {
-    ...target,
-    runtimePin: effectiveRuntimeBinding(target.runtimePin, boundBinding()),
-  };
+  current = { ...target, runtimePin };
   emit();
 }
 
@@ -312,7 +325,7 @@ let handoverHold: {
   epoch: number;
   timer: number;
   scope: { laneId: string | null; chatSessionId: string | null };
-  pin: OpenProjectBinding | null;
+  pin: OpenProjectBinding;
 } | null = null;
 
 function dropHandoverHold(stopIfLast: boolean): void {
@@ -338,7 +351,7 @@ function takeHandoverHold(args: {
   key: AppleStreamLeaseKey;
   laneId: string | null;
   chatSessionId: string | null;
-  runtimePin: OpenProjectBinding | null;
+  runtimePin: OpenProjectBinding;
 }): void {
   // One at a time: a second handover while one is still held would leave the
   // first one's count parked until its timer, which is a stream nobody stops.
@@ -382,6 +395,8 @@ export function handoffAppleMiniPlayer(args: {
   }
   const { laneId } = args;
   if (!laneId || current) return false;
+  const runtimePin = devicePinFor(args.runtimePin);
+  if (!runtimePin) return false;
   const viewer = appleStreamViewerForLane(
     laneId,
     workRuntimeScopeKey(args.runtimePin, boundBinding()),
@@ -395,7 +410,7 @@ export function handoffAppleMiniPlayer(args: {
     key: viewer.key,
     laneId,
     chatSessionId: args.chatSessionId,
-    runtimePin: args.runtimePin,
+    runtimePin,
   });
   openAppleMiniPlayer({
     laneId,
@@ -437,7 +452,9 @@ export async function handoffAppleMiniPlayerAsync(args: {
   if (current) return;
   const api = window.ade?.iosSimulator;
   if (!api?.deviceList) return;
-  const listed = await api.deviceList({ laneId, installed: true }, args.runtimePin).catch(() => null);
+  const runtimePin = devicePinFor(args.runtimePin);
+  if (!runtimePin) return;
+  const listed = await api.deviceList({ laneId, installed: true }, runtimePin).catch(() => null);
   const lane = listed?.lane ?? null;
   if (!lane || !laneDeviceBooted(listed)) return;
   if (previewSuppressed(args.chatSessionId, lane.udid)) return;
@@ -503,8 +520,9 @@ export async function floatAppleMiniPlayerForChat(args: {
   let device = args.auto ? null : getAppleMiniPlayerLaneDevice(args);
   if (!device) {
     const api = window.ade?.iosSimulator;
-    if (!api?.deviceList) return false;
-    const listed = await api.deviceList({ laneId, installed: true }, args.runtimePin).catch(() => null);
+    const runtimePin = devicePinFor(args.runtimePin);
+    if (!api?.deviceList || !runtimePin) return false;
+    const listed = await api.deviceList({ laneId, installed: true }, runtimePin).catch(() => null);
     const lane = listed?.lane ?? null;
     if (!lane) return false;
     if (args.auto && !laneDeviceBooted(listed)) return false;

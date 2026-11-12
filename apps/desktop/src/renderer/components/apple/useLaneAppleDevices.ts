@@ -1,7 +1,9 @@
 import type { AppleDeviceListResult, IosSimulatorEventPayload } from "../../../shared/types/iosSimulator";
 import { supportsIosSimulatorPlatform } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { useRef } from "react";
+import type { OpenProjectBinding } from "../../../shared/types/core";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { applePowerFromPhase } from "./appleDeviceState";
 import { useLaneDeviceMarks } from "../device/useLaneDeviceMarks";
 
@@ -18,8 +20,10 @@ import { useLaneDeviceMarks } from "../device/useLaneDeviceMarks";
  *   changes, never on a timer.
  * - Boot and shutdown events move the running tint directly, without a read.
  *
- * No pin: the rows this feeds are the bound machine's lanes, and an unpinned
- * call goes to the bound runtime. Lanes on other machines are not covered.
+ * The pin names the machine of the lanes on screen. The Work list shows the
+ * tab copy's lanes today, so a caller that passes no pin gets the tab's copy,
+ * named explicitly. Lanes on other machines are not covered. With no copy (no
+ * computer online) it reads nothing.
  */
 
 export type LaneAppleDevice = {
@@ -107,17 +111,21 @@ export function laneAppleDevicesSupported(bindingKind: "local" | "remote" | null
 export function useLaneAppleDevices(args: {
   /** Changes whenever the lane list refreshes; each change re-reads the claims. */
   refreshKey: unknown;
+  /** The machine of those lanes. Omitted: the tab's copy (the lanes the Work list shows). */
+  pin?: OpenProjectBinding | null;
 }): LaneAppleDevices {
-  const projectRoot = useAppStore(selectActiveProjectRoot);
-  const bindingKind = useAppStore((state) => state.projectBinding?.kind ?? null);
-  const bindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
-  const enabled = laneAppleDevicesSupported(bindingKind);
-  const scope = enabled ? `${bindingKey ?? ""}\u0000${projectRoot ?? ""}` : null;
+  const tabCopyPin = useTabCopyPin();
+  const pin = args.pin === undefined ? tabCopyPin : args.pin;
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const enabled = pin != null && laneAppleDevicesSupported(pin.kind);
+  const scope = enabled ? pin.key : null;
   const api = typeof window !== "undefined" ? window.ade?.iosSimulator : undefined;
 
   const read = async (current: LaneAppleDevices, withInstalled: boolean): Promise<LaneAppleDevices | null> => {
-    if (!api?.deviceList) return null;
-    const listed = await api.deviceList({ installed: withInstalled }).catch(() => null);
+    const readPin = pinRef.current;
+    if (!api?.deviceList || !readPin) return null;
+    const listed = await api.deviceList({ installed: withInstalled }, readPin).catch(() => null);
     // A failed read keeps what is on screen; a blip should not blink the marks.
     if (!listed) return null;
     const owners = listed.owners ?? [];
@@ -135,7 +143,7 @@ export function useLaneAppleDevices(args: {
     scope,
     refreshKey: args.refreshKey,
     read: (current) => read(current, false),
-    subscribe: api?.onEvent ? (listener) => api.onEvent(listener) : null,
+    subscribe: api?.onEvent ? (listener) => api.onEvent(listener, pinRef.current) : null,
     onEvent: (event, current) => {
       if (event.type === "session-released") return null;
       if (event.type !== "apple.device.state") return false;

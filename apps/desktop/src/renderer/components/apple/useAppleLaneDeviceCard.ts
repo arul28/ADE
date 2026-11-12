@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AppleLaneDeviceOrigin } from "../../../shared/types/iosSimulator";
 import { applePowerFromPhase, laneDeviceBooted } from "./appleDeviceState";
+import { useDeviceMachinePin } from "./useDeviceMachinePin";
 
 /**
  * The tools grid card's one fact about the Apple tool: which device this lane
@@ -54,7 +55,10 @@ export function useAppleLaneDeviceCard(args: {
    */
   refreshKey?: unknown;
 }): AppleLaneDeviceCard | null {
-  const { laneId, runtimePin, enabled, refreshKey } = args;
+  const { laneId, enabled: wanted, refreshKey } = args;
+  // The lane's machine, the tab's copy included. No copy: no card, no call.
+  const runtimePin = useDeviceMachinePin(args.runtimePin);
+  const enabled = wanted && runtimePin != null;
   const [card, setCard] = useState<AppleLaneDeviceCard | null>(null);
   const [starting, setStarting] = useState(false);
   const [readNonce, setReadNonce] = useState(0);
@@ -80,7 +84,7 @@ export function useAppleLaneDeviceCard(args: {
         return;
       }
       const listed = await api
-        .deviceList({ laneId, installed: true }, pinRef.current)
+        .deviceList({ laneId, installed: true }, pinRef.current ?? undefined)
         .catch(() => null);
       if (cancelled) return;
       const lane = listed?.lane ?? null;
@@ -102,7 +106,7 @@ export function useAppleLaneDeviceCard(args: {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [enabled, laneId, readNonce, refreshKey]);
+  }, [enabled, laneId, readNonce, refreshKey, runtimePin?.key]);
 
   useEffect(() => {
     if (!enabled || !laneId) return undefined;
@@ -121,7 +125,7 @@ export function useAppleLaneDeviceCard(args: {
       setReadNonce((nonce) => nonce + 1);
     }, pinRef.current);
     return unsubscribe;
-  }, [enabled, laneId]);
+  }, [enabled, laneId, runtimePin?.key]);
 
   if (!card) return null;
   return starting && card.state !== "running" ? { ...card, state: "starting" } : card;

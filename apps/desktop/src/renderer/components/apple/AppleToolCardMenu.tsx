@@ -9,6 +9,7 @@ import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_C
 import { DangerConfirmMenuItem } from "../ui/DangerConfirmMenuItem";
 import { confirmAppleDeviceRelease } from "./appleReleaseConfirm";
 import type { AppleLaneDeviceCard } from "./useAppleLaneDeviceCard";
+import { useDeviceMachinePin } from "./useDeviceMachinePin";
 
 /**
  * The Apple Development card's action menu.
@@ -44,7 +45,7 @@ export function AppleToolCardMenu({
   device,
   laneId,
   chatSessionId,
-  runtimePin,
+  runtimePin: hostPin,
   onOpenTool,
   onMutated,
 }: {
@@ -57,6 +58,8 @@ export function AppleToolCardMenu({
   /** A mutation succeeded: the card should re-read (the web client gets no events). */
   onMutated: () => void;
 }) {
+  // The lane's machine, the tab's copy included (`useDeviceMachinePin`).
+  const runtimePin = useDeviceMachinePin(hostPin);
   const [pending, setPending] = useState(false);
   const [confirmingRelease, setConfirmingRelease] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -65,13 +68,13 @@ export function AppleToolCardMenu({
   const comingUp = device.state !== "off";
   const isAdeDevice = isAdeOwnedLaneDevice(device.origin);
 
-  const run = useCallback((action: string, task: () => Promise<unknown>, after?: () => void) => {
-    if (pending) return;
+  const run = useCallback((action: string, task: (pin: OpenProjectBinding) => Promise<unknown>, after?: () => void) => {
+    if (pending || !runtimePin) return;
     setPending(true);
-    // `Promise.resolve().then(task)` rather than `task()`: a namespace that
+    // `Promise.resolve(pin).then(task)` rather than `task(pin)`: a namespace that
     // throws SYNCHRONOUSLY would escape the chain and leave `pending` stuck
     // true, disabling the trigger for the card's lifetime.
-    void Promise.resolve()
+    void Promise.resolve(runtimePin)
       .then(task)
       .then(() => {
         onMutated();
@@ -85,37 +88,37 @@ export function AppleToolCardMenu({
         });
       })
       .finally(() => setPending(false));
-  }, [onMutated, pending]);
+  }, [onMutated, pending, runtimePin]);
 
   const boot = useCallback(() => {
     run(
       "Boot device",
-      () => window.ade.iosSimulator.deviceStart({ laneId, chatSessionId, udid: device.udid }, runtimePin),
+      (pin) => window.ade.iosSimulator.deviceStart({ laneId, chatSessionId, udid: device.udid }, pin),
       onOpenTool,
     );
-  }, [chatSessionId, device.udid, laneId, onOpenTool, run, runtimePin]);
+  }, [chatSessionId, device.udid, laneId, onOpenTool, run]);
 
   const release = useCallback(() => {
     void confirmAppleDeviceRelease({ name: device.name, origin: device.origin, endsSession: comingUp }).then((choice) => {
       if (!choice) return;
-      run("Release device", () => window.ade.iosSimulator.deviceDetach({
+      run("Release device", (pin) => window.ade.iosSimulator.deviceDetach({
         laneId,
         udid: device.udid,
         chatSessionId,
         ignoreOwnership: true,
         ...(choice.keep ? { keep: true } : {}),
-      }, runtimePin));
+      }, pin));
     });
-  }, [chatSessionId, comingUp, device.name, device.origin, device.udid, laneId, run, runtimePin]);
+  }, [chatSessionId, comingUp, device.name, device.origin, device.udid, laneId, run]);
 
   const remove = useCallback(() => {
-    run("Delete device", () => window.ade.iosSimulator.deviceDelete({
+    run("Delete device", (pin) => window.ade.iosSimulator.deviceDelete({
       laneId,
       udid: device.udid,
       chatSessionId,
       ignoreOwnership: true,
-    }, runtimePin));
-  }, [chatSessionId, device.udid, laneId, run, runtimePin]);
+    }, pin));
+  }, [chatSessionId, device.udid, laneId, run]);
 
   return (
     <DropdownMenu.Root
