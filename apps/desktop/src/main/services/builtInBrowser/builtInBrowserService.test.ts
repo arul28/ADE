@@ -3047,6 +3047,28 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(left).not.toContain(b);
   });
 
+  it("stops a chat's close pass when the chat goes back to work mid-pass", async () => {
+    // A close pass awaits each close before the next. A newer lifecycle word
+    // for the chat (a turn starting) must stop it there, or the rest of the
+    // chat's tabs close in the middle of that turn.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const first = await service.createTab({ url: "https://one.example.test", activate: false, laneId: "lane-1", chatSessionId: "chat-1" });
+    const second = await service.createTab({ url: "https://two.example.test", activate: false, laneId: "lane-1", chatSessionId: "chat-1" });
+    const firstId = first.targetTabId ?? "";
+    const secondId = second.targetTabId ?? "";
+    expect(firstId && secondId, "two agent tabs open").toBeTruthy();
+
+    expect(service.chatBrowserLifecycle({ chatSessionId: "chat-1", state: "ended" }).tabs).toBe(2);
+    // Same tick: the pass is awaiting its first close.
+    service.chatBrowserLifecycle({ chatSessionId: "chat-1", state: "running" });
+
+    await vi.waitFor(() => expect(service.getStatus().tabs.map((tab) => tab.id)).not.toContain(firstId));
+    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    const left = service.getStatus().tabs.map((tab) => tab.id);
+    expect(left).toContain(secondId);
+    expect(left).not.toContain(firstId);
+  });
+
   it("intercepts popup requests as real ADE browser tabs", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await service.createTab({

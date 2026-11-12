@@ -328,6 +328,12 @@ const MAX_TRACKED_DOWNLOADS = 100;
 const DOWNLOAD_TRIGGER_ACTIONS = new Set([
   "click", "dispatchKey", "fill", "typeText", "paste", "dropFiles", "uploadFile", "selectOption", "drag",
 ]);
+/**
+ * Agent actions that send input into the page. While one runs, the input the
+ * tab sees is the agent's; `wait` sends none, so a person's clicks during it
+ * still make the tab theirs.
+ */
+const AGENT_INPUT_ACTIONS = new Set([...DOWNLOAD_TRIGGER_ACTIONS, "scroll", "clear"]);
 const DEFAULT_DOWNLOAD_WAIT_MS = 60_000;
 const MAX_DOWNLOAD_WAIT_MS = 120_000;
 /**
@@ -474,9 +480,9 @@ export type BrowserTabState = {
   /** When an agent command last drove input into this tab (any action, not only downloads). */
   lastAgentInputAtMs: number | null;
   /**
-   * Agent actions running on this tab right now. While any runs, input the
-   * tab sees is the agent's own, however long the action waited before it
-   * sent it (an access check, a wake, the recording viewport).
+   * Input-sending agent actions running on this tab right now, counted once
+   * their access check and wake are done. While any runs, input the tab sees
+   * is the agent's own.
    */
   agentActionsInFlight: number;
   /** Last time a person saw this tab on screen, or an agent or a watcher used it. */
@@ -3619,9 +3625,15 @@ function createBuiltInBrowserWindowService(args: {
       // the finished file, so the wait timed out on a download it had made.
       if (DOWNLOAD_TRIGGER_ACTIONS.has(action)) tab.lastActionAtMs = Date.now();
       tab.lastAgentInputAtMs = Date.now();
-      tab.agentActionsInFlight += 1;
-      inFlight = true;
       await prepareAgentActionTab(tab, input);
+      // Counted from here, not before the access check, the wake and the
+      // recording viewport: a person using the tab while the agent waits on
+      // those is still a person.
+      if (AGENT_INPUT_ACTIONS.has(action)) {
+        tab.lastAgentInputAtMs = Date.now();
+        tab.agentActionsInFlight += 1;
+        inFlight = true;
+      }
       // A tab nobody is looking at has no compositor surface, and Chromium
       // drops synthesized input to it: a click found its element, was sent,
       // and nothing happened. Hold the tab parked (attached, off screen) for
@@ -5433,8 +5445,10 @@ function createBuiltInBrowserWindowService(args: {
   const chatLifecycleGenerations = new Map<string, number>();
   const chatGeneration = (chatSessionId: string): number => chatLifecycleGenerations.get(chatSessionId) ?? 0;
   const bumpChatGeneration = (chatSessionId: string): void => {
+    // Read before the delete (the delete only moves the chat to the newest end).
+    const next = chatGeneration(chatSessionId) + 1;
     chatLifecycleGenerations.delete(chatSessionId);
-    chatLifecycleGenerations.set(chatSessionId, chatGeneration(chatSessionId) + 1);
+    chatLifecycleGenerations.set(chatSessionId, next);
     // Bounded: only the most recent chats can still have a pass in flight.
     if (chatLifecycleGenerations.size > 1_000) {
       const oldest = chatLifecycleGenerations.keys().next().value;
