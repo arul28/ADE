@@ -861,6 +861,42 @@ The zero-baseline long-task row has a small absolute ceiling rather than a
 percentage margin; hidden-tab reads have a strict zero ceiling. These rows do
 not change any desktop ceiling.
 
+### Signed-out rows on the Mac Studio, 2026-11-12
+
+A second machine (Mac Studio M4 Max, 36 GB, Chrome 155, load average 7–13
+from other agents), so these do not replace the PR #1561 baselines above.
+`npm run bench:webclient -- --skip-chat --runs 3` (one run for the bisect
+points), medians. The ceilings stay as they are.
+
+| Metric | Before Sentry (`8298e50a8~1`) | main `1896ab16b` | Joined branch `99be2796f` | `ade/account-web-cli-links` `75461a9ff` | Ceiling |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Requests | 53 | 74 | 94 | 67 | 60 |
+| Transfer (KB) | 816 | 1,607 | 2,799 | 1,496 | 2,000 |
+| JS (KB) | 598 | 1,358 | 1,655 | 1,252 | 950 |
+| Images (KB) | 79 | 82 | 975 | 82 | 100 |
+| Heap after GC (MB) | 2.5 | 3.7 | 4.6 | 3.6 | 3.5 |
+| Gate visible (ms) | 89 | 110 | 233 | 88 | 190 |
+| Long-task total (ms) | 0 | 0 | 0 | 0 | 10 |
+
+Where the growth came from (bisected on main's first-parent history):
+
+- #1612 (`8298e50a8`, Sentry on every surface): +449 KB JS, +4 requests. The
+  Sentry chunk loads after the first paint, but inside the bench's window.
+  Still over: it needs an owner decision (load it later, or a new ceiling
+  with a recorded reason).
+- #1951 (`24fe8f57c`, notices): +7 requests, +105 KB JS. The sign-in card
+  imported the whole notice system for its error banner. Fixed on
+  `ade/account-web-cli-links`: the banner loads only when an error shows.
+- #2059 (`3d10a29f6`) and #2159 (`d5ad85b1a`): +90 KB and +34 KB JS. The
+  settings manifest imports the full MCP catalogue (134 KB of source) to add
+  one search entry per server, and `webclient/shell/webRoutes.ts` imports
+  the manifest for `settingsRouteFor`. Still over: the fix is a small
+  id/name/publisher index for the manifest, kept with the catalogue.
+- The joined account-projects branch: +20 requests, +893 KB images, +297 KB
+  JS. The web shell imported `requirePin` through `state/repositoryScope`,
+  which pulled in the app store and its 842 KB scene image. Fixed on
+  `ade/account-web-cli-links` (import from `lib/requirePin`).
+
 ## Mac Studio (M4 Max), ADE-175 pass
 
 A second machine, so a second set of columns and not new values for the tables
