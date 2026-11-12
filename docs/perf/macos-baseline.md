@@ -2925,3 +2925,32 @@ move from Work to Lanes, from a perf run, 3 runs. The chat row is
 B2 adds an optional `pin` to each member. A call with no pin takes the same
 route as before, so the counts do not move. The total time of the Lanes calls
 follows the GitHub PR calls, which vary from run to run.
+
+### Settings pages read one picked copy (B3 Settings, 2026-11-12)
+
+Dev app on `ade/account-desktop-b3-settings` against the preload pass
+`ffcee3670` (its renderer checked out over the same tree in the same run, so
+both passes share the app, the brain and the load). Same Mac (Mac Studio M4
+Max), `--first-run --keep`, the account brain on its own socket, the dev test
+machine "tabs" connected, one local project tab whose repository also has a
+copy on "tabs", nothing streaming. Each page was visited once before the
+pass. `route-sweep.mjs` with 20 s idle, no perf run.
+
+| Row | Before (`ffcee3670`) | After (B3) | Ceiling |
+| --- | --- | --- | --- |
+| Settings › Providers, idle: main-thread work / page elements / renderer heap | 1.6 ms/s / 768 / 115 MB | 1.0 ms/s / 768 / 115 MB | 30 ms/s; 3k / 220 MB |
+| Settings › General, idle | 0.7 ms/s / 647 / 118 MB | 0.5 ms/s / 647 / 117 MB | 30 ms/s; 3k / 220 MB |
+| Settings › Project › Lanes, idle | 1.1 ms/s / 526 / 119 MB | 0.8 ms/s / 530 / 120 MB | 30 ms/s; 3k / 220 MB |
+| Settings › Project › Storage & cleanup, idle | 0.8 ms/s / 666 / 109 MB | 1.0 ms/s / 670 / 121 MB | 30 ms/s; 3k / 220 MB |
+| Settings › Project › Location, idle | 1.0 ms/s / 552 / 110 MB | 0.5 ms/s / 556 / 122 MB | 30 ms/s; 3k / 220 MB |
+| Settings › Project › Secrets, idle | 0.6 ms/s / 516 / 111 MB | 0.6 ms/s / 520 / 112 MB | 30 ms/s; 3k / 220 MB |
+| Settings › Integrations, idle | 0.7 ms/s / 2,415 / 112 MB | 0.7 ms/s / 2,419 / 117 MB | 30 ms/s; 3k / 220 MB |
+| Navigation long tasks (all seven pages) | 0 ms | 0 ms | 100 ms |
+| IPC per minute, idle (all seven pages) | 0 | 0 | — |
+
+A project page adds the line that names its copy (4 elements). The heap
+readings move by up to 12 MB in both directions between pages and passes;
+that is garbage-collection timing, not a held structure. An earlier pass in
+the same session with a remote tab also open read 8–12 ms/s before and
+0.6–3.6 ms/s after, from load by other agents on the Mac; the pair above is
+the comparison.
