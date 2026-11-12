@@ -6,6 +6,10 @@ import { buildAccountState } from "./accountState";
 import { routeSavedChats } from "./chats";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { routeReferrals } from "./referrals";
+import { trustedHttpsOrigin } from "../trustedOrigin";
+import { handleLaunchJoin, isLaunchJoinRequest, routeLaunches } from "./launches";
+import { routeProjectComputersDelete } from "./projectComputers";
+import { routeSignIns } from "./signIns";
 import {
   endLaneStatement,
   laneFactsOf,
@@ -19,7 +23,7 @@ import {
   type CloudLaneFacts,
 } from "./lanesWithoutComputer";
 import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
-import { CLOUD_PATHS, formatCloudCents, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
+import { CLOUD_LAUNCH_ENV, CLOUD_PATHS, formatCloudCents, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
 import { ownerLimitState } from "./costReport";
 import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
 import {
@@ -405,17 +409,43 @@ const onlyWakePorts = (ports: unknown): Array<{ port: number; label: string }> |
   return out;
 };
 
-async function handleCreate(request: Request, env: CloudEnv, userId: string, provider: CloudProvider, { now, waitUntil }: CloudRequestContext): Promise<Response> {
+async function handleCreate(request: Request, env: CloudEnv, userId: string, provider: CloudProvider, ctx: CloudRequestContext): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  return await createComputer(env, userId, provider, { body }, ctx);
+}
+
+/**
+ * What the server itself adds to a create made for one of its own flows (the
+ * server launcher): env the client could not set, and statements that land in
+ * the adoption's batch, so they hold exactly when the computer was made.
+ */
+export type CreateComputerExtras = {
+  body: Record<string, unknown>;
+  serverEnv?: Record<string, string>;
+  onMade?: (instance: CloudInstance) => D1PreparedStatement[];
+};
+
+/**
+ * The one way a computer is made (`POST /cloud/instances` and the server
+ * launcher): the same replay, limits, reservation, billing and metadata.
+ * 201 for a computer this call made, 200 for one an earlier request with the
+ * same request id made, or the refusal.
+ */
+export async function createComputer(env: CloudEnv, userId: string, provider: CloudProvider, extras: CreateComputerExtras, { now, waitUntil }: CloudRequestContext): Promise<Response> {
+  const { body } = extras;
   const resources = body.resources && typeof body.resources === "object" ? body.resources as Record<string, unknown> : null;
   const size = cloudSizeFor(body.type, resources?.cpu, resources?.memory);
   if (!size) return badRequest("That size isn't one ADE Cloud offers.");
   const name = shortText(body.name, 60) ?? "ADE computer";
   const clientMetadata = stringMap(body.metadata, MAX_METADATA_ENTRIES);
-  const clientEnv = stringMap(body.env, MAX_ENV_ENTRIES);
+  const requestedEnv = stringMap(body.env, MAX_ENV_ENTRIES);
   const publicPorts = onlyWakePorts(body.publicPorts);
-  if (!clientMetadata || !clientEnv || !publicPorts) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  if (!clientMetadata || !requestedEnv || !publicPorts) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  // The server's own entries only: a client can't name a launch or its join code.
+  delete requestedEnv[CLOUD_LAUNCH_ENV.launchId];
+  delete requestedEnv[CLOUD_LAUNCH_ENV.join];
+  const clientEnv = { ...requestedEnv, ...extras.serverEnv };
   // The app's own update track: the computer starts from that channel's image and follows it.
   const channel = body.channel === undefined ? "stable" : readUpdateChannel(body.channel);
   if (!channel) return badRequest("That update channel isn't one ADE knows.");
@@ -485,6 +515,7 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
     await env.DB.batch([
       ...adoptionStatements(env, { pendingId: reservation.pendingId, instance, machineKey: metadata.ade_machine_key ?? null, now: Date.now(), reason: "create" }),
       diskDayStatement(env, account, now),
+      ...(extras.onMade?.(instance) ?? []),
     ]);
     track({ action, tier: tierOf(size) });
     return json(withUpdateFacts(instance, { channel, template_version: templateVersion, update_state: null, updated_at: null, update_error: null }, targets), 201);
@@ -1103,9 +1134,56 @@ function instanceRouteOf(path: string): { instanceId: string; action: string | u
   return { instanceId, action, rest };
 }
 
+const CORS_METHODS = "GET, POST, PUT, DELETE";
+const CORS_HEADERS = new Set(["authorization", "content-type", "x-ade-correlation-id"]);
+
+function withCors(response: Response, origin: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", origin);
+  headers.set("vary", "Origin");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+/**
+ * `/cloud/*` straight from a browser and a phone (C7). CORS is the
+ * directory's rule (`handleRequest`): only the hosted web client's exact
+ * origin, never `*`; a native caller sends no Origin and passes. Any other
+ * Origin is refused before the token, D1 or the provider is touched.
+ */
 export async function handleCloudRequest(request: Request, env: CloudEnv, waitUntil?: CloudWaitUntil): Promise<Response> {
+  const requestOrigin = request.headers.get("origin");
+  const allowedOrigin = trustedHttpsOrigin(env.WEB_CLIENT_ORIGIN, { requireExactOrigin: true });
+  const corsOrigin = requestOrigin && allowedOrigin && requestOrigin === allowedOrigin ? allowedOrigin : null;
+  if (request.method === "OPTIONS") {
+    if (!corsOrigin) return fail("origin_not_allowed", "This origin can't call ADE Cloud.", 403);
+    const wanted = request.headers.get("access-control-request-method")?.toUpperCase() ?? "";
+    if (!CORS_METHODS.split(", ").includes(wanted)) return fail("bad_request", "That method isn't allowed here.", 405);
+    const requested = (request.headers.get("access-control-request-headers") ?? "")
+      .split(",").map((header) => header.trim().toLowerCase()).filter(Boolean);
+    if (requested.some((header) => !CORS_HEADERS.has(header))) return fail("origin_not_allowed", "Those headers aren't allowed.", 403);
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "access-control-allow-origin": corsOrigin,
+        "access-control-allow-headers": [...CORS_HEADERS].join(", "),
+        "access-control-allow-methods": `${CORS_METHODS}, OPTIONS`,
+        "access-control-max-age": "600",
+        vary: "Origin",
+      },
+    });
+  }
+  if (requestOrigin && !corsOrigin) return fail("origin_not_allowed", "This origin can't call ADE Cloud.", 403);
+  const response = await routeCloudRequest(request, env, waitUntil);
+  return corsOrigin ? withCors(response, corsOrigin) : response;
+}
+
+async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: CloudWaitUntil): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, "") || "/";
+  // The new computer's join has no account token yet: its one-time code is the proof.
+  if (isLaunchJoinRequest(path, request.method)) {
+    return providerCall(() => handleLaunchJoin(request, env, path, { provider: providerFor(env), now: Date.now() }));
+  }
   const caller = await authenticate(request, env);
   if (!caller.ok) {
     return caller.reason === "authentication unavailable"
@@ -1152,6 +1230,18 @@ export async function handleCloudRequest(request: Request, env: CloudEnv, waitUn
   if (path === CLOUD_PATHS.lanesWithoutComputer || path.startsWith(`${CLOUD_PATHS.lanesWithoutComputer}/`)) {
     return routeLanesWithoutComputer(request, path, env, caller.userId);
   }
+  // The server launcher: a launch's record reads with no provider; only the start and a cancel need it.
+  if (path === CLOUD_PATHS.launches || path.startsWith(`${CLOUD_PATHS.launches}/`)) {
+    return providerCall(() => routeLaunches(request, path, env, caller.userId, {
+      provider,
+      now,
+      createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, ctx),
+    }));
+  }
+  // The job's rows only; the minute cron does the work.
+  if (path === CLOUD_PATHS.projectComputersDelete || path.startsWith(`${CLOUD_PATHS.projectComputersDelete}/`)) {
+    return routeProjectComputersDelete(request, path, env, caller.userId, now);
+  }
   if (!provider) {
     reportCloudFailure("cloud.no_provider_key");
     return noProviderKey();
@@ -1165,6 +1255,16 @@ export async function handleCloudRequest(request: Request, env: CloudEnv, waitUn
     if (path.startsWith(`${CLOUD_PATHS.templates}/`) && request.method === "GET") return handleTemplate(env, provider);
     const instanceRoute = instanceRouteOf(path);
     if (instanceRoute) {
+      if (instanceRoute.action === "sign-ins") {
+        if (!INSTANCE_ID.test(instanceRoute.instanceId)) return notFound();
+        const computer = await ownedComputer(env, caller.userId, instanceRoute.instanceId);
+        if (!computer) return notFound();
+        return routeSignIns(request, computer, instanceRoute.rest, {
+          provider,
+          isAwake: isMeteredStatus(computer.status),
+          wakeBlocked: async () => (await wakeBlocker(env, caller.userId, now)).blocked?.response ?? null,
+        });
+      }
       if (instanceRoute.rest.length) return notFound();
       return routeInstance(request, env, provider, caller.userId, instanceRoute.instanceId, instanceRoute.action, ctx);
     }

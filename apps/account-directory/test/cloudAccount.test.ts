@@ -34,6 +34,7 @@ const PROVIDER = "https://api.agent37.com/v1";
 const SANDBOX = "https://sandbox.agent37.app/v1";
 const STRIPE = "https://api.stripe.com/v1";
 const RESEND = "https://api.resend.com";
+const CLERK = "https://api.clerk.com/v1";
 
 type SqliteStatement = {
   run(...params: unknown[]): { changes: number | bigint };
@@ -133,6 +134,8 @@ function fakeNetwork() {
     }
     if (url.startsWith(STRIPE)) return reply({});
     if (url.startsWith(RESEND)) return reply({ id: "email_1" });
+    // The one-time sign-in ticket the device approval mints for a user.
+    if (url.startsWith(`${CLERK}/sign_in_tokens`)) return reply({ url: `https://clerk.test/v1/tickets/accept?ticket=t_${String(body?.user_id)}` });
     const rest = url.replace(PROVIDER, "").replace(SANDBOX, "");
     if (method === "GET" && rest === "/instances") return reply({ data: [...instances.values()].map(instanceJson) });
     if (method === "GET" && rest.startsWith("/usage")) return reply({ instances: [] });
@@ -169,7 +172,7 @@ function fakeNetwork() {
 
   const fetchStub = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input instanceof Request ? input.url : input);
-    if (![PROVIDER, SANDBOX, STRIPE, RESEND].some((prefix) => url.startsWith(prefix))) return realFetch(input as RequestInfo, init);
+    if (![PROVIDER, SANDBOX, STRIPE, RESEND, CLERK].some((prefix) => url.startsWith(prefix))) return realFetch(input as RequestInfo, init);
     const method = init?.method ?? "GET";
     // JSON to the provider, a form to Stripe.
     const body = typeof init?.body !== "string" ? null
@@ -1297,5 +1300,114 @@ describe("ADE Cloud plan cleanup", () => {
     // A computer it keeps ends as it started: one it woke is never left running.
     if (!freed) expect([harness.net.instances.get(INSTANCE)?.status, computer(harness).status]).toEqual([startedAs, startedAs]);
     expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toHaveLength(freed ? 1 : 0);
+  });
+});
+
+/*
+ * The server launcher (C6) and `/cloud/*` from a browser (C7): the launch id's
+ * replay, the one-time join code's rules, and the CORS gate. The join is the
+ * one `/cloud` route with no account token, so its code is the whole proof.
+ */
+describe("ADE Cloud server launcher", () => {
+  const LAUNCH = "0b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a10";
+  const USER_CODE = "BCDF-2345";
+  const WEB = "https://app.ade.test";
+  const launchBody = {
+    launchId: LAUNCH,
+    kind: "chat",
+    sizeId: "small",
+    project: { origin: "https://github.com/Acme/Widgets.git" },
+    lane: { id: "lane-1", name: "Fix the login page" },
+    chat: { provider: "codex", modelId: "gpt-5", permissions: "full-auto", prompt: "Fix the login page." },
+  };
+
+  beforeEach(() => {
+    harness.env.CLERK_SECRET_KEY = "sk_test";
+    harness.env.WEB_CLIENT_ORIGIN = WEB;
+    seedAccount(harness, OWNER);
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+  });
+
+  const madeCalls = () => providerCalls(harness, /POST .*\/instances$/);
+  const joinCode = (): string => (madeCalls()[0]!.body!.env as Record<string, string>).ADE_LAUNCH_JOIN!;
+  const join = (body: Record<string, unknown>, instanceId = "madenew12345") => handleCloudRequest(new Request(`https://directory.test/cloud/launches/${LAUNCH}/join`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-ade-instance": instanceId },
+    body: JSON.stringify(body),
+  }), harness.env);
+  const seedDeviceSignIn = (userCode = USER_CODE) => harness.insert("device_authorizations", {
+    device_code: `device-${userCode}`, user_code: userCode, device_secret_hash: "hash", status: "pending", poll_interval_seconds: 5, created_at: NOW, expires_at: NOW + 60 * 60_000,
+  });
+
+  it("one launch id makes one computer: a repeat answers the same launch, another account can't use it", async () => {
+    const first = await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    expect(first.status).toBe(201);
+    expect(await first.json()).toEqual(expect.objectContaining({ instanceId: "madenew12345", state: "joining" }));
+
+    const again = await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual(expect.objectContaining({ instanceId: "madenew12345", state: "joining" }));
+    const theirs = await harness.send(OTHER, "POST", "/cloud/launches", launchBody);
+    expect(theirs.status).toBe(400);
+
+    expect(madeCalls()).toHaveLength(1);
+    expect(harness.rows("select instance_id from cloud_computers where deleted_at is null")).toEqual([{ instance_id: "madenew12345" }]);
+    // Only the code's hash is kept, never the code.
+    expect(harness.row("select join_hash from cloud_launches where launch_id = ?", LAUNCH).join_hash).not.toBe(joinCode());
+    // Another account sees no such launch.
+    expect((await harness.send(OTHER, "GET", `/cloud/launches/${LAUNCH}`)).status).toBe(404);
+    expect((await harness.send(OTHER, "DELETE", `/cloud/launches/${LAUNCH}`)).status).toBe(404);
+  });
+
+  it.each<[string, (code: string) => Promise<Response>, number]>([
+    ["a wrong code", () => join({ nonce: "x".repeat(43), userCode: USER_CODE }), 403],
+    ["the code from another computer", (code) => join({ nonce: code, userCode: USER_CODE }, "otherbox1234"), 403],
+    ["the code after its 30 minutes", (code) => { clock = NOW + 31 * 60_000; return join({ nonce: code, userCode: USER_CODE }); }, 410],
+  ])("%s is refused and leaves the code unused", async (_label, attempt, status) => {
+    await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    seedDeviceSignIn();
+
+    expect((await attempt(joinCode())).status).toBe(status);
+
+    expect(harness.row("select join_used_at from cloud_launches where launch_id = ?", LAUNCH).join_used_at).toBeNull();
+    expect(providerCalls(harness, /sign_in_tokens/)).toHaveLength(0);
+    if (status !== 410) expect((await join({ nonce: joinCode(), userCode: USER_CODE })).status).toBe(200);
+  });
+
+  it("the join code is spent once, and its link signs in only the launch's account", async () => {
+    await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    seedDeviceSignIn();
+    seedDeviceSignIn("GHJK-6789");
+
+    const first = await join({ nonce: joinCode(), userCode: USER_CODE });
+    const second = await join({ nonce: joinCode(), userCode: "GHJK-6789" });
+
+    expect(first.status).toBe(200);
+    expect((await first.json() as { url: string }).url).toContain(`ticket=t_${OWNER}`);
+    expect(second.status).toBe(409);
+    expect(providerCalls(harness, /sign_in_tokens/).map((call) => call.body?.user_id)).toEqual([OWNER]);
+    // After it was spent, the same computer may still say a person has to confirm.
+    expect((await join({ nonce: joinCode(), needsApproval: true })).status).toBe(200);
+    const record = await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json();
+    expect(record).toEqual(expect.objectContaining({ state: "needs_approval", approval: expect.objectContaining({ userCode: USER_CODE }) }));
+  });
+
+  it.each<[string, Record<string, string>, number, string | null]>([
+    ["a preflight from the web client", { origin: WEB, "access-control-request-method": "POST", "access-control-request-headers": "authorization, content-type" }, 204, WEB],
+    ["a preflight from another site", { origin: "https://evil.test", "access-control-request-method": "POST" }, 403, null],
+  ])("CORS: %s", async (_label, headers, status, allowed) => {
+    const response = await handleCloudRequest(new Request("https://directory.test/cloud/launches", { method: "OPTIONS", headers }), harness.env);
+    expect(response.status).toBe(status);
+    expect(response.headers.get("access-control-allow-origin")).toBe(allowed);
+  });
+
+  it("CORS: a browser call from another site is refused before anything runs; the web client's is answered", async () => {
+    const refused = await harness.send(OWNER, "POST", "/cloud/launches", launchBody, { origin: "https://evil.test" });
+    expect(refused.status).toBe(403);
+    expect(madeCalls()).toHaveLength(0);
+
+    const answered = await harness.send(OWNER, "GET", "/cloud/account", undefined, { origin: WEB });
+    expect(answered.status).toBe(200);
+    expect(answered.headers.get("access-control-allow-origin")).toBe(WEB);
   });
 });

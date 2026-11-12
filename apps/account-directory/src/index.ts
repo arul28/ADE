@@ -2,6 +2,9 @@ import { runCloudWakes } from "./cloudWake";
 import { handleCloudRequest, isCloudRequest } from "./cloud/routes";
 import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
+import { expireCloudLaunches } from "./cloud/launches";
+import { runProjectComputerDeletes } from "./cloud/projectComputers";
+import { createCloudProvider } from "./cloud/provider";
 import { handleCloudBillingPublicRequest, isCloudBillingPublicRequest, reportExtraHours } from "./cloud/billing";
 import type { CloudEnv } from "./cloud/store";
 import * as Sentry from "@sentry/cloudflare";
@@ -78,8 +81,10 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // The Jev bonus: account bearer, POST only, no CORS — the ADE brain is the
   // only caller. It forwards to TypeSafe with ADE's key under a daily cap.
   if (isJevBonusRequest(url)) return handleJevBonusRequest(request, env);
-  // ADE Cloud (src/cloud): account bearer, no CORS. Timed wakes ride the same
-  // gate. Everything under /cloud answers 404 for an account not on the list.
+  // ADE Cloud (src/cloud): account bearer, the directory's exact-origin CORS for
+  // the web client (routes.ts). Timed wakes ride the same gate. Everything
+  // under /cloud answers 404 for an account not on the list, except a launch's
+  // join, which a new computer makes with its one-time code.
   if (isCloudRequest(url)) return handleCloudRequest(request, env, held.waitUntil);
   // Stripe's webhook (signed, so no bearer and no access list) and the page
   // Stripe sends a person back to after Checkout or the billing portal.
@@ -177,6 +182,15 @@ export default Sentry.withSentry(sentryOptions, {
         // ADE Cloud extra hours: reports whole hours to the Stripe meter. One
         // indexed read when no account has extra hours on.
         settle("cloud_extra_hours", () => reportExtraHours(env)),
+        // The server launcher's records past their week (and a draft's day),
+        // with their files. One indexed read when none is due.
+        settle("cloud_launches", () => expireCloudLaunches(env)),
+        // "Delete the project's cloud computers" jobs: a few computers a tick.
+        // One indexed read when no job waits.
+        settle("cloud_project_deletes", async () => {
+          const key = env.AGENT37_API_KEY?.trim();
+          if (key) await runProjectComputerDeletes(env, createCloudProvider(key));
+        }),
       ]);
     } catch (error) {
       status = "error";
