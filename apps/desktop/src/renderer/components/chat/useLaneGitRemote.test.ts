@@ -5,6 +5,10 @@ import { act, renderHook } from "@testing-library/react";
 
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useLaneGitRemote } from "./useLaneGitRemote";
+import { NO_CHAT_MACHINE_MESSAGE } from "./chatMachinePin";
+
+/** The machine the lane lives on. */
+const LANE_PIN = { kind: "remote", key: "remote:studio:project-a" } as unknown as OpenProjectBinding;
 
 type OriginRemote = { remoteUrl: string | null; branch: string | null };
 
@@ -66,10 +70,10 @@ describe("useLaneGitRemote", () => {
       resolveRead = resolve;
     }));
 
-    const { result } = renderHook(() => useLaneGitRemote("lane-1"));
+    const { result } = renderHook(() => useLaneGitRemote("lane-1", LANE_PIN));
 
     expect(result.current.status).toBe("loading");
-    expect(getOriginRemote).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(getOriginRemote).toHaveBeenCalledWith({ laneId: "lane-1" }, LANE_PIN);
 
     await act(async () => {
       resolveRead?.({ remoteUrl: "git@github.com:acme/project.git", branch: "ade/feature" });
@@ -85,7 +89,7 @@ describe("useLaneGitRemote", () => {
   it("reports a lane with no remote as ready and empty, not as a failure", async () => {
     getOriginRemote.mockResolvedValue({ remoteUrl: null, branch: "main" });
 
-    const { result } = renderHook(() => useLaneGitRemote("lane-1"));
+    const { result } = renderHook(() => useLaneGitRemote("lane-1", LANE_PIN));
     await flush();
 
     expect(result.current.status).toBe("ready");
@@ -93,14 +97,13 @@ describe("useLaneGitRemote", () => {
     expect(result.current.branch).toBe("main");
   });
 
-  it("passes the runtime pin when the caller supplies one", async () => {
-    getOriginRemote.mockResolvedValue({ remoteUrl: null, branch: null });
-    const pin = { kind: "remote", key: "remote:studio:project-a" } as unknown as OpenProjectBinding;
-
-    renderHook(() => useLaneGitRemote("lane-1", pin));
+  it("asks nothing and says the machine is not connected when no machine has the lane", async () => {
+    const { result } = renderHook(() => useLaneGitRemote("lane-1", null));
     await flush();
 
-    expect(getOriginRemote).toHaveBeenCalledWith({ laneId: "lane-1" }, pin);
+    expect(getOriginRemote).not.toHaveBeenCalled();
+    expect(result.current.status).toBe("error");
+    expect(result.current.error).toBe(NO_CHAT_MACHINE_MESSAGE);
   });
 
   it("surfaces the failure message and clears it on the first automatic retry", async () => {
@@ -108,7 +111,7 @@ describe("useLaneGitRemote", () => {
       .mockRejectedValueOnce(new Error("Error invoking remote method 'git:getOriginRemote': git is not installed"))
       .mockResolvedValue({ remoteUrl: "git@github.com:acme/project.git", branch: "main" });
 
-    const { result } = renderHook(() => useLaneGitRemote("lane-1"));
+    const { result } = renderHook(() => useLaneGitRemote("lane-1", LANE_PIN));
     await flush();
 
     expect(result.current.status).toBe("error");
@@ -127,7 +130,7 @@ describe("useLaneGitRemote", () => {
   it("backs off 1s, 3s and 8s and then stops retrying", async () => {
     getOriginRemote.mockRejectedValue(new Error("origin unreachable"));
 
-    const { result } = renderHook(() => useLaneGitRemote("lane-1"));
+    const { result } = renderHook(() => useLaneGitRemote("lane-1", LANE_PIN));
     await flush();
     expect(getOriginRemote).toHaveBeenCalledTimes(1);
 
@@ -156,7 +159,7 @@ describe("useLaneGitRemote", () => {
   it("restarts the whole sequence from refetch", async () => {
     getOriginRemote.mockRejectedValue(new Error("origin unreachable"));
 
-    const { result } = renderHook(() => useLaneGitRemote("lane-1"));
+    const { result } = renderHook(() => useLaneGitRemote("lane-1", LANE_PIN));
     await flush();
     await advance(1_000);
     await advance(3_000);
@@ -182,7 +185,7 @@ describe("useLaneGitRemote", () => {
     }));
 
     const { result, rerender } = renderHook(
-      ({ laneId }: { laneId: string }) => useLaneGitRemote(laneId),
+      ({ laneId }: { laneId: string }) => useLaneGitRemote(laneId, LANE_PIN),
       { initialProps: { laneId: "lane-1" } },
     );
 
@@ -211,7 +214,7 @@ describe("useLaneGitRemote", () => {
     getOriginRemote.mockRejectedValue(new Error("origin unreachable"));
 
     const { rerender } = renderHook(
-      ({ laneId }: { laneId: string }) => useLaneGitRemote(laneId),
+      ({ laneId }: { laneId: string }) => useLaneGitRemote(laneId, LANE_PIN),
       { initialProps: { laneId: "lane-1" } },
     );
     await flush();
@@ -219,20 +222,20 @@ describe("useLaneGitRemote", () => {
 
     rerender({ laneId: "lane-2" });
     await flush();
-    expect(getOriginRemote).toHaveBeenLastCalledWith({ laneId: "lane-2" });
+    expect(getOriginRemote).toHaveBeenLastCalledWith({ laneId: "lane-2" }, LANE_PIN);
     const callsAfterSwitch = getOriginRemote.mock.calls.length;
 
     // Only lane-2's own retry may fire. Two new calls would mean lane-1's
     // pending timer survived the switch.
     await advance(1_000);
     expect(getOriginRemote.mock.calls.length).toBe(callsAfterSwitch + 1);
-    expect(getOriginRemote).toHaveBeenLastCalledWith({ laneId: "lane-2" });
+    expect(getOriginRemote).toHaveBeenLastCalledWith({ laneId: "lane-2" }, LANE_PIN);
   });
 
   it("stops retrying after unmount", async () => {
     getOriginRemote.mockRejectedValue(new Error("origin unreachable"));
 
-    const { unmount } = renderHook(() => useLaneGitRemote("lane-1"));
+    const { unmount } = renderHook(() => useLaneGitRemote("lane-1", LANE_PIN));
     await flush();
     expect(getOriginRemote).toHaveBeenCalledTimes(1);
 
@@ -244,7 +247,7 @@ describe("useLaneGitRemote", () => {
   it("says so when the window has no git bridge at all", async () => {
     (window as unknown as { ade: unknown }).ade = {};
 
-    const { result } = renderHook(() => useLaneGitRemote("lane-1"));
+    const { result } = renderHook(() => useLaneGitRemote("lane-1", LANE_PIN));
     await flush();
 
     expect(result.current.status).toBe("error");
