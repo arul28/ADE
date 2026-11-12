@@ -2,9 +2,10 @@ import SwiftUI
 
 // Location (spec 3.8): where an account project's folders are, one card per
 // computer. The phone reads the folders from the account list and the
-// computers' states from the account; it changes nothing on a computer except
-// to put a new copy on one. The main folder of a copy belongs to its computer's
-// brain, so "Use for new lanes" is not offered here.
+// computers' states from the account. It changes two things on a computer:
+// it puts a new copy on one, and "Use for new lanes" asks a computer's brain
+// to start its new lanes from another of its folders. An older brain without
+// that action shows why the button is off.
 
 /// One computer that holds folders of the project, for the Location page.
 struct ProjectLocationComputer: Equatable, Identifiable {
@@ -49,6 +50,13 @@ private enum LocationCopyState: Equatable {
   case failed(String)
 }
 
+/// The folder new lanes use on one computer, as far as the phone knows: a
+/// change it just made wins over the list until the list shows it. Pure.
+func projectLocationMainFolder(_ computer: ProjectLocationComputer, justChosen: String?) -> String? {
+  if let justChosen, computer.folders.contains(where: { $0.checkoutId == justChosen }) { return justChosen }
+  return (computer.folders.first(where: \.isMain) ?? computer.folders.first)?.checkoutId
+}
+
 struct ProjectLocationScreen: View {
   let projectId: String
 
@@ -59,6 +67,11 @@ struct ProjectLocationScreen: View {
   @Environment(\.dismiss) private var dismiss
 
   @State private var copyJobs: [String: LocationCopyState] = [:]
+  /// "Use for new lanes" by checkout id.
+  @State private var mainJobs: [String: LocationCopyState] = [:]
+  /// The folder each computer now uses, by account machine key, until the
+  /// account list catches up.
+  @State private var chosenMain: [String: String] = [:]
 
   private var project: AccountProject? {
     let id = store.mergedTargets[projectId] ?? projectId
@@ -168,19 +181,21 @@ struct ProjectLocationScreen: View {
         reach: reach,
         symbol: machineDeviceSymbol(deviceType: computer.machine?.deviceType, platform: computer.machine?.platform)
       )
-      ForEach(Array(computer.folders.enumerated()), id: \.element.checkoutId) { index, folder in
-        folderRow(folder, isFirst: index == 0, computer: computer, isOffline: isOffline)
+      let main = projectLocationMainFolder(computer, justChosen: chosenMain[computer.accountMachineKey])
+      ForEach(computer.folders, id: \.checkoutId) { folder in
+        folderRow(folder, usedForNewLanes: folder.checkoutId == main, computer: computer, isOffline: isOffline)
       }
     }
   }
 
   private func folderRow(
     _ folder: AccountProjectCopy,
-    isFirst: Bool,
+    usedForNewLanes: Bool,
     computer: ProjectLocationComputer,
     isOffline: Bool
   ) -> some View {
-    let usedForNewLanes = folder.isMain || (isFirst && !computer.folders.contains(where: \.isMain))
+    let job = mainJobs[folder.checkoutId]
+    let oldBrain = !isOffline && !usedForNewLanes && liveComputerLacksMainAction(computer.machine)
     return VStack(alignment: .leading, spacing: 5) {
       HStack(spacing: 8) {
         Text(usedForNewLanes ? "Used for new lanes" : "Another folder")
@@ -188,9 +203,20 @@ struct ProjectLocationScreen: View {
           .foregroundStyle(usedForNewLanes ? ADEColor.textPrimary : ADEColor.textSecondary)
         Spacer(minLength: 8)
         if !usedForNewLanes {
-          Text(isOffline ? "Offline" : "Change on that computer")
-            .font(.system(size: 12))
-            .foregroundStyle(ADEColor.textMuted)
+          if isOffline {
+            Text("Offline")
+              .font(.system(size: 12))
+              .foregroundStyle(ADEColor.textMuted)
+          } else if job == .copying {
+            ProgressView().controlSize(.small)
+          } else {
+            Button("Use for new lanes") {
+              useForNewLanes(folder, on: computer)
+            }
+            .buttonStyle(ADEKitButtonStyle())
+            .disabled(oldBrain || mainJobs.values.contains(.copying))
+            .accessibilityLabel("Use \(folder.rootPath) for new lanes on \(computerName(computer.machine))")
+          }
         }
       }
       Text(folder.rootPath)
@@ -199,12 +225,51 @@ struct ProjectLocationScreen: View {
         .lineLimit(3)
         .truncationMode(.middle)
         .textSelection(.enabled)
+      if oldBrain {
+        Text("Update ADE on \(computerName(computer.machine)) to change this from your phone.")
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      } else if !usedForNewLanes, case .failed(let message) = job {
+        Text(message)
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.danger)
+          .fixedSize(horizontal: false, vertical: true)
+      }
     }
     .padding(.leading, ADEKit.inset + 40)
     .padding(.trailing, ADEKit.inset)
     .padding(.vertical, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .accessibilityElement(children: .combine)
+    // A row with a button keeps it as its own element.
+    .accessibilityElement(children: usedForNewLanes || isOffline ? .combine : .contain)
+  }
+
+  // MARK: Use for new lanes
+
+  /// A computer the phone is connected to whose ADE has no
+  /// `projects.setMainCheckout`. A computer that is not connected yet is
+  /// checked after the tap connects it.
+  private func liveComputerLacksMainAction(_ machine: AccountMachine?) -> Bool {
+    guard let machine, let key = syncService.startOnPhoneKey(for: machine), syncService.startOnIsLive(key) else { return false }
+    return !syncService.machineAllowsPhoneAction(accountProjectSetMainAction, onMachine: syncService.machineCallKey(key))
+  }
+
+  /// One change at a time; the computer's brain publishes it at once, then
+  /// the list is read again.
+  private func useForNewLanes(_ folder: AccountProjectCopy, on computer: ProjectLocationComputer) {
+    guard !mainJobs.values.contains(.copying) else { return }
+    mainJobs[folder.checkoutId] = .copying
+    Task { @MainActor in
+      switch await syncService.setAccountProjectMainFolder(checkoutId: folder.checkoutId, onAccountMachine: computer.accountMachineKey) {
+      case .failure(let failure):
+        mainJobs[folder.checkoutId] = .failed(failure.message)
+      case .success:
+        mainJobs[folder.checkoutId] = nil
+        chosenMain[computer.accountMachineKey] = folder.checkoutId
+        await store.refresh()
+      }
+    }
   }
 
   // MARK: Put a copy

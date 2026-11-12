@@ -14,6 +14,7 @@ enum RemoteProjectChoiceIcon {
 /// adds the repository to the ADE account; copies come after.
 struct ProjectGitHubRepoPicker: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  @ObservedObject private var accountGitHub = GitHubAccountConnection.shared
   private var syncService: SyncService { syncPublishes.service }
 
   let machineKey: String?
@@ -40,6 +41,15 @@ struct ProjectGitHubRepoPicker: View {
       Text("The list comes from the GitHub sign-in on \(computerName).")
         .font(.system(size: 12))
         .foregroundStyle(ADEColor.textMuted)
+      if accountGitHub.state == .notConnected {
+        // The account's own sign-in lists repositories with no computer.
+        ADESettingsNotice(
+          message: "Connect GitHub to your ADE account to list your repositories from this phone.",
+          tone: .neutral,
+          actionTitle: accountGitHub.connecting ? "Connecting…" : "Connect GitHub",
+          action: { Task { await accountGitHub.connect() } }
+        )
+      }
       if loading && repos.isEmpty {
         ProgressView("Loading repositories…")
           .font(.caption)
@@ -104,6 +114,105 @@ struct ProjectGitHubRepoPicker: View {
       guard query == search, !Task.isCancelled, !(error is CancellationError) else { return }
       errorMessage = SyncUserFacingError.message(for: error)
     }
+  }
+}
+
+/// The repositories of the ADE account's GitHub sign-in, read straight from
+/// GitHub on this phone (spec 3.10): no computer is needed to add one. The
+/// list is read once (ETag'd) and searched here.
+struct ProjectAccountGitHubRepoPicker: View {
+  let isSubmitting: Bool
+  let onPick: (MobileGitHubRepoSummary) -> Void
+  let onCloneURL: (() -> Void)?
+
+  @ObservedObject private var connection = GitHubAccountConnection.shared
+  @State private var repos: [GitHubDirectRepository] = []
+  @State private var search = ""
+  @State private var loaded = false
+  @State private var error: GitHubDirectError?
+  @State private var pickedId: String?
+
+  private var shown: [GitHubDirectRepository] {
+    let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !query.isEmpty else { return repos }
+    return repos.filter { $0.fullName.lowercased().contains(query) }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      if let error, let copy = githubDirectStateCopy(error, githubLogin: connection.state.login) {
+        GitHubStateCard(copy: copy)
+      } else {
+        ProjectField(label: "SEARCH REPOSITORIES") {
+          TextField("owner/repo", text: $search)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+        }
+        Text(connection.state.login.map { "The list comes from @\($0) on GitHub." } ?? "The list comes from your GitHub sign-in.")
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textMuted)
+        if !loaded {
+          ProgressView("Loading repositories…")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+        } else if shown.isEmpty {
+          InlineProjectNotice(message: search.isEmpty ? "No repositories on that GitHub sign-in." : "No repository matches \"\(search)\".", tone: .muted)
+        }
+        ADESettingsRows {
+          ForEach(shown) { repo in
+            Button {
+              guard !isSubmitting else { return }
+              pickedId = repo.id
+              onPick(Self.summary(repo))
+            } label: {
+              ADESettingsRow(title: repo.fullName, hint: repo.defaultBranch, symbol: repo.isPrivate ? "lock" : "globe") {
+                if isSubmitting && pickedId == repo.id {
+                  ProgressView().controlSize(.small)
+                } else {
+                  Image(systemName: "plus.circle")
+                    .foregroundStyle(ADEColor.accent)
+                }
+              }
+            }
+            .buttonStyle(.plain)
+            .disabled(isSubmitting)
+          }
+        }
+      }
+      if let onCloneURL {
+        Button("Clone from a URL", action: onCloneURL)
+          .buttonStyle(ProjectSecondaryButtonStyle())
+          .disabled(isSubmitting)
+          .frame(maxWidth: .infinity, alignment: .trailing)
+      }
+    }
+    // A new sign-in or an App install reads the list again.
+    .task(id: "\(connection.state.login ?? "")#\(connection.installationsRevision)") { await load() }
+  }
+
+  private func load() async {
+    switch await GitHubDirectClient.shared.listRepositories() {
+    case .success(let next):
+      repos = next
+      error = nil
+    case .failure(let failure):
+      error = failure
+    }
+    loaded = true
+  }
+
+  static func summary(_ repo: GitHubDirectRepository) -> MobileGitHubRepoSummary {
+    MobileGitHubRepoSummary(
+      owner: repo.owner,
+      name: repo.name,
+      fullName: repo.fullName,
+      isPrivate: repo.isPrivate,
+      pushedAt: repo.pushedAt,
+      defaultBranch: repo.defaultBranch ?? "",
+      htmlUrl: "https://github.com/\(repo.owner)/\(repo.name)",
+      cloneUrl: "https://github.com/\(repo.owner)/\(repo.name).git",
+      sshUrl: "git@github.com:\(repo.owner)/\(repo.name).git"
+    )
   }
 }
 
@@ -349,9 +458,12 @@ private struct DirectoryBrowserRow: View {
 struct RemoteProjectCreateForm: View {
   @Binding var name: String
   @Binding var parentDir: String
-  /// Where the new project lives until it is on GitHub. The phone cannot
-  /// publish yet.
-  var publishNote: String? = nil
+  /// "Publish to GitHub": nil hides the switch (the phone is not signed in
+  /// to an ADE account, so the project stays on the computer anyway).
+  var publish: Binding<Bool>? = nil
+  /// Why the switch is off and cannot be turned on (an older ADE there).
+  var publishUnavailable: String? = nil
+  var computerName = "the computer"
   let isSubmitting: Bool
   let onChooseParent: () -> Void
   let onCancel: () -> Void
@@ -388,19 +500,8 @@ struct RemoteProjectCreateForm: View {
       if !parentDir.isEmpty && !trimmedName.isEmpty {
         InlineProjectNotice(message: projectJoinPath(parentDir, trimmedName), tone: .muted)
       }
-      if let publishNote {
-        HStack(alignment: .top, spacing: 8) {
-          Image("ProviderGitHub")
-            .renderingMode(.template)
-            .resizable()
-            .scaledToFit()
-            .frame(width: 13, height: 13)
-            .padding(.top, 2)
-          Text(publishNote)
-            .font(.system(size: 13))
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .foregroundStyle(ADEColor.textSecondary)
+      if let publish {
+        publishRow(publish)
       }
       HStack(spacing: 10) {
         Button("Cancel", action: onCancel)
@@ -413,6 +514,23 @@ struct RemoteProjectCreateForm: View {
       }
       .frame(maxWidth: .infinity, alignment: .trailing)
     }
+  }
+
+  private func publishRow(_ publish: Binding<Bool>) -> some View {
+    let on = publish.wrappedValue && publishUnavailable == nil
+    let hint = publishUnavailable
+      ?? (on
+        ? "ADE makes a private repository with \(computerName)'s GitHub sign-in, so your other devices can use it."
+        : "It stays on \(computerName) only. You can publish it later with ADE on that computer.")
+    return ADESettingsRows {
+      ADESettingsRow(title: "Publish to GitHub", hint: hint) {
+        Toggle("Publish to GitHub", isOn: publish)
+          .labelsHidden()
+          .tint(ADEColor.accent)
+          .disabled(publishUnavailable != nil || isSubmitting)
+      }
+    }
+    .opacity(publishUnavailable == nil ? 1 : 0.7)
   }
 }
 

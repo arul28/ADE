@@ -38,3 +38,33 @@ func syncPairedHostCredentialState(
   guard kind == "paired" else { return .notPaired }
   return credentialLookup(profile) == nil ? .credentialUnreadable : .ready
 }
+
+/// Which device id this install presents to its computers, and what to save.
+///
+/// Every computer binds its pairing to the id, so a new id makes every
+/// computer refuse the phone as an unknown device. Rules:
+/// - The keychain id wins (it survives a reinstall). It is copied to the
+///   saved copy, so a later failed keychain read still finds it.
+/// - A failed keychain read uses the saved copy and writes nothing to the
+///   keychain: the keychain may still hold the real id.
+/// - A new id is made only when nothing is stored. After a failed read with
+///   no saved copy, the new id lives for this launch only: it goes to
+///   neither store, so the next launch reads the keychain again.
+func syncResolveDeviceId(
+  keychain: KeychainService.StoredRead,
+  saved: String?,
+  makeFresh: () -> String
+) -> (id: String, writeKeychain: Bool, writeSaved: Bool) {
+  let savedId = saved?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let usableSaved = (savedId?.isEmpty == false) ? savedId : nil
+  switch keychain {
+  case .value(let id) where !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
+    return (id, false, usableSaved != id)
+  case .value, .absent:
+    if let usableSaved { return (usableSaved, true, false) }
+    return (makeFresh(), true, true)
+  case .failed:
+    if let usableSaved { return (usableSaved, false, false) }
+    return (makeFresh(), false, false)
+  }
+}

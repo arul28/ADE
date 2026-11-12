@@ -419,6 +419,7 @@ import type { createSessionService } from "../../../../desktop/src/main/services
 import { readMachineInventoryDetail } from "../account/accountMachinePublisherService";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import { getMachineProviderInstanceStore } from "../providerInstances/providerInstanceStore";
+import { setAccountProjectMainCheckout } from "../projects/accountProjectMain";
 import { getSharedModelPickerStore, type ModelPickerStore } from "../modelPickerStore";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { getErrorMessage, resolvePathWithinRoot } from "../../../../desktop/src/main/services/shared/utils";
@@ -8540,6 +8541,13 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
 
   register("account.setRelayEnabled", { viewerAllowed: true, runtimeHostOnly: true }, async (payload) =>
     await setMachineRelayEnabled(readRelayEnabledArg(payload.enabled)), "runtime");
+
+  // "Use for new lanes": which folder of a project new lanes on this computer
+  // use. Machine-level (the account project state of the publishing brain),
+  // so it answers the same from any project scope. A person's choice: the
+  // account's own phone may make it, an agent's viewer may not.
+  register("projects.setMainCheckout", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    await setAccountProjectMainCheckout(payload.checkoutId), "runtime");
 
   register("usage.getQuotaSnapshot", { viewerAllowed: true }, async () => {
     if (!args.usageTrackingService) throw new Error("Usage quota is not available in this runtime.");

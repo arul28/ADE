@@ -22,12 +22,15 @@ private enum ProjectAddFlow: Equatable {
   case open
   case create
   case gitHub
+  /// Clone from a URL, from the account's GitHub list.
+  case clone
 
   var screen: RemoteProjectAddScreen {
     switch self {
     case .open: return .open
     case .create: return .create
     case .gitHub: return .gitHub
+    case .clone: return .clone
     }
   }
 }
@@ -92,6 +95,12 @@ struct RemoteProjectAddSheet: View {
   @State private var outcome: ProjectAddOutcome?
   @State private var copyChoices = Set<String>()
   @State private var copyJobs: [String: ProjectCopyJobState] = [:]
+  /// From GitHub reads the account's GitHub sign-in on this phone, with no
+  /// computer chosen.
+  @State private var gitHubDirect = false
+  /// Create's "Publish to GitHub" switch.
+  @State private var publishOnCreate = true
+  @ObservedObject private var accountGitHub = GitHubAccountConnection.shared
 
   private var governsAccount: Bool { accountProjects.governsHub }
   private var targets: [ProjectAddTarget] { syncService.projectAddTargets() }
@@ -141,9 +150,11 @@ struct RemoteProjectAddSheet: View {
               RemoteProjectCreateForm(
                 name: $createName,
                 parentDir: $createParentDir,
-                publishNote: governsAccount
-                  ? "ADE creates it on \(targetName ?? syncService.focusedMachineDisplayName) only. To use it from other devices, publish it to GitHub with ADE on that computer."
-                  : nil,
+                publish: governsAccount ? $publishOnCreate : nil,
+                publishUnavailable: canPublishOnTarget
+                  ? nil
+                  : "Update ADE on \(targetName ?? syncService.focusedMachineDisplayName) to publish from your phone. It stays on that computer only.",
+                computerName: targetName ?? syncService.focusedMachineDisplayName,
                 isSubmitting: isSubmitting,
                 onChooseParent: { screen = .parentPicker(.create) },
                 onCancel: { screen = .chooser },
@@ -161,6 +172,16 @@ struct RemoteProjectAddSheet: View {
                 onChooseParent: { screen = .parentPicker(.clone) },
                 onCancel: { screen = .chooser },
                 onClone: { Task { await cloneProject() } }
+              )
+            case .gitHub where gitHubDirect:
+              ProjectAccountGitHubRepoPicker(
+                isSubmitting: isSubmitting,
+                onPick: { repo in Task { await addGitHubRepo(repo) } },
+                onCloneURL: targets.isEmpty ? nil : {
+                  gitHubDirect = false
+                  cloneTab = .url
+                  begin(.clone)
+                }
               )
             case .gitHub:
               targetLine
@@ -240,6 +261,7 @@ struct RemoteProjectAddSheet: View {
       await loadDefaultParent()
     }
     .task { await account.loadMachines() }
+    .task { await accountGitHub.refreshStatus() }
   }
 
   // MARK: Chooser
@@ -268,11 +290,31 @@ struct RemoteProjectAddSheet: View {
       RemoteProjectChoiceCard(
         icon: .asset("ProviderGitHub"),
         title: "From GitHub",
-        subtitle: hasComputer ? "a repository you have on GitHub" : "Connect a computer with GitHub to list your repositories.",
-        enabled: hasComputer
+        subtitle: hasComputer || canAddFromAccountGitHub
+          ? "a repository you have on GitHub"
+          : "Connect a computer with GitHub to list your repositories.",
+        enabled: hasComputer || canAddFromAccountGitHub
       ) {
-        begin(.gitHub)
+        if accountGitHub.state.isConnected && governsAccount || !hasComputer {
+          // The account's GitHub sign-in lists them here; no computer needed.
+          actionError = nil
+          gitHubDirect = true
+          screen = .gitHub
+        } else {
+          gitHubDirect = false
+          begin(.gitHub)
+        }
       }
+    }
+  }
+
+  /// From GitHub works with no computer when the account adds projects and
+  /// can sign in to GitHub (connected, or the connect card on the next screen).
+  private var canAddFromAccountGitHub: Bool {
+    guard governsAccount else { return false }
+    switch accountGitHub.state {
+    case .connected, .notConnected, .needsReauth, .unavailable: return true
+    case .unknown, .signedOut, .unsupported: return false
     }
   }
 
@@ -400,25 +442,47 @@ struct RemoteProjectAddSheet: View {
 
   private func openProject(rootPath: String) async {
     await runFolderStep(retry: .open) {
-      try await syncService.openMachineProject(rootPath: rootPath, onMachine: callKey)
+      (try await syncService.openMachineProject(rootPath: rootPath, onMachine: callKey), nil)
     }
   }
 
+  /// Whether the chosen computer's ADE can publish a folder for the phone.
+  private var canPublishOnTarget: Bool {
+    syncService.machineAllowsPhoneAction("github.publishCurrentProject", onMachine: callKey)
+  }
+
   private func createProject() async {
+    // Read once: the step runs on this computer, with this choice.
+    let machineKey = callKey
+    let computerName = targetName ?? syncService.focusedMachineDisplayName
+    let publish = governsAccount && publishOnCreate && canPublishOnTarget
+    let name = createName.trimmingCharacters(in: .whitespacesAndNewlines)
     await runFolderStep(retry: .create) {
-      try await syncService.createMachineProject(name: createName, parentDir: createParentDir, onMachine: callKey)
+      var folder = try await syncService.createMachineProject(name: createName, parentDir: createParentDir, onMachine: machineKey)
+      guard publish else { return (folder, nil) }
+      // The folder exists now; a failed publish keeps it and says so, so a
+      // retry never tries to create it again.
+      do {
+        let published = try await syncService.publishMachineProject(folder, name: name, onMachine: machineKey)
+        folder.repoOwner = published.owner
+        folder.repoName = published.name
+        return (folder, nil)
+      } catch {
+        return (folder, "\(folder.displayName) is on \(computerName), but publishing it to GitHub did not finish: \(SyncUserFacingError.message(for: error)) Publish it with ADE on that computer.")
+      }
     }
   }
 
   private func cloneProject() async {
     await runFolderStep(retry: .clone) {
-      try await syncService.cloneMachineProject(url: cloneUrl, name: cloneName, parentDir: cloneParentDir, onMachine: callKey)
+      (try await syncService.cloneMachineProject(url: cloneUrl, name: cloneName, parentDir: cloneParentDir, onMachine: callKey), nil)
     }
   }
 
   /// Runs one machine step, adds a GitHub folder to the account, then moves
-  /// to the copies step (or straight to success).
-  private func runFolderStep(retry: RemoteProjectAddScreen, _ step: () async throws -> MobileProjectSummary) async {
+  /// to the copies step (or straight to success). The step can return a
+  /// notice for the success card.
+  private func runFolderStep(retry: RemoteProjectAddScreen, _ step: () async throws -> (MobileProjectSummary, String?)) async {
     guard !isSubmitting else { return }
     isSubmitting = true
     defer { isSubmitting = false }
@@ -426,8 +490,9 @@ struct RemoteProjectAddSheet: View {
     let phoneKey = targetPhoneKey ?? syncService.focusedMachineKey
     let computerName = targetName ?? syncService.focusedMachineDisplayName
     let folder: MobileProjectSummary
+    let stepNotice: String?
     do {
-      folder = try await step()
+      (folder, stepNotice) = try await step()
     } catch {
       actionError = SyncUserFacingError.message(for: error)
       screen = retry
@@ -439,7 +504,8 @@ struct RemoteProjectAddSheet: View {
       name: folder.displayName,
       folder: folder,
       folderPhoneKey: phoneKey,
-      computerName: computerName
+      computerName: computerName,
+      accountNotice: stepNotice
     )
     if governsAccount, let identity = AccountProjectIdentity(folder: folder) {
       do {

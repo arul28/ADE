@@ -1030,6 +1030,8 @@ final class AccountService: ObservableObject {
       identity = nextIdentity
       // The account's saved project list shows at once, before any read.
       AccountProjectStore.shared.activate(userId: nextIdentity.userId)
+      // The account's GitHub sign-in: another account's cached token is dropped.
+      GitHubAccountConnection.shared.activate(userId: nextIdentity.userId)
       ProductAnalytics.shared.identifyAccount(nextIdentity.userId)
       SessionReplay.syncIdentity()
       if phase != .signedIn {
@@ -1104,6 +1106,7 @@ final class AccountService: ObservableObject {
     machinesState = .idle
     // An owner signing out takes the saved project list with them.
     AccountProjectStore.shared.deactivate(deletingCacheOf: previousOwnerId)
+    GitHubAccountConnection.shared.deactivate()
     phase = .signedOut
     clearAttentionSnapshot()
     LiveActivityService.shared.prepareForAccountSignOut()

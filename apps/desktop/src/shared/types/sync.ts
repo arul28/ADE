@@ -3259,6 +3259,7 @@ export type SyncRemoteCommandAction =
   | "github.listIssueTypes"
   | "github.commentOnIssue"
   | "github.publishCurrentProject"
+  | "projects.setMainCheckout"
   | "jira.getConnectionStatus"
   | "jira.connect"
   | "jira.disconnect"

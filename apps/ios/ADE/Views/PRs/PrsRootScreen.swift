@@ -9,6 +9,9 @@ struct PRsTabView: View, Equatable {
   let machineFleet: MachineFleet
   /// PR ↔ lane links and lanes of the other machines holding this repository.
   @StateObject private var remotePrs = PrRemoteMachinesModel()
+  /// Open PRs read straight from GitHub while the computer is not reachable.
+  @StateObject private var directPrs = PrDirectPullsModel()
+  @State private var directOpened: GitHubDirectPull?
   let isActive: Bool
   let inputs: PrsRootInputs
 
@@ -69,6 +72,12 @@ struct PRsTabView: View, Equatable {
 
   private var isLive: Bool {
     prsStatus.phase == .ready && syncService.connectionState == .connected && syncService.projectHostIsLive
+  }
+
+  /// The repository read straight from GitHub: the computer is not
+  /// reachable, so the machine's list cannot update (spec 3.10).
+  private var directRepo: GitHubDirectRepoRef? {
+    GitHubDirectRepoRef(owner: inputs.directRepoOwner, name: inputs.directRepoName)
   }
 
   /// Skeletons only stand in for rows the phone has never had: cached rows
@@ -468,21 +477,50 @@ struct PRsTabView: View, Equatable {
   /// keeps the edge bar's inset where the closed display has one.
   private func prsListColumnContent(diagnosticsKey: String) -> some View {
     List {
-      noticeRows
-      if isLoadingSkeleton {
-        Section {
-          ForEach(0..<4, id: \.self) { _ in
-            PrRowCardSkeleton().adeFlatRow()
-          }
-        }
+      if let directRepo {
+        PrDirectPullRows(
+          repo: directRepo,
+          computerName: inputs.directComputerName,
+          model: directPrs
+        ) { directOpened = $0 }
       } else {
-        githubSurfaceRows
+        noticeRows
+        if isLoadingSkeleton {
+          Section {
+            ForEach(0..<4, id: \.self) { _ in
+              PrRowCardSkeleton().adeFlatRow()
+            }
+          }
+        } else {
+          githubSurfaceRows
+        }
       }
     }
     .adeFlatList()
     .contentMargins(.bottom, 24, for: .scrollContent)
     .adeScrollDiagnosticsSurface(.prList, key: diagnosticsKey)
-    .refreshable { await refreshFromPullGesture() }
+    .refreshable {
+      if let directRepo {
+        await directPrs.load(directRepo, background: false)
+      } else {
+        await refreshFromPullGesture()
+      }
+    }
+    // The direct reads run only while the tab shows them.
+    .background {
+      if let directRepo, isActive {
+        Color.clear.prDirectPolling(directRepo, model: directPrs)
+      }
+    }
+    .navigationDestination(item: $directOpened) { pull in
+      if let directRepo {
+        PrDirectDetailScreen(
+          repo: directRepo,
+          pull: pull,
+          computerName: inputs.directComputerName
+        )
+      }
+    }
     .safeAreaInset(edge: .top, spacing: 0) { duoPrsHeaderRows }
     .modifier(PrListColumnEdgeModifier(isLeadingColumn: duoLayout.isWide))
     // A PR's detail hides the bar held landscape on a phone; the list asks

@@ -70,6 +70,45 @@ final class KeychainService {
     "\(service)\u{0}\(account)"
   }
 
+  /// A read that tells "not there" apart from "could not read". The keychain
+  /// can refuse a read for a moment (before first unlock, or while securityd
+  /// restarts); treating that as "not there" made the phone invent a new
+  /// device id, and every computer then refused it as an unknown device.
+  enum StoredRead: Equatable {
+    case value(String)
+    case absent
+    case failed(OSStatus)
+  }
+
+  private func readString(account: String) -> StoredRead {
+    let cacheKey = self.cacheKey(account)
+    let (cached, generation) = Self.cache.withLock { ($0.values[cacheKey], $0.generation) }
+    if let cached {
+      return cached.map(StoredRead.value) ?? .absent
+    }
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: account,
+      kSecMatchLimit as String: kSecMatchLimitOne,
+      kSecReturnData as String: true,
+    ]
+    var item: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &item)
+    let value: String?
+    if status == errSecSuccess, let data = item as? Data {
+      value = String(data: data, encoding: .utf8)
+    } else if status == errSecItemNotFound {
+      value = nil
+    } else {
+      return .failed(status)
+    }
+    Self.cache.withLock { state in
+      if state.generation == generation { state.values[cacheKey] = .some(value) }
+    }
+    return value.map(StoredRead.value) ?? .absent
+  }
+
   private func loadString(account: String) -> String? {
     let cacheKey = self.cacheKey(account)
     let (cached, generation) = Self.cache.withLock { ($0.values[cacheKey], $0.generation) }
@@ -150,6 +189,27 @@ final class KeychainService {
 
   func loadDeviceId() -> String? {
     loadString(account: deviceIdAccount)
+  }
+
+  /// The ADE account's GitHub App token record (`GitHubAccountTokenRecord`,
+  /// JSON). One record; it names the account it belongs to.
+  private let githubAccountTokenAccount = "github-account-app.v1"
+
+  func saveGitHubAccountToken(_ json: String) {
+    saveString(json, account: githubAccountTokenAccount)
+  }
+
+  func loadGitHubAccountToken() -> String? {
+    loadString(account: githubAccountTokenAccount)
+  }
+
+  func clearGitHubAccountToken() {
+    clearString(account: githubAccountTokenAccount)
+  }
+
+  /// The device id with the reason when there is none (see `StoredRead`).
+  func readDeviceId() -> StoredRead {
+    readString(account: deviceIdAccount)
   }
 
   func saveAccountDeviceOwnershipEpoch(_ epoch: Int, deviceId: String) {

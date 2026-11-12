@@ -500,6 +500,9 @@
 		E2000000000000000000DE08 /* HubAccountProjects.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE08 /* HubAccountProjects.swift */; };
 		E2000000000000000000DE0E /* HubAccountCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0E /* HubAccountCards.swift */; };
 		E2000000000000000000DE0F /* HubPhoneLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0F /* HubPhoneLayout.swift */; };
+		E2000000000000000000DE10 /* GitHubAccountCredential.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE10 /* GitHubAccountCredential.swift */; };
+		E2000000000000000000DE11 /* GitHubDirectClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE11 /* GitHubDirectClient.swift */; };
+		E2000000000000000000DE12 /* PrDirectViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE12 /* PrDirectViews.swift */; };
 		E2000000000000000000DE0A /* StartOnPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0A /* StartOnPicker.swift */; };
 		E2000000000000000000DE0B /* DeleteProjectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0B /* DeleteProjectSheet.swift */; };
 		E2000000000000000000DE0C /* ProjectLocationScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0C /* ProjectLocationScreen.swift */; };
@@ -1032,6 +1035,9 @@
 		D2000000000000000000DE08 /* HubAccountProjects.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubAccountProjects.swift; path = ADE/Views/Hub/HubAccountProjects.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE0E /* HubAccountCards.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubAccountCards.swift; path = ADE/Views/Hub/HubAccountCards.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE0F /* HubPhoneLayout.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubPhoneLayout.swift; path = ADE/Views/Hub/HubPhoneLayout.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE10 /* GitHubAccountCredential.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GitHubAccountCredential.swift; path = ADE/Services/GitHubAccountCredential.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE11 /* GitHubDirectClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GitHubDirectClient.swift; path = ADE/Services/GitHubDirectClient.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE12 /* PrDirectViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDirectViews.swift; path = ADE/Views/PRs/PrDirectViews.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE0A /* StartOnPicker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StartOnPicker.swift; path = ADE/Views/Components/StartOnPicker.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE0B /* DeleteProjectSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeleteProjectSheet.swift; path = ADE/Views/Hub/DeleteProjectSheet.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE0C /* ProjectLocationScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProjectLocationScreen.swift; path = ADE/Views/Hub/ProjectLocationScreen.swift; sourceTree = "<group>"; };
@@ -1309,6 +1315,7 @@
 				G20000000000000000000034 /* PrDetailRedesign.swift */,
 				G20000000000000000000032 /* PrGitHubDescriptionParser.swift */,
 				G20000000000000000000005 /* PrRowCard.swift */,
+				D2000000000000000000DE12 /* PrDirectViews.swift */,
 				D20000000000000000000F41 /* PrFlatPreviews.swift */,
 				D20000000000000000000F40 /* PrConversationDigest.swift */,
 				G20000000000000000000006 /* PrsRootScreen.swift */,
@@ -1602,6 +1609,8 @@
 				AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */,
 				AD0000000000000000000A02 /* AccountDirectory.swift */,
 				D2000000000000000000DE07 /* AccountProjects.swift */,
+				D2000000000000000000DE10 /* GitHubAccountCredential.swift */,
+				D2000000000000000000DE11 /* GitHubDirectClient.swift */,
 				D2000000000000000000DE01 /* DeviceSignInApproval.swift */,
 				C5A000000000000000000001 /* MobileTrustResetPolicy.swift */,
 				C5A00000000000000000001F /* PairedHostCredentialState.swift */,
@@ -2341,6 +2350,9 @@
 				AD0000000000000000000B05 /* AccountEmailAuthFlow.swift in Sources */,
 				AD0000000000000000000B02 /* AccountDirectory.swift in Sources */,
 				E2000000000000000000DE07 /* AccountProjects.swift in Sources */,
+				E2000000000000000000DE10 /* GitHubAccountCredential.swift in Sources */,
+				E2000000000000000000DE11 /* GitHubDirectClient.swift in Sources */,
+				E2000000000000000000DE12 /* PrDirectViews.swift in Sources */,
 				E2000000000000000000DE01 /* DeviceSignInApproval.swift in Sources */,
 				E2000000000000000000DE02 /* DeviceSignInApprovalSheet.swift in Sources */,
 				E2000000000000000000DE03 /* WebAuthPresentationAnchor.swift in Sources */,

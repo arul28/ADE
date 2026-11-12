@@ -21,6 +21,7 @@ enum WidgetReloadBridge {
 
 private let syncConnectLog = Logger(subsystem: "com.ade.sync", category: "connect")
 private let syncChatLog = Logger(subsystem: "com.ade.ios", category: "WorkChatSync")
+private let syncServiceDeviceIdLog = Logger(subsystem: "com.ade.sync", category: "device-id")
 
 private struct SourceFaviconsRemoteResult: Decodable {
   let icons: [String: String?]
@@ -6294,6 +6295,68 @@ final class SyncService: ObservableObject {
     return try applyMachineProjectActionResponse(response, fallbackMessage: "The machine could not clone that project.", onMachine: machineKey)
   }
 
+  /// Whether the computer behind `machineKey` (nil = the primary) has
+  /// `action` and lets the phone call it. An older brain without it answers
+  /// false, so the caller hides or disables its button.
+  func machineAllowsPhoneAction(_ action: String, onMachine machineKey: String? = nil) -> Bool {
+    if let machineKey, machineKey != focusedMachineKey {
+      guard let connection = machineFleet?.connection(for: machineKey) else { return false }
+      return connection.commandDescriptor(for: action)?.policy.allowsPhone == true
+    }
+    return supportsViewerRemoteAction(action)
+  }
+
+  /// A remote command on the computer behind `machineKey` (nil = the
+  /// primary), never sent to another one. `projectId` scopes it to one of
+  /// that computer's projects; nil sends a runtime command.
+  func sendMachineCommand(
+    action: String,
+    args: [String: Any],
+    projectId: String? = nil,
+    projectRootPath: String? = nil,
+    timeoutNanoseconds: UInt64? = nil,
+    onMachine machineKey: String? = nil
+  ) async throws -> Any {
+    if let machineKey, machineKey != focusedMachineKey {
+      guard let connection = machineFleet?.connection(for: machineKey), machineFleet?.isLive(machineKey) == true else {
+        throw NSError(domain: "ADE", code: 14, userInfo: [
+          NSLocalizedDescriptionKey: "That computer is not connected. Connect it, then try again."
+        ])
+      }
+      return try await connection.sendCommand(
+        action: action,
+        args: args,
+        projectId: projectId,
+        projectRootPath: projectRootPath,
+        timeoutNanoseconds: timeoutNanoseconds
+      )
+    }
+    return try await sendCommand(
+      action: action,
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: timeoutNanoseconds,
+      targetProjectId: projectId,
+      targetProjectRootPath: projectRootPath,
+      fallbackToActiveProjectScope: projectId == nil
+    )
+  }
+
+  /// Publishes a folder on a computer to a new GitHub repository with that
+  /// computer's GitHub sign-in (`github.publishCurrentProject`, project
+  /// scope). The repository is private.
+  func publishMachineProject(_ folder: MobileProjectSummary, name: String, onMachine machineKey: String? = nil) async throws -> MobilePublishProjectResult {
+    let raw = try await sendMachineCommand(
+      action: "github.publishCurrentProject",
+      args: ["name": name, "isPrivate": true],
+      projectId: folder.id,
+      projectRootPath: folder.rootPath,
+      timeoutNanoseconds: 120_000_000_000,
+      onMachine: machineKey
+    )
+    return try decode(raw, as: MobilePublishProjectResult.self)
+  }
+
   func listMachineGitHubRepos(search: String = "", onMachine machineKey: String? = nil) async throws -> [MobileGitHubRepoSummary] {
     var payload: [String: Any] = [:]
     let trimmedSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -6797,16 +6860,25 @@ final class SyncService: ObservableObject {
       UserDefaults.standard.set(true, forKey: pausedFlagMigrationKey)
     }
     self.autoReconnectPausedByUser = UserDefaults.standard.bool(forKey: autoReconnectPausedKey)
-    if let existing = keychain.loadDeviceId() {
-      deviceId = existing
-    } else if let existing = UserDefaults.standard.string(forKey: legacyDeviceIdKey) {
-      deviceId = existing
-      keychain.saveDeviceId(existing)
-    } else {
-      let fresh = UUID().uuidString.lowercased()
-      UserDefaults.standard.set(fresh, forKey: legacyDeviceIdKey)
-      keychain.saveDeviceId(fresh)
-      deviceId = fresh
+    // The keychain can refuse a read for a moment at launch. Ask again a few
+    // times, and never write a new id over one the keychain may still hold:
+    // every computer binds its pairing to this id.
+    var storedDeviceId = keychain.readDeviceId()
+    for _ in 0..<3 {
+      guard case .failed = storedDeviceId else { break }
+      usleep(50_000)
+      storedDeviceId = keychain.readDeviceId()
+    }
+    let deviceIdChoice = syncResolveDeviceId(
+      keychain: storedDeviceId,
+      saved: UserDefaults.standard.string(forKey: legacyDeviceIdKey),
+      makeFresh: { UUID().uuidString.lowercased() }
+    )
+    deviceId = deviceIdChoice.id
+    if deviceIdChoice.writeSaved { UserDefaults.standard.set(deviceIdChoice.id, forKey: legacyDeviceIdKey) }
+    if deviceIdChoice.writeKeychain { keychain.saveDeviceId(deviceIdChoice.id) }
+    if case .failed(let status) = storedDeviceId {
+      syncServiceDeviceIdLog.error("device_id.keychain_read_failed status=\(status, privacy: .public)")
     }
     MobileTrustResetPolicy.applyIfNeeded(keychain: keychain)
     // Read the route marker before anything below can rewrite it:
