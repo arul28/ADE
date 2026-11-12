@@ -1,3 +1,4 @@
+import { ADE_GIT_CREDENTIAL_HELPER, ADE_GIT_CREDENTIAL_HELPER_KEY } from "../../../../../ade-cli/src/services/github/gitCredentialHelper";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -252,6 +253,15 @@ export function createProjectScaffoldService({
 
       fs.writeFileSync(path.join(rootPath, "README.md"), `# ${name}\n`, "utf8");
       fs.writeFileSync(path.join(rootPath, ".gitignore"), GITIGNORE_CONTENT, "utf8");
+      if (authHeader) {
+        // No token in the clone; a plain `git push` in a terminal there asks
+        // ADE for it when it runs (`ade git credential`). Best effort: ADE's
+        // own fetch, pull and push pass the token per command anyway.
+        const helper = await runGit(["config", "--local", ADE_GIT_CREDENTIAL_HELPER_KEY, ADE_GIT_CREDENTIAL_HELPER], { cwd: rootPath, timeoutMs: 10_000 })
+          .catch((error: unknown) => ({ exitCode: 1, stderr: error instanceof Error ? error.message : String(error) }));
+        if (helper.exitCode !== 0) logger.warn("project_scaffold.clone_credential_helper_failed", { error: redactGitOutput(String(helper.stderr ?? "")).slice(0, 200) });
+      }
+
       initializeOrRepairAdeProject(rootPath, { logger, mode: "shared" });
       await warmLocalDatabase(rootPath, "project_scaffold.local_db_warm_failed");
 

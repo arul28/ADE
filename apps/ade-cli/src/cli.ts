@@ -41304,6 +41304,19 @@ async function main(): Promise<void> {
       await runCursorHookScript(process.argv[3]);
       return;
     }
+    // Git's credential helper for clones ADE made with its GitHub token
+    // (services/github/gitCredentialHelper.ts): answered here, with no brain
+    // and no argument parsing, because git calls it on every push.
+    if (process.argv[2] === "git" && process.argv[3] === "credential") {
+      const { runGitCredentialHelper } = await import("./services/github/gitCredentialHelper");
+      process.exitCode = await runGitCredentialHelper(process.argv[4], {
+        readToken: async () => {
+          const quiet = { debug() {}, info() {}, warn() {}, error() {} } as unknown as Parameters<typeof createHeadlessGitHubService>[1];
+          return await createHeadlessGitHubService(process.cwd(), quiet).getGitTransportTokenOrThrowAsync().catch(() => null);
+        },
+      });
+      return;
+    }
     // The proxy supervisor's synchronous health probe on the standalone runtime.
     if (process.argv[2] === PROXY_HEALTH_PROBE_COMMAND) {
       const port = Number(process.argv[3]);
