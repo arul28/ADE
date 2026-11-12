@@ -222,7 +222,10 @@ export function ProjectCopyBlock({ page, children }: { page: string; children: R
   if (!copy.page || !onlineCopyPin(copy)) return <ProjectCopyUnavailable copy={copy} />;
   return (
     <ProjectCopyScopeProvider page={copy.page}>
-      <ProjectCopyBar copy={copy} />
+      {/* Sits close above the sections it names, in a stack with wide gaps. */}
+      <div className="ade-copy-scope-block">
+        <ProjectCopyBar copy={copy} />
+      </div>
       {children}
     </ProjectCopyScopeProvider>
   );

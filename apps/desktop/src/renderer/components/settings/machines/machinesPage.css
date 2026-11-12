@@ -614,6 +614,10 @@ button.ade-mx-hero-chip {
   margin-top: -12px;
   margin-bottom: -18px;
 }
-.ade-copy-scope-column .ade-copy-scope {
+.ade-copy-scope-block {
+  margin-bottom: -18px;
+}
+.ade-copy-scope-column .ade-copy-scope,
+.ade-copy-scope-block .ade-copy-scope {
   margin-bottom: 0;
 }
