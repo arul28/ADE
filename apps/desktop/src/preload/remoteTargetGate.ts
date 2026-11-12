@@ -21,12 +21,13 @@ export type RemoteTargetGate = {
   invoke<T>(channel: string, targetId: string, payload: Record<string, unknown>): Promise<T>;
   isDisconnected(targetId: string): Promise<boolean>;
   /**
-   * True while no call can reach the machine: it is disconnected, its link
+   * True while no call can reach the machine: it is disconnected, or its link
    * dropped and ADE waits for it to come back (state "error" with a
-   * `recovery`), or this computer does not know it (removed; main answers
-   * "Remote target was not found"). A reconnect attempt ("connecting") keeps
-   * it offline until it connects. Event pumps park on this; calls still go by
-   * `isDisconnected`.
+   * `recovery`). A reconnect attempt ("connecting") keeps it offline until it
+   * connects. A target the snapshot does not list is not offline: main maps a
+   * removed target or a saved chat's stand-in to its machine's connection now
+   * (machines/goneTargets.ts), and a pump parked on it would never resume.
+   * Event pumps park on this; calls still go by `isDisconnected`.
    */
   isOffline(targetId: string): Promise<boolean>;
 };
@@ -42,13 +43,6 @@ export function createRemoteTargetGate(deps: {
 }): RemoteTargetGate {
   const disconnected = new Set<string>();
   const offline = new Set<string>();
-  // Every machine the last snapshot listed. Main lists every saved machine,
-  // so one it does not list is one main refuses as not found.
-  const known = new Set<string>();
-  let snapshotApplied = false;
-  // Machines `isOffline` answered as unknown; one that a later snapshot lists
-  // is back online.
-  const askedWhileUnknown = new Set<string>();
   let updatedAt = 0;
   let firstRead: Promise<void> | null = null;
   let nextReadAfterFailureAt = 0;
@@ -62,12 +56,9 @@ export function createRemoteTargetGate(deps: {
     const wasOffline = new Set(offline);
     disconnected.clear();
     offline.clear();
-    known.clear();
-    snapshotApplied = true;
     for (const connection of snapshot.connections) {
       const targetId = connection?.target?.id;
       if (!targetId) continue;
-      known.add(targetId);
       const isDisconnected = connection.reconnectBlocked === "disconnected";
       if (isDisconnected) disconnected.add(targetId);
       if (
@@ -82,11 +73,6 @@ export function createRemoteTargetGate(deps: {
       if (!disconnected.has(targetId)) deps.onReconnected(targetId);
     }
     for (const targetId of wasOffline) {
-      if (!offline.has(targetId)) deps.onBackOnline(targetId);
-    }
-    for (const targetId of [...askedWhileUnknown]) {
-      if (!known.has(targetId)) continue;
-      askedWhileUnknown.delete(targetId);
       if (!offline.has(targetId)) deps.onBackOnline(targetId);
     }
   };
@@ -121,10 +107,7 @@ export function createRemoteTargetGate(deps: {
     isDisconnected,
     async isOffline(targetId: string): Promise<boolean> {
       await readFirstSnapshot();
-      if (offline.has(targetId)) return true;
-      if (!snapshotApplied || known.has(targetId)) return false;
-      askedWhileUnknown.add(targetId);
-      return true;
+      return offline.has(targetId);
     },
     async invoke<T>(channel: string, targetId: string, payload: Record<string, unknown>): Promise<T> {
       if (await isDisconnected(targetId)) {

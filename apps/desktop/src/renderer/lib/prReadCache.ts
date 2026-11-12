@@ -29,8 +29,10 @@ function projectKey(
 ): string {
   const pin = cacheScopePin(rawPin);
   if (pin?.key) return `pin:${pin.key}`;
-  // A pin that names the tab's copy still names its folder.
-  return projectRoot?.trim() || rawPin?.rootPath?.trim() || "active";
+  // A pin that names the tab's copy still names its folder and its copy: the
+  // same folder on two machines is two databases.
+  const root = projectRoot?.trim() || rawPin?.rootPath?.trim() || "active";
+  return rawPin?.key ? `${root}::${rawPin.key}` : root;
 }
 
 /**

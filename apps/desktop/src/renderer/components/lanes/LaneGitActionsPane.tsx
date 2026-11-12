@@ -1061,9 +1061,11 @@ export function LaneGitActionsPane({
           tone: "warning",
         });
       }
-      if (!pinTargetsTab) {
-        // The new lane lives on another machine, not in this tab's lane
-        // list or Lanes page, so stay here; it appears in that machine's list.
+      // The tab may have moved to another project while the lane was made.
+      const stillOnStartingTab = selectActiveProjectStateKey(useAppStore.getState()) === tabScopeKey;
+      if (!pinTargetsTab || !stillOnStartingTab) {
+        // The new lane is not in this tab's lane list or Lanes page now, so
+        // stay here; it appears in its own machine's list.
         patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
           busyAction: null,
           notice: warned ? null : `Created ${created.name} with a copy of these changes.`,
@@ -1096,6 +1098,7 @@ export function LaneGitActionsPane({
     navigate,
     pin,
     pinTargetsTab,
+    tabScopeKey,
     lane?.branchRef,
     projectStateKey,
     refreshLanes,

@@ -1122,7 +1122,7 @@ export function AutomationsWorkspace({
                 runBlockedReason={selectedRule ? ruleElsewhereReason(selectedRule) : null}
                 onIngressChanged={() => {
                   // The draft's machine owns its ingress status.
-                  if (draftTarget?.pin) setDraftMachineReadNonce((n) => n + 1);
+                  if (draftForeignTarget?.pin) setDraftMachineReadNonce((n) => n + 1);
                   else void refresh();
                 }}
                 runtimePin={draftPin}

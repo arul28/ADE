@@ -649,8 +649,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const ids = new Set<string>();
     for (const lane of targets) {
       const target = resolveLaneTarget(lane.id);
-      // Only another machine's lane can be an ADE Cloud lane here (`machineId` set).
-      if (target.ok && target.machineId != null && cloud.isCloudLane(target.pin, target.laneId)) ids.add(lane.id);
+      // The tab's own copy counts too: it carries its pin, and its `machineId` is null.
+      if (target.ok && cloud.isCloudLane(target.pin, target.laneId)) ids.add(lane.id);
     }
     return ids.size ? ids : null;
   }, [cloud, managedLane, managedLanes, resolveLaneTarget]);
@@ -1346,7 +1346,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const cloudDeletes = targets.flatMap((lane) => {
       if (lane.laneType === "primary") return [];
       const target = resolveLaneTarget(lane.id);
-      const cloudLane = target.ok && target.machineId != null ? cloud.computerOf(target.pin, target.laneId) : null;
+      const cloudLane = target.ok ? cloud.computerOf(target.pin, target.laneId) : null;
       return cloudLane && target.ok ? [{ lane, cloudLane, machineId: target.machineId }] : [];
     });
     const cloudLaneIds = new Set(cloudDeletes.map((entry) => entry.lane.id));
@@ -1374,6 +1374,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
             askFirst: false,
             onDeleted: () => {
               if (entry.machineId) requestCrossMachineLanesForMachine(entry.machineId);
+              else void refreshLanes({ includeStatus: false });
             },
           });
         }
