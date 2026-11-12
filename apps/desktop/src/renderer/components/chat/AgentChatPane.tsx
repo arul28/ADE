@@ -17170,7 +17170,7 @@ export function AgentChatPane({
           kind: "cloud",
           cloudProvider: "cloud",
           // The size a new lane gets and how long the hours left last at it
-          // ("Small · 43.8 h left at this size"). No claim before the first
+          // ("Small · 43 h left at this size"). No claim before the first
           // account answer: the line keeps its space, empty, and fills in place.
           detail: adeCloud.runOnLine,
           detailPending: adeCloud.runOnLine == null,
@@ -18949,7 +18949,9 @@ export function AgentChatPane({
     selectedSession?.remoteWork,
     selectedSession?.status,
     selectedSession?.currentTurnStartedAt,
+    selectedSession?.laneId,
     laneId,
+    turnActive,
     hasAttachedTerminal,
     chatActionsAvailable,
     chatActionsOpen,
@@ -18970,7 +18972,7 @@ export function AgentChatPane({
         onClick={() => workSidebar.setTool("side-chat")}
       />
       <LaneDesktopHeaderButton laneId={laneId} onOpen={(tool) => workSidebar.setTool(tool)} />
-      <CloudLaneHeaderButton laneId={selectedSession?.laneId ?? laneId ?? null} />
+      <CloudLaneHeaderButton laneId={selectedSession?.laneId ?? laneId ?? null} turnRunning={turnActive} />
       {hasAttachedTerminal ? (
         <button
           type="button"

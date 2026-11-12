@@ -170,19 +170,16 @@ export function cloudTierFacts(tier: CloudTier): CloudTierFacts {
   };
 }
 
-/** "41 h of agent time": how long the hours left last at this size, whole hours from 10 up. */
-export function cloudTierAgentTimeLabel(tier: Pick<CloudTier, "multiplierMilli">, leftMilli: number): string {
-  const hours = Math.max(0, leftMilli) / tier.multiplierMilli;
+/**
+ * "41 h", "7.5 h": how long `leftMilli` hours last at this size, rounded down,
+ * to a tenth under 10 h and to whole hours from 10 up. Every surface that
+ * shows this number uses it, and adds its own words.
+ */
+export function cloudTierHoursAt(tier: Pick<CloudTier, "multiplierMilli">, leftMilli: number): string {
+  const hours = tier.multiplierMilli > 0 ? Math.max(0, leftMilli) / tier.multiplierMilli : 0;
   const shown = hours >= 10 ? Math.floor(hours) : Math.floor(hours * 10) / 10;
-  return `${shown} h of agent time`;
+  return `${shown} h`;
 }
 
 /** The one line under the sizes: what an hour is. Hours count while awake, and a computer sleeps soon after its agent stops. */
 export const CLOUD_AWAKE_TIME_LINE = "Hours count only while a computer is awake. It falls asleep a few minutes after its agent stops.";
-
-/** How long `leftMilli` hours last at this size, rounded down to a tenth: "57.4 h". */
-export function cloudTierHoursLeftLabel(tier: Pick<CloudTier, "multiplierMilli">, leftMilli: number): string {
-  const hours = Math.max(0, leftMilli) / tier.multiplierMilli;
-  const shown = hours >= 100 ? Math.floor(hours) : Math.floor(hours * 10) / 10;
-  return `${shown} h`;
-}

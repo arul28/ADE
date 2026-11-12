@@ -54,32 +54,6 @@
   background: var(--adec-tile-bg);
   color: var(--adec-tile-fg);
 }
-.adecl-tier-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
-.adecl-tier-opt {
-  position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  column-gap: 8px;
-  align-items: center;
-  padding: 8px 10px;
-  border-radius: 9px;
-  border: 1px solid var(--kit-panel-edge);
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.adecl-tier-opt > svg { grid-row: span 2; }
-.adecl-tier-opt b { font-size: 12px; font-weight: 600; }
-.adecl-tier-opt .kit-num { font-size: 11px; color: var(--kit-text-3); }
-.adecl-tier-opt:hover { background: var(--kit-hover); }
-.adecl-tier-opt[aria-checked="true"] {
-  border-color: color-mix(in srgb, var(--adec-400) 45%, transparent);
-  background: color-mix(in srgb, var(--adec-600) 12%, transparent);
-}
-.adecl-tier-opt:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
-.adecl-tier-now { position: absolute; top: 6px; right: 8px; font-size: 10px; color: var(--kit-text-3); }
-
 .adecl-tier-path { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .adecl-tier-size { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; color: var(--kit-text-2); }
 .adecl-tier-size[data-to="true"] { color: var(--adec-pill-fg); }
@@ -104,8 +78,6 @@
 
 .adecl-tier-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
 .adecl-tier-actions .kit-btn { white-space: nowrap; }
-/* The note takes its own line above the buttons, so the three buttons stay together on one. */
-.adecl-tier-when { flex: 1 0 100%; text-align: right; }
 
 /* The fold toggle of the job card above the prompt box, and a job's dismiss ×, which shares its look. */
 .adecl-job-fold,

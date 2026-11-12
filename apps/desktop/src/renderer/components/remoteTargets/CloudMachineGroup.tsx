@@ -7,6 +7,7 @@ import {
   describeCloudMachineSize,
   describeCloudSleepPolicy,
   formatCloudHoursRate,
+  type CloudCatalog,
   type CloudMachine,
   type CloudMachinesResult,
 } from "../../../shared/adeCloud";
@@ -125,6 +126,7 @@ function errorActions(error: CloudBoxActionError, onOpenSettings?: (() => void) 
  */
 export function CloudBoxStrip({
   box,
+  catalog,
   work,
   pending,
   error,
@@ -134,6 +136,8 @@ export function CloudBoxStrip({
   onOpenSettings,
 }: {
   box: CloudMachine;
+  /** The account's sizes, so the box's size reads as the pickers name it. */
+  catalog: CloudCatalog;
   work: CloudBoxWork;
   pending: CloudBoxPending | null;
   error: CloudBoxActionError | null;
@@ -163,7 +167,7 @@ export function CloudBoxStrip({
           <span className="kit-tag" data-tone={tone ?? undefined} title={`ADE Cloud status: ${box.status}`}>
             {stateLabel}
           </span>
-          <span className="ade-cx-cloud-fact">{describeCloudMachineSize(box)}</span>
+          <span className="ade-cx-cloud-fact">{describeCloudMachineSize(box, catalog)}</span>
           {rate ? <span className="ade-cx-cloud-fact kit-num">{rate}</span> : null}
           {box.sleep.state !== "auto" ? (
             <span

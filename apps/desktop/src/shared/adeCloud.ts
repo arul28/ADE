@@ -1039,27 +1039,30 @@ export type CloudMachineActionResult = {
 };
 
 /**
- * "Full computer · Large · 4 CPU · 8 GB · 4 GB disk". The size's name is the
- * catalog's for that kind and shape, the same name the size list and the
+ * "Full computer · Large · 4 CPU · 8 GB · 4 GB disk". A lane size's name is
+ * the catalog's for that kind and shape, the same name the size list and the
  * pickers use (a full 4 CPU / 8 GB computer is Large, not Medium), never the
- * bare shape's.
+ * bare shape's. A catalog size with no lane size has no name of its own (its
+ * label only repeats the CPU and memory), so the line names none. Pass the
+ * account's catalog (`cloudCatalogOf`); the fallback is for no account yet.
  */
 export function describeCloudMachineSize(
   machine: Pick<CloudMachine, "type" | "resources" | "shapeId">,
   catalog: Pick<CloudCatalog, "sizes"> = CLOUD_CATALOG_FALLBACK,
 ): string {
   const kind = machine.type === "vm" ? "vm" : "default";
-  const sized = machine.resources
-    ? catalog.sizes.find((entry) => entry.type === kind && entry.cpu === machine.resources!.cpu && entry.memoryGb === machine.resources!.memoryGb)
+  const resources = machine.resources;
+  const sized = resources
+    ? catalog.sizes.find((entry) => entry.type === kind && entry.cpu === resources.cpu && entry.memoryGb === resources.memoryGb)
     : undefined;
-  const shape = sized ? { label: sized.label } : machine.shapeId ? cloudShapeById(machine.shapeId) : null;
-  const size = machine.resources
-    ? `${machine.resources.cpu} CPU · ${machine.resources.memoryGb} GB`
-    : null;
+  const name = sized
+    ? (sized.tier ? sized.label : null)
+    : machine.shapeId ? cloudShapeById(machine.shapeId).label : null;
+  const size = resources ? `${resources.cpu} CPU · ${resources.memoryGb} GB` : null;
   // Only when the provider says it: a grown disk is the one size a resize can't undo.
-  const diskGb = machine.resources?.diskGb;
+  const diskGb = resources?.diskGb;
   const disk = typeof diskGb === "number" && Number.isFinite(diskGb) && diskGb > 0 ? `${diskGb} GB disk` : null;
-  return [machine.type === "vm" ? "Full computer" : null, shape?.label ?? null, size, disk].filter(Boolean).join(" · ");
+  return [machine.type === "vm" ? "Full computer" : null, name, size, disk].filter(Boolean).join(" · ");
 }
 
 /** The kind of machine this instance type is. */

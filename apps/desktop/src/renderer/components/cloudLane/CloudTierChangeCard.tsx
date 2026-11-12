@@ -1,12 +1,11 @@
 import { useMemo, useState } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
-import { cloudCatalogOf, formatCloudHours, type CloudAccountState } from "../../../shared/adeCloud";
+import { cloudCatalogOf, cloudHoursLeftMilli, formatCloudHours, type CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneJobSnapshot, CloudLaneTierTiming } from "../../../shared/cloudLaneLife";
-import { cloudTierRateLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudTierHoursAt, cloudTierRateLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { ipcErrorMessage } from "../../lib/format";
 import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import { CloudSizeCards } from "../settings/cloudDashboard/CloudSizeCards";
-import "../settings/cloudDashboard/cloudDashboard.css";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { noticeTone } from "../ui/notice/noticeTones";
@@ -48,11 +47,14 @@ function rateText(tier: CloudTier | null): string {
   return tier ? cloudTierRateLabel(tier) : "";
 }
 
-function hoursText(account: CloudAccountState | null, tier: CloudTier | null): string | null {
-  const hours = (account as Partial<CloudAccountState> | null)?.hours;
-  if (!hours || !tier || tier.multiplierMilli <= 0) return null;
-  const atSize = (hours.leftMilli * 1000) / tier.multiplierMilli;
-  return `${formatCloudHours(hours.leftMilli)} h left is about ${formatCloudHours(atSize)} h awake at this size.`;
+/** The hours left, the plan's and the earned ones (as the ADE Cloud page counts them); null before the account is read. */
+function hoursLeftOf(account: CloudAccountState | null): number | null {
+  return account?.hours ? cloudHoursLeftMilli(account) : null;
+}
+
+function hoursText(leftMilli: number | null, tier: CloudTier | null): string | null {
+  if (leftMilli == null || !tier || tier.multiplierMilli <= 0) return null;
+  return `${formatCloudHours(leftMilli)} h left is about ${cloudTierHoursAt(tier, leftMilli)} awake at this size.`;
 }
 
 export function CloudTierChangeCard({
@@ -92,7 +94,8 @@ export function CloudTierChangeCard({
   const move = Boolean(from && to && from.type !== to.type);
   const changed = to != null && to.id !== facts.fromSizeId;
   const available = cloudLaneLifeAvailable();
-  const hours = hoursText(account, to);
+  const leftMilli = hoursLeftOf(account);
+  const hours = hoursText(leftMilli, to);
   const currentDiskGb = computer?.diskGb ?? null;
   const diskLine = to && changed ? tierChangeDiskLine({ to, move, currentGb: currentDiskGb }) : null;
   const diskGrow = useMemo(
@@ -141,7 +144,7 @@ export function CloudTierChangeCard({
             tiers={tiers}
             picked={picked}
             onPick={setPicked}
-            leftMilli={(account as Partial<CloudAccountState> | null)?.hours?.leftMilli ?? 0}
+            leftMilli={leftMilli}
             extraHourCents={account?.extraHours?.available ? cloudCatalogOf(account).extraHourCents : null}
             markId={facts.fromSizeId}
             markLabel="Now"

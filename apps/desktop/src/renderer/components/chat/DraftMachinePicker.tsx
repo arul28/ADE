@@ -380,7 +380,7 @@ export function DraftMachinePicker({
                     onKeyDown={moveAmongRows}
                   >
                     <span className="flex shrink-0">{machineIcon(machine)}</span>
-                    <span className="min-w-0 shrink-0 truncate font-medium" style={{ maxWidth: "48%" }}>{machine.name}</span>
+                    <span className="min-w-0 max-w-[48%] shrink-0 truncate font-medium">{machine.name}</span>
                     <span
                       className={cn("min-w-0 flex-1 truncate text-right text-[10px] tabular-nums", reason ? "text-[var(--kit-warn)]" : "text-muted-fg/60")}
                       title={secondLine ?? undefined}

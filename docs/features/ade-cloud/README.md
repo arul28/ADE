@@ -100,7 +100,8 @@ that stops (see Sleep and busy rules).
 
 ## Surfaces
 
-- **Settings:** Settings › ADE Cloud, its own tab (`CloudSection.tsx` and the
+- **Settings:** Settings › ADE Cloud, its own tab, listed right under General
+  (its settings stay account level) (`CloudSection.tsx` and the
   dashboard in `settings/cloudDashboard/`): the hero with hours, disk and
   computers against the plan, every lane and computer, Plans (`CloudPlans.tsx`:
   the plans side by side, buy Plus or Pro, move between them or stay on Pro,
@@ -123,16 +124,28 @@ that stops (see Sleep and busy rules).
   [Run on ADE Cloud in the composer](../chat/README.md#run-on-ade-cloud-in-the-composer).
 - **Dashboard:** Settings › ADE Cloud is one tab (`settings/cloudDashboard/CloudDashboard.tsx`):
   hours, disk and lanes against the plan, every cloud lane as a city or a list,
-  and "Free up space" at 80% of the plan's disk (`CloudFreeUpSpace.tsx`: the
+  each row's actions behind its ⋯ menu (What uses the disk, Change size, Keep
+  the lane and free its computer, Delete), and "Free up space" at 80% of the plan's disk (`CloudFreeUpSpace.tsx`: the
   biggest lanes first, then the longest unused; each one is kept with its
   computer freed, or deleted). The disk measure is each computer's own
-  (`cloudDiskUsage.ts`): its repository, dependencies, Docker, Android and
-  caches, measured at its idle step at most every 6 hours and sent with its
-  last work. The dashboard reads it with the computer list, so it wakes nothing.
+  (`cloudDiskUsage.ts`): its repository, dependencies, Docker, Android,
+  caches, agent programs (the tools cache) and ADE data (chats and lanes),
+  with the rest as "System and other". A part on another disk than the home
+  disk (an SDK baked into the image) is left out, since it uses none of the
+  billed disk. It is measured at its idle step at most every 6 hours and sent
+  with its last work. The dashboard reads it with the computer list, so it wakes nothing.
   Clear caches runs on that lane's own computer, through its brain
   (`cloud.clear_caches`). The dashboard confirms first; an agent's call asks
   the person with a card in its chat, and with nobody watching (full-auto, an
   automation, ADE MCP) the answer is no.
+- **Sizes:** one set of size cards (`CloudSizeCards.tsx`) serves the Sizes
+  card on the page and the change-size dialog. Each card shows how long the
+  hours left (the plan's and earned ones) last at that size.
+- **A cloud lane's chat:** a cloud button in the chat header manages that
+  lane's computer in place: Change size, Disk, hours and more (opens the ADE
+  Cloud page), Sleep (it asks first while the chat's turn runs) and Delete
+  lane. Account level, by the computer's ADE Cloud id, so it works for a chat
+  on any machine.
 - **Look:** the Night sky tokens, the cloud mark, the size icon and the skyline
   live in `remoteTargets/cloudBrand.tsx` and `cloudBrand.css`. A light theme
   changes the tokens there once.

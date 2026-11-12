@@ -1,8 +1,8 @@
 import { CaretDown, Check, GearSix, Info, Warning } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
-import { cloudTierFacts, cloudTierHoursLeftLabel, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudTierFacts, cloudTierHoursAt, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { adeCloudLaneLabel, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
@@ -48,6 +48,7 @@ export function CloudSizeButton({
 }) {
   const [open, setOpen] = useState(false);
   const portalContainer = usePortalContainer();
+  const idBase = useId();
   const current = tiers.find((tier) => tier.id === tierId) ?? null;
   const label = current?.label ?? "Small";
   const currentFacts = current ? cloudTierFacts(current) : null;
@@ -105,23 +106,30 @@ export function CloudSizeButton({
           >
             {tiers.map((tier) => {
               const facts = cloudTierFacts(tier);
-              // One line per size (B14-14); what it runs is in the row's hover text.
+              // One line per size (B14-14); what it runs is in the row's hover
+              // text, and in its description for the keyboard and screen readers.
               const shape = `${tier.cpu} CPU · ${tier.memoryGb} GB${tier.diskMaxGb != null ? ` · ${tier.diskMaxGb} GB disk` : ""}`;
               const runs = facts.full ? `Full computer: ${facts.runs}` : facts.runs;
+              const hoursAt = hoursLeftMilli != null ? cloudTierHoursAt(tier, hoursLeftMilli) : null;
+              const about = `${facts.specs.join(", ")}. ${runs}. ${facts.rateLine}.${hoursAt ? ` Your hours last ${hoursAt} here.` : ""}`;
+              const aboutId = `${idBase}-${tier.id}`;
               return (
                 <DropdownMenu.RadioItem
                   key={tier.id}
                   value={tier.id}
-                  title={`${tier.label}: ${facts.specs.join(", ")}. ${runs}. ${facts.rateLine}.`}
+                  title={`${tier.label}: ${about}`}
+                  aria-label={tier.id === defaultTier ? `${tier.label}, default` : tier.label}
+                  aria-describedby={aboutId}
                   className={cn(MENU_ITEM_CLASS, "min-h-[30px] items-center gap-2 text-[11px]", tier.id === tierId ? "text-fg/90" : "text-fg/70")}
                 >
+                  <span id={aboutId} className="sr-only">{about}</span>
                   <span className="inline-flex h-[16px] w-[16px] shrink-0 items-center justify-center"><CloudSizeIcon tier={tier.id} size={15} /></span>
                   <span className="shrink-0 text-[11.5px] font-medium">{tier.label}</span>
                   {tier.id === defaultTier ? <span className="shrink-0 text-[9.5px] text-muted-fg/55">Default</span> : null}
                   <span className="min-w-0 flex-1 truncate text-[10.5px] tabular-nums text-muted-fg/60">{shape}</span>
                   <span className="shrink-0 text-[11px] font-medium tabular-nums text-fg/80">{facts.rate}×</span>
-                  {hoursLeftMilli != null ? (
-                    <span className="w-[52px] shrink-0 text-right text-[10px] tabular-nums text-muted-fg/60">{cloudTierHoursLeftLabel(tier, hoursLeftMilli)}</span>
+                  {hoursAt ? (
+                    <span className="w-[52px] shrink-0 text-right text-[10px] tabular-nums text-muted-fg/60">{hoursAt}</span>
                   ) : null}
                   <span className="flex w-3 shrink-0 justify-end">
                     <DropdownMenu.ItemIndicator>

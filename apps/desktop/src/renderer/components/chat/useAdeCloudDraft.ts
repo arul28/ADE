@@ -10,7 +10,7 @@ import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock } from "../../../share
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import type { AgentChatFileRef, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
-import { cloudTierHoursLeftLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudTierHoursAt, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -128,7 +128,7 @@ export function useAdeCloudDraft({
     const tier = tiers.find((entry) => entry.id === tierId) ?? null;
     if (!account || !tier) return null;
     if (cloudOutOfHours(account) && hoursLeftMilli === 0) return `${tier.label} · no hours left`;
-    return `${tier.label} · ${cloudTierHoursLeftLabel(tier, hoursLeftMilli ?? 0)} left at this size`;
+    return `${tier.label} · ${cloudTierHoursAt(tier, hoursLeftMilli ?? 0)} left at this size`;
   }, [account, hoursLeftMilli, tierId, tiers]);
 
   return {

@@ -463,6 +463,7 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
   color: var(--kit-text-3);
   border-bottom: 1px solid var(--kit-rule);
 }
+.adecd-row-wrap { position: relative; }
 .adecd-row-wrap + .adecd-row-wrap { border-top: 1px solid var(--kit-rule); }
 .adecd-row-wrap > .adecd-tr { cursor: pointer; }
 .adecd-row-wrap > .adecd-tr:hover { background: var(--kit-hover); }
@@ -483,12 +484,10 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
   padding: 2px 16px 12px 40px;
   background: color-mix(in srgb, var(--adec-600) 10%, transparent);
 }
-.adecd-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.adecd-actions .kit-btn { gap: 5px; }
 .adecd-actions-note { flex-basis: 100%; font-size: 11px; color: var(--kit-text-3); }
 
 @container adecd (max-width: 620px) {
-  .adecd-tr { grid-template-columns: minmax(0, 1fr) 70px 90px; }
+  .adecd-tr { grid-template-columns: minmax(0, 1fr) 70px 90px 28px; }
   .adecd-tr > :nth-child(2), .adecd-tr > :nth-child(5) { display: none; }
   .adecd-row-actions { padding-left: 16px; }
 }
@@ -551,36 +550,6 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 .adecd-billing-row b { display: block; font-size: 12.5px; font-weight: 500; }
 .adecd-billing-row small { display: block; margin-top: 2px; font-size: 11.5px; line-height: 1.45; color: var(--kit-text-3); }
 .adecd-billing-controls { display: flex; align-items: center; gap: 10px; }
-
-/* Sizes. */
-.adecd-sizes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-@container adecd (max-width: 760px) { .adecd-sizes { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.adecd-sizecard {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 140ms ease, background 140ms ease;
-}
-.adecd-sizecard:hover { background: var(--kit-hover); }
-.adecd-sizecard:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
-.adecd-sizecard[aria-checked="true"] {
-  border-color: color-mix(in srgb, var(--adec-400) 50%, transparent);
-  background: color-mix(in srgb, var(--adec-600) 10%, transparent);
-}
-.adecd-sizecard-top { display: flex; align-items: center; gap: 8px; }
-.adecd-sizecard-top b { font-size: 13.5px; font-weight: 600; }
-.adecd-sizecard-pick { gap: 3px; margin-left: auto; }
-.adecd-sizecard-specs { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--kit-text-2); }
-.adecd-sizecard-runs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-height: 34px; font-size: 11.5px; line-height: 1.4; color: var(--kit-text-2); }
-.adecd-sizecard-rate { display: flex; align-items: baseline; gap: 8px; padding-top: 10px; border-top: 1px solid var(--kit-rule); }
-.adecd-sizecard-rate b { font-size: 18px; font-weight: 500; }
-.adecd-sizecard-rate span { font-size: 11px; color: var(--kit-text-3); }
-.adecd-sizecard-left { font-size: 11.5px; line-height: 1.45; color: var(--kit-text-3); }
-.adecd-sizecard-left b { font-weight: 500; color: var(--color-fg); }
 
 /* Two cards side by side: sign-ins and what agents may do. */
 .adecd-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
@@ -687,7 +656,8 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 .adecd-acct-invite { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
 @container adecd (max-width: 700px) { .adecd-invite-body { grid-template-columns: 1fr; } }
 
-.adecd-row-menu { display: flex; justify-content: flex-end; }
+/* A row's ⋯ menu: beside its option (an option can't hold a button), over the row's last column. */
+.adecd-row-menu { position: absolute; top: 0; right: 16px; display: flex; align-items: center; justify-content: flex-end; width: 28px; height: 40px; }
 /* In the right column (B14-2) the invite card is half width: text on top, the three numbers in one row under it. */
 .adecd-stack .adecd-invite-body { grid-template-columns: 1fr; }
 .adecd-stack .adecd-invite-stats dd { font-size: 15px; white-space: nowrap; }

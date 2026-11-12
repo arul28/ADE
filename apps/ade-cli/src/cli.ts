@@ -29503,6 +29503,7 @@ async function runServe(
   const cloudDiskUsageReporter = cloudComputerReports
     ? (await import("../../desktop/src/main/services/adeCloud/cloudDiskUsage")).createCloudDiskUsageReporter({
         instanceId: cloudInstanceId,
+        adeHome: layout.adeDir,
         stateFile: path.join(layout.adeDir, "cloud", "disk-usage.json"),
         projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
         readWork: cloudComputerReports.readWork,

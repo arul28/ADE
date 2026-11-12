@@ -482,6 +482,9 @@ function LaneTable({
   menuActions: (lane: DashLane) => MachineAction[];
 }) {
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // The listbox keeps focus itself (`aria-activedescendant`): keys from a
+    // row's ⋯ button or its open menu (a portal, so they bubble here) are theirs.
+    if (event.target !== event.currentTarget) return;
     if (!lanes.length) return;
     const at = Math.max(0, lanes.findIndex((lane) => lane.key === selectedKey));
     let next = at;
@@ -544,11 +547,14 @@ function LaneTable({
                 <span className="adecd-state" data-state={lane.state}><i />{STATE_LABEL[lane.state]}</span>
               )}
               <span className="adecd-when">{lastRunText(lane, now)}</span>
-              {/* The menu opens without selecting the row. */}
-              <span className="adecd-row-menu" onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
-                {actions.length ? <MachineActionsMenu label={`Actions for ${lane.name}`} actions={actions} /> : null}
-              </span>
+              {/* The ⋯ menu's column; the menu itself sits beside the option, never inside it. */}
+              <span aria-hidden="true" />
             </div>
+            {actions.length ? (
+              <span className="adecd-row-menu">
+                <MachineActionsMenu label={`Actions for ${lane.name}`} actions={actions} />
+              </span>
+            ) : null}
             {open && below ? <div className="adecd-row-actions">{below}</div> : null}
           </div>
         );
