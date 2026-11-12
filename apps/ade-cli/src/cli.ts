@@ -29591,6 +29591,19 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
+  if (isAdeCloudComputer()) {
+    // C4: older clones saved the GitHub sign-in header in their .git/config.
+    // Take it out once a boot, off the start path.
+    const cleanup = setTimeout(() => {
+      void import("./services/github/savedGithubHeaderCleanup")
+        .then(({ removeSavedGithubHeaders }) => removeSavedGithubHeaders(
+          projectRegistry.list().map((project) => project.rootPath),
+          { logger: headlessProjectLogger },
+        ))
+        .catch((error: unknown) => headlessProjectLogger.warn("github.saved_header_cleanup_failed", { error: error instanceof Error ? error.message : String(error) }));
+    }, 60_000);
+    cleanup.unref?.();
+  }
   const cloudKeepAwake = cloudKeepAwakeModule && isAdeCloudComputer()
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
