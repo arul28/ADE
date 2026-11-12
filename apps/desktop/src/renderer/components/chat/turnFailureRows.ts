@@ -41,18 +41,6 @@ function isRetryNoise(event: GroupedRow["event"]): boolean {
   return event.type === "status" || event.type === "context_usage";
 }
 
-/** Rows that say nothing about the work a turn did: its prompt, its ending, its failure. */
-function isTurnBookkeeping(event: GroupedRow["event"]): boolean {
-  return isRetryNoise(event) || event.type === "user_message" || event.type === "error" || event.type === "done"
-    || isErrorNotice(event);
-}
-
-function doneHasUsage(event: GroupedRow["event"]): boolean {
-  if (event.type !== "done" || !event.usage) return false;
-  const usage = event.usage;
-  return Boolean(usage.inputTokens || usage.outputTokens || usage.cacheReadTokens || usage.cacheCreationTokens);
-}
-
 type RowPatch = Pick<GroupedRow, "repeatCount" | "endedAtUsageLimit" | "failureShown" | "failureNotes">;
 
 /**
@@ -83,9 +71,7 @@ function patchRow(row: GroupedRow, patch: RowPatch): GroupedRow {
  *   first line's Details. An error-tone notice of that turn that says the same
  *   thing (the storage guard's notice next to its refusal) is dropped too.
  * - The turn-end line of a failed turn whose failure is already drawn says no
- *   second "FAILED": it reads like any other turn end (`failureShown`). A turn
- *   that was refused before it did anything (no work, no tokens) has no
- *   turn-end line at all.
+ *   second "FAILED": it reads like any other turn end (`failureShown`).
  * - A turn that ended at a usage limit draws no row of its own: its turn-end
  *   line says "Usage limit" (`endedAtUsageLimit`), and the pill above the
  *   composer owns what happens next.
@@ -123,8 +109,6 @@ export function foldTurnFailureRows(rows: GroupedRow[]): GroupedRow[] {
   // The first failure line drawn for each turn.
   const lineByTurn = new Map<string, GroupedRow>();
   let lastPrompt: { text: string; row: GroupedRow } | null = null;
-  // Rows of the current turn (since its prompt) that are real work.
-  let workSinceTurnStart = false;
   let open: {
     signature: string;
     turnId: string | null;
@@ -183,7 +167,6 @@ export function foldTurnFailureRows(rows: GroupedRow[]): GroupedRow[] {
     }
     if (event.type === "user_message") {
       const text = event.text.trim();
-      workSinceTurnStart = false;
       if (open && !open.replay && open.prompt?.text === text) {
         open.replay = row;
         lastPrompt = { text, row };
@@ -199,16 +182,11 @@ export function foldTurnFailureRows(rows: GroupedRow[]): GroupedRow[] {
         patchOf(row).endedAtUsageLimit = true;
       } else if (event.status !== "completed") {
         // Its failure line already says what went wrong.
-        if (!workSinceTurnStart && !doneHasUsage(event)) {
-          dropped.add(row);
-        } else {
-          patchOf(row).failureShown = true;
-        }
+        patchOf(row).failureShown = true;
       }
       if (open.count > 1) patchOf(row).repeatCount = open.count;
       continue;
     }
-    if (!isTurnBookkeeping(event)) workSinceTurnStart = true;
     // Anything but bookkeeping ends the run a repeat can fold into.
     if (open && !isRetryNoise(event) && event.type !== "done" && !isErrorNotice(event)) open = null;
   }
