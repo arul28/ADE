@@ -1508,16 +1508,20 @@ describe("projectConfigService - settings that follow the account", () => {
     const id = (scope: string, key: string) => `${scope}|${key}`;
     const keysOf = (set: Iterable<string>, scope: string) =>
       [...set].filter((entry) => entry.startsWith(`${scope}|`)).map((entry) => ({ key: entry.slice(scope.length + 1) }));
-    return {
+    const store = {
       rows,
+      /** The store could not save (its cache file failed): writes return false. */
+      refuse: false,
       backend: {
         get: (scope: string, key: string) => structuredClone(rows.get(id(scope, key))),
         set: (scope: string, key: string, value: unknown) => {
+          if (store.refuse) return false;
           rows.set(id(scope, key), structuredClone(value));
           deleted.delete(id(scope, key));
           return true;
         },
         remove: (scope: string, key: string) => {
+          if (store.refuse) return false;
           rows.delete(id(scope, key));
           deleted.add(id(scope, key));
           return true;
@@ -1526,6 +1530,7 @@ describe("projectConfigService - settings that follow the account", () => {
         deletedKeys: (scope: string) => keysOf(deleted, scope),
       },
     };
+    return store;
   }
 
   const ORIGIN = "https://github.com/acme/widgets.git";
@@ -1541,10 +1546,11 @@ describe("projectConfigService - settings that follow the account", () => {
     const localPath = path.join(adeDir, "local.yaml");
     fs.writeFileSync(localPath, YAML.stringify({ version: 1, ...(typeof local === "function" ? local(root) : local) }), "utf8");
     const service = createProjectConfigService({ projectRoot: root, adeDir, projectId: name, db: makeDb(), logger });
+    const origin = { url: ORIGIN };
     service.setAccountSettingsStore({
       backend: () => store.backend,
       accountUserId: () => "user_1",
-      readOriginUrl: () => ORIGIN,
+      readOriginUrl: () => origin.url,
       statePath: path.join(adeDir, "account-settings-move.state.json"),
     });
     const file = () => YAML.parse(fs.readFileSync(localPath, "utf8")) as Record<string, any>;
@@ -1554,7 +1560,7 @@ describe("projectConfigService - settings that follow the account", () => {
       change(local);
       return service.save({ shared: snapshot.shared, local, baseLocalHash: snapshot.trust.localHash });
     };
-    return { service, file, edit, logger, root };
+    return { service, file, edit, logger, root, origin };
   }
 
   it("moves settings write-if-absent, joins set-like lists, and keeps a different value in a notice the person can apply", () => {
@@ -1572,6 +1578,13 @@ describe("projectConfigService - settings that follow the account", () => {
     expect(b.service.get().accountNotices).toEqual([
       expect.objectContaining({ kind: "account_setting", key: "prs.pollIntervalSeconds" }),
     ]);
+
+    // A notice belongs to its repository: after the origin changes, it is not shown or applied there.
+    b.origin.url = "https://github.com/acme/other.git";
+    expect(b.service.get().accountNotices ?? []).toEqual([]);
+    b.service.resolveAccountSettingNotice({ key: "prs.pollIntervalSeconds", choice: "use_local" });
+    expect(store.rows.get("repo:github.com/acme/other|prs.pollIntervalSeconds")).toBeUndefined();
+    b.origin.url = ORIGIN;
 
     const answered = b.service.resolveAccountSettingNotice({ key: "prs.pollIntervalSeconds", choice: "use_local" });
     expect(answered.accountNotices ?? []).toEqual([]);
@@ -1669,5 +1682,16 @@ describe("projectConfigService - settings that follow the account", () => {
     b.edit((local) => { local.browser = { linkOpenMode: "external" }; });
     expect(store.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(120);
     expect(b.file().github.prPollingIntervalSeconds).toBe(120);
+
+    // The account store refuses the write: the save fails instead of looking
+    // saved while the account's value hides the change on the next read.
+    store.refuse = true;
+    const before = b.file();
+    expect(() => b.edit((local) => { local.github.prPollingIntervalSeconds = 300; })).toThrow();
+    expect(b.file()).toEqual(before);
+    expect(store.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(120);
+    store.refuse = false;
+    b.edit((local) => { local.github.prPollingIntervalSeconds = 300; });
+    expect(a.service.get().effective.github?.prPollingIntervalSeconds).toBe(300);
   });
 });

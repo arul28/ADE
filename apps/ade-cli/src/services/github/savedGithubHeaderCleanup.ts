@@ -46,10 +46,16 @@ export function isSavedAdeGithubHeader(value: string): boolean {
   }
 }
 
-/** A POSIX ERE that matches exactly `value`, for `git config --unset-all <key> <value-regex>`. */
-function exactValueRegex(value: string): string {
-  return `^${value.replace(/[.[\]()*+?{}|^$\\]/g, "\\$&")}$`;
-}
+/**
+ * A POSIX ERE for `git config --unset-all <key> <value-regex>` that matches
+ * every header `isSavedAdeGithubHeader` accepts, and nothing that carries the
+ * token: `x-access-token:` is 15 bytes, so its base64 is always the same 20
+ * characters. The token never goes on the git command line, where another
+ * user of the computer could read it from the process list.
+ */
+const SAVED_VALUE_REGEX = `^[[:space:]]*[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]:[[:space:]]*[Bb][Aa][Ss][Ii][Cc][[:space:]]+${
+  Buffer.from(ADE_CREDENTIAL_PREFIX, "utf8").toString("base64")
+}`;
 
 /**
  * The repository's local config file, or null when `root` is not a Git
@@ -106,17 +112,16 @@ export async function removeSavedGithubHeaders(
       // Exit 1 is "no such key": nothing saved there.
       const listed = await runGit(root, ["config", "--local", "--get-regexp", SAVED_KEY_REGEX]);
       if (listed.code !== 0) continue;
-      const saved: Array<{ key: string; value: string }> = [];
+      const savedKeys = new Set<string>();
       for (const line of listed.stdout.split(/\r?\n/)) {
         const space = line.indexOf(" ");
         if (space <= 0) continue;
-        const value = line.slice(space + 1);
-        if (isSavedAdeGithubHeader(value)) saved.push({ key: line.slice(0, space), value });
+        if (isSavedAdeGithubHeader(line.slice(space + 1))) savedKeys.add(line.slice(0, space));
       }
-      if (saved.length === 0) continue;
+      if (savedKeys.size === 0) continue;
       const removedKeys = new Set<string>();
-      for (const { key, value } of saved) {
-        const removed = await runGit(root, ["config", "--local", "--unset-all", key, exactValueRegex(value)]);
+      for (const key of savedKeys) {
+        const removed = await runGit(root, ["config", "--local", "--unset-all", key, SAVED_VALUE_REGEX]);
         if (removed.code === 0) removedKeys.add(key);
         else deps.logger.warn("github.saved_header_cleanup_failed", { key, code: removed.code });
       }

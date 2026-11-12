@@ -56,6 +56,12 @@ type LayerState = {
   /** The account these rows belong to; another account starts afresh. */
   account: string | null;
   /**
+   * The repository scope (`repo:<origin>`) the notices and mirror marks
+   * belong to: after the origin changes, an old notice must not write its
+   * value into the new repository's row.
+   */
+  scope: string | null;
+  /**
    * The first move for this account has run. Until then the file is the
    * setting: an account value written over the file earlier (by a read or a
    * save) would lose this computer's value before the move could join it or
@@ -167,14 +173,15 @@ export function createProjectConfigAccountLayer(args: {
   // every snapshot read asks for it.
   let state: LayerState | null = null;
 
-  const readState = (account: string): LayerState => {
+  const readState = ({ account, scope }: Target): LayerState => {
     if (!state) {
-      state = { account: null, moved: false, conflicts: [], mirrored: [] };
+      state = { account: null, scope: null, moved: false, conflicts: [], mirrored: [] };
       try {
         const parsed = JSON.parse(fs.readFileSync(args.statePath, "utf8")) as unknown;
         if (isRecord(parsed)) {
           state = {
             account: typeof parsed.account === "string" ? parsed.account : null,
+            scope: typeof parsed.scope === "string" ? parsed.scope : null,
             moved: parsed.moved === true,
             conflicts: Array.isArray(parsed.conflicts)
               ? parsed.conflicts.filter((entry): entry is PendingConflict => isRecord(entry) && typeof entry.row === "string")
@@ -188,14 +195,16 @@ export function createProjectConfigAccountLayer(args: {
         }
       }
     }
-    // Another account's notices and mirrors say nothing about this one.
-    const current = state.account === account ? state : { account, moved: false, conflicts: [], mirrored: [] };
-    return { account, moved: current.moved, conflicts: [...current.conflicts], mirrored: [...current.mirrored] };
+    // Another account's or repository's notices and mirrors say nothing about this one.
+    const current = state.account === account && state.scope === scope
+      ? state
+      : { moved: false, conflicts: [], mirrored: [] };
+    return { account, scope, moved: current.moved, conflicts: [...current.conflicts], mirrored: [...current.mirrored] };
   };
 
   const writeState = (next: LayerState): void => {
     if (state && isDeepStrictEqual(state, next)) return;
-    state = { account: next.account, moved: next.moved, conflicts: [...next.conflicts], mirrored: [...next.mirrored] };
+    state = { account: next.account, scope: next.scope, moved: next.moved, conflicts: [...next.conflicts], mirrored: [...next.mirrored] };
     try {
       fs.mkdirSync(path.dirname(args.statePath), { recursive: true });
       const tmp = `${args.statePath}.${process.pid}.tmp`;
@@ -215,7 +224,7 @@ export function createProjectConfigAccountLayer(args: {
     overlay(local: ProjectConfigFile): ProjectConfigFile {
       const target = active();
       if (!target) return local;
-      const { mirrored, moved } = readState(target.account);
+      const { mirrored, moved } = readState(target);
       if (!moved) return local;
       let next = local;
       for (const key of keysFor(target, [local])) {
@@ -236,16 +245,19 @@ export function createProjectConfigAccountLayer(args: {
      * value. A save from a snapshot read before another computer's change
      * is refused earlier, by the base hash (`fingerprint` is part of it).
      * Returns the config to write to the file, which carries the account's
-     * value for every moved key (the one-release mirror).
+     * value for every moved key (the one-release mirror), and the labels of
+     * the settings the account store refused: the caller fails the save, as
+     * the account's value would hide the change on the next read.
      */
-    routeSave(candidate: ProjectConfigFile, file: ProjectConfigFile): ProjectConfigFile {
+    routeSave(candidate: ProjectConfigFile, file: ProjectConfigFile): { local: ProjectConfigFile; refused: string[] } {
       const target = active();
-      if (!target) return candidate;
-      const saved = readState(target.account);
+      if (!target) return { local: candidate, refused: [] };
+      const saved = readState(target);
       // Before the first move the file is the setting; the move takes it.
-      if (!saved.moved) return candidate;
+      if (!saved.moved) return { local: candidate, refused: [] };
       let toFile = candidate;
       const written: string[] = [];
+      const refused: string[] = [];
       for (const key of keysFor(target, [candidate, file])) {
         const raw = key.read(candidate);
         // It stays in this file (a secret, a folder here, too large).
@@ -261,7 +273,7 @@ export function createProjectConfigAccountLayer(args: {
           if (attempt(() => target.backend.remove(target.scope, key.row))) written.push(key.row);
           else {
             args.logger.warn("projectConfig.account_setting_write_refused", { key: key.row });
-            toFile = key.write(toFile, key.combine(current, raw));
+            refused.push(key.label);
           }
           continue;
         }
@@ -271,6 +283,7 @@ export function createProjectConfigAccountLayer(args: {
             if (!saved.mirrored.includes(key.row)) saved.mirrored.push(key.row);
           } else {
             args.logger.warn("projectConfig.account_setting_write_refused", { key: key.row });
+            refused.push(key.label);
           }
           continue;
         }
@@ -285,7 +298,7 @@ export function createProjectConfigAccountLayer(args: {
         saved.conflicts = saved.conflicts.filter((entry) => !written.includes(entry.row));
       }
       writeState(saved);
-      return toFile;
+      return { local: toFile, refused };
     },
 
     /**
@@ -297,7 +310,7 @@ export function createProjectConfigAccountLayer(args: {
       const result = { moved: [] as string[], joined: [] as string[], conflicts: [] as string[] };
       const target = active();
       if (!target) return result;
-      const pending = readState(target.account);
+      const pending = readState(target);
       for (const key of keysFor(target, [file])) {
         try {
           const local = key.coerce(key.read(file));
@@ -344,7 +357,7 @@ export function createProjectConfigAccountLayer(args: {
     /** The account's values of the moved keys, as text; null when there is no account layer in use. */
     fingerprint(): string | null {
       const target = active();
-      if (!target || !readState(target.account).moved) return null;
+      if (!target || !readState(target).moved) return null;
       return JSON.stringify(keysFor(target, []).map((key) => [key.row, accountValue(target, key) ?? null]));
     },
 
@@ -356,7 +369,7 @@ export function createProjectConfigAccountLayer(args: {
     mirror(file: ProjectConfigFile): ProjectConfigFile | null {
       const target = active();
       if (!target) return null;
-      const saved = readState(target.account);
+      const saved = readState(target);
       let next = file;
       let changed = false;
       for (const key of keysFor(target, [file])) {
@@ -392,7 +405,7 @@ export function createProjectConfigAccountLayer(args: {
       if (!target) return [];
       const keys = keysFor(target, [file]);
       const out: ProjectConfigAccountNotice[] = [];
-      for (const entry of readState(target.account).conflicts) {
+      for (const entry of readState(target).conflicts) {
         const key = keys.find((candidate) => candidate.row === entry.row);
         // Settled meanwhile: the account now holds this computer's value.
         if (!key || isDeepStrictEqual(accountValue(target, key), entry.localValue)) continue;
@@ -416,7 +429,7 @@ export function createProjectConfigAccountLayer(args: {
     resolve(row: string, choice: "use_local" | "keep"): boolean {
       const target = active();
       if (!target) return false;
-      const pending = readState(target.account);
+      const pending = readState(target);
       const entry = pending.conflicts.find((candidate) => candidate.row === row);
       if (!entry) return false;
       if (choice === "use_local") {

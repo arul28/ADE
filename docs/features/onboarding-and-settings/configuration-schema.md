@@ -84,7 +84,10 @@ computer signed in to the account gets them
   got from the account is never moved back: the account's newer value wins.
 - **Save.** A changed value goes to the account. A cleared value removes the
   row, and the other computers remove their copy only when it came from the
-  account. This computer's own parts (the `writablePaths` lists) stay. For one release ADE also writes the account values back into
+  account. This computer's own parts (the `writablePaths` lists) stay. When
+  the account store refuses the write, the whole save fails with an error, so
+  the person can try again; nothing is written to the file alone. Notices
+  belong to one repository: after `origin` changes, the old ones are gone. For one release ADE also writes the account values back into
   `local.yaml` (the mirror), so an older ADE on the same computer still reads
   them.
 - **Held on this computer.** A value with a credential-shaped key (for

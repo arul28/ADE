@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -38,9 +38,18 @@ describe("removeSavedGithubHeaders", () => {
 
     const warnings: unknown[] = [];
     const logger = { info: () => {}, warn: (...args: unknown[]) => { warnings.push(args); } };
+    // The real git, with every argument kept: the process list is readable by other users.
+    const argv: string[][] = [];
+    const runGit = async (cwd: string, args: string[]) => {
+      argv.push(args);
+      const result = spawnSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" } });
+      return { code: result.status ?? 1, stdout: result.stdout };
+    };
 
     // The project ADE opens is the linked worktree; the header lives in the main config.
-    expect(await removeSavedGithubHeaders([worktree], { logger })).toBe(1);
+    expect(await removeSavedGithubHeaders([worktree], { logger, runGit })).toBe(1);
+    expect(argv.some((args) => args.includes("--unset-all"))).toBe(true);
+    expect(JSON.stringify(argv)).not.toContain(adeHeader.split(" ").pop());
 
     expect(git(repo, "config", "--local", "--get-all", githubKey).trim().split("\n")).toEqual([personHeader]);
     // A header for a different host is not ADE's GitHub sign-in, even in the same form.
