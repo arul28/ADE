@@ -368,15 +368,10 @@ export function claimCliReopen(projectRoot: string, entry: CliSessionOwner): boo
  * without a crash. Written before the reopen starts. Throws when it cannot be
  * written; the caller then does not reopen.
  */
-export function countCliCrashReopen(
-  projectRoot: string,
-  sessionId: string,
-  maxAgeMs: number,
-  now: () => Date = () => new Date(),
-): number {
+export function countCliCrashReopen(projectRoot: string, sessionId: string, maxAgeMs: number): number {
   const dir = crashStateDir(projectRoot);
   const filePath = path.join(dir, `${safeName(sessionId)}.json`);
-  const nowMs = now().getTime();
+  const nowMs = Date.now();
   let previous = 0;
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as { streak?: unknown; at?: unknown };
@@ -411,13 +406,9 @@ export function resetCliCrashReopenCount(projectRoot: string, sessionIds: Iterab
  * Never throws; returns how many files it could not handle (the next start
  * tries again).
  */
-export function pruneCliCrashReopenState(
-  projectRoot: string,
-  options: { keepMs: number; isPidRunning?: (pid: number) => boolean; now?: () => Date },
-): number {
+export function pruneCliCrashReopenState(projectRoot: string, options: { keepMs: number }): number {
   const dir = crashStateDir(projectRoot);
-  const isRunning = options.isPidRunning ?? isProcessRunning;
-  const nowMs = (options.now ?? (() => new Date()))().getTime();
+  const nowMs = Date.now();
   let names: string[];
   try {
     names = fs.readdirSync(dir);
@@ -431,7 +422,7 @@ export function pruneCliCrashReopenState(
     try {
       if (name.startsWith(TURNS_PREFIX) && name.endsWith(TURNS_SUFFIX)) {
         const pid = Number(name.slice(TURNS_PREFIX.length, -TURNS_SUFFIX.length));
-        if (Number.isInteger(pid) && pid !== process.pid && !isRunning(pid)) fs.rmSync(filePath, { force: true });
+        if (Number.isInteger(pid) && pid !== process.pid && !isProcessRunning(pid)) fs.rmSync(filePath, { force: true });
         continue;
       }
       if (nowMs - fs.statSync(filePath).mtimeMs > options.keepMs) fs.rmSync(filePath, { force: true });
@@ -483,11 +474,8 @@ export function findCliSessionsCutOffByCrash(args: {
   ownPid: number;
   exclude?: ReadonlySet<string>;
   maxAgeMs: number;
-  isPidRunning?: (pid: number) => boolean;
-  now?: () => Date;
 }): { cutOff: CliCutOffByCrash[]; stale: number } {
-  const isRunning = args.isPidRunning ?? isProcessRunning;
-  const nowMs = (args.now ?? (() => new Date()))().getTime();
+  const nowMs = Date.now();
   const lastSeenByIdentity = new Map<string, number>();
   const lastSeenByPid = new Map<number, number>();
   for (const owner of args.knownOwners) {
@@ -509,7 +497,7 @@ export function findCliSessionsCutOffByCrash(args: {
     const lastSeenMs = ownerStartedAt
       ? lastSeenByIdentity.get(ownerKey(ownerPid, ownerStartedAt))
       : lastSeenByPid.get(ownerPid);
-    if (lastSeenMs === undefined || isRunning(ownerPid)) continue;
+    if (lastSeenMs === undefined || isProcessRunning(ownerPid)) continue;
     if (nowMs - lastSeenMs > args.maxAgeMs) {
       stale += 1;
       continue;
