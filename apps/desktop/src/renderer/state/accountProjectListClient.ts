@@ -217,6 +217,8 @@ export function refreshAccountProjectList(options?: { force?: boolean }): Promis
 function start(): () => void {
   starts += 1;
   if (starts === 1) {
+    // ADE Web keeps no copy: drop one an older build left, before any read.
+    if (isWebClientMode()) writeCache(null);
     const cached = readCache();
     if (cached && current.state === "unknown") {
       currentUserId = cached.userId;
