@@ -244,8 +244,10 @@ export function useWindowRepositoryTabsSync(enabled: boolean, tabs: SavedWindowR
     const send = window.ade?.app?.setWindowRepositoryTabs;
     if (typeof send !== "function") return;
     lastSentRef.current = serialized;
-    void send(JSON.parse(serialized) as SavedWindowRepositoryTabs).catch(() => {
+    void send(JSON.parse(serialized) as SavedWindowRepositoryTabs).catch((error: unknown) => {
+      // The next change sends again; until then a restart restores the last saved strip.
       lastSentRef.current = null;
+      captureError(error, { fingerprint: ["repository-tabs", "strip-save"], level: "warning", handled: true });
     });
   }, [serialized]);
 }
