@@ -1140,6 +1140,10 @@ export const IPC = {
   accountSetRelayEnabled: "ade.account.setRelayEnabled",
   accountRenameMachine: "ade.account.renameMachine",
   accountPairMachine: "ade.account.pairMachine",
+  /** Contract C2: an address for one machine of the account, by machine key (`shared/machineAddress.ts`). */
+  machinesConnect: "ade.machines.connect",
+  /** The address from this computer's saved connections only; no network. */
+  machinesAddressFor: "ade.machines.addressFor",
   accountPairMachineProgress: "account:pairMachineProgress",
   accountGetLocalMachineIdentity: "ade.account.getLocalMachineIdentity",
   accountRemoveMachine: "ade.account.removeMachine",
@@ -1179,6 +1183,12 @@ export const IPC = {
   cloudLaneLifeCall: "ade.cloud.laneLife.call",
   /** A tier change's steps (`CloudLaneJobSnapshot`), to every window. */
   cloudLaneJobEvent: "cloud:laneJobEvent",
+  /** Contract C3 (`shared/laneComputer.ts`): the computer a lane is on now. Account level. */
+  cloudLaneComputer: "ade.cloud.laneComputer",
+  /** The lane's computer and an address for it (pairs and connects). */
+  cloudFollowLane: "ade.cloud.followLane",
+  /** A lane's computer changed (`LaneMovedEvent`), to every window. */
+  cloudLaneMoved: "cloud:laneMoved",
   cloudCopyMachine: "ade.cloud.copyMachine",
   cloudMoveMachine: "ade.cloud.moveMachine",
   cloudReconnectMachine: "ade.cloud.reconnectMachine",

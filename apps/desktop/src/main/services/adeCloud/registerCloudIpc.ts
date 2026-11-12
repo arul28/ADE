@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
+import path from "node:path";
 import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
 import {
   cloudKindLabel,
@@ -63,6 +64,8 @@ import { openExternalUrl } from "../shared/externalLinks";
 import { getErrorMessage } from "../shared/utils";
 import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
 import { createCloudPendingCreateStore, sweepCloudPendingCreates } from "./cloudPendingCreates";
+import { createLaneFollower } from "./cloudLaneFollow";
+import type { MachineConnector } from "../machines/machineConnector";
 
 type Logger = {
   info(event: string, meta?: Record<string, unknown>): void;
@@ -97,6 +100,8 @@ export function registerCloudIpc(args: {
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
   /** Forgets this desktop's saved connections to a machine a move deleted (the remote connection service). */
   forgetMachineConnections?: (machine: { machineKey: string | null; instanceId: string }) => void;
+  /** Contract C2: reaches any machine of the account by key (`machines/machineConnector.ts`). */
+  machineConnector?: () => MachineConnector | null;
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
   /** One coarse product fact per box action that worked (analytics; never the box). */
@@ -224,13 +229,36 @@ export function registerCloudIpc(args: {
   const savedClient = () => getCloudProvider(credentials);
 
 
+  // Contract C3: a lane follows its computer (cloudLaneFollow.ts). It reads
+  // nothing of its own: every good read of the account's computers reaches it.
+  let readMachinesNow: () => Promise<boolean> = async () => false;
+  const laneFollower = createLaneFollower({
+    readNow: () => readMachinesNow(),
+    connector: () => args.machineConnector?.() ?? null,
+    forgetMachine: (machine) => args.forgetMachineConnections?.(machine),
+    statePath: path.join(app.getPath("userData"), "cloud-lane-computers.json"),
+    emit: (move) => sendToAllWindows(IPC.cloudLaneMoved, move),
+    logger,
+  });
   const machines = createCloudMachines({
     whyNoClient: () => cloudNoProviderSentence(credentials),
     client: savedClient,
     // A miss refreshes the known computers only on a known yes to access.
     knownClient: () => knownCloudProvider(credentials),
     removeAccountMachine: args.removeAccountMachine,
+    onInstancesRead: (instances) => laneFollower.note(instances),
     logger,
+  });
+  readMachinesNow = async () => (await machines.list()).state === "ok";
+  ipcMain.handle(IPC.cloudLaneComputer, async (event, raw: unknown) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaneComputer)) return null;
+    const laneId = raw && typeof raw === "object" && typeof (raw as { laneId?: unknown }).laneId === "string" ? (raw as { laneId: string }).laneId : "";
+    return await laneFollower.laneComputer(laneId);
+  });
+  ipcMain.handle(IPC.cloudFollowLane, async (event, raw: unknown) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudFollowLane)) throw new Error("ADE can't do that from here.");
+    const request = raw && typeof raw === "object" ? raw as { laneId?: unknown; connect?: unknown } : {};
+    return await laneFollower.follow(typeof request.laneId === "string" ? request.laneId : "", { connect: request.connect !== false });
   });
   // Off the list this asks nothing: access is read at sign-in and on focus only.
   startCloudSleepWatch({ client: async () => knownCloudProvider(credentials), logger, firstPassDelayMs: STARTUP_CHECK_DELAY_MS + 30_000 });

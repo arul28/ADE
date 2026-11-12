@@ -1,5 +1,6 @@
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
+import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
 import type {
   ProjectRemovalOutcome,
   ProjectRemovalReport,
@@ -4735,6 +4736,17 @@ declare global {
         getCreateMeta: (args: { projectKey: string }, pin?: OpenProjectBinding | null) => Promise<JiraCreateMeta>;
         createIssue: (args: JiraCreateIssueArgs, pin?: OpenProjectBinding | null) => Promise<JiraCreateIssueResult>;
       };
+      /**
+       * Contract C2 (shared/machineAddress.ts): an address for one machine of
+       * the account, by machine key. Pairs through the account when this
+       * computer has no saved connection; `connect: false` leaves a sleeping
+       * cloud computer asleep. Never reads or changes the tab's machine.
+       */
+      machines: {
+        connect: (machineKey: string, options?: MachineConnectOptions) => Promise<MachineConnectResult>;
+        /** From saved connections only; no network. */
+        addressFor: (machineKey: string) => Promise<MachineAddress | null>;
+      };
       account: {
         status: () => Promise<AdeAccountStatus>;
         startLogin: () => Promise<AdeAccountLoginStart>;
@@ -4881,6 +4893,12 @@ declare global {
         ) => Promise<import("../shared/cloudLaneLife").CloudLaneLifeResults[M]>;
         /** A tier change's steps as they move. */
         onLaneJob?: (cb: (job: import("../shared/cloudLaneLife").CloudLaneJobSnapshot) => void) => () => void;
+        /** Contract C3 (shared/laneComputer.ts): the computer a lane is on now, by lane id. Account level. */
+        laneComputer?: (laneId: string) => Promise<import("../shared/laneComputer").LaneComputer | null>;
+        /** The lane's computer and an address for it; pairs, and connects (which wakes it) unless `connect: false`. */
+        followLane?: (laneId: string, options?: { connect?: boolean }) => Promise<import("../shared/laneComputer").LaneFollowResult>;
+        /** A lane's computer changed: same lane id and chat ids, a new machine key. */
+        onLaneMoved?: (cb: (move: import("../shared/laneComputer").LaneMovedEvent) => void) => () => void;
         /**
          * Clears a lane computer's caches (`cloud.clear_caches`) on THAT
          * computer: `pin` is the lane's machine binding, `instanceId` its

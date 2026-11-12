@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
+import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
+import type { LaneComputer, LaneFollowResult, LaneMovedEvent } from "../shared/laneComputer";
 import type {
   LaneShareAcceptResult,
   LaneShareConnectTicket,
@@ -13314,6 +13316,14 @@ const adeBridge = {
         throw new Error("Jira needs a connected ADE runtime.");
       }),
   },
+  // Contract C2 (shared/machineAddress.ts): an address for one machine of the
+  // account, by machine key. Never reads or changes the tab's machine.
+  machines: {
+    connect: (machineKey: string, options?: MachineConnectOptions): Promise<MachineConnectResult> =>
+      ipcRenderer.invoke(IPC.machinesConnect, { machineKey, connect: options?.connect !== false }),
+    addressFor: (machineKey: string): Promise<MachineAddress | null> =>
+      ipcRenderer.invoke(IPC.machinesAddressFor, { machineKey }),
+  },
   // Machine-owned ADE account (Clerk identity). Token-free surface only — the
   // raw bearer stays in the main process and is never exposed here.
   account: {
@@ -13441,6 +13451,15 @@ const adeBridge = {
       const listener = (_event: Electron.IpcRendererEvent, job: CloudLaneJobSnapshot) => cb(job);
       ipcRenderer.on(IPC.cloudLaneJobEvent, listener);
       return () => ipcRenderer.removeListener(IPC.cloudLaneJobEvent, listener);
+    },
+    // Contract C3 (shared/laneComputer.ts): a lane follows its computer. Account level, by lane id.
+    laneComputer: (laneId: string): Promise<LaneComputer | null> => ipcRenderer.invoke(IPC.cloudLaneComputer, { laneId }),
+    followLane: (laneId: string, options?: { connect?: boolean }): Promise<LaneFollowResult> =>
+      ipcRenderer.invoke(IPC.cloudFollowLane, { laneId, connect: options?.connect !== false }),
+    onLaneMoved: (cb: (move: LaneMovedEvent) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, move: LaneMovedEvent) => cb(move);
+      ipcRenderer.on(IPC.cloudLaneMoved, listener);
+      return () => ipcRenderer.removeListener(IPC.cloudLaneMoved, listener);
     },
     machineAction: (args: CloudMachineActionArgs): Promise<CloudMachineActionResult | null> =>
       ipcRenderer.invoke(IPC.cloudMachineAction, args),

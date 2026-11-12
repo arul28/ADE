@@ -960,6 +960,7 @@ import {
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
 import { cloudAccountChanged, registerCloudIpc } from "../adeCloud/registerCloudIpc";
 import { registerCloudLaneLifeIpc } from "../adeCloud/registerCloudLaneLifeIpc";
+import { registerMachineConnectIpc } from "../machines/registerMachineConnectIpc";
 import { registerCloudLaneLaunchIpc } from "../adeCloud/registerCloudLaneLaunchIpc";
 import { getMachineMainLogger } from "../logging/machineLogger";
 import { registerCloudSavedChatsIpc } from "../cloudChats/registerCloudSavedChatsIpc";
@@ -12681,8 +12682,29 @@ export function registerIpc({
     }
   });
 
+  // Contract C2: any machine of the account by its key (machineConnector.ts).
+  const machineConnector = registerMachineConnectIpc({
+    localMachineKey: () => runtimeBridge.getLocalMachineIdentity()?.machineKey ?? null,
+    signedIn: () => accountBridge.status().signedIn,
+    savedTarget: (machineKey) => {
+      const id = runtimeBridge.resolveTargetIdForMachineKey(machineKey);
+      return id ? { id, name: runtimeBridge.resolveTargetNameForMachineKey(machineKey) ?? "" } : null;
+    },
+    isConnected: (targetId) => runtimeBridge.isTargetConnected(targetId),
+    accountMachine: async (machineKey) => {
+      const list = await accountBridge.listMachines();
+      if (list.state !== "ok") throw new Error(list.message ?? "Your account's computers can't be read right now.");
+      const row = list.machines.find((machine) => machine.machineKey.trim().toLowerCase() === machineKey.trim().toLowerCase());
+      return row ? { name: row.customName?.trim() || row.name } : null;
+    },
+    pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
+    connect: (targetId) => runtimeBridge.remoteForMain.connect(targetId),
+    logger: getMachineMainLogger(),
+  });
+
   // the provider: the account-wide key and new machines made on it (no pin; see the module).
   const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient } = registerCloudIpc({
+    machineConnector: () => machineConnector,
     // Its items in this computer's brain, also with no project here: then the
     // brain opens only those (`accountVault.call`).
     vaultBridge: createAccountVaultBridge({ ...vaultBridgeOptions, machineFallback: true }),

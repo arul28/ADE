@@ -233,6 +233,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // renderer reported a timeout while the update was still going.
     case IPC.remoteRuntimeUpdateAndRestart:
       return REMOTE_MACHINE_UPDATE_IPC_TIMEOUT_MS;
+    // Pairs through the account (25 s) when needed, then connects, which can wake a cloud computer.
+    case IPC.machinesConnect:
+    case IPC.cloudFollowLane:
     case IPC.remoteRuntimeConnect:
     case IPC.remoteRuntimeListProjects:
     case IPC.remoteRuntimeAddProject:
