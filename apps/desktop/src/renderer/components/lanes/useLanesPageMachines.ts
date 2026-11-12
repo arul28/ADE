@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { useRootAppStore } from "../../state/appStore";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import {
   createLaneMachineRouter,
   machineBlockedReason,
@@ -127,7 +128,11 @@ export function useLanesPageMachines({
    * machine's address from the router. Null while the copy is offline or no
    * project is open; then nothing is sent for those rows.
    */
-  const tabLanePin = activeMachine?.routable && activeMachine.online ? activeMachine.pin : null;
+  // The union carries no slice for the tab's own machine, so its `online`
+  // stays true after that machine drops. The tab's copy pin follows the
+  // connection, and is null while that machine is offline.
+  const tabCopyPin = useTabCopyPin();
+  const tabLanePin = activeMachine?.routable && activeMachine.online && tabCopyPin != null ? activeMachine.pin : null;
 
   // The shared router over the same union the list renders. Every action on a
   // row resolves through it, so a lane on another machine is only ever sent
