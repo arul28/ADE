@@ -59,6 +59,7 @@ import {
   type SyncShared,
   type VaultRow,
 } from "./providerLoginSyncShared";
+import { antigravityKeyringItemExists, invalidateAntigravityAuthCache, peekAntigravityKeyringPresent } from "../ai/antigravityAuth";
 
 /** The Allow line before the first read, per OS. */
 const KEYRING_ALLOW_HINT: Record<KeyringPlatform, string> = {
@@ -167,6 +168,9 @@ export function createAllow(s: SyncShared) {
     }
     if (local !== "captured" || !key) throw new Error("ADE couldn't put the sign-in in your account. Try again in a moment.");
     state.keychain = { ...(state.keychain ?? {}), antigravity: { allowedAt: now(), slot, key } };
+    // The item was just read, so an older "no item" answer is wrong now; left
+    // in place, capture would count the copy as signed out and remove it.
+    invalidateAntigravityAuthCache();
     try {
       writeProviderLoginState(deps.adeDir, state);
     } catch (error) {
@@ -188,10 +192,15 @@ export function createAllow(s: SyncShared) {
     const stillThere = Boolean(allowed && vault?.list(ACCOUNT_SCOPE_ALL).some((row) =>
       row.kind === PROVIDER_LOGIN_VAULT_KIND && row.key === allowed.key && !row.deleted));
     const allowedAt = allowed && stillThere ? new Date(allowed.allowedAt) : null;
+    // Whether the item is there, from the attribute-only check (no secret, no
+    // prompt). Unknown starts that check, so the next status read knows.
+    const present = peekAntigravityKeyringPresent();
+    if (present === null) void antigravityKeyringItemExists().catch(() => undefined);
     return {
       part: {
         store: KEYRING_STORE[platform],
         canAllow: !off,
+        present,
         allowedAt: allowedAt ? allowedAt.toISOString() : null,
         message: allowedAt
           ? `Copied from this computer on ${allowedAt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}. Allow again to update.`

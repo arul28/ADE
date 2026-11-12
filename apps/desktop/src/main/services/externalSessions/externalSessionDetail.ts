@@ -33,6 +33,8 @@ type WatchEntry = {
   timer: ReturnType<typeof setTimeout> | null;
   closed: boolean;
   sourcePath: string | null;
+  /** A SQLite log's write-ahead file, polled beside it (removed with its own listener). */
+  walWatch: { path: string; listener: () => void } | null;
 };
 
 const watches = new Map<string, WatchEntry>();
@@ -254,6 +256,7 @@ export function stopExternalSessionDetailWatch(senderId: number, watchId: string
   if (entry.timer) clearTimeout(entry.timer);
   entry.watcher?.close();
   if (entry.sourcePath) fs.unwatchFile(entry.sourcePath);
+  if (entry.walWatch) fs.unwatchFile(entry.walWatch.path, entry.walWatch.listener);
   watches.delete(key);
 }
 
@@ -297,7 +300,7 @@ export async function startExternalSessionDetailWatch(args: {
     return detail;
   }
 
-  const entry: WatchEntry = { watcher: null, timer: null, closed: false, sourcePath: detail.sourcePath };
+  const entry: WatchEntry = { watcher: null, timer: null, closed: false, sourcePath: detail.sourcePath, walWatch: null };
   watches.set(key, entry);
 
   const emit = () => {
@@ -325,5 +328,13 @@ export async function startExternalSessionDetailWatch(args: {
   }
   // `fs.watch` is silent on some hosts for append-only JSONL; poll the inode too.
   fs.watchFile(detail.sourcePath, { interval: 200, persistent: false }, emit);
+  // An open agy conversation writes its new steps to `<log>.db-wal`, not the
+  // log, until a checkpoint. Polled, since it comes and goes.
+  if (args.provider === "antigravity" && detail.sourcePath.endsWith(".db")) {
+    const walPath = `${detail.sourcePath}-wal`;
+    const listener = () => emit();
+    fs.watchFile(walPath, { interval: 200, persistent: false }, listener);
+    entry.walWatch = { path: walPath, listener };
+  }
   return detail;
 }

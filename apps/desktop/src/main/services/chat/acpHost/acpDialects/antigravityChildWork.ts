@@ -203,14 +203,21 @@ export function createAntigravityBackgroundWork(args: {
   /**
    * New parent steps. `outsideTurn`: they were written while no prompt ran,
    * so ADE reports what the agent did; otherwise the turn already streamed it.
+   * False when a read failed (a locked log): the caller keeps the old
+   * signature so the next tick reads again from the cursor.
    */
-  const readParent = (outsideTurn: boolean, events: AcpBackgroundEvent[]) => {
-    if (!parentFile) return;
+  const readParent = (outsideTurn: boolean, events: AcpBackgroundEvent[]): boolean => {
+    if (!parentFile) return true;
+    let ok = true;
     // Every unread step, a batch at a time: a long turn can add more than
     // one batch, and a launch past the first must not be missed.
     const steps: AntigravityStep[] = [];
     for (let batch = 0; batch < MAX_READ_BATCHES; batch++) {
-      const read = readAntigravitySteps(parentFile, steps.at(-1)?.idx ?? cursor, READ_BATCH) ?? [];
+      const read = readAntigravitySteps(parentFile, steps.at(-1)?.idx ?? cursor, READ_BATCH);
+      if (!read) {
+        ok = false;
+        break;
+      }
       steps.push(...read);
       if (read.length < READ_BATCH) break;
     }
@@ -235,24 +242,29 @@ export function createAntigravityBackgroundWork(args: {
       }
     }
     if (items.length) events.push({ kind: "agent_activity", items });
+    return ok;
   };
 
-  /** Background tools that were still running: report the ones that finished. */
-  const readRunningTools = (events: AcpBackgroundEvent[]) => {
-    if (!parentFile || !runningTools.size) return;
+  /** Background tools that were still running: report the ones that finished. False when the read failed. */
+  const readRunningTools = (events: AcpBackgroundEvent[]): boolean => {
+    if (!parentFile || !runningTools.size) return true;
+    const steps = readAntigravityStepsAt(parentFile, [...runningTools]);
+    if (!steps) return false;
     const items: AcpBackgroundItem[] = [];
-    for (const step of readAntigravityStepsAt(parentFile, [...runningTools]) ?? []) {
+    for (const step of steps) {
       if (step.kind === "tool") toolOutcome(step, items);
     }
     if (items.length) events.push({ kind: "agent_activity", items });
+    return true;
   };
 
   const readChildren = (events: AcpBackgroundEvent[]) => {
     for (const [childId, child] of children) {
       const signature = logSignature(child.file);
-      if (signature !== child.signature && child.file) {
+      const steps = signature !== child.signature && child.file ? readAntigravitySteps(child.file, child.cursor) : undefined;
+      // A failed read keeps the old signature, so the next tick tries again.
+      if (steps) {
         child.signature = signature;
-        const steps = readAntigravitySteps(child.file, child.cursor) ?? [];
         let lastTool = child.lastTool;
         for (const step of steps) {
           child.cursor = Math.max(child.cursor, step.idx);
@@ -280,11 +292,12 @@ export function createAntigravityBackgroundWork(args: {
     if (!inTurn) {
       const signature = logSignature(parentFile);
       if (signature !== parentSignature) {
-        parentSignature = signature;
         // The parent is still working on a result: keep watching.
         lastSettledAt = now();
-        readRunningTools(events);
-        readParent(true, events);
+        const toolsRead = readRunningTools(events);
+        const parentRead = readParent(true, events);
+        // Only a full read moves the signature; a locked log is read again next tick.
+        if (toolsRead && parentRead) parentSignature = signature;
       }
     }
     if (events.length) args.emit(events);
@@ -310,12 +323,14 @@ export function createAntigravityBackgroundWork(args: {
       // The turn's own replies were streamed; only launches and results count.
       const events: AcpBackgroundEvent[] = [];
       const settledBefore = lastSettledAt;
-      readParent(false, events);
-      parentSignature = logSignature(parentFile);
+      const signature = logSignature(parentFile);
+      const read = readParent(false, events);
+      // A failed read leaves the signature stale, so the timer's tick reads again.
+      if (read) parentSignature = signature;
       if (events.length) args.emit(events);
       // A child that already reported still gets agy's reply to it, which can
       // come after the turn.
-      if (children.size || lastSettledAt !== settledBefore) startTimer();
+      if (children.size || lastSettledAt !== settledBefore || !read) startTimer();
     },
     hasOpenWork: () => !disposed && (
       children.size > 0

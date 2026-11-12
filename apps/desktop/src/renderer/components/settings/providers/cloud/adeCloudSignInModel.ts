@@ -450,7 +450,9 @@ function carriedTile(input: AdeCloudTileInput, row: ProviderLoginProviderStatus 
     return signedIn("T3", [{ text: email ? `${email} · ${originLine(inUse, signIns)}` : originLine(inUse, signIns) }, ...repoLine], action);
   }
   if (signIns.length > 0) return notSignedIn("T9", "Off for ADE Cloud", switchFor(only));
-  if (provider === "antigravity" && input.keyringIsThisComputer && row?.keychain?.canAllow) {
+  // Only a sign-in known to be there (or an older ADE that cannot say) offers Allow.
+  const keyringHasIt = row?.keychain?.present === true || row?.keychain?.present === undefined;
+  if (provider === "antigravity" && input.keyringIsThisComputer && row?.keychain?.canAllow && keyringHasIt) {
     return notSignedIn("T11", `It is in ${keyringAllowWords(row.keychain.store).where}`, { kind: "allow-keychain" });
   }
   // Copilot comes from a computer's GitHub CLI login, once it is turned on there (this computer's page).

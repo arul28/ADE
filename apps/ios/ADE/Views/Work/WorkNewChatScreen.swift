@@ -2038,7 +2038,7 @@ struct WorkNewChatScreen: View {
 
 private func workCliSupportsReasoningSelection(provider: String) -> Bool {
   let family = providerFamilyKey(provider)
-  return family == "claude" || family == "codex" || family == "muse" || family == "droid" || family == "pi"
+  return family == "claude" || family == "codex" || family == "muse" || family == "droid" || family == "pi" || family == "antigravity"
 }
 
 private func workCliInitialSessionTitle(provider: String, opener: String) -> String {

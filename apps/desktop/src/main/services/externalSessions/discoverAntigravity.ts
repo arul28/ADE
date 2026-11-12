@@ -75,7 +75,8 @@ function listAntigravityCandidates(args: ExternalSessionDiscoveryArgs, lookupId:
  * What a log said, kept while its file (and WAL) keeps its mtime and size.
  * Every list open used to open each log twice: 200 logs cost 250 ms warm on
  * an M3 Pro, all on the event loop. The window is read only for a log that
- * gets that far, then kept too.
+ * gets that far, then kept too. A failed read (a locked log) is never kept:
+ * the next list reads it again.
  */
 type CachedLog = {
   mtimeMs: number;
@@ -93,6 +94,7 @@ function cachedLog(candidate: AntigravityCandidate): CachedLog {
   if (hit && hit.mtimeMs === candidate.mtimeMs && hit.size === candidate.size) return hit;
   const entry: CachedLog = { mtimeMs: candidate.mtimeMs, size: candidate.size, meta: readAntigravityConversationMeta(candidate.file) };
   logCache.delete(candidate.file);
+  if (!entry.meta) return entry;
   logCache.set(candidate.file, entry);
   if (logCache.size > LOG_CACHE_MAX) logCache.delete(logCache.keys().next().value!);
   return entry;
@@ -115,7 +117,8 @@ function antigravityRecordFromCandidate(
   const scope = `${includeAdeOwned ? 1 : 0}\u0000${(scopeRoots ?? []).join("\u0000")}`;
   if (log.record?.scope === scope) return log.record.value;
   const value = buildAntigravityRecord(candidate, log, scopeRoots, includeAdeOwned);
-  log.record = { scope, value };
+  // A record missing only because the window read failed is built again next time.
+  if (value || log.window !== undefined || !log.meta || log.meta.isSubagent) log.record = { scope, value };
   return value;
 }
 
@@ -131,7 +134,7 @@ function buildAntigravityRecord(
   const cwd = normalizeProviderCwd(meta.workspace);
   if (!cwdIsInScope(cwd, scopeRoots)) return null;
 
-  if (!("window" in log)) log.window = readAntigravityMessageWindow(candidate.file);
+  log.window ??= readAntigravityMessageWindow(candidate.file);
   const window = log.window;
   if (!window) return null;
   const toNeutral = (steps: typeof window.head) => compact(steps.map((step) => (step.kind === "user"

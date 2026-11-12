@@ -11,6 +11,8 @@ import { cutPage, type EventsCursor, type PageCut } from "./paging";
 const STEP_BATCH = 200;
 /** A tool result longer than this is clipped in the copy. */
 const TOOL_RESULT_CHARS = 16_000;
+/** Payload bytes one batch holds at most, whatever the page's budget. */
+const BATCH_BYTES = 4 * 1024 * 1024;
 /** Steps one page scans at most: bookkeeping steps show nothing and must not be read forever. */
 const MAX_SCANNED_STEPS = 2_000;
 
@@ -78,17 +80,22 @@ export function loadAntigravityStorePage(args: {
   let readFailed = false;
   let first = true;
   // Read newest first: a user's message (no time of its own) takes the time
-  // of the reply that followed it.
-  let laterAt = args.fallbackBaseMs;
+  // of the reply that followed it, else of the dated step before it, so it
+  // never sorts ahead of earlier turns.
+  let laterAt: number | null = null;
+  const undated: Array<{ chunk: AgentChatEventEnvelope[]; idx: number }> = [];
   outer: while (count < args.maxEvents) {
-    const batch = readAntigravityStepsBefore(args.file, before, STEP_BATCH);
-    if (!batch) {
+    // Until the page shows something its budget does not stop it, so hold a full batch.
+    const batchBytes = count > 0 ? Math.min(BATCH_BYTES, Math.max(args.maxBytes - bytes, 1)) : BATCH_BYTES;
+    const read = readAntigravityStepsBefore(args.file, before, STEP_BATCH, batchBytes);
+    if (!read) {
       if (first) return null;
       // The log stopped answering mid-page: what is older is unknown, not absent.
       readFailed = true;
       break;
     }
     first = false;
+    const batch = read.rows;
     if (!batch.length) break;
     for (const { step, bytes: size, clipped } of batch) {
       // The byte budget ends a page only once it shows something, so a run of
@@ -106,8 +113,16 @@ export function loadAntigravityStorePage(args: {
       lowest = step.idx;
       highest ??= step.idx;
       const sink = new EnvelopeSink(args.options);
-      const at = ("atMs" in step && step.atMs) || laterAt;
-      laterAt = at;
+      const dated = ("atMs" in step && step.atMs) || null;
+      if (dated !== null) {
+        laterAt = dated;
+        // Newer undated steps go just after this one.
+        for (const pending of undated.splice(0)) {
+          const stamp = new Date(dated + pending.idx).toISOString();
+          for (const envelope of pending.chunk) envelope.timestamp = stamp;
+        }
+      }
+      const at = laterAt ?? args.fallbackBaseMs;
       // `+ idx` keeps steps that share a second in order.
       const timestamp = new Date(at + step.idx).toISOString();
       stepToEvents(step, sink, timestamp);
@@ -120,11 +135,12 @@ export function loadAntigravityStorePage(args: {
           message: "This message was longer than ADE reads from Antigravity's log; the copy shows its start.",
         }, timestamp, `agy:${step.idx}:clipped`);
       }
+      if (laterAt === null && sink.out.length) undated.push({ chunk: sink.out, idx: step.idx });
       chunks.push(sink.out);
       count += sink.out.length;
     }
     before = batch[batch.length - 1]!.step.idx;
-    if (batch.length < STEP_BATCH) break;
+    if (!read.more) break;
   }
   // Older steps were left unread: by the byte or event budget, the scan bound,
   // or a read that failed part way.

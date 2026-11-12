@@ -324,11 +324,15 @@ export async function loadExternalSessionEvents(
   if (!raw || emptyFirstPage) {
     if (cursor) return { events: [], hasOlder: false, olderCursor: null, truncated: false };
     const sampled = sampledContentEvents(record, options);
+    // A source read that left history unread says so here too.
+    const sourceTruncated = raw?.bytesTruncated === true;
     return {
-      events: isImport ? finalizeExternalImportEvents(sampled, options) : sampled.slice(-maxEvents),
+      events: isImport
+        ? finalizeExternalImportEvents(sampled, { ...options, transcriptBytesTruncated: sourceTruncated, transcriptByteLimit: byteLimit })
+        : sampled.slice(-maxEvents),
       hasOlder: false,
       olderCursor: null,
-      truncated: sampled.length > maxEvents,
+      truncated: sampled.length > maxEvents || sourceTruncated,
     };
   }
 

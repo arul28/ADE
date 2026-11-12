@@ -205,6 +205,11 @@ export type ProviderLoginProviderStatus = {
     store?: ProviderLoginKeyringStore;
     /** True when an Allow can run now (capture is on). */
     canAllow: boolean;
+    /**
+     * Whether the OS store holds the sign-in, from an attribute-only check;
+     * null while unknown. Absent from an older ADE.
+     */
+    present?: boolean | null;
     /** The last Allow that put the sign-in in the account; null before the first. */
     allowedAt: string | null;
     /** Plain words for the tile, such as "Copied from this computer on Nov 10, 2026. Allow again to update." */

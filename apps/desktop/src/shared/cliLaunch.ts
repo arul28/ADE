@@ -1685,7 +1685,7 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "antigravity") {
     const commandArgs: string[] = [
-      ...antigravityModelFlags(modelForLaunch),
+      ...antigravityModelFlags(modelForLaunch, passthroughModelId),
       ...antigravityEffortFlags(args.reasoningEffort),
       ...permissionModeToAntigravityFlags(permissionMode),
     ];
@@ -2250,8 +2250,9 @@ export function resolveAntigravityCliModelForLaunch(model: string | null | undef
   return stripRegistryPrefix(model, "antigravity");
 }
 
-function antigravityModelFlags(model: string | null | undefined): string[] {
-  const resolved = resolveAntigravityCliModelForLaunch(model);
+/** A preset with `passthroughModelId` hands its model to `agy` exactly as written. */
+function antigravityModelFlags(model: string | null | undefined, passthrough = false): string[] {
+  const resolved = passthrough ? normalizeCliFlagValue(model) : resolveAntigravityCliModelForLaunch(model);
   return resolved ? ["--model", resolved] : [];
 }
 
@@ -3055,7 +3056,7 @@ function buildProviderResumeLaunchCommand(
   if (metadata.provider === "antigravity") {
     const parts = [
       ANTIGRAVITY_CLI_COMMAND,
-      ...antigravityModelFlags(modelForLaunch),
+      ...antigravityModelFlags(modelForLaunch, passthroughModelId),
       ...antigravityEffortFlags(reasoningEffort),
       ...permissionModeToAntigravityFlags(permissionMode),
     ];

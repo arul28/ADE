@@ -278,32 +278,51 @@ export function readAntigravityStepsAt(file: string, indexes: readonly number[])
 
 /**
  * Steps before `beforeIdx` (all steps when null), newest first, at most
- * `limit`, each payload read up to `payloadBytes`. Paging backwards through a
+ * `limit`, each payload read up to 256 KiB. Paging backwards through a
  * whole conversation (the importer's preview and copy).
  */
 export function readAntigravityStepsBefore(
   file: string,
   beforeIdx: number | null,
   limit: number,
-  payloadBytes = MAX_PAYLOAD_BYTES,
-): Array<{ step: AntigravityStep; bytes: number; clipped: boolean }> | undefined {
-  return withLog(file, (db) => db
-    .prepare(
-      "SELECT idx, step_type AS type, status, substr(step_payload, 1, ?) AS payload, length(step_payload) AS full FROM steps WHERE idx < ? ORDER BY idx DESC LIMIT ?",
-    )
-    .all<StepRow & { full?: unknown }>(
-      Math.min(payloadBytes, MAX_PAYLOAD_BYTES),
-      beforeIdx ?? Number.MAX_SAFE_INTEGER,
-      limit,
-    )
-    .flatMap((row) => {
-      if (typeof row.idx !== "number" || typeof row.type !== "number") return [];
+  /** Stop once this many payload bytes are held (the step that crosses it is kept). */
+  maxBytes = Number.POSITIVE_INFINITY,
+): { rows: Array<{ step: AntigravityStep; bytes: number; clipped: boolean }>; more: boolean } | undefined {
+  return withLog(file, (db) => {
+    const rows: Array<{ step: AntigravityStep; bytes: number; clipped: boolean }> = [];
+    let held = 0;
+    let seen = 0;
+    // Row by row, so a batch of large payloads is never all in memory at once.
+    for (const raw of db
+      .prepare(
+        "SELECT idx, step_type AS type, status, substr(step_payload, 1, ?) AS payload, length(step_payload) AS full FROM steps WHERE idx < ? ORDER BY idx DESC LIMIT ?",
+      )
+      .iterate(MAX_PAYLOAD_BYTES, beforeIdx ?? Number.MAX_SAFE_INTEGER, limit)) {
+      seen += 1;
+      const row = raw as StepRow & { full?: unknown };
+      if (typeof row.idx !== "number" || typeof row.type !== "number") continue;
       const payload = row.payload instanceof Uint8Array ? row.payload : null;
       const bytes = payload?.byteLength ?? 0;
-      // `clipped`: the payload was longer than what was read, so its text may be cut.
-      const clipped = typeof row.full === "number" && row.full > bytes;
-      return [{ step: parseAntigravityStep(row.idx, row.type, payload, row.status), bytes, clipped }];
-    }));
+      const step = parseAntigravityStep(row.idx, row.type, payload, row.status);
+      // `clipped`: the payload was longer than what was read, or a text was
+      // cut at the text limit.
+      const clipped = (typeof row.full === "number" && row.full > bytes) || stepTextCut(step);
+      rows.push({ step, bytes, clipped });
+      held += bytes;
+      if (held >= maxBytes) return { rows, more: true };
+    }
+    return { rows, more: seen >= limit };
+  });
+}
+
+/** Whether a step's text reached the text limit, so its end was cut. */
+function stepTextCut(step: AntigravityStep): boolean {
+  switch (step.kind) {
+    case "user": return step.text.length >= TEXT_LIMIT;
+    case "reply": return step.text.length >= TEXT_LIMIT || step.thinking.length >= TEXT_LIMIT;
+    case "message": return step.content.length >= TEXT_LIMIT;
+    default: return false;
+  }
 }
 
 /** Conversation ids a launch step's result names (`"conversationId": "<id>"`). */

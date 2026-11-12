@@ -37509,9 +37509,11 @@ export function createAgentChatService(args: {
     runtime: AcpRuntime,
     events: AcpBackgroundEvent[],
   ): void => {
-    if (managed.closed) return;
     let changed = false;
     for (const event of events) {
+      // A closed chat still records how its subagents ended (teardown
+      // settles them), so a saved transcript shows no card still running.
+      if (managed.closed && event.kind !== "subagent_result") continue;
       if (event.kind === "agent_activity") {
         if (managed.runtime !== runtime) continue;
         // The running turn first: the saved id can still name the turn before it.
@@ -37880,6 +37882,20 @@ export function createAgentChatService(args: {
       acpBackgroundTurnIds.set(runtime, turnId);
       runtime.backgroundWork?.turnStarting();
       backgroundTurnStarted = true;
+      // The agent reads this message as the answer to any question it asked
+      // (`dialect.asyncQuestions`), so those cards are answered now. A card
+      // sending its own answer is `responding` and settles itself.
+      for (const [itemId, banked] of [...managed.asyncQuestions]) {
+        if (!itemId.startsWith("acp-question:") || banked.responding) continue;
+        managed.asyncQuestions.delete(itemId);
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision: "accept",
+          turnId: banked.request.turnId ?? null,
+          responseText: args.userText ?? args.displayText ?? args.promptText,
+          questions: banked.request.questions,
+        });
+      }
       const outcome = await runtime.session.prompt({
         turnId,
         blocks,
