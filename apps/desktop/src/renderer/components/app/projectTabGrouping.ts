@@ -702,6 +702,9 @@ export function accountProjectGroups(args: {
       });
     }
     if (shownIndex != null) {
+      // Until this computer's identity is read, its copy looks like another
+      // computer's (`account-machine:`); merging then would list it twice.
+      if (!thisMachineKey && !accountMachineKeys) continue;
       // A recent row shows this repository: add the copies on computers it
       // lacks (a computer with no saved connection, for example).
       const group = shown[shownIndex]!;
@@ -711,7 +714,16 @@ export function accountProjectGroups(args: {
         return accountKey ? [location.machineId, `${ACCOUNT_MACHINE_TARGET_PREFIX}${accountKey}`] : [location.machineId];
       }));
       const missing = locations.filter((location) => !has.has(location.machineId));
-      if (missing.length > 0) shown[shownIndex] = { ...group, locations: [...group.locations, ...missing] };
+      if (missing.length > 0) {
+        const merged = [...group.locations, ...missing];
+        // An added copy on this computer opens before an offline recent.
+        const primary = group.primary.reachable
+          ? group.primary
+          : merged.find((location) => location.summary.kind !== "remote" && location.reachable)
+            ?? merged.find((location) => location.reachable)
+            ?? group.primary;
+        shown[shownIndex] = { ...group, locations: merged, primary };
+      }
       continue;
     }
     // A project with no copy is still the account's (added with no

@@ -136,9 +136,11 @@ export async function resolveAccountProjectNavigation(
   const order = [...new Set([...(local ? [local] : []), ...connected, ...online])];
   const reachable = new Set(order);
   const resolved = resolveAccountProjectLink(id, owner, list, order, (key) => reachable.has(key));
-  const tell = (reason: "no-copy" | "removed" | "unknown", name: string | null): AppNavigationRequest => ({
+  // `projectId`: the project the link ends at after its merges. The page reads
+  // projects and copies by it, so the old id would show no copies.
+  const tell = (reason: "no-copy" | "removed" | "unknown", name: string | null, projectId: string = id): AppNavigationRequest => ({
     ...request,
-    target: { kind: "account-project", accountProjectId: id, name, reason },
+    target: { kind: "account-project", accountProjectId: projectId, name, reason },
   });
   switch (resolved.kind) {
     case "removed":
@@ -146,7 +148,7 @@ export async function resolveAccountProjectNavigation(
     case "unknown":
       return owner ? request : tell("unknown", null);
     case "noCopy":
-      return tell("no-copy", resolved.project.name);
+      return tell("no-copy", resolved.project.name, resolved.project.id);
     case "copy": {
       const samePair = owner?.accountMachineKey === resolved.machineKey && owner.projectId === resolved.checkoutId;
       if (samePair) return request;
