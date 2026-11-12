@@ -983,7 +983,7 @@ import { createAccountSettingsSyncService } from "../account/accountSettingsSync
 import { createDesktopProjectRecords } from "../projects/desktopProjectRecords";
 import { pruneOrphanedPresetConfigHomesFromMachine } from "../chat/harnessPresetConfigHomes";
 import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
-import { captureAutomationTestAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
+import { captureAutomationTestAnalytics, captureGhAccountSharingAnalytics, captureMcpServerSignInAnalytics, capturePresetAnalytics, captureProviderAccountSettingsChange, captureWebhookUrlCreatedAnalytics, providerAccountAnalyticsCapture } from "../analytics/featureProductAnalytics";
 import type {
   AccountSettingRow,
   AccountSettingsResult,
@@ -12206,14 +12206,7 @@ export function registerIpc({
     const enabled = arg?.enabled === true;
     await ctx.githubService.setGhAccountSharing({ enabled });
     // Reached only after the vault accepted the change; a refusal throws above.
-    productAnalyticsService?.capture({
-      event: "ade_feature_used",
-      surface: "desktop",
-      properties: { feature: "connections", action: enabled ? "github_cli_shared" : "github_cli_removed", outcome: "completed" },
-      projectId: null,
-      dedupeKey: `github_cli_${enabled ? "shared" : "removed"}:completed`,
-      minimumIntervalMs: 60 * 60 * 1_000,
-    });
+    captureGhAccountSharingAnalytics({ analytics: productAnalyticsService, surface: "desktop", enabled });
     const status = await ctx.githubService.getStatus();
     broadcastGithubStatus(status);
     return status;

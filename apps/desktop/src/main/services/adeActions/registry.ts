@@ -275,6 +275,7 @@ import {
   captureAgentCardAnalytics,
   captureNotificationSentAnalytics,
   captureWebhookUrlCreatedAnalytics,
+  captureGhAccountSharingAnalytics,
   captureAutomationTestAnalytics,
   captureProviderAccountSettingsChange,
   providerAccountAnalyticsCapture,
@@ -3558,7 +3559,10 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
       return githubService.getStatus();
     },
     async setGhAccountSharing(args?: unknown) {
-      await githubService.setGhAccountSharing({ enabled: asActionRecord(args).enabled === true });
+      const enabled = asActionRecord(args).enabled === true;
+      await githubService.setGhAccountSharing({ enabled });
+      // Reached only after the vault accepted the change; a refusal throws above.
+      captureGhAccountSharingAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", enabled });
       return githubService.getStatus();
     },
   };
