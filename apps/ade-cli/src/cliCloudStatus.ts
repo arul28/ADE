@@ -77,11 +77,17 @@ export function formatCloudStatus(value: unknown): string {
   for (const [label, text] of rows) lines.push(`${label.padEnd(width)}  ${text}`);
   const lanes = Array.isArray(status.lanes) ? status.lanes.filter(isRecord) : [];
   lines.push("", lanes.length ? "Lanes" : "No computers on ADE Cloud yet.");
+  /** A computer's name in this listing: its lane's, else its own. */
+  const boxName = (box: Record<string, unknown>): string => {
+    const lane = isRecord(box.lane) ? box.lane : null;
+    const laneName = lane && typeof lane.name === "string" ? lane.name : "";
+    return laneName || String(box.name ?? box.instanceId ?? "computer");
+  };
   const laneRows = lanes.map((box) => {
     const lane = isRecord(box.lane) ? box.lane : null;
     const size = isRecord(box.size) ? String(box.size.label ?? "") : String(box.sizeLabel ?? "");
     return [
-      lane ? String(lane.name ?? "") : `(no lane) ${String(box.name ?? box.instanceId ?? "")}`,
+      lane ? boxName(box) : `(no lane) ${boxName(box)}`,
       size,
       typeof box.hoursRate === "number" ? `${box.hoursRate}× hours` : "—",
       String(box.state ?? ""),
@@ -105,12 +111,10 @@ export function formatCloudStatus(value: unknown): string {
   // A computer whose disk is full and can't grow: the reason and the way out
   // (`cloudDiskFullMessage`), so an agent can explain why its turns stop.
   for (const box of lanes) {
-    const disk = isRecord(box.disk) ? box.disk : null;
-    if (typeof disk?.full !== "string" || !disk.full.trim()) continue;
-    const lane = isRecord(box.lane) ? box.lane : null;
-    const name = lane && typeof lane.name === "string" && lane.name ? lane.name : String(box.name ?? box.instanceId ?? "computer");
-    const size = typeof disk.sizeGb === "number" ? ` (${disk.sizeGb} GB disk)` : "";
-    lines.push(`  ${name}${size}: ${disk.full.trim()}`);
+    const boxDisk = isRecord(box.disk) ? box.disk : null;
+    if (typeof boxDisk?.full !== "string" || !boxDisk.full.trim()) continue;
+    const size = typeof boxDisk.sizeGb === "number" ? ` (${boxDisk.sizeGb} GB disk)` : "";
+    lines.push(`  ${boxName(box)}${size}: ${boxDisk.full.trim()}`);
   }
   if (sizeRows.length) lines.push("", "Sizes (ade chat create --machine cloud --size <id>)", ...table(sizeRows));
   return lines.join("\n");

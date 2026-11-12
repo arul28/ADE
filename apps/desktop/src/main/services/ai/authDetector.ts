@@ -1377,11 +1377,8 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
       // (never a probe, which would need the copy). Signed in, the provider
       // keeps its models and its first turn downloads the copy.
       if (!pinned && pinnedDownloadPending && (cli === "claude" || cli === "codex")) {
-        const { readClaudeCredentials, readCodexCredentials } = await import("./providerCredentialSources");
-        const saved = cli === "claude"
-          ? Boolean(await readClaudeCredentials()) || ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"].some((key) => Boolean(process.env[key]?.trim()))
-          : Boolean(await readCodexCredentials());
-        return { ...base, authenticated: saved, verified: false };
+        const { savedSignInPresent } = await import("./providerConnectionStatus");
+        return { ...base, authenticated: await savedSignInPresent(cli), verified: false };
       }
       // Every other probe runs ADE's copy, so it waits for that copy.
       if (!pinned) {

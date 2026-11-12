@@ -122,8 +122,9 @@ WORKDIR /home/node
 # the package managers the lane runs. /home/node is the person's billed disk;
 # everything outside it is the provider's unbilled system layer, which an
 # image update resets. So: the baked agents first; agents downloaded later and
-# package caches on the system layer within ~7 GB of its 10 GB (least recently
-# used out first), falling back to /home/node only when that cannot fit. After
+# package caches on the system layer, brought within ~7 GB of its 10 GB and its
+# free space each time an agent installs (old agent versions out first, then
+# package caches), falling back to /home/node only when that cannot fit. After
 # an image update the folder starts empty and each agent downloads again on
 # its first use, so nothing needs restoring (no post-image-update hook).
 # ADE_TOOLS_PREFETCH=used: the brain fetches at startup only the agents this

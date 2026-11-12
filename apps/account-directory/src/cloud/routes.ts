@@ -606,6 +606,8 @@ async function resizeAwake(
     const live = await provider.getInstance(computer.instance_id).catch(() => null);
     if (live?.status !== "sleeping") throw error;
     // The row said awake; the provider says asleep. Take its word for the meter too.
+    // The provider gives no time it fell asleep, so the stretch up to now is
+    // metered: at most the row's lag (about a minute), accepted.
     if (computer.status !== "sleeping") await recordStatus(env, computer, "sleeping", now, "resize");
     const blocked = await wake();
     if (blocked) return { blocked };
@@ -671,21 +673,22 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
 
   const resize: { cpu: number; memory: number; disk?: number } = { cpu: size.cpu, memory: size.memoryGb };
   if (nextDisk !== currentDisk) resize.disk = nextDisk;
+  /** Gives back the disk this resize reserved, unless something else has changed it since. */
+  const releaseDiskReservation = async (): Promise<void> => {
+    await env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null, disk_confirmed_gb = null where instance_id = ? and disk_gb = ?")
+      .bind(currentDisk, computer.instance_id, nextDisk).run();
+  };
   let status: string;
   try {
     const awake = await resizeAwake(env, computer, provider, resize, now);
     if ("blocked" in awake) {
-      if (nextDisk !== currentDisk) {
-        await env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null, disk_confirmed_gb = null where instance_id = ? and disk_gb = ?")
-          .bind(currentDisk, computer.instance_id, nextDisk).run();
-      }
+      if (nextDisk !== currentDisk) await releaseDiskReservation();
       return refuse(awake.blocked);
     }
     status = awake.status;
   } catch (error) {
     if (nextDisk !== currentDisk && providerMadeNothing(error)) {
-      await env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null, disk_confirmed_gb = null where instance_id = ? and disk_gb = ?")
-        .bind(currentDisk, computer.instance_id, nextDisk).run();
+      await releaseDiskReservation();
     }
     throw error;
   }

@@ -12,6 +12,7 @@ import type {
   AiProviderAccountSummary,
   AiCustomProviderConfig,
   AiLocalProviderConfigs,
+  AiProviderConnectionStatus,
   AiProviderConnections,
   AiRuntimeConnections,
   AiRuntimeConnectionStatus,
@@ -123,7 +124,12 @@ import {
   resetProviderRuntimeHealth,
 } from "./providerRuntimeHealth";
 import { resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
-import { buildClaudeAvailabilityFromConnection, resolveBundledClaudeBinary, withReportedClaudeVersion } from "./claudeAvailability";
+import {
+  buildClaudeAvailabilityFromConnection,
+  connectionListable,
+  resolveBundledClaudeBinary,
+  withReportedClaudeVersion,
+} from "./claudeAvailability";
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
@@ -1274,10 +1280,9 @@ export function createAiIntegrationService(args: {
       // The provider's own list (persisted from the last chat or probe) is the
       // picker; curated rows are only the fallback before one exists. Refresh
       // it in the background when it is missing or old, so this read never
-      // blocks on a subprocess. Only from a copy already here: a signed-in
-      // provider still waiting for its first-use download lists curated rows.
-      const onDisk = auth.some((entry) => entry.type === "cli-subscription" && entry.cli === provider && Boolean(entry.path));
-      if (onDisk || health?.state === "ready") warmAcpModelCatalog(provider, { logger });
+      // blocks on a subprocess. A signed-in provider still waiting for its
+      // first-use download lists curated rows (the warm skips it).
+      warmAcpModelCatalog(provider, { logger });
       available.push(...listAcpModelDescriptorsForProvider(provider, {
         ...(provider === "qwen" && qwenSettings.models.length
           ? { configuredModelIds: qwenSettings.models.map((model) => model.id) }
@@ -2421,21 +2426,25 @@ export function createAiIntegrationService(args: {
           // connection status, so the switch stays findable.
           const disabledProviders = disabledProviderSet(projectConfigService.get().effective.ai);
           const enabled = (provider: string): boolean => !disabledProviders.has(provider);
+          // Signed in with ADE's copy still to download lists its models like
+          // a ready one, so the first turn can start (and download it).
+          const listable = (provider: string, connection: AiProviderConnectionStatus | null | undefined): boolean =>
+            enabled(provider) && connectionListable(connection);
           const availability: AiIntegrationStatus["availableProviders"] = {
             claude: buildClaudeAvailabilityFromConnection(
               providerConnections.claude,
               { disabled: !enabled("claude") },
             ),
-            codex: enabled("codex") && providerConnections.codex.runtimeAvailable,
-            cursor: enabled("cursor") && providerConnections.cursor.runtimeAvailable,
-            droid: enabled("droid") && providerConnections.droid.runtimeAvailable,
-            muse: enabled("muse") && Boolean(providerConnections.muse?.runtimeAvailable),
-            qwen: enabled("qwen") && Boolean(providerConnections.qwen?.runtimeAvailable),
-            kimi: enabled("kimi") && Boolean(providerConnections.kimi?.runtimeAvailable),
-            grok: enabled("grok") && Boolean(providerConnections.grok?.runtimeAvailable),
-            copilot: enabled("copilot") && Boolean(providerConnections.copilot?.runtimeAvailable),
-            devin: enabled("devin") && Boolean(providerConnections.devin?.runtimeAvailable),
-            antigravity: enabled("antigravity") && Boolean(providerConnections.antigravity?.runtimeAvailable),
+            codex: listable("codex", providerConnections.codex),
+            cursor: listable("cursor", providerConnections.cursor),
+            droid: listable("droid", providerConnections.droid),
+            muse: listable("muse", providerConnections.muse),
+            qwen: listable("qwen", providerConnections.qwen),
+            kimi: listable("kimi", providerConnections.kimi),
+            grok: listable("grok", providerConnections.grok),
+            copilot: listable("copilot", providerConnections.copilot),
+            devin: listable("devin", providerConnections.devin),
+            antigravity: listable("antigravity", providerConnections.antigravity),
           };
           const runtimeFilteredAvailable = timeSyncPhase("filter_available_models", () => available.filter((descriptor) => {
             // API/local rows are not owned by any one provider tile (they reach
@@ -2443,10 +2452,10 @@ export function createAiIntegrationService(args: {
             // does not speak for them. The catalog gate handles those groups.
             if (!descriptor.isCliWrapped) return true;
             if (descriptor.family === "anthropic") return availability.claude.auth.ready;
-            if (descriptor.family === "openai") return enabled("codex") && providerConnections.codex.runtimeAvailable;
-            if (descriptor.family === "cursor") return enabled("cursor") && providerConnections.cursor.runtimeAvailable;
-            if (descriptor.family === "factory") return enabled("droid") && providerConnections.droid.runtimeAvailable;
-            if (descriptor.family === "muse") return enabled("muse") && Boolean(providerConnections.muse?.runtimeAvailable);
+            if (descriptor.family === "openai") return availability.codex;
+            if (descriptor.family === "cursor") return availability.cursor;
+            if (descriptor.family === "factory") return availability.droid;
+            if (descriptor.family === "muse") return availability.muse === true;
             if (descriptor.family === PROVIDER_STATUS_FAMILIES.qwen) return availability.qwen === true;
             if (descriptor.family === PROVIDER_STATUS_FAMILIES.kimi) return availability.kimi === true;
             if (descriptor.family === PROVIDER_STATUS_FAMILIES.grok) return availability.grok === true;

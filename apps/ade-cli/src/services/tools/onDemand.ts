@@ -2,8 +2,8 @@ import { pinnedToolFetchPending } from "./cacheLookup";
 import { asToolError, type ToolError, type ToolErrorKind } from "./errors";
 import type { ToolProgress, ToolsContext } from "./install";
 import { findToolPin, loadToolsManifest } from "./manifest";
-import { resolveToolsRootLayout, toolUsageRoot } from "./paths";
-import { noteToolUse } from "./usage";
+import { setToolsLogger, warnTools } from "./toolsLog";
+import { noteToolUse, toolUsageRootFor } from "./usage";
 
 /**
  * Download a pinned tool the moment something needs it.
@@ -63,11 +63,12 @@ export function enablePinnedToolFetch(logger: FetchLogger, options: { downloadOn
   fetchEnabled = true;
   fetchDownloadOnly = options.downloadOnly === true;
   fetchLogger = logger;
+  setToolsLogger(logger);
 }
 
 /** Log cache bookkeeping failures through the logger installed for tool fetches. */
 export function warnPinnedToolFetch(event: string, fields: Record<string, unknown>): void {
-  fetchLogger?.warn(event, fields);
+  warnTools(event, fields);
 }
 
 /** False when downloads are off here, or this is a checkout and the tool lives in its node_modules. */
@@ -173,7 +174,7 @@ export function trackPinnedToolFetch(name: string, run: () => Promise<unknown>):
  */
 export function pinnedToolDownload(name: string, context: ToolsContext = {}): Promise<ToolError | null> | null {
   if (fetchEnabled) {
-    noteToolUse(name, context.toolsRoot ?? toolUsageRoot(resolveToolsRootLayout(context.env ?? process.env, context.platform ?? process.platform)));
+    noteToolUse(name, toolUsageRootFor(context));
   }
   const running = inFlight.get(name);
   if (running) return running;

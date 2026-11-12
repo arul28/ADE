@@ -68,7 +68,7 @@ const PAUSED: Record<DiskPressureOperationKind, string> = {
  * may be fine), then what happens next: a grow under way, the reason a grow
  * was refused with its way out, or the grow ADE makes as soon as nothing runs.
  */
-export function cloudDiskRefusalMessage(
+function cloudDiskRefusalMessage(
   kind: DiskPressureOperationKind,
   snapshot: Pick<DiskPressureSnapshot, "freeBytes" | "totalBytes">,
   state: CloudDiskGrowState | null,

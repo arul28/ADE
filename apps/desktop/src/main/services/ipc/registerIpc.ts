@@ -123,7 +123,7 @@ import type { MachineInventoryDetail } from "../../../shared/types/machineInvent
 import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { noteProviderLoginChanged } from "../ai/providerLoginChanged";
-import { buildClaudeAvailabilityFromConnection } from "../ai/claudeAvailability";
+import { buildClaudeAvailabilityFromConnection, connectionListable } from "../ai/claudeAvailability";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
@@ -1650,9 +1650,9 @@ async function buildGlobalAiStatus(args?: { force?: boolean; onPhase?: (phase: s
     mode: hasConfirmedSubscriptionProvider ? "subscription" : "guest",
     availableProviders: {
       claude: buildClaudeAvailabilityFromConnection(providerConnections.claude),
-      codex: providerConnections.codex.runtimeAvailable,
-      cursor: providerConnections.cursor.runtimeAvailable,
-      droid: providerConnections.droid.runtimeAvailable,
+      codex: connectionListable(providerConnections.codex),
+      cursor: connectionListable(providerConnections.cursor),
+      droid: connectionListable(providerConnections.droid),
     },
     models: {
       claude: [],

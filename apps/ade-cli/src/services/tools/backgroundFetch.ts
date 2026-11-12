@@ -1,10 +1,8 @@
+import { type GcToolsOptions, type GcToolsResult, gcTools } from "./gc";
 import {
   type EnsureToolsOptions,
-  type GcToolsOptions,
-  type GcToolsResult,
   type ToolResolution,
   ensureTools,
-  gcTools,
   listPinnedTools,
 } from "./install";
 import { isToolError } from "./errors";

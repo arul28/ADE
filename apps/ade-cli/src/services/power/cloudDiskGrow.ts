@@ -30,18 +30,24 @@ import {
   diskPressureThresholdsForSize,
   type DiskPressureState,
 } from "../../../../desktop/src/main/services/storage/diskPressure";
-import { CLOUD_DISK_GROW_STARTED_COOLDOWN_MS, type CloudDiskGrowState } from "./cloudDiskGuard";
+import { isUrgentDiskPressure } from "../../../../desktop/src/shared/types/storage";
+import {
+  CLOUD_DISK_GROW_STARTED_COOLDOWN_MS,
+  cloudDiskGrowStatePath,
+  readCloudDiskGrowState,
+  type CloudDiskGrowState,
+} from "./cloudDiskGuard";
 
-export { cloudDiskGrowStatePath } from "./cloudDiskGuard";
-
-/** Near full: at this much used (or the guard's warning, if that comes first), grow at the idle point. */
+/**
+ * Near full: at this much used, or the guard's warning if that comes first,
+ * grow at the idle point. On a disk over 80 GB the warning comes later than
+ * this (its line is a fixed number of bytes), and the grow still comes here.
+ */
 const NEAR_FULL = 0.85;
 /** A refused grow is asked again only this often: a plan, extra disk or the account's disk changes rarely. */
 const REFUSED_RETRY_MS = 60 * 60_000;
-/** After a grow started the computer restarts; if it somehow doesn't, no second grow for this long. */
-const GROW_STARTED_COOLDOWN_MS = CLOUD_DISK_GROW_STARTED_COOLDOWN_MS;
-
-const SEVERITY: Record<DiskPressureState, number> = { normal: 0, warning: 1, critical: 2, exhausted: 3 };
+/** A grow that failed for another reason (out of hours, the server or network) waits this long before the next try. */
+const FAILED_RETRY_MS = 5 * 60_000;
 
 type DiskSpace = { freeBytes: number; totalBytes: number };
 
@@ -68,14 +74,21 @@ export function createCloudDiskGrower(deps: {
   client: () => Promise<CloudProvider | null>;
   /** The path whose filesystem is the computer's disk. */
   path: string;
-  /** Where `CloudDiskGrowState` is written (`cloudDiskGrowStatePath`); none, nothing is written. */
-  stateFile?: string;
+  /** The brain's `$ADE_HOME`: `CloudDiskGrowState` goes to `cloudDiskGrowStatePath` there, for the guard's refusal. */
+  adeHome: string;
   logger?: { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
   now?: () => number;
 }) {
   const now = deps.now ?? (() => Date.now());
-  let refusedAt: number | null = null;
-  let grewAt: number | null = null;
+  const stateFile = cloudDiskGrowStatePath(deps.adeHome);
+  // A grow restarts the computer, so the last boot's grow or refusal is read
+  // back from the state file it wrote: the cooldown and the refusal's wait
+  // hold across that restart instead of growing again at the first check.
+  const previous = readCloudDiskGrowState(stateFile);
+  let refusedAt: number | null = previous?.state === "refused" ? previous.at : null;
+  let grewAt: number | null = previous?.state === "growing" ? previous.at : null;
+  let failedAt: number | null = null;
+  let stateWritten = previous !== null;
   /** One grow at a time: a check that comes while one runs answers false. */
   let inFlight = false;
   /**
@@ -84,7 +97,6 @@ export function createCloudDiskGrower(deps: {
    * caches made room) is read once and cleared.
    */
   let shown: string | null | undefined = undefined;
-  let stateWritten = false;
 
   const setNotice = async (client: CloudProvider, reason: string | null): Promise<void> => {
     if (reason === shown) return;
@@ -103,17 +115,16 @@ export function createCloudDiskGrower(deps: {
   };
 
   const writeState = (state: CloudDiskGrowState | null): void => {
-    if (!deps.stateFile) return;
     try {
       if (!state) {
-        if (stateWritten || fs.existsSync(deps.stateFile)) fs.rmSync(deps.stateFile, { force: true });
+        if (stateWritten || fs.existsSync(stateFile)) fs.rmSync(stateFile, { force: true });
         stateWritten = false;
         return;
       }
-      fs.mkdirSync(path.dirname(deps.stateFile), { recursive: true });
-      const tmp = `${deps.stateFile}.${process.pid}.tmp`;
+      fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+      const tmp = `${stateFile}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, `${JSON.stringify(state)}\n`, { mode: 0o600 });
-      fs.renameSync(tmp, deps.stateFile);
+      fs.renameSync(tmp, stateFile);
       stateWritten = true;
     } catch (error) {
       deps.logger?.warn("cloud.disk_grow_state_write_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -127,10 +138,16 @@ export function createCloudDiskGrower(deps: {
     return { space, used: 1 - space.freeBytes / space.totalBytes, pressure: pressureOf(space) };
   };
 
+  /** A refused grow, a started one, or a failed one still holds the next try back. */
+  const holding = (): boolean =>
+    (refusedAt != null && now() - refusedAt < REFUSED_RETRY_MS)
+    || (grewAt != null && now() - grewAt < CLOUD_DISK_GROW_STARTED_COOLDOWN_MS)
+    || (failedAt != null && now() - failedAt < FAILED_RETRY_MS);
+
   const grow = async (stillIdle: () => boolean | Promise<boolean>): Promise<boolean> => {
     const disk = measure();
     if (!disk) return false;
-    const nearFull = disk.used >= NEAR_FULL || SEVERITY[disk.pressure] >= SEVERITY.warning;
+    const nearFull = disk.used >= NEAR_FULL || disk.pressure !== "normal";
     if (!nearFull) {
       if (shown !== null) {
         // Never in the way of the idle sleep that follows: tried again at the next idle point.
@@ -143,10 +160,10 @@ export function createCloudDiskGrower(deps: {
       }
       writeState(null);
       refusedAt = null;
+      failedAt = null;
       return false;
     }
-    if (refusedAt != null && now() - refusedAt < REFUSED_RETRY_MS) return false;
-    if (grewAt != null && now() - grewAt < GROW_STARTED_COOLDOWN_MS) return false;
+    if (holding()) return false;
     const client = await deps.client();
     if (!client) return false;
     const instance = await client.getInstance(deps.instanceId);
@@ -164,6 +181,7 @@ export function createCloudDiskGrower(deps: {
       writeState({ v: 1, state: "growing", toGb, at: now() });
       await client.resizeInstance(deps.instanceId, { cpu, memory, disk: toGb }, { computerIdle: true, origin: "auto" });
       grewAt = now();
+      failedAt = null;
       deps.logger?.info("cloud.disk_grown", { instanceId: deps.instanceId, toGb, pressure: disk.pressure });
       await setNotice(client, null);
       return true;
@@ -174,11 +192,11 @@ export function createCloudDiskGrower(deps: {
         const reason = error.detail.reason ?? (error.code === "needs_paid_plan" ? "plan_disk" : "account_limit");
         writeState({ v: 1, state: "refused", reason, wayOut: cloudDiskGrowRefusedWayOut(null, catalog, reason) ?? "It can't grow right now.", at: now() });
         // The card says "full" once the guard stops heavy work; the chat's refusal says it at once.
-        if (SEVERITY[disk.pressure] >= SEVERITY.critical) await setNotice(client, reason);
+        if (isUrgentDiskPressure(disk.pressure)) await setNotice(client, reason);
         deps.logger?.info("cloud.disk_grow_refused", { code: error.code, reason });
         return false;
       }
-      // Not refused, just failed: the next check tries again.
+      // Not refused, just failed: `growIfNeeded` holds the next try back a little.
       writeState(null);
       throw error;
     }
@@ -194,6 +212,10 @@ export function createCloudDiskGrower(deps: {
       inFlight = true;
       try {
         return await grow(stillIdle);
+      } catch (error) {
+        // Out of hours, the server or the network: not asked again every minute while the disk stays full.
+        failedAt = now();
+        throw error;
       } finally {
         inFlight = false;
       }
@@ -201,14 +223,12 @@ export function createCloudDiskGrower(deps: {
     /**
      * Whether the disk is close enough to the guard's stop line that the grow
      * shouldn't wait for the idle point: a local `statfs`, no server call.
-     * False while a refused grow or a started one still holds.
+     * False while a refused, started or failed grow still holds.
      */
     growDueNow(): boolean {
-      if (inFlight) return false;
-      if (refusedAt != null && now() - refusedAt < REFUSED_RETRY_MS) return false;
-      if (grewAt != null && now() - grewAt < GROW_STARTED_COOLDOWN_MS) return false;
+      if (inFlight || holding()) return false;
       const disk = measure();
-      return disk != null && SEVERITY[disk.pressure] >= SEVERITY.critical;
+      return disk != null && isUrgentDiskPressure(disk.pressure);
     },
   };
 }

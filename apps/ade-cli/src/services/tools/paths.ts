@@ -9,6 +9,7 @@ import {
   normalizeRuntimeArch,
 } from "../../lib/releaseAssets";
 import { ToolError } from "./errors";
+import { toolsLoggerInstalled, warnTools } from "./toolsLog";
 
 /**
  * The tools cache is only ever populated for a target the ADE runtime itself
@@ -101,10 +102,11 @@ function homeToolsRoot(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): strin
  *   - `ADE_TOOLS_ROOT` relocates the whole cache (tests, CI, large disks).
  *   - `ADE_SYSTEM_CACHE_ROOT` names a folder for caches ADE can rebuild that
  *     is not the person's own disk (an ADE Cloud computer's system layer).
- *     Tools then install under `<root>/tools`, within
- *     `ADE_SYSTEM_CACHE_BUDGET_BYTES` (default about 7 GB) for everything in
- *     that folder, least recently used out first, and a tool that still does
- *     not fit goes to the per-user cache instead.
+ *     Tools then install under `<root>/tools`. Each time a tool installs
+ *     there, the folder is brought within `ADE_SYSTEM_CACHE_BUDGET_BYTES`
+ *     (default about 7 GB) and within the free space of its filesystem
+ *     (`systemCache.ts`); between installs nothing checks it. A tool that
+ *     still does not fit goes to the per-user cache instead.
  *   - `ADE_TOOLS_BAKED_ROOTS` lists read-only caches in the same layout that a
  *     machine image ships (separated like PATH). A pinned version found there
  *     is used before any download.
@@ -124,21 +126,43 @@ export type ToolsRootLayout = {
 export const DEFAULT_SYSTEM_CACHE_BUDGET_BYTES = 7 * 1000 ** 3;
 export const SYSTEM_CACHE_TOOLS_DIR = "tools";
 
-const writableDirCache = new Map<string, boolean>();
+/** A writable verdict holds for the process; a refusal is checked again after this long (the image may fix it). */
+const UNWRITABLE_RECHECK_MS = 5 * 60_000;
+const writableDirCache = new Map<string, { writable: boolean; at: number }>();
+const warnedUnwritable = new Set<string>();
 
-/** True when `dir` exists (or can be made) and this process may write it. Cached per process. */
+/**
+ * True when this process may write `dir`, or, before the first install made
+ * it, the nearest folder above it that exists. Never creates anything: the
+ * image makes the folder, and the first install under it makes the rest.
+ */
 function writableDir(dir: string): boolean {
   const cached = writableDirCache.get(dir);
-  if (cached !== undefined) return cached;
+  if (cached && (cached.writable || Date.now() - cached.at < UNWRITABLE_RECHECK_MS)) return cached.writable;
   let writable = false;
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.accessSync(dir, fs.constants.W_OK);
-    writable = true;
-  } catch {
-    writable = false;
+  let reason = "";
+  let cursor = dir;
+  for (;;) {
+    try {
+      fs.accessSync(cursor, fs.constants.W_OK);
+      writable = true;
+      break;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "unknown";
+      const parent = path.dirname(cursor);
+      if (code !== "ENOENT" || parent === cursor) {
+        reason = code;
+        break;
+      }
+      cursor = parent;
+    }
   }
-  writableDirCache.set(dir, writable);
+  writableDirCache.set(dir, { writable, at: Date.now() });
+  if (!writable && !warnedUnwritable.has(dir) && toolsLoggerInstalled()) {
+    warnedUnwritable.add(dir);
+    // The image names the folder but this process can't write it: tools stay on the per-user cache.
+    warnTools("tools.system_cache_unwritable", { dir, code: reason, fallback: "home" });
+  }
   return writable;
 }
 
@@ -156,6 +180,34 @@ export function toolUsageRoot(layout: ToolsRootLayout): string {
   return layout.fallback ?? layout.primary;
 }
 
+/** Roots that can hold the current pin, in the order it is taken: a baked copy first. */
+export function currentPinRoots(layout: ToolsRootLayout): string[] {
+  return [...layout.baked, layout.primary, ...(layout.fallback ? [layout.fallback] : [])];
+}
+
+/** Roots ADE writes and collects (never an image's baked root). */
+export function writableRoots(layout: ToolsRootLayout): string[] {
+  return [layout.primary, ...(layout.fallback ? [layout.fallback] : [])];
+}
+
+/**
+ * The finished `<package>/<version>` install under one of `roots` that holds
+ * `target`, or null when `target` is outside them or the install is unfinished.
+ */
+export function installDirContaining(target: string, roots: readonly string[]): string | null {
+  const resolved = path.resolve(target);
+  for (const root of roots) {
+    const relative = path.relative(root, resolved);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue;
+    const segments = relative.split(path.sep);
+    const depth = segments[0]?.startsWith("@") ? 3 : 2;
+    if (segments.length < depth) continue;
+    const dir = path.join(root, ...segments.slice(0, depth));
+    if (isToolInstalled(dir)) return dir;
+  }
+  return null;
+}
+
 export function resolveToolsRootLayout(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
@@ -169,8 +221,9 @@ export function resolveToolsRootLayout(
   if (!explicit && systemRoot && path.isAbsolute(systemRoot)) {
     const root = path.resolve(systemRoot);
     const tools = path.join(root, SYSTEM_CACHE_TOOLS_DIR);
-    // A machine whose image names the folder but never made it (or made it
-    // read-only) keeps the per-user cache rather than failing every install.
+    // A machine whose image names the folder but lets this process write
+    // neither it nor the folder it would be made in keeps the per-user cache
+    // rather than failing every install.
     if (writableDir(tools)) {
       primary = tools;
       fallback = home;

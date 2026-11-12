@@ -45,7 +45,7 @@ export {
   type ToolProgress,
   type ToolResolution,
   ensureTools,
-  gcTools,
   listPinnedTools,
   tryResolveTool,
 } from "./install";
+export { gcTools } from "./gc";

@@ -1,4 +1,4 @@
-import type { AiClaudeAvailability, AiProviderConnections } from "../../../shared/types";
+import type { AiClaudeAvailability, AiProviderConnectionStatus, AiProviderConnections } from "../../../shared/types";
 import { reportedClaudeCodeVersion } from "./claudeCodeInit";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 
@@ -30,6 +30,16 @@ export function withReportedClaudeVersion(binary: AiClaudeAvailability["binary"]
   return version ? { ...binary, version } : binary;
 }
 
+/**
+ * Whether a provider's models are offered: its runtime is ready, or it is
+ * signed in with ADE's copy still to download (its first turn downloads it).
+ * `runtimeAvailable` stays false in the second case, for health and banners.
+ * Claude's row (below) follows the same rule.
+ */
+export function connectionListable(connection: AiProviderConnectionStatus | null | undefined): boolean {
+  return Boolean(connection?.runtimeAvailable || (connection?.runtimeDownloadPending && connection.authAvailable));
+}
+
 export function buildClaudeAvailabilityFromConnection(
   connection: AiProviderConnections["claude"],
   options?: { disabled?: boolean },
@@ -45,10 +55,14 @@ export function buildClaudeAvailabilityFromConnection(
   const authMode = detectClaudeAuthModeFromConnection(connection);
   // The connection's runtime is the same resolver's answer, so a blocker here
   // is about sign-in or runtime health, never a binary ADE has but missed.
+  // Signed in with ADE's copy still to download is ready too: the first turn
+  // downloads it (`runtimeAvailable` stays false for health and banners).
   const ready = options?.disabled !== true
-    && binary.present
     && connection.authAvailable
-    && (connection.runtimeAvailable || !connection.blocker);
+    && (
+      (binary.present && (connection.runtimeAvailable || !connection.blocker))
+      || connection.runtimeDownloadPending === true
+    );
   return {
     binary: withReportedClaudeVersion(binary),
     auth: {

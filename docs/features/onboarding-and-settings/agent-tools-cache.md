@@ -295,11 +295,16 @@ go and ADE has no code path per provider or OS:
   `ADE_SYSTEM_CACHE_BUDGET_BYTES`, default 7 GB): a folder that is not the
   person's disk (ADE Cloud's system layer, `/var/cache/ade`). Installs go to
   `<root>/tools` when the whole folder (package caches included) fits the new
-  tool within the budget; before that, the least recently used entries are
-  removed (`systemCache.ts`: tool versions by their last use, other caches by
-  their folder time). A tool that ran in the last 24 hours keeps its current
-  copy. What still does not fit, or a full disk under the budget, installs into
-  the per-user root instead. This runs only right before an install.
+  tool within the budget and the folder's filesystem has the room; before
+  that, entries are removed (`systemCache.ts`): tool versions first, by their
+  last use, then the package caches, by the newest time among what they hold.
+  A tool that ran in the last 24 hours keeps its current copy, and an install
+  a process of this ADE runs from (`holdToolInstallsWhileRunning`) is never
+  removed, here or by collection. What still does not fit, or a full disk
+  under the budget, installs into the per-user root instead. This runs only
+  right before an install, one at a time (`toolRoots.ts`); nothing checks the
+  folder between installs. Collection removes a per-user copy of a version a
+  baked root or the system cache also holds.
 - **Use record** (`.last-used.json`, `usage.ts`): when each tool last ran,
   written only by `pinnedToolDownload` (every spawn site calls it right before
   it runs a tool), at most once per tool per 10 minutes per process. It lives
@@ -762,8 +767,12 @@ report the state instead ("ADE has not downloaded <Tool> for this machine
 yet. It downloads the first time this machine uses it."). So that a chat can
 still start, a provider whose copy is missing but downloadable
 (`CliAuthStatus.pinnedDownloadPending`) and whose sign-in is on disk keeps its
-models (`detectAllAuth`; Claude and Codex read their saved login), its
-connection carries `runtimeDownloadPending`, and its first turn downloads it.
+models (`detectAllAuth`; Claude and Codex read their saved login with
+`savedSignInPresent`), its connection carries `runtimeDownloadPending`, the AI
+status lists it as available with its models (`runtimeAvailable` stays false,
+so health and banners still read "not here yet"), and its first turn
+downloads it. The ACP model-list warm (`warmAcpModelCatalog`) skips a provider
+whose copy is not here yet, without counting a failure.
 Saving an API key in ADE (other than Cursor's) starts OpenCode's download,
 since that key's models run on OpenCode. The status refresh used to start
 these downloads itself (`startDemandedAgentToolFetches`, removed): on an ADE

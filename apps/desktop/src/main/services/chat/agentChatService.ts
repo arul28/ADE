@@ -884,7 +884,7 @@ import {
 } from "../../../shared/types/chat";
 
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
-import { attachAgentStderrTail, readAgentStderrTail } from "./agentProcessStderr";
+import { attachAgentStderrTail, processStderrErrorFields, readAgentStderrTail } from "./agentProcessStderr";
 import {
   classifyProviderRetryCause,
   formatProviderRetryActivityDetail,
@@ -1447,7 +1447,6 @@ import {
   ensureQwenAdeSkillDefaultsFile,
   openAcpSession,
   pendingPermissionToInputRequest,
-  readAcpStderrTailFromError,
   setAcpReasoningEffort,
   textPromptBlock,
   type AcpDialect,
@@ -1530,6 +1529,7 @@ import { copilotSessionApproval, copilotSessionApprovalLabel } from "./copilotSd
 import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { holdToolInstallsWhileRunning } from "../../../../../ade-cli/src/services/tools/usage";
 import {
   acquirePiSdkConnection,
   isPiSdkPooledAlive,
@@ -29838,28 +29838,6 @@ export function createAgentChatService(args: {
    * card leads with its meaningful line (as an ACP failure does) and keeps the
    * tail behind Details. Nothing when there is no tail.
    */
-  const processStderrErrorFields = (
-    managed: ManagedChatSession,
-    message: string,
-    stderrTail: string | null | undefined,
-  ) => {
-    const tail = stderrTail?.trim();
-    if (!tail) return {};
-    const provider = managed.session.provider;
-    const providerLabel = providerDisplayLabel(provider, String(provider));
-    const card = presentChatFailure({ kind: "unknown", message, provider: providerLabel, stderrTail: tail });
-    // The exit line ("… exited (code=1)") stays in Details above the tail,
-    // even when the tail's own line leads the card.
-    const technicalDetail = [message, card.technicalDetail]
-      .filter((part, index, parts): part is string => Boolean(part) && parts.indexOf(part) === index)
-      .join("\n\n");
-    const presented = { ...card, technicalDetail };
-    return {
-      detail: technicalDetail,
-      errorInfo: { category: "unknown" as const, provider: providerLabel, presentation: presented },
-    };
-  };
-
   const keepChatSessionOpen = (
     managed: ManagedChatSession,
     args: {
@@ -29885,7 +29863,7 @@ export function createAgentChatService(args: {
       type: "error",
       message: args.message,
       ...(resolvedTurnId ? { turnId: resolvedTurnId } : {}),
-      ...processStderrErrorFields(managed, args.message, args.stderrTail),
+      ...processStderrErrorFields(providerDisplayLabel(managed.session.provider, String(managed.session.provider)), args.message, args.stderrTail),
     });
 
     if (resolvedTurnId && args.turnStatus) {
@@ -36263,6 +36241,7 @@ export function createAgentChatService(args: {
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         stdio: ["ignore", "pipe", "pipe"],
       });
+      holdToolInstallsWhileRunning([resolved.path], child);
       let stdout = "";
       let stderr = "";
       let settled = false;
@@ -37507,7 +37486,7 @@ export function createAgentChatService(args: {
         managed,
         turnId,
         message,
-        managed.acpLastExitStderrTail ?? readAcpStderrTailFromError(error),
+        managed.acpLastExitStderrTail ?? readAgentStderrTail(error),
       );
       emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
       emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel });
@@ -46218,11 +46197,22 @@ export function createAgentChatService(args: {
   /** The app-server process each Codex runtime talks through, and its seat on it. */
   const codexHostByRuntime = new WeakMap<CodexRuntime, { host: CodexAppServerHost; client: CodexAppServerClient }>();
   const codexRedactionByClient = new WeakMap<CodexAppServerClient, (text: string) => string>();
-  /** What the app-server printed last, redacted for the chat that will show it. */
+  /**
+   * Every chat that has been on a host, by its redaction: a shared host's
+   * stderr tail holds lines from all of them, including chats that left.
+   */
+  const codexRedactionsByHost = new WeakMap<CodexAppServerHost, Set<(text: string) => string>>();
+  /**
+   * What the app-server printed last, for the chat that will show it: redacted
+   * with that chat's servers as they are now, and every chat's servers as they
+   * were when it joined (the tail is shared), then for secrets.
+   */
   const codexStderrTailFor = (host: CodexAppServerHost, client: CodexAppServerClient): string => {
-    const raw = host.stderrTail().trim();
-    if (!raw) return "";
-    return codexRedactionByClient.get(client)?.(raw) ?? raw;
+    let text = host.stderrTail().trim();
+    if (!text) return "";
+    text = codexRedactionByClient.get(client)?.(text) ?? text;
+    for (const redact of codexRedactionsByHost.get(host) ?? []) text = redact(text);
+    return redactSecrets(text);
   };
   /**
    * A chat that left a shared app-server releases its thread there
@@ -46433,7 +46423,7 @@ export function createAgentChatService(args: {
       key: hostKey,
       spawn: () => {
         const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
-        return spawn(invocation.command, invocation.args, {
+        const child = spawn(invocation.command, invocation.args, {
           cwd: processCwd,
           env: processEnv,
           stdio: ["pipe", "pipe", "pipe"],
@@ -46441,6 +46431,9 @@ export function createAgentChatService(args: {
           windowsVerbatimArguments: invocation.windowsVerbatimArguments,
           windowsHide: true,
         });
+        // A shared app-server can outlive any record of use: its copy stays while it runs.
+        holdToolInstallsWhileRunning([codexExecutable], child);
+        return child;
       },
     });
     const proc = host.process;
@@ -46704,6 +46697,11 @@ export function createAgentChatService(args: {
     };
     codexHostByRuntime.set(runtime, { host, client: hostClient });
     codexRedactionByClient.set(hostClient, (text) => redactCallerMcpText(text, callerMcpServersForRedaction(managed)));
+    // The servers as they are now, not the chat: a closed chat isn't kept alive by the host.
+    const serversAtAttach = callerMcpServersForRedaction(managed);
+    const hostRedactions = codexRedactionsByHost.get(host) ?? new Set<(text: string) => string>();
+    hostRedactions.add((text) => redactCallerMcpText(text, serversAtAttach));
+    codexRedactionsByHost.set(host, hostRedactions);
     host.attach(hostClient);
     if (host.clientCount() > 1) {
       logger.info("agent_chat.codex_shared_app_server_join", {
@@ -57136,7 +57134,7 @@ export function createAgentChatService(args: {
     // An agent process that died while the runtime started (Codex's
     // app-server exiting before it answered): its stderr goes behind Details.
     const stderrFields = !resumeFailure && !presentation
-      ? processStderrErrorFields(managed, message, readAgentStderrTail(error))
+      ? processStderrErrorFields(providerDisplayLabel(managed.session.provider, String(managed.session.provider)), message, readAgentStderrTail(error))
       : {};
     emitChatEvent(managed, {
       type: "error",
@@ -72703,7 +72701,7 @@ export function createAgentChatService(args: {
         // The provider's live list is the picker once it exists; refresh it in
         // the background when missing or old (never blocks this read, and
         // only from a copy already here).
-        if (cli.installed) warmAcpModelCatalog(provider, { logger });
+        warmAcpModelCatalog(provider, { logger });
         if (provider === "qwen") {
           const settings = await loadQwenUserSettings();
           if (settings.models.length) {

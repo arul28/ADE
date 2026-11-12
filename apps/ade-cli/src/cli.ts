@@ -688,7 +688,8 @@ import {
   recordLastFailure,
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
-import { createDiskPressureMonitor, diskPressureThresholdsForSize } from "../../desktop/src/main/services/storage/diskPressure";
+import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
+import { cloudDiskGuardOptions } from "./services/power/cloudDiskGuard";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
@@ -24579,8 +24580,8 @@ function checkStorageReadiness(projectRoot: string): ReadinessCheck {
   try {
     const monitor = createDiskPressureMonitor({
       roots: [projectRoot, resolveMachineAdeLayout().adeDir],
-      // The brain's own guard follows an ADE Cloud computer's disk size (`cloudDiskGuard.ts`).
-      ...(isAdeCloudComputer() ? { thresholdsForSize: diskPressureThresholdsForSize } : {}),
+      // The brain's own guard on an ADE Cloud computer (`cloudDiskGuard.ts`).
+      ...(isAdeCloudComputer() ? cloudDiskGuardOptions(resolveMachineAdeLayout().adeDir) : {}),
     });
     const snap = monitor.getSnapshot({ maxAgeMs: 0 });
     const urgent = isUrgentDiskPressure(snap.state);
@@ -29422,7 +29423,7 @@ async function runServe(
   };
   // This computer's ADE Cloud id, on a cloud computer; empty elsewhere.
   const cloudInstanceId = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
-  const cloudDiskGrowModule = cloudKeepAwakeModule?.isCloudMachine()
+  const cloudDiskGrowModule = cloudKeepAwakeModule && isAdeCloudComputer()
     ? await import("./services/power/cloudDiskGrow")
     : null;
   const cloudDiskGrower = cloudDiskGrowModule
@@ -29430,13 +29431,13 @@ async function runServe(
         instanceId: cloudInstanceId,
         client: async () => (await getCloudBrainAccess()).client(),
         path: os.homedir(),
-        // The storage guard's refusal reads it (`cloudDiskGuardOptions` in bootstrap).
-        stateFile: cloudDiskGrowModule.cloudDiskGrowStatePath(layout.adeDir),
+        // The storage guard's refusal reads what it writes there (`cloudDiskGuardOptions` in bootstrap).
+        adeHome: layout.adeDir,
         logger: headlessProjectLogger,
       })
     : null;
   // What this computer tells ADE Cloud at its idle step: its lanes' work, its disk, an update, its boot.
-  const cloudComputerReports = cloudKeepAwakeModule?.isCloudMachine()
+  const cloudComputerReports = cloudKeepAwakeModule && isAdeCloudComputer()
     ? (await import("./services/power/cloudComputerReports")).createCloudComputerReports({
         instanceId: cloudInstanceId,
         projectRegistry,
@@ -29456,7 +29457,7 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
-  const cloudKeepAwake = cloudKeepAwakeModule?.isCloudMachine()
+  const cloudKeepAwake = cloudKeepAwakeModule && isAdeCloudComputer()
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
         readBusy: async () => {
@@ -29465,14 +29466,14 @@ async function runServe(
             readMachineBusyFacts({ ...sources, personalChatScope }),
             readMachineNextScheduledWakeAt(sources),
           ]);
-          const { busy, reasons } = cloudKeepAwakeModule.decideCloudBusy({
+          const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
             ...facts,
             setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
             holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
           }, Date.now());
           // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
           // one goes to the account server, which wakes the machine for it.
-          return { busy, reasons, nextWakeAt };
+          return { busy, reasons, nextWakeAt, waitingOnPerson };
         },
         requestIdleSleep: async (instanceId) => {
           const client = await (await getCloudBrainAccess()).client();
@@ -40724,8 +40725,7 @@ async function resolveCliCloudEnabled(parsed: ReturnType<typeof extractMachineTa
   const isCloud = primary === "cloud";
   // What the server runs on a cloud computer never depends on the answer.
   if (isCloud && CLOUD_ON_COMPUTER_PLANS.has(parsed.command[1]?.toLowerCase() ?? "")) {
-    const { isCloudMachine } = await import("./services/power/cloudKeepAwake");
-    if (isCloudMachine()) {
+    if (isAdeCloudComputer()) {
       cliCloudEnabled = true;
       setAdeCloudSkillVisible(true);
       return;

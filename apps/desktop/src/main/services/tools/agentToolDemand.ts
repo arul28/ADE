@@ -1,9 +1,7 @@
 import fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { ToolsContext } from "../../../../../ade-cli/src/services/tools/install";
-import { resolveToolsRootLayout, toolUsageRoot } from "../../../../../ade-cli/src/services/tools/paths";
-import { readToolUsage } from "../../../../../ade-cli/src/services/tools/usage";
+import { readToolUsage, toolUsageRootFor } from "../../../../../ade-cli/src/services/tools/usage";
 import { ENV_KEY_MAP } from "../ai/authDetector";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { resolveMuseConfigDir } from "../ai/museAuth";
@@ -45,8 +43,6 @@ type DemandArgs = {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
   platform?: NodeJS.Platform;
-  /** Tools-cache context, e.g. `toolsRoot` in a test. */
-  tools?: ToolsContext;
 };
 
 export type AgentToolDemand = { fetch: string[]; skip: string[] };
@@ -91,7 +87,10 @@ function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, pla
         || ghHostsFiles({ env, homeDir: home, platform }).some(exists);
     case "opencode":
       // OpenCode is also the engine for API-key, OpenRouter and local models.
-      // Keys saved in ADE's own store are caught by the status refresh instead.
+      // Keys saved only in ADE's own store are not read here: saving one starts
+      // the download (`storeApiKey`), a machine that runs OpenCode stays
+      // current through its record of use, and otherwise the first turn
+      // after a pin bump downloads the new copy.
       return onPath("opencode", env)
         || hasEnv(env, [...Object.keys(ENV_KEY_MAP), "OPENROUTER_API_KEY"])
         || openCodeDataDirs({ ...homeArgs, platform }).some((dir) => exists(path.join(dir, "auth.json")))
@@ -155,7 +154,7 @@ function cursorAuthFile(env: NodeJS.ProcessEnv, home: string, platform: NodeJS.P
 }
 
 /** A tool that ran this recently is kept current at launch; older use waits for the next one. */
-export const RECENT_TOOL_USE_MS = 30 * 24 * 60 * 60_000;
+const RECENT_TOOL_USE_MS = 30 * 24 * 60 * 60_000;
 
 /**
  * What counts as a sign of use, from the machine's own environment
@@ -178,7 +177,7 @@ export function selectDemandedAgentTools(pinned: readonly string[], args: Demand
   const home = args.homeDir ?? (env.HOME?.trim() || env.USERPROFILE?.trim() || homedir());
   const platform = args.platform ?? process.platform;
   const policy = prefetchPolicy(env);
-  const toolsRoot = args.tools?.toolsRoot ?? toolUsageRoot(resolveToolsRootLayout(env, platform));
+  const toolsRoot = toolUsageRootFor({ env, platform });
   // Installed is not used: a copy on disk alone never counts, or one wrong
   // download would keep itself current forever.
   const usage = policy === "off" ? {} : readToolUsage(toolsRoot);

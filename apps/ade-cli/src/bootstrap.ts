@@ -310,7 +310,6 @@ import { redactSecrets, sha256Hex } from "../../desktop/src/main/services/shared
 import { createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
 import { createCloudLaneNameSync, type CloudLaneNameSync } from "../../desktop/src/main/services/adeCloud/cloudLaneNameSync";
 import { createCloudServerProvider } from "../../desktop/src/main/services/adeCloud/cloudServerProvider";
-import { isCloudMachine } from "./services/power/cloudKeepAwake";
 import { normalizeGitRemoteIdentity } from "../../desktop/src/shared/crossMachineHandoff";
 import { readGitOriginUrl } from "../../desktop/src/main/services/projects/recentProjectSummary";
 import { BRAIN_HEARTBEAT_STALE_MS, readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
@@ -2895,7 +2894,7 @@ export async function createAdeRuntime(args: {
 
     let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
     // Saved chats: a cloud computer only. Fed by the chat service's events below.
-    const cloudChatUploader = isCloudMachine() && resolvedArgs.chatRuntime === "agent"
+    const cloudChatUploader = isAdeCloudComputer() && resolvedArgs.chatRuntime === "agent"
       ? createCloudChatUploader({
           adeDir: paths.adeDir,
           chatTranscriptsDir: paths.chatTranscriptsDir,
@@ -2937,7 +2936,7 @@ export async function createAdeRuntime(args: {
       : null;
     cloudChatUploaderRef.current = cloudChatUploader;
     teardown.push(() => cloudChatUploader?.dispose());
-    if (isCloudMachine() && process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
+    if (isAdeCloudComputer() && process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
       const laneNameClient = createCloudServerProvider({
         accessToken: async () => (await getAccountAccessToken().catch(() => null)) ?? null,
         baseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null,

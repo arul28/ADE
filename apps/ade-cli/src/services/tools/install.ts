@@ -10,15 +10,13 @@ import {
   estimateToolRequiredBytes,
   readFreeBytes,
   TOOL_SPACE_HEADROOM_BYTES,
-  TOOL_UNPACK_RATIO,
 } from "./diskSpace";
-import { warnPinnedToolFetch } from "./onDemand";
-import { makeRoomInSystemCache } from "./systemCache";
+import { installIntoBestRoot } from "./toolRoots";
 import { type ToolDownloadResult, type ToolDownloader, downloadToolTarball, fileSha256 } from "./download";
 import { type ToolExtractor, applyDecompressSteps, extractArchive, extractNpmTarball } from "./extract";
-import { recordPinnedPackages, readToolsLedger, RETIRED_PACKAGE_GRACE_MS, writeToolsLedger } from "./ledger";
+import { recordPinnedPackages } from "./ledger";
 import { acquireToolLock, type ToolLockOptions } from "./lock";
-import { collectToolVersionOverrides, readToolVersionOverrides } from "./overrides";
+import { readToolVersionOverrides } from "./overrides";
 import {
   type ToolDecompressStep,
   type ToolPin,
@@ -36,15 +34,15 @@ import {
   detectToolTarget,
   isToolInstalled,
   type ToolsRootLayout,
+  currentPinRoots,
   resolveToolsRootLayout,
-  toolUsageRoot,
   toolLockPath,
   toolPackageDir,
   toolSentinelPath,
   toolSlug,
   toolVersionDir,
-  toolsLockRoot,
   toolsStagingRoot,
+  writableRoots,
 } from "./paths";
 
 export type ToolResolution = {
@@ -85,11 +83,8 @@ export type ToolsContext = {
   platform?: NodeJS.Platform;
   arch?: string;
   target?: ToolTarget;
+  /** The whole cache in one root (tests, CI): no fallback, baked roots or budget. */
   toolsRoot?: string;
-  /** With `toolsRoot` only (tests): the rest of the layout `resolveToolsRootLayout` reads from the env. */
-  fallbackToolsRoot?: string | null;
-  bakedToolsRoots?: string[];
-  toolsBudget?: { root: string; bytes: number } | null;
   manifest?: ToolsManifest;
   download?: ToolDownloader;
   extract?: ToolExtractor;
@@ -101,27 +96,13 @@ export type EnsureToolsOptions = ToolsContext & {
   onProgress?: (progress: ToolProgress) => void;
 };
 
-export type GcToolsOptions = ToolsContext & {
-  /** Keep the newest non-pinned version as a rollback target. Defaults to true. */
-  keepPrevious?: boolean;
-  dryRun?: boolean;
-};
-
-export type GcToolsResult = {
-  removed: string[];
-  kept: string[];
-};
-
-type ResolvedContext = {
+export type ResolvedContext = {
   platform: NodeJS.Platform;
   target: ToolTarget;
-  /** The primary root: locks, ledgers, overrides, and installs that fit there. */
-  toolsRoot: string;
+  /** `layout.primary` holds the locks, ledgers and overrides, and the installs that fit there. */
   layout: ToolsRootLayout;
   manifest: ToolsManifest;
 };
-
-const STALE_STAGING_MS = 24 * 60 * 60_000;
 
 /**
  * How many times `ensureOneTool` will re-enter itself after the lock reported
@@ -132,35 +113,19 @@ const STALE_STAGING_MS = 24 * 60 * 60_000;
  */
 const MAX_SATISFIED_ATTEMPTS = 3;
 
-function resolveContext(context: ToolsContext): ResolvedContext {
+export function resolveContext(context: ToolsContext): ResolvedContext {
   const env = context.env ?? process.env;
   const platform = context.platform ?? process.platform;
   const target = context.target ?? detectToolTarget(platform, context.arch ?? os.arch());
   const layout: ToolsRootLayout = context.toolsRoot
-    ? {
-        primary: path.resolve(context.toolsRoot),
-        fallback: context.fallbackToolsRoot ? path.resolve(context.fallbackToolsRoot) : null,
-        baked: (context.bakedToolsRoots ?? []).map((root) => path.resolve(root)),
-        budget: context.toolsBudget ?? null,
-      }
+    ? { primary: path.resolve(context.toolsRoot), fallback: null, baked: [], budget: null }
     : resolveToolsRootLayout(env, platform);
   return {
     platform,
     target,
-    toolsRoot: layout.primary,
     layout,
     manifest: context.manifest ?? loadToolsManifest(),
   };
-}
-
-/** Roots that can hold the current pin, in the order it is taken: a baked copy first. */
-function currentPinRoots(layout: ToolsRootLayout): string[] {
-  return [...layout.baked, layout.primary, ...(layout.fallback ? [layout.fallback] : [])];
-}
-
-/** Roots ADE writes and collects. */
-function writableRoots(layout: ToolsRootLayout): string[] {
-  return [layout.primary, ...(layout.fallback ? [layout.fallback] : [])];
 }
 
 /**
@@ -223,7 +188,7 @@ function entryFilesForPlatform(pin: ToolPin, platform: NodeJS.Platform): Record<
   );
 }
 
-function resolvePinned(pin: ToolPin, resolved: ResolvedContext, root: string = resolved.toolsRoot): {
+function resolvePinned(pin: ToolPin, resolved: ResolvedContext, root: string = resolved.layout.primary): {
   packageName: string;
   version: string;
   dir: string;
@@ -304,7 +269,7 @@ const unreadablePackageDirs = new Set<string>();
  * first) and `tryResolvePreviousTool` (which runs the first), so the copy
  * collection keeps is the copy a machine mid-update can run.
  */
-function supersededVersionDirs(
+export function supersededVersionDirs(
   packageDir: string,
   pinnedVersions: ReadonlySet<string>,
 ): { dir: string; version: string; installed: boolean }[] {
@@ -352,7 +317,7 @@ export function tryResolvePreviousTool(name: string, context: ToolsContext = {})
   const resolved = resolveContext(context);
   const pinned = resolvePinned(findToolPin(resolved.manifest, name), resolved);
   // A vendor-forced override is not a previous pin; it resolves on its own terms.
-  const overrideVersions = readToolVersionOverrides({ toolsRoot: resolved.toolsRoot })
+  const overrideVersions = readToolVersionOverrides({ toolsRoot: resolved.layout.primary })
     .filter((entry) => entry.packageName === pinned.packageName)
     .map((entry) => entry.overrideVersion);
   // ADE's own caches first; an image's older copy last.
@@ -441,7 +406,7 @@ async function ensureOneTool(
 
   const acquisition = await acquireToolLock({
     ...options.lock,
-    lockPath: toolLockPath(resolved.toolsRoot, pinned.packageName, pinned.version),
+    lockPath: toolLockPath(resolved.layout.primary, pinned.packageName, pinned.version),
     isSatisfied: () => resolveInstalled() != null,
     onWait: () => report("waiting"),
   });
@@ -477,7 +442,21 @@ async function ensureOneTool(
       report("cached");
       return afterLock;
     }
-    await installIntoBestRoot({ name, pin, pinned, resolved, options, report });
+    await installIntoBestRoot({
+      name,
+      layout: resolved.layout,
+      manifest: resolved.manifest,
+      targetPin: pinned.targetPin,
+      primaryDir: pinned.dir,
+      freeBytes: options.freeBytes,
+      lock: options.lock,
+      installAt: async (root) => {
+        const target = resolvePinned(pin, resolved, root);
+        // A directory without a usable entry is a crashed install, not a cache hit.
+        await fsp.rm(target.dir, { recursive: true, force: true });
+        await installPinnedTool({ name, pinned: target, resolved, root, options, report });
+      },
+    });
     const installed = resolveInstalled();
     if (!installed) {
       throw new ToolError(
@@ -492,77 +471,12 @@ async function ensureOneTool(
   }
 }
 
-/**
- * Install into the primary root, unless it has a budget (a system cache) that
- * cannot make room for this tool, or its disk is full: then into the
- * fallback root. Without a fallback this is the plain primary install.
- */
-async function installIntoBestRoot(args: InstallArgs & { pin: ToolPin }): Promise<void> {
-  const { resolved, pin } = args;
-  const fallback = resolved.layout.fallback;
-  const installAt = async (root: string): Promise<void> => {
-    const pinned = resolvePinned(pin, resolved, root);
-    // A directory without a usable entry is a crashed install, not a cache hit.
-    await fsp.rm(pinned.dir, { recursive: true, force: true });
-    await installPinnedTool({ ...args, pinned, resolved: { ...resolved, toolsRoot: root } });
-  };
-  if (!fallback) {
-    await installAt(resolved.toolsRoot);
-    return;
-  }
-  const budget = resolved.layout.budget;
-  let fits = true;
-  if (budget) {
-    try {
-      fits = await makeRoomInSystemCache({
-        root: budget.root,
-        budgetBytes: budget.bytes,
-        needBytes: estimateInstalledToolBytes(args.pinned.targetPin),
-        manifest: resolved.manifest,
-        keepDir: args.pinned.dir,
-        usageRoot: toolUsageRoot(resolved.layout),
-        log: (event, fields) => warnPinnedToolFetch(event, fields),
-      });
-    } catch {
-      fits = false;
-    }
-  }
-  if (!fits) {
-    warnPinnedToolFetch("tools.system_cache_full", { tool: args.name, fallback: "home" });
-    await installAt(fallback);
-    return;
-  }
-  try {
-    await installAt(resolved.toolsRoot);
-  } catch (error) {
-    // The system layer's own disk filled up under its budget: the home disk still may not be.
-    if (!(error instanceof ToolError && error.kind === "disk-space")) throw error;
-    warnPinnedToolFetch("tools.system_cache_disk_full", { tool: args.name, fallback: "home" });
-    await installAt(fallback);
-  }
-}
-
-/** Roughly what a tool takes once installed, for a budget check before its download. */
-function estimateInstalledToolBytes(targetPin: ToolTargetPin): number {
-  switch (targetPin.format) {
-    case "file":
-      return targetPin.size;
-    case "archive":
-      return targetPin.size * TOOL_UNPACK_RATIO;
-    case "npm-tree":
-      return targetPin.unpackedSize + targetPin.packages.reduce((sum, entry) => sum + entry.size, 0);
-    default:
-      // An npm tarball pin carries no size; the largest unpacks to about 450 MB.
-      return NPM_TARBALL_INSTALLED_ESTIMATE_BYTES;
-  }
-}
-
-const NPM_TARBALL_INSTALLED_ESTIMATE_BYTES = 600 * 1024 * 1024;
-
 type InstallArgs = {
   name: string;
   pinned: ReturnType<typeof resolvePinned>;
   resolved: ResolvedContext;
+  /** The root this install goes into (`toolRoots.ts` picks it): its staging, ledger and free space. */
+  root: string;
   options: EnsureToolsOptions;
   report: (phase: ToolProgressPhase, extra?: Partial<ToolProgress>) => void;
 };
@@ -603,8 +517,8 @@ async function writeSentinel(payloadDir: string, args: InstallArgs, digest: Reco
 }
 
 async function installPinnedTool(args: InstallArgs): Promise<void> {
-  const { name, pinned, resolved } = args;
-  const stagingRoot = toolsStagingRoot(resolved.toolsRoot);
+  const { name, pinned, root } = args;
+  const stagingRoot = toolsStagingRoot(root);
   await fsp.mkdir(stagingRoot, { recursive: true });
   const stagingDir = await fsp.mkdtemp(path.join(stagingRoot, `${toolSlug(pinned.packageName, pinned.version)}-`));
   const payloadDir = path.join(stagingDir, "payload");
@@ -624,7 +538,7 @@ async function installPinnedTool(args: InstallArgs): Promise<void> {
     await finalizePayload(args, payloadDir, digest);
     // Recorded before the rename, so a crash between the two leaves at worst
     // a ledger name with nothing on disk, never a directory GC cannot see.
-    await recordPinnedPackages(resolved.toolsRoot, [pinned.packageName]);
+    await recordPinnedPackages(root, [pinned.packageName]);
     await promotePayload(payloadDir, pinned.dir);
   } catch (error) {
     throw asToolError(error, {
@@ -719,7 +633,7 @@ async function downloadWithPreflight(
     onProgress?: (receivedBytes: number, totalBytes: number | null) => void;
   },
 ): Promise<ToolDownloadResult> {
-  const { name, pinned, resolved, options, report } = args;
+  const { name, pinned, root, options, report } = args;
   const download: ToolDownloader = options.download ?? downloadToolTarball;
   const freeBytes = options.freeBytes ?? readFreeBytes;
   const progress = request.onProgress
@@ -729,7 +643,7 @@ async function downloadWithPreflight(
   progress(0, request.pinnedBytes);
   return await download(request.url, request.destPath, {
     onSize: (declaredBytes) => {
-      const available = freeBytes(resolved.toolsRoot);
+      const available = freeBytes(root);
       const required = request.requiredBytes(declaredBytes);
       if (available !== null && available < required) throw diskSpaceError(args, required, available);
     },
@@ -859,11 +773,11 @@ async function installNpmTreePin(
   stagingDir: string,
   payloadDir: string,
 ): Promise<Record<string, string>> {
-  const { resolved, options, report } = args;
+  const { options, report } = args;
   const extract = options.extract ?? extractNpmTarball;
   const totalBytes = targetPin.packages.reduce((sum, entry) => sum + entry.size, 0);
   const required = totalBytes + targetPin.unpackedSize + TOOL_SPACE_HEADROOM_BYTES;
-  const available = (options.freeBytes ?? readFreeBytes)(resolved.toolsRoot);
+  const available = (options.freeBytes ?? readFreeBytes)(args.root);
   if (available !== null && available < required) throw diskSpaceError(args, required, available);
 
   const received = new Map<string, number>();
@@ -937,139 +851,4 @@ async function promotePayload(payloadDir: string, targetDir: string): Promise<vo
 function formatBytes(bytes: number): string {
   const mib = bytes / (1024 * 1024);
   return mib >= 1024 ? `${(mib / 1024).toFixed(1)} GB` : `${Math.round(mib)} MB`;
-}
-
-/**
- * Drop cached versions this build no longer pins.
- *
- * With `keepPrevious` (the default) the newest superseded version of each
- * pinned package survives, so a rollback to the previous ADE build does not
- * re-download hundreds of megabytes, and a machine mid-update has a copy to run.
- *
- * A package this manifest does not pin at all is removed only when the ledger
- * (`ledger.ts`) shows ADE wrote it and no ADE build on this machine has pinned
- * it for two weeks: on a machine running two ADE channels, the other channel
- * refreshes what it pins every time it collects. A directory that is not in
- * the ledger is never touched.
- */
-export async function gcTools(options: GcToolsOptions = {}): Promise<GcToolsResult> {
-  const resolved = resolveContext(options);
-  const keepPrevious = options.keepPrevious !== false;
-  const removed: string[] = [];
-  const kept: string[] = [];
-
-  const pinnedVersionsByPackage = new Map<string, Set<string>>();
-  for (const tool of resolved.manifest.tools) {
-    for (const targetPin of Object.values(tool.targets)) {
-      if (!targetPin) continue;
-      const versions = pinnedVersionsByPackage.get(targetPin.package) ?? new Set<string>();
-      versions.add(targetPin.version);
-      pinnedVersionsByPackage.set(targetPin.package, versions);
-    }
-  }
-
-  // A vendor-forced newer build (`overrides.ts`) is kept like a pin, and kept
-  // out of the superseded ranking so the real previous pin survives beside it.
-  const overrideVersions = await collectToolVersionOverrides(resolved.toolsRoot, pinnedVersionsByPackage, {
-    dryRun: options.dryRun === true,
-  });
-  // Every root ADE writes (a system cache and the home fallback); never an
-  // image's baked root. Each keeps its own previous version and ledger.
-  for (const root of writableRoots(resolved.layout)) {
-    const presentPinnedPackages: string[] = [];
-    for (const [packageName, pinnedVersions] of pinnedVersionsByPackage) {
-      const packageDir = toolPackageDir(root, packageName);
-      if (fs.existsSync(packageDir)) presentPinnedPackages.push(packageName);
-      const keptVersions = new Set([...pinnedVersions, ...(overrideVersions.get(packageName) ?? [])]);
-      for (const version of keptVersions) {
-        const versionDir = toolVersionDir(root, packageName, version);
-        if (fs.existsSync(versionDir)) kept.push(versionDir);
-      }
-      const superseded = supersededVersionDirs(packageDir, keptVersions);
-      const doomed = keepPrevious ? superseded.slice(1) : superseded;
-      if (keepPrevious && superseded[0]) kept.push(superseded[0].dir);
-      for (const candidate of doomed) {
-        if (!options.dryRun) await fsp.rm(candidate.dir, { recursive: true, force: true });
-        removed.push(candidate.dir);
-      }
-    }
-
-    await collectRetiredPackages(root, pinnedVersionsByPackage, presentPinnedPackages, options.dryRun === true, removed);
-    await collectStaleScratch(root, options.dryRun === true, removed);
-  }
-  return { removed, kept };
-}
-
-/**
- * Refresh the ledger for every package this build pins and has on disk, then
- * remove ledger packages no build has pinned within the grace period.
- */
-async function collectRetiredPackages(
-  toolsRoot: string,
-  pinnedVersionsByPackage: ReadonlyMap<string, ReadonlySet<string>>,
-  presentPinnedPackages: readonly string[],
-  dryRun: boolean,
-  removed: string[],
-): Promise<void> {
-  const now = Date.now();
-  const ledger = await readToolsLedger(toolsRoot);
-  for (const packageName of presentPinnedPackages) ledger.packages[packageName] = now;
-  const root = path.resolve(toolsRoot);
-  for (const [packageName, lastPinnedAt] of Object.entries(ledger.packages)) {
-    if (pinnedVersionsByPackage.has(packageName) || now - lastPinnedAt < RETIRED_PACKAGE_GRACE_MS) continue;
-    const packageDir = toolPackageDir(root, packageName);
-    // The ledger is a file on disk; the name was validated when read, and the
-    // directory must still resolve under the tools root.
-    const relative = path.relative(root, packageDir);
-    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue;
-    if (fs.existsSync(packageDir)) {
-      if (!dryRun) {
-        try {
-          await fsp.rm(packageDir, { recursive: true, force: true });
-        } catch {
-          // In use (a running binary on Windows) or unreadable: keep the ledger
-          // entry so the next collection tries again.
-          continue;
-        }
-        await removeEmptyScopeDir(root, packageDir);
-      }
-      removed.push(packageDir);
-    }
-    if (!dryRun) delete ledger.packages[packageName];
-  }
-  if (!dryRun) await writeToolsLedger(toolsRoot, ledger).catch(() => undefined);
-}
-
-/** `@scope/name` leaves `@scope/` behind; drop it once it holds nothing. */
-async function removeEmptyScopeDir(root: string, packageDir: string): Promise<void> {
-  const parent = path.dirname(packageDir);
-  if (parent === root || !path.basename(parent).startsWith("@")) return;
-  try {
-    if ((await fsp.readdir(parent)).length === 0) await fsp.rmdir(parent);
-  } catch {
-    // Someone else is installing into the scope; leave it.
-  }
-}
-
-/** Abandoned staging dirs and orphaned locks from processes that died mid-install. */
-async function collectStaleScratch(toolsRoot: string, dryRun: boolean, removed: string[]): Promise<void> {
-  const cutoff = Date.now() - STALE_STAGING_MS;
-  for (const scratchRoot of [toolsStagingRoot(toolsRoot), toolsLockRoot(toolsRoot)]) {
-    let entries: fs.Dirent[];
-    try {
-      entries = await fsp.readdir(scratchRoot, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const scratchPath = path.join(scratchRoot, entry.name);
-      try {
-        if ((await fsp.stat(scratchPath)).mtimeMs > cutoff) continue;
-      } catch {
-        continue;
-      }
-      if (!dryRun) await fsp.rm(scratchPath, { recursive: true, force: true }).catch(() => undefined);
-      removed.push(scratchPath);
-    }
-  }
 }

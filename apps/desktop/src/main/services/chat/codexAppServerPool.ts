@@ -99,7 +99,7 @@ const UNCLAIMED_THREAD_LINE_TTL_MS = 10_000;
 const UNCLAIMED_THREAD_LINE_MAX = 500;
 const ORPHANED_THREAD_UNSUBSCRIBE_TIMEOUT_MS = 10_000;
 /** Enough for a panic or a config error and the lines before it. */
-export const CODEX_STDERR_TAIL_CHARS = 4_000;
+const CODEX_STDERR_TAIL_CHARS = 4_000;
 
 export function createCodexAppServerPool(args: {
   /** Stops the process tree (SIGTERM, then SIGKILL); returns the escalation timer. */

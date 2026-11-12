@@ -23,13 +23,11 @@ import { getErrorMessage } from "../shared/utils";
 import {
   approveCloudMachineSignIn,
   cloudMinAdeVersion,
-  cloudSignInNotStartedMessage,
   readCloudBoxAuth,
-  startCloudBoxSignIn,
-  startCloudBoxSignInWhenReady,
   waitForCloudAccountRow,
   waitForCloudBoxAuth,
 } from "./cloudMachineCreator";
+import { cloudSignInNotStartedMessage, startCloudBoxSignInWhenReady } from "./cloudBoxSignInStart";
 import type { CloudLaneLaunchRecord } from "./cloudLaneLaunchRecords";
 import {
   CANT_MAKE_COMPUTER,
@@ -237,7 +235,12 @@ export function createCloudLaneComputerStages(
         name,
         instanceId,
         requestId: launchId,
-        restartSignIn: async () => (await startCloudBoxSignIn(client, instanceId, "login", signal, { fresh: true })).userCode,
+        restartSignIn: async () => (await startCloudBoxSignInWhenReady(client, instanceId, "login", {
+          signal,
+          fresh: true,
+          sleep,
+          logger: { info: (event, meta) => logger.info(event, { launchId, ...meta }) },
+        })).userCode,
         directory,
         signal,
         readSignedIn: async () => (await readCloudBoxAuth(client, instanceId, signal))?.signedIn === true,

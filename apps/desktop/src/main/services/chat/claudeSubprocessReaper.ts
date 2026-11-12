@@ -11,6 +11,7 @@ import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/pro
 import { createPrivateKeyStreamFilter, scrubOutputTail } from "../../../shared/sentry/scrub";
 import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { moveClaudeMcpConfigOffArgv, pruneStaleClaudeMcpConfigFiles, removeClaudeMcpConfigFiles } from "./claudeMcpConfigFile";
+import { holdToolInstallsWhileRunning } from "../../../../../ade-cli/src/services/tools/usage";
 
 /**
  * Every process's command line, for the MCP config sweep; null on Windows or
@@ -656,6 +657,8 @@ export function createClaudeSubprocessReaper(args: {
       child.once("exit", cleanup);
       child.once("error", cleanup);
     }
+    // A chat's Claude can outlive any record of use: its copy stays while it runs.
+    holdToolInstallsWhileRunning([options.command, options.args[0]], child);
     captureStderrTail(child, metadata.sessionId);
     register(child, metadata, options.command, mcpConfig.args, { groupLeader: !isWindows });
     return child;

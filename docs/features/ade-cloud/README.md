@@ -663,15 +663,21 @@ this computer" moves one computer to it (`updateInstance`).
 On first boot a new machine installs the ADE version of the app that made it,
 when the image's ADE is older.
 
-Agent programs stay off the person's disk. `/home/node` is the billed disk;
-everything else is the provider's unbilled system layer, which an image update
-resets. The image bakes the agents its own ADE pins (by default Codex, Claude
-Code and OpenCode) read-only into `/opt/ade-tools`, so a lane's first turn on
-them downloads nothing. Any other agent, or a newer pin after `ade brain
-update`, downloads on its first use into `/var/cache/ade/tools` on the system
-layer, within about 7 GB for that folder (package caches for npm, pip and yarn
-live there too), least recently used out first; only what cannot fit goes to
-`/home/node/.ade/tools`. The brain reads all of this from the image's
+Agent programs go to the system layer first, not the person's disk.
+`/home/node` is the billed disk; everything else is the provider's unbilled
+system layer, which an image update resets. The image bakes the agents its own
+ADE pins (by default Codex, Claude Code and OpenCode) read-only into
+`/opt/ade-tools`, so a lane's first turn on them downloads nothing. Any other
+agent, or a newer pin after `ade brain update`, downloads on its first use into
+`/var/cache/ade/tools` on the system layer. Each time one installs there, the
+folder (package caches for npm, pip and yarn live there too) is brought within
+about 7 GB and within the system layer's free space: old agent versions go
+first, least recently used first, then the package caches; an agent that ran in
+the last day, or that runs now, keeps its copy. Between installs nothing checks
+the folder. Only what cannot fit goes to `/home/node/.ade/tools`. A computer
+made before the agents were baked keeps the copies it already has in
+`/home/node/.ade/tools`, except those the image now bakes at the same version:
+collection removes those duplicates. The brain reads all of this from the image's
 environment (`ADE_TOOLS_BAKED_ROOTS`, `ADE_SYSTEM_CACHE_ROOT`,
 `ADE_SYSTEM_CACHE_BUDGET_BYTES`), and with `ADE_TOOLS_PREFETCH=used` it fetches
 at startup only agents this computer ran, never every agent whose sign-in was

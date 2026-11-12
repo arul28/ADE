@@ -44,6 +44,11 @@ const PING_TIMEOUT_MS = 10_000;
 export const CLOUD_IDLE_SLEEP_AFTER_MS = 3 * 60_000;
 /** A command or turn this silent, with nothing typed, counts as idle. */
 export const CLOUD_UNTOUCHED_IDLE_MS = 60 * 60_000;
+/**
+ * The early disk grow (it restarts the computer) waits this long after
+ * someone last used the computer, and for as long as a chat waits on them.
+ */
+export const CLOUD_EARLY_GROW_QUIET_MS = 5 * 60_000;
 /** A gap this many intervals long between checks means the machine was asleep. */
 const SLEEP_GAP_INTERVALS = 2.5;
 /** The longest wait between boot report tries after failures. */
@@ -106,7 +111,10 @@ function terminalBusyReason(terminal: CloudBusyTerminal, now: number): "agent_cl
  * it), and a command or turn with no output and no touch for an hour. Someone
  * watching a tool (`noteUse`) and a timer due soon are added by the keep-awake.
  */
-export function decideCloudBusy(facts: CloudBusyFacts, now: number): { busy: boolean; reasons: string[] } {
+export function decideCloudBusy(
+  facts: CloudBusyFacts,
+  now: number,
+): { busy: boolean; reasons: string[]; waitingOnPerson: boolean } {
   const reasons = new Set<string>();
   for (const chat of facts.chats) {
     if (!chat.waitingOnPerson && now - chat.lastActivityAt < CLOUD_UNTOUCHED_IDLE_MS) reasons.add("chat");
@@ -118,7 +126,7 @@ export function decideCloudBusy(facts: CloudBusyFacts, now: number): { busy: boo
   if (facts.setupRunning) reasons.add("setup");
   if ((facts.laneSetups ?? 0) > 0) reasons.add("lane_setup");
   for (const hold of facts.holds) reasons.add(hold);
-  return { busy: reasons.size > 0, reasons: [...reasons] };
+  return { busy: reasons.size > 0, reasons: [...reasons], waitingOnPerson: facts.chats.some((chat) => chat.waitingOnPerson) };
 }
 
 export type CloudKeepAwakeBusy = {
@@ -127,6 +135,8 @@ export type CloudKeepAwakeBusy = {
   reasons: string[];
   /** When the machine's next timer is due (a scheduled wake-up, an automation), or null. */
   nextWakeAt?: number | null;
+  /** A chat's turn is stopped on the person's approval or question (idle, but they'd lose the card to a restart). */
+  waitingOnPerson?: boolean;
 };
 
 /** What the account server is asked to do: wake this machine at `at`, or nothing. */
@@ -147,7 +157,9 @@ export type CloudKeepAwakeOptions = {
    * server call): grow at the next check that finds nothing really running,
    * not at the three-minute idle point, so the grow comes before the guard
    * refuses a turn. Someone's use alone (`in_use`, a refused send, a watched
-   * tool) doesn't hold it back.
+   * tool) doesn't keep it busy, but a use in the last
+   * {@link CLOUD_EARLY_GROW_QUIET_MS} or a chat waiting on the person holds
+   * the restart back.
    */
   diskGrowDueNow?: () => boolean;
   /**
@@ -199,9 +211,6 @@ export function cloudKeepAwakePaths(adeHome: string) {
   return { dir, wakeUrl: path.join(dir, "wake.json"), state: path.join(dir, "keep-awake.json") };
 }
 
-/** Whether this brain runs on a cloud machine (the machine template sets the variable). One check, shared with the lane and Codex rules. */
-export const isCloudMachine = isAdeCloudComputer;
-
 /** The machine's wake URL, only when it was written for this machine (a forked disk carries its source's). */
 function readWakeUrl(file: string, instanceId: string): string | null {
   try {
@@ -215,7 +224,7 @@ function readWakeUrl(file: string, instanceId: string): string | null {
 
 export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepAwake {
   const env = options.env ?? process.env;
-  const enabled = isCloudMachine(env);
+  const enabled = isAdeCloudComputer(env);
   const instanceId = env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
   const paths = cloudKeepAwakePaths(options.adeHome);
   const intervalMs = Math.max(1_000, options.intervalMs ?? CLOUD_KEEP_AWAKE_INTERVAL_MS);
@@ -235,6 +244,8 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   let sentWake: string | null = null;
   /** The last moment the machine had work. Starts at boot: a fresh machine gets the full three minutes. */
   let lastBusyAt = now();
+  /** The last moment someone used the machine (`noteUse`), for the early grow. */
+  let lastUseAt: number | null = null;
   /** The last moment real work ran (never the boot itself), for `reportUse`. */
   let lastWorkAt: number | null = null;
   let lastTickAt: number | null = null;
@@ -368,16 +379,23 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
 
   /**
    * The early grow (`diskGrowDueNow`): only when nothing but someone's use
-   * keeps the machine busy, checked again right before the grow. True when a
-   * grow started (the machine restarts).
+   * keeps the machine busy, nobody used it in the last
+   * {@link CLOUD_EARLY_GROW_QUIET_MS}, and no chat waits on the person (a
+   * restart would lose their approval card or their shell), checked again
+   * right before the grow. True when a grow started (the machine restarts).
    */
   const growDiskEarlyIfDue = async (state: CloudKeepAwakeBusy): Promise<boolean> => {
     if (!options.growDiskIfNeeded || !options.diskGrowDueNow?.()) return false;
     if (!state.reasons.every((reason) => reason === "in_use")) return false;
+    const quiet = (): boolean => lastUseAt == null || now() - lastUseAt >= CLOUD_EARLY_GROW_QUIET_MS;
+    if (state.waitingOnPerson || !quiet()) return false;
     const nothingRuns = async (): Promise<boolean> => {
+      if (usedSinceTick || !quiet()) return false;
       try {
-        return !(await options.readBusy()).busy;
-      } catch {
+        const busy = await options.readBusy();
+        return !busy.busy && !busy.waitingOnPerson;
+      } catch (error) {
+        options.logger?.warn("cloud.disk_grow_early_busy_read_failed", { error: error instanceof Error ? error.message : String(error) });
         return false;
       }
     };
@@ -481,6 +499,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       usedSinceTick = true;
       lastBusyAt = now();
       lastWorkAt = lastBusyAt;
+      lastUseAt = lastBusyAt;
       if (pingIsDue()) await tick();
     },
     tick,

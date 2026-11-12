@@ -17,12 +17,11 @@ import { getErrorMessage } from "../shared/utils";
 import {
   CloudCreateCancelled,
   approveCloudMachineSignIn,
-  cloudSignInNotStartedMessage,
   readCloudBoxAuth,
-  startCloudBoxSignInWhenReady,
   waitForCloudAccountRow,
   waitForCloudBoxAuth,
 } from "./cloudMachineCreator";
+import { cloudSignInNotStartedMessage, startCloudBoxSignInWhenReady } from "./cloudBoxSignInStart";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { enableCloudSleep } from "./cloudSleep";
 import { wakeThroughTransition } from "./cloudInstanceOps";

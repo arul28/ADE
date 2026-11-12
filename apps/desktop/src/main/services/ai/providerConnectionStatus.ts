@@ -195,6 +195,18 @@ async function codexAuthFilePresent(env: NodeJS.ProcessEnv): Promise<boolean> {
   }
 }
 
+/**
+ * Whether Claude or Codex has a saved sign-in on this machine, read from disk,
+ * the keychain's attributes and the environment (never a probe, which needs
+ * the CLI). One answer for the CLI status before ADE's copy is here
+ * (`detectCliAuthStatuses`) and for this connection row's own evidence.
+ */
+export async function savedSignInPresent(provider: "claude" | "codex", env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  if (provider === "codex") return Boolean(await readCodexCredentials()) || await codexAuthFilePresent(env);
+  if (CLAUDE_AUTH_ENV_KEYS.some((key) => Boolean(env[key]?.trim())) || await readClaudeCredentials()) return true;
+  return process.platform === "darwin" && (await probeClaudeKeychainLogin()) === "present";
+}
+
 /** A settings file is a few kilobytes; anything far larger is not one to parse. */
 const CLAUDE_SETTINGS_MAX_BYTES = 1024 * 1024;
 

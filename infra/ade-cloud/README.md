@@ -44,8 +44,9 @@ the ADE brain.
   only while its version is the pin (`ADE_TOOLS_BAKED_ROOTS`).
 - `/var/cache/ade` (owned by `node`) on the system layer for what ADE can
   rebuild: agents downloaded later (`ADE_SYSTEM_CACHE_ROOT`, about 7 GB
-  budget `ADE_SYSTEM_CACHE_BUDGET_BYTES`, least recently used out first,
-  overflow to `/home/node/.ade/tools`) and the npm, pip and yarn caches
+  budget `ADE_SYSTEM_CACHE_BUDGET_BYTES` checked with the layer's free space
+  each time an agent installs: old agent versions out first, then the package
+  caches; overflow to `/home/node/.ade/tools`) and the npm, pip and yarn caches
   (`npm_config_cache`, `PIP_CACHE_DIR`, `YARN_CACHE_FOLDER`).
   `ADE_TOOLS_PREFETCH=used` keeps the brain's startup fetch to agents this
   computer ran. An image update resets the folder to empty, and each agent

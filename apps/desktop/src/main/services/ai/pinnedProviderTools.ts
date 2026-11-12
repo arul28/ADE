@@ -192,11 +192,7 @@ export async function requirePinnedProviderExecutable<T extends { path: string; 
 ): Promise<T> {
   const tool = pinnedToolForProvider(provider);
   if (tool) await awaitPinnedToolDownload(tool.tool);
-  const resolved = resolve();
-  if (resolved.source === "fallback-command" || !resolved.path) {
-    throw tool ? pinnedToolNotReadyError(tool.tool, tool.label) : new Error(`ADE has no ${provider} runtime on this machine.`);
-  }
-  return resolved;
+  return requireInstalledPinnedProviderExecutable(provider, resolve);
 }
 
 /**
@@ -222,7 +218,7 @@ export function requireInstalledPinnedProviderExecutable<T extends { path: strin
  * `onStart` runs only when a download is actually awaited. Never rejects: the
  * caller resolves afterwards and reports a miss with {@link pinnedToolNotReadyError}.
  */
-export async function awaitPinnedToolDownload(tool: string, onStart?: () => void): Promise<void> {
+async function awaitPinnedToolDownload(tool: string, onStart?: () => void): Promise<void> {
   const pending = pinnedToolDownload(tool);
   if (!pending) return;
   onStart?.();
