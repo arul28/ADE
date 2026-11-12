@@ -352,9 +352,13 @@ async function persistRefresh(rt: GithubAppRuntime, row: GrantRow, leaseId: stri
     ? await seal(rt.key, tokens.refreshToken, grantAad(row.user_id, "refresh"))
     : row.refresh_token_sealed;
   const refreshExpiresAt = tokens.refreshToken ? tokens.refreshExpiresAt : row.refresh_expires_at;
+  // The row is judged by its token hash, not by the update's change count: an
+  // update that committed before its answer (or the read after it) was lost
+  // finds the lease already cleared on the retry, yet the row holds this
+  // token. Calling that `replaced` would delete the account's saved token.
   for (let attempt = 0; attempt < PERSIST_ATTEMPTS; attempt += 1) {
     try {
-      const result = await rt.db.prepare(`
+      await rt.db.prepare(`
         update github_app_grants set
           access_token_sealed = ?, access_token_sha256 = ?, access_expires_at = ?,
           refresh_token_sealed = ?, refresh_expires_at = ?,
@@ -362,9 +366,8 @@ async function persistRefresh(rt: GithubAppRuntime, row: GrantRow, leaseId: stri
           refresh_not_before = null, refresh_failures = 0, last_rejected_check_at = null, updated_at = ?
         where user_id = ? and lease_id = ?
       `).bind(accessSealed, accessHash, tokens.accessExpiresAt, refreshSealed, refreshExpiresAt, now, row.user_id, leaseId).run();
-      if ((result.meta?.changes ?? 0) !== 1) return { kind: "replaced" };
-      const saved = await loadGrant(rt.db, row.user_id);
-      return saved ? { kind: "saved", row: saved } : { kind: "replaced" };
+      const current = await loadGrant(rt.db, row.user_id);
+      return current && current.access_token_sha256 === accessHash ? { kind: "saved", row: current } : { kind: "replaced" };
     } catch {
       if (attempt < PERSIST_ATTEMPTS - 1) await sleep(200 * (attempt + 1));
     }
@@ -554,6 +557,7 @@ async function dropAbandonedConfirms(env: GithubAppEnv, now: number): Promise<vo
   const rows = due.results ?? [];
   let deletedAtGitHub = 0;
   let unreadable = 0;
+  let kept = 0;
   for (const row of rows) {
     const claim = await rt.db.prepare(
       "update github_app_sign_ins set status = 'expired', tokens_sealed = null, confirm_hash = null where id = ? and status = ?",
@@ -566,10 +570,19 @@ async function dropAbandonedConfirms(env: GithubAppEnv, now: number): Promise<vo
       unreadable += 1;
       continue;
     }
+    // A confirm whose grant was saved but whose last write (marking it done)
+    // failed: the account uses this token, so it is not deleted.
+    const grant = await loadGrant(rt.db, row.user_id);
+    if (grant && grant.access_token_sha256 === await sha256Hex(tokens.accessToken)) {
+      await rt.db.prepare("update github_app_sign_ins set status = 'done', result_code = 'ok' where id = ? and status = 'expired'")
+        .bind(row.id).run();
+      kept += 1;
+      continue;
+    }
     if (await deleteToken(rt.config, tokens.accessToken)) deletedAtGitHub += 1;
   }
   if (rows.length) {
-    logGithubApp({ event: "github_app.abandoned_confirms_dropped", userId: "cron", due: rows.length, deletedAtGitHub, unreadable });
+    logGithubApp({ event: "github_app.abandoned_confirms_dropped", userId: "cron", due: rows.length, deletedAtGitHub, unreadable, kept });
   }
 }
 

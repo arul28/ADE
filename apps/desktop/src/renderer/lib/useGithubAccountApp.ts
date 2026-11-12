@@ -9,12 +9,18 @@ import type { GitHubAccountAppAccountStatus } from "../../shared/types";
  * page shows. The calls take no pin (see `registerGithubAccountAppIpc.ts`).
  *
  * A connect opens GitHub in the browser and reads how it ended every two
- * seconds until it ends or ten minutes pass. The reads stop on their own; no
- * timer runs while nothing is pending.
+ * seconds until the server says it ended (see `SIGN_IN_MAX_MS`). The reads
+ * stop on their own; no timer runs while nothing is pending.
  */
 
 const SIGN_IN_POLL_MS = 2_000;
-const SIGN_IN_MAX_MS = 10 * 60_000;
+/**
+ * How long Settings follows a sign-in. The server decides when it ends: the
+ * read says `expired` once GitHub's leg (10 minutes) or the confirm page's
+ * own 10 minutes run out, so Settings keeps reading until the read is no
+ * longer pending, up to both legs plus a minute.
+ */
+const SIGN_IN_MAX_MS = 21 * 60_000;
 
 export type GithubAccountAppSignInPhase =
   | { kind: "idle" }
@@ -148,7 +154,7 @@ export async function startGithubAccountAppSignIn(onDone: () => void): Promise<v
     setPhase({ kind: "failed", reason, message: result.message });
     return;
   }
-  const until = Math.min(result.expiresAt, Date.now() + SIGN_IN_MAX_MS);
+  const until = Date.now() + SIGN_IN_MAX_MS;
   setPhase({ kind: "waiting", signInId: result.signInId, until });
   schedulePoll(result.signInId, until, onDone);
 }

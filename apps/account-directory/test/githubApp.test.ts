@@ -29,14 +29,35 @@ function sqliteD1() {
   for (const file of readdirSync(MIGRATIONS).filter((name) => name.endsWith(".sql")).sort()) {
     db.exec(readFileSync(resolve(MIGRATIONS, file), "utf8"));
   }
+  // One-shot failures, as D1 gives them: "before" fails the statement,
+  // "after" commits it and then loses the answer.
+  const faults: Array<{ when: "before" | "after"; match: (sql: string) => boolean }> = [];
+  const fault = (sql: string, when: "before" | "after") => {
+    const index = faults.findIndex((entry) => entry.when === when && entry.match(sql));
+    if (index < 0) return;
+    faults.splice(index, 1);
+    throw new Error("D1_ERROR: Network connection lost.");
+  };
   const statement = (sql: string, values: unknown[]) => ({
     bind: (...next: unknown[]) => statement(sql, next),
-    first: async <T>() => (db.prepare(sql).get(...values) ?? null) as T | null,
-    all: async <T>() => ({ results: db.prepare(sql).all(...values) as T[], success: true, meta: {} }),
-    run: async () => ({ success: true, meta: { changes: Number(db.prepare(sql).run(...values).changes) } }),
+    first: async <T>() => {
+      fault(sql, "before");
+      return (db.prepare(sql).get(...values) ?? null) as T | null;
+    },
+    all: async <T>() => {
+      fault(sql, "before");
+      return { results: db.prepare(sql).all(...values) as T[], success: true, meta: {} };
+    },
+    run: async () => {
+      fault(sql, "before");
+      const changes = Number(db.prepare(sql).run(...values).changes);
+      fault(sql, "after");
+      return { success: true, meta: { changes } };
+    },
   });
   return {
     raw: db,
+    faults,
     prepare: (sql: string) => statement(sql, []),
     batch: async (statements: Array<{ run: () => Promise<unknown> }>) => {
       db.exec("begin");
@@ -233,6 +254,41 @@ describe("GitHub App sign-in", () => {
     // Another machine's different sign-in is still refused.
     const other = await call("POST", "/github/app/adopt", { ...machineSignIn, accessToken: "ghu_device_flow_access_0002" });
     expect(other.status).toBe(409);
+  });
+
+  it("a renewal whose save committed but lost its answer keeps and serves the saved token", async () => {
+    const page = await toConfirmPage();
+    await confirmForm({ signIn: page.signInId, confirm: page.confirm, choice: "connect" });
+    db.raw.prepare("update github_app_grants set access_expires_at = ? where user_id = ?").run(Date.now() - 60_000, userId);
+    db.faults.push({ when: "after", match: (sql) => sql.includes("update github_app_grants set") && sql.includes("access_token_sealed = ?") });
+
+    const answer = await call("POST", "/github/app/token", {});
+    const renewedToken = github.lastAccess();
+    expect(renewedToken).not.toBe(page.heldToken);
+    expect(answer.status).toBe(200);
+    expect(await answer.json()).toMatchObject({ accessToken: renewedToken });
+    expect(github.deleted).not.toContain(renewedToken);
+    expect(github.isLive(renewedToken)).toBe(true);
+  });
+
+  it("the cron keeps the token of a confirm whose grant was saved but whose last write failed", async () => {
+    const page = await toConfirmPage();
+    db.faults.push({ when: "before", match: (sql) => sql.includes("set status = 'done', result_code = 'ok', tokens_sealed = null") });
+    await confirmForm({ signIn: page.signInId, confirm: page.confirm, choice: "connect" }).catch(() => undefined);
+    expect(grantLogin(), "the grant was saved").toBe("octo");
+    const stuck = db.raw.prepare("select status, tokens_sealed from github_app_sign_ins where id = ?").get(page.signInId) as { status: string; tokens_sealed: string | null };
+    expect(stuck.status).toBe("exchanging");
+    expect(stuck.tokens_sealed).not.toBeNull();
+    db.raw.prepare("update github_app_sign_ins set expires_at = ? where id = ?").run(Date.now() - 11 * 60_000, page.signInId);
+
+    const tick = new Date();
+    tick.setUTCHours(tick.getUTCHours() === 3 ? 4 : tick.getUTCHours(), 17, 0, 0);
+    await runGithubAppCron(env, tick.getTime());
+
+    expect(github.deleted).not.toContain(page.heldToken);
+    expect(grantLogin()).toBe("octo");
+    const read = await call("GET", `/github/app/sign-in/${page.signInId}`);
+    expect(await read.json()).toMatchObject({ status: "done", resultCode: "ok" });
   });
 
   it("a renewal whose grant was disconnected meanwhile deletes its new token and serves nothing", async () => {
