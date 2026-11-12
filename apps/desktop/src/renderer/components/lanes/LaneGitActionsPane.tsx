@@ -1061,7 +1061,7 @@ export function LaneGitActionsPane({
           tone: "warning",
         });
       }
-      if (pin) {
+      if (pin && !pinTargetsTab) {
         // The new lane lives on the lane's machine, not in this tab's lane
         // list or Lanes page, so stay here; it appears in that machine's list.
         patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
@@ -1095,6 +1095,7 @@ export function LaneGitActionsPane({
     laneId,
     navigate,
     pin,
+    pinTargetsTab,
     lane?.branchRef,
     projectStateKey,
     refreshLanes,

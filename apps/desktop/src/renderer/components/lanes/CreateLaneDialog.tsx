@@ -345,6 +345,10 @@ export function CreateLaneDialog({
     : showMachineSelector
       ? "Choose the machine this lane will live on."
       : "No connected machine has this repository open.";
+  // The computer the lane starts on, named next to the create button.
+  const startsOnName = !onAdeCloud && selectedMachineId
+    ? machineOptions.find((option) => option.id === selectedMachineId)?.name ?? null
+    : null;
   const isSubmitDisabled = machineMissing
     || Boolean(cloudProblem)
     || cloudBranchUnpushed
@@ -408,7 +412,14 @@ export function CreateLaneDialog({
                 {showMachineSelector ? "Pick a machine first" : "No machine has this repo open"}
               </span>
             ) : (
-              <span className="cl-foot-hint"><kbd>{isMacPlatform() ? "⌘" : modifierKeyLabel}</kbd><kbd>↵</kbd>&nbsp;to create</span>
+              <span className="cl-foot-hint">
+                {startsOnName ? (
+                  <span className="cl-foot-starts-on" data-testid="create-lane-starts-on" title={`The lane starts on ${startsOnName}`}>
+                    Starts on {startsOnName}&nbsp;·&nbsp;
+                  </span>
+                ) : null}
+                <kbd>{isMacPlatform() ? "⌘" : modifierKeyLabel}</kbd><kbd>↵</kbd>&nbsp;to create
+              </span>
             )}
             <div className="cl-foot-actions">
               <button

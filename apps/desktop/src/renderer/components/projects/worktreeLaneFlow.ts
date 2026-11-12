@@ -1,4 +1,5 @@
 import type { ProjectPathInspection } from "../../../shared/types";
+import { localProjectBindingForRoot } from "../../state/appStore";
 
 function basename(input: string): string {
   const parts = input.split(/[\\/]/).filter(Boolean);
@@ -39,9 +40,12 @@ export async function openWorktreeAsLane(
   // disk, so without this call it can look before the row exists. The reconcile
   // runs ahead of the lane-list cache check, so a cache hit still adopts, and
   // `includeStatus: false` skips per-lane git status for a cheap round trip.
-  // It targets the bound runtime, hence after the switch.
+  // It names the parent project on this computer, after the switch opened it.
   await deps.switchProjectToPath(parent.rootPath, { skipWorktreeGate: true });
-  await window.ade.lanes.list({ includeStatus: false });
+  await window.ade.lanes.list(
+    { includeStatus: false },
+    localProjectBindingForRoot(parent.rootPath, basename(parent.rootPath)),
+  );
 
   const fresh = await window.ade.project.inspectPath(worktreeRoot, { fresh: true });
   const laneId = fresh.parent?.existingLane?.id;

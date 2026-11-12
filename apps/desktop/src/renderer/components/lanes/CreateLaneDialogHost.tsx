@@ -8,6 +8,7 @@ import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
 import type { CloudTierId } from "../../../shared/cloudTiers";
 import { adeCloudLaunchProblem, adeCloudStartBranchReady, startAdeCloudLaunch } from "../chat/launch/adeCloudLaunch";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { CreateLaneDialog, type CreateLaneMode } from "./CreateLaneDialog";
 import { DEFAULT_LANE_START, plainLaneStartBranch, type LaneStart } from "../../../shared/laneStart";
 import { startSourceBranch } from "./laneStartOptions";
@@ -116,14 +117,6 @@ type DetachedCreateParams = LaneFlowScope & {
   addLaneToList: (lane: LaneSummary) => void;
   onCreated?: LaneCreatedHandler;
 };
-
-/**
- * The trailing pin argument for a preload call: none for the tab's machine, so
- * an unpinned call keeps exactly its pre-pin shape.
- */
-function pinArg(pin: OpenProjectBinding | null): [] | [OpenProjectBinding] {
-  return pin ? [pin] : [];
-}
 
 async function applyLaneEnvSetup(
   laneId: string,
@@ -415,10 +408,11 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   // This tab's own store, not the global one: the background create keeps them.
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const tabStore = useAppStoreApi();
-  const tabBinding = useAppStore((s) => s.projectBinding);
-  // The form's reads name the tab's own copy when no other machine is picked.
-  const tabBindingRef = useRef(tabBinding);
-  tabBindingRef.current = tabBinding;
+  // The form reads the repository's reader copy (the tab's copy while it has
+  // one) until another machine is picked, and for an ADE Cloud lane.
+  const readerPin = useActiveRepositoryReader(open);
+  const readerPinRef = useRef(readerPin);
+  readerPinRef.current = readerPin;
   const tabScopeKey = useAppStore(selectActiveProjectStateKey);
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
 
@@ -472,6 +466,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     adeCloudPicked,
     repoOriginUrl,
   } = useLaneMachineChoice(open);
+  // The tab's own copy is picked: the form already reads it (`readerPin`).
+  const selectedIsTab = machines.some((machine) => machine.id === selectedMachineId && machine.isBound);
+  const formPinKey = selectedIsTab ? null : targetPinKey;
 
   const {
     selectedEmoji: createSelectedEmoji,
@@ -483,8 +480,8 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   } = useLaneEmojiSuggestion({
     name: createLaneName,
     enabled: open && !configureForChat,
-    pin: targetPin ?? tabBinding,
-    pinKey: targetPinKey ?? tabBinding?.key ?? null,
+    pin: targetPin ?? readerPin,
+    pinKey: targetPinKey ?? readerPin?.key ?? null,
   });
 
   /**
@@ -495,7 +492,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
    */
   const [pinnedLanes, setPinnedLanes] = useState<{ key: string; lanes: LaneSummary[] } | null>(null);
   useEffect(() => {
-    if (!open || !targetPin) return;
+    if (!open || !targetPin || selectedIsTab) return;
     let cancelled = false;
     const pin = targetPin;
     void window.ade.lanes.list({ includeStatus: true }, pin)
@@ -508,12 +505,12 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     };
     // `targetPinKey` carries the pin's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, targetPinKey]);
+  }, [open, targetPinKey, selectedIsTab]);
   const lanes = useMemo<LaneSummary[]>(() => {
-    if (!targetPin) return boundLanes;
+    if (!targetPin || selectedIsTab) return boundLanes;
     if (pinnedLanes?.key === targetPin.key) return pinnedLanes.lanes;
     return selectedTarget?.lanes ?? [];
-  }, [boundLanes, pinnedLanes, selectedTarget, targetPin]);
+  }, [boundLanes, pinnedLanes, selectedIsTab, selectedTarget, targetPin]);
   const primaryLane = useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
 
   const resetCreateDialogState = useCallback(() => {
@@ -600,7 +597,13 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     // Fresh on every open: another computer may have changed them. An older
     // brain without new-lane defaults answers null, and the form keeps the
     // built-in default (the default branch on the remote).
-    const callPin = pin ?? tabBindingRef.current;
+    const callPin = pin ?? readerPinRef.current;
+    if (!callPin) {
+      // No computer to read from: the form keeps its built-in defaults.
+      setCreateBranchesLoading(false);
+      setTemplates([]);
+      return;
+    }
     const defaultsRead = getNewLaneDefaultsCached({ projectRoot: getActiveProjectRoot(), pin: callPin, force: true });
     setCreateBranchesLoading(Boolean(primary));
     if (primary) {
@@ -613,7 +616,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     }
     Promise.all([
       defaultsRead,
-      window.ade.lanes.listTemplates(...pinArg(callPin)).catch(() => [] as LaneTemplate[]),
+      window.ade.lanes.listTemplates(callPin).catch(() => [] as LaneTemplate[]),
     ]).then(([snapshot, nextTemplates]) => {
       if (!current()) return;
       setNewLaneDefaults(snapshot);
@@ -637,7 +640,11 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   // the lane is being created on (the account setting is shared, but the
   // machine answers with its own branch names).
   const handleMakeStartDefault = useCallback(() => {
-    const pin = targetPinRef.current ?? tabBindingRef.current;
+    const pin = targetPinRef.current ?? readerPinRef.current;
+    if (!pin) {
+      setCreateError("Connect a computer that has this project to save the default.");
+      return;
+    }
     // Only the start: the brain keeps the rest (the default template).
     void saveNewLaneDefaults({
       projectRoot: getActiveProjectRoot(),
@@ -710,12 +717,12 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   const targetPrimaryId = primaryLane?.id ?? null;
   useEffect(() => {
     if (!open) return;
-    const key = `${targetPinKey ?? "bound"}::${targetPrimaryId ?? ""}`;
+    const key = `${formPinKey ?? "bound"}::${targetPrimaryId ?? ""}`;
     if (machineDataKeyRef.current === key) return;
-    loadMachineData(targetPinRef.current, primaryLane);
+    loadMachineData(selectedIsTab ? null : targetPinRef.current, primaryLane);
     // `primaryLane` is read through its id; `targetPinKey` carries the pin.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, targetPinKey, targetPrimaryId]);
+  }, [open, formPinKey, targetPrimaryId]);
 
   /*
    * ADE Cloud as the lane's place. From the Lanes tab it is one more choice in
@@ -794,7 +801,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       return false;
     }
     try {
-      const check = await window.ade.lanes.checkBranchName({ name: branchName }, ...pinArg(pin ?? tabBindingRef.current));
+      const checkPin = pin ?? readerPinRef.current;
+      if (!checkPin) return true;
+      const check = await window.ade.lanes.checkBranchName({ name: branchName }, checkPin);
       setCreateBranchProblem(check.problem);
       return !check.problem;
     } catch (error) {
@@ -849,8 +858,8 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         return;
       }
       if (createMode === "existing" && !createImportBranch) return;
-      if (!tabBinding) {
-        setCreateError("This project is still opening. Try again in a moment.");
+      if (!readerPin) {
+        setCreateError("Connect a computer that has this project to start a lane on ADE Cloud.");
         return;
       }
       const typedBranch = createMode === "new" ? editedBranchName?.trim() ?? "" : "";
@@ -895,7 +904,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       }
       resetCreateDialogState();
       onOpenChange(false);
-      void startAdeCloudLaunch({ args, sizeId: adeCloud.tierId, originUrl: repoOriginUrl, binding: tabBinding });
+      void startAdeCloudLaunch({ args, sizeId: adeCloud.tierId, originUrl: repoOriginUrl, binding: readerPin });
       return;
     }
 
@@ -905,7 +914,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       setCreateError("Choose the machine this lane will live on.");
       return;
     }
-    const pin = machineTargets.get(machineId)?.pin ?? null;
+    const targetMachinePin = machineTargets.get(machineId)?.pin ?? null;
+    // `pin` marks a lane on another machine; the tab's own copy keeps it null.
+    const pin = selectedIsTab ? null : targetMachinePin;
     // A named branch must be picked. Default and Primary are the brain's to
     // resolve, so a failed defaults read does not block them.
     const startBranchMissing = createStart.from === "branch"
@@ -924,10 +935,10 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     // A typed branch name is checked where the lane will live; a followed one
     // is the brain's to make unique.
     const typedBranch = createMode === "new" ? editedBranchName?.trim() ?? "" : "";
-    if (typedBranch && !(await branchNameIsFree(typedBranch, pin))) return;
+    if (typedBranch && !(await branchNameIsFree(typedBranch, targetMachinePin))) return;
 
-    // Every background call is pinned: the chosen machine, else this tab's own.
-    const callPin = pin ?? tabBinding;
+    // Every background call is pinned to the chosen machine's copy.
+    const callPin = targetMachinePin;
     if (!callPin) {
       setCreateError("This project is still opening. Try again in a moment.");
       return;
@@ -988,7 +999,8 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     createSelectedEmoji,
     createSelectedLinearIssue,
     tabScopeKey,
-    tabBinding,
+    readerPin,
+    selectedIsTab,
     tabStore,
     refreshLanes,
     validateLaneFormExtras,

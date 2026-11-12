@@ -6,6 +6,7 @@ import { revealLabel } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { extractError } from "../../lib/format";
 import { deleteEventBinding } from "../app/toast/useLaneWorkSavedToast";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 
@@ -13,9 +14,9 @@ import { Banner } from "../ui/notice";
  * Where the delete ran: the user can switch tabs while a delete runs and
  * before answering, so the folder's actions must not follow the active tab.
  * The event's `origin` (the binding the delete started with) names it; the
- * active tab is only the fallback for a delete this window did not start.
- * `pin` is set only for a project on another machine; a project on this one is
- * named by `rootPath` and keeps the unpinned route.
+ * copy the event came from is the fallback for a delete this window did not
+ * start. `pin` names that copy; a project on this computer also passes its
+ * `rootPath`.
  */
 type LeftoverPrompt = LaneDeleteLeftoverWorktree & {
   laneId: string;
@@ -37,26 +38,32 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
   const [deleting, setDeleting] = useState(false);
   const current = queue[0] ?? null;
 
+  // Follows the open copy's deletes, as before; its machine is named.
+  const tabPin = useTabCopyPin();
+  const tabPinKey = tabPin?.key ?? null;
   useEffect(() => {
     const subscribe = window.ade?.lanes?.onDeleteEvent;
-    if (!subscribe) return;
+    const subscribedPin = tabPin;
+    if (!subscribe || !subscribedPin) return;
     const unsubscribe = subscribe((event) => {
       const progress = event.progress;
       const leftover = progress.leftoverWorktree;
       const finished = progress.overallStatus === "completed" || progress.overallStatus === "completed_with_warnings";
       if (!finished || !leftover?.path) return;
-      const binding = deleteEventBinding(event);
+      const binding = deleteEventBinding(event, subscribedPin);
       setQueue((existing) => {
         if (existing.some((entry) => entry.laneId === progress.laneId && entry.path === leftover.path)) {
           return existing;
         }
-        const pin = binding?.kind === "remote" ? binding : null;
+        const pin = binding;
         const rootPath = binding?.kind === "local" ? binding.rootPath : null;
         return [...existing, { ...leftover, laneId: progress.laneId, pin, rootPath }];
       });
-    });
+    }, subscribedPin);
     return unsubscribe;
-  }, []);
+    // `tabPinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabPinKey]);
 
   useEffect(() => {
     setError(null);
@@ -70,12 +77,14 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
   };
 
   const reveal = () => {
+    if (!current.pin) return;
     void window.ade.lanes.revealLeftoverWorktree(leftoverArgs(current), current.pin).catch((reason: unknown) => {
       setError(extractError(reason));
     });
   };
 
   const remove = () => {
+    if (!current.pin) return;
     setDeleting(true);
     setError(null);
     void window.ade.lanes.deleteLeftoverWorktree(leftoverArgs(current), current.pin)

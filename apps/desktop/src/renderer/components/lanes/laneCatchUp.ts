@@ -93,6 +93,8 @@ export async function readLaneCatchUpConflict(
   pin: OpenProjectBinding | null,
 ): Promise<LaneCatchUpConflict> {
   try {
+    // No machine to ask: the check cannot run.
+    if (!pin) return { state: "failed" };
     const need = await window.ade.rebase.getNeed(laneId, pin);
     // No need means nothing to catch up with now: nothing to conflict.
     if (!need) return { state: "done", predicted: false, files: [] };
@@ -344,7 +346,9 @@ export async function runLaneCatchUpDirect(args: {
     return { ok: false, failure };
   } finally {
     try {
-      if (pin) requestCrossMachineLanesForMachine(args.machineId ?? machineIdForBinding(pin));
+      // Another machine has no change feed here; the tab's own copy re-reads its list.
+      const otherPin = cacheScopePin(pin);
+      if (otherPin) requestCrossMachineLanesForMachine(args.machineId ?? machineIdForBinding(otherPin));
       else {
         await args.refreshLanes();
         requestLaneRebaseNeedsRescan();

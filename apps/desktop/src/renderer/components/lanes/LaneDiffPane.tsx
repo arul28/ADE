@@ -438,7 +438,7 @@ export function LaneDiffPane({
                   // Files pins itself to the lane's machine from `filesPin`, so a
                   // foreign lane's file opens (and saves) on that machine.
                   onClick={() => navigate("/files", {
-                    state: { openFilePath: selectedPath, laneId, ...(pin ? { filesPin: pin } : {}) },
+                    state: { openFilePath: selectedPath, laneId, ...(pin && isForeign ? { filesPin: pin } : {}) },
                   })}
                   title="Open in Files tab"
                 >
@@ -463,7 +463,7 @@ export function LaneDiffPane({
                     if (text == null) return;
                     setBusyAction("save");
                     window.ade.files
-                      .writeTextAtomic({ laneId, path: selectedPath, text })
+                      .writeTextAtomic({ laneId, path: selectedPath, text }, pin)
                       .then(() => {
                         return refreshWorkingDiff();
                       })

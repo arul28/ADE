@@ -77,6 +77,7 @@ import { chatLaunchBindingKey, noteChatLaunchSourceRead } from "./chatLaunchStor
 import { isAdeAvailable } from "../lib/adeAvailability";
 import { subscribeAdeCloudAccess } from "./cloudAccess";
 import { claimSessionsLiveFirst, machineIsCloudResting, rowShowsConnected } from "./cloudRestingRows";
+import { useStableBinding } from "./laneMachineRouting";
 import { isSavedChatsMachineId } from "./cloudSavedChats";
 import { scheduleCloudSavedChatsRefresh, type SavedChatsContext } from "./cloudSavedChatsSync";
 
@@ -1137,6 +1138,8 @@ export type CrossMachineLaneScope = {
   boundProjectId: string | null;
   /** Verified local checkout of the same repo, while the tab is remote-bound. */
   thisMachineBinding?: Extract<OpenProjectBinding, { kind: "local" }> | null;
+  /** The tab's copy: its change feeds are subscribed on this address. Null: no feed. */
+  tabBinding?: OpenProjectBinding | null;
 };
 
 type SyncRuntime = {
@@ -1183,6 +1186,8 @@ type SyncRuntime = {
   legacySessionPageMachineIds: Set<string>;
   /** `connectionsReadSignature` of the last snapshot that forced a read. */
   connectionsReadSignature: string | null;
+  /** The change feeds of the tab's copy, and the address they follow. */
+  tabFeed: { key: string; dispose: () => void } | null;
 };
 
 /**
@@ -1232,6 +1237,7 @@ const runtime: SyncRuntime = {
   unresolvedLaneIdsByMachineId: new Map(),
   legacySessionPageMachineIds: new Set(),
   connectionsReadSignature: null,
+  tabFeed: null,
 };
 
 /**
@@ -1252,6 +1258,7 @@ function sameScope(a: CrossMachineLaneScope, b: CrossMachineLaneScope): boolean 
     && a.boundTargetId === b.boundTargetId
     && a.boundProjectId === b.boundProjectId
     && a.thisMachineBinding?.key === b.thisMachineBinding?.key
+    && (a.tabBinding?.key ?? null) === (b.tabBinding?.key ?? null)
   );
 }
 
@@ -2219,19 +2226,7 @@ function attach(): void {
   runtime.disposers.push(subscribeAdeCloudAccess(() => {
     if (connectionSnapshotSeen) scheduleCloudSavedChatsRefresh(savedChatsContext, { force: true });
   }));
-  // These events cover the active binding. Other machines are covered by the
-  // shared bounded refresh below because preload exposes no per-target push
-  // subscription.
-  //
-  // Both are change feeds, so both request `identity` depth. On the web
-  // transport a lifecycle event is synthesized from a coarse table invalidation,
-  // and reading status here would write the rows that produce the next
-  // invalidation — the loop this depth split exists to cut. The scheduler also
-  // keeps these events from restarting the foreign poll on every shell tick.
-  const unsubscribeSessions = window.ade?.sessions?.onChanged?.(() => scheduleRefresh());
-  if (unsubscribeSessions) runtime.disposers.push(unsubscribeSessions);
-  const unsubscribeLanes = window.ade?.lanes?.onLifecycleEvent?.(() => scheduleRefresh());
-  if (unsubscribeLanes) runtime.disposers.push(unsubscribeLanes);
+  retargetTabFeed();
   // The refresh loop stops itself while the window is hidden, so coming back is
   // the only thing that can restart it. Returning to the surface is also when a
   // stale status badge is about to be looked at, so this read pays for status.
@@ -2272,8 +2267,46 @@ function attach(): void {
   // lane/session rows remain stale indefinitely.
 }
 
+/**
+ * Follows the change feeds of the tab's copy (`scope.tabBinding`). Other
+ * machines are covered by the shared bounded refresh, because each of them
+ * would cost a relay pump of its own.
+ *
+ * Both are change feeds, so both request `identity` depth. On the web
+ * transport a lifecycle event is synthesized from a coarse table invalidation,
+ * and reading status here would write the rows that produce the next
+ * invalidation — the loop this depth split exists to cut. The scheduler also
+ * keeps these events from restarting the foreign poll on every shell tick.
+ */
+function retargetTabFeed(): void {
+  const pin = runtime.refCount > 0 ? runtime.scope.tabBinding ?? null : null;
+  if (runtime.tabFeed && runtime.tabFeed.key === pin?.key) return;
+  runtime.tabFeed?.dispose();
+  runtime.tabFeed = null;
+  if (!pin) return;
+  const disposers: Array<() => void> = [];
+  const unsubscribeSessions = window.ade?.sessions?.onChanged?.(() => scheduleRefresh(), pin);
+  if (unsubscribeSessions) disposers.push(unsubscribeSessions);
+  const unsubscribeLanes = window.ade?.lanes?.onLifecycleEvent?.(() => scheduleRefresh(), pin);
+  if (unsubscribeLanes) disposers.push(unsubscribeLanes);
+  runtime.tabFeed = {
+    key: pin.key,
+    dispose: () => {
+      for (const dispose of disposers) {
+        try {
+          dispose();
+        } catch {
+          // A subscription that already tore itself down is not an error here.
+        }
+      }
+    },
+  };
+}
+
 function detach(): void {
   connectionSnapshotSeen = false;
+  runtime.tabFeed?.dispose();
+  runtime.tabFeed = null;
   runtime.generation += 1;
   runtime.lifecycle += 1;
   machineCallsInFlight = new Map();
@@ -2411,6 +2444,7 @@ export function startCrossMachineLaneSync(scope: CrossMachineLaneScope): () => v
   runtime.scope = scope;
   runtime.refCount += 1;
   if (runtime.refCount === 1) attach();
+  else if (scopeChanged) retargetTabFeed();
   if (scopeChanged || runtime.refCount === 1) {
     scheduleRefresh("status");
     // Before a first connection snapshot every saved computer would look deleted.
@@ -2452,6 +2486,7 @@ export function resetCrossMachineLaneSyncForTest(): void {
  */
 export function useCrossMachineLaneSync(active = true): void {
   const projectBinding = useAppStore((state) => state.projectBinding);
+  const tabBinding = useStableBinding(projectBinding);
   const scopeKey = useAppStore((state) => selectActiveProjectStateKey(state));
   const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
   const projectDisplayName = useAppStore((state) => state.project?.displayName ?? null);
@@ -2618,9 +2653,10 @@ export function useCrossMachineLaneSync(active = true): void {
         boundTargetId,
         boundProjectId,
         thisMachineBinding,
+        tabBinding,
       });
     },
-    [active, boundProjectId, boundTargetId, repoAccountProjectId, repoDisplayName, repoOriginUrl, scopeKey, thisMachineBinding],
+    [active, boundProjectId, boundTargetId, repoAccountProjectId, repoDisplayName, repoOriginUrl, scopeKey, tabBinding, thisMachineBinding],
   );
 }
 

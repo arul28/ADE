@@ -1,4 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
+import { requireLanePin } from "./laneMachines";
 import {
   WarningCircle,
   Archive,
@@ -88,7 +90,8 @@ function ManageLaneRenameControls({
   lane: LaneSummary;
   allLanes: LaneSummary[];
   onRenamed?: () => void | Promise<void>;
-  runtimePin?: OpenProjectBinding | null;
+  /** The managed lanes' machine. Null: nothing is sent. */
+  runtimePin: OpenProjectBinding | null | undefined;
   nameColor: string;
 }) {
   const [editing, setEditing] = useState(false);
@@ -118,9 +121,7 @@ function ManageLaneRenameControls({
     setRenameError(null);
     try {
       const args = { laneId: lane.id, emoji };
-      await (runtimePin
-        ? window.ade.lanes.updateAppearance(args, runtimePin)
-        : window.ade.lanes.updateAppearance(args));
+      await window.ade.lanes.updateAppearance(args, requireLanePin(runtimePin));
       await onRenamed?.();
     } catch (error) {
       setRenameError(error instanceof Error ? error.message : "Failed to update lane emoji");
@@ -141,9 +142,7 @@ function ManageLaneRenameControls({
     setRenameError(null);
     try {
       const args = { laneId: lane.id, name: trimmedDraft };
-      await (runtimePin
-        ? window.ade.lanes.rename(args, runtimePin)
-        : window.ade.lanes.rename(args));
+      await window.ade.lanes.rename(args, requireLanePin(runtimePin));
       setEditing(false);
       await onRenamed?.();
     } catch (error) {
@@ -464,7 +463,8 @@ export function ManageLaneDialog({
   onArchive: () => Promise<boolean>;
   onDelete: () => void;
   onAppearanceChanged?: () => void | Promise<void>;
-  runtimePin?: OpenProjectBinding | null;
+  /** The managed lanes' machine. Null: nothing is sent. */
+  runtimePin: OpenProjectBinding | null | undefined;
   /** Tab to open on, e.g. "archive" for the sidebar's "Archive all". Defaults to Delete. */
   initialTab?: ManageLaneTab | null;
   /**
@@ -493,6 +493,12 @@ export function ManageLaneDialog({
 
   const singleLaneId = singleLane?.id ?? null;
   const singleLaneType = singleLane?.laneType ?? null;
+  // Effects key on the pin's key: a rebuilt pin is the same machine.
+  const runtimePinKey = runtimePin?.key ?? null;
+  const runtimePinRef = useRef(runtimePin);
+  runtimePinRef.current = runtimePin;
+  // Linear is read and written through the repository's reader copy.
+  const linearPin = useActiveRepositoryReader(open);
   const [deleteRisk, setDeleteRisk] = useState<LaneDeleteRisk | null>(null);
   const [reclaimRisk, setReclaimRisk] = useState<LaneReclaimRisk | null>(null);
   const [reclaimConfirm, setReclaimConfirm] = useState("");
@@ -517,7 +523,8 @@ export function ManageLaneDialog({
     try {
       const cancel = window.ade?.cto?.cancelLinearIssue;
       if (!cancel) throw new Error("Linear is not available in this window.");
-      const result = await cancel(openLinearIssue.id);
+      if (!linearPin) throw new Error("Connect a computer to cancel the issue in Linear.");
+      const result = await cancel(openLinearIssue.id, linearPin);
       if (result.canceled) showToast({ tone: "success", title: `${openLinearIssue.identifier} canceled in Linear` });
     } catch (err) {
       showToast({
@@ -567,13 +574,14 @@ export function ManageLaneDialog({
     }
     let cancelled = false;
     const getReclaimRisk = window.ade.lanes.getReclaimRisk;
-    const deleteRiskPromise = runtimePin
-      ? window.ade.lanes.getDeleteRisk({ laneId: singleLaneId }, runtimePin)
-      : window.ade.lanes.getDeleteRisk({ laneId: singleLaneId });
+    const pin = runtimePinRef.current;
+    if (!pin) {
+      setDeleteRisk(null);
+      return;
+    }
+    const deleteRiskPromise = window.ade.lanes.getDeleteRisk({ laneId: singleLaneId }, pin);
     const reclaimRiskPromise = typeof getReclaimRisk === "function"
-      ? runtimePin
-        ? getReclaimRisk({ laneId: singleLaneId }, runtimePin)
-        : getReclaimRisk({ laneId: singleLaneId })
+      ? getReclaimRisk({ laneId: singleLaneId }, pin)
       : Promise.resolve(null);
     void Promise.all([
       deleteRiskPromise,
@@ -592,22 +600,21 @@ export function ManageLaneDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, runtimePin, singleCloud, singleLaneId, singleLaneType]);
+  }, [open, runtimePinKey, singleCloud, singleLaneId, singleLaneType]);
 
   // Stream live delete progress for the active lane.
   useEffect(() => {
-    if (!open || !singleLaneId) return;
+    const pin = runtimePinRef.current;
+    if (!open || !singleLaneId || !pin) return;
     const handleDeleteEvent = (event: LaneDeleteEvent) => {
       if (event.progress.laneId !== singleLaneId) return;
       setDeleteProgress(event.progress);
     };
-    const unsubscribe = runtimePin
-      ? window.ade.lanes.onDeleteEvent(handleDeleteEvent, runtimePin)
-      : window.ade.lanes.onDeleteEvent(handleDeleteEvent);
+    const unsubscribe = window.ade.lanes.onDeleteEvent(handleDeleteEvent, pin);
     return () => {
       unsubscribe?.();
     };
-  }, [open, runtimePin, singleLaneId]);
+  }, [open, runtimePinKey, singleLaneId]);
 
   // Cloud lanes need no pick: the lane and its computer go together.
   const hasDeleteSelection = onlyCloud || laneDeleteSelectionHasAny(deleteSelection);
@@ -642,9 +649,7 @@ export function ManageLaneDialog({
         confirmation: "RECLAIM" as const,
         ...(reclaimRisk.dirty && discardDirtyConfirmed ? { forceDirty: true } : {}),
       };
-      await (runtimePin
-        ? window.ade.lanes.archiveAndReclaim(args, runtimePin)
-        : window.ade.lanes.archiveAndReclaim(args));
+      await window.ade.lanes.archiveAndReclaim(args, requireLanePin(runtimePin));
       void cancelLinkedIssueIfAsked();
       await onAppearanceChanged?.();
       onOpenChange(false);
@@ -1282,7 +1287,8 @@ function AppearanceSection({
   allLanes: LaneSummary[];
   disabled: boolean;
   onChanged?: () => void | Promise<void>;
-  runtimePin?: OpenProjectBinding | null;
+  /** The managed lanes' machine. Null: nothing is sent. */
+  runtimePin: OpenProjectBinding | null | undefined;
 }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -1302,9 +1308,7 @@ function AppearanceSection({
     setBusy(true);
     try {
       const args = { laneId: lane.id, color: next };
-      await (runtimePin
-        ? window.ade.lanes.updateAppearance(args, runtimePin)
-        : window.ade.lanes.updateAppearance(args));
+      await window.ade.lanes.updateAppearance(args, requireLanePin(runtimePin));
       await onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to set color");
@@ -1318,9 +1322,7 @@ function AppearanceSection({
     setBusy(true);
     try {
       const args = { laneId: lane.id, emoji: next };
-      await (runtimePin
-        ? window.ade.lanes.updateAppearance(args, runtimePin)
-        : window.ade.lanes.updateAppearance(args));
+      await window.ade.lanes.updateAppearance(args, requireLanePin(runtimePin));
       await onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to set emoji");

@@ -1,6 +1,5 @@
 import React from "react";
 import type { BranchPullRequest, LaneSummary, OpenProjectBinding } from "../../../shared/types";
-import { pinArg } from "../../state/laneMachineRouting";
 import type { LaneBranchOption } from "./laneUtils";
 
 /** Where `loadLaneStartMenuData` puts what it reads. */
@@ -19,11 +18,11 @@ export type LaneStartMenuSink = {
  */
 export function loadLaneStartMenuData(
   primaryLaneId: string,
-  pin: OpenProjectBinding | null,
+  pin: OpenProjectBinding,
   isCurrent: () => boolean,
   sink: LaneStartMenuSink,
 ): void {
-  void window.ade.git.listBranches({ laneId: primaryLaneId }, ...pinArg(pin))
+  void window.ade.git.listBranches({ laneId: primaryLaneId }, pin)
     .then((branches) => {
       if (isCurrent()) sink.setBranches(branches);
     })
@@ -31,16 +30,16 @@ export function loadLaneStartMenuData(
     .finally(() => {
       if (isCurrent()) sink.setBranchesLoading(false);
     });
-  void window.ade.git.getUserIdentity({ laneId: primaryLaneId }, ...pinArg(pin))
+  void window.ade.git.getUserIdentity({ laneId: primaryLaneId }, pin)
     .then((identity) => {
       if (isCurrent()) sink.setGitUserName(identity?.name ?? "");
     })
     .catch((error: unknown) => console.warn("lane_start_menu.git_identity_load_failed", error));
-  // Repo-wide (GitHub): the tab's machine answers it for every target. Only
-  // decoration for the menu, so a host without it (even one that throws at
-  // the call) never blocks the menu.
+  // Repo-wide (GitHub): the same machine answers it, since any copy can.
+  // Only decoration for the menu, so a host without it (even one that throws
+  // at the call) never blocks the menu.
   void Promise.resolve()
-    .then(() => window.ade.prs.listOpenForRepo())
+    .then(() => window.ade.prs.listOpenForRepo(pin))
     .then((pullRequests) => {
       if (isCurrent()) sink.setPullRequests(pullRequests);
     })
@@ -75,8 +74,14 @@ export function useLaneStartMenuData(pin: OpenProjectBinding | null): {
     setBranches([]);
     setPullRequests([]);
     setGitUserName("");
+    // No machine: an empty menu, and nothing is sent.
+    const target = pin;
+    if (!target) {
+      setBranchesLoading(false);
+      return;
+    }
     setBranchesLoading(true);
-    void window.ade.lanes.list({ includeStatus: false }, ...pinArg(pin))
+    void window.ade.lanes.list({ includeStatus: false }, target)
       .then((next) => {
         if (cancelled) return;
         const list = Array.isArray(next) ? next : [];
@@ -86,7 +91,7 @@ export function useLaneStartMenuData(pin: OpenProjectBinding | null): {
           setBranchesLoading(false);
           return;
         }
-        loadLaneStartMenuData(primary.id, pin, isCurrent, { setBranches, setBranchesLoading, setGitUserName, setPullRequests });
+        loadLaneStartMenuData(primary.id, target, isCurrent, { setBranches, setBranchesLoading, setGitUserName, setPullRequests });
       })
       .catch((error: unknown) => {
         console.warn("lane_start_menu.lanes_load_failed", error);

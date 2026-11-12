@@ -610,3 +610,16 @@ export function canCreateLaneOnMachine(option: LaneMachineOption): boolean {
 export function isLowLaneMachineDisk(freeBytes: number | null): boolean {
   return typeof freeBytes === "number" && freeBytes <= LANE_MACHINE_LOW_DISK_BYTES;
 }
+
+/** What a lane action says when its lane has no machine to send to. */
+export const LANE_MACHINE_NOT_CONNECTED = "This lane's computer is not connected.";
+
+/**
+ * The pin of a lane write, or a clear error when the lane has no machine to
+ * send to. A write is never sent without a pin: that would reach whatever
+ * machine the tab happens to be on.
+ */
+export function requireLanePin(pin: OpenProjectBinding | null | undefined): OpenProjectBinding {
+  if (!pin) throw new Error(LANE_MACHINE_NOT_CONNECTED);
+  return pin;
+}

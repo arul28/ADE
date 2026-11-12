@@ -111,6 +111,7 @@ export function LaneDashboard({
   onStartChat,
   onSelectCommit,
   onOpenLaneMenu,
+  pin: tabPin = null,
   machine = null,
 }: {
   laneId: string;
@@ -125,6 +126,11 @@ export function LaneDashboard({
   onSelectCommit: (commit: GitCommitSummary) => void;
   /** Opens the lane's context menu under the given button. */
   onOpenLaneMenu: (laneId: string, anchor: DOMRect) => void;
+  /**
+   * The tab copy's address, for a lane of the tab's own copy (`machine` null).
+   * Null: the copy is offline, and nothing is read.
+   */
+  pin?: OpenProjectBinding | null;
   /** The lane's machine, when it is not the tab's. See {@link LaneDashboardMachine}. */
   machine?: LaneDashboardMachine | null;
 }) {
@@ -132,7 +138,8 @@ export function LaneDashboard({
   const boundLanes = useAppStore((s) => s.lanes);
   const boundLaneStatusStale = useAppStore((s) => s.laneStatusStale);
   const lanes = machine?.lanes ?? boundLanes;
-  const pin = machine?.pin ?? null;
+  // Every read goes to the lane's machine: the other machine, else the tab's copy.
+  const pin = machine?.pin ?? tabPin;
   const selectLane = useAppStore((s) => s.selectLane);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const lane = useMemo(() => lanes.find((row) => row.id === laneId) ?? null, [laneId, lanes]);
@@ -160,7 +167,7 @@ export function LaneDashboard({
   // works, and each change would cost two remote reads, so a pinned lane keys on
   // state alone.
   const agentsKey = agents
-    .map((agent) => `${agent.sessionId}:${agent.activity}:${agent.name}${pin ? "" : `:${agent.lastHint ?? ""}`}`)
+    .map((agent) => `${agent.sessionId}:${agent.activity}:${agent.name}${machine ? "" : `:${agent.lastHint ?? ""}`}`)
     .sort()
     .join(",");
 
@@ -176,7 +183,7 @@ export function LaneDashboard({
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [laneId]);
 
-  const prs = useLaneOverviewPrs(lane, machine?.prs ?? null);
+  const prs = useLaneOverviewPrs(lane, machine?.prs ?? null, pin);
   const { current: currentPr, earlier: earlierPrs } = useMemo(() => {
     const prominent = splitLanePrs(prs.current).current;
     if (!prominent) return { current: null, earlier: prs.all };
@@ -238,17 +245,17 @@ export function LaneDashboard({
     // `binding` names another machine's lane, so Work can reach a chat that
     // is not in its roster instead of falling back to the tab's machine.
     window.dispatchEvent(new CustomEvent("ade:work:select-session", {
-      detail: { sessionId, laneId, ...(pin ? { binding: pin } : {}) },
+      detail: { sessionId, laneId, ...(machine ? { binding: machine.pin } : {}) },
     }));
     navigate(`/work?${new URLSearchParams({ sessionId, laneId }).toString()}`);
-  }, [laneId, navigate, pin]);
+  }, [laneId, machine, navigate]);
 
   const openPr = useCallback((pr: Pick<LaneHistoryPr, "linkedPrId" | "number" | "repoOwner" | "repoName">) => {
     // Another machine's linked PR id is a row in THAT machine's database; the
     // PRs tab resolves ids against the tab's machine, so open it by number.
-    const path = openPrPath(pin ? { ...pr, linkedPrId: null } : pr);
+    const path = openPrPath(machine ? { ...pr, linkedPrId: null } : pr);
     if (path) navigate(path);
-  }, [navigate, pin]);
+  }, [machine, navigate]);
 
   const openEntry = useCallback((entry: LaneHistoryEntry) => {
     const target = entry.target;
@@ -262,16 +269,16 @@ export function LaneDashboard({
   }, [commits, onSelectCommit, openChat, openPr]);
 
   const openFiles = useCallback((openFilePath?: string) => {
-    if (pin) {
+    if (machine) {
       // Files pins itself to the lane's machine from the request. Selecting the
       // bare id here would select the tab machine's lane with that id.
-      navigate("/files", { state: { laneId, filesPin: pin, ...(openFilePath ? { openFilePath } : {}) } });
+      navigate("/files", { state: { laneId, filesPin: machine.pin, ...(openFilePath ? { openFilePath } : {}) } });
       return;
     }
     // The Files tab follows the selected lane, so select it first.
     selectLane(laneId);
     navigate("/files", openFilePath ? { state: { openFilePath, laneId } } : undefined);
-  }, [laneId, navigate, pin, selectLane]);
+  }, [laneId, machine, navigate, selectLane]);
 
   if (!lane) {
     return <div className="h-full" data-testid="lane-dashboard" />;

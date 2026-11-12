@@ -5191,9 +5191,9 @@ declare global {
         ) => Promise<CleanupPrBranchResult>;
       };
       rebase: {
-        scanNeeds: (pin?: OpenProjectBinding | null) => Promise<RebaseNeed[]>;
-        getNeed: (laneId: string, pin?: OpenProjectBinding | null) => Promise<RebaseNeed | null>;
-        onEvent: (cb: (ev: RebaseEventPayload) => void, pin?: OpenProjectBinding | null) => () => void;
+        scanNeeds: (pin: OpenProjectBinding) => Promise<RebaseNeed[]>;
+        getNeed: (laneId: string, pin: OpenProjectBinding) => Promise<RebaseNeed | null>;
+        onEvent: (cb: (ev: RebaseEventPayload) => void, pin: OpenProjectBinding) => () => void;
       };
       history: {
         listOperations: (
