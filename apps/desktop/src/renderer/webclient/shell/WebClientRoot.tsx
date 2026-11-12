@@ -608,7 +608,12 @@ export function WebClientRoot({
         if (disposed) return;
         Object.assign(window.ade, { account: createAccountNamespace(accountClient) });
         window.history.replaceState(null, "", WELCOME_PATH);
-        setPhase({ kind: "signed-out", SignIn: WebSignInScreen });
+        // A link waits for the sign-in; the card says so.
+        const linkWaiting = (pendingTargetRef.current ?? readPendingTarget()) != null;
+        setPhase({
+          kind: "signed-out",
+          SignIn: linkWaiting ? function SignInForLink() { return <WebSignInScreen linkWaiting />; } : WebSignInScreen,
+        });
         return;
       }
 

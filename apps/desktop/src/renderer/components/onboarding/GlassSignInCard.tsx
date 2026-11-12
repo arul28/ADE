@@ -25,10 +25,13 @@ export function GlassSignInCard({
   configured,
   onSignedIn,
   sessionState = "signed_out",
+  subtitle,
 }: {
   configured: boolean;
   onSignedIn: () => void;
   sessionState?: AdeAccountSessionState;
+  /** Replaces the default line under the title (a notice still wins). */
+  subtitle?: string;
 }) {
   const { phase, error, beginLogin, cancel, busy, unreadable, expired, notice, repair, signInLabel, otherDevice } = useSignInFlow({
     onSignedIn,
@@ -44,7 +47,7 @@ export function GlassSignInCard({
         {unreadable || expired ? accountSessionTitle(sessionState) : "Sign in to ADE"}
       </h1>
       <p className="ade-glass-sub">
-        {notice ?? "One account for every computer and phone you run ADE on."}
+        {notice ?? subtitle ?? "One account for every computer and phone you run ADE on."}
       </p>
 
       {!configured ? (

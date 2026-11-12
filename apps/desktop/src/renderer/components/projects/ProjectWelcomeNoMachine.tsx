@@ -17,6 +17,7 @@ import { requestRemoveProject } from "./removeProjectRequest";
 import { ACCOUNT_PROJECT_ID_PATTERN } from "../../../shared/accountProject";
 import { repoRefForTab } from "../prs/state/prsReader";
 import { PullRequestsCard } from "./ProjectWelcomeHome";
+import { Banner } from "../ui/notice";
 import { useDirectHomePullRequests } from "./useDirectHomePullRequests";
 import { useOptionalWebWorkspace, useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import type { WebMachineEntry } from "../../webclient/workspace/webWorkspaceModel";
@@ -66,7 +67,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     [webMachines],
   );
   const [openingCopyKey, setOpeningCopyKey] = useState<string | null>(null);
-  const [openError, setOpenError] = useState<string | null>(null);
+  const [openError, setOpenError] = useState<{ title: string; technicalDetail: string } | null>(null);
   const list = useAccountProjectList();
   const repositoryTab = useMemo(() => repositoryTabOf(tab, list), [list, tab]);
   const copies = useRepositoryCopies(repositoryTab);
@@ -79,6 +80,9 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   // project's pull requests, read only. Null for a folder or a non-GitHub host.
   const githubRepo = typeof window !== "undefined" && window.ade?.githubDirect ? repoRefForTab(repositoryTab) : null;
   const githubRepoKey = githubRepo ? `${githubRepo.owner}/${githubRepo.name}` : null;
+  // The card names the repository as the account spells it (the read key is lower case).
+  const accountProject = list.state === "ready" ? list.projects.find((entry) => entry.id === tab.id) : undefined;
+  const githubRepoTitle = accountProject?.owner && accountProject.name ? `${accountProject.owner}/${accountProject.name}` : githubRepoKey;
   const pullRequests = useDirectHomePullRequests(githubRepo);
 
   // A copy came online: open it. Once per copy, so a copy that fails to open
@@ -147,8 +151,11 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
         // The project is open now; leave this page as the desktop does when a copy opens.
         useAppStore.setState((state) => (state.activeNoMachineTabId === tab.id ? { activeNoMachineTabId: null } : {}));
         navigate(workspace.consumePendingProjectPath() ?? "/work");
-      } catch {
-        setOpenError(`${machine.name} did not answer. Try again, or open the project on another computer.`);
+      } catch (error) {
+        setOpenError({
+          title: `${machine.name} did not open ${tab.displayName}.`,
+          technicalDetail: error instanceof Error ? error.message : String(error),
+        });
       } finally {
         setOpeningCopyKey((current) => (current === copyKey ? null : current));
       }
@@ -234,7 +241,16 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
             </div>
           ) : null}
           {openError ? (
-            <span className="text-[12px]" role="alert" style={{ color: "var(--kit-crit)" }}>{openError}</span>
+            <Banner
+              layout="inline"
+              model={{
+                id: "no-machine-open",
+                tone: "error",
+                title: openError.title,
+                detail: "Try again, or open the project on another computer.",
+                report: { surface: "no_machine_open", technicalDetail: openError.technicalDetail },
+              }}
+            />
           ) : null}
           {failed ? (
             <span className="text-[12px]" style={{ color: "var(--kit-crit)" }}>
@@ -276,7 +292,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
       </section>
       {githubRepoKey ? (
         <div className="flex w-full max-w-[460px] shrink-0 flex-col" style={{ height: 300 }}>
-          <PullRequestsCard projectName={githubRepoKey} projectRoot={githubRepoKey} prs={pullRequests} />
+          <PullRequestsCard projectName={githubRepoTitle ?? githubRepoKey} projectRoot={githubRepoKey} prs={pullRequests} />
         </div>
       ) : null}
     </div>
