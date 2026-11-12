@@ -3231,6 +3231,12 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => () => void;
       };
+      /**
+       * The lane's Apple simulator. Lane members take a required pin: the
+       * simulator lives on the lane's machine, the tab's own copy included.
+       * Machine members (status, the device list and admin, runtimes, Xcode)
+       * and `onEvent` keep an optional pin: null is this window's fanout.
+       */
       iosSimulator: {
         getStatus: (
           pin?: OpenProjectBinding | null,
@@ -3240,11 +3246,11 @@ declare global {
         ) => Promise<IosSimulatorDevice[]>;
         listLaunchTargets: (
           args?: IosSimulatorListLaunchTargetsArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorLaunchTarget[]>;
         launch: (
           args?: IosSimulatorLaunchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorLaunchResult>;
         attachToChatSession: (
           args: {
@@ -3252,75 +3258,75 @@ declare global {
             callerChatSessionId?: string | null;
             takeOver?: boolean;
           },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorSession | null>;
         shutdown: (
           args?: IosSimulatorShutdownArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorShutdownResult>;
         screenshot: (
           args?: IosSimulatorScreenshotArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorScreenshot>;
         getScreenSnapshot: (
           args?: IosScreenSnapshotArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosScreenSnapshot>;
         getInspectorSnapshot: (
           args?: { deviceUdid?: string | null },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosInspectorSnapshot | null>;
         inspectPoint: (
           args: IosSimulatorInspectPointArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorInspectResult>;
         getPreviewCapability: (
           args?: IosSimulatorListPreviewsArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorPreviewCapability>;
         listPreviewTargets: (
           args?: IosSimulatorListPreviewsArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorPreviewTarget[]>;
         resolvePreviewMatch: (
           args?: IosSimulatorListPreviewsArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorPreviewMatch>;
         ensurePreviewWorkspace: (
           args?: IosSimulatorEnsurePreviewWorkspaceArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorEnsurePreviewWorkspaceResult>;
         renderCurrentPreview: (
           args?: IosSimulatorRenderCurrentPreviewArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorRenderCurrentPreviewResult>;
         renderPreview: (
           args: IosSimulatorRenderPreviewArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorRenderPreviewResult>;
         openPreviewWorkspace: (
           args?: IosSimulatorOpenPreviewWorkspaceArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true; path: string }>;
         startStream: (
           args?: IosSimulatorStartStreamArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorStreamStatus>;
         stopStream: (
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
           args?: { laneId?: string | null; chatSessionId?: string | null },
         ) => Promise<IosSimulatorStreamStatus>;
         getStreamStatus: (
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
           args?: { laneId?: string | null; chatSessionId?: string | null },
         ) => Promise<IosSimulatorStreamStatus>;
         deviceCreate: (
           args?: AppleDeviceCreateArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppleLaneDevice>;
         deviceAttach: (
           args: AppleDeviceAttachArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppleLaneDevice>;
         /**
          * Attach (or create, with `create.sourceUdid`) if the lane owns no
@@ -3329,7 +3335,7 @@ declare global {
          */
         deviceStart: (
           args?: AppleDeviceStartArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorStreamStatus>;
         /**
          * Power the lane's simulator OFF, leaving it registered.
@@ -3339,7 +3345,7 @@ declare global {
          */
         deviceStop: (
           args?: AppleDeviceStopArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppleDeviceStopResult>;
         /**
          * What this Mac has, what this lane owns, and who holds the rest.
@@ -3356,12 +3362,12 @@ declare global {
         ) => Promise<AppleDeviceListResult>;
         deviceDelete: (
           args?: AppleDeviceDeleteArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppleDeviceDeleteResult>;
         /** The lane gives up its device and the simulator stays installed. */
         deviceDetach: (
           args?: AppleDeviceDetachArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppleLaneDevice | null>;
         deviceDeleteInstalled: (
           args: AppleDeviceDeleteInstalledArgs,
@@ -3395,23 +3401,23 @@ declare global {
         ) => Promise<AppleXcodeStatus>;
         frame: (
           args?: AppleFrameArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppleFrameResult>;
         recordStart: (
           args?: AppleRecordStartArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<SimRecording>;
         recordStop: (
           args?: AppleRecordStopArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<SimRecording | null>;
         recordList: (
           args?: AppleRecordListArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<SimRecording[]>;
         recordDelete: (
           args: AppleRecordDeleteArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         /**
          * Bytes of Apple recordings on disk. Lane-optional: the Diagnostics
@@ -3426,63 +3432,63 @@ declare global {
         // never resolves a build root for it.
         tap: (
           args: { deviceUdid?: string | null; x: number; y: number },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         /** A press held at one point (a context menu). */
         longPress: (
           args: IosSimulatorLongPressArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true; action: "long-press"; durationMs: number }>;
         pressButton: (
           args: ApplePressButtonArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ApplePressButtonResult>;
         rotate: (
           args: AppleRotateArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppleRotateResult>;
         setPosture: (
           args: AppleSetPostureArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppleSetPostureResult>;
         getPosture: (
           args?: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppleDevicePosture>;
         getDuoModel: (pin?: OpenProjectBinding | null) => Promise<AppleDuoModelResult>;
-        renderAck: (args: { requestId: string }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
+        renderAck: (args: { requestId: string }, pin: OpenProjectBinding) => Promise<{ ok: boolean }>;
         renderComplete: (
           args: { requestId: string; filed: number; error: string | null; proofArtifactIds?: string[] },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: boolean }>;
         duoAppStoreScreenshots: (
           args?: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppleDuoAppStoreScreenshotsResult>;
         attachRenderProof: (
           args: { laneId?: string | null; chatSessionId?: string | null; dataUrl: string; title: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppleRenderProofResult>;
         addDuoSkill: (
           args?: { laneId?: string | null; chatSessionId?: string | null },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppleAddDuoSkillResult>;
         /** The helper's re-anchoring scroll gesture, by viewport direction. */
         scroll: (
           args: AppleScrollArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AppleScrollResult>;
         typeText: (
           args: { deviceUdid?: string | null; text: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         drag: (
           args: IosSimulatorDragArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         swipe: (
           args: IosSimulatorDragArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         // Mirrors the shared IosSimulatorPoint: selection matches source
         // against the caller's tree, so the lane has to ride the wire.
@@ -3494,125 +3500,125 @@ declare global {
             x: number;
             y: number;
           },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorSelectResult>;
         // Device hub: a booted device, its typed settings, its log, and
         // element-named actions. Every one takes the same pin as the calls
         // above, because the simulator lives on the machine that owns the lane.
         openDevice: (
           args?: IosSimulatorOpenDeviceArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorDeviceSession>;
         closeDevice: (
           args?: IosSimulatorCloseDeviceArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorCloseDeviceResult>;
         getDeviceSettings: (
           args?: IosSimulatorDeviceArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorDeviceSettings>;
         setAppearance: (
           args: IosSimulatorSetAppearanceArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorDeviceSettings>;
         setContentSize: (
           args: IosSimulatorSetContentSizeArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorDeviceSettings>;
         setAccessibilityOption: (
           args: IosSimulatorSetAccessibilityArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorDeviceSettings>;
         setLocation: (
           args: IosSimulatorSetLocationArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorDeviceSettings>;
         clearLocation: (
           args?: IosSimulatorDeviceArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorDeviceSettings>;
         setPermission: (
           args: IosSimulatorSetPermissionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         sendPushNotification: (
           args: IosSimulatorPushArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         openUrl: (
           args: IosSimulatorOpenUrlArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         relaunchApp: (
           args: IosSimulatorRelaunchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorAppState>;
         terminateApp: (
           args: IosSimulatorAppLifecycleArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         uninstallApp: (
           args: IosSimulatorUninstallAppArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         setStatusBar: (
           args: IosSimulatorStatusBarArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         clearStatusBar: (
           args?: IosSimulatorDeviceArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         getAppState: (
           args: IosSimulatorAppLifecycleArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorAppState>;
         getForegroundApp: (
           args?: { deviceUdid?: string | null; laneId?: string | null; waitMs?: number | null },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorForegroundApp>;
         startEventLog: (
           args: IosSimulatorStartEventLogArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorEventLogPage>;
         stopEventLog: (
           args?: IosSimulatorStopEventLogArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorEventLogPage>;
         getEventLog: (
           args?: IosSimulatorEventLogArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorEventLogPage>;
         findElement: (
           args: IosSimulatorFindElementArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorElementActionResult>;
         tapElement: (
           args: IosSimulatorTapElementArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorElementActionResult>;
         fillElement: (
           args: IosSimulatorFillElementArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorElementActionResult>;
         waitForElement: (
           args: IosSimulatorWaitForElementArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorElementActionResult>;
         assertVisible: (
           args: IosSimulatorAssertVisibleArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorElementActionResult>;
         captureProofBundle: (
           args?: IosSimulatorProofBundleArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<IosSimulatorProofBundle>;
         // The stream URL names loopback on the simulator's own machine, so a
         // remote binding has to tunnel it before a player can open it. Resolves
         // to a message instead of rejecting: the caller renders it in a card.
         resolveStreamUrl: (
           streamUrl: string | null,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ url: string | null; forwarded: boolean; error: string | null }>;
         onEvent: (
           cb: (ev: IosSimulatorEventPayload) => void,
@@ -4417,26 +4423,31 @@ declare global {
       // the tab is bound to". Writes honour it too — a file on another
       // connected machine is fully editable. `external-local:*` workspaces are
       // local-only by construction and ignore the pin.
+      /**
+       * Files of one copy. Every member takes a required pin (the copy that
+       * owns the workspace, the tab's own included), except `openExternalPath`,
+       * which opens a path from this computer's Finder.
+       */
       files: {
         writeTextAtomic: (
           args: WriteTextAtomicArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         listWorkspaces: (
           args?: FilesListWorkspacesArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<FilesWorkspace[]>;
         listTree: (
           args: FilesListTreeArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<FileTreeNode[]>;
         listTreeChildren: (
           args: FilesListTreeChildrenArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<FilesListTreeChildrenResult>;
         refreshGitDecorations: (
           args: FilesRefreshGitDecorationsArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<FilesGitStatusEvent>;
         /** Local-only: the path comes from this machine's Finder/drag-drop, so it takes no pin. */
         openExternalPath: (
@@ -4444,53 +4455,53 @@ declare global {
         ) => Promise<FilesOpenExternalPathResult>;
         readFile: (
           args: FilesReadFileArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<FileContent>;
         readFileRange: (
           args: FilesReadFileRangeArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<FilesReadFileRangeResult>;
         gitBlame: (
           args: FilesGitBlameArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<FilesGitBlameResult>;
         writeText: (
           args: FilesWriteTextArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         createFile: (
           args: FilesCreateFileArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         createDirectory: (
           args: FilesCreateDirectoryArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         rename: (
           args: FilesRenameArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         delete: (
           args: FilesDeleteArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         watchChanges: (
           args: FilesWatchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         stopWatching: (
           args: FilesWatchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         quickOpen: (
           args: FilesQuickOpenArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<FilesQuickOpenItem[]>;
         searchText: (
           args: FilesSearchTextArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<FilesSearchTextMatch[]>;
-        onChange: (cb: (ev: FileChangeEvent) => void, pin?: OpenProjectBinding | null) => () => void;
+        onChange: (cb: (ev: FileChangeEvent) => void, pin: OpenProjectBinding) => () => void;
       };
       git: {
         stageFile: (
