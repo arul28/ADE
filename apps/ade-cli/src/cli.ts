@@ -437,6 +437,10 @@ import {
 } from "./services/projects/projectRoots";
 import { gitOwnershipMessage, parseGitOwnershipError } from "./services/projects/gitOwnership";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
+import { createAccountProjectSync, type AccountProjectSync } from "./services/projects/accountProjectSync";
+import { createGithubRepoLookup, type GithubApiRequest } from "./services/projects/githubRepoLookup";
+import { readProjectFolderStates } from "./services/projects/projectFolderPresence";
+import { isDevTestMachineHome, isDevTestMachineProcess } from "./services/sync/devTestMachine";
 import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
 import { createBrainHomeRegistry, describeOtherBrains } from "./services/runtime/brainHomeRegistry";
 import {
@@ -31040,6 +31044,8 @@ async function runServe(
   };
   startSyncHostForRepair = () => startSyncHost(true);
   startSyncHostOnDemand = () => startSyncHost();
+  // Stops the account project sync of the brain (set where that sync is built).
+  let stopAccountProjectSync: (() => void) | null = null;
   const disposeServeResources = async () => {
     // A stopped brain must not describe itself in later reports from this process.
     for (const unregister of unregisterBrainDiagnostics) unregister();
@@ -31051,6 +31057,10 @@ async function runServe(
     stopSyncHostRehostWatch = null;
     machinePairingAutoRecovery?.stop();
     machinePairingAutoRecovery = null;
+    // The account project sync stops before the publisher releases the lease,
+    // so no copy is sent or written once shutdown has begun.
+    stopAccountProjectSync?.();
+    stopAccountProjectSync = null;
     accountMachinePublisher?.dispose();
     accountMachinePublisher = null;
     brainRelayTunnelGate?.dispose();
@@ -31519,6 +31529,40 @@ async function runServe(
       if (!activeProjectId) return null;
       return await scopeRegistry.getIfBooted(activeProjectId)?.catch(() => null) ?? null;
     };
+    // The account's project list (`accountProjectSync.ts`). One instance for
+    // the brain, fed by whichever publisher holds the lease: it runs after an
+    // accepted heartbeat and owns no timer. The GitHub service it asks for
+    // repository ids is built on first use, with this machine's own
+    // credentials (gh, an environment token, a stored token, the App).
+    let accountProjectSync: AccountProjectSync | null = null;
+    let accountProjectGithubRequest: GithubApiRequest | null = null;
+    const getAccountProjectSync = (): AccountProjectSync => {
+      accountProjectSync ??= createAccountProjectSync({
+        adeDir: layout.adeDir,
+        registry: projectRegistry,
+        getAccountUserId: () => {
+          const status = brainAccountAuthService.getStatus();
+          return status.signedIn ? status.userId?.trim() || null : null;
+        },
+        lookupRepo: createGithubRepoLookup({
+          getApiRequest: async () => {
+            accountProjectGithubRequest ??= (() => {
+              const service = createHeadlessGitHubService(process.cwd(), headlessProjectLogger);
+              return (args) => service.apiRequest(args);
+            })();
+            return accountProjectGithubRequest;
+          },
+        }),
+        readFolderStates: (records) => readProjectFolderStates(records),
+        isDevTestMachine: () => isDevTestMachineProcess() || isDevTestMachineHome(layout.adeDir),
+        logger: headlessProjectLogger,
+      });
+      return accountProjectSync;
+    };
+    stopAccountProjectSync = () => {
+      accountProjectSync?.stop();
+      accountProjectSync = null;
+    };
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;
       accountMachinePublisher = createBrainAccountMachinePublisherService({
@@ -31579,6 +31623,11 @@ async function runServe(
           }
         },
         directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
+        // Only with sync on: a brain started with --no-sync keeps the account
+        // list out of it, like every other account store.
+        onPublished: (event) => {
+          if (syncEnabled) getAccountProjectSync().afterHeartbeat(event);
+        },
         captureAnalytics: (input) => {
           brainProductAnalytics.captureInternal(input);
         },
@@ -31652,6 +31701,10 @@ async function runServe(
         // acquisition rebuilds it above.
         accountMachinePublisher?.dispose();
         accountMachinePublisher = null;
+        // The account project sync it fed stops with it (nothing more sent or
+        // written from here); the next lease builds a new one on first use.
+        accountProjectSync?.stop();
+        accountProjectSync = null;
       }, SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS);
       accountPublisherReleaseTimer.unref?.();
     });

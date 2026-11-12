@@ -6,7 +6,11 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
-  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  // 10% of requests are logged: Workers Logs cost $0.60 per million events above
+  // 20 million a month, and at 100% the three Workers made about 53 million a
+  // month (measured 2026-11-12). Errors still reach Sentry in full. The
+  // production environment inherits this block.
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 },
   // The Sentry cron monitor `account-directory-cleanup` repeats this schedule
   // (CLEANUP_MONITOR_CONFIG in src/index.ts); change both together.
   "triggers": { "crons": ["* * * * *"] },

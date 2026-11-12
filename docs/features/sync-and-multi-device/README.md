@@ -1362,8 +1362,10 @@ Runtime support files outside `services/sync/`:
   optional finer `reason` (`no_proof` versus `grant_rejected`, or the relay's
   own failure text), and the request's correlation id. Every refusal is a user
   who cannot get their computer back onto their account, and by the time they
-  ask for help the request is gone; Workers observability runs at
-  `head_sampling_rate: 1` so the line is always there. Identifiers appear as
+  ask for help the request is gone. Workers observability keeps 10% of
+  requests (`head_sampling_rate: 0.1` since 2026-11-12, for the Workers Logs
+  bill), so each refusal is also a Sentry warning (one issue per event and
+  code, tagged with the correlation id, no account id). Identifiers appear as
   **8-character prefixes only** — a machine key is capability-shaped and a grant
   is a live credential. There is deliberately no admin restore route: it would
   be a new authentication boundary guarding exactly the tables

@@ -37,6 +37,7 @@ import { markExpected } from "../../../shared/expectedError";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { connectSshWithRoute, execSsh, execSshWithInput, openSshRuntimeTransport, type ConnectedSshRoute, type OpenSshResolvedConfig } from "./sshTransport";
 import { routeKey } from "./routeUtils";
+import { ACCOUNT_PROJECT_ID_PATTERN } from "../../../shared/accountProject";
 import { syncEndpointForHost } from "./pairedRuntimeRoutes";
 import { generateDesktopDpopKeyPair, type DesktopPairedMachineStore } from "./syncPairedMachineStore";
 import {
@@ -132,10 +133,13 @@ const MACHINE_PROJECT_CAPABILITIES = [
   "listMyGitHubRepos",
 ] as const satisfies readonly RemoteRuntimeMachineProjectCapability[];
 
-// Cosmetic capabilities: normalized like the rest, but a host without them is
-// not worth a compatibility warning. The action itself names the update.
+// Capabilities with a fallback or a clear refusal: normalized like the rest,
+// but a host without them is not worth a compatibility warning. The action
+// itself names the update (`removeCopy` falls back to an entry-only remove).
 const OPTIONAL_MACHINE_PROJECT_CAPABILITIES = [
   "setIcon",
+  "removeCopy",
+  "accountList",
 ] as const satisfies readonly RemoteRuntimeMachineProjectCapability[];
 
 type RemoteRuntimeInitializeInfo = {
@@ -1983,6 +1987,12 @@ export function coerceProjects(value: unknown): RemoteRuntimeProjectRecord[] {
           ? record.registrationSource
           : undefined,
       ...(typeof record.exists === "boolean" ? { exists: record.exists } : {}),
+      ...(typeof record.accountProjectId === "string" && ACCOUNT_PROJECT_ID_PATTERN.test(record.accountProjectId)
+        ? { accountProjectId: record.accountProjectId }
+        : {}),
+      ...(typeof record.githubRepoId === "number" && Number.isSafeInteger(record.githubRepoId) && record.githubRepoId > 0
+        ? { githubRepoId: record.githubRepoId }
+        : {}),
       icon: coerceProjectIcon(record.icon),
     }];
   });

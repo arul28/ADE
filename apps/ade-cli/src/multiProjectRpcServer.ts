@@ -58,6 +58,7 @@ import {
 import { createConnectionFrameDemand } from "./connectionFrameDemand";
 import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFrameDemand";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { readAccountProjectListForRpc } from "./services/projects/accountProjectSync";
 import { peekSharedUsageTrackingService } from "../../desktop/src/main/services/usage/sharedUsageTracking";
 import { readProjectFolderPresence, readProjectFolderStates } from "./services/projects/projectFolderPresence";
 import { createProjectCopyRemoval } from "./services/projects/projectCopyRemoval";
@@ -639,6 +640,7 @@ const RUNTIME_METHODS = new Set([
   "machine.updateAndRestart",
   "machine.reportPowerTransition",
   "projects.list",
+  "projects.accountList",
   "projects.add",
   "projects.setCatalogVisibility",
   "projects.remove",
@@ -1540,6 +1542,24 @@ function omitProjectId(
  * folder, the storage preflight, this machine's own Git credentials, and the
  * clone service's rollback on failure. An already registered checkout wins.
  */
+/**
+ * A registry record as an RPC answer. The account project link goes only to
+ * the account it was made for, and the account id itself never leaves this
+ * machine. The signed-in account is read only for a linked record, unless the
+ * caller passes it (a list reads it once).
+ */
+function publicProjectRecord<T extends { accountProjectId?: string; accountProjectUserId?: string }>(
+  record: T,
+  accountUserId?: string | null,
+): Omit<T, "accountProjectId" | "accountProjectUserId"> & { accountProjectId?: string } {
+  const { accountProjectUserId, accountProjectId, ...rest } = record;
+  if (!accountProjectId) return rest;
+  const signedIn = accountUserId !== undefined
+    ? accountUserId
+    : getMachineAccountStores(machineProjectLogger).accountUserId();
+  return signedIn && accountProjectUserId === signedIn ? { ...rest, accountProjectId } : rest;
+}
+
 async function cloneRepositoryForRemoteAgent(
   projectRegistry: ProjectRegistry,
   originUrl: string | undefined,
@@ -2701,6 +2721,8 @@ export function createMultiProjectRpcRequestHandler(
             setIcon: true,
             // `projects.inspectRemoval` + `projects.removeCopy`.
             removeCopy: true,
+            // `projects.accountList`, and `accountProjectId` / `githubRepoId` on `projects.list` rows.
+            accountList: true,
           },
           ...sdkCapabilities(),
           account: true,
@@ -3541,10 +3563,10 @@ export function createMultiProjectRpcRequestHandler(
       if (!isAgentRemoteClientName(callerClientName()) || !options.peerDeviceId) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "machines.cloneForAgent is for another machine's agents.");
       }
-      return await decorateProjectWithIcon(
+      return publicProjectRecord(await decorateProjectWithIcon(
         await cloneRepositoryForRemoteAgent(projectRegistry, readOptionalString(params.originUrl), cloneIntoFolder),
         projectRecords,
-      );
+      ));
     }
 
     if (method === "machines.deliverWake") {
@@ -3762,12 +3784,26 @@ export function createMultiProjectRpcRequestHandler(
         decorateProjectListWithIcons(records, undefined, undefined, projectRecords),
         readProjectFolderPresence(records),
       ]);
-      // Additive: older callers ignore `exists`, and an unknown answer is left out.
+      // Read once for the whole list (`publicProjectRecord`).
+      const accountUserId = records.some((record) => record.accountProjectId)
+        ? getMachineAccountStores(machineProjectLogger).accountUserId()
+        : null;
+      // Additive: older callers ignore `exists`, `accountProjectId` and
+      // `githubRepoId`, and an unknown answer is left out.
       return decorated.map((record, index) => {
+        const linked = publicProjectRecord(record, accountUserId);
         const sharedName = projectRecords?.name(record) ?? null;
-        const named = sharedName ? { ...record, displayName: sharedName } : record;
+        const named = sharedName ? { ...linked, displayName: sharedName } : linked;
         return presence[index] === undefined ? named : { ...named, exists: presence[index] };
       });
+    }
+
+    if (method === "projects.accountList") {
+      // The account's projects as this machine last read them (after a
+      // heartbeat that saw a change). Only the signed-in account's list; an
+      // account switch answers `not_loaded` until the new list is read.
+      const accountUserId = getMachineAccountStores(machineProjectLogger).accountUserId();
+      return readAccountProjectListForRpc(path.dirname(projectRegistry.path), accountUserId);
     }
 
     if (method === "projects.add") {
@@ -3784,8 +3820,8 @@ export function createMultiProjectRpcRequestHandler(
       // asks for no icon: resolving one starts a worker process, and a cold one
       // held every project open for up to its 750 ms budget. Every other
       // caller, and every older client, still gets the icon.
-      if (params.withoutIcon === true) return { ...added, icon: EMPTY_PROJECT_ICON };
-      return await decorateProjectWithIcon(added, projectRecords);
+      if (params.withoutIcon === true) return publicProjectRecord({ ...added, icon: EMPTY_PROJECT_ICON });
+      return publicProjectRecord(await decorateProjectWithIcon(added, projectRecords));
     }
 
     if (method === "projects.setCatalogVisibility") {
@@ -3803,7 +3839,7 @@ export function createMultiProjectRpcRequestHandler(
         registration.catalogVisibility,
         registration.registrationSource,
       );
-      return project ? await decorateProjectWithIcon(project, projectRecords) : null;
+      return project ? publicProjectRecord(await decorateProjectWithIcon(project, projectRecords)) : null;
     }
 
     if (method === "projects.remove") {
@@ -3891,7 +3927,7 @@ export function createMultiProjectRpcRequestHandler(
           "projects.touch requires projectId.",
         );
       }
-      return projectRegistry.touch(projectId);
+      return publicProjectRecord(projectRegistry.touch(projectId));
     }
 
     if (method === "projects.checkOpen") {
@@ -4040,25 +4076,25 @@ export function createMultiProjectRpcRequestHandler(
         await (await createMachineProjectScaffoldService()).createLocalProject(
           readCreateProjectInput(params),
         );
-      return await decorateProjectWithIcon(
+      return publicProjectRecord(await decorateProjectWithIcon(
         projectRegistry.add(
           result.rootPath,
           readProjectRegistrationIntent(params),
         ),
         projectRecords,
-      );
+      ));
     }
 
     if (method === "projects.clone") {
       const input = await readCloneProjectInput(params, () => defaultParentDir(projectRegistry));
       const result = await cloneIntoFolder(input);
-      return await decorateProjectWithIcon(
+      return publicProjectRecord(await decorateProjectWithIcon(
         projectRegistry.add(
           result.rootPath,
           readProjectRegistrationIntent(params),
         ),
         projectRecords,
-      );
+      ));
     }
 
     if (method === "projects.listMyGitHubRepos") {

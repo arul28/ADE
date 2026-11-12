@@ -61,7 +61,54 @@ export type ProjectRecord = {
   gitOriginUrl: string | null;
   catalogVisibility: ProjectCatalogVisibility;
   registrationSource: ProjectRegistrationSource;
+  /**
+   * GitHub's numeric id of the repository at `gitOriginUrl`, once a machine
+   * credential (or GitHub's public API) could read it. Written by the account
+   * project sync (`accountProjectSync.ts`); absent until then. A cache: an
+   * older ADE that rewrites this file drops it, and the sync reads it again.
+   */
+  githubRepoId?: number;
+  /**
+   * The account project (`ap_…`) this folder is a copy of, and the account it
+   * belongs to. `projectId` stays the copy's own id. Shown only while that
+   * account is signed in here (`projects.list`).
+   */
+  accountProjectId?: string;
+  accountProjectUserId?: string;
 };
+
+/** What the account project sync writes on one record; null clears a field. */
+export type ProjectAccountLink = {
+  projectId: ProjectId;
+  githubRepoId?: number | null;
+  accountProjectId?: string | null;
+  accountProjectUserId?: string | null;
+};
+
+/** The account fields of a stored record, kept only when they have the right shape. */
+function accountLinkFields(record: {
+  githubRepoId?: unknown;
+  accountProjectId?: unknown;
+  accountProjectUserId?: unknown;
+}): Pick<ProjectRecord, "githubRepoId" | "accountProjectId" | "accountProjectUserId"> {
+  const fields: Pick<ProjectRecord, "githubRepoId" | "accountProjectId" | "accountProjectUserId"> = {};
+  if (typeof record.githubRepoId === "number" && Number.isSafeInteger(record.githubRepoId) && record.githubRepoId > 0) {
+    fields.githubRepoId = record.githubRepoId;
+  }
+  if (
+    typeof record.accountProjectId === "string" && /^ap_[0-9a-f]{32}$/.test(record.accountProjectId)
+    && typeof record.accountProjectUserId === "string" && record.accountProjectUserId.trim()
+  ) {
+    fields.accountProjectId = record.accountProjectId;
+    fields.accountProjectUserId = record.accountProjectUserId.trim();
+  }
+  return fields;
+}
+
+/** The account fields of `existing`, carried onto a record that is built again. */
+function carriedAccountLinks(existing: ProjectRecord | null | undefined): Pick<ProjectRecord, "githubRepoId" | "accountProjectId" | "accountProjectUserId"> {
+  return existing ? accountLinkFields(existing) : {};
+}
 
 /** A database file's device and inode, as decimal strings. A move keeps both. */
 export type ProjectDatabaseIdentity = { dev: string; ino: string };
@@ -199,6 +246,7 @@ function coerceRecord(
         : null,
     catalogVisibility: registration.catalogVisibility,
     registrationSource: registration.registrationSource,
+    ...accountLinkFields(record),
   };
 }
 
@@ -349,6 +397,7 @@ export class ProjectRegistry {
             ? "recent"
             : "system",
         registrationSource: registration.registrationSource,
+        ...carriedAccountLinks(existing),
       };
       if (existingIndex >= 0) {
         file.projects[existingIndex] = next;
@@ -385,6 +434,47 @@ export class ProjectRegistry {
       return { file, result: next };
     });
     return updated ? withCanonicalOrigin(updated) : null;
+  }
+
+  /**
+   * Write the account project sync's findings on many records in one locked
+   * write. A record that is gone (removed or moved since the sync read the
+   * list) is skipped. Writes nothing when nothing changes. Returns how many
+   * records changed.
+   */
+  setAccountLinks(links: ProjectAccountLink[]): number {
+    if (links.length === 0) return 0;
+    const current = new Map(this.read().projects.map((record) => [record.projectId, record]));
+    const differs = (record: ProjectRecord | undefined, link: ProjectAccountLink) => record !== undefined && (
+      (link.githubRepoId !== undefined && (record.githubRepoId ?? null) !== link.githubRepoId)
+      || (link.accountProjectId !== undefined && (record.accountProjectId ?? null) !== link.accountProjectId)
+      || (link.accountProjectUserId !== undefined && (record.accountProjectUserId ?? null) !== link.accountProjectUserId)
+    );
+    if (!links.some((link) => differs(current.get(link.projectId), link))) return 0;
+    return this.mutate("set_account_links", { count: links.length }, (file) => {
+      let changed = 0;
+      for (const link of links) {
+        const index = file.projects.findIndex((record) => record.projectId === link.projectId);
+        const record = index >= 0 ? file.projects[index] : undefined;
+        if (!record || !differs(record, link)) continue;
+        const next: ProjectRecord = { ...record };
+        if (link.githubRepoId !== undefined) {
+          if (link.githubRepoId === null) delete next.githubRepoId;
+          else next.githubRepoId = link.githubRepoId;
+        }
+        if (link.accountProjectId !== undefined) {
+          if (link.accountProjectId === null) delete next.accountProjectId;
+          else next.accountProjectId = link.accountProjectId;
+        }
+        if (link.accountProjectUserId !== undefined) {
+          if (link.accountProjectUserId === null) delete next.accountProjectUserId;
+          else next.accountProjectUserId = link.accountProjectUserId;
+        }
+        file.projects[index] = { ...next, ...accountLinkFields(next) };
+        changed += 1;
+      }
+      return { file: changed > 0 ? file : null, result: changed };
+    });
   }
 
   remove(projectId: ProjectId): boolean {
@@ -487,6 +577,8 @@ export class ProjectRegistry {
         gitOriginUrl: existing?.gitOriginUrl ?? knownOrigin,
         catalogVisibility: existing?.catalogVisibility ?? "recent",
         registrationSource: existing?.registrationSource ?? "desktop",
+        // Same repository, same account project: only the copy id changes.
+        ...carriedAccountLinks(existing),
       };
       const projects = file.projects.filter(
         (record, i) => i !== index && record.projectId !== newId,
