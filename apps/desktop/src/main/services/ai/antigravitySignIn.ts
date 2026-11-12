@@ -336,6 +336,9 @@ function runTerminalLogin(flow: Flow, executable: AcpExecutableResolution): Prom
     child.stdout?.on("data", scan);
     child.stderr?.on("data", scan);
     child.once("error", reject);
+    // The CLI can close its input before the code is written; that write's
+    // EPIPE fails this sign-in instead of escaping into the runtime.
+    child.stdin?.on("error", reject);
     child.once("exit", (code, signal) => {
       flow.child = null;
       if (flow.done) return resolve();

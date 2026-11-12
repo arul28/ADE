@@ -195,6 +195,7 @@ import {
   type PinnedCliProvider,
   type PinnedProviderCli,
 } from "./pinnedProviderCli";
+import { antigravityCredentialEnv, readAntigravitySettings } from "../ai/antigravityAuth";
 import { museCredentialEnv } from "../ai/museAuth";
 import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
@@ -6993,6 +6994,15 @@ export function createPtyService({
           ?? trackedCliResumeCredentialId(initialResumeMetadata)
           ?? undefined;
         Object.assign(launchEnv, museCredentialEnv(launchEnv, museCredentialId));
+      }
+      // An Antigravity API key saved in ADE reaches the terminal as it does a
+      // chat (env only): the method agy is set to picks the key. A Google
+      // login needs nothing, so the shell keeps its own environment.
+      if (toolTypeHint === "antigravity") {
+        const method = readAntigravitySettings(launchEnv).method;
+        if (method === "gemini-api-key" || method === "agent-platform") {
+          launchEnv = antigravityCredentialEnv(launchEnv, method);
+        }
       }
       // The account's own prompt cache choice, on the one path every fresh
       // launch and resume takes. A preset or stored credential bills another
