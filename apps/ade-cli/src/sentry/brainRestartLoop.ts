@@ -50,8 +50,13 @@ const RESTART_LOOP_FINGERPRINT = ["brain", "restart_loop"] as const;
 
 /** This brain's own start, for `markBrainStoppedCleanly`. */
 let current: { startsPath: string; pid: number; at: string } | null = null;
-/** This start completed a loop (whether or not it was reported already). */
-let startInRestartLoop = false;
+/**
+ * This start completed a loop (whether or not it was reported already). Kept
+ * on the process, not the module: `bootstrap` is also a bundle of its own, and
+ * a copy of this module there must read what the brain's start recorded.
+ */
+const RESTART_LOOP_FLAG = Symbol.for("ade.brainRestartLoop.startInLoop");
+type RestartLoopFlagHolder = { [RESTART_LOOP_FLAG]?: boolean };
 
 /**
  * True when this brain's start is one more in a restart loop: at least
@@ -60,7 +65,7 @@ let startInRestartLoop = false;
  * reopen cannot be what keeps it stopping. False where the watch does not run.
  */
 export function brainStartIsInRestartLoop(): boolean {
-  return startInRestartLoop;
+  return (globalThis as RestartLoopFlagHolder)[RESTART_LOOP_FLAG] === true;
 }
 
 /**
@@ -77,7 +82,8 @@ export function startBrainRestartLoopWatch(options: { runtimeDir: string; build:
     build: options.build,
     nowMs,
   });
-  startInRestartLoop = countedStartsInWindow(state.starts, nowMs) >= RESTART_LOOP_THRESHOLD;
+  (globalThis as RestartLoopFlagHolder)[RESTART_LOOP_FLAG] =
+    countedStartsInWindow(state.starts, nowMs) >= RESTART_LOOP_THRESHOLD;
   current = { startsPath, pid: process.pid, at: new Date(nowMs).toISOString() };
   writeStartsFile(startsPath, state);
   if (loopFoundAtMs === null) return;

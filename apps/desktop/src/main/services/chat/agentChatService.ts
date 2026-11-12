@@ -71400,7 +71400,7 @@ export function createAgentChatService(args: {
         const streak = wantsContinue && scheduledWorkScheduler ? cliContinueStreakFor(row.id) : 0;
         const continues = wantsContinue && scheduledWorkScheduler != null && streak <= MAX_CONSECUTIVE_RESTART_RESUMES;
         if (wantsContinue && !continues) tally.continueHeld += 1;
-        const reopened = await ptyService.resumeSession({ sessionId: row.id });
+        const reopened = await ptyService.resumeSession({ sessionId: row.id }, { reopenAfterRestart: true });
         // A CLI child's card closed with its process; reopening it reopens the card.
         if (reopened.resumed) notifyParentOfCliChildSpawn(row.id, { resumed: true });
         let continued = false;

@@ -64,7 +64,7 @@ import { detectDevServersInChunk, devServerRegistry } from "../devServers/devSer
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import { isPtyOutputHeld, onPtyOutputHoldChange } from "./ptyOutputFlowControl";
-import { createCliTurnRecorder, recordCliSessionsToReopen, type CliReopenEntry } from "./cliReopenAfterRestart";
+import { createCliTurnRecorder, recordCliSessionsToReopen, resetCliCrashReopenCount, type CliReopenEntry } from "./cliReopenAfterRestart";
 import { ensureNodePtySpawnHelperExecutable } from "./nodePtySpawnHelper";
 import { remoteWorkLaneIdFor } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
@@ -8851,9 +8851,20 @@ export function createPtyService({
       return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
     },
 
-    async resumeSession(args: PtyResumeSessionArgs): Promise<PtyResumeSessionResult> {
+    async resumeSession(
+      args: PtyResumeSessionArgs,
+      options?: {
+        /**
+         * Set only by the reopen after a restart. Any other resume (a person, a
+         * failed move) breaks the row of reopens after crashes, so it starts
+         * that count again (`cliReopenAfterRestart.ts`).
+         */
+        reopenAfterRestart?: boolean;
+      },
+    ): Promise<PtyResumeSessionResult> {
       const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
       if (!sessionId) throw new Error("Session id is required.");
+      if (!options?.reopenAfterRestart) resetCliCrashReopenCount(projectRoot, [sessionId]);
 
       const session = sessionService.get(sessionId);
       assertAgentCliSessionAction(sessionId, session, "resumed");
@@ -8898,7 +8909,8 @@ export function createPtyService({
       const live = liveEntryBySessionId(sessionId.trim());
       const line = text.replace(/[\r\n]+/g, " ").trim();
       if (!live || live[1].disposed || !line || !live[1].processOutputData) return false;
-      live[1].processOutputData(`${line}\r\n`);
+      // On a line of its own: the output before it may not end in a newline.
+      live[1].processOutputData(`\r\n${line}\r\n`);
       return true;
     },
 
