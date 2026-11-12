@@ -76,7 +76,7 @@ export function RuleHistory({
     } finally {
       if (detailRequestId.current === requestId) setDetailLoading(false);
     }
-  }, [machineName, pin]);
+  }, [isActiveBinding, machineName, pin]);
 
   useEffect(() => {
     detailRequestId.current += 1;
@@ -88,14 +88,15 @@ export function RuleHistory({
 
   useEffect(() => {
     // The event feed is the tab machine's own; another machine's runs refresh
-    // on the Refresh button instead.
-    if (pin) return undefined;
+    // on the Refresh button instead. The tab's own copy has a pin too, so the
+    // gate is the machine, not the pin.
+    if (!isActiveBinding) return undefined;
     const unsubscribe = window.ade.automations.onEvent(() => {
       void load();
       if (selectedRunId) void loadDetail(selectedRunId);
     });
     return () => unsubscribe();
-  }, [load, loadDetail, pin, selectedRunId]);
+  }, [isActiveBinding, load, loadDetail, selectedRunId]);
 
   useEffect(() => {
     if (selectedRunId && !detail) void loadDetail(selectedRunId);

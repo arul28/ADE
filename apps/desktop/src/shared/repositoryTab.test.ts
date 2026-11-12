@@ -131,7 +131,7 @@ describe("resolveDefaultCopy", () => {
       ? thisComputerOnlyTab({ rootPath: "/Users/me/notes", displayName: "notes" })
       : tab;
     const copies = buildRepositoryCopies(subject, inputsFor(setup));
-    expect(resolveDefaultCopy(subject, { copies, explicitPickKey: keys.pick, currentKey: keys.current })?.key ?? null).toBe(expectedKey);
+    expect(resolveDefaultCopy({ copies, explicitPickKey: keys.pick, currentKey: keys.current })?.key ?? null).toBe(expectedKey);
   });
 
   it("joins on an equal account project id OR an equal origin", () => {

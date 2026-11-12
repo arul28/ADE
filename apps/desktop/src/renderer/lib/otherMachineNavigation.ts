@@ -47,8 +47,9 @@ export function readOtherMachines(
     machineIdForLane: (laneId, machineId) => {
       const route = router.route(laneId, machineId);
       // `unroutable`: the machine is known but has no binding, so nothing on it
-      // can be read. `bound`: the tab's own machine, which the caller checked.
-      return route.kind === "pinned" ? route.machine.machineId : null;
+      // can be read. The tab's own machine routes as `pinned` too, but it is not
+      // another machine: the caller already looked there.
+      return route.kind === "pinned" && !route.machine.isActiveBinding ? route.machine.machineId : null;
     },
     hasSession: (sessionId) => {
       for (const sessions of all.sessionsByMachineId.values()) {

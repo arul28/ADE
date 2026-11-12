@@ -2880,8 +2880,8 @@ average of the Mac was 7–17 in all runs, so read CPU as a range.
 
 | Row | Before (S2) | After (S3) | Ceiling |
 | --- | --- | --- | --- |
-| Idle, 2 machines, Work + Lanes open: runtime event IPC per minute, Work scene | 361 (local 79, remote 282) | 111 (local 79, remote 32) | 150 (proposed) |
-| Same, Lanes scene | 127 (local 80, remote 47) | 109 (local 79, remote 30) | 150 (proposed) |
+| Idle, 2 machines, Work + Lanes open: runtime event IPC per minute, Work scene | 361 (local 79, remote 282) | 111 (local 79, remote 32) | 150 |
+| Same, Lanes scene | 127 (local 80, remote 47) | 109 (local 79, remote 30) | 150 |
 | Processes, Work scene, CPU main / renderer | 0.7–0.8% / 1.3–2.0% | 0.5–1.3% / 1.0–1.9% | the Processes table |
 | Same, RSS main / renderer | 187–241 / 224–362 MB | 188–269 / 241–464 MB | the Processes table |
 | Processes, Lanes scene, CPU main / renderer | 0.5–1.2% / 2.9–3.2% | 0.4–1.5% / 2.6–4.3% | the Processes table |
@@ -2893,7 +2893,7 @@ The new row counts every `streamEvents` call (local and remote) in a
 active-binding pump at its 750 ms idle rate, which S3 does not change. The
 remote share was one pump for each listener (about 18 to 25 on the Work page).
 S3 runs one pump for each machine, so about 2 remote pumps poll at the 5 s
-idle rate. The ceiling of 150 is a proposal for the owner.
+idle rate. The owner approved the ceiling of 150 on 2026-11-12.
 
 CPU and RSS show no change outside the noise of the busy Mac. Two S3 samples
 on the same steps read renderer RSS 241–275 MB and 436–464 MB; the S2 samples

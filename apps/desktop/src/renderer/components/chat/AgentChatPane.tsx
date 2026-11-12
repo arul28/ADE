@@ -403,7 +403,6 @@ import {
   buildChatMachineRoutingState,
   collectOpenProjectBindings,
   createChatMachineRouter,
-  isActiveBindingPin,
   isLivePinnedBinding,
   workRuntimeScopeKey,
   type LaneBindingSource,
@@ -5601,6 +5600,7 @@ export function AgentChatPane({
   const {
     chatScopeLaneId,
     chatRuntimePin,
+    chatForeignPin,
     chatEffectiveBinding,
     isRemoteChat,
     chatMachineName,
@@ -5623,11 +5623,6 @@ export function AgentChatPane({
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
-  // The chat's pin when it names another copy than the tab's own; null for the
-  // tab's copy. Branches that mean "another machine" read this, not the pin.
-  const chatForeignPin = chatRuntimePin && !isActiveBindingPin(chatRuntimePin, projectBinding)
-    ? chatRuntimePin
-    : null;
   // Another machine's chat: pinned there, or on the machine this project tab
   // itself is bound to.
   const shownNotice = shownChatNotice(

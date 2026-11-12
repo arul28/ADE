@@ -4230,21 +4230,59 @@ function subscribeAgentChatEvents(
   };
 }
 
+/**
+ * A PTY listener through a pin that names the bound copy shares the active
+ * stream. That stream follows the window, so when the window binds to another
+ * copy the listener moves to its own copy's pump and takes its PTY ids along.
+ * (A pinned listener whose copy becomes bound keeps its pump: it still hears
+ * its copy.)
+ */
+function followBoundCopyPtyEvents(
+  pin: OpenProjectBinding,
+  subscribeActive: () => () => void,
+  subscribePinned: () => () => void,
+): () => void {
+  let remove = subscribeActive();
+  const pinKey = pin.key;
+  const onBindingChanged = () => {
+    if (currentProjectBinding?.key === pinKey) return;
+    projectBindingChangedCallbacks.delete(onBindingChanged);
+    remove();
+    remove = subscribePinned();
+    const entry = boundCopyPinPtyDataIds;
+    if (!entry || entry.key !== pinKey) return;
+    boundCopyPinPtyDataIds = null;
+    void pinnedRuntimeEvents.setPinnedPtyDataSubscriptions(pin, entry.ids).catch((error: unknown) => {
+      console.warn("[preload] could not move terminal output to its own machine", error);
+    });
+  };
+  projectBindingChangedCallbacks.add(onBindingChanged);
+  return () => {
+    projectBindingChangedCallbacks.delete(onBindingChanged);
+    remove();
+  };
+}
+
 function subscribePtyDataEvents(
   cb: (payload: PtyDataEvent) => void,
   pin?: OpenProjectBinding | null,
 ): () => void {
-  // A pin that names the bound copy listens on the active stream, as no pin does.
   if (pin && !isBoundCopyPin(pin)) return pinnedRuntimeEvents.subscribePinnedPtyDataEvents(pin, cb);
-  const filteredCb = (payload: PtyDataEvent) => {
-    if (shouldDispatchPtyDataEvent(payload)) cb(payload);
+  const subscribeActive = () => {
+    const filteredCb = (payload: PtyDataEvent) => {
+      if (shouldDispatchPtyDataEvent(payload)) cb(payload);
+    };
+    const removeLocal = ptyDataEventFanout(filteredCb);
+    const removeRemote = subscribeRemotePtyDataEvents(filteredCb);
+    return () => {
+      removeRemote();
+      removeLocal();
+    };
   };
-  const removeLocal = ptyDataEventFanout(filteredCb);
-  const removeRemote = subscribeRemotePtyDataEvents(filteredCb);
-  return () => {
-    removeRemote();
-    removeLocal();
-  };
+  // A pin that names the bound copy listens on the active stream, as no pin does.
+  return pin
+    ? followBoundCopyPtyEvents(pin, subscribeActive, () => pinnedRuntimeEvents.subscribePinnedPtyDataEvents(pin, cb))
+    : subscribeActive();
 }
 
 function subscribePtyExitEvents(
@@ -4252,12 +4290,17 @@ function subscribePtyExitEvents(
   pin?: OpenProjectBinding | null,
 ): () => void {
   if (pin && !isBoundCopyPin(pin)) return pinnedRuntimeEvents.subscribePinnedPtyExitEvents(pin, cb);
-  const removeLocal = ptyExitEventFanout(cb);
-  const removeRemote = subscribeRemotePtyExitEvents(cb);
-  return () => {
-    removeRemote();
-    removeLocal();
+  const subscribeActive = () => {
+    const removeLocal = ptyExitEventFanout(cb);
+    const removeRemote = subscribeRemotePtyExitEvents(cb);
+    return () => {
+      removeRemote();
+      removeLocal();
+    };
   };
+  return pin
+    ? followBoundCopyPtyEvents(pin, subscribeActive, () => pinnedRuntimeEvents.subscribePinnedPtyExitEvents(pin, cb))
+    : subscribeActive();
 }
 
 function subscribeUsageUpdateEvents(

@@ -19,6 +19,7 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { AccountProjectView } from "../../shared/accountProject";
+import { captureError } from "../../shared/sentry/capture";
 import {
   buildRepositoryCopies,
   repositoryReaderAddress,
@@ -87,7 +88,12 @@ function readThisMachineKey(): Promise<string | null> {
       thisMachineKeyCache = identity?.machineKey?.trim() || null;
       return thisMachineKeyCache;
     })
-    .catch(() => null)
+    .catch((error: unknown) => {
+      // Without the key, this computer's account copies read as another
+      // computer's until the next read; say so instead of hiding it.
+      captureError(error, { tags: { surface: "repository_copies", read: "machine_identity" } });
+      return null;
+    })
     .finally(() => { thisMachineKeyRead = null; });
   return thisMachineKeyRead;
 }
@@ -113,7 +119,10 @@ function useThisComputer(active: boolean): ThisComputer | null {
       if (typeof listRecent !== "function") return;
       void listRecent().then(
         (rows) => { if (!cancelled) setLocalProjects(rows); },
-        () => undefined,
+        // The last list stays; the next focus reads again.
+        (error: unknown) => {
+          captureError(error, { tags: { surface: "repository_copies", read: "recent_projects" } });
+        },
       );
     };
     read();

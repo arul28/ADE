@@ -437,7 +437,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       target: "primary",
     });
     navigate(`/prs?${params.toString()}`);
-  }, [laneId, linkedPr, openPr, prLoaded, refreshPr, foreignPin]);
+  }, [foreignPin, laneId, linkedPr, navigate, openPr, prLoaded, refreshPr]);
 
   const handlePrClick = useCallback(() => {
     if (prActionBusy) return;
