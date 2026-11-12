@@ -67,6 +67,11 @@ final class SSHPairingViewModel: ObservableObject {
     let hasDeviceKey = await DpopKeyService.shared.warmKey()
     // Cancelled during the wait (`cancelConfirmation`): do not pair behind a closed sheet.
     guard case .pairing = state else { return }
+    // A pairing binds to the device id: never make one with a provisional id.
+    guard syncService.recheckProvisionalDeviceId() else {
+      state = .failed(syncProvisionalDeviceIdMessage)
+      return
+    }
     do {
       guard hasDeviceKey, let dpopPublicKey = DpopKeyService.shared.publicKeyX963Base64() else {
         throw SSHBootstrapError.invalidResponse

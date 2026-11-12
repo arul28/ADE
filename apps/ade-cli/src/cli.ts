@@ -440,6 +440,7 @@ import {
 import { gitOwnershipMessage, parseGitOwnershipError } from "./services/projects/gitOwnership";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import { createAccountProjectSync, type AccountProjectSync } from "./services/projects/accountProjectSync";
+import { provideAccountProjectMainHandler } from "./services/projects/accountProjectMain";
 import { createGithubRepoLookup, type GithubApiRequest } from "./services/projects/githubRepoLookup";
 import { createSavedGithubHeaderSweep } from "./services/github/savedGithubHeaderCleanup";
 import { readProjectFolderStates } from "./services/projects/projectFolderPresence";
@@ -31835,7 +31836,32 @@ async function runServe(
     stopAccountProjectSync = () => {
       accountProjectSync?.stop();
       accountProjectSync = null;
+      provideAccountProjectMainHandler(null);
     };
+    // "Use for new lanes" from the phone or another computer
+    // (`accountProjectMain.ts`). Only while this brain publishes: the choice
+    // goes out with the next publish, which the handler asks for at once.
+    provideAccountProjectMainHandler(async (checkoutId) => {
+      const publisher = accountMachinePublisher;
+      if (!syncEnabled || !publisher) {
+        return { ok: false, code: "not_publishing", message: "This computer is not sending its projects to your ADE account right now." };
+      }
+      const sync = getAccountProjectSync();
+      const result = await sync.setMainCheckout(checkoutId);
+      if (!result.ok) return result;
+      // One heartbeat sends it. A heartbeat already in flight may have run the
+      // sync before the change; then one more heartbeat runs it after.
+      const before = sync.runCount();
+      await publisher.publishNow();
+      await sync.idle();
+      if (sync.runCount() === before && accountMachinePublisher === publisher) {
+        await publisher.publishNow();
+        await sync.idle();
+      }
+      // Saved here either way; say when the account does not have it yet.
+      const published = sync.runCount() !== before && !sync.publishPending();
+      return { ...result, published };
+    });
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;
       accountMachinePublisher = createBrainAccountMachinePublisherService({

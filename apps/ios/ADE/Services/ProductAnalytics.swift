@@ -80,6 +80,8 @@ enum ADEAnalyticsFeature: String, CaseIterable {
   case simulatorControl = "simulator_control"
   /// The ADE Cloud invite funnel (the desktop's `lib/invitePill.ts` names).
   case cloudInvite = "cloud_invite"
+  /// How a GitHub connect of the ADE account, started on the phone, ended.
+  case githubConnect = "github_connect"
 }
 
 /// What the person did in the invite funnel, in the desktop's action names.

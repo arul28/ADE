@@ -137,7 +137,23 @@ export type AccountProjectSync = {
    * shuts down): drop a queued run, send nothing more, write nothing more.
    */
   stop: () => void;
+  /**
+   * Makes one folder of this machine the main copy of its repository: the
+   * folder new lanes use ("Use for new lanes"). It runs between two runs,
+   * never during one, and the next run publishes it. The caller asks the
+   * publisher for a heartbeat to send it now.
+   */
+  setMainCheckout: (checkoutId: string) => Promise<AccountProjectMainResult>;
+  /** Runs started so far. A caller compares two reads to see that a run happened. */
+  runCount: () => number;
+  /** The last copy upload failed and waits for its retry: the account does not have this machine's copies yet. */
+  publishPending: () => boolean;
 };
+
+export type AccountProjectMainResult =
+  /** `published: false`: saved on this machine; the account gets it on the upload's retry. */
+  | { ok: true; checkoutId: string; changed: boolean; published?: boolean }
+  | { ok: false; code: "signed_out" | "not_a_copy" | "not_publishing" | "write_failed"; message: string };
 
 // ---------------------------------------------------------------------------
 // State file
@@ -304,6 +320,27 @@ function matchProject(
   return found;
 }
 
+/** Folders of one repository on this machine share this key: the repository id when known, else the origin. */
+function copyGroupKey(identity: GithubRepoIdentity, state: AccountProjectSyncState): string {
+  const lookup = state.repoLookups[identity.repoKey];
+  return lookup?.repoId ? `id:${identity.host}:${lookup.repoId}` : `key:${identity.repoKey}`;
+}
+
+/**
+ * The main copies after a person picks `checkoutId`: it replaces the main of
+ * its repository, and the mains of other repositories stay. Pure.
+ */
+export function pickMainCheckout(args: {
+  mainCheckouts: readonly string[];
+  checkoutId: string;
+  /** Every folder of the picked folder's repository on this machine. */
+  sameRepository: ReadonlySet<string>;
+  resolveMoved: (checkoutId: string) => string | null;
+}): string[] {
+  const kept = args.mainCheckouts.filter((id) => !args.sameRepository.has(args.resolveMoved(id) ?? id));
+  return [...new Set([...kept, args.checkoutId])].sort();
+}
+
 /**
  * The copies to publish. One main copy per repository on this machine: the
  * one chosen before while its folder is still listed (it moves with a
@@ -321,10 +358,7 @@ function buildCopies(args: {
     .sort((left, right) => right.record.lastOpenedAt - left.record.lastOpenedAt || left.record.projectId.localeCompare(right.record.projectId))
     .slice(0, ACCOUNT_PROJECT_MAX_COPIES_PER_MACHINE);
   const sticky = new Set(state.mainCheckouts.map((id) => args.resolveMoved(id) ?? id));
-  const groupKey = (candidate: Candidate) => {
-    const lookup = state.repoLookups[candidate.identity.repoKey];
-    return lookup?.repoId ? `id:${candidate.identity.host}:${lookup.repoId}` : `key:${candidate.identity.repoKey}`;
-  };
+  const groupKey = (candidate: Candidate) => copyGroupKey(candidate.identity, state);
   const mainByGroup = new Map<string, string>();
   for (const candidate of ordered) {
     if (sticky.has(candidate.record.projectId) && !mainByGroup.has(groupKey(candidate))) {
@@ -381,6 +415,7 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
   let running: Promise<void> | null = null;
   let queued: AccountProjectHeartbeat | null = null;
   let stopped = false;
+  let runs = 0;
   /** List reads that failed in a row; the next one waits a backoff, not 30 minutes. */
   let pullFailures = 0;
   /**
@@ -551,6 +586,7 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
   };
 
   const runOnce = async (event: AccountProjectHeartbeat): Promise<void> => {
+    runs += 1;
     // Old directory: no project list there.
     if (event.accountProjectsCursor === null) return;
     const userId = tokenSubject(event.accessToken);
@@ -715,6 +751,73 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
     }
   };
 
+  /** Starts the drain of a heartbeat that arrived while something else held the turn. */
+  const drainQueued = (): void => {
+    const next = queued;
+    if (!next || stopped || running) return;
+    queued = null;
+    running = drain(next).finally(() => {
+      running = null;
+      drainQueued();
+    });
+  };
+
+  /** Work that must not overlap a run: it reads and writes the same state file. */
+  const exclusive = async <T>(work: () => Promise<T>): Promise<T> => {
+    while (running) await running;
+    const current = work();
+    running = current.then(() => undefined, () => undefined).finally(() => {
+      running = null;
+      drainQueued();
+    });
+    return await current;
+  };
+
+  const setMainCheckout = (rawCheckoutId: string): Promise<AccountProjectMainResult> => exclusive(async () => {
+    const requested = rawCheckoutId.trim();
+    const checkoutId = (requested && options.registry.resolveMovedProjectId(requested)) || requested;
+    if (stopped) {
+      return { ok: false, code: "not_publishing", message: "This computer is not sending its projects to your ADE account right now." };
+    }
+    const userId = options.getAccountUserId();
+    if (!userId) return { ok: false, code: "signed_out", message: "Sign in to ADE on this computer first." };
+    const candidates = await eligibleCandidates();
+    const target = candidates.find((candidate) => candidate.record.projectId === checkoutId);
+    if (!target) {
+      return { ok: false, code: "not_a_copy", message: "That folder is not a GitHub project ADE lists on this computer." };
+    }
+    // Signed out or switched while the folders were checked.
+    if (stopped || options.getAccountUserId() !== userId) {
+      return { ok: false, code: "signed_out", message: "The ADE account on this computer changed. Try again." };
+    }
+    const loaded = readAccountProjectState(options.adeDir, logger);
+    const state = stateForAccount(loaded, userId);
+    const key = copyGroupKey(target.identity, state);
+    const sameRepository = new Set(candidates
+      .filter((candidate) => copyGroupKey(candidate.identity, state) === key)
+      .map((candidate) => candidate.record.projectId));
+    const next = pickMainCheckout({
+      mainCheckouts: state.mainCheckouts,
+      checkoutId,
+      sameRepository,
+      resolveMoved: (id) => options.registry.resolveMovedProjectId(id),
+    });
+    const changed = JSON.stringify(next) !== JSON.stringify(state.mainCheckouts);
+    if (changed || state !== loaded) {
+      state.mainCheckouts = next;
+      try {
+        writeState(options.adeDir, state);
+      } catch (error) {
+        logger.warn?.("account_projects.main_write_failed", { error: errorReason(error) });
+        return { ok: false, code: "write_failed", message: "ADE could not save the change on this computer." };
+      }
+    }
+    // The next heartbeat runs in full and publishes the new main copy.
+    lastGate = null;
+    logger.info?.("account_projects.main_set", { changed, folders: sameRepository.size });
+    return { ok: true, checkoutId, changed };
+  });
+
   return {
     afterHeartbeat(event) {
       if (stopped) return;
@@ -724,7 +827,15 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
       }
       running = drain(event).finally(() => {
         running = null;
+        drainQueued();
       });
+    },
+    setMainCheckout,
+    runCount: () => runs,
+    publishPending() {
+      const userId = options.getAccountUserId();
+      if (!userId) return false;
+      return stateForAccount(readAccountProjectState(options.adeDir, logger), userId).publishFailures !== null;
     },
     async idle() {
       while (running) await running;

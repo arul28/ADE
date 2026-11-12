@@ -918,6 +918,10 @@ struct AccountProjectHomeScreen: View {
         .padding(.top, 4)
       }
 
+      if project.host == "github.com", let repo = GitHubDirectRepoRef(owner: project.owner, name: project.name) {
+        pullRequestsLink(repo, computerName: held.first?.machine?.displayName)
+      }
+
       Button(role: .destructive) {
         deletePresented = true
       } label: {
@@ -927,6 +931,26 @@ struct AccountProjectHomeScreen: View {
       }
       .buttonStyle(.plain)
       .padding(.top, 6)
+    }
+  }
+
+  /// The project's open PRs, read straight from GitHub (spec 3.10): this
+  /// screen shows a project with no computer the phone is on.
+  private func pullRequestsLink(_ repo: GitHubDirectRepoRef, computerName: String?) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("On GitHub")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+      ADESettingsRows {
+        NavigationLink {
+          PrDirectListScreen(repo: repo, computerName: computerName)
+        } label: {
+          ADESettingsRow(title: "Pull requests", hint: repo.fullName, symbol: "arrow.triangle.pull", tint: .violet) {
+            ADESettingsChevron()
+          }
+        }
+        .buttonStyle(ADEKitRowButtonStyle())
+      }
     }
   }
 

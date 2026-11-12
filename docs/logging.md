@@ -2259,6 +2259,8 @@ iOS analytics is default-on when the public capture configuration is present; th
 
 Taking Control of a Mac's simulator from the phone records `ade_mobile_feature_used` with `feature: "simulator_control"`, `outcome: "started"` and nothing else: no device, lane, machine, stream or gesture detail. It answers the same question as the desktop's `ios_live_view` (does anyone drive a simulator that is not on this Mac), and the existing per-foreground deduplication and the 7-feature-events-per-day limit bound it; no ceiling was raised. Gestures, frames and the speed readout are never events.
 
+A GitHub connect of the ADE account that the phone started records `ade_mobile_feature_used` with `feature: "github_connect"` and `outcome` `completed` (the server says the sign-in is done), `cancelled` (declined on GitHub) or `failure`. It is the phone's half of the desktop's `connections` / `github_app_connected`: never the GitHub login, the account, the sign-in id or an error. A person connects once, so the per-foreground deduplication and the 7-feature-events-per-day limit bound it; no ceiling was raised. Direct GitHub reads (PR lists, repositories) are never events.
+
 Host-recorded mobile mutations may still appear in the canonical `ade_*` namespace with `surface: mobile`; those events use the machine installation identity and the same shared 200-event budget. Native `ade_mobile_*` events describe only interaction with the phone app itself.
 
 ### Public marketing site
