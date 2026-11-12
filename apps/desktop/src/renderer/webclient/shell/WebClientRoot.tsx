@@ -37,7 +37,9 @@ import type { WebOwnedLinkState } from "../workspace/WebWorkspaceContext";
 import { ScreenShell } from "./ScreenShell";
 import { installSessionLifecycleChrome } from "./sessionLifecycleChrome";
 import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
-import { requirePin } from "../../state/repositoryScope";
+// Not from `state/repositoryScope`: that module pulls the app store into the
+// signed-out page.
+import { requirePin } from "../../lib/requirePin";
 
 async function loadFederatedAdapter(
   manager: WebMachineSessionManager,

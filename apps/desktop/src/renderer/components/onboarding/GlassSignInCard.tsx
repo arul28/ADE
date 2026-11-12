@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { ArrowRight, CircleNotch, Question, WarningCircle } from "@phosphor-icons/react";
 import { fetchAccountStatus, accountSessionTitle, type AdeAccountSessionState } from "../../lib/account";
 import { openExternalUrl } from "../../lib/openExternal";
@@ -7,8 +8,12 @@ import { useSignInFlow } from "../account/useSignInFlow";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { Banner } from "../ui/notice";
 import { AdeWordmark } from "../ui/AdeWordmark";
+
+// The notice system (popover, issue report) loads only when a sign-in error
+// shows. Imported here eagerly, it added 7 requests and about 105 KB of JS to
+// ADE Web's signed-out page (#1951).
+const Banner = lazy(() => import("../ui/notice/Banner").then((module) => ({ default: module.Banner })));
 
 /**
  * The launch gate's sign-in: a frosted card floating over the window mesh.
@@ -113,6 +118,7 @@ export function GlassSignInCard({
       ) : null}
 
       {error ? (
+        <Suspense fallback={null}>
         <Banner
           layout="inline"
           style={{ marginTop: 14 }}
@@ -123,6 +129,7 @@ export function GlassSignInCard({
             report: { surface: "account_sign_in" },
           }}
         />
+        </Suspense>
       ) : null}
 
       <div className="ade-glass-foot">
