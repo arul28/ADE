@@ -2925,3 +2925,25 @@ move from Work to Lanes, from a perf run, 3 runs. The chat row is
 B2 adds an optional `pin` to each member. A call with no pin takes the same
 route as before, so the counts do not move. The total time of the Lanes calls
 follows the GitHub PR calls, which vary from run to run.
+
+### Work calls name their machine (B3 Work, 2026-11-12)
+
+Dev app on `ade/account-desktop-b3-work` (`08ae07477`). The "before" is the
+B2 head `ffcee3670`: its renderer was checked out over the same tree and the
+page reloaded, so both sides ran in the same app session. Same Mac (Mac Studio
+M4 Max), `--first-run --keep`, the account brain on its own socket, the dev
+test machine "tabs" connected, one local project tab, nothing streaming. The
+chat row compares with the B2 run of the same script on the same steps.
+
+| Row | Before | After (B3 Work) | Ceiling |
+| --- | --- | --- | --- |
+| Work chat switch, warm, 2 machines: first changed frame median / settled median / worst long frame | 32 / 144 ms / 0 ms (B2) | 37 / 145 ms / 0 ms | 60 ms first frame |
+| Switching to a chat: time until settled / longest task (`chat-switch.mjs 3`, chat rows) | — | 14–48 ms / 0 ms | 250 ms / 120 ms |
+| Model picker: open to first frame, warm / long frames (`interaction.mjs pickers 4`) | 32 ms / 0 ms | 25 ms / 0 ms | 110 ms / 85 ms |
+| Idle, 2 machines, Work open: runtime event IPC per minute (60 s, after a reload) | 103, 104 (local 79, remote 24–25) | 105 (local 79, remote 26) | 150 (proposed) |
+
+`chat-switch.mjs` waits up to 4 s for a chat timeline, so the two shell rows
+in the list read 4,000 ms; they are left out. One idle window taken after
+manual tests on three tabs (two closed just before) read 140 per minute. The
+same build read 105 after a reload, so that window does not count. The DOM
+node count of the chat row drops from about 900 to about 800 per chat.
