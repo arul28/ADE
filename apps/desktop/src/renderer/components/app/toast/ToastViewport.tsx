@@ -21,11 +21,22 @@ const MAX_WIDTH_PX = 380;
  *
  * Order, top to bottom: store toasts (oldest first), then the one situational
  * suggestion (`useAppBanner(..., { placement: "suggestion" })`), which stays
- * put while toasts come and go above it, then the `slot` (the live Launches
- * panel), which sits closest to the corner.
+ * put while toasts come and go above it, then the live panels in `slots`
+ * order (the ADE Cloud lane changes, then the Launches panel, which sits
+ * closest to the corner). `slot` is the one-panel form of `slots`.
  */
-export function ToastViewport({ slot, slotKey }: { slot?: ReactNode; slotKey?: string }) {
+export function ToastViewport({
+  slot,
+  slotKey,
+  slots,
+}: {
+  slot?: ReactNode;
+  slotKey?: string;
+  /** Live panels, top to bottom; a null node is not drawn. */
+  slots?: ReadonlyArray<{ key: string; node: ReactNode }>;
+}) {
   const suggestion = useVisibleAppSuggestion();
+  const panels = slots ?? (slot ? [{ key: slotKey ?? "slot", node: slot }] : []);
   return (
     <div
       data-testid="toast-viewport"
@@ -52,11 +63,11 @@ export function ToastViewport({ slot, slotKey }: { slot?: ReactNode; slotKey?: s
         ) : null}
       </AnimatePresence>
       <AnimatePresence initial={false}>
-        {slot ? (
-          <motion.div key={slotKey ?? "slot"} {...TOAST_MOTION_PROPS}>
-            {slot}
+        {panels.filter((panel) => panel.node != null).map((panel) => (
+          <motion.div key={panel.key} {...TOAST_MOTION_PROPS}>
+            {panel.node}
           </motion.div>
-        ) : null}
+        ))}
       </AnimatePresence>
     </div>
   );

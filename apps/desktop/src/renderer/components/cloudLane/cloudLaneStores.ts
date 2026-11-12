@@ -83,9 +83,11 @@ function cloudLaneJobIsLive(job: CloudLaneJobSnapshot): boolean {
 /** A failed job waits for Retry this long before its card leaves the view. */
 const FAILED_JOB_VISIBLE_MS = 24 * 60 * 60_000;
 
-/** Live, ended in the last two minutes, or failed in the last day (waiting for Retry). */
+/** Live, ended in the last two minutes, or failed in the last day (waiting for Retry), unless its card was closed. */
 export function cloudLaneJobVisible(job: CloudLaneJobSnapshot, now = Date.now()): boolean {
   if (cloudLaneJobIsLive(job)) return true;
+  // Closed by the person (or replaced by a newer change of the lane): gone from every view.
+  if (job.dismissedAt) return false;
   const endedAt = Date.parse(job.endedAt ?? job.updatedAt);
   if (!Number.isFinite(endedAt)) return false;
   return now - endedAt <= (job.phase === "failed" ? FAILED_JOB_VISIBLE_MS : FINISHED_JOB_VISIBLE_MS);

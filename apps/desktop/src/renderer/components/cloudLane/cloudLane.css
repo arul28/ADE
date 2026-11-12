@@ -97,6 +97,11 @@
 }
 .adecl-tier-facts dt { font-size: 11.5px; color: var(--kit-text-3); }
 .adecl-tier-facts dd { margin: 0; font-size: 12px; line-height: 1.45; color: var(--color-fg); }
+.adecl-tier-facts dd[data-tone="warn"] { color: var(--kit-warn); }
+.adecl-tier-grow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; color: var(--kit-text-2); }
+.adecl-tier-grow input[type="checkbox"] { accent-color: var(--adec-400); }
+.adecl-tier-grow .kit-input { width: auto; min-width: 84px; }
+.adecl-tier-sub { display: block; margin-top: 4px; font-size: 11.5px; color: var(--kit-text-3); }
 
 .adecl-tier-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
 .adecl-tier-actions .kit-btn { white-space: nowrap; }
@@ -135,6 +140,8 @@
   border: 1px solid var(--kit-panel-edge);
   background: var(--kit-panel-bg);
 }
+/* Inside the corner panel's row, which already draws the panel. */
+.adecl-jobpanel.adecl-jobpanel-bare { padding: 0; border: 0; border-radius: 0; background: none; }
 
 /* A lane without a computer. */
 .adecl-nocomp {
@@ -155,6 +162,19 @@
 
 .adecl-nocomp-list { display: flex; flex-direction: column; gap: 6px; margin: 0 6px 8px; }
 .adecl-nocomp-list-head { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--kit-text-3); }
+
+/* Lanes on deleted computers: one folded line in the Lanes tab, opened to a row per lane. */
+.adecl-deleted-head {
+  align-self: flex-start;
+  padding: 2px 4px;
+  margin: 0 -4px;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+.adecl-deleted-head:hover { color: var(--color-fg); background: var(--kit-hover); }
+.adecl-deleted-head:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.adecl-deleted-rows { display: flex; flex-direction: column; gap: 6px; }
 
 /* Connections: one row per lane's computer. */
 .adecl-cx-row { display: flex; flex-direction: column; }

@@ -89,6 +89,8 @@ export function registerCloudLaneLifeIpc(args: {
         return await life.retryJob({ jobId: textArg(callArgs, "jobId") });
       case "cancelJob":
         return await life.cancelJob({ jobId: textArg(callArgs, "jobId") });
+      case "dismissJob":
+        return await life.dismissJob({ jobId: textArg(callArgs, "jobId") });
       default:
         throw new Error("Unknown ADE Cloud lane call.");
     }
