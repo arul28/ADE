@@ -273,20 +273,21 @@ function isInsideToolFolder(rootPath: string): boolean {
   if (isInsideTempFolder(rootPath)) return true;
   const segments = pathSegments(rootPath).map((segment) => segment.toLowerCase());
   return segments.some((segment, index) =>
-    TOOL_SEGMENTS.has(segment) || (segment === "worktrees" && index > 0 && TOOL_WORKTREE_PARENTS.has(segments[index - 1]!)));
+    TOOL_SEGMENTS.has(segment) || (segment === "worktrees" && TOOL_WORKTREE_PARENTS.has(segments[index - 1] ?? "")));
 }
 
-/** Whether the first fill may add a project from this folder on its own: not a temp, scratch or hidden one. */
-function isAutoFillFolder(rootPath: string): boolean {
-  if (isInsideToolFolder(rootPath)) return false;
-  return !pathSegments(rootPath).some((segment) =>
+/**
+ * How a registered project counts as a copy: `fill` in a real folder (the
+ * first fill may add it), `opened` when the person opened it on purpose in a
+ * hidden or scratch folder, and null when it is no copy (a tool's folder, or
+ * found in a hidden or scratch folder).
+ */
+function copyFolderKind(record: Pick<ProjectRecord, "rootPath" | "registrationSource">): "fill" | "opened" | null {
+  if (isInsideToolFolder(record.rootPath)) return null;
+  const hiddenOrScratch = pathSegments(record.rootPath).some((segment) =>
     SCRATCH_SEGMENT.test(segment) || (segment.startsWith(".") && segment !== "." && segment !== ".."));
-}
-
-/** Whether a registered project is a copy: opened on purpose and not in a tool's folder, or in a folder the first fill takes. */
-function isCopyFolder(record: Pick<ProjectRecord, "rootPath" | "registrationSource">): boolean {
-  if (isAutoFillFolder(record.rootPath)) return true;
-  return EXPLICIT_SOURCES.has(record.registrationSource) && !isInsideToolFolder(record.rootPath);
+  if (!hiddenOrScratch) return "fill";
+  return EXPLICIT_SOURCES.has(record.registrationSource) ? "opened" : null;
 }
 
 function backoff(base: number, max: number, failures: number): number {
@@ -332,7 +333,7 @@ function nextLookupEntry(previous: RepoLookupEntry | undefined, result: GithubRe
 type Candidate = {
   record: ProjectRecord;
   identity: GithubRepoIdentity;
-  /** The first fill may add it (`isAutoFillFolder`). */
+  /** The first fill may add it: it is in a real folder (`copyFolderKind` is `fill`). */
   autoFill: boolean;
 };
 
@@ -536,13 +537,13 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
   };
 
   const eligibleCandidates = async (): Promise<Candidate[]> => {
-    const records = options.registry.list().filter((record) =>
-      record.catalogVisibility === "recent"
-      && record.registrationSource !== "test"
-      && isCopyFolder(record));
-    const withIdentity = records
-      .map((record) => ({ record, identity: githubRepoIdentityFromOrigin(record.gitOriginUrl), autoFill: isAutoFillFolder(record.rootPath) }))
-      .filter((candidate): candidate is Candidate => candidate.identity !== null);
+    const withIdentity: Candidate[] = [];
+    for (const record of options.registry.list()) {
+      if (record.catalogVisibility !== "recent" || record.registrationSource === "test") continue;
+      const kind = copyFolderKind(record);
+      const identity = githubRepoIdentityFromOrigin(record.gitOriginUrl);
+      if (kind && identity) withIdentity.push({ record, identity, autoFill: kind === "fill" });
+    }
     // A folder that is gone is not a copy. A drive that is not plugged in, or
     // a check that ran out of time, keeps the copy: it is still the person's.
     const states = await options.readFolderStates(withIdentity.map((candidate) => candidate.record));
