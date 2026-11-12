@@ -90,7 +90,7 @@ import { markExpected } from "../../../shared/expectedError";
 import { normalizeAutomationAgentLimits } from "../../../shared/automationLimits";
 import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
 import type { AutomationRuleAccountStore } from "../automations/automationRuleAccountStore";
-import { createAutomationRuleAccountSync, type AutomationRuleAccountSync } from "../automations/automationRuleAccountSync";
+import { createAutomationRuleAccountSync, type AutomationRuleAccountSync, type CloudHomesView } from "../automations/automationRuleAccountSync";
 
 const VERSION = 1;
 const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
@@ -3566,13 +3566,18 @@ export function createProjectConfigService({
       return automationRuleSync?.fingerprint() ?? null;
     },
 
-    /** Rules whose home is ADE Cloud, and those that just left it; see `AutomationRuleAccountSync.cloudHomes`. */
-    cloudHomedAutomationRules(): Array<{ rule: ConfigAutomationRule; version: string; onCloud: boolean }> {
+    /**
+     * What ADE Cloud's copy of this repository's rules must follow; see
+     * `AutomationRuleAccountSync.cloudHomes`. Null (logged on a failure) when
+     * the account can't be read: never an empty list, which would read as
+     * "every cloud rule is gone".
+     */
+    cloudHomedAutomationRules(): CloudHomesView | null {
       try {
-        return automationRuleSync?.cloudHomes() ?? [];
+        return automationRuleSync?.cloudHomes() ?? null;
       } catch (error) {
         logger.warn("projectConfig.cloud_homed_rules_failed", { error: error instanceof Error ? error.message : String(error) });
-        return [];
+        return null;
       }
     },
 

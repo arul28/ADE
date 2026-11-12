@@ -11,6 +11,7 @@
 //   * A hibernating topic object sends a wake-up hint per delivery; D1 stays
 //     the durable stream.
 
+import * as Sentry from "@sentry/cloudflare";
 import { authenticateAccount } from "./auth";
 import { subscribeLinearTopic } from "./linearAgent";
 import { notifyLinearTopic, runAfterResponse } from "./linearAgentCore";
@@ -70,15 +71,22 @@ type CustomHookRow = {
 // account's machines: one signed POST per delivery, right after it is stored,
 // kept here until the directory answers 2xx (the 3-day hold covers an outage)
 // and tried again on the hook's next delivery and from the cron. A 410 means
-// the rule left ADE Cloud: the forward is cleared, and the machines drain the
-// hook again. Machines never list a forwarded hook's deliveries, so a delivery
+// the rule left ADE Cloud: the forward is cleared (logged), and the machines
+// drain the hook again. A 400, 413 or refused signature is final for that one
+// delivery: it is dropped (logged, reported) so the ones behind it go on. Machines never list a forwarded hook's deliveries, so a delivery
 // runs in one place.
 
-/** ADE's own account directories: the only places a hook forwards to, besides `HOOK_FORWARD_ORIGINS`. */
-const HOOK_FORWARD_ORIGINS = [
-  "https://ade-account-directory-production.arulsharma1028.workers.dev",
-  "https://ade-account-directory.arulsharma1028.workers.dev",
-];
+/**
+ * ADE's own account directories, each with the service binding that reaches
+ * it (wrangler.jsonc): the only places a hook forwards to, besides
+ * `HOOK_FORWARD_ORIGINS`. A binding ignores the URL's host, so the forward
+ * URL's origin picks it; an origin with no binding is sent with plain `fetch`.
+ */
+const HOOK_FORWARD_DIRECTORIES: Record<string, "ACCOUNT_DIRECTORY" | "ACCOUNT_DIRECTORY_PRODUCTION"> = {
+  "https://ade-account-directory-production.arulsharma1028.workers.dev": "ACCOUNT_DIRECTORY_PRODUCTION",
+  "https://ade-account-directory.arulsharma1028.workers.dev": "ACCOUNT_DIRECTORY",
+};
+const HOOK_FORWARD_ORIGINS = Object.keys(HOOK_FORWARD_DIRECTORIES);
 const HOOK_FORWARD_PATH = /^\/cloud\/automations\/[A-Za-z0-9][A-Za-z0-9._-]{0,150}\/deliveries$/;
 const HOOK_FORWARD_TIMEOUT_MS = 25_000;
 /** Held deliveries one pass forwards for one hook, oldest first. */
@@ -111,12 +119,31 @@ async function hmacHex(keyHex: string, message: string): Promise<string> {
   return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-/** One delivery to the directory: `sent` (and deleted here), `gone` (the rule left ADE Cloud), or `later`. */
-async function forwardOne(env: RelayEnv, hook: Required<Pick<CustomHookRow, "hook_id" | "forward_url" | "forward_secret">>, row: CustomHookEventRow): Promise<"sent" | "gone" | "later"> {
+/** The fetch that reaches a forward URL: its directory's service binding, or plain `fetch` for any other origin. */
+function forwardSender(env: RelayEnv, forwardUrl: string): typeof fetch {
+  const name = HOOK_FORWARD_DIRECTORIES[new URL(forwardUrl).origin];
+  const binding = name ? env[name] : undefined;
+  return binding ? binding.fetch.bind(binding) : fetch;
+}
+
+/** The directory's error code, from a refusal's JSON body (`{ error: { code } }`). */
+async function refusalCode(response: Response): Promise<string | null> {
+  const body = await response.json().catch(() => null) as { error?: { code?: unknown } } | null;
+  return typeof body?.error?.code === "string" ? body.error.code : null;
+}
+
+/**
+ * One delivery to the directory: `sent` (and deleted here), `gone` (the rule
+ * left ADE Cloud), `dropped` (the directory will never take this one: it is
+ * too large, unreadable, or signed with a key it no longer derives; deleted
+ * here so the deliveries behind it go on), or `later` (5xx, 429, a stale
+ * signature, the network).
+ */
+async function forwardOne(env: RelayEnv, hook: Required<Pick<CustomHookRow, "hook_id" | "forward_url" | "forward_secret">>, row: CustomHookEventRow): Promise<"sent" | "gone" | "dropped" | "later"> {
   const body = JSON.stringify(hookRowToEvent(row));
   const timestamp = String(Date.now());
   try {
-    const send = env.ACCOUNT_DIRECTORY ? env.ACCOUNT_DIRECTORY.fetch.bind(env.ACCOUNT_DIRECTORY) : fetch;
+    const send = forwardSender(env, hook.forward_url!);
     const response = await send(hook.forward_url!, {
       method: "POST",
       headers: {
@@ -129,13 +156,22 @@ async function forwardOne(env: RelayEnv, hook: Required<Pick<CustomHookRow, "hoo
       redirect: "manual",
       signal: AbortSignal.timeout(HOOK_FORWARD_TIMEOUT_MS),
     });
+    const code = response.status === 401 ? await refusalCode(response) : null;
     await response.body?.cancel().catch(() => {});
     if (response.status >= 200 && response.status < 300) {
       await env.DB.prepare("delete from custom_hook_events where event_id = ? and hook_id = ?").bind(row.event_id, hook.hook_id).run();
       return "sent";
     }
     if (response.status === 410) return "gone";
-    console.warn(JSON.stringify({ kind: "hook_forward_refused", status: response.status }));
+    if (response.status === 400 || response.status === 413 || (response.status === 401 && code === "signature_refused")) {
+      // Final for this delivery: sending it again gets the same answer, and it would hold every later one behind it.
+      await env.DB.prepare("delete from custom_hook_events where event_id = ? and hook_id = ?").bind(row.event_id, hook.hook_id).run();
+      const fields = { kind: "hook_forward_dropped", status: response.status, code };
+      console.warn(JSON.stringify(fields));
+      Sentry.captureMessage("hook_forward_dropped", { level: "warning", extra: fields });
+      return "dropped";
+    }
+    console.warn(JSON.stringify({ kind: "hook_forward_refused", status: response.status, code }));
     return "later";
   } catch (error) {
     console.warn(JSON.stringify({ kind: "hook_forward_failed", error: error instanceof Error ? error.name : "unknown" }));
@@ -158,8 +194,9 @@ async function forwardHeld(env: RelayEnv, hook: CustomHookRow): Promise<void> {
     if (outcome === "later") return;
     if (outcome === "gone") {
       // The rule left ADE Cloud: its computer drains what is held, from now on.
-      await env.DB.prepare("update custom_hooks set forward_url = null, forward_secret = null where hook_id = ? and forward_url = ?")
+      const cleared = await env.DB.prepare("update custom_hooks set forward_url = null, forward_secret = null where hook_id = ? and forward_url = ?")
         .bind(hook.hook_id, hook.forward_url).run();
+      console.warn(JSON.stringify({ kind: "hook_forward_gone", origin: new URL(hook.forward_url).origin, cleared: (cleared.meta?.changes ?? 0) > 0 }));
       await notifyLinearTopic(env, hookTopic(hook.account_id), { t: "hook_delivery" });
       return;
     }

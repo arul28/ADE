@@ -9,6 +9,8 @@ import { ADE_CLOUD_HOME_DEVICE_ID, ADE_CLOUD_HOME_NAME, AUTOMATION_HOME_HANDOVER
 import { automationCloudHomeProblem, localTimeZone } from "../../../shared/automationCloud";
 import type { Logger } from "../logging/logger";
 import {
+  AUTOMATION_RULE_KEY_PREFIX,
+  automationRuleAccountId,
   automationRuleAccountKey,
   fitsInAccount,
   isChatScopedAutomationRule,
@@ -48,13 +50,14 @@ const RACE_WINDOW_MS = 10 * 60_000;
 
 /**
  * A rule as it goes to ADE Cloud: its runs make their lanes there
- * (`execution.cloud`), and each schedule names the zone it is read in (this
- * computer's, unless it has one), so every brain compiles the same rule.
+ * (`execution.cloud`), and each trigger names the zone its schedule, and the
+ * prompt's `{{date}}` and `{{time}}`, are read in (this computer's, unless it
+ * has one), so every brain compiles the same rule.
  */
 function forCloudHome(rule: ConfigAutomationRule): ConfigAutomationRule {
   const zone = localTimeZone();
   const withZone = (trigger: AutomationTrigger): AutomationTrigger =>
-    trigger.type === "schedule" && !trigger.timezone ? { ...trigger, timezone: zone } : trigger;
+    !trigger.timezone ? { ...trigger, timezone: zone } : trigger;
   return {
     ...rule,
     ...(rule.triggers ? { triggers: rule.triggers.map(withZone) } : {}),
@@ -62,6 +65,16 @@ function forCloudHome(rule: ConfigAutomationRule): ConfigAutomationRule {
     ...(rule.execution ? { execution: { ...rule.execution, cloud: rule.execution.cloud ?? {} } } : {}),
   };
 }
+
+/** See `AutomationRuleAccountSync.cloudHomes`. */
+export type CloudHomesView = {
+  onCloud: Array<{ rule: ConfigAutomationRule; version: string }>;
+  released: Map<string, { version: string; hookId: string | null; leftCloud: boolean }>;
+};
+
+/** The custom webhook a rule's trigger names, if any. */
+export const webhookIdOf = (rule: Pick<ConfigAutomationRule, "triggers" | "trigger">): string | null =>
+  (rule.triggers ?? (rule.trigger ? [rule.trigger] : [])).find((trigger) => trigger.type === "webhook")?.webhook?.hookId ?? null;
 
 type Note = { needsNewerAde?: true; localReason?: AutomationRuleLocalReason; accountRunCount?: number };
 
@@ -98,8 +111,7 @@ export function createAutomationRuleAccountSync(args: {
   const sameContent = (a: ConfigAutomationRule, b: ConfigAutomationRule): boolean => stableJson(content(a)) === stableJson(content(b));
 
   /** The account's rules for this repository, or null when there are none to have (no remote). */
-  const readAccount = (): AccountRule[] | null => {
-    const read = store.read();
+  const readAccount = (read = store.read()): AccountRule[] | null => {
     if (!read) return null;
     if (cache?.fingerprint === read.fingerprint) return cache.rules;
     const rules: AccountRule[] = [];
@@ -209,22 +221,49 @@ export function createAutomationRuleAccountSync(args: {
     },
 
     /**
-     * Rules whose home is ADE Cloud (`onCloud`), and rules whose home just
-     * left it for a computer (`onCloud: false`, so the server's copy goes),
-     * with the version ADE Cloud compares. A rule this ADE can't read whole
-     * is never sent: a newer brain sends it.
+     * What ADE Cloud's server copy of this repository's rules must follow,
+     * or null when the account can't be read with confidence (no remote,
+     * signed out, unreadable, not synced since ADE started): then nothing is
+     * sent and, above all, nothing is taken off the server.
+     *
+     * - `onCloud`: rules homed on ADE Cloud that this ADE reads whole, with
+     *   the version the server compares. A rule a newer ADE wrote is never
+     *   sent: a newer brain sends it.
+     * - `released`: the positive evidence that a server copy must go, by
+     *   account id: the rule's home is now a computer (`leftCloud` when it
+     *   just left ADE Cloud), or some computer deleted it. Its version is
+     *   that row's time, so the server never drops a newer save for it.
      */
-    cloudHomes(): Array<{ rule: ConfigAutomationRule; version: string; onCloud: boolean }> {
-      const out: Array<{ rule: ConfigAutomationRule; version: string; onCloud: boolean }> = [];
-      for (const entry of readAccount() ?? []) {
+    cloudHomes(): CloudHomesView | null {
+      const read = store.read();
+      if (!read || read.signedOut || read.unreadable || !store.hasSynced()) return null;
+      const onCloud: CloudHomesView["onCloud"] = [];
+      const released: CloudHomesView["released"] = new Map();
+      for (const entry of readAccount(read) ?? []) {
         const home = entry.rule.home;
-        if (!home) continue;
-        const onCloud = isAdeCloudHome(home);
-        if (!onCloud && home.previousDeviceId !== ADE_CLOUD_HOME_DEVICE_ID) continue;
-        if (onCloud && entry.needsNewerAde) continue;
-        out.push({ rule: entry.rule, version: entry.version ?? home.chosenAt, onCloud });
+        if (!home || entry.needsNewerAde) continue;
+        const version = entry.version ?? home.chosenAt;
+        if (isAdeCloudHome(home)) {
+          onCloud.push({ rule: entry.rule, version });
+          continue;
+        }
+        released.set(automationRuleAccountId(entry.rule.id), {
+          version,
+          hookId: webhookIdOf(entry.rule),
+          leftCloud: home.previousDeviceId === ADE_CLOUD_HOME_DEVICE_ID,
+        });
       }
-      return out;
+      // Rows still there (even ones this ADE can't read) were not deleted.
+      const present = new Set(read.rows.flatMap((row) => {
+        const id = row.value && typeof row.value === "object" ? (row.value as { id?: unknown }).id : null;
+        return typeof id === "string" && id ? [automationRuleAccountId(id)] : [];
+      }));
+      for (const [key, deletedAt] of store.deletedRuleStamps()) {
+        const accountId = key.slice(AUTOMATION_RULE_KEY_PREFIX.length);
+        if (present.has(accountId) || released.has(accountId)) continue;
+        released.set(accountId, { version: deletedAt, hookId: null, leftCloud: false });
+      }
+      return { onCloud, released };
     },
 
     /**

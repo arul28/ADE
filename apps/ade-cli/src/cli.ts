@@ -30737,31 +30737,51 @@ async function runServe(
       chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
       cloudClient: async () => await (await getCloudBrainAccess()).client(),
       holdCloudWork: holdCloudWork ?? null,
-      // An automation's run (C9): its chat's turn ending is the run's end.
+      // An automation's run (C9): its chat's turn ending is the run's end. Nobody
+      // watches that chat, so one that stops to ask for input ends the run as
+      // failed rather than holding its computer until the server's stop limit.
       waitForChatEnd: async (projectId, sessionId) => {
         const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
         if (!chat) return { ok: false, error: "This ADE runtime has no chats." };
+        const ASKED_FOR_INPUT = { ok: false, error: "The agent asked for input." } as const;
         return await new Promise((resolve) => {
           let settled = false;
+          const timers = new Set<ReturnType<typeof setTimeout>>();
           const finish = (result: { ok: boolean; error?: string | null }) => {
             if (settled) return;
             settled = true;
             unsubscribe();
+            for (const timer of timers) clearTimeout(timer);
             resolve(result);
           };
+          // Reads the chat once, `delayMs` from now: gone, still waiting on a card, or over.
+          const checkLater = (delayMs: number) => {
+            const timer = setTimeout(() => {
+              timers.delete(timer);
+              void chat.getSessionSummary(sessionId).then((summary) => {
+                if (!summary) finish({ ok: false, error: "The run's chat is gone." });
+                else if (summary.awaitingInput) finish(ASKED_FOR_INPUT);
+                else if (summary.status !== "active") finish({ ok: true });
+              }).catch((error: unknown) => {
+                headlessProjectLogger.warn("cloud_boot_launch.automation_chat_read_failed", { error: error instanceof Error ? error.message : String(error) });
+              });
+            }, delayMs);
+            timer.unref?.();
+            timers.add(timer);
+          };
           const unsubscribe = chat.subscribeToEvents((envelope) => {
-            if (envelope.sessionId !== sessionId || envelope.event.type !== "done") return;
-            finish(envelope.event.status === "completed" ? { ok: true } : { ok: false, error: `The run's chat ${envelope.event.status === "interrupted" ? "was stopped" : "failed"}.` });
+            if (envelope.sessionId !== sessionId) return;
+            const event = envelope.event;
+            if (event.type === "done") {
+              finish(event.status === "completed" ? { ok: true } : { ok: false, error: `The run's chat ${event.status === "interrupted" ? "was stopped" : "failed"}.` });
+            } else if (event.type === "approval_request" || event.type === "structured_question") {
+              // A card that settles itself (an auto-approved tool) is gone by then; one that waits for a person ends the run.
+              checkLater(30_000);
+            }
           });
-          // Already over (a restart after it ended): nothing more will come. Read
-          // once, after the hand-off's first turn has surely started.
-          const check = setTimeout(() => {
-            void chat.getSessionSummary(sessionId).then((summary) => {
-              if (!summary) finish({ ok: false, error: "The run's chat is gone." });
-              else if (summary.status !== "active" && !summary.awaitingInput) finish({ ok: true });
-            }).catch(() => {});
-          }, 20_000);
-          check.unref?.();
+          // Already over or already waiting (a restart after the hand-off): read once,
+          // after the hand-off's first turn has surely started.
+          checkLater(20_000);
         });
       },
     });

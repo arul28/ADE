@@ -57,9 +57,14 @@ create table if not exists cloud_automations (
 -- The minute cron's one read: rules whose schedule is due.
 create index if not exists idx_cloud_automations_due
   on cloud_automations(next_fire_at) where enabled = 1 and next_fire_at is not null;
--- The relay's forward names its hook.
+-- The relay's forward names its hook. Unique per account only: the hook id is
+-- in a public URL, so another account registering it first must not be able
+-- to lock the owner out. A delivery finds its row by hook, rule and the
+-- signature, whose key is derived with the account's own id.
 create unique index if not exists idx_cloud_automations_hook
-  on cloud_automations(hook_id) where hook_id is not null;
+  on cloud_automations(user_id, hook_id) where hook_id is not null;
+create index if not exists idx_cloud_automations_hook_rule
+  on cloud_automations(hook_id, rule_id) where hook_id is not null;
 
 -- One row per trigger the server saw for a cloud rule: a run, a queued run,
 -- or a skipped one. The run id is the launch id.
@@ -85,6 +90,10 @@ create table if not exists cloud_automation_runs (
   computer text,
   -- While `finishing`: when a tick took it (a claim older than 20 minutes was lost).
   claimed_at integer,
+  -- While `queued`: not started before this (UTC ms); a delivery that came
+  -- while the rule was moving here from a computer waits out that handover.
+  -- Once it leaves the queue: when it started trying to start.
+  not_before integer,
   started_at integer,
   ended_at integer,
   created_at integer not null,

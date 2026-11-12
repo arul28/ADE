@@ -175,7 +175,12 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /** The brain that saved the cloud home (or saw it drift): one write per rule change; the same version writes nothing. */
     registerAutomation: (ruleId: string, registration: CloudAutomationRegistration) =>
       request<CloudAutomationRegistered>("PUT", automationPath(ruleId), { body: registration, timeoutMs: timeoutMs * 2 }),
-    unregisterAutomation: (ruleId: string) => request<{ deleted: boolean }>("DELETE", automationPath(ruleId)),
+    /**
+     * Takes a rule off ADE Cloud. With `through`, only a copy no newer than that
+     * version goes; `kept` says the server holds a newer save and kept it.
+     */
+    unregisterAutomation: (ruleId: string, options?: { through?: string }) =>
+      request<{ deleted: boolean; kept?: boolean }>("DELETE", `${automationPath(ruleId)}${options?.through ? `?through=${encodeURIComponent(options.through)}` : ""}`),
     /** Run now: a run made on ADE Cloud, under the agent limits. */
     runAutomation: (ruleId: string) => request<CloudAutomationRun>("POST", `${automationPath(ruleId)}/run`, { timeoutMs: timeoutMs * 4 }),
     automationRuns: async (ruleId: string) => (await request<{ runs: CloudAutomationRun[] }>("GET", `${automationPath(ruleId)}/runs`)).runs,

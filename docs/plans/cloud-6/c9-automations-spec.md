@@ -33,10 +33,20 @@ each run through the C6 server launcher.
   recorded.
 - **Custom webhooks.** For a cloud-homed rule, the hook is registered with the webhook relay with a
   forward target: on each delivery the relay calls `POST /cloud/automations/:ruleId/deliveries` on
-  the account directory over HTTPS, signed with a per-hook HMAC secret made at registration (stored
-  hashed on the directory side). No service binding, no new Cloudflare secret. The relay keeps the
-  delivery until the directory answers 2xx (its 3-day hold covers a directory outage). Signing
-  secrets of the person's webhook (the sender's) are checked as today and never leave the relay.
+  the account directory, signed with a per-hook HMAC key. The directory derives that key from its
+  own `CLOUD_CHAT_MASTER_KEY` and a random salt (its D1 holds only the salt; the relay keeps the
+  derived key to sign with), so there is no new Cloudflare secret. The relay reaches the directory
+  over a service binding (a Worker can't fetch another workers.dev Worker of the same account,
+  error 1042), one per directory, picked by the forward URL's origin. The relay keeps the delivery
+  until the directory answers 2xx (its 3-day hold covers a directory outage); a delivery the
+  directory will never take (too large, unreadable, a key it no longer derives) is dropped with a
+  log line so the ones behind it go on. A hook id is unique per account on the server, not across
+  accounts: the signature says which account's rule a delivery is for. Deliveries during the
+  12-minute handover from a computer wait in the rule's queue until it ends. Signing secrets of
+  the person's webhook (the sender's) are checked as today and never leave the relay. A prompt
+  may use `{{trigger.type}}`, `{{trigger.method}}`, `{{trigger.body}}` and its fields,
+  `{{date}}` and `{{time}}` (in the rule's zone), each meaning what it means on a computer; a
+  rule whose prompt uses any other variable is refused the cloud home.
 - **GitHub events** (relay App deliveries): the same forward, keyed by repository, when it fits the
   relay's per-repo event store without a new binding; otherwise refuse the cloud home for `github.*`
   triggers with a reason, for now.
@@ -45,10 +55,16 @@ each run through the C6 server launcher.
 ## Each run
 
 - A run is a C6 server launch: launch id = run id, caller `automation`, the agent limits answer
-  (largest size, new computers a day, unattended spend), never the person.
+  (largest size, new computers a day, unattended spend), never the person. The server reads the
+  limits from the vault at each registration (every brain start and every rule change), and a
+  brain sends its cloud rules again when the limits change; limits it never could read refuse
+  unattended spend.
+- A run's chat that stops to ask for input ends the run as failed ("The agent asked for input"):
+  nobody watches it, and it must not hold its computer.
 - **One run at a time per rule**: a trigger while a run is active is queued once (at most one
   waiting) and the rest are recorded as skipped. **A storm stop**: at most N runs an hour per rule
-  (default 6, the rule's own limit wins), past that the rule pauses and the person is told.
+  (default 6, the rule's own limit wins), past that the rule pauses and the person is told. Only
+  a save (a newer version) turns it back on; a brain restarting doesn't.
 - **Plan limits**: by default a run's computer is freed when the run ends and its work is pushed
   (the lane stays, as "a lane without a computer"), so a Free account's three computers don't fill
   up. A rule can keep it.

@@ -12,6 +12,10 @@
 
 import type { AutomationAction, AutomationExecution, AutomationCloudTarget, AutomationTrigger } from "./types/config";
 import { isCloudTierId } from "./cloudTiers";
+import { CLOUD_AUTOMATION_PROMPT_VARIABLE } from "../../../account-directory/src/cloud/contract";
+
+/** Why ADE Cloud can't be a rule's home on an account without it (the editor and the action say the same). */
+export const ADE_CLOUD_HOME_UNAVAILABLE = "ADE Cloud isn't available on this account. Pick a computer to run it.";
 
 /** Built-in steps that work in the run's lane on this machine: they can't follow a lane on ADE Cloud. */
 const LOCAL_LANE_STEPS: ReadonlySet<AutomationAction["type"]> = new Set([
@@ -47,6 +51,7 @@ export function localTimeZone(): string {
 
 type CloudHomeRule = {
   scope?: { sessionId?: string | null } | null;
+  prompt?: string | null;
   triggers?: ReadonlyArray<AutomationTrigger> | null;
   trigger?: AutomationTrigger | null;
   execution?: AutomationExecution | null;
@@ -91,6 +96,13 @@ export function automationCloudHomeProblem(rule: CloudHomeRule): string | null {
       return "GitHub triggers run on one of your computers for now: ADE Cloud doesn't match GitHub's events yet.";
     }
     return "This trigger happens on one computer, so it can't start a rule on ADE Cloud. Use a schedule, a webhook or Run now.";
+  }
+  // ADE Cloud's server fills a prompt's variables the way a computer does, but only these
+  // (`CLOUD_AUTOMATION_PROMPT_VARIABLE`); any other would reach the agent meaning something else.
+  for (const match of (rule.prompt ?? "").matchAll(/\{\{\s*((?:trigger|run)\.[^}\s]+)\s*\}\}/g)) {
+    if (!CLOUD_AUTOMATION_PROMPT_VARIABLE.test(match[1]!)) {
+      return `On ADE Cloud the prompt can't use {{${match[1]}}}: ADE's server fills only {{trigger.type}}, {{trigger.method}}, {{trigger.body}} and its fields, {{date}} and {{time}}. Take it out to run this rule on ADE Cloud.`;
+    }
   }
   return null;
 }

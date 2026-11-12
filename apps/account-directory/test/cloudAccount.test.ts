@@ -1438,6 +1438,15 @@ describe("ADE Cloud automations", () => {
     seedAccount(harness, OWNER);
     harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
     harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
+    // The vault answers (a GitHub sign-in, no stored agent limits: the default): limits never read refuse spending.
+    Object.assign(harness.env, {
+      PUSH_RELAY_URL: "https://relay.test",
+      ACTIVITY_RELAY: {
+        fetch: async (input: RequestInfo | URL) => new Response(JSON.stringify(String(input).includes("/attention/account/vault")
+          ? { items: [{ kind: "integration", key: "github", value: JSON.stringify({ v: 1, token: "gho_test" }) }] }
+          : { ok: true }), { status: 200 }),
+      },
+    });
   });
 
   it("starts one run at a time with one waiting, and pauses a rule past its runs an hour", async () => {

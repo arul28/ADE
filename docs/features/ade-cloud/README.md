@@ -709,9 +709,12 @@ ADE Cloud"). The server keeps the rule (`cloud_automations`, migration 0029,
 
 - **Registration.** `PUT /cloud/automations/:ruleId` from a brain (the one
   that saved the home, or any that sees a version the server lacks; the same
-  version writes nothing). `DELETE` when the home leaves ADE Cloud or the rule
-  is deleted. The registration reads the agent limits and the git credential
-  from the vault with the brain's token and keeps them for the rule's runs.
+  version writes nothing, but re-reads the vault). `DELETE` (with
+  `?through=<version>`, so a newer save stays) when the home leaves ADE Cloud
+  or the rule is deleted. Every registration reads the agent limits and the
+  git credential from the vault with the brain's token and keeps them for the
+  rule's runs; limits never read refuse unattended spend. Only a newer
+  version turns a storm-paused rule back on.
 - **Schedules.** The rule's cron in its own IANA zone (`automationSchedule.ts`);
   the next fire is kept in UTC and the minute cron reads due rules and open
   runs in one indexed statement. A time the clocks skip doesn't fire that
@@ -721,13 +724,23 @@ ADE Cloud"). The server keeps the rule (`cloud_automations`, migration 0029,
   `POST /cloud/automations/:ruleId/deliveries` (no account token), signed
   with HMAC-SHA256 over `<timestamp>.<body>` with the hook's key. The key is
   derived from the directory's own `CLOUD_CHAT_MASTER_KEY` and a per-hook salt,
-  so D1 holds no key. A repeat of a delivery is the same run; 410 tells the
-  relay the hook no longer forwards here.
+  so the directory's D1 holds no key (the relay keeps the derived key to sign
+  with). The relay reaches each directory over its own service binding, picked
+  by the forward URL's origin. A hook id is unique per account; the signature
+  says which account's rule a delivery is for. A repeat of a delivery is the
+  same run; 410 tells the relay the hook no longer forwards here (logged);
+  400, 413 and a refused signature drop that delivery so the rest go on. A
+  delivery during the handover from a computer waits in the rule's queue
+  until it ends. The prompt's `{{trigger.body.*}}` fields are read from the
+  whole body when it comes, and `{{date}}`/`{{time}}` in the rule's zone.
 - **Runs.** Each run is a server launch (launch id = run id, `madeBy:
   automation`): the agent limits first (unattended spend, largest size, new
   computers a day), then the launcher's own checks. One run at a time per
-  rule, one waiting, the rest recorded as skipped; past the rule's runs an
-  hour (default 6) the rule pauses. The computer reports the `run` stage when
+  rule, one waiting, the rest recorded as skipped (runs of the last 25 hours
+  are never pruned, so the counts hold); past the rule's runs an hour
+  (default 6) the rule pauses. ADE Cloud briefly unable to make computers (a
+  503) leaves the run starting for up to an hour. A chat that stops for input
+  ends the run as failed ("The agent asked for input"). The computer reports the `run` stage when
   the chat ends, and the cron then saves its chats, pushes its work and
   deletes it, keeping the lane as a lane without a computer (unless the rule
   keeps its computer). A run that can't start fails before anything is made;

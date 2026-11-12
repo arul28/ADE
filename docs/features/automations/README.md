@@ -289,21 +289,33 @@ runs with no computer of the person's on. Picked in the builder's **Runs on**
   "A new lane each run" and no bound chat, on a schedule, a custom webhook
   (no signing secret, no filters: secrets never move) or Run now. File-change,
   GitHub and Linear triggers and every local event are refused with a reason.
-  Saving the home gives each schedule the saving computer's zone
-  (`trigger.timezone`), so every brain compiles the same rule; a computer still
-  reads a schedule on its own clock. A cloud-bound rule is never kept in
+  A prompt may use only the variables the server fills as a computer does
+  (`{{trigger.type}}`, `{{trigger.method}}`, `{{trigger.body}}` and its
+  fields, `{{date}}`, `{{time}}`). Saving the home gives each trigger the
+  saving computer's zone (`trigger.timezone`; a schedule's, and the prompt's
+  date and time), so every brain compiles the same rule; a computer still
+  reads a schedule on its own clock. Without ADE Cloud on the account,
+  `run-on --cloud` and a save to ADE Cloud are refused. A cloud-bound rule is never kept in
   `.ade/local.yaml` (signed out, before a first sync): the save is refused,
   because a file rule runs on its computer.
 - **Registration** (`automationCloudRegistrar.ts`, attached by the brain).
   After every account sync, each brain sends the server the cloud-homed
   rules whose version it hasn't sent (`automationService.cloudHomeSpec`
-  compiles one: model, permissions, prompt, triggers), points a webhook at
-  the server (the relay's `POST /hooks/forward`), and unregisters a rule whose
-  home left ADE Cloud or that was deleted. Nothing runs on a timer.
+  compiles one: model, permissions, prompt, triggers), and points a webhook at
+  the server (the relay's `POST /hooks/forward`). It takes a rule off the
+  server only on positive evidence from the account: the home is now a
+  computer, or a computer deleted the rule (`cloudHomes().released`), and
+  then also when the server still lists it, so a release that failed or a
+  restarted brain still ends it. The release names the version it saw
+  (`DELETE ?through=`), so a newer save stays. An unreadable account, a rule
+  a newer ADE wrote, or a compile problem on this brain takes nothing off.
+  A change of the agent limits in the vault sends every cloud rule again, so
+  the server reads them. Nothing runs on a timer.
 - **History.** The server keeps each rule's runs; a rule's summary carries
   them (`cloud`, read at most once a minute while rules are listed) and the
-  builder shows them under **Runs on**. Run now on a computer refuses a
-  cloud-homed rule ("runs on ADE Cloud").
+  builder shows them under **Runs on**. Run now on a cloud-homed rule asks the
+  server; a refusal (agent limits, the storm stop, one waiting) shows as a
+  toast.
 
 ## Cron scheduling
 

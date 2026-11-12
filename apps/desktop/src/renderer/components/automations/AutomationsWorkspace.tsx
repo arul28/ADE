@@ -18,6 +18,7 @@ import { Button } from "../ui/Button";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice/Banner";
+import { showToast } from "../app/toast/toastStore";
 import { cn } from "../ui/cn";
 import { extractError } from "./shared";
 import { inputCls } from "./designTokens";
@@ -794,13 +795,22 @@ export function AutomationsWorkspace({
       setRunning(true);
       setError(null);
       try {
-        await onMachine(
+        const run = await onMachine(
           window.ade.automations.triggerManually(
             { id: entry.rule.id, ...(laneId ? { laneId } : {}) },
             entry.machine.pin,
           ),
           entry.machine,
         );
+        // ADE Cloud answers a refusal (agent limits, the storm stop, one already waiting) as the run, not an error.
+        if (run.triggerMetadata?.runsOn === "ade-cloud" && (run.status === "failed" || run.status === "cancelled")) {
+          showToast({
+            tone: "warning",
+            title: run.status === "failed" ? `"${entry.rule.name}" didn't start on ADE Cloud` : `"${entry.rule.name}" was skipped on ADE Cloud`,
+            message: run.errorMessage ?? "ADE Cloud didn't start this run.",
+            report: false,
+          });
+        }
         setManualRunRule(null);
         setManualRunLaneId("");
         if (entry.machine.pin) refreshMachine(entry.machine.machineId);
@@ -1126,7 +1136,7 @@ export function AutomationsWorkspace({
                     cloudHome={selectedRule && !followsAccount(selectedRule) ? null : {
                       available: adeCloudEnabled,
                       chosen: draftCloudChosen || (!draftRehomeChosen && isAdeCloudHome(selectedRule?.home)),
-                      problem: automationCloudHomeProblem({ scope: draft.scope, triggers: draft.triggers, execution: draft.execution }),
+                      problem: automationCloudHomeProblem({ scope: draft.scope, triggers: draft.triggers, execution: draft.execution, prompt: draft.prompt }),
                       state: draftCloudChosen ? null : selectedRule?.cloud ?? null,
                       onChoose: () => {
                         setDraftCloudChosen(!isAdeCloudHome(selectedRule?.home) || draftRehomeChosen);

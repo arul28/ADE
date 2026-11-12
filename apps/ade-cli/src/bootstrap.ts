@@ -85,6 +85,7 @@ import { createLaneTemplateService } from "../../desktop/src/main/services/lanes
 import { createCachedProjectOriginReader, createProjectNewLaneSettings } from "../../desktop/src/main/services/lanes/newLaneSettingsStore";
 import { createAutomationRuleAccountStore } from "../../desktop/src/main/services/automations/automationRuleAccountStore";
 import { createAutomationCloudRegistrar, type AutomationCloudRegistrar } from "../../desktop/src/main/services/automations/automationCloudRegistrar";
+import { CLOUD_AGENT_LIMITS_VAULT_KEY } from "../../desktop/src/main/services/adeCloud/cloudSleep";
 import { resolveWebhookRelayBaseUrl } from "../../desktop/src/main/services/automations/customWebhookService";
 import { ACCOUNT_RELAY_TOKEN_HEADER } from "../../desktop/src/main/services/github/githubRelayConfig";
 import { createCloudApiClient } from "../../desktop/src/shared/cloudApiClient";
@@ -3449,9 +3450,23 @@ export async function createAdeRuntime(args: {
         logger,
       });
       cloudAutomationRegistrarRef = registrar;
-      automationService.setCloudHomeStateSource((ruleId) => registrar.stateFor(ruleId));
-      automationService.setCloudRunNow((ruleId) => registrar.runNow(ruleId));
+      automationService.setCloudHome({ stateFor: (ruleId) => registrar.stateFor(ruleId), runNow: (rule) => registrar.runNow(rule) });
       teardown.push(automationService.onRuleDeleted((rule) => void registrar.forget(rule)));
+      // The server reads the agent limits when a rule is registered: a change of
+      // them (on any computer) sends the cloud rules again, so it takes effect.
+      if (accountVaultStore) {
+        const vault = accountVaultStore;
+        let limitsSeen: string | null | undefined;
+        teardown.push(vault.startPeriodicSync(undefined, (status) => {
+          if (status !== "ready") return;
+          const limits = vault.get(ACCOUNT_SCOPE_ALL, "integration", CLOUD_AGENT_LIMITS_VAULT_KEY);
+          if (limitsSeen !== undefined && limits !== limitsSeen) {
+            logger.info("automations.cloud_home_limits_changed", {});
+            void registrar.resendAll();
+          }
+          limitsSeen = limits;
+        }));
+      }
       void registrar.reconcile();
     }
     teardown.push(() => automationService?.dispose());

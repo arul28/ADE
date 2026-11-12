@@ -6,6 +6,8 @@ import type { LaneMachine } from "../../../state/laneMachineRouting";
 import type { RuleSyncLine } from "../ruleSync";
 import { AUTOMATION_HOME_HANDOVER_MINUTES } from "../../../../shared/automationHome";
 import type { AutomationCloudHomeState } from "../../../../shared/types";
+import { ADE_CLOUD_HOME_UNAVAILABLE } from "../../../../shared/automationCloud";
+import { Banner } from "../../ui/notice";
 
 /**
  * "Runs on [machine ▾]" — the machine a rule runs on, as part of the recipe.
@@ -51,7 +53,9 @@ function CloudHomeRuns({ state }: { state: AutomationCloudHomeState }) {
   return (
     <div className="space-y-0.5" data-testid="automation-cloud-runs">
       {!state.registered ? <p>ADE Cloud doesn't have this rule yet. It gets it once a computer with ADE open syncs.</p> : null}
-      {state.pausedReason === "storm" ? <p className="text-amber-300/80">Paused after too many runs in an hour. Save it again to turn it back on.</p> : null}
+      {state.pausedReason === "storm" ? (
+        <Banner layout="inline" model={{ id: "automation-cloud-paused", tone: "warning", title: "Paused after too many runs in an hour. Save it again to turn it back on." }} />
+      ) : null}
       {state.registered && state.nextFireAt ? <p>Next run: {when(state.nextFireAt)}</p> : null}
       {state.runs.slice(0, 5).map((run) => (
         <p key={run.runId} className="truncate" title={run.reason ?? undefined}>
@@ -145,9 +149,15 @@ export function RuleMachineField({
             ADE Cloud watches its schedule or webhook and starts each run on a new computer of its own, as an unattended
             agent under your agent limits. After the run its work is pushed and the computer is freed; its lane stays.
           </p>
-          {cloudHome?.problem ? <p className="text-amber-300/80" data-testid="automation-cloud-home-problem">{cloudHome.problem}</p> : null}
+          {cloudHome?.problem ? (
+            <div data-testid="automation-cloud-home-problem">
+              <Banner layout="inline" model={{ id: "automation-cloud-home-problem", tone: "warning", title: cloudHome.problem }} />
+            </div>
+          ) : null}
           {cloudHome?.state ? <CloudHomeRuns state={cloudHome.state} /> : null}
-          {!cloudHome?.available ? <p className="text-amber-300/80">ADE Cloud isn't available on this account. Pick a computer to run it.</p> : null}
+          {!cloudHome?.available ? (
+            <Banner layout="inline" model={{ id: "automation-cloud-unavailable", tone: "warning", title: ADE_CLOUD_HOME_UNAVAILABLE }} />
+          ) : null}
         </div>
       ) : !valueMachineId && !unreachableHomeName ? (
         <div className="text-[10.5px] text-amber-300/80" data-testid="automation-machine-required">

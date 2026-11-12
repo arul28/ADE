@@ -36,7 +36,11 @@ export const DEFAULT_AGENT_LIMITS: CloudAgentLimits = { unattendedSpend: true, m
 export type VaultFacts = {
   /** `ok`: a git-capable credential follows the account; `none`: none does; `unknown`: the vault didn't answer. */
   git: "ok" | "none" | "unknown";
-  /** The stored agent limits, or null when none are stored (the default answers) or the vault didn't answer. */
+  /**
+   * The agent limits: the stored ones, the default when the vault answered
+   * with none stored, or null when the vault didn't answer (unknown, which
+   * a caller must not read as permission to spend).
+   */
   limits: CloudAgentLimits | null;
 };
 
@@ -111,7 +115,7 @@ export async function readVaultFacts(env: RelayEnv, authorization: string | null
     logCloud("cloud.vault_read_failed", { error: error instanceof Error ? error.name : "unknown" });
     return UNKNOWN;
   }
-  return { git: git ? "ok" : "none", limits };
+  return { git: git ? "ok" : "none", limits: limits ?? DEFAULT_AGENT_LIMITS };
 }
 
 export type RepoVisibility = "public" | "private" | "unknown";

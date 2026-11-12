@@ -382,8 +382,10 @@ export function createAutomationRuleAccountStore(args: {
      * Every stored rule in this repository's scope with its home, plus a
      * fingerprint of the rows so a caller can cache what it derives. Signed
      * out, the last signed-in copy (read-only). Null when there is no remote.
+     * `unreadable`: the account's rows couldn't be read, so `rows` is empty
+     * for want of an answer, not because there are none.
      */
-    read(): { fingerprint: string; rows: AutomationAccountRow[]; signedOut: boolean } | null {
+    read(): { fingerprint: string; rows: AutomationAccountRow[]; signedOut: boolean; unreadable?: true } | null {
       const where = scope();
       if (!where) return null;
       const state = readState();
@@ -405,7 +407,7 @@ export function createAutomationRuleAccountStore(args: {
         args.logger?.warn("automations.account_rules.read_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
-        return { fingerprint: "unreadable", rows: [], signedOut: false };
+        return { fingerprint: "unreadable", rows: [], signedOut: false, unreadable: true };
       }
       const copy = state.copy;
       // An unfinished copy after a remote change keeps the old scope, so the
