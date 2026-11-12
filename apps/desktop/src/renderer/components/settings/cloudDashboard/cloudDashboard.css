@@ -688,3 +688,6 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 @container adecd (max-width: 700px) { .adecd-invite-body { grid-template-columns: 1fr; } }
 
 .adecd-row-menu { display: flex; justify-content: flex-end; }
+/* In the right column (B14-2) the invite card is half width: text on top, the three numbers in one row under it. */
+.adecd-stack .adecd-invite-body { grid-template-columns: 1fr; }
+.adecd-stack .adecd-invite-stats dd { font-size: 15px; white-space: nowrap; }
