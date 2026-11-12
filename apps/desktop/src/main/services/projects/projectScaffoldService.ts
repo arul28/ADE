@@ -369,13 +369,22 @@ export function createProjectScaffoldService({
       logger.warn("project_scaffold.clone_credential_helper_skipped", { reason: "no_launcher" });
       return;
     }
-    for (const value of ["", adeGitCredentialHelperValue(launcher)]) {
-      const result = await runGit(["config", "--local", "--add", ADE_GIT_CREDENTIAL_HELPER_KEY, value], { cwd: rootPath, timeoutMs: 10_000 })
-        .catch((error: unknown) => ({ exitCode: 1, stderr: error instanceof Error ? error.message : String(error) }));
-      if (result.exitCode !== 0) {
-        logger.warn("project_scaffold.clone_credential_helper_failed", { error: redactGitOutput(String(result.stderr ?? "")).slice(0, 200) });
-        return;
+    const configure = (args: string[]) => runGit(["config", "--local", ...args], { cwd: rootPath, timeoutMs: 10_000 })
+      .catch((error: unknown) => ({ exitCode: 1, stderr: error instanceof Error ? error.message : String(error) }));
+    for (const [index, value] of ["", adeGitCredentialHelperValue(launcher)].entries()) {
+      const result = await configure(["--add", ADE_GIT_CREDENTIAL_HELPER_KEY, value]);
+      if (result.exitCode === 0) continue;
+      logger.warn("project_scaffold.clone_credential_helper_failed", { step: index === 0 ? "reset" : "helper", error: redactGitOutput(String(result.stderr ?? "")).slice(0, 200) });
+      // A reset with no helper after it would leave this clone with none at
+      // all, not even the person's own: undo it (the clone is fresh, so these
+      // entries are only ours).
+      if (index > 0) {
+        const undo = await configure(["--unset-all", ADE_GIT_CREDENTIAL_HELPER_KEY]);
+        if (undo.exitCode !== 0) {
+          logger.warn("project_scaffold.clone_credential_helper_undo_failed", { error: redactGitOutput(String(undo.stderr ?? "")).slice(0, 200) });
+        }
       }
+      return;
     }
   };
 

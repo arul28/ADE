@@ -28,17 +28,21 @@ import path from "node:path";
 export const ADE_GIT_CREDENTIAL_HELPER_KEY = "credential.https://github.com.helper";
 
 /**
- * The launcher an ADE Cloud computer's clone records: the image's
- * `/usr/local/bin/ade`, which the template links to its own ADE and keeps on
- * every box, else the ADE home's `bin/ade` (`ade brain update`). Null when
- * neither is an executable file; then no helper is recorded.
+ * The launcher an ADE Cloud computer's clone records. First the ADE this
+ * brain runs: the entrypoint starts the newer of the image's ADE and the ADE
+ * home's (`pick_ade`), so `process.execPath` is the one that knows
+ * `ade git credential`. Then the ADE home's `bin/ade` (`ade brain update`),
+ * and last the image's `/usr/local/bin/ade`, which can be older. Null when
+ * none is an executable file; then no helper is recorded.
  */
 export function cloudAdeLauncherPath(
   adeHome: string,
   isExecutable: (file: string) => boolean = isExecutableFile,
+  runningExecutable: string = process.execPath,
 ): string | null {
-  for (const candidate of ["/usr/local/bin/ade", path.posix.join(adeHome, "bin", "ade")]) {
-    if (isExecutable(candidate)) return candidate;
+  const running = path.posix.basename(runningExecutable) === "ade" ? runningExecutable : null;
+  for (const candidate of [running, path.posix.join(adeHome, "bin", "ade"), "/usr/local/bin/ade"]) {
+    if (candidate && isExecutable(candidate)) return candidate;
   }
   return null;
 }

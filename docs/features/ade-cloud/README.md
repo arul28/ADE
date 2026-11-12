@@ -428,8 +428,10 @@ surface calls it yet.
 The clone passes its auth header through Git's config environment, so no token
 is left in the clone's `.git/config`. On an ADE Cloud computer only, the clone's
 local config also gets an empty `credential.https://github.com.helper` and then
-`!'/usr/local/bin/ade' git credential` (the image's launcher, else the ADE
-home's `bin/ade`; none is recorded when neither exists), so a plain `git push`
+`!'<launcher>' git credential`. The launcher is the ADE the brain runs (the
+entrypoint picks the newer of the image's and the ADE home's), else the ADE
+home's `bin/ade`, else the image's `/usr/local/bin/ade`; none is recorded when
+none exists, and a half-written entry is undone. So a plain `git push`
 in a terminal there signs in with ADE's token while no other helper runs or
 stores it. A person's own computer records no helper: ADE's own fetch and push
 pass the token per command, and the person's git setup works as in any
