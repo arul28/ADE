@@ -692,16 +692,19 @@ async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: A
     return failRun(env, { rule }, run.run_id, connectGitHubSentence(spec.project.origin), now, { email: true });
   }
   // The day's computers, claimed in one conditional write (`started_at` is the claim): two runs of
-  // the account at once can't both take the last one. A start tried again keeps the claim it made.
-  if (run.started_at == null) {
+  // the account at once can't both take the last one. A start tried again keeps the claim it made
+  // today; one claimed before midnight claims one of today's again.
+  const today = dayStart(now);
+  if (run.started_at == null || run.started_at < today) {
     const claimed = await env.DB.prepare(`
-      update cloud_automation_runs set started_at = ?, updated_at = ? where run_id = ? and state = 'starting' and started_at is null
+      update cloud_automation_runs set started_at = ?, updated_at = ? where run_id = ? and state = 'starting'
+        and (started_at is null or started_at < ?)
         and (select count(*) from cloud_automation_runs where user_id = ? and started_at >= ? and run_id <> ?) < ?
-    `).bind(now, now, run.run_id, rule.user_id, dayStart(now), run.run_id, limits.machinesPerDay).run();
+    `).bind(now, now, run.run_id, today, rule.user_id, today, run.run_id, limits.machinesPerDay).run();
     if ((claimed.meta?.changes ?? 0) !== 1) {
       const latest = await readRun(env, run.run_id);
       // Another tick claimed it (or the run moved on): that one goes on with it.
-      if (!latest || latest.state !== "starting" || latest.started_at != null) return;
+      if (!latest || latest.state !== "starting" || (latest.started_at != null && latest.started_at >= today)) return;
       return failRun(env, { rule }, run.run_id, `Your agent limits allow ${limits.machinesPerDay} new computer${limits.machinesPerDay === 1 ? "" : "s"} a day for unattended agents, and today's are used. Raise the limit in Settings › ADE Cloud.`, now, { email: true });
     }
   }

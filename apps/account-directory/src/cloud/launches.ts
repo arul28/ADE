@@ -821,13 +821,26 @@ export async function failUnjoinedLaunches(
   if (rows.length === 0 || !provider) return 0;
   let ended = 0;
   for (const row of rows) {
+    // Claimed first: a join that lands after this read finds the launch closed
+    // (`launch_closed`), and one that landed before it makes this claim miss,
+    // so a computer that did join is never deleted.
+    const failed = await env.DB.prepare(`
+      update cloud_launches set state = 'failed', error = ?, approval_url = null, updated_at = ?
+      where launch_id = ? and state in ('joining', 'needs_approval') and join_expires_at <= ?
+    `).bind(JOIN_NEVER_FINISHED, now, row.launch_id, now - JOIN_GIVE_UP_GRACE_MS).run();
+    if ((failed.meta?.changes ?? 0) !== 1) continue;
     try {
       await deleteLaunchComputer(env, provider, row, now, { who: "launch_join", reason: "launch_never_joined" });
-      const failed = await env.DB.prepare(`
-        update cloud_launches set state = 'failed', error = ?, approval_url = null, updated_at = ?
-        where launch_id = ? and state in ('joining', 'needs_approval') and join_expires_at <= ?
-      `).bind(JOIN_NEVER_FINISHED, now, row.launch_id, now - JOIN_GIVE_UP_GRACE_MS).run();
-      if ((failed.meta?.changes ?? 0) !== 1) continue;
+    } catch (error) {
+      // Put the launch back as it was, so the next tick tries the delete again.
+      await env.DB.prepare(`
+        update cloud_launches set state = ?, error = ?, approval_url = ?, updated_at = ?
+        where launch_id = ? and state = 'failed' and updated_at = ?
+      `).bind(row.state, row.error ?? null, row.approval_url ?? null, row.updated_at, row.launch_id, now).run();
+      reportCloudFailure("cloud.launch_never_joined_end_failed", { launchId: row.launch_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+      continue;
+    }
+    try {
       ended += 1;
       logCloud("cloud.launch_never_joined", { userId: row.user_id, launchId: row.launch_id, instanceId: row.instance_id });
       const latest = await readLaunch(env, row.launch_id);
