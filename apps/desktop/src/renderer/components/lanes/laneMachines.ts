@@ -78,9 +78,10 @@ export type LaneMachineProjectRef = {
   rootPath: string;
   displayName: string;
   /**
-   * How this checkout was tied to the current repo. `"origin"` is proof;
-   * `"name"` is a guess from the folder name and must not, on its own, drive an
-   * action that rebinds the app to this project.
+   * How this checkout was tied to the current repo. `"origin"` is proof (a
+   * matching account project id, or a matching git origin); `"name"` is a
+   * guess from the folder name and must not, on its own, drive an action that
+   * rebinds the app to this project.
    */
   matchedBy: "origin" | "name";
 };
@@ -131,6 +132,12 @@ export type LaneMachineDerivationInput = {
   boundProject?: LaneMachineProjectRef | null;
   /** `origin` URL of the repo lanes are created for, when known. */
   repoOriginUrl?: string | null;
+  /**
+   * The account project (`ap_…`) of the repo, when the tab's machine reports
+   * one. A machine joins when its project row has the same id OR the same
+   * origin; the id never removes an origin join.
+   */
+  repoAccountProjectId?: string | null;
   /** Repo folder name — the fallback identity when no origin URL is known. */
   repoDisplayName?: string | null;
   /** Local project roots already open in this window (in-memory state only). */
@@ -256,15 +263,33 @@ function connectionFreeBytes(connection: RemoteRuntimeConnectionStatus): number 
 }
 
 function resolveProjectMatch(
-  projects: ReadonlyArray<{
+  allProjects: ReadonlyArray<{
     projectId: string;
     rootPath: string;
     displayName: string;
     gitOriginUrl: string | null;
+    accountProjectId?: string;
   } & RegisteredCheckoutRank>,
   repoIdentity: string | null,
   repoDisplayName: string | null,
+  repoAccountProjectId: string | null = null,
 ): LaneMachineProjectRef | null {
+  // Two checkouts are one repository when their account project ids are equal
+  // OR their origins are equal. The id adds a join (a rename or transfer seen on
+  // one machine only); it never removes the origin join, so machines signed in
+  // to different accounts still join on the origin, as before.
+  const projects = allProjects;
+  if (repoAccountProjectId) {
+    const byAccount = pickLiveCheckout(allProjects.filter((project) => project.accountProjectId === repoAccountProjectId));
+    if (byAccount) {
+      return {
+        projectId: byAccount.projectId,
+        rootPath: byAccount.rootPath,
+        displayName: byAccount.displayName,
+        matchedBy: "origin",
+      };
+    }
+  }
   if (repoIdentity) {
     // Same rule as `--machine` calls from the CLI: the live checkout, not the
     // first registry entry, which is often a deleted temp copy of the repo.
@@ -411,7 +436,12 @@ export function deriveLaneMachineOptions(
   for (const connection of input.connections) {
     if (connection.state !== "connected") continue;
     const isBound = input.boundTargetId === connection.target.id;
-    const matched = resolveProjectMatch(connection.projects ?? [], repoIdentity, repoDisplayName);
+    const matched = resolveProjectMatch(
+      connection.projects ?? [],
+      repoIdentity,
+      repoDisplayName,
+      input.repoAccountProjectId?.trim() || null,
+    );
     const project = isBound ? (input.boundProject ?? matched) : matched;
     options.push({
       id: connection.target.id,
