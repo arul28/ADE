@@ -448,8 +448,9 @@ export function AddProjectForm({
     }));
     if (mountedRef.current) setAddingToAccount(false);
     if (!answer.ok) {
-      // Signed out: the copies still clone, as they did before the account kept projects.
-      if (answer.code === "signed_out" && !options.openTab) return false;
+      // Signed out, or an ssh alias only the cloning machine can read: the
+      // copies still clone, as they did before the account kept projects.
+      if (!options.openTab && (answer.code === "signed_out" || answer.code === "invalid_repository")) return false;
       if (mountedRef.current) setAccountError(answer.message);
       else showToast({ tone: "error", title: `Couldn't add ${folderName} to your account`, message: answer.message });
       return false;
