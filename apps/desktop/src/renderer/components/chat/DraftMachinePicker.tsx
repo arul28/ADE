@@ -317,7 +317,7 @@ export function DraftMachinePicker({
             // the next real focus still shows the tooltip.
             queueMicrotask(() => { returningFocusRef.current = false; });
           }}
-          className={cn(POPOVER_SURFACE_CLASS, MENU_SCROLL_CLASS, "w-[272px] p-1 font-sans text-[11px] text-fg/82")}
+          className={cn(POPOVER_SURFACE_CLASS, MENU_SCROLL_CLASS, "w-[320px] p-1 font-sans text-[11px] text-fg/82")}
           style={{ zIndex: portalContainer ? Z_LAYERS.dialogPopover : Z_LAYERS.popover }}
           side={side}
           align="start"
@@ -334,19 +334,18 @@ export function DraftMachinePicker({
               >
                 <DropdownMenu.Item
                   disabled={Boolean(autoPickUnavailableReason)}
-                  className={cn(MENU_ITEM_CLASS, "w-full items-start text-left text-[11px] text-fg/75")}
+                  className={cn(MENU_ITEM_CLASS, "min-h-[30px] w-full items-center gap-2 text-left text-[11px] text-fg/75")}
                   onSelect={() => {
                     if (autoPick.machineId !== selectedMachineId) onChange(autoPick.machineId);
                   }}
                   onKeyDown={moveAmongRows}
                 >
-                  <span className="mt-[1px] inline-flex h-[14px] w-[14px] shrink-0 items-center justify-center" aria-hidden>
+                  <span className="inline-flex h-[14px] w-[14px] shrink-0 items-center justify-center" aria-hidden>
                     <Scales size={12} weight="duotone" className="text-muted-fg/80" />
                   </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate">Least loaded</span>
-                    <span className="block truncate text-[10px] tabular-nums text-muted-fg/60" title={autoPick.summary}>{autoPick.summary}</span>
-                  </span>
+                  <span className="shrink-0 truncate">Least loaded</span>
+                  <span className="min-w-0 flex-1 truncate text-right text-[10px] tabular-nums text-muted-fg/60" title={autoPick.summary}>{autoPick.summary}</span>
+                  <span className="w-[11px] shrink-0" aria-hidden />
                 </DropdownMenu.Item>
               </SmartTooltip>
               <DropdownMenu.Separator className="my-1 h-px bg-fg/[0.06]" />
@@ -361,7 +360,7 @@ export function DraftMachinePicker({
             {machines.map((machine) => {
               const active = machine.id === selectedMachineId;
               const reason = machine.unavailableReason?.trim() || null;
-              // A row that can't be picked says why on its second line, not only on hover.
+              // A row that can't be picked says why on its right, not only on hover.
               const secondLine = reason ?? (machine.detail?.trim() || null);
               const row = (
                 <DropdownMenu.RadioItem
@@ -370,8 +369,8 @@ export function DraftMachinePicker({
                   disabled={Boolean(reason)}
                   className={cn(
                     MENU_ITEM_CLASS,
-                    // Full width, text at the start, one height for every row.
-                    "min-h-[36px] w-full items-start text-left text-[11px]",
+                    // One line per row: the name, then its status on the right (B14-14).
+                    "min-h-[30px] w-full items-center gap-2 text-left text-[11px]",
                     active ? "text-fg/90" : "text-fg/70",
                   )}
                 >
@@ -380,18 +379,16 @@ export function DraftMachinePicker({
                     disabled={Boolean(reason)}
                     onKeyDown={moveAmongRows}
                   >
-                    <span className="mt-[1px] flex shrink-0">{machineIcon(machine)}</span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium">{machine.name}</span>
-                      <span
-                        className={cn("block truncate text-[10px] tabular-nums", reason ? "text-[var(--kit-warn)]" : "text-muted-fg/60")}
-                        title={secondLine ?? undefined}
-                      >
-                        {machine.detailPending && !secondLine ? "\u00a0" : secondLine ?? fallbackLine(machine)}
-                      </span>
+                    <span className="flex shrink-0">{machineIcon(machine)}</span>
+                    <span className="min-w-0 shrink-0 truncate font-medium" style={{ maxWidth: "48%" }}>{machine.name}</span>
+                    <span
+                      className={cn("min-w-0 flex-1 truncate text-right text-[10px] tabular-nums", reason ? "text-[var(--kit-warn)]" : "text-muted-fg/60")}
+                      title={secondLine ?? undefined}
+                    >
+                      {machine.detailPending && !secondLine ? "\u00a0" : secondLine ?? fallbackLine(machine)}
                     </span>
                     {/* The check keeps its place when not shown, so names never shift. */}
-                    <span className="mt-[2px] flex w-[11px] shrink-0 justify-end">
+                    <span className="flex w-[11px] shrink-0 justify-end">
                       <DropdownMenu.ItemIndicator>
                         <Check size={11} weight="bold" className="shrink-0" aria-hidden />
                       </DropdownMenu.ItemIndicator>

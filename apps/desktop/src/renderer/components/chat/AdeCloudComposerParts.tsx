@@ -88,7 +88,7 @@ export function CloudSizeButton({
       <DropdownMenu.Portal container={portalContainer ?? undefined}>
         <DropdownMenu.Content
           aria-label="Computer size"
-          className={cn(POPOVER_SURFACE_CLASS, MENU_SCROLL_CLASS, "w-[316px] p-1 font-sans text-[11px] text-fg/82")}
+          className={cn(POPOVER_SURFACE_CLASS, MENU_SCROLL_CLASS, "w-[340px] p-1 font-sans text-[11px] text-fg/82")}
           style={{ zIndex: portalContainer ? Z_LAYERS.dialogPopover : Z_LAYERS.popover }}
           side="bottom"
           align="start"
@@ -105,28 +105,26 @@ export function CloudSizeButton({
           >
             {tiers.map((tier) => {
               const facts = cloudTierFacts(tier);
+              // One line per size (B14-14); what it runs is in the row's hover text.
+              const shape = `${tier.cpu} CPU · ${tier.memoryGb} GB${tier.diskMaxGb != null ? ` · ${tier.diskMaxGb} GB disk` : ""}`;
+              const runs = facts.full ? `Full computer: ${facts.runs}` : facts.runs;
               return (
                 <DropdownMenu.RadioItem
                   key={tier.id}
                   value={tier.id}
-                  className={cn(MENU_ITEM_CLASS, "min-h-[50px] items-start gap-[9px] py-1.5 text-[11px]", tier.id === tierId ? "text-fg/90" : "text-fg/70")}
+                  title={`${tier.label}: ${facts.specs.join(", ")}. ${runs}. ${facts.rateLine}.`}
+                  className={cn(MENU_ITEM_CLASS, "min-h-[30px] items-center gap-2 text-[11px]", tier.id === tierId ? "text-fg/90" : "text-fg/70")}
                 >
-                  <span className="mt-[1px] inline-flex h-[16px] w-[16px] shrink-0 items-center justify-center"><CloudSizeIcon tier={tier.id} size={15} /></span>
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1.5">
-                      <span className="truncate text-[12px] font-medium">{tier.label}</span>
-                      {tier.id === defaultTier ? <span className="shrink-0 text-[9.5px] text-muted-fg/55">Default</span> : null}
-                    </span>
-                    <span className="block truncate text-[10.5px] text-muted-fg/65">{facts.specs.join(" · ")}</span>
-                    <span className="block truncate text-[10.5px] text-muted-fg/65">{facts.full ? `Full computer: ${facts.runs}` : facts.runs}</span>
+                  <span className="inline-flex h-[16px] w-[16px] shrink-0 items-center justify-center"><CloudSizeIcon tier={tier.id} size={15} /></span>
+                  <span className="shrink-0 text-[11.5px] font-medium">{tier.label}</span>
+                  <span className="min-w-0 flex-1 truncate text-[10.5px] tabular-nums text-muted-fg/60">
+                    {shape}{tier.id === defaultTier ? " · Default" : ""}
                   </span>
-                  <span className="mt-[1px] flex shrink-0 flex-col items-end">
-                    <span className="text-[11.5px] font-medium tabular-nums text-fg/80">{facts.rate}× hours</span>
-                    {hoursLeftMilli != null ? (
-                      <span className="text-[10px] tabular-nums text-muted-fg/60">{cloudTierHoursLeftLabel(tier, hoursLeftMilli)} left</span>
-                    ) : null}
-                  </span>
-                  <span className="mt-[2px] flex w-3 shrink-0 justify-end">
+                  <span className="shrink-0 text-[11px] font-medium tabular-nums text-fg/80">{facts.rate}×</span>
+                  {hoursLeftMilli != null ? (
+                    <span className="w-[52px] shrink-0 text-right text-[10px] tabular-nums text-muted-fg/60">{cloudTierHoursLeftLabel(tier, hoursLeftMilli)}</span>
+                  ) : null}
+                  <span className="flex w-3 shrink-0 justify-end">
                     <DropdownMenu.ItemIndicator>
                       <Check size={11} weight="bold" className="adec-check" aria-hidden />
                     </DropdownMenu.ItemIndicator>
@@ -143,7 +141,7 @@ export function CloudSizeButton({
             </DropdownMenu.Item>
           ) : (
             <div className="px-2 py-1.5 text-[10.5px] leading-snug text-muted-fg/60">
-              An hour is one hour of Small while awake. Every new lane starts on {label}; change that in Settings, ADE Cloud.
+              Hours count only while the computer is awake. New lanes start on {label}.
             </div>
           )}
         </DropdownMenu.Content>

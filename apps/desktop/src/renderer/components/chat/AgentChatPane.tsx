@@ -424,6 +424,7 @@ import { ADE_CLOUD_MACHINE_ID, useAdeCloudComposer, useAdeCloudDraft, type AdeCl
 import { useAdeCloudSignInNeed } from "./useAdeCloudSignInNeed";
 import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
 import { useFollowLaneMoves } from "../cloudLane/useFollowLaneMoves";
+import { CloudLaneHeaderButton } from "../cloudLane/CloudLaneHeaderButton";
 import { AdeCloudTray, CloudSizeButton, useCloudLaneWithoutComputerForChat } from "./AdeCloudComposerParts";
 import { cloudLaneRestartBranchRef, cloudLaneRestartProblem, cloudLaneRestartTier } from "../cloudLane/CloudLaneWithoutComputer";
 import type { CloudAccountState } from "../../../shared/adeCloud";
@@ -18969,6 +18970,7 @@ export function AgentChatPane({
         onClick={() => workSidebar.setTool("side-chat")}
       />
       <LaneDesktopHeaderButton laneId={laneId} onOpen={(tool) => workSidebar.setTool(tool)} />
+      <CloudLaneHeaderButton laneId={selectedSession?.laneId ?? laneId ?? null} />
       {hasAttachedTerminal ? (
         <button
           type="button"
