@@ -21,7 +21,7 @@ import type { WebMachineEntry } from "../workspace/webWorkspaceModel";
 import { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
 import { mergeWebMachines, webMachineCatalogKeys } from "../workspace/webWorkspaceModel";
 import { createAccountNamespace } from "../adapter/account";
-import { parseOpenTarget, parseWebPath, targetToWebPath } from "./webRoutes";
+import { parseOpenTarget, parseWebPath } from "./webRoutes";
 import { readPendingTarget, stashPendingTarget } from "./pendingTarget";
 import {
   isOwnedOrAccountLink,
@@ -69,6 +69,15 @@ function loadAppStylesheet(): Promise<unknown> {
   return import("../../index.css");
 }
 
+/**
+ * Target -> route mapping. It imports the settings manifest (with the MCP
+ * catalogue), so only a signed-in boot loads it; the signed-out page only
+ * parses links.
+ */
+function loadTargetPaths(): Promise<typeof import("./webTargetPaths")> {
+  return import("./webTargetPaths");
+}
+
 async function loadAppRoot(): Promise<React.ComponentType> {
   const [, { App }, { RendererErrorBoundary }, { useAppStore }, { WebOwnedLinkBanner }] = await Promise.all([
     loadAppStylesheet(),
@@ -100,6 +109,7 @@ async function loadAppRoot(): Promise<React.ComponentType> {
 function preloadWorkspaceModules(): void {
   void Promise.all([
     loadAppStylesheet(),
+    loadTargetPaths(),
     import("../adapter/federated"),
     import("../../components/app/App"),
     import("../../components/app/RendererErrorBoundary"),
@@ -230,6 +240,8 @@ export function WebClientRoot({
   const federatedAdapterGenerationRef = useRef(0);
   const accountRef = useRef(account);
   const pendingTargetRef = useRef<DeeplinkTarget | null>(null);
+  // Set by the signed-in boot, before the workspace mounts.
+  const targetPathRef = useRef<((target: DeeplinkTarget) => string) | null>(null);
   const workspaceSnapshotRef = useRef(workspaceSnapshot);
   accountRef.current = account;
   workspaceSnapshotRef.current = workspaceSnapshot;
@@ -602,8 +614,14 @@ export function WebClientRoot({
 
       const linkTarget = pendingTargetRef.current ?? readPendingTarget();
       const ownedLinkTarget = isOwnedOrAccountLink(linkTarget) ? linkTarget : null;
+      const targetPathsLoad = loadTargetPaths();
+      // Awaited below; a failure there reaches the error screen with Retry.
+      targetPathsLoad.catch(() => undefined);
       const installed = await installFederatedAdapter(snapshot, { restore: !ownedLinkTarget });
       if (disposed) return;
+      const { targetToWebPath } = await targetPathsLoad;
+      if (disposed) return;
+      targetPathRef.current = targetToWebPath;
       let restored = installed.restored;
       let initialPath: string;
       if (ownedLinkTarget) {
@@ -783,11 +801,12 @@ export function WebClientRoot({
       dismissNotice: () => setWorkspaceNotice(null),
       consumePendingProjectPath() {
         const target = pendingTargetRef.current ?? readPendingTarget();
-        if (!target) return null;
+        const toPath = targetPathRef.current;
+        if (!target || !toPath) return null;
         if (!pendingTargetBelongsToActiveProject(target)) return null;
         clearPendingTarget();
         setOwnedLink(null);
-        return targetToWebPath(target);
+        return toPath(target);
       },
       ownedLink,
       retryOwnedLink,

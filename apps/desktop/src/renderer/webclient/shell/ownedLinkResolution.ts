@@ -22,7 +22,6 @@ import {
 export { ownershipOfTarget } from "../../../shared/deeplinks";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { WebMachineEntry } from "../workspace/webWorkspaceModel";
-import { targetToWebPath } from "./webRoutes";
 
 /** The GitHub repo a target names, when it names one. */
 function targetRepo(target: DeeplinkTarget): { owner: string; name: string } | null {
@@ -287,7 +286,11 @@ export async function resolveOwnedLink(
   const project = match.project;
   const projectName = project.displayName || repo?.name || "the project";
   deps.onStage({ kind: "opening", machineName, projectName });
+  let targetToWebPath: (target: DeeplinkTarget) => string;
   try {
+    // The route mapping carries the settings manifest, so it loads here,
+    // after sign-in, and never on the signed-out page.
+    ({ targetToWebPath } = await import("./webTargetPaths"));
     await deps.openProject(targetId, project.id);
   } catch (error) {
     const detail = errorText(error);
