@@ -43,8 +43,9 @@ import { installWindowsCliLauncher, resolveWindowsCliLauncherSource } from "../c
  * - The shim steps aside (runs the real `gh` with the environment as it is)
  *   when the shell has its own GitHub token, `gh` has its own login, the
  *   endpoint is gone, or ADE has no token for the owner. With no real `gh`
- *   installed it prints the shell's usual "not found" and exits 127 (9009 on
- *   Windows, as cmd.exe does).
+ *   installed it prints the shell's usual "not found" and exits 127 (on
+ *   Windows: 9009 as cmd.exe does, 127 under Git Bash). PowerShell's own
+ *   not-found error cannot be copied; it gets cmd.exe's text.
  *
  * Off by default: a process turns it on with `configureGithubShellShim`
  * (desktop main and the brain do at start). Until then, and wherever the shim
@@ -232,8 +233,27 @@ function realDir(dir) {
   }
 }
 
+// PATH entries as cmd.exe, Git Bash and gh's own Go runtime read them: on
+// Windows an entry may be quoted ("C:\\some dir"), and ";" inside quotes does
+// not split.
+function pathEntries(value) {
+  if (!isWin) return value.split(path.delimiter);
+  const entries = [];
+  let current = "";
+  let quoted = false;
+  for (const ch of value) {
+    if (ch === '"') quoted = !quoted;
+    else if (ch === ";" && !quoted) {
+      entries.push(current);
+      current = "";
+    } else current += ch;
+  }
+  entries.push(current);
+  return entries;
+}
+
 function findRealGh() {
-  const entries = (envValue("PATH") || "").split(path.delimiter);
+  const entries = pathEntries(envValue("PATH") || "");
   const names = isWin
     ? (envValue("PATHEXT") || ".COM;.EXE;.BAT;.CMD").split(";").map((ext) => ext.trim().toLowerCase())
       .filter((ext) => ext === ".exe" || ext === ".com").map((ext) => "gh" + ext)
@@ -303,7 +323,8 @@ function askToken() {
 }
 
 function notFound() {
-  if (isWin) {
+  // Git Bash / MSYS2 (MSYSTEM set) reports a missing command as bash does.
+  if (isWin && !envValue("MSYSTEM")) {
     process.stderr.write("'gh' is not recognized as an internal or external command,\\r\\noperable program or batch file.\\r\\n");
     process.exit(9009);
   }
@@ -311,7 +332,14 @@ function notFound() {
   process.exit(127);
 }
 
-function runGh(real, args, childEnv) {
+function runGh(real, args, baseEnv) {
+  // ELECTRON_RUN_AS_NODE is set only to run this script under the app's
+  // runtime (the Windows launcher, the POSIX fallback). ADE keeps it out of
+  // terminals; gh and what gh starts (an editor, a browser) must not get it.
+  const childEnv = Object.assign({}, baseEnv);
+  for (const key of Object.keys(childEnv)) {
+    if (key.toUpperCase() === "ELECTRON_RUN_AS_NODE") delete childEnv[key];
+  }
   const child = spawn(real, args, { stdio: "inherit", env: childEnv, windowsHide: true });
   // The terminal sends Ctrl+C to the whole group (the console on Windows):
   // the real gh decides, this wrapper only waits. Signals sent to this
