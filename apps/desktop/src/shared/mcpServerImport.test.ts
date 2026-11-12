@@ -85,7 +85,7 @@ describe("mcpPlainTextSecretFindings", () => {
     },
     {
       label: "a bare token as the whole URL fragment",
-      server: { url: "https://mcp.example.test/mcp#ghp_0123456789abcdefABCDEF0123456789abcd" },
+      server: { url: "https://mcp.example.test/mcp#fixture1234-not-a-real-value-5678" },
       expected: [{ where: "url", kind: "value" }],
     },
     {
