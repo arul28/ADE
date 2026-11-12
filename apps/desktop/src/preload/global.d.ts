@@ -1488,10 +1488,11 @@ declare global {
         /**
          * Forget the refusal of a project this computer's ADE stopped opening
          * because its folder is too slow (`project_folder_too_slow`), so the
-         * next open really tries. Local projects only: a project on another
+         * next open really tries. Resolves false when the refusal could not be
+         * cleared (no brain, a root ADE does not know). Local projects only: a project on another
          * machine is retried there (`ade projects retry --machine`).
          */
-        retryOpen: (rootPath: string) => Promise<{ wasBlocked: boolean; strikesCleared: boolean } | null>;
+        retryOpen: (rootPath: string) => Promise<boolean>;
         reorderRecent: (
           orderedKeys: string[],
         ) => Promise<RecentProjectSummary[]>;

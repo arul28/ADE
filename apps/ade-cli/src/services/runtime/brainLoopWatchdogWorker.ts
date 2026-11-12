@@ -25,6 +25,9 @@ export const BRAIN_LOOP_WORKER_LATE_REPORT_MS = 500;
  */
 export const BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS = 5_000;
 
+/** How long a project open must have frozen the loop before the worker names it. */
+export const BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS = 5_000;
+
 export function evaluateBrainLoopWatchdog(args: {
   nowWallMs: number;
   nowMonotonicMs: number;
@@ -70,6 +73,7 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
     const BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS = ${BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS};
     const BRAIN_LOOP_WORKER_LATE_REPORT_MS = ${BRAIN_LOOP_WORKER_LATE_REPORT_MS};
     const BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS = ${BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS};
+    const BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS = ${BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS};
     const evaluateBrainLoopWatchdog = ${evaluateBrainLoopWatchdog.toString()};
     const readSyncFsCall = ${readSyncFsCall.toString()};
     // What the main thread is inside, when the brain installed the tracker.
@@ -104,6 +108,7 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
       projectId: open.projectId,
       phase: open.phase,
       elapsedMs: Math.max(0, Date.now() - open.startedAtMs),
+      phaseElapsedMs: Math.max(0, Date.now() - (open.phaseStartedAtMs || open.startedAtMs)),
     }));
     // One stalled-open line per stall: cleared when a heartbeat arrives again.
     let projectOpenStallReported = false;
@@ -312,7 +317,7 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
       // this thread, while the main thread cannot log anything: if the freeze
       // ends in a kill, this line is what the log keeps of the open.
       if (
-        evaluation.blockedMs >= BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS
+        evaluation.blockedMs >= BRAIN_LOOP_PROJECT_OPEN_STALL_REPORT_MS
         && !projectOpenStallReported
         && projectOpens.length > 0
       ) {

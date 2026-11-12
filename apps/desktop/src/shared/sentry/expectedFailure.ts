@@ -15,6 +15,7 @@ import {
   ACTION_NOT_EXPOSED_CODE,
   isUnsupportedAdeActionError,
   parseCodedErrorMessage,
+  PROJECT_FOLDER_TOO_SLOW_CODE,
 } from "../codedError";
 import { expectedErrorKind } from "../expectedError";
 import { GITHUB_AUTOLINKS_REFUSED } from "../githubAutolinks";
@@ -268,9 +269,8 @@ const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set([
   "storage_read_failed",
   "storage_io_failed",
   "db_busy",
-  // A project refused because opening it froze ADE twice: its folder's drive
-  // is too slow (`projectOpenStrikes.ts`). The brain reports the refusal once.
-  "project_folder_too_slow",
+  // A project whose folder is too slow to open; the brain reports the refusal once.
+  PROJECT_FOLDER_TOO_SLOW_CODE,
   // A chat refusing a send or restart while its turn runs; the caller waits or stops it.
   "turn_in_flight",
 ]);

@@ -4985,32 +4985,27 @@ export function registerIpc({
     return listRecentProjectSummaries({ force: true });
   });
 
-  // The banner's Try again for a project this computer's ADE refused as too
-  // slow to open: the refusal lives in the local brain that refused it, the
-  // same brain the open that failed went to. A project on another machine has
-  // no Try again here; it is retried on that machine.
-  handle(IPC.projectRetryOpen, async (_event, arg: { rootPath?: string }): Promise<{ wasBlocked: boolean; strikesCleared: boolean } | null> => {
-    const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+  // Try again for a project this computer's brain refused as too slow to open
+  // (`project_folder_too_slow`). Local projects only, by design: the refusal
+  // lives in the brain the failed open went to, which for a project on this
+  // computer is this computer's. A project on another machine has no Try
+  // again here and is retried on that machine (`ade projects retry --machine`).
+  handle(IPC.projectRetryOpen, async (_event, arg: { rootPath?: string }): Promise<boolean> => {
+    const requested = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+    const rootPath = requested ? resolveRequestedProjectRoot(requested) : null;
     const pool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
-    if (!rootPath || !pool) return null;
+    if (!rootPath || !pool) return false;
     try {
-      const result = await pool.callSync<{ wasBlocked?: unknown; strikesCleared?: unknown }>(
-        "projects.retryOpen",
-        { rootPath: path.resolve(rootPath) },
-        { timeoutMs: 10_000 },
-      );
-      return { wasBlocked: result?.wasBlocked === true, strikesCleared: result?.strikesCleared === true };
+      await pool.retryProjectOpen(rootPath);
+      return true;
     } catch (error) {
-      // A brain without the method, or a folder it never registered: the
-      // reopen that follows says what is wrong.
+      // The banner stays up; the person can try again or wait out the refusal.
       try {
-        getCtx().logger.warn("project.retry_open_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        getCtx().logger.warn("project.retry_open_failed", { code: parseCodedErrorMessage(error).code ?? null });
       } catch {
-        // No project context to log through; the reopen still runs.
+        // No project context to log through.
       }
-      return null;
+      return false;
     }
   });
 

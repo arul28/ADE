@@ -6272,7 +6272,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       switchToPath: resolvedArg(MOCK_PROJECT),
       forgetRecent: resolvedArg([]),
-      retryOpen: resolvedArg(null),
+      retryOpen: resolvedArg(true),
       reorderRecent: resolvedArg([]),
       setRecentPinned: resolvedArg([]),
       getSnapshot: resolved({

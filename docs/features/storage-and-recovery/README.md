@@ -577,18 +577,52 @@ A project on a drive too slow for its database (a network mount) can freeze the
 event loop while it opens, for longer than the freeze guard allows; the guard
 kills the brain, the supervisor restarts it, a client asks for the same project
 and it freezes again, with every other project on the machine down too. The
-scope registry tells the watchdog which projects are opening and in which step
-(`trackBrainLoopWatchdogProjectOpen`), so the kill's breadcrumb names them
-(`openingProjects`). The next start counts a strike against each in
-`$ADE_HOME/runtime/project-open-strikes.json` (`projectOpenStrikes.ts`; read
-once, atomic writes, a torn or missing file is no strikes). With two strikes in
-15 minutes `ProjectScopeRegistry.get` refuses that project at once with the
-expected `project_folder_too_slow` error, for every caller (windows, phones,
-automations, timers, restart recovery) and the catalog skips its lane count, so
-nothing reopens it in the background. A successful open clears its strikes, the
-refusal lifts after the window, and `ade projects retry <id|path>`
-(`projects.retryOpen`) or the desktop banner's Try again (local projects) clears
-it at once. The database stays in the project folder.
+database stays in the project folder; this breaks the loop instead.
+
+- **Which project froze it.** The scope registry tells the watchdog which
+  projects are opening and in which step (`trackBrainLoopWatchdogProjectOpen`),
+  from before the first read of the folder, so the kill's breadcrumb names them
+  (`openingProjects`, with the time in the open and in the step).
+- **Strikes.** The next start counts a strike in
+  `$ADE_HOME/runtime/project-open-strikes.json` (`projectOpenStrikes.ts`; read
+  once, atomic writes, a torn or missing file is no strikes, a stamp in the
+  future is ignored). Only the project that froze it is struck: an open whose
+  step has not moved for far longer than the freeze was waiting, and when
+  several projects were opening only those in a step that does synchronous
+  database work (`db_open`, `services`) count (a breadcrumb from before steps
+  were timed keeps every entry). A project with a strike opens alone: other
+  cold opens wait for it, and it waits for those already running, each for at
+  most the freeze guard's threshold (as the brain resolved it) plus 15 seconds, after
+  which the queued open goes ahead.
+- **Refusal.** Two strikes in 15 minutes and `ProjectScopeRegistry.get` refuses
+  that project at once with the expected `project_folder_too_slow` error, whose
+  message names the project and the real wait. The refusal lasts 15 minutes the
+  first time and doubles each time the project is refused again after one
+  lifted (30 minutes, 1 hour, 2 hours … capped at 24 hours). Every caller hits
+  it (windows, phones, automations, timers, restart recovery), and the brain's
+  readers that would read the folder without opening it skip a refused project:
+  the sync host choice, the phone roster, the catalog's lane count and icon,
+  the chat owner lookup and cross-project search. The desktop asks the brain
+  (`projects.checkOpen`, by path) before it opens a project's database itself,
+  and again, asking only a brain it is already connected to and waiting at
+  most 1.5 seconds, when it switches to a project it already has open; a
+  timeout or any other failure of that check lets the switch go ahead. A
+  project that is refused while it is the one open in the window shows the
+  same banner when its lane read (made on every reconnect) is refused, once,
+  and the banner goes when a lane read succeeds again. Its Try again clears
+  the refusal and reads the lanes again; for a project on another machine the
+  banner shows the message only.
+- **Way back.** A successful open forgets everything and the next refusal
+  starts at 15 minutes again; so does `ade projects retry <id|path>`
+  (`projects.retryOpen`, `--machine` for another computer), and the desktop
+  banner's Try again for a project on this computer.
+- **What clients cannot do.** A phone, the web app and a desktop showing a
+  project on another machine have no retry control: they show the brain's
+  message, which says how long until ADE tries again, and the refusal lifts on
+  its own then. The phone and web roster list a refused project with no lanes
+  or chats (its database is not read), indistinguishable from an empty
+  project until it is opened, which shows the message. Retrying sooner is `ade projects retry --machine <name>`, or Try
+  again in the desktop on the computer that owns the project.
 
 #### A folder waiting on a permission prompt
 

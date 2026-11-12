@@ -68,7 +68,10 @@ export type BrainLoopProjectOpen = {
   projectId: string;
   /** The open's step: `prepare`, then the runtime's own steps (`db_open`, `services`…). */
   phase: string;
+  /** Since the open started. */
   elapsedMs: number;
+  /** Since the open entered `phase`. Absent on breadcrumbs written before it existed. */
+  phaseElapsedMs?: number;
 };
 
 export type BrainLoopWatchdogBreadcrumb = {
@@ -419,12 +422,14 @@ function readProjectOpens(value: unknown): BrainLoopProjectOpen[] {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
     if (typeof record.projectId !== "string" || !record.projectId.trim()) continue;
+    const ms = (value: unknown): number | null =>
+      typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+    const phaseElapsedMs = ms(record.phaseElapsedMs);
     opens.push({
       projectId: record.projectId.trim(),
       phase: typeof record.phase === "string" && record.phase ? record.phase : "unknown",
-      elapsedMs: typeof record.elapsedMs === "number" && Number.isFinite(record.elapsedMs)
-        ? Math.max(0, Math.floor(record.elapsedMs))
-        : 0,
+      elapsedMs: ms(record.elapsedMs) ?? 0,
+      ...(phaseElapsedMs !== null ? { phaseElapsedMs } : {}),
     });
   }
   return opens;
@@ -584,7 +589,7 @@ export function trackBrainLoopWatchdogCommand(action: string): () => void {
   };
 }
 
-type TrackedProjectOpen = { projectId: string; phase: string; startedAtMs: number };
+type TrackedProjectOpen = { projectId: string; phase: string; startedAtMs: number; phaseStartedAtMs: number };
 
 let nextProjectOpenToken = 0;
 const activeProjectOpens = new Map<number, TrackedProjectOpen>();
@@ -592,11 +597,12 @@ const activeProjectOpens = new Map<number, TrackedProjectOpen>();
 let announceProjectOpensToWatchdog: ((opens: TrackedProjectOpen[]) => void) | null = null;
 
 /** The project scopes opening right now, with the step each one is in. */
-export function currentBrainLoopWatchdogProjectOpens(nowMs = Date.now()): BrainLoopProjectOpen[] {
+function currentProjectOpens(nowMs = Date.now()): BrainLoopProjectOpen[] {
   return [...activeProjectOpens.values()].map((open) => ({
     projectId: open.projectId,
     phase: open.phase,
     elapsedMs: Math.max(0, nowMs - open.startedAtMs),
+    phaseElapsedMs: Math.max(0, nowMs - open.phaseStartedAtMs),
   }));
 }
 
@@ -615,12 +621,10 @@ export type BrainLoopProjectOpenTracker = {
  * several projects can be opening at once. The worker receives the whole set
  * on every change, by message, which it reads while the main thread is stuck.
  */
-export function trackBrainLoopWatchdogProjectOpen(
-  projectId: string,
-  initialPhase = "prepare",
-): BrainLoopProjectOpenTracker {
+export function trackBrainLoopWatchdogProjectOpen(projectId: string): BrainLoopProjectOpenTracker {
   const token = ++nextProjectOpenToken;
-  const open: TrackedProjectOpen = { projectId, phase: initialPhase, startedAtMs: Date.now() };
+  const startedAtMs = Date.now();
+  const open: TrackedProjectOpen = { projectId, phase: "prepare", startedAtMs, phaseStartedAtMs: startedAtMs };
   activeProjectOpens.set(token, open);
   const announce = (): void => announceProjectOpensToWatchdog?.([...activeProjectOpens.values()]);
   announce();
@@ -628,6 +632,7 @@ export function trackBrainLoopWatchdogProjectOpen(
     phase(phase) {
       if (!activeProjectOpens.has(token) || open.phase === phase) return;
       open.phase = phase;
+      open.phaseStartedAtMs = Date.now();
       announce();
     },
     done() {
@@ -645,6 +650,12 @@ export function startBrainLoopWatchdog(args: {
    */
   socketPath?: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * The freeze threshold, when the host resolved it already for other users
+   * of the same value (the scope registry's open queue). Otherwise read from
+   * `ADE_LOOP_WATCHDOG_MS` in `env`.
+   */
+  thresholdMs?: number;
   forceInTests?: boolean;
   warn?: (event: string, meta: Record<string, unknown>) => void;
   /**
@@ -699,7 +710,7 @@ export function startBrainLoopWatchdog(args: {
   if (env.ADE_DISABLE_LOOP_WATCHDOG === "1") return () => {};
   if (!args.forceInTests && (env.VITEST || env.NODE_ENV === "test")) return () => {};
 
-  const thresholdMs = resolveBrainLoopWatchdogThresholdMs(env.ADE_LOOP_WATCHDOG_MS);
+  const thresholdMs = args.thresholdMs ?? resolveBrainLoopWatchdogThresholdMs(env.ADE_LOOP_WATCHDOG_MS);
   const reportPath = path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_REPORT_FILE);
   const reportSignal = "SIGUSR2";
   let reportEnabled = false;
@@ -992,7 +1003,7 @@ export function startBrainLoopWatchdog(args: {
         observedAtMonotonicMs: nowMonotonicMs,
         lagMs: lag.observedLagMs,
         lastCommand: currentCommandName(),
-        openingProjects: currentBrainLoopWatchdogProjectOpens(),
+        openingProjects: currentProjectOpens(),
         diagnostics,
         cpuDeltaMs,
         majorPageFaultsDelta,

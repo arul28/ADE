@@ -22,7 +22,7 @@ export function ProjectTransitionErrorAlert(): null {
   const clearProjectTransitionError = useAppStore(
     (state) => state.clearProjectTransitionError,
   );
-  const switchProjectToPath = useAppStore((state) => state.switchProjectToPath);
+  const retryProjectTransition = useAppStore((state) => state.retryProjectTransition);
 
   // One problem, one notice. A failed open caused by an update replacing the
   // background service, or made while that service is down, is a symptom: the
@@ -37,7 +37,6 @@ export function ProjectTransitionErrorAlert(): null {
       && !brainDownShowing,
   );
   const retryRootPath = projectTransitionError?.retryRootPath ?? null;
-  const retryClearsOpenRefusal = projectTransitionError?.retryClearsOpenRefusal === true;
 
   useAppBanner(
     visible && projectTransitionError
@@ -57,14 +56,7 @@ export function ProjectTransitionErrorAlert(): null {
                 label: "Try again",
                 variant: "primary",
                 onClick: () => {
-                  clearProjectTransitionError();
-                  // A project refused as too slow is refused again unless the
-                  // brain that refused it forgets that first. The open is
-                  // local (only local opens offer Try again), so is the retry.
-                  const cleared = retryClearsOpenRefusal
-                    ? Promise.resolve(window.ade.project.retryOpen?.(retryRootPath)).catch(() => null)
-                    : Promise.resolve(null);
-                  void cleared.then(() => switchProjectToPath(retryRootPath)).catch(() => {});
+                  void retryProjectTransition();
                 },
               }]
             : undefined,

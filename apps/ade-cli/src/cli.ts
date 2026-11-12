@@ -695,6 +695,7 @@ import { markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/br
 import {
   currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
+  resolveBrainLoopWatchdogThresholdMs,
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
 import { recordHostStall } from "./services/runtime/hostStallRecord";
@@ -26351,33 +26352,30 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
     };
   }
   if (sub === "retry") {
-    // A project refused because opening it froze ADE twice (its folder is on
-    // a drive too slow for ADE): forget that, so the next open really tries.
-    // The refusal also lifts on its own after 15 minutes.
-    const projectRef = requireValue(
-      readValue(args, ["--project-id", "--id", "--path"]) ?? firstPositional(args),
-      "project id or path",
-    );
-    const byId = /^project_[A-Za-z0-9]+$/.test(projectRef);
+    // Forget a `project_folder_too_slow` refusal and its strikes, so the
+    // next open really tries (see `projectOpenStrikes.ts`).
+    const explicitPath = readValue(args, ["--path"]);
+    const positional = explicitPath ? null : firstPositional(args);
+    const projectId = readValue(args, ["--project-id", "--id"])
+      ?? (positional && /^project_[A-Za-z0-9]+$/.test(positional) ? positional : null);
+    let params: Record<string, unknown>;
+    if (projectId) {
+      params = { projectId };
+    } else {
+      const rootPath = requireValue(explicitPath ?? positional, "project id or path");
+      // Another computer's path is sent as typed, as `clone --path` is.
+      params = { rootPath: target.remote ? rootPath : resolveCliPathArg(rootPath) };
+    }
     return {
       ...base,
       label: "projects retry",
-      steps: [{
-        key: "result",
-        method: "projects.retryOpen",
-        params: byId
-          ? { projectId: projectRef }
-          // Another computer's path is sent as typed, as `clone --path` is.
-          : { rootPath: target.remote ? projectRef : resolveCliPathArg(projectRef) },
-      }],
+      steps: [{ key: "result", method: "projects.retryOpen", params }],
       formatText: (result) => {
         if (!isRecord(result)) return "Done.";
         const name = String(result.displayName ?? result.projectId ?? "The project");
-        return result.wasBlocked === true
-          ? `${name} can be opened again. Open it to try.`
-          : result.strikesCleared === true
-            ? `${name} was not refused yet; its earlier freezes are forgotten.`
-            : `${name} was not refused. Nothing to clear.`;
+        if (result.wasBlocked === true) return `${name} can be opened again. Open it to try.`;
+        if (result.strikesCleared === true) return `${name} was not refused yet; its earlier freezes are forgotten.`;
+        return `${name} was not refused. Nothing to clear.`;
       },
     };
   }
@@ -29195,19 +29193,19 @@ async function runServe(
   projectRootAccessMonitor.configureProjectRootAccessMonitor({ logger: headlessProjectLogger });
   // Started below for the machine brain only; the watchdog's five-minute sample drives it.
   let resourcePressureMonitor: { tick: () => Promise<void> } | null = null;
-  // Freeze kills counted against the projects that were opening when they hit,
-  // read once here from this machine's runtime folder. The scope registry
-  // refuses a project with two in the window, which is what breaks a restart
-  // loop on a project whose folder is too slow to open.
+  // Freeze kills counted against the project that was opening, read once from
+  // this machine's runtime folder; the scope registry refuses a project with
+  // enough of them (`projectOpenStrikes.ts`).
   const { ProjectOpenStrikes } = await import("./services/projects/projectOpenStrikes");
   const projectOpenStrikes = new ProjectOpenStrikes({
     runtimeDir: layout.runtimeDir,
-    onWriteFailed: (error) => headlessProjectLogger.warn("project.open_strikes_write_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    }),
+    logger: headlessProjectLogger,
   });
+  // Read once: the watchdog kills at it, and the scope registry's open queue waits no longer.
+  const freezeThresholdMs = resolveBrainLoopWatchdogThresholdMs(process.env.ADE_LOOP_WATCHDOG_MS);
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
+    thresholdMs: freezeThresholdMs,
     socketPath,
     onSampleTick: () => {
       void resourcePressureMonitor?.tick();
@@ -29220,11 +29218,12 @@ async function runServe(
       const struck = projectOpenStrikes.recordFreezeKill(breadcrumb);
       if (struck.length > 0) {
         headlessProjectLogger.warn("project.open_freeze_killed", {
-          projects: struck.map((projectId) => ({
+          projects: struck.map(({ projectId, phase, strikes, blocked }) => ({
             projectId,
-            strikes: projectOpenStrikes.strikeCount(projectId),
-            blocked: projectOpenStrikes.blocked(projectId) !== null,
-            phase: breadcrumb.openingProjects?.find((open) => open.projectId === projectId)?.phase ?? null,
+            phase,
+            strikes,
+            blockedUntil: blocked ? new Date(blocked.blockedUntilMs).toISOString() : null,
+            level: blocked?.level ?? null,
           })),
           blockedMs: breadcrumb.blockedMs,
           killedAt: breadcrumb.ts,
@@ -29409,6 +29408,9 @@ async function runServe(
   const mobileProjectIconDataUrl = (record: ProjectRecord): string | null => {
     const decision = projectRecords.iconDecision(record);
     if (decision.use === "record") return decision.icon.dataUrl;
+    // Detecting the icon reads the folder (and its `.ade/local.yaml`) here, on
+    // the brain's thread; a refused project's folder is not read.
+    if (scopeRegistry.isOpenBlocked(record.projectId)) return null;
     if (decision.use === "detected") {
       const detected = resolveProjectIconPath(record.rootPath, { iconPathOverride: undefined });
       return detected ? resolveMobileProjectIconDataUrl(record.rootPath, { resolvedSourcePath: detected }) : null;
@@ -30297,6 +30299,7 @@ async function runServe(
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
     openStrikes: projectOpenStrikes,
+    freezeThresholdMs,
     logger: headlessProjectLogger,
     terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),

@@ -6265,6 +6265,8 @@ app.whenReady().then(async () => {
             scopeRegistry: {
               getIfBooted: (id) =>
                 id === projectId ? Promise.resolve({ runtime: { agentChatService, ptyService } }) : null,
+              // This in-process host serves its one open project; refusals live in the brain.
+              isOpenBlocked: () => false,
             },
             hostProjectId: projectId,
             logger,
@@ -7030,6 +7032,11 @@ app.whenReady().then(async () => {
     baseRef: string;
     userSelectedProject: boolean;
   }): Promise<AppContext> => {
+    // A project the brain refuses as too slow to open is refused here too,
+    // before this process stats the folder or opens its database itself: the
+    // person gets the brain's message and Try again instead of a window that
+    // freezes on the same drive.
+    await localRuntimePool.assertProjectOpenable(projectRoot);
     assertLocalProjectDataAvailable(projectRoot);
     const adePaths = ensureAdeDirs(projectRoot);
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
@@ -8495,6 +8502,12 @@ app.whenReady().then(async () => {
       });
       const existing = projectContexts.get(repoRoot);
       if (existing) {
+        // A project the brain refused after this window opened it: its panes
+        // would fail one by one. The refusal shows the banner and Try again
+        // instead; any other failure of the check lets the switch go ahead.
+        if (!shouldUseInProcessProjectRuntime()) {
+          await localRuntimePool.assertProjectOpenableIfConnected(repoRoot);
+        }
         existing.hasUserSelectedProject = true;
         // `bindWindowToProject` writes a listed project's recent entry in
         // place; only a project missing from the list still needs this write.

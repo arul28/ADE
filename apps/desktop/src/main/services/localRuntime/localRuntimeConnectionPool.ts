@@ -73,7 +73,8 @@ import {
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import { runtimeActionReplyError } from "../../../shared/runtimeActionReplyError";
-import { expectedErrorKind } from "../../../shared/expectedError";
+import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
+import { codedError, parseCodedErrorMessage, PROJECT_FOLDER_TOO_SLOW_CODE } from "../../../shared/codedError";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
@@ -1246,6 +1247,13 @@ function serviceHealthState(
 
 const APP_CONTROL_FRAME_DEMAND_TIMEOUT_MS = 5_000;
 
+/**
+ * How long a switch back to an already-open project waits for the brain's
+ * refusal check. A healthy brain answers in about a millisecond; a frozen one
+ * is not waited for.
+ */
+const OPEN_TAB_REFUSAL_CHECK_TIMEOUT_MS = 1_500;
+
 export class LocalRuntimeConnectionPool {
   private disposed = false;
   private stopping = false;
@@ -2365,6 +2373,59 @@ export class LocalRuntimeConnectionPool {
       });
       return await call(fresh);
     }
+  }
+
+  /** The brain's id for a folder this pool registered, without asking the brain. */
+  private knownProjectRef(rootPath: string): { projectId: string } | { rootPath: string } {
+    const normalizedRoot = path.resolve(rootPath);
+    const projectId = this.projectsByRoot.get(normalizedRoot)?.projectId;
+    return projectId ? { projectId } : { rootPath: normalizedRoot };
+  }
+
+  /**
+   * Throws the brain's `project_folder_too_slow` refusal when it refuses this
+   * folder, before this process reads the folder itself (a cold open).
+   *
+   * Sent by path only: a brain from before the method answers a path-only
+   * call at once ("requires projectId") instead of opening the project to
+   * route it. A failed connection propagates, as the registration that
+   * follows would fail the same way, so the brain is dialed once; any other
+   * failure of the call is left to the open that follows.
+   */
+  async assertProjectOpenable(rootPath: string): Promise<void> {
+    const entry = await this.connect();
+    await this.throwOpenRefusal(entry, rootPath, LOCAL_RUNTIME_PROJECT_TIMEOUT_MS);
+  }
+
+  /**
+   * The same check for a project already open in this window, on a switch
+   * back to it: only a brain this pool is connected to is asked, briefly, and
+   * nothing but the refusal stops the switch. A brain frozen on some other
+   * folder must not hold up a switch to a healthy project.
+   */
+  async assertProjectOpenableIfConnected(rootPath: string): Promise<void> {
+    const entry = this.activeConnection;
+    if (!entry) return;
+    await this.throwOpenRefusal(entry, rootPath, OPEN_TAB_REFUSAL_CHECK_TIMEOUT_MS);
+  }
+
+  /** Ask `projects.checkOpen`; rethrow only its `project_folder_too_slow` refusal. */
+  private async throwOpenRefusal(entry: LocalRuntimeConnection, rootPath: string, timeoutMs: number): Promise<void> {
+    try {
+      await entry.client.call("projects.checkOpen", { rootPath: path.resolve(rootPath) }, { timeoutMs });
+    } catch (error) {
+      const parsed = parseCodedErrorMessage(error);
+      if (parsed.code !== PROJECT_FOLDER_TOO_SLOW_CODE) return;
+      throw markExpected(codedError(parsed.message, PROJECT_FOLDER_TOO_SLOW_CODE), "environment");
+    }
+  }
+
+  /** Forget the brain's refusal of this folder (`projects.retryOpen`), so the next open tries. */
+  async retryProjectOpen(rootPath: string): Promise<void> {
+    const entry = await this.connect();
+    await entry.client.call("projects.retryOpen", this.knownProjectRef(rootPath), {
+      timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS,
+    });
   }
 
   async setProjectCatalogVisibility(

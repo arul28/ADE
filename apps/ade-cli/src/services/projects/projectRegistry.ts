@@ -270,10 +270,16 @@ export class ProjectRegistry {
    * into its project: a peer naming a root means that root.
    */
   findAtRootPath(rootPath: string): ProjectRecord | null {
+    const records = this.list();
+    // The registered root as given first: `realpath` reads the folder, which on
+    // a hung or slow mount blocks this thread.
+    const given = path.resolve(rootPath);
+    const exact = records.find((record) => pathsEqual(record.rootPath, given));
+    if (exact) return exact;
     // Registered roots are real paths (`normalizeRoot`); a peer's may go
     // through a symlink (`/tmp` → `/private/tmp`).
-    const resolved = realpathIfExists(path.resolve(rootPath));
-    return this.list().find((record) => pathsEqual(record.rootPath, resolved)) ?? null;
+    const resolved = realpathIfExists(given);
+    return records.find((record) => pathsEqual(record.rootPath, resolved)) ?? null;
   }
 
   add(

@@ -5399,7 +5399,7 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.projectInspectRemoval, { rootPath }),
     removeCopy: async (rootPath: string, request: ProjectRemovalRequest): Promise<ProjectRemovalOutcome> =>
       ipcRenderer.invoke(IPC.projectRemoveCopy, { rootPath, request }),
-    retryOpen: async (rootPath: string): Promise<{ wasBlocked: boolean; strikesCleared: boolean } | null> =>
+    retryOpen: async (rootPath: string): Promise<boolean> =>
       ipcRenderer.invoke(IPC.projectRetryOpen, { rootPath }),
     forgetRecent: async (keyOrRootPath: string): Promise<RecentProjectSummary[]> =>
       // For local recents the key equals the root path; for remote recents the
