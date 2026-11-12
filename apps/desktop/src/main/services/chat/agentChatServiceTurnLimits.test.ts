@@ -250,12 +250,15 @@ describe("createAgentChatService", () => {
         service: any,
         sessionId: string,
         turnId: string,
-        resetAt: string | null,
+        // A function is read when the limit is sent, not before the turn starts:
+        // a near reset (`resetFiringIn`) would otherwise spend its margin on the
+        // turn's start and arm nothing on a slow runner.
+        resetAt: string | null | (() => string | null),
       ): Promise<void> => {
         const turnStartsBefore = codexTurnStarts();
         const turn = service.runSessionTurn({ sessionId, text: "Ship the fix." });
         await waitForNextCodexTurnStart(turnStartsBefore);
-        failCodexTurnAtUsageLimit(turnId, resetAt);
+        failCodexTurnAtUsageLimit(turnId, typeof resetAt === "function" ? resetAt() : resetAt);
         await turn;
       };
 
@@ -532,7 +535,7 @@ describe("createAgentChatService", () => {
         // snapshot is session-scoped and `mergeSnapshot` carries a stale reset
         // forward, so a limit the resume cannot clear still publishes a fresh
         // reset instant on every cycle; Codex's rolling window models that here.
-        await failTurnAtUsageLimit(service, session.id, "turn-cap-1", resetFiringIn(400));
+        await failTurnAtUsageLimit(service, session.id, "turn-cap-1", () => resetFiringIn(400));
 
         const firstResumeStarts = codexTurnStarts();
         await waitForNextCodexTurnStart(firstResumeStarts);
@@ -605,7 +608,7 @@ describe("createAgentChatService", () => {
         });
 
         // Walk the chat right up to the cap, then let a resume actually work.
-        await failTurnAtUsageLimit(service, session.id, "streak-1", resetFiringIn(400));
+        await failTurnAtUsageLimit(service, session.id, "streak-1", () => resetFiringIn(400));
         const firstResumeStarts = codexTurnStarts();
         await waitForNextCodexTurnStart(firstResumeStarts);
         failCodexTurnAtUsageLimit("streak-2", resetFiringIn(400));

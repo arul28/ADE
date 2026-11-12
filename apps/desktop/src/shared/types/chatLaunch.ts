@@ -154,6 +154,13 @@ export type ChatLaunchCloudState = {
    * snapshot is that brain's, and the launch goes on with this app closed.
    */
   handedOff: boolean;
+  /**
+   * What the start's GitHub check (contract C4) could not settle, in plain
+   * words: GitHub didn't answer whether the repository is public, and the
+   * account has no GitHub sign-in, so a private one won't clone. The card
+   * shows it until the clone is done. Absent when the check settled it.
+   */
+  warning?: string;
 };
 
 export type ChatLaunchSnapshot = {
@@ -187,6 +194,13 @@ export type ChatLaunchSnapshot = {
   };
   /** Chat model id the launch runs with (for display). */
   modelId: string | null;
+  /**
+   * What the person picked at Send besides the model (effort, Fast,
+   * permissions), so every client shows it while the chat is set up, after a
+   * failed setup, and on Retry, before the chat's own settings exist. Absent
+   * on a launch from an older brain.
+   */
+  chatSettings?: ChatLaunchChatSettings | null;
   phase: ChatLaunchPhase;
   stages: ChatLaunchStage[];
   /** Failure summary when `phase === "failed"`. */
@@ -205,6 +219,15 @@ export type ChatLaunchSnapshot = {
   /** Id of the device/window that started the launch (for "mine" filtering in the slide-out). */
   originClientId: string | null;
   startedAt: string;
+  /**
+   * When an earlier host began this attempt (an ADE Cloud launch's computer,
+   * join and clone ran on the launching app before this brain's clock
+   * started), or null when this host's `startedAt` is the whole launch. A
+   * retry here resets it to null, so its clock starts again. Absent on a
+   * launch from an older brain (`chatLaunchStartedAt` falls back to the cloud
+   * steps' own times).
+   */
+  setupStartedAt?: string | null;
   endedAt: string | null;
   updatedAt: string;
   /** Monotonic per launch; clients drop snapshots older than the one they hold. */
@@ -217,6 +240,25 @@ export type ChatLaunchEvent =
   | { type: "launch-updated"; launch: ChatLaunchSnapshot }
   /** The launch record expired: it finished (completed or cancelled) and its retention window ran out. */
   | { type: "launch-removed"; launchId: string };
+
+/** The settings a launch's chat starts with, as picked at Send (`ChatLaunchSnapshot.chatSettings`). */
+export type ChatLaunchChatSettings = Pick<
+  AgentChatCreateArgs,
+  | "reasoningEffort"
+  | "fastMode"
+  | "fastTier"
+  | "interactionMode"
+  | "permissionMode"
+  | "claudePermissionMode"
+  | "codexApprovalPolicy"
+  | "codexSandbox"
+  | "codexConfigSource"
+  | "opencodePermissionMode"
+  | "droidPermissionMode"
+  | "copilotPermissionMode"
+  | "musePermissionMode"
+  | "cursorModeId"
+>;
 
 export type ChatLaunchChatArgs = {
   /** Session args minus the lane, which the launch creates. */
@@ -313,6 +355,12 @@ export type ChatLaunchArgs = {
    * statuses; the brain shows them first and keeps them on the card.
    */
   priorStages?: ChatLaunchStage[];
+  /**
+   * When the host before this brain began the launch's current attempt (an
+   * ADE Cloud launch: the launching app's own clock, reset by its Retry), so
+   * the card's total counts the steps that ran there (`setupStartedAt`).
+   */
+  setupStartedAt?: string | null;
 };
 
 export type ChatLaunchCloudTarget = {

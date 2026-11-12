@@ -709,10 +709,28 @@ export function useWorkToolStatuses(args: {
   const issueTabsProjectRoot = useActiveProjectRoot();
   const openIssueTabCount = useIssueTabs(issueTabsScopeKey(issueTabsProjectRoot, laneId)).refs.length;
 
-  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop, desktopTool, context.hostPlatform ?? null);
+  // One read, but each card says its own product's name: while the host's
+  // platform is unknown (an asleep or unreachable cloud computer) both desktop
+  // cards show, and the Windows card must never read "Mac Desktop is off".
+  // A Linux host's Mac Desktop card is its Linux lane screen (`workTools.ts`).
+  const hostPlatform = context.hostPlatform ?? null;
+  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(
+    desktopTool === "mac-desktop" ? macDesktop : null,
+    "mac-desktop",
+    hostPlatform,
+  );
+  const { line: windowsDesktopLine, live: windowsDesktopLive } = macDesktopStatusLineText(
+    desktopTool === "windows-desktop" ? macDesktop : null,
+    "windows-desktop",
+    hostPlatform,
+  );
   const macDesktopStatus = useMemo(
     () => statusLine(macDesktopLine, macDesktopLive),
     [macDesktopLine, macDesktopLive],
+  );
+  const windowsDesktopStatus = useMemo(
+    () => statusLine(windowsDesktopLine, windowsDesktopLive),
+    [windowsDesktopLine, windowsDesktopLive],
   );
 
   // Keyed on the name, not the pin object: a pin can be rebuilt with the same key.
@@ -743,13 +761,14 @@ export function useWorkToolStatuses(args: {
       // answer standing rather than claiming the lane has no screen, and the
       // hook already stops reading.
       "mac-desktop": macDesktopStatus,
-      "windows-desktop": macDesktopStatus,
+      "windows-desktop": windowsDesktopStatus,
       pr: prToolStatusLine(prCount),
       issues: issuesToolStatusLine(openIssueTabCount),
     };
   }, [
     appControlSession,
     macDesktopStatus,
+    windowsDesktopStatus,
     appleDevice,
     androidDevice,
     browserErrors,

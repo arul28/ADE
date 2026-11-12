@@ -233,7 +233,7 @@ import {
   isUsageLimitTurn,
   usageLimitTurnFooterLabel,
 } from "../../../shared/usageLimitResumePresentation";
-import { chatErrorKindFromCategory, presentChatFailure, readChatErrorPresentation } from "../../../shared/chatErrorPresentation";
+import { chatErrorKindFromCategory, presentChatFailure, presentDiskFullRefusal, readChatErrorPresentation } from "../../../shared/chatErrorPresentation";
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
   collectUserMessageMinimapSourceEntries,
@@ -1363,6 +1363,10 @@ type RenderEnvelope = {
   quietNoticeSiblings?: QuietNoticeSibling[];
   /** On a `done` row: the turn ended at a usage limit; see ChatTranscriptRenderEnvelope. */
   endedAtUsageLimit?: boolean;
+  /** On a failed turn's `done` row: its failure line is drawn; see ChatTranscriptGroupedEnvelope. */
+  failureShown?: boolean;
+  /** On a failure line: the turn's later errors, under Details; see ChatTranscriptGroupedEnvelope. */
+  failureNotes?: string[];
   /** True when `timestamp` is an ordering placeholder with no real clock behind it. */
   timestampSynthetic?: boolean;
   /** Row identity for a scene's still; see ChatTranscriptRenderEnvelope. */
@@ -4489,13 +4493,23 @@ function renderEvent(
     const recovery = classifyProviderFailure(event);
     const errorCategory = typeof event.errorInfo === "object" ? event.errorInfo?.category : undefined;
     const errorProvider = typeof event.errorInfo === "object" ? event.errorInfo?.provider : undefined;
-    const presentation = readChatErrorPresentation(event.errorInfo)
-      ?? presentChatFailure({
-        kind: chatErrorKindFromCategory(errorCategory),
-        message: event.message,
-        detail: event.detail,
-        provider: errorProvider,
-      });
+    const errorCode = typeof event.errorInfo === "object" ? event.errorInfo?.code : undefined;
+    const basePresentation = readChatErrorPresentation(event.errorInfo)
+      ?? (errorCode === "disk_full"
+        ? presentDiskFullRefusal(event.message)
+        : presentChatFailure({
+          kind: chatErrorKindFromCategory(errorCategory),
+          message: event.message,
+          detail: event.detail,
+          provider: errorProvider,
+        }));
+    // The turn's later errors ride under this one line's Details (`foldTurnFailureRows`).
+    const presentation = envelope.failureNotes?.length
+      ? {
+          ...basePresentation,
+          technicalDetail: [basePresentation.technicalDetail, ...envelope.failureNotes].filter(Boolean).join("\n"),
+        }
+      : basePresentation;
     const renderAgentCliAuthCard = () => agentCliInfo ? (
       <AgentCliAuthCard
         agentCli={agentCliInfo}
@@ -4895,6 +4909,7 @@ function DoneTurnDivider({
   turnDiffSummaries = null,
   usageLimitResumeTurnId,
   endedAtUsageLimit = false,
+  failureShown = false,
   repeatCount = 1,
   workSummaryInFold = false,
   turnSources,
@@ -4924,6 +4939,8 @@ function DoneTurnDivider({
   usageLimitResumeTurnId?: string | null;
   /** The transcript read this turn's own error as a usage limit (`foldTurnFailureRows`). */
   endedAtUsageLimit?: boolean;
+  /** This failed turn's failure line is drawn above (`foldTurnFailureRows`): no second "failed" here. */
+  failureShown?: boolean;
   /** Identical failed retries folded into this turn, itself included. */
   repeatCount?: number;
   toolEntries: ChatWorkLogEntry[];
@@ -4955,7 +4972,10 @@ function DoneTurnDivider({
 }) {
   const [usageDetailsOpen, setUsageDetailsOpen] = useState(false);
   const turnProof = proofArtifacts ?? EMPTY_PROOF_ARTIFACTS;
-  const completed = event.status === "completed";
+  // A failed turn whose failure line is already drawn ends like any other turn.
+  // (A turn the live usage limit is anchored to keeps its paused footer.)
+  const completed = event.status === "completed"
+    || (failureShown && !isUsageLimitTurn(event, usageLimitResumeTurnId));
   const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
   const reasonLabel = completed ? null : terminalReasonLabel(event.terminalReason);
   // Same rule as the fold row's `Worked for …`: any measured duration shows.
@@ -5627,6 +5647,7 @@ const EventRow = React.memo(function EventRow({
           turnDiffSummaries={turnDiffSummaries}
           usageLimitResumeTurnId={usageLimitResumeTurnId}
           endedAtUsageLimit={envelope.endedAtUsageLimit === true}
+          failureShown={envelope.failureShown === true}
           repeatCount={envelope.repeatCount ?? 1}
           workSummaryInFold={turnWorkInFold}
           turnSources={turnSources}

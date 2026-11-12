@@ -18,6 +18,7 @@ import { Button } from "../ui/Button";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice/Banner";
+import { showToast } from "../app/toast/toastStore";
 import { cn } from "../ui/cn";
 import { extractError } from "./shared";
 import { inputCls } from "./designTokens";
@@ -32,7 +33,9 @@ import { TemplateGallery } from "./templates/TemplateGallery";
 import { RuleMachineField } from "./builder/RuleMachineField";
 import { machineRuleKey, ruleListKey, useAutomationMachines, type MachineRule } from "./useAutomationMachines";
 import { followsAccount, ruleElsewhereReason, ruleSyncLine } from "./ruleSync";
-import { AUTOMATION_HOME_HANDOVER_MINUTES } from "../../../shared/automationHome";
+import { AUTOMATION_HOME_HANDOVER_MINUTES, isAdeCloudHome } from "../../../shared/automationHome";
+import { automationCloudHomeProblem } from "../../../shared/automationCloud";
+import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import type { LaneMachine } from "../../state/laneMachineRouting";
 import { onMachine } from "../../state/projectMachines";
 import { parseMachineScopedId } from "../../state/foreignMachineReads";
@@ -257,6 +260,9 @@ export function AutomationsWorkspace({
    * read from, is then a change of home.
    */
   const [draftRehomeChosen, setDraftRehomeChosen] = useState(false);
+  /** "Runs on: ADE Cloud" was picked (C9): Save makes ADE Cloud the rule's home. */
+  const [draftCloudChosen, setDraftCloudChosen] = useState(false);
+  const adeCloudEnabled = useAdeCloudEnabled();
   const loadedRuleKeyRef = useRef<string | null>(null);
   /**
    * The machine the loaded rule was read from. A rule that follows the
@@ -283,9 +289,9 @@ export function AutomationsWorkspace({
   ));
   const isDirty = useMemo(() => {
     if (!draft || savedSnapshotRef.current == null) return false;
-    return draftMoving || JSON.stringify(draft) !== savedSnapshotRef.current;
+    return draftMoving || draftCloudChosen || JSON.stringify(draft) !== savedSnapshotRef.current;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, draftMoving]);
+  }, [draft, draftMoving, draftCloudChosen]);
 
   const confirmDiscardIfDirty = useCallback(async (): Promise<boolean> => {
     if (!isDirty) return true;
@@ -300,6 +306,7 @@ export function AutomationsWorkspace({
       setDraftTarget(draftOrigin.machine);
       setDraftRehomeChosen(false);
     }
+    if (ok) setDraftCloudChosen(false);
     if (ok && savedSnapshotRef.current != null) {
       try {
         setDraft(JSON.parse(savedSnapshotRef.current) as AutomationRuleDraft);
@@ -382,6 +389,7 @@ export function AutomationsWorkspace({
     loadedRuleKeyRef.current = null;
     setDraftOrigin(null);
     setDraftRehomeChosen(false);
+    setDraftCloudChosen(false);
     setDraftTarget(only && !only.isActiveBinding ? only : null);
     setDraftMachineChosen(Boolean(only));
   }, []);
@@ -423,6 +431,7 @@ export function AutomationsWorkspace({
       setDraftTarget(nextTarget);
       setDraftOrigin({ machine: nextTarget });
       setDraftRehomeChosen(false);
+      setDraftCloudChosen(false);
       setDraftMachineChosen(true);
     }
     const nextDraft = toDraftFromRule(selectedEntry.rule);
@@ -692,6 +701,36 @@ export function AutomationsWorkspace({
 
   const saveDraft = useCallback(async () => {
     if (!draft) return;
+    // ADE Cloud as the home: saved through this draft's machine, which hands it to ADE Cloud's server.
+    if (draftCloudChosen) {
+      setSaving(true);
+      setError(null);
+      try {
+        const validation = await validateDraft(draft);
+        if (!validation.ok) return;
+        const target = draftTarget;
+        const saved = await onMachine(
+          window.ade.automations.saveDraft({ draft: { ...draft, home: "ade-cloud" }, confirmations: [...acceptedConfirmations] }, target?.pin ?? null),
+          target,
+        );
+        commitMachineRules(target, saved.rules);
+        refreshForeign();
+        setDraftCloudChosen(false);
+        setDraftRehomeChosen(false);
+        setDraftMachineChosen(true);
+        setSelectedRuleId(saved.rule.id);
+        const nextSelected = saved.rules.find((r) => r.id === saved.rule.id) ?? null;
+        const nextDraft = nextSelected ? toDraftFromRule(nextSelected) : draft;
+        setDraft(nextDraft);
+        savedSnapshotRef.current = JSON.stringify(nextDraft);
+        setIssues([]);
+      } catch (err) {
+        setError(explainError(err));
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     if (!draftMachineChosen) {
       setError(CHOOSE_MACHINE_HINT);
       return;
@@ -731,7 +770,7 @@ export function AutomationsWorkspace({
     } finally {
       setSaving(false);
     }
-  }, [acceptedConfirmations, blockedReason, commitMachineRules, draft, draftMachineChosen, draftMoving, draftOrigin, draftTarget, moveRule, refreshForeign, validateDraft]);
+  }, [acceptedConfirmations, blockedReason, commitMachineRules, draft, draftCloudChosen, draftMachineChosen, draftMoving, draftOrigin, draftTarget, moveRule, refreshForeign, validateDraft]);
 
   const createRule = useCallback(async () => {
     if (!(await confirmDiscardIfDirty())) return;
@@ -759,13 +798,22 @@ export function AutomationsWorkspace({
       setRunning(true);
       setError(null);
       try {
-        await onMachine(
+        const run = await onMachine(
           window.ade.automations.triggerManually(
             { id: entry.rule.id, ...(laneId ? { laneId } : {}) },
             entry.machine.pin,
           ),
           entry.machine,
         );
+        // ADE Cloud answers a refusal (agent limits, the storm stop, one already waiting) as the run, not an error.
+        if (run.triggerMetadata?.runsOn === "ade-cloud" && (run.status === "failed" || run.status === "cancelled")) {
+          showToast({
+            tone: "warning",
+            title: run.status === "failed" ? `"${entry.rule.name}" didn't start on ADE Cloud` : `"${entry.rule.name}" was skipped on ADE Cloud`,
+            message: run.errorMessage ?? "ADE Cloud didn't start this run.",
+            report: false,
+          });
+        }
         setManualRunRule(null);
         setManualRunLaneId("");
         if (!entry.machine.isActiveBinding) refreshMachine(entry.machine.machineId);
@@ -1085,10 +1133,22 @@ export function AutomationsWorkspace({
                     savedMachineId={draftOrigin ? (draftOrigin.machine?.machineId ?? boundMachine?.machineId ?? null) : null}
                     followsAccount={Boolean(selectedRule && followsAccount(selectedRule))}
                     unreachableHomeName={
-                      selectedRule && followsAccount(selectedRule) && selectedRule.runsHere === false && !draftRehomeChosen
+                      selectedRule && followsAccount(selectedRule) && selectedRule.runsHere === false && !draftRehomeChosen && !isAdeCloudHome(selectedRule.home)
                         ? selectedRule.home?.name ?? null
                         : null
                     }
+                    cloudHome={selectedRule && !followsAccount(selectedRule) ? null : {
+                      available: adeCloudEnabled,
+                      chosen: draftCloudChosen || (!draftRehomeChosen && isAdeCloudHome(selectedRule?.home)),
+                      problem: automationCloudHomeProblem({ scope: draft.scope, triggers: draft.triggers, execution: draft.execution, prompt: draft.prompt, oneShot: draft.oneShot, maxRuns: draft.maxRuns }),
+                      state: draftCloudChosen ? null : selectedRule?.cloud ?? null,
+                      onChoose: () => {
+                        setDraftCloudChosen(!isAdeCloudHome(selectedRule?.home) || draftRehomeChosen);
+                        setDraftRehomeChosen(false);
+                        setDraftMachineChosen(true);
+                        setError(null);
+                      },
+                    }}
                     homeName={selectedRule && followsAccount(selectedRule) ? selectedRule.home?.name ?? null : null}
                     rehoming={draftRehomeChosen}
                     sync={selectedRule && !draftMoving ? ruleSyncLine(selectedRule) : null}
@@ -1097,6 +1157,7 @@ export function AutomationsWorkspace({
                       const next = machines.find((machine) => machine.machineId === machineId);
                       if (!next) return;
                       if (selectedRule && followsAccount(selectedRule) && selectedRule.runsHere === false) setDraftRehomeChosen(true);
+                      setDraftCloudChosen(false);
                       setDraftTarget(next.isActiveBinding ? null : next);
                       setDraftMachineChosen(true);
                       setError(null);

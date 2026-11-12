@@ -229,6 +229,7 @@ enum WorkSettingsCatalog {
     "integrations.ade-cloud-sign-ins": Setting(path: "App › ADE Cloud › Sign-ins on ADE Cloud", locked: true),
     "integrations.ade-cloud-spending": Setting(path: "App › ADE Cloud › ADE Cloud lanes and computers", locked: true),
     "ade-cloud.plans": Setting(path: "App › ADE Cloud › ADE Cloud plans and billing", locked: true),
+    "ade-cloud.invite": Setting(path: "App › ADE Cloud › Invite friends to ADE Cloud", locked: false),
     "ade-cloud.sizes": Setting(path: "App › ADE Cloud › ADE Cloud sizes", locked: true),
     "integrations.ade-cloud-agent-limits": Setting(path: "App › ADE Cloud › What agents may spend on ADE Cloud", locked: true),
     "integrations.jira-projects": Setting(path: "App › Integrations › Jira projects for this project", locked: false),

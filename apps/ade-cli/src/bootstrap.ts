@@ -84,6 +84,11 @@ import { resolveGitCommit, runGit } from "../../desktop/src/main/services/git/gi
 import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
 import { createCachedProjectOriginReader, createProjectNewLaneSettings } from "../../desktop/src/main/services/lanes/newLaneSettingsStore";
 import { createAutomationRuleAccountStore } from "../../desktop/src/main/services/automations/automationRuleAccountStore";
+import { createAutomationCloudRegistrar, type AutomationCloudRegistrar } from "../../desktop/src/main/services/automations/automationCloudRegistrar";
+import { CLOUD_AGENT_LIMITS_VAULT_KEY } from "../../desktop/src/main/services/adeCloud/cloudSleep";
+import { resolveWebhookRelayBaseUrl } from "../../desktop/src/main/services/automations/customWebhookService";
+import { ACCOUNT_RELAY_TOKEN_HEADER } from "../../desktop/src/main/services/github/githubRelayConfig";
+import { createCloudApiClient } from "../../desktop/src/shared/cloudApiClient";
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
 import { createProxyService, type ProxyService } from "./services/proxy/proxyService";
@@ -95,6 +100,7 @@ import {
 import { createOAuthRedirectService } from "../../desktop/src/main/services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
+import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { registerRemoteWorkShellCheck } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import {
@@ -309,7 +315,6 @@ import { redactSecrets, sha256Hex } from "../../desktop/src/main/services/shared
 import { createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
 import { createCloudLaneNameSync, type CloudLaneNameSync } from "../../desktop/src/main/services/adeCloud/cloudLaneNameSync";
 import { createCloudServerProvider } from "../../desktop/src/main/services/adeCloud/cloudServerProvider";
-import { isCloudMachine } from "./services/power/cloudKeepAwake";
 import { normalizeGitRemoteIdentity } from "../../desktop/src/shared/crossMachineHandoff";
 import { readGitOriginUrl } from "../../desktop/src/main/services/projects/recentProjectSummary";
 import { BRAIN_HEARTBEAT_STALE_MS, readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
@@ -1134,8 +1139,14 @@ export async function createAdeRuntime(args: {
   const sessionActivityReportingEnabled = !embeddedRuntime && Boolean(runtimeSocketPath);
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   if (!embeddedRuntime) removeAdeCodeLeftovers(projectRoot, logger);
+  // On an ADE Cloud computer the guard follows the computer's own small,
+  // growing disk and names it in its refusal (`cloudDiskGuard.ts`).
+  const cloudDiskGuard = isAdeCloudComputer()
+    ? (await import("./services/power/cloudDiskGuard")).cloudDiskGuardOptions(machineRuntimeLayout.adeDir)
+    : null;
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, machineRuntimeLayout.adeDir],
+    ...(cloudDiskGuard ?? {}),
   });
   // An embedded runtime is a guest inside an external process. It must never
   // take machine-brain authority, host a sync listener, or answer for the
@@ -1544,6 +1555,8 @@ export async function createAdeRuntime(args: {
     let onAccountAutomationRulesChangedRef: (() => void) | null = null;
     /** Account rows changed (another computer wrote): claim, confirm and re-read rules. */
     let onAccountAutomationRuleRowsChangedRef: (() => void) | null = null;
+    /** Sends ADE Cloud the rules homed there (C9) after each sync; set once automations exist. */
+    let cloudAutomationRegistrarRef: AutomationCloudRegistrar | null = null;
     const syncDeviceIdPath = path.join(
       syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
       "sync-device-id",
@@ -1677,6 +1690,8 @@ export async function createAdeRuntime(args: {
             const settled = projectConfigService.reconcileAutomationRules({ confirmed: confirmed && moved.moved === 0 });
             if (moved.moved > 0 || settled.claimed > 0 || settled.readded.length > 0) ruleSyncAgain = true;
             onAccountAutomationRulesChangedRef?.();
+            // Off this loop: a slow directory never holds the rules' own sync.
+            void cloudAutomationRegistrarRef?.reconcile();
           } while (ruleSyncAgain);
         } catch (error) {
           logger.warn("automations.account_rules_sync_failed", {
@@ -2898,7 +2913,7 @@ export async function createAdeRuntime(args: {
 
     let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
     // Saved chats: a cloud computer only. Fed by the chat service's events below.
-    const cloudChatUploader = isCloudMachine() && resolvedArgs.chatRuntime === "agent"
+    const cloudChatUploader = isAdeCloudComputer() && resolvedArgs.chatRuntime === "agent"
       ? createCloudChatUploader({
           adeDir: paths.adeDir,
           chatTranscriptsDir: paths.chatTranscriptsDir,
@@ -2940,7 +2955,7 @@ export async function createAdeRuntime(args: {
       : null;
     cloudChatUploaderRef.current = cloudChatUploader;
     teardown.push(() => cloudChatUploader?.dispose());
-    if (isCloudMachine() && process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
+    if (isAdeCloudComputer() && process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
       const laneNameClient = createCloudServerProvider({
         accessToken: async () => (await getAccountAccessToken().catch(() => null)) ?? null,
         baseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null,
@@ -3410,6 +3425,60 @@ export async function createAdeRuntime(args: {
         }
         pushEvent("runtime", { type: "runs-updated", source: "automations" });
       };
+    }
+    if (automationService) {
+      // ADE Cloud as a rule's home (C9): this brain sends the server the rules
+      // homed there, after every account sync; never on a timer.
+      const readOrigin = createCachedProjectOriginReader(projectRoot);
+      const registrar = createAutomationCloudRegistrar({
+        listCloudHomes: () => projectConfigService.cloudHomedAutomationRules(),
+        compile: (ruleId) => {
+          const origin = readOrigin();
+          return origin ? automationService.cloudHomeSpec(ruleId, origin) : { problem: "This project has no GitHub remote." };
+        },
+        api: () => {
+          const baseUrl = getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] });
+          if (!baseUrl || !accountAuthService.getStatus().signedIn) return null;
+          return createCloudApiClient({ baseUrl, accessToken: async () => (await getAccountAccessToken().catch(() => null)) ?? null });
+        },
+        setHookForward: async (hookId, forward) => {
+          const token = await getAccountAccessToken().catch(() => null);
+          if (!token) throw new Error("Sign in to ADE to point this webhook at ADE Cloud.");
+          const response = await fetch(`${resolveWebhookRelayBaseUrl(db)}/hooks/forward`, {
+            method: "POST",
+            headers: { "content-type": "application/json", [ACCOUNT_RELAY_TOKEN_HEADER]: token },
+            body: JSON.stringify({ hookId, forward }),
+            signal: AbortSignal.timeout(15_000),
+          });
+          // A hook already gone (retired with its rule) forwards nowhere.
+          if (!response.ok && !(response.status === 404 && forward === null)) {
+            throw new Error(`ADE's webhook relay answered HTTP ${response.status}.`);
+          }
+        },
+        origin: () => readOrigin(),
+        onStateChanged: () => automationService.noteCloudHomeStateChanged(),
+        logger,
+      });
+      cloudAutomationRegistrarRef = registrar;
+      automationService.setCloudHome({ stateFor: (ruleId) => registrar.stateFor(ruleId), runNow: (rule) => registrar.runNow(rule) });
+      teardown.push(automationService.onRuleDeleted((rule) => void registrar.forget(rule)));
+      // The server reads the agent limits when a rule is registered: a change of
+      // them (on any computer) sends the cloud rules again, so it takes effect.
+      if (accountVaultStore) {
+        const vault = accountVaultStore;
+        let limitsSeen: string | null | undefined;
+        teardown.push(vault.startPeriodicSync(undefined, (status) => {
+          if (status !== "ready") return;
+          const limits = vault.get(ACCOUNT_SCOPE_ALL, "integration", CLOUD_AGENT_LIMITS_VAULT_KEY);
+          if (limitsSeen !== undefined && limits !== limitsSeen) {
+            logger.info("automations.cloud_home_limits_changed", {});
+            void registrar.resendAll();
+          }
+          limitsSeen = limits;
+        }));
+      }
+      void registrar.reconcile();
+      teardown.push(() => registrar.dispose());
     }
     teardown.push(() => automationService?.dispose());
     const automationSecretService = createAutomationSecretService({

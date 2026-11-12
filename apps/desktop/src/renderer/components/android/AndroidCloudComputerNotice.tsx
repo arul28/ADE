@@ -3,6 +3,7 @@ import { AndroidLogo } from "@phosphor-icons/react";
 import {
   cloudAndroidNeedsVmCost,
   cloudAndroidVmShape,
+  cloudCatalogOf,
   cloudDiskGrowPlan,
   cloudMachineKindOf,
   cloudMachineRunsAndroid,
@@ -120,7 +121,7 @@ export function AndroidCloudComputerNotice({
     ctx.name,
     kind === "vm" ? null : "Standard computer",
     // Says the disk too, when the provider reports it.
-    describeCloudMachineSize(box),
+    describeCloudMachineSize(box, cloudCatalogOf(account)),
   ]
     .filter(Boolean)
     .join(" · ");

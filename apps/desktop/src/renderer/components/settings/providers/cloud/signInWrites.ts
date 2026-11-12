@@ -16,7 +16,7 @@ import { COPILOT_REPO_LINE } from "./adeCloudSignInModel";
 import type { HeldWrites } from "./useHeldWrites";
 
 /** One write: a busy id (a second press waits), the call, and the error toast's words. True when it went through. */
-export type RunWrite = (id: string, write: () => Promise<ProviderLoginStatus> | undefined, failure: string) => Promise<boolean>;
+export type RunWrite = (id: string, write: () => Promise<ProviderLoginStatus | undefined> | undefined, failure: string) => Promise<boolean>;
 
 /**
  * The writes of one page: `runWrite` and the busy ids. A second press of a
@@ -121,9 +121,13 @@ export async function confirmUseOnCloud(args: {
 /**
  * Remove one sign-in from the account: the confirm, then the held write (the
  * card hides, the toast offers Undo, the write runs when the toast ends).
+ * An account copied from several computers goes whole: every copy in `keys`.
  */
 export async function confirmRemoveSignIn(args: {
-  key: string;
+  /** Every copy of the account the card stands for, the card's own key first (the hold and busy id). */
+  keys: readonly string[];
+  /** The account's name on the card (its email), for a card of several copies. */
+  name?: string;
   providerLabel: string;
   /** The computer it came from, and whether that is this one. */
   origin: string;
@@ -132,23 +136,58 @@ export async function confirmRemoveSignIn(args: {
   hold: HeldWrites["hold"];
   runWrite: RunWrite;
 }): Promise<void> {
-  const { key, providerLabel, pin, runWrite } = args;
-  const from = args.originIsThisComputer ? "this computer" : args.origin;
-  const keeps = args.originIsThisComputer ? "This computer keeps its own sign-in." : `${args.origin} keeps its own sign-in.`;
+  const { keys, providerLabel, pin, runWrite } = args;
+  const key = keys[0];
+  if (!key) return;
+  const several = keys.length > 1;
+  const from = several
+    ? `${keys.length} computers`
+    : args.originIsThisComputer ? "this computer" : args.origin;
+  const keeps = several
+    ? "Each computer keeps its own sign-in."
+    : args.originIsThisComputer ? "This computer keeps its own sign-in." : `${args.origin} keeps its own sign-in.`;
+  const what = several && args.name ? `${providerLabel} sign-in for ${args.name}` : `${providerLabel} sign-in`;
   const ok = await confirmDialog({
-    title: `Remove the ${providerLabel} sign-in from ${from}?`,
-    message: `ADE Cloud stops using it, and each cloud computer drops it. ${keeps}`,
+    title: `Remove the ${what} from ${several ? "your ADE account" : from}?`,
+    message: several
+      ? `ADE removes its copies from all ${keys.length} computers. ADE Cloud stops using it, and each cloud computer drops it. ${keeps}`
+      : `ADE Cloud stops using it, and each cloud computer drops it. ${keeps}`,
     confirmLabel: "Remove",
     destructive: true,
   });
   if (!ok) return;
   args.hold({
     id: key,
-    title: `Removed the ${providerLabel} sign-in from ${from}.`,
+    title: `Removed the ${what} from ${several ? "your ADE account" : from}.`,
     write: () => {
       void runWrite(
         `remove:${key}`,
-        () => window.ade?.providerLogins?.remove?.({ key }, pin),
+        async () => {
+          // One at a time: each write saves the account setting, and the last answer is the page's.
+          // A copy that fails doesn't stop the others; the ones left are said.
+          let status: ProviderLoginStatus | undefined;
+          let lastError: unknown = null;
+          let left = 0;
+          for (const each of keys) {
+            try {
+              status = await window.ade?.providerLogins?.remove?.({ key: each }, pin);
+            } catch (error) {
+              lastError = error;
+              left += 1;
+            }
+          }
+          // None went: the page's own failure toast says it is back.
+          if (left === keys.length) throw lastError;
+          if (left > 0) {
+            console.warn("[providers] removing a sign-in's copies failed for some", lastError);
+            showToast({
+              tone: "warning",
+              title: `ADE removed ${keys.length - left} of ${keys.length} copies of the ${what}.`,
+              message: `${left === 1 ? "One copy is" : `${left} copies are`} still in your ADE account and back on the page. Remove it again to take ${left === 1 ? "it" : "them"} out.`,
+            });
+          }
+          return status;
+        },
         `ADE couldn't remove the ${providerLabel} sign-in. It is back on the page.`,
       );
     },

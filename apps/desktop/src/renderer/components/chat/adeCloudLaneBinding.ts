@@ -6,6 +6,8 @@ import type { RemoteRuntimeConnectionStatus, RemoteRuntimeProjectRecord } from "
 import { ipcErrorMessage } from "../../lib/format";
 import type { AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { connectWithRetry } from "./connectWithRetry";
+import { connectMachine } from "../../lib/machineConnect";
+import { MachineConnectError, sameMachineKey } from "../../../shared/machineAddress";
 
 type RemoteBinding = OpenProjectBinding & { kind: "remote" };
 
@@ -60,7 +62,7 @@ export async function resolveAdeCloudLaneBinding(args: {
 }): Promise<RemoteBinding> {
   const { lane } = args;
   const origin = normalizeGitRemoteIdentity(args.originUrl);
-  const connection = args.connections.find((candidate) => lane.machineKey && candidate.target.pairedMachine?.machineKey === lane.machineKey)
+  const connection = args.connections.find((candidate) => lane.machineKey && sameMachineKey(candidate.target.pairedMachine?.machineKey, lane.machineKey))
     ?? args.connections.find((candidate) => candidate.target.hostname?.trim().toLowerCase() === lane.instanceId.toLowerCase())
     ?? null;
   if (connection) {
@@ -73,11 +75,24 @@ export async function resolveAdeCloudLaneBinding(args: {
   let target: { id: string; name: string; hostname?: string | null } | null = connection?.target ?? null;
   if (!target) {
     if (!lane.machineKey) throw new Error(`ADE can't reach the computer of ${lane.laneName} yet. Try again in a minute.`);
-    const paired = await window.ade.account.pairMachine(lane.machineKey);
-    target = { id: paired.targetId, name: paired.name || lane.laneName, hostname: lane.instanceId };
+    // Never connected from here: contract C2 wakes a sleeping computer, pairs
+    // this one with it through the account, and connects.
+    args.onWaking();
+    const machineKey = lane.machineKey;
+    const address = await connectMachine(machineKey).catch(async (error: unknown) => {
+      // Paired but not connected yet (a just-woken computer still settling):
+      // the retry below connects it. Anything else is the reason the send stops.
+      if (!(error instanceof MachineConnectError) || error.failure.reason !== "unreachable") throw error;
+      const saved = await window.ade.machines.addressFor(machineKey).catch(() => null);
+      if (saved?.kind === "remote") return saved;
+      throw error;
+    });
+    if (address.kind !== "remote") throw new Error(`The computer of ${lane.laneName} is this computer.`);
+    target = { id: address.targetId, name: address.name || lane.laneName, hostname: lane.instanceId };
+  } else {
+    args.onWaking();
   }
   if (!args.stillWanted()) throw new Error("Send cancelled.");
-  args.onWaking();
   const targetId = target.id;
   const { value: connected, lastError } = await connectWithRetry({
     connect: () => window.ade.remoteRuntime.connect(targetId),

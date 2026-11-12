@@ -3,7 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { CaretRight, ChatCircleText, Check, GitBranch, TerminalWindow, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { ChatLaunchSnapshot } from "../../../shared/types";
-import { chatLaunchProgress, chatLaunchStatusLine, isChatLaunchSucceeded } from "../../../shared/chatLaunch";
+import { chatLaunchProgress, chatLaunchStartedAt, chatLaunchStatusLine, isChatLaunchSucceeded } from "../../../shared/chatLaunch";
 import {
   chatLaunchStore,
   dismissChatLaunches,
@@ -97,7 +97,7 @@ export function slideOutHeadline(launches: ChatLaunchSnapshot[]): string {
 
 function LaunchElapsed({ launch }: { launch: ChatLaunchSnapshot }) {
   const live = !launch.endedAt && launch.phase !== "failed" && !isChatLaunchSucceeded(launch);
-  const text = useLaunchDurationText(launch.startedAt, launch.endedAt, live);
+  const text = useLaunchDurationText(chatLaunchStartedAt(launch), launch.endedAt, live);
   return <span className="shrink-0 tabular-nums text-fg/40">{text}</span>;
 }
 

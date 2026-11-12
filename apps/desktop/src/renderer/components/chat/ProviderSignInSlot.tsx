@@ -22,15 +22,19 @@ export const ProviderSignInStrip = memo(function ProviderSignInStrip({
   provider,
   machineName,
   runsHere,
+  adeCloudPass = false,
   onSignIn,
 }: {
   provider: string;
   machineName: string;
   /** The chat runs on the computer in front of the person. */
   runsHere: boolean;
+  /** Claude on ADE Cloud: what it needs there is a pass, not a sign-in. */
+  adeCloudPass?: boolean;
   onSignIn: () => void;
 }) {
-  const label = providerSignInSpec(provider)?.label ?? provider;
+  // A pass is Claude's own (the account's plan), not Claude Code's sign-in.
+  const label = adeCloudPass ? "Claude" : providerSignInSpec(provider)?.label ?? provider;
   const where = runsHere || machineName === THIS_MACHINE_NAME ? "this computer" : machineName;
   return (
     <div
@@ -45,14 +49,14 @@ export const ProviderSignInStrip = memo(function ProviderSignInStrip({
         <ProviderLogo family={provider} size={13} />
       </span>
       <span className="ade-psi-text ade-psi-long">
-        <span className="ade-psi-lead">{label} isn&apos;t signed in on&nbsp;</span>
+        <span className="ade-psi-lead">{adeCloudPass ? `${label} needs a pass on\u00a0` : `${label} isn't signed in on\u00a0`}</span>
         <span className="ade-psi-machine" title={where}>{where}</span>
         <span className="ade-psi-end">.</span>
       </span>
       {/* The narrowest prompt box: the sentence shortens before the button
           could be cut. */}
       <span className="ade-psi-text ade-psi-short">
-        <span className="ade-psi-lead">{label}: not signed in</span>
+        <span className="ade-psi-lead">{adeCloudPass ? `${label}: needs a pass` : `${label}: not signed in`}</span>
       </span>
       <button type="button" className="kit-btn ade-psi-button" data-size="sm" onClick={onSignIn}>
         Sign in

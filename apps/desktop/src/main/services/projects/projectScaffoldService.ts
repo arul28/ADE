@@ -1,3 +1,9 @@
+import {
+  ADE_GIT_CREDENTIAL_HELPER_KEY,
+  adeGitCredentialHelperValue,
+  cloudAdeLauncherPath,
+} from "../../../../../ade-cli/src/services/github/gitCredentialHelper";
+import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -15,6 +21,8 @@ import { codedError } from "../../../shared/codedError";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { isFsAccessRefusal } from "../../../shared/fsAccessRefusal";
 import { gitCommandError, runGit } from "../git/git";
+import { githubAuthHeaderGitEnv } from "../git/gitTransportAuth";
+import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import type { Logger } from "../logging/logger";
 import type { createGithubService } from "../github/githubService";
 import { canonicalGitOriginUrl, resolveGithubRemoteRepo } from "../github/githubSshAlias";
@@ -334,6 +342,52 @@ export function createProjectScaffoldService({
     }
   };
 
+  /** Whether this computer has a GitHub sign-in git can use (environment, gh, or the saved token). */
+  const hasOwnGithubSignIn = async (): Promise<boolean> => {
+    try {
+      await githubService.getGitTransportTokenOrThrowAsync();
+      return true;
+    } catch (error) {
+      logger.info("project_scaffold.clone_no_own_github_sign_in", { error: error instanceof Error ? error.name : "unknown" });
+      return false;
+    }
+  };
+
+  /**
+   * On an ADE Cloud computer only: the clone's local config gets an empty
+   * `credential.https://github.com.helper` (no system or global helper runs,
+   * or stores ADE's token, for this clone), then `ade git credential` by its
+   * launcher's absolute path, so a plain `git push` in a terminal there signs
+   * in (`gitCredentialHelper.ts`). On a person's own computer nothing is
+   * recorded: ADE's own git passes the token per command, and the person's
+   * git setup works as in any repository. Best effort: a failure is logged.
+   */
+  const recordCloudCredentialHelper = async (rootPath: string): Promise<void> => {
+    if (!isAdeCloudComputer()) return;
+    const launcher = cloudAdeLauncherPath(resolveMachineAdeDir());
+    if (!launcher) {
+      logger.warn("project_scaffold.clone_credential_helper_skipped", { reason: "no_launcher" });
+      return;
+    }
+    const configure = (args: string[]) => runGit(["config", "--local", ...args], { cwd: rootPath, timeoutMs: 10_000 })
+      .catch((error: unknown) => ({ exitCode: 1, stderr: error instanceof Error ? error.message : String(error) }));
+    for (const [index, value] of ["", adeGitCredentialHelperValue(launcher)].entries()) {
+      const result = await configure(["--add", ADE_GIT_CREDENTIAL_HELPER_KEY, value]);
+      if (result.exitCode === 0) continue;
+      logger.warn("project_scaffold.clone_credential_helper_failed", { step: index === 0 ? "reset" : "helper", error: redactGitOutput(String(result.stderr ?? "")).slice(0, 200) });
+      // A reset with no helper after it would leave this clone with none at
+      // all, not even the person's own: undo it (the clone is fresh, so these
+      // entries are only ours).
+      if (index > 0) {
+        const undo = await configure(["--unset-all", ADE_GIT_CREDENTIAL_HELPER_KEY]);
+        if (undo.exitCode !== 0) {
+          logger.warn("project_scaffold.clone_credential_helper_undo_failed", { error: redactGitOutput(String(undo.stderr ?? "")).slice(0, 200) });
+        }
+      }
+      return;
+    }
+  };
+
   const cloneIntoTarget = async (input: CloneProjectInput, target: CloneTarget): Promise<CloneProjectResult> => {
     const { url, parentDir, rootPath } = target;
 
@@ -353,7 +407,10 @@ export function createProjectScaffoldService({
     // clones work in environments without a system credential helper. Using
     // the basic-auth shape (x-access-token:<token>) is the GitHub-recommended
     // form and avoids leaking the token via the URL in process listings.
+    // A header from another computer (`input.githubAuthHeader`, a one-shot
+    // clone sent here) is used for this clone only and never stored here.
     let authHeader = (input.githubAuthHeader ?? "").trim();
+    const borrowedHeader = authHeader.length > 0;
     if (!authHeader) {
       try {
         const storedToken = await githubService.getGitTransportTokenOrThrowAsync();
@@ -364,34 +421,38 @@ export function createProjectScaffoldService({
       }
     }
 
-    // `git clone -c …` on purpose: the clone's own `-c` is persisted in the
-    // new repository's .git/config, and ADE's normal fetch/push has no other
-    // auth injection, so later Git work relies on that header. Callers that
-    // add their own header (cross-machine handoff) reset the inherited list
-    // first, so GitHub never sees two.
-    const cloneArgs: string[] = ["clone"];
-    if (authHeader) {
-      cloneArgs.push(
-        "-c",
-        `http.https://github.com/.extraheader=AUTHORIZATION: ${authHeader}`,
-      );
-    }
+    // The header goes to this one command through Git's config environment
+    // (Git 2.31+, the same on every platform), never as `git clone -c …`:
+    // that form saves it in the new repository's .git/config, where any
+    // process, agent or copy of the folder can read the token. It also stays
+    // out of the command line that process listings show. The empty entry
+    // first resets a global header, so GitHub never sees two. Later, ADE's
+    // own fetch and push pass this computer's token the same way
+    // (`runGitWithGithubAuthFallback`); a computer with none of its own has
+    // nothing to pass, which the result says (`githubSignInMissing`).
+    const cloneEnv: NodeJS.ProcessEnv = authHeader ? githubAuthHeaderGitEnv(authHeader) : {};
     // `--` so a URL that starts with "-" cannot be read as a git option.
-    cloneArgs.push("--", url, rootPath);
+    const cloneArgs: string[] = ["clone", "--", url, rootPath];
 
     try {
       const cloneRes = await runGit(cloneArgs, {
         cwd: parentDir,
         timeoutMs: 5 * 60_000,
+        env: cloneEnv,
       });
       if (cloneRes.exitCode !== 0) {
         // Git repeats the clone URL, query and all, so a token in it would reach the banner.
         throw new Error(redactGitOutput(cloneRes.stderr.trim()) || `git clone failed (exit ${cloneRes.exitCode})`);
       }
 
+      await recordCloudCredentialHelper(rootPath);
+
       initializeOrRepairAdeProject(rootPath, { logger, mode: "shared" });
       await warmLocalDatabase(rootPath, "project_scaffold.clone_local_db_warm_failed");
 
+      // Cloned with another computer's header: without a sign-in of its own,
+      // this computer's fetch and push won't sign in. The caller says so.
+      if (borrowedHeader && !await hasOwnGithubSignIn()) return { rootPath, githubSignInMissing: true };
       return { rootPath };
     } catch (err) {
       if (!preexistedRoot) {

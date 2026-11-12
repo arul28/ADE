@@ -12,15 +12,16 @@
 import os from "node:os";
 
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
-import type {
-  ProviderLoginApplyState,
-  ProviderLoginCaptureOffReason,
-  ProviderLoginGhCliStatus,
-  ProviderLoginLocalState,
-  ProviderLoginProvider,
-  ProviderLoginProviderStatus,
-  ProviderLoginSignIn,
-  ProviderLoginStatus,
+import {
+  accountIdentityOf,
+  type ProviderLoginApplyState,
+  type ProviderLoginCaptureOffReason,
+  type ProviderLoginGhCliStatus,
+  type ProviderLoginLocalState,
+  type ProviderLoginProvider,
+  type ProviderLoginProviderStatus,
+  type ProviderLoginSignIn,
+  type ProviderLoginStatus,
 } from "../../../shared/types/providerLogins";
 import { CLOUD_SIGN_INS } from "../../../shared/cloudSignIns";
 import {
@@ -126,6 +127,35 @@ export function savedKeyVaultKey(id: string): string {
   return `cloud-key-${id}`;
 }
 
+/** The source an applied entry records for a saved ADE Cloud key: `key:<id>`. */
+export function savedKeySource(id: string): string {
+  return `key:${id}`;
+}
+
+/** Whether an applied source is a saved ADE Cloud key (`savedKeySource`), not a sign-in's vault key. */
+export function isSavedKeySource(source: string | null | undefined): boolean {
+  return typeof source === "string" && source.startsWith("key:");
+}
+
+/**
+ * A place's pick among its copies: the freshest copy of the picked account
+ * (a pick names one copy, and the same account copied from another computer
+ * is the same choice, one card per account, B14-5), else the picked copy
+ * itself (it names no account), else the newest copy. `newestFirst` is
+ * already sorted; each caller reads keys, accounts and times its own way.
+ */
+export function pickFreshestOfAccount<T>(
+  newestFirst: readonly T[],
+  chosenKey: string | undefined,
+  read: { key(entry: T): string; identity(entry: T): string | null },
+): T | undefined {
+  const picked = newestFirst.find((entry) => read.key(entry) === chosenKey);
+  const pickedAccount = picked ? read.identity(picked) : null;
+  return (pickedAccount ? newestFirst.find((entry) => read.identity(entry) === pickedAccount) : undefined)
+    ?? picked
+    ?? newestFirst[0];
+}
+
 /** One carried sign-in that is on for ADE Cloud, as the pick rule sees it. */
 export type CloudPlaceCandidate<R> = { row: R; meta: NonNullable<LoginMeta>; provider: ProviderLoginProvider; slot: string };
 /** A place's pick: the saved key, or one of its sign-ins. */
@@ -140,8 +170,10 @@ export type CloudPlacePick<R> = { provider: ProviderLoginProvider } & ({ savedKe
  * usable, not deleted, not switched off and have readable meta; none while
  * ADE Cloud's sign-ins are off. The saved key wins when the person picked it,
  * or for Copilot with no pick (a saved key goes before a carried GitHub CLI
- * login, G1 Q2), if one is saved. Otherwise the picked sign-in, else the
- * newest (`renewedAt`, else `capturedAt`).
+ * login, G1 Q2), if one is saved. Otherwise the picked sign-in (the
+ * freshest usable copy of the picked account, when the same account came
+ * from several computers), else the newest (`renewedAt`, else `capturedAt`).
+ * A copy that stops being usable drops out, so the next copy takes over.
  */
 export function cloudPlacePicks<R extends { kind: string; key: string; deleted?: boolean }>(
   rows: Iterable<R>,
@@ -171,8 +203,11 @@ export function cloudPlacePicks<R extends { kind: string; key: string; deleted?:
       picks.set(place, { provider, savedKey: { id: saved.id, token } });
       continue;
     }
-    const signIn = list.find((entry) => entry.row.key === chosen)
-      ?? [...list].sort((left, right) => (right.meta.renewedAt ?? right.meta.capturedAt) - (left.meta.renewedAt ?? left.meta.capturedAt))[0]!;
+    const newestFirst = [...list].sort((left, right) => (right.meta.renewedAt ?? right.meta.capturedAt) - (left.meta.renewedAt ?? left.meta.capturedAt));
+    const signIn = pickFreshestOfAccount(newestFirst, chosen, {
+      key: (entry) => entry.row.key,
+      identity: (entry) => accountIdentityOf(entry.provider, entry.meta.account),
+    })!;
     picks.set(place, { provider, signIn });
   }
   return picks;
@@ -311,7 +346,7 @@ export const LOCAL_MESSAGES: Record<ProviderLoginLocalState, string> = {
   other_owner_newer: "Another computer renews this sign-in, so your account keeps that computer's copy.",
   written_back: "A cloud computer renewed this sign-in while this computer was off. ADE wrote the newer copy into the login file here.",
   from_saved_key: "This file came from a saved ADE Cloud key. It stays a key.",
-  from_account: "This is the account's sign-in. ADE wrote it on this cloud computer.",
+  from_account: "This is the account's sign-in. ADE wrote it on this computer.",
   account_refused: "Your account service doesn't take sign-ins yet. ADE keeps this one on this computer and tries again every hour.",
   not_checked: "Not checked on this computer.",
 };
@@ -392,7 +427,7 @@ export type SyncJobs = {
   // status and the person's writes (providerLoginStatus.ts, providerLoginWrites.ts)
   status(provider?: ProviderLoginProvider | null): Promise<ProviderLoginStatus>;
   saveSetting(next: CloudSetting, dropKey?: string | null, claude?: Record<string, unknown> | null): Promise<ProviderLoginStatus>;
-  // apply on a cloud computer (providerLoginApplyPass.ts)
+  // apply on a cloud computer, the sync down on an own computer (providerLoginApplyPass.ts)
   runApply(
     vault: ProviderLoginVault,
     accountUserId: string,
@@ -405,6 +440,8 @@ export type SyncJobs = {
   isAppliedBundle(provider: ProviderLoginProvider, bundle: CarryBundle): boolean;
   ownedPlaceFor(provider: ProviderLoginProvider, login: LoginMemo): { place: string; source: string } | null;
   noteOwnedCopy(place: string, memo: LoginMemo, expiresAt: number | null): void;
+  /** The account sign-in apply wrote here that capture reads back as `contentHash`, or null. */
+  appliedSourceOf(contentHash: string): string | null;
   // takeover, write-back and renewal (providerLoginTakeover.ts)
   checkArmed(): void;
   writeBack(
@@ -564,7 +601,12 @@ export function createSyncShared(deps: ProviderLoginSyncDeps): SyncShared {
         provider: parsedKey.provider,
         slot: parsedKey.slot,
         class: meta.class,
-        origin: { label: meta.origin.label, platform: meta.origin.platform, thisComputer: parsedKey.origin12 === origin12 },
+        origin: {
+          label: meta.origin.label,
+          ...(meta.origin.machineKey ? { machineKey: meta.origin.machineKey } : {}),
+          platform: meta.origin.platform,
+          thisComputer: parsedKey.origin12 === origin12,
+        },
         account: meta.account,
         capturedAt: iso(meta.capturedAt),
         renewedAt: iso(meta.renewedAt),
@@ -589,8 +631,12 @@ export function createSyncShared(deps: ProviderLoginSyncDeps): SyncShared {
       if (chosen === "key") continue;
       if (place === "copilot" && chosen === undefined && savedCopilotKey) continue;
       const on = list.filter((signIn) => signIn.onForCloud);
-      const pick = on.find((signIn) => signIn.key === chosen)
-        ?? [...on].sort((left, right) => (right.renewedAt ?? right.capturedAt ?? "").localeCompare(left.renewedAt ?? left.capturedAt ?? ""))[0];
+      const newestFirst = [...on].sort((left, right) => (right.renewedAt ?? right.capturedAt ?? "").localeCompare(left.renewedAt ?? left.capturedAt ?? ""));
+      // The same rule as `cloudPlacePicks`: the picked account's freshest copy.
+      const pick = pickFreshestOfAccount(newestFirst, chosen, {
+        key: (signIn) => signIn.key,
+        identity: (signIn) => accountIdentityOf(signIn.provider, signIn.account),
+      });
       if (pick && setting.enabled) pick.inUseOnCloud = true;
     }
     return signIns.sort((left, right) => left.key.localeCompare(right.key));

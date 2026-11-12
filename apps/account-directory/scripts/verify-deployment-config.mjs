@@ -80,6 +80,10 @@ export const OPTIONAL_SECRETS = [
     name: "CLERK_SECRET_KEY",
     effect: "approving a sign-in from the ADE phone app answers 503, and the app offers the browser page",
   },
+  {
+    name: "CLOUD_LAUNCH_JOIN_KEY",
+    effect: "starting an ADE Cloud lane from the web, the phone or an automation (POST /cloud/launches) answers 503",
+  },
 ];
 export const ENVIRONMENTS = ["default", "production"];
 /** A well-formed code that no sign-in holds; the page must carry it through. */

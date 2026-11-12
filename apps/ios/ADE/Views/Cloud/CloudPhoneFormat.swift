@@ -192,10 +192,11 @@ struct CloudPhoneTier: Identifiable, Equatable {
     return "1 hour of work uses \(value) hour\(rate == 1 ? "" : "s")"
   }
 
-  /// How long `leftMilli` hours last at this size, rounded down to a tenth: "57.4 h".
+  /// How long `leftMilli` hours last at this size (`cloudTierHoursAt`): rounded
+  /// down, to a tenth under 10 h and to whole hours from 10 up: "7.5 h", "57 h".
   func hoursLeftLabel(_ leftMilli: Int) -> String {
     let hours = Double(max(0, leftMilli)) / Double(max(1, multiplierMilli))
-    let shown = hours >= 100 ? hours.rounded(.down) : (hours * 10).rounded(.down) / 10
+    let shown = hours >= 10 ? hours.rounded(.down) : (hours * 10).rounded(.down) / 10
     return "\(shown.formatted(.number.precision(.fractionLength(0...1)).grouping(.never)))\u{00A0}h"
   }
 }

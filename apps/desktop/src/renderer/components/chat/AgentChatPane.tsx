@@ -421,7 +421,10 @@ import { describeAutoCreateStart } from "../lanes/laneStartOptions";
 import { autoLaneMachine, isAdeCloudLaneComputer, originUrlForBinding } from "../lanes/laneMachines";
 import { draftCloneRowTargetId, useDraftMachineSetup } from "./useDraftMachineSetup";
 import { ADE_CLOUD_MACHINE_ID, useAdeCloudComposer, useAdeCloudDraft, type AdeCloudSend } from "./useAdeCloudDraft";
+import { useAdeCloudSignInNeed } from "./useAdeCloudSignInNeed";
 import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
+import { useFollowLaneMoves } from "../cloudLane/useFollowLaneMoves";
+import { CloudLaneHeaderButton } from "../cloudLane/CloudLaneHeaderButton";
 import { AdeCloudTray, CloudSizeButton, useCloudLaneWithoutComputerForChat } from "./AdeCloudComposerParts";
 import { cloudLaneRestartBranchRef, cloudLaneRestartProblem, cloudLaneRestartTier } from "../cloudLane/CloudLaneWithoutComputer";
 import type { CloudAccountState } from "../../../shared/adeCloud";
@@ -455,6 +458,7 @@ import {
 } from "./draftAttachmentTransfer";
 import { chatNoticeReducer, shownChatNotice } from "./chatNotice";
 import { savedChatComputerGone } from "../../state/cloudSavedChats";
+import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
   LAUNCH_PROFILE_TITLE,
   type CliProvider,
@@ -5622,7 +5626,12 @@ export function AgentChatPane({
   // as a `useRef` result and stops demanding it as a dependency.
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
+  // A cloud lane's chat follows its lane to a new computer (contract C3).
+  useFollowLaneMoves({ sessionId: selectedSessionId, laneId: selectedSession?.laneId ?? null, pin: chatRuntimePin });
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
+  // An ADE Cloud lane computer is called by its lane in the notice; any other
+  // machine keeps the name it was given, short or not.
+  const chatCloudLane = useAdeCloudLaneForBinding(chatRuntimePin ?? projectBinding);
   // Another machine's chat: pinned there, or on the machine this project tab
   // itself is bound to.
   const shownNotice = shownChatNotice(
@@ -5632,6 +5641,7 @@ export function AgentChatPane({
     // cloud computer no longer exists (no connection, or gone from the list).
     chatNotice != null && selectedSessionId != null
       && savedChatComputerGone(chatForeignPin, selectedSessionId),
+    chatCloudLane ? (chatCloudLane.laneName.trim() || laneLabel?.trim() || null) : null,
   );
   // A project chat on another machine, shown here: this desktop runs its
   // agent's browser commands in the browser the user can see, wherever the
@@ -7350,6 +7360,10 @@ export function AgentChatPane({
     && !turnActive
     && activeProviderConnection
     && !activeProviderConnection.runtimeAvailable
+    // ADE's copy is downloading, or downloads at this chat's first turn: an
+    // expected wait the chat shows itself ("Getting <agent> ready" on the
+    // turn), never a runtime problem with a Report button.
+    && activeProviderConnection.runtimeDownloadPending !== true
     // ADE's copy is there and only the login is missing: the sign-in card in
     // the composer says that, with the button that fixes it. Where that card
     // cannot show (a personal chat, a subagent's view, a provider signed in
@@ -8139,17 +8153,20 @@ export function AgentChatPane({
   // appears without a reload.
   const refetchDevinCloudAuth = useCallback(() => {
     // Devin Cloud rides the Devin CLI's own login (`devin acp --cloud`), so a
-    // signed-in CLI is the whole gate. Asked of the chat's machine, the one
-    // that launches: with shared sign-ins any computer can.
-    void getAiStatusCached({ projectRoot: projectRoot ?? null, pin: chatRuntimePinRef.current })
+    // signed-in CLI is the whole gate. Asked of the machine that launches it:
+    // an open chat's machine, or the machine a draft is set to Run on (the
+    // launch carries that machine's pin). With shared sign-ins any computer can.
+    const composerPin = selectedSessionIdRef.current
+      ? (chatRuntimePinRef.current ?? projectBinding)
+      : (draftExecutionBindingRef.current ?? chatRuntimePinRef.current);
+    // The tab's own copy is named too; the status cache shares its entry with no pin.
+    void getAiStatusCached({ projectRoot: composerPin?.rootPath ?? projectRoot ?? null, pin: composerPin ?? null })
       .then((status) => setDevinCloudAuthConfigured(status.providerConnections?.devin?.authAvailable === true))
-      .catch(() => setDevinCloudAuthConfigured(false));
-  }, [projectRoot]);
-  useEffect(() => {
-    // Once per pane, and again when the chat moves to another machine (the
-    // pin is read from its ref; its key says when the machine changed).
-    refetchDevinCloudAuth();
-  }, [chatRuntimePinKey, refetchDevinCloudAuth]);
+      .catch((error: unknown) => {
+        console.warn("[chat] reading Devin Cloud's sign-in failed", error);
+        setDevinCloudAuthConfigured(false);
+      });
+  }, [projectBinding, projectRoot]);
   // "Least loaded" reads machine stats only once the machine menu has opened.
   const [draftMachinePickerOpened, setDraftMachinePickerOpened] = useState(false);
   /** Set below, once the draft's machine routing exists: reads the machines' projects again. */
@@ -10353,7 +10370,20 @@ export function AgentChatPane({
   // (model, effort, Fast, permission mode), not the composer's defaults.
   const seedComposerFromLaunch = useCallback((launch: ChatLaunchSnapshot): boolean => {
     const picked = getChatLaunchLocalRecord(launch.launchId)?.draftSnapshot ?? null;
-    if (!picked?.modelId) return false;
+    if (!picked?.modelId) {
+      // Started in another window, on another computer, or before a reload:
+      // the launch itself carries what was picked at Send.
+      const settings = launch.chatSettings;
+      if (!settings || !launch.modelId) return false;
+      const config = buildLastLaunchConfig({ ...settings, modelId: launch.modelId }, initialNativeControls);
+      if (!config) return false;
+      applyLaunchConfigToComposer({
+        ...config,
+        fastMode: settings.fastMode === true,
+        fastTier: settings.fastMode === true && settings.fastTier === "ultrafast" ? "ultrafast" : null,
+      }, { preserveFast: true });
+      return true;
+    }
     applyLaunchConfigToComposer({
       version: 1,
       modelId: picked.modelId,
@@ -10366,7 +10396,7 @@ export function AgentChatPane({
       updatedAt: new Date().toISOString(),
     }, { preserveFast: true });
     return true;
-  }, [applyLaunchConfigToComposer]);
+  }, [applyLaunchConfigToComposer, initialNativeControls]);
   useChatLaunchPaneLifecycle({
     chatLaunch,
     launchAwaitingSession,
@@ -17004,6 +17034,7 @@ export function AgentChatPane({
     newLane: adeCloudNewLane,
     notice: adeCloudNotice,
     openSettings: openAdeCloudSettings,
+    recheckSendBlock: recheckAdeCloudSendBlock,
   } = useAdeCloudComposer({
     draft: adeCloud,
     mode: adeCloudMode,
@@ -17020,6 +17051,7 @@ export function AgentChatPane({
     connections: draftConnections,
     sendRef: adeCloudSendRef,
     navigate,
+    visible: isTileVisible,
   });
 
   const handleShelfLaneChange = useCallback((nextLaneId: string) => {
@@ -17139,7 +17171,7 @@ export function AgentChatPane({
           kind: "cloud",
           cloudProvider: "cloud",
           // The size a new lane gets and how long the hours left last at it
-          // ("Small · 43.8 h left at this size"). No claim before the first
+          // ("Small · 43 h left at this size"). No claim before the first
           // account answer: the line keeps its space, empty, and fills in place.
           detail: adeCloud.runOnLine,
           detailPending: adeCloud.runOnLine == null,
@@ -17345,6 +17377,13 @@ export function AgentChatPane({
   draftBoundMachineIdRef.current = boundLaneMachineId;
   draftExecutionBindingRef.current = draftExecutionBinding;
   draftExecutionBindingRequiredRef.current = showDraftLaunchControls;
+  const draftExecutionBindingKey = draftExecutionBinding?.key ?? null;
+  useEffect(() => {
+    // Once per pane, and again when the chat moves to another machine or the
+    // draft's Run on changes (the pins are read from their refs; their keys
+    // say when the machine changed).
+    refetchDevinCloudAuth();
+  }, [chatRuntimePinKey, draftExecutionBindingKey, refetchDevinCloudAuth]);
   draftMachineUnavailableRef.current = draftMachineUnavailable;
   composerDriftLaneIdRef.current = composerDriftLaneId;
   const activeComposerRuntimeBinding = selectedSessionId
@@ -17529,6 +17568,21 @@ export function AgentChatPane({
     ? `Sign in to ${providerSignInSpec(providerSignInNeed.provider)?.label ?? providerSignInNeed.provider} first`
     : null;
   const signInSendBlocked = signInSendBlockReason != null;
+  /**
+   * The same card for a draft bound for ADE Cloud, asked of the account's ADE
+   * Cloud sign-ins (`useAdeCloudSignInNeed`), not of this computer. Send stays
+   * off until the provider is signed in there (or another model is picked).
+   */
+  const {
+    need: adeCloudSignInNeed,
+    recheck: recheckAdeCloudSignIn,
+    blockReason: adeCloudSignInBlockReason,
+    openSignIn: openAdeCloudSignIn,
+  } = useAdeCloudSignInNeed({
+    enabled: !selectedSessionId && adeCloudMode && !turnActive && !subagentView && !personalScope && !parallelDraftActive,
+    provider: signInLoginProvider,
+    navigate,
+  });
   // One status read at a time for the sign-in checks below.
   const signInRecheckInFlightRef = useRef(false);
   /**
@@ -17557,13 +17611,17 @@ export function AgentChatPane({
   }, [refreshAvailableModels, resolveAiStatusRuntimeScope]);
   /** Send or Enter while the login is missing: bring back the strip (Not now hid it) and check again. */
   const handleSendBlocked = useCallback(() => {
+    // Signed in on ADE Cloud elsewhere (another window, the phone): read the account again.
+    if (adeCloudSignInNeed) recheckAdeCloudSignIn();
+    // GitHub connected since the last check: ask whether the repository can be cloned again.
+    recheckAdeCloudSendBlock();
     if (!signInSendBlocked) return;
     // Back as the one-line strip, never the card: the card takes focus, and a
     // second Enter would then start a provider sign-in. Focus stays in the box.
     setSignInCardKey(null);
     setDismissedSignInKey(null);
     recheckProviderSignIn("press");
-  }, [recheckProviderSignIn, signInSendBlocked]);
+  }, [adeCloudSignInNeed, recheckAdeCloudSendBlock, recheckAdeCloudSignIn, recheckProviderSignIn, signInSendBlocked]);
   /**
    * Commands that need no login of the provider, or that are the login, still
    * run while Send is off for the sign-in. Each one is answered without a
@@ -17701,7 +17759,18 @@ export function AgentChatPane({
         </ProviderSignInCardHolder>
       );
     }
-    if (!providerSignInShown) return null;
+    if (!providerSignInShown) {
+      return adeCloudSignInNeed ? (
+        <ProviderSignInStrip
+          key={adeCloudSignInNeed.key}
+          provider={adeCloudSignInNeed.provider}
+          machineName="ADE Cloud"
+          runsHere={false}
+          adeCloudPass={adeCloudSignInNeed.kind === "claude-pass"}
+          onSignIn={openAdeCloudSignIn}
+        />
+      ) : null;
+    }
     const openedFromStrip = providerSignInShown.key === signInCardKey;
     if (providerSignInShown.reason === "no-login" && !openedFromStrip) {
       return (
@@ -17735,10 +17804,12 @@ export function AgentChatPane({
     );
   }, [
     accountSwitchShown,
+    adeCloudSignInNeed,
     changeSwitchBack,
     composerRuntimePin,
     continueSwitchInNewThread,
     handleProviderSignedIn,
+    openAdeCloudSignIn,
     openSignInSettings,
     providerSignInShown,
     returnFocusToComposer,
@@ -17759,7 +17830,9 @@ export function AgentChatPane({
   const cloudLaneStatusBinding = selectedSessionId ? activeComposerRuntimeBinding : null;
   const composerAboveSlot = useMemo(() => {
     const cloudTray = adeCloudNotice ? <AdeCloudTray notice={adeCloudNotice} onAction={openAdeCloudSettings} /> : null;
-    const laneStatus = cloudLaneStatusBinding?.kind === "remote" ? <CloudLaneChatStatus binding={cloudLaneStatusBinding} /> : null;
+    const laneStatus = cloudLaneStatusBinding?.kind === "remote"
+      ? <CloudLaneChatStatus binding={cloudLaneStatusBinding} laneId={selectedSession?.laneId ?? null} />
+      : null;
     if (!cloudTray && !laneStatus) return providerSignInSlot;
     return (
       <>
@@ -17768,7 +17841,7 @@ export function AgentChatPane({
         {laneStatus}
       </>
     );
-  }, [adeCloudNotice, cloudLaneStatusBinding, openAdeCloudSettings, providerSignInSlot]);
+  }, [adeCloudNotice, cloudLaneStatusBinding, openAdeCloudSettings, providerSignInSlot, selectedSession?.laneId]);
   // Layout effect, not effect: this publishes the machine the model memos above
   // read from, so running it after paint would show one frame of the previous
   // machine's model list when the composer switches machines. Setting the same
@@ -18877,7 +18950,9 @@ export function AgentChatPane({
     selectedSession?.remoteWork,
     selectedSession?.status,
     selectedSession?.currentTurnStartedAt,
+    selectedSession?.laneId,
     laneId,
+    turnActive,
     hasAttachedTerminal,
     chatActionsAvailable,
     chatActionsOpen,
@@ -18898,6 +18973,7 @@ export function AgentChatPane({
         onClick={() => workSidebar.setTool("side-chat")}
       />
       <LaneDesktopHeaderButton laneId={laneId} onOpen={(tool) => workSidebar.setTool(tool)} />
+      <CloudLaneHeaderButton laneId={selectedSession?.laneId ?? laneId ?? null} turnRunning={turnActive} />
       {hasAttachedTerminal ? (
         <button
           type="button"
@@ -19513,6 +19589,7 @@ export function AgentChatPane({
             onPromptHistoryNavigate={handlePromptHistoryNavigate}
             attachments={attachments}
             composerMachineBinding={composerMachineBinding}
+            composerMachineLabel={launchRunsOnAdeCloud ? ADE_CLOUD_NAME : null}
             machineChipAction={machineChipAction}
             cursorRuntime={composerCloudRuntime}
             modelRuntimePin={activeComposerRuntimeBinding}
@@ -19600,7 +19677,7 @@ export function AgentChatPane({
             onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
             onOpenAiSettings={openProviderSignIn}
             aboveComposerSlot={composerAboveSlot}
-            sendBlockedReason={signInSendBlockReason ?? adeCloudNotice?.message ?? null}
+            sendBlockedReason={signInSendBlockReason ?? adeCloudSignInBlockReason ?? adeCloudNotice?.message ?? null}
             onSendBlocked={handleSendBlocked}
             sendBlockExempt={sendRunsWithoutSignIn}
             onOpenLinearSettings={openLinearSettings}

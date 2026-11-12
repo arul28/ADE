@@ -666,6 +666,8 @@ import {
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
 import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
+import { createRemoteProviderSignIn } from "./services/account/remoteProviderSignIn";
+import { startCloudBootLaunch, takeCloudLaunchEnv } from "./services/account/cloudBootLaunch";
 import {
   deviceSignInInstructions,
   readDeviceSignInPoll,
@@ -693,6 +695,8 @@ import {
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
+import { cloudDiskGuardOptions } from "./services/power/cloudDiskGuard";
+import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
 import { markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
@@ -819,6 +823,8 @@ export type CloudLaneLaunchDraft = {
   launchId: string | null;
   /** `--from-linear-issue`: bound to the new lane on the computer, when it is the whole issue. */
   linearIssue: JsonObject | null;
+  /** `--lane-name`: the new lane's name (and its computer's); null names it from the prompt. */
+  laneName: string | null;
   /** A choice a new ADE Cloud lane can't take yet; refused with its own line. */
   notify: boolean;
 };
@@ -1705,7 +1711,9 @@ const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --p
                                                     A new lane on its own new ADE Cloud computer: ADE makes the
                                                     computer, gets the repository there (the pushed branch) and
                                                     starts the chat there. --size small, medium, large, xlarge
-                                                    (default: the size you saved for new lanes). Asks you first. Ctrl-C stops only the waiting; the
+                                                    (default: the size you saved for new lanes). --lane-name <name>
+                                                    names the lane and its computer (default: from the prompt).
+                                                    Asks you first. Ctrl-C stops only the waiting; the
                                                     same --launch-id <id> again follows it or goes on from a
                                                     failed step. ade chat launch-status|launch-cancel <id>
                                                     --machine cloud checks it or stops it.
@@ -4987,9 +4995,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade automations update <id> --from-file <path>
     $ ade automations delete <id>                   Remove a rule (on every computer when it follows your account)
     $ ade automations toggle <id> --enabled true|false
-    $ ade automations run-on <id> [--device <sync-device-id> --name <computer>]
+    $ ade automations run-on <id> [--device <sync-device-id> --name <computer> | --cloud]
                                                      Choose the one computer that runs a rule that
-                                                     follows your account. Default: this computer
+                                                     follows your account. Default: this computer.
+                                                     --cloud: ADE Cloud watches its schedule or
+                                                     webhook and starts each run on a new computer
     $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
           [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
                                                      Test a rule with an event. preview shows
@@ -12417,8 +12427,10 @@ function buildChatPlan(args: string[]): CliPlan {
     const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, { provider, model: modelArg });
     const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
     const explicitLane = readLaneId(args);
-    // Only `--machine cloud` takes it: the same id again follows that launch.
+    // Only `--machine cloud` takes these: the same id again follows that
+    // launch, and the new lane (and its computer) gets the name.
     const cloudLaunchIdFlag = readValue(args, ["--launch-id"]);
+    const cloudLaneName = readValue(args, ["--lane-name"])?.trim() || null;
     const actionArgs = collectLaunchArgs(args, {
       laneId: explicitLane,
       ...lineageArgs,
@@ -12501,6 +12513,7 @@ function buildChatPlan(args: string[]): CliPlan {
       prompt: kickoffText,
       launchId: cloudLaunchIdFlag ? requireCliUuid(cloudLaunchIdFlag, "--launch-id") : null,
       linearIssue,
+      laneName: cloudLaneName,
       notify: notify != null,
     };
     if (printConfig) {
@@ -21537,12 +21550,55 @@ function buildProxyPlan(args: string[]): CliPlan {
  * login to land in the new directory, and `remove` signs the account out, then
  * forgets the entry; the directory itself is never deleted.
  */
+/**
+ * `ade providers sign-in <provider> --remote --json`: starts the provider's
+ * own sign-in in this machine's brain for a person on another screen (ADE's
+ * server runs it over exec for the phone and the web) and answers with the
+ * link and code. `sign-in-code <job> --stdin` passes a code pasted from the
+ * provider's page (on stdin only, so it is not in this process's arguments);
+ * `sign-in-status <job>` reads where it stands. Only `--remote` exists: a
+ * sign-in on this screen is Settings › Providers.
+ */
+function buildRemoteSignInPlan(group: "sign-in" | "sign-in-code" | "sign-in-status", args: string[]): CliPlan {
+  if (group === "sign-in") {
+    if (!readFlag(args, ["--remote"])) {
+      throw new CliUsageError("ade providers sign-in <provider> --remote: a sign-in finished on another screen. To sign in here, use Settings › Providers.");
+    }
+    const provider = requireValue(firstPositional(args), "provider").trim().toLowerCase();
+    return {
+      kind: "execute",
+      label: "providers sign-in",
+      steps: [{ key: "result", method: "providers.remoteSignInStart", params: { provider } }],
+      machineOnly: true,
+      minTimeoutMs: 30_000,
+    };
+  }
+  const jobId = requireValue(firstPositional(args), "sign-in job id").trim();
+  if (group === "sign-in-status") {
+    return {
+      kind: "execute",
+      label: "providers sign-in-status",
+      steps: [{ key: "result", method: "providers.remoteSignInStatus", params: { jobId } }],
+      machineOnly: true,
+    };
+  }
+  const code = readFlag(args, ["--stdin"]) ? readAllStdinSync().trim() : "";
+  if (!code) throw new CliUsageError("ade providers sign-in-code <job> --stdin (the code on stdin)");
+  return {
+    kind: "execute",
+    label: "providers sign-in-code",
+    steps: [{ key: "result", method: "providers.remoteSignInCode", params: { jobId, code } }],
+    machineOnly: true,
+  };
+}
+
 function buildProvidersPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.providers ?? topLevelHelpText() };
   }
   const group = firstPositional(args) ?? "accounts";
   if (group === "opencode") return buildOpenCodeProvidersPlan(args);
+  if (group === "sign-in" || group === "sign-in-code" || group === "sign-in-status") return buildRemoteSignInPlan(group, args);
   if (group === "actions") {
     return {
       kind: "execute",
@@ -22330,6 +22386,7 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     // Flags first, so their values are not taken for the rule id.
     const deviceId = readValue(args, ["--device", "--device-id"]);
     const name = readValue(args, ["--name"]);
+    const cloud = readFlag(args, ["--cloud"]);
     const id = requireValue(
       readValue(args, ["--id"]) ?? firstPositional(args),
       "rule id",
@@ -22337,13 +22394,16 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     if (deviceId && !name) {
       throw new CliUsageError("automations run-on --device needs --name <computer name> too.");
     }
+    if (cloud && deviceId) {
+      throw new CliUsageError("automations run-on takes --cloud or --device, not both.");
+    }
     return {
       kind: "execute",
       label: `automations run-on ${id}`,
       steps: [
         actionStep("result", "automations", "setRunOn", {
           id,
-          ...(deviceId ? { deviceId, name } : {}),
+          ...(cloud ? { cloud: true } : deviceId ? { deviceId, name } : {}),
         }),
       ],
     };
@@ -24584,6 +24644,8 @@ function checkStorageReadiness(projectRoot: string): ReadinessCheck {
   try {
     const monitor = createDiskPressureMonitor({
       roots: [projectRoot, resolveMachineAdeLayout().adeDir],
+      // The brain's own guard on an ADE Cloud computer (`cloudDiskGuard.ts`).
+      ...(isAdeCloudComputer() ? cloudDiskGuardOptions(resolveMachineAdeLayout().adeDir) : {}),
     });
     const snap = monitor.getSnapshot({ maxAgeMs: 0 });
     const urgent = isUrgentDiskPressure(snap.state);
@@ -25813,6 +25875,7 @@ function isMachineRuntimeScopedMethod(method: string): boolean {
     method === "cloud.prepareStop" ||
     method === "cloud.pushWork" ||
     method === "cloud.workState" ||
+    method.startsWith("providers.remoteSignIn") ||
     method === "notify.send" ||
     method.startsWith("sync.") ||
     method.startsWith("projects.") ||
@@ -29493,16 +29556,21 @@ async function runServe(
   };
   // This computer's ADE Cloud id, on a cloud computer; empty elsewhere.
   const cloudInstanceId = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "";
-  const cloudDiskGrower = cloudKeepAwakeModule?.isCloudMachine()
-    ? (await import("./services/power/cloudDiskGrow")).createCloudDiskGrower({
+  const cloudDiskGrowModule = cloudKeepAwakeModule && isAdeCloudComputer()
+    ? await import("./services/power/cloudDiskGrow")
+    : null;
+  const cloudDiskGrower = cloudDiskGrowModule
+    ? cloudDiskGrowModule.createCloudDiskGrower({
         instanceId: cloudInstanceId,
         client: async () => (await getCloudBrainAccess()).client(),
         path: os.homedir(),
+        // The storage guard's refusal reads what it writes there (`cloudDiskGuardOptions` in bootstrap).
+        adeHome: layout.adeDir,
         logger: headlessProjectLogger,
       })
     : null;
   // What this computer tells ADE Cloud at its idle step: its lanes' work, its disk, an update, its boot.
-  const cloudComputerReports = cloudKeepAwakeModule?.isCloudMachine()
+  const cloudComputerReports = cloudKeepAwakeModule && isAdeCloudComputer()
     ? (await import("./services/power/cloudComputerReports")).createCloudComputerReports({
         instanceId: cloudInstanceId,
         projectRegistry,
@@ -29515,6 +29583,7 @@ async function runServe(
   const cloudDiskUsageReporter = cloudComputerReports
     ? (await import("../../desktop/src/main/services/adeCloud/cloudDiskUsage")).createCloudDiskUsageReporter({
         instanceId: cloudInstanceId,
+        adeHome: layout.adeDir,
         stateFile: path.join(layout.adeDir, "cloud", "disk-usage.json"),
         projectRoots: () => projectRegistry.list().map((project) => project.rootPath).filter((root) => !refusedRoot(root)),
         readWork: cloudComputerReports.readWork,
@@ -29522,7 +29591,20 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
-  const cloudKeepAwake = cloudKeepAwakeModule?.isCloudMachine()
+  if (isAdeCloudComputer()) {
+    // C4: older clones saved the GitHub sign-in header in their .git/config.
+    // Take it out once a boot, off the start path.
+    const cleanup = setTimeout(() => {
+      void import("./services/github/savedGithubHeaderCleanup")
+        .then(({ removeSavedGithubHeaders }) => removeSavedGithubHeaders(
+          projectRegistry.list().map((project) => project.rootPath),
+          { logger: headlessProjectLogger },
+        ))
+        .catch((error: unknown) => headlessProjectLogger.warn("github.saved_header_cleanup_failed", { error: error instanceof Error ? error.message : String(error) }));
+    }, 60_000);
+    cleanup.unref?.();
+  }
+  const cloudKeepAwake = cloudKeepAwakeModule && isAdeCloudComputer()
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
         readBusy: async () => {
@@ -29531,14 +29613,14 @@ async function runServe(
             readMachineBusyFacts({ ...sources, personalChatScope }),
             readMachineNextScheduledWakeAt(sources),
           ]);
-          const { busy, reasons } = cloudKeepAwakeModule.decideCloudBusy({
+          const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
             ...facts,
             setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
             holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
           }, Date.now());
           // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
           // one goes to the account server, which wakes the machine for it.
-          return { busy, reasons, nextWakeAt };
+          return { busy, reasons, nextWakeAt, waitingOnPerson };
         },
         requestIdleSleep: async (instanceId) => {
           const client = await (await getCloudBrainAccess()).client();
@@ -29546,6 +29628,7 @@ async function runServe(
           await client.requestIdleSleep(instanceId);
         },
         growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
+        diskGrowDueNow: () => cloudDiskGrower?.growDueNow() ?? false,
         reportUse: async (lastWorkAt, stillIdle) => await cloudDiskUsageReporter?.report(lastWorkAt, stillIdle),
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
@@ -30726,6 +30809,92 @@ async function runServe(
     });
   }
 
+  // A provider sign-in a person finishes on another screen (`ade providers
+  // sign-in --remote`): the login runners live here, in the brain, so they
+  // outlive the short command ADE's server runs over exec.
+  const remoteProviderSignIn = embedded ? null : createRemoteProviderSignIn({
+    providerAccounts: async () => (await import("../../desktop/src/main/services/providerAccounts/machineProviderLoginRunner")).getMachineProviderLoginRunner(),
+    defaultInstanceId: async (provider) => {
+      const { getMachineProviderInstanceStore } = await import("./services/providerInstances/providerInstanceStore");
+      return getMachineProviderInstanceStore().getDefault(provider).id;
+    },
+    agentClis: async () => {
+      const runner = (await import("../../desktop/src/main/services/ai/machineAgentCliLoginRunner")).getMachineAgentCliLoginRunner();
+      return {
+        start: (args) => runner.start(args),
+        status: (loginId) => runner.status(loginId),
+        submitCode: (loginId, code) => runner.submitCode(loginId, code),
+      };
+    },
+  });
+
+  // A server launch (C6): ADE's server made this computer for a caller with
+  // no computer and named the launch in its env. The computer signs itself
+  // in with its join code and runs the launch here. The code leaves this
+  // process's env now, so nothing the brain starts inherits it.
+  const bootLaunchEnv = !embedded && cloudInstanceId ? takeCloudLaunchEnv(process.env) : null;
+  if (bootLaunchEnv) {
+    startCloudBootLaunch(bootLaunchEnv, {
+      cloudInstanceId,
+      adeDir: layout.adeDir,
+      secretsDir: layout.secretsDir,
+      logger: headlessProjectLogger,
+      account: brainAccountAuthService,
+      directoryBaseUrl: getSharedAccountDirectoryBaseUrl,
+      projectRegistry,
+      chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
+      cloudClient: async () => await (await getCloudBrainAccess()).client(),
+      holdCloudWork: holdCloudWork ?? null,
+      // An automation's run (C9): its chat's turn ending is the run's end. Nobody
+      // watches that chat, so one that stops to ask for input ends the run as
+      // failed rather than holding its computer until the server's stop limit.
+      waitForChatEnd: async (projectId, sessionId) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        if (!chat) return { ok: false, error: "This ADE runtime has no chats." };
+        const ASKED_FOR_INPUT = { ok: false, error: "The agent asked for input." } as const;
+        return await new Promise((resolve) => {
+          let settled = false;
+          const timers = new Set<ReturnType<typeof setTimeout>>();
+          const finish = (result: { ok: boolean; error?: string | null }) => {
+            if (settled) return;
+            settled = true;
+            unsubscribe();
+            for (const timer of timers) clearTimeout(timer);
+            resolve(result);
+          };
+          // Reads the chat once, `delayMs` from now: gone, still waiting on a card, or over.
+          const checkLater = (delayMs: number) => {
+            const timer = setTimeout(() => {
+              timers.delete(timer);
+              void chat.getSessionSummary(sessionId).then((summary) => {
+                if (!summary) finish({ ok: false, error: "The run's chat is gone." });
+                else if (summary.awaitingInput) finish(ASKED_FOR_INPUT);
+                else if (summary.status !== "active") finish({ ok: true });
+              }).catch((error: unknown) => {
+                headlessProjectLogger.warn("cloud_boot_launch.automation_chat_read_failed", { error: error instanceof Error ? error.message : String(error) });
+              });
+            }, delayMs);
+            timer.unref?.();
+            timers.add(timer);
+          };
+          const unsubscribe = chat.subscribeToEvents((envelope) => {
+            if (envelope.sessionId !== sessionId) return;
+            const event = envelope.event;
+            if (event.type === "done") {
+              finish(event.status === "completed" ? { ok: true } : { ok: false, error: `The run's chat ${event.status === "interrupted" ? "was stopped" : "failed"}.` });
+            } else if (event.type === "approval_request" || event.type === "structured_question") {
+              // A card that settles itself (an auto-approved tool) is gone by then; one that waits for a person ends the run.
+              checkLater(30_000);
+            }
+          });
+          // Already over or already waiting (a restart after the hand-off): read once,
+          // after the hand-off's first turn has surely started.
+          checkLater(20_000);
+        });
+      },
+    });
+  }
+
   // Work another machine does here (a command, a chat or CLI send, a file
   // copied in) keeps a cloud machine awake (cloudKeepAwake). Reads, lists
   // and status polls do not: an idle window polling one must not bill it all month.
@@ -30751,6 +30920,7 @@ async function runServe(
   const createHandler = (context?: { peerDeviceId: string | null }) =>
     withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
       holdCloudWork,
+      remoteProviderSignIn,
       pushCloudWork: holdCloudWork
         ? async ({ check }: { check: boolean }) => {
             const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
@@ -39368,6 +39538,9 @@ async function recoverAccountMachineReconnect(
   return true;
 }
 
+/** How long `ade login`'s device sign-in keeps trying an account directory it can't reach yet. */
+const DEVICE_SIGN_IN_START_RETRY_MS = 45_000;
+
 /**
  * Interactive machine-account authorization. The daemon owns either the
  * loopback listener or the device-code secret, token exchange, and credential
@@ -39504,6 +39677,10 @@ async function runAccountLogin(
       const answer = await runAccountAction("startDeviceLogin", {
         projectRoot,
         ignoreEnvCredential: plan.explicitHeadless || options.headless,
+        // Nobody can click Retry here (a fresh ADE Cloud computer signs in this
+        // way seconds after boot, before its network is up): the brain keeps
+        // trying an unreachable account directory for a while first.
+        retryUnreachableForMs: DEVICE_SIGN_IN_START_RETRY_MS,
       });
       const device = readDeviceSignInStart(answer);
       if (!device) {
@@ -40852,8 +41029,7 @@ async function resolveCliCloudEnabled(parsed: ReturnType<typeof extractMachineTa
   const isCloud = primary === "cloud";
   // What the server runs on a cloud computer never depends on the answer.
   if (isCloud && CLOUD_ON_COMPUTER_PLANS.has(parsed.command[1]?.toLowerCase() ?? "")) {
-    const { isCloudMachine } = await import("./services/power/cloudKeepAwake");
-    if (isCloudMachine()) {
+    if (isAdeCloudComputer()) {
       cliCloudEnabled = true;
       setAdeCloudSkillVisible(true);
       return;
@@ -41430,6 +41606,20 @@ async function main(): Promise<void> {
     // hook's own `--socket <path>` is not an `ade` flag.
     if (process.argv[2] === CURSOR_HOOK_RUNNER_COMMAND) {
       await runCursorHookScript(process.argv[3]);
+      return;
+    }
+    // Git's credential helper for clones made on an ADE Cloud computer
+    // (services/github/gitCredentialHelper.ts): answered here, with no brain
+    // and no argument parsing, because git calls it on every push. A missing
+    // or unreadable sign-in is one line on stderr, which git shows.
+    if (process.argv[2] === "git" && process.argv[3] === "credential") {
+      const { runGitCredentialHelper } = await import("./services/github/gitCredentialHelper");
+      process.exitCode = await runGitCredentialHelper(process.argv[4], {
+        readToken: async () => {
+          const quiet: Logger = { debug() {}, info() {}, warn() {}, error() {} };
+          return await createHeadlessGitHubService(process.cwd(), quiet).getGitTransportTokenOrThrowAsync();
+        },
+      });
       return;
     }
     // The proxy supervisor's synchronous health probe on the standalone runtime.

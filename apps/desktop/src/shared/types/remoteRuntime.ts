@@ -121,6 +121,12 @@ export type RemoteRuntimeProjectRecord = {
    * icon (older host, no icon file, or an oversized icon dropped from the wire).
    */
   icon?: ProjectIcon | null;
+  /**
+   * Only on the answer of a clone (`projects.clone`): the machine cloned with
+   * this computer's one-shot GitHub header and has no GitHub sign-in of its
+   * own, so its fetch and push won't sign in until GitHub is connected there.
+   */
+  githubSignInMissing?: boolean;
 };
 
 export type RemoteRuntimeUpdateInstallMode = "in_place" | "manual_download" | "runtime_only";
@@ -376,6 +382,9 @@ export type RemoteRuntimeConnectionStatus = {
 };
 
 export type RemoteRuntimeConnectionRecovery = "reconnecting" | "waiting_for_user" | "held_elsewhere";
+
+/** A call named a saved connection this computer doesn't have. Matched by clients that fall back to a saved chat copy. */
+export const REMOTE_TARGET_NOT_FOUND_MESSAGE = "Remote target was not found.";
 
 /** What a call to a machine the person disconnected is told. */
 export const REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE =
