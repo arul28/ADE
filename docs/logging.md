@@ -482,6 +482,32 @@ None is a PostHog event: each is ADE reacting to a provider or keychain fault,
 with no user action behind it, and the user's own Try again / Start a new chat
 choice goes through the existing recovery path.
 
+Two project-subject clean-ups and the account settings layer write local
+lines only, to the project's `ade-cli.jsonl`. None carries a value:
+
+- `github.saved_header_removed` (warn, the config `keys` only): the brain
+  removed a GitHub sign-in header that an older ADE clone saved in the
+  project's `.git/config`. It runs once per project per brain process
+  (`savedGithubHeaderCleanup.ts`). `github.saved_header_cleanup_failed`
+  (warn, the key and git's exit code, or the error name) is a failed removal.
+- `projectConfig.account_settings_moved` (info, the moved and joined row
+  keys), `projectConfig.account_move_conflict` (info, the row key),
+  `projectConfig.account_settings_saved` (info, row keys),
+  `projectConfig.account_setting_write_refused` (warn, the row key),
+  `projectConfig.account_move_notice_resolved` (info, the row key and the
+  choice), `projectConfig.account_move_failed` (warn, the row key and the
+  error name), and `projectConfig.account_move_state_read_failed`,
+  `projectConfig.account_move_state_write_failed` (warn, the error code).
+  They tell where a project setting came from after it moved to the ADE
+  account (`projectConfigAccountLayer.ts`). A value held on this computer
+  (a credential-shaped key, a folder path, too large) is named by its row
+  key and reason, never by its value.
+
+None is a PostHog event: the clean-up has no user action behind it, and the
+account move runs on its own when the account syncs. The person's answer to
+a notice ("Use this computer's value" or "Keep") is a settings write that the
+existing settings path already records.
+
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
 ## Source file map
