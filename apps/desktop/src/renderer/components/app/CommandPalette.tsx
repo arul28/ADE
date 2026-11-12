@@ -1027,7 +1027,7 @@ export function CommandPalette({
         title: "Restart agent session",
         hint: "Fresh process, same conversation — picks up new skills, plugins, and MCP servers",
         group: "Actions",
-        run: () => { void restartAgentSession(activeChat); },
+        run: () => { void restartAgentSession(activeChat, runtimePinRef.current); },
       });
       if (activeChat.toolType === "codex-chat" || activeChat.toolType === "claude-chat") {
         next.push({
@@ -1035,7 +1035,7 @@ export function CommandPalette({
           title: "Set goal…",
           hint: "The agent keeps working across turns until the goal is met",
           group: "Actions",
-          run: () => { void setChatGoalFromPalette(activeChat); },
+          run: () => { void setChatGoalFromPalette(activeChat, runtimePinRef.current); },
         });
       }
     }

@@ -46,6 +46,9 @@ const PROJECT_ROOT = "/Users/admin/Projects/ADE";
 
 const PALETTE_PLACEHOLDER = "Search commands, projects, and threads\u2026";
 
+/** The tab's copy of the project, on this computer. */
+const TAB_BINDING = { kind: "local", key: `local:${PROJECT_ROOT}`, rootPath: PROJECT_ROOT, displayName: "ADE" } as const;
+
 function seedStore(overrides: Record<string, unknown> = {}) {
   useAppStore.setState({
     project: {
@@ -55,7 +58,7 @@ function seedStore(overrides: Record<string, unknown> = {}) {
     },
     lanes: [],
     selectedLaneId: null,
-    projectBinding: null,
+    projectBinding: TAB_BINDING,
     selectLane: vi.fn(),
     switchProjectToPath: vi.fn(async () => {}),
     // Reset explicitly: `setState` merges, so a thread test's sessions would
@@ -796,7 +799,7 @@ describe("CommandPalette", () => {
       expect(await screen.findByText("Keep this chat")).toBeTruthy();
       expect(document.querySelector('[data-thread-id="session-1"]')?.textContent).toContain("rename request");
       expect(screen.getByText("Match: chat content")).toBeTruthy();
-      expect(query).toHaveBeenCalledWith({ query: "rename", limit: 60 });
+      expect(query).toHaveBeenCalledWith({ query: "rename", limit: 60 }, TAB_BINDING);
     });
 
     it("queries each lane when a Work lane facet has multiple values", async () => {
@@ -831,11 +834,11 @@ describe("CommandPalette", () => {
       expect(query).toHaveBeenCalledWith({
         query: "auth lane:auth",
         limit: 60,
-      });
+      }, TAB_BINDING);
       expect(query).toHaveBeenCalledWith({
         query: "auth lane:payments",
         limit: 60,
-      });
+      }, TAB_BINDING);
     });
 
     it("does not let a transcript hit bypass a Work facet", async () => {
@@ -961,7 +964,7 @@ describe("CommandPalette", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Settle session" }));
 
       await waitFor(() => {
-        expect(settle).toHaveBeenCalledWith("session-to-settle", undefined);
+        expect(settle).toHaveBeenCalledWith("session-to-settle", undefined, TAB_BINDING);
         expect(onOpenChange).toHaveBeenCalledWith(false);
       });
     });
@@ -1851,7 +1854,7 @@ describe("CommandPalette", () => {
       }
       fireEvent.keyDown(input, { key: "Enter" });
       await waitFor(() => expect(restartSession).toHaveBeenCalledTimes(1));
-      expect(restartSession).toHaveBeenCalledWith({ sessionId: "chat-1" });
+      expect(restartSession).toHaveBeenCalledWith({ sessionId: "chat-1" }, TAB_BINDING);
     });
   });
 });

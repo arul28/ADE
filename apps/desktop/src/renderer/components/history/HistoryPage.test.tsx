@@ -105,7 +105,8 @@ describe("HistoryPage lane/URL sync", () => {
     useAppStore.setState({
       lanes: [lane("lane-a", "Lane A"), lane("lane-b", "Lane B")],
       selectedLaneId: "lane-a",
-      projectBinding: null,
+      // The tab's copy: History reads its lanes' git there.
+      projectBinding: { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" },
     });
   });
 
