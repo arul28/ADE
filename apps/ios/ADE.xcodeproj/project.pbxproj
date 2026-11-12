@@ -433,6 +433,7 @@
 		E10000000000000000000040 /* WorkModelPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000040 /* WorkModelPickerSheet.swift */; };
 		E10000000000000000000F0D /* WorkLaneToolChips.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0D /* WorkLaneToolChips.swift */; };
 		E10000000000000000000F0E /* WorkToolsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F0E /* WorkToolsSheet.swift */; };
+		E10000000000000000000F1B /* WorkToolsBrowserLiveCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F1B /* WorkToolsBrowserLiveCard.swift */; };
 		T3F002B00000000000000000 /* WorkMessageLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = T3F002F00000000000000000 /* WorkMessageLinks.swift */; };
 		E10000000000000000000041 /* WorkNewChatScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000041 /* WorkNewChatScreen.swift */; };
 		E30000000000000000000041 /* WorkUsageActivityCarousel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000041 /* WorkUsageActivityCarousel.swift */; };
@@ -762,6 +763,7 @@
 		D10000000000000000000040 /* WorkModelPickerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkModelPickerSheet.swift; path = ADE/Views/Work/WorkModelPickerSheet.swift; sourceTree = "<group>"; };
 		D10000000000000000000F0D /* WorkLaneToolChips.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaneToolChips.swift; path = ADE/Views/Work/WorkLaneToolChips.swift; sourceTree = "<group>"; };
 		D10000000000000000000F0E /* WorkToolsSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkToolsSheet.swift; path = ADE/Views/Work/WorkToolsSheet.swift; sourceTree = "<group>"; };
+		D10000000000000000000F1B /* WorkToolsBrowserLiveCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkToolsBrowserLiveCard.swift; path = ADE/Views/Work/WorkToolsBrowserLiveCard.swift; sourceTree = "<group>"; };
 		T3F002F00000000000000000 /* WorkMessageLinks.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMessageLinks.swift; path = ADE/Views/Work/WorkMessageLinks.swift; sourceTree = "<group>"; };
 		D10000000000000000000041 /* WorkNewChatScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNewChatScreen.swift; path = ADE/Views/Work/WorkNewChatScreen.swift; sourceTree = "<group>"; };
 		D30000000000000000000041 /* WorkUsageActivityCarousel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageActivityCarousel.swift; path = ADE/Views/Work/WorkUsageActivityCarousel.swift; sourceTree = "<group>"; };
@@ -1392,6 +1394,7 @@
 				D10000000000000000000040 /* WorkModelPickerSheet.swift */,
 				D10000000000000000000F0D /* WorkLaneToolChips.swift */,
 				D10000000000000000000F0E /* WorkToolsSheet.swift */,
+				D10000000000000000000F1B /* WorkToolsBrowserLiveCard.swift */,
 				T3F002F00000000000000000 /* WorkMessageLinks.swift */,
 				D10000000000000000000041 /* WorkNewChatScreen.swift */,
 				D20000000000000000000F32 /* WorkNewChatMachinePicker.swift */,
@@ -2423,6 +2426,7 @@
 				E10000000000000000000040 /* WorkModelPickerSheet.swift in Sources */,
 				E10000000000000000000F0D /* WorkLaneToolChips.swift in Sources */,
 				E10000000000000000000F0E /* WorkToolsSheet.swift in Sources */,
+				E10000000000000000000F1B /* WorkToolsBrowserLiveCard.swift in Sources */,
 				T3F002B00000000000000000 /* WorkMessageLinks.swift in Sources */,
 				E10000000000000000000041 /* WorkNewChatScreen.swift in Sources */,
 				E20000000000000000000F32 /* WorkNewChatMachinePicker.swift in Sources */,

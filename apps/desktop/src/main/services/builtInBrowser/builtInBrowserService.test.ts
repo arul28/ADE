@@ -2926,31 +2926,32 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }));
   });
 
-  it("drops the Electron token only for Teams, which refuses it", async () => {
+  it("introduces every tab request as Chrome: no Electron or app token, Chrome's client hints", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await service.createTab({ url: "https://example.test", activate: true });
 
-    const [teams] = fakes.filteredBeforeSendHeaders;
-    expect(teams?.urls).toEqual(["https://teams.cloud.microsoft/*", "https://teams.microsoft.com/*"]);
-    let rewritten: Record<string, string> | undefined;
-    teams?.listener(
-      { requestHeaders: { "User-Agent": "Mozilla/5.0 Chrome/140.0 Electron/41.0 Safari/537.36" } },
-      (response) => { rewritten = response.requestHeaders; },
-    );
-    expect(rewritten?.["User-Agent"]).toBe("Mozilla/5.0 Chrome/140.0 Safari/537.36");
-  });
+    const [identity] = fakes.filteredBeforeSendHeaders;
+    expect(identity?.urls).toEqual(["<all_urls>"]);
+    const send = (url: string, requestHeaders: Record<string, string>) => {
+      let response: { requestHeaders?: Record<string, string> } | undefined;
+      identity?.listener({ url, requestHeaders } as never, (next) => { response = next; });
+      return response?.requestHeaders;
+    };
 
-  it("does not impersonate Chrome or rewrite browser request headers", async () => {
-    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
-    await service.createTab({ url: "https://example.test", activate: true });
+    const secure = send("https://accounts.google.com/", {
+      "User-Agent": "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) ade-desktop/1.2.3 Chrome/152.0.7977.169 Electron/44.10.1 Safari/537.36",
+    });
+    expect(secure?.["User-Agent"]).toBe("Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.169 Safari/537.36");
+    expect(secure?.["sec-ch-ua"]).toContain("\"Google Chrome\"");
+    expect(secure?.["sec-ch-ua-mobile"]).toBe("?0");
 
-    const wc = fakes.webContentsInstances[0];
-    expect(wc?.userAgentCalls).toEqual([]);
-    expect(fakes.beforeSendHeadersHandlers).toHaveLength(0);
-    expect(fakes.dispatchBeforeSendHeaders({
-      "User-Agent": "Electron/41",
-      "Sec-CH-UA": "\"Chromium\";v=\"140\", \"Electron\";v=\"41\"",
-    })).toBeNull();
+    // A hint the page already sends gains the brand rather than a second header.
+    const hinted = send("https://example.test/", { "Sec-CH-UA": "\"Chromium\";v=\"152\", \"Not?A_Brand\";v=\"24\"" });
+    expect(Object.keys(hinted ?? {}).filter((key) => key.toLowerCase() === "sec-ch-ua")).toEqual(["Sec-CH-UA"]);
+    expect(hinted?.["Sec-CH-UA"]).toContain("\"Google Chrome\"");
+
+    // Hints only go to secure contexts, as in Chrome; a clean request passes through untouched.
+    expect(send("http://example.test/", { "User-Agent": "Mozilla/5.0 Chrome/152.0 Safari/537.36" })).toBeUndefined();
   });
 
   it("allows only narrow Google account auth permissions", async () => {

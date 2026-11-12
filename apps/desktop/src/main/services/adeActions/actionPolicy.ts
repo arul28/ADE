@@ -1417,6 +1417,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "probePort",
     "stopDevServer",
     "noteWatching",
+    // A person watching a browser tab from another machine or the phone, and
+    // their input when they take control. User clients only (adeRpcServer).
+    "readBrowserTabFrame",
+    "sendBrowserTabInput",
   ],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands

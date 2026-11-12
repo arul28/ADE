@@ -69,6 +69,8 @@ import type {
   BuiltInBrowserTrustCertificateArgs,
   BuiltInBrowserTrustedCertificatesResult,
   BuiltInBrowserTabArgs,
+  BuiltInBrowserRemoteInputEvent,
+  BuiltInBrowserRemoteTabFrame,
   BuiltInBrowserTabTargetArgs,
   BuiltInBrowserTraceArgs,
   BuiltInBrowserTraceResult,
@@ -244,6 +246,7 @@ import {
 } from "./builtInBrowserCertificateTrust";
 import { buildBuiltInBrowserPageContextMenuTemplate } from "./builtInBrowserContextMenu";
 import { migrateLegacyBuiltInBrowserProfiles } from "./builtInBrowserProfileMigration";
+import { chromeUserAgent, withChromeIdentityHeaders } from "./builtInBrowserChromeIdentity";
 import {
   createBuiltInBrowserPermissionController,
 } from "./builtInBrowserPermissions";
@@ -298,6 +301,21 @@ const MAX_BROWSER_WAIT_TIMEOUT_MS = 60_000;
 const DEFAULT_BROWSER_NETWORK_IDLE_MS = 500;
 const MAX_BROWSER_NETWORK_IDLE_MS = 10_000;
 const DEFAULT_TAB_LEASE_TTL_MS = 10 * 60_000;
+/** An agent's tabs close this long after its chat goes idle, unless kept. */
+export const CHAT_IDLE_CLOSE_MS = 15 * 60_000;
+/** A tab that could not close yet (on screen, recording, signing in) is tried again after this. */
+const AUTO_CLOSE_RETRY_MS = 5 * 60_000;
+/** Input this soon after an agent action is the agent's own, not a person's. */
+const AGENT_INPUT_QUIET_MS = 1_500;
+/**
+ * The safety net: an agent tab nobody kept and no agent touched for this long
+ * closes even if its chat never said it went idle (a brain restarted, an older
+ * brain, a lost message).
+ */
+const STALE_AGENT_TAB_MS = 2 * 60 * 60_000;
+const STALE_SWEEP_INTERVAL_MS = 5 * 60_000;
+/** A background tab nobody used for this long sleeps (its page is dropped until it is needed). */
+const TAB_SLEEP_AFTER_MS = 30 * 60_000;
 const MAX_TAB_LEASE_TTL_MS = 60 * 60_000;
 const DEFAULT_OBSERVATION_MAX_AGE_MS = 30 * 60_000;
 const OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "browser-observations");
@@ -447,6 +465,22 @@ export type BrowserTabState = {
    * one task, and nobody sits at the machine to close it (ledger T1).
    */
   keptByPerson: boolean;
+  /**
+   * When ADE will close this agent tab on its own: its chat went idle (or
+   * ended) and nobody kept the tab. Null while the chat is working, for a
+   * person's tab, and for a kept one. See `chatBrowserLifecycle`.
+   */
+  autoCloseAtMs: number | null;
+  /** When an agent command last drove input into this tab (any action, not only downloads). */
+  lastAgentInputAtMs: number | null;
+  /** Last time a person saw this tab on screen, or an agent or a watcher used it. */
+  lastUsedAtMs: number;
+  /**
+   * Set while the tab sleeps: its page was dropped to free memory, as Chrome
+   * discards a tab, and it remembers where it was and its history. Waking
+   * (a person switching to it, an agent using it, a watcher) loads it again.
+   */
+  sleeping: { url: string; title: string | null; entries: Electron.NavigationEntry[]; index: number } | null;
   createdAt: string;
   /** When the agent last acted on this tab; scopes "the download I just made". */
   lastActionAtMs: number | null;
@@ -617,8 +651,21 @@ type BrowserNetworkObserver = {
   onRequestFinished: (details: Record<string, unknown>, error: string | null) => void;
 };
 
-/** Teams sends an Electron User-Agent to its error page before sign-in. */
-const ELECTRON_UA_REFUSING_URLS = ["https://teams.cloud.microsoft/*", "https://teams.microsoft.com/*"];
+
+function normalizeRemoteInputEvent(value: unknown): BuiltInBrowserRemoteInputEvent | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const type = record.type;
+  if (type === "click" || type === "scroll") {
+    const x = Number(record.x);
+    const y = Number(record.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return type === "click" ? { type, x, y } : { type, x, y, deltaY: Number(record.deltaY) || 0 };
+  }
+  if (type === "key" && typeof record.key === "string") return { type, key: record.key };
+  if (type === "text" && typeof record.text === "string") return { type, text: record.text };
+  return null;
+}
 
 function createBrowserNetworkRouter() {
   const configuredSessions = new WeakSet<Electron.Session>();
@@ -628,11 +675,25 @@ function createBrowserNetworkRouter() {
     configureSession(browserSession: Electron.Session): void {
       if (configuredSessions.has(browserSession)) return;
       configuredSessions.add(browserSession);
+      // Chrome's identity for every tab this session creates (navigator and
+      // headers alike); the header pass below covers requests made before a
+      // tab picked it up and adds the client hints Chromium drops for an
+      // overridden UA. See builtInBrowserChromeIdentity.ts.
+      try {
+        const sessionWithUa = browserSession as unknown as {
+          getUserAgent?: () => string;
+          setUserAgent?: (userAgent: string) => void;
+        };
+        const current = sessionWithUa.getUserAgent?.();
+        if (current) sessionWithUa.setUserAgent?.(chromeUserAgent(current));
+      } catch {
+        // An older Electron without per-session UA still gets the header pass.
+      }
       const webRequest = browserSession.webRequest as unknown as {
         onBeforeSendHeaders?: (
           filter: { urls: string[] },
           listener: (
-            details: { requestHeaders: Record<string, string> },
+            details: { requestHeaders: Record<string, string>; url?: string },
             callback: (response: { requestHeaders?: Record<string, string> }) => void,
           ) => void,
         ) => void;
@@ -640,13 +701,10 @@ function createBrowserNetworkRouter() {
         onCompleted?: (listener: (details: Record<string, unknown>) => void) => void;
         onErrorOccurred?: (listener: (details: Record<string, unknown>) => void) => void;
       };
-      webRequest.onBeforeSendHeaders?.({ urls: ELECTRON_UA_REFUSING_URLS }, ({ requestHeaders }, callback) => {
-        const name = Object.keys(requestHeaders).find((key) => key.toLowerCase() === "user-agent");
-        if (!name) {
-          callback({});
-          return;
-        }
-        callback({ requestHeaders: { ...requestHeaders, [name]: requestHeaders[name]!.replace(/ Electron\/\S+/, "") } });
+      webRequest.onBeforeSendHeaders?.({ urls: ["<all_urls>"] }, (details, callback) => {
+        const url = typeof details.url === "string" ? details.url : "";
+        const rewritten = withChromeIdentityHeaders(details.requestHeaders, url);
+        callback(rewritten ? { requestHeaders: rewritten } : {});
       });
       webRequest.onBeforeRequest?.((details, callback) => {
         for (const observer of observers) observer.onRequestStarted(details);
@@ -1830,6 +1888,20 @@ export function createBuiltInBrowserService(args: {
       for (const service of allWindowServices()) released += service.releaseLane(laneId);
       return { released };
     },
+    /**
+     * A chat started a turn, went idle, or ended: its agent tabs in every
+     * collection keep running, start their 15-minute countdown, or close.
+     * Reached from the brain (bridge-served, never an agent command) and from
+     * a brain on another machine.
+     */
+    chatBrowserLifecycle(input: { chatSessionId?: string | null; state?: string | null }): { tabs: number } {
+      const chatSessionId = typeof input.chatSessionId === "string" ? input.chatSessionId.trim() : "";
+      const state = input.state === "running" || input.state === "idle" || input.state === "ended" ? input.state : null;
+      if (!chatSessionId || !state) return { tabs: 0 };
+      let count = 0;
+      for (const service of allWindowServices()) count += service.chatBrowserLifecycle(chatSessionId, state);
+      return { tabs: count };
+    },
     requestOriginAccess(
       input: BuiltInBrowserRequestOriginAccessArgs = {},
       sourceWindow?: BrowserWindow | null,
@@ -1905,6 +1977,28 @@ export function createBuiltInBrowserService(args: {
     },
     switchTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): Promise<BuiltInBrowserStatus> {
       return serviceForInput(input, sourceWindow).switchTab(input);
+    },
+    /**
+     * One tab's newest frame for a viewer on another machine. Bridge-served
+     * for the brain's `work_tools.readBrowserTabFrame`, never an agent
+     * command; the tab is found in whichever collection holds it.
+     */
+    captureTabFrameForRuntime(input: { tabId?: string | null; maxWidth?: number | null }): BuiltInBrowserRemoteTabFrame | null {
+      const tabId = typeof input.tabId === "string" ? input.tabId.trim() : "";
+      if (!tabId) return null;
+      const service = allWindowServices().find((entry) => entry.hasLiveTab(tabId));
+      return service ? service.captureTabFrameForRemote({ tabId, maxWidth: input.maxWidth ?? null }) : null;
+    },
+    /** A person on another machine's input into one tab (Take control). Bridge-served. */
+    async sendTabInputForRuntime(input: { tabId?: string | null; event?: unknown }): Promise<{ ok: boolean }> {
+      const tabId = typeof input.tabId === "string" ? input.tabId.trim() : "";
+      const event = normalizeRemoteInputEvent(input.event);
+      if (!tabId || !event) return { ok: false };
+      const service = allWindowServices().find((entry) => entry.hasLiveTab(tabId));
+      return service ? await service.sendRemoteHumanInput({ tabId, event }) : { ok: false };
+    },
+    keepTab(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
+      return serviceForInput(input, sourceWindow).keepTab(input);
     },
     handTabToChat(input: BuiltInBrowserTabArgs, sourceWindow?: BrowserWindow | null): BuiltInBrowserStatus {
       return serviceForInput(input, sourceWindow).handTabToChat(input);
@@ -2522,7 +2616,7 @@ function createBuiltInBrowserWindowService(args: {
       const activeIndex = Math.max(0, liveTabs.findIndex((tab) => tab.id === activeTabId));
       args.onStateChange({
         tabs: liveTabs.map((tab) => ({
-          url: tab.webContents.getURL(),
+          url: tab.sleeping?.url ?? tab.webContents.getURL(),
           id: tab.id,
           openedBy: tab.openedBy,
           openedByChatSessionId: tab.openedByChatSessionId,
@@ -2836,6 +2930,9 @@ function createBuiltInBrowserWindowService(args: {
     const touchedAt = new Date().toISOString();
     if (ownerChanged) tab.ownerClaimedAt = touchedAt;
     tab.ownerLastActiveAt = touchedAt;
+    // A chat that drives the browser while "idle" (a subagent, a background
+    // task) is working: its countdown starts again from now.
+    if (chatSessionId && chatIdleTimers.has(chatSessionId)) armChatIdleClose(chatSessionId, CHAT_IDLE_CLOSE_MS);
     /*
      * A new owner is news the moment it happens. Reads and actions claim the
      * tab they touch (`prepareAgentReadTabAsync`, `prepareAgentActionTab`) but
@@ -2931,6 +3028,7 @@ function createBuiltInBrowserWindowService(args: {
   ): void => {
     if (stringOrNull(input.laneId) || stringOrNull(input.chatSessionId)) return;
     tab.keptByPerson = true;
+    tab.autoCloseAtMs = null;
     tab.ownerLaneId = null;
     tab.ownerChatSessionId = null;
     tab.ownerClaimedAt = null;
@@ -2955,6 +3053,69 @@ function createBuiltInBrowserWindowService(args: {
     throw new BuiltInBrowserHandoffActiveError(tab.id, tab.handoff.reason);
   };
 
+  /** The page a tab is on, a sleeping tab's remembered one included. */
+  const tabPageUrl = (tab: BrowserTabState): string => tab.sleeping?.url ?? tab.webContents.getURL();
+
+  /** Load a sleeping tab's page again, with its history. Returns at once. */
+  const wakeTab = (tab: BrowserTabState): Promise<void> | null => {
+    tab.lastUsedAtMs = Date.now();
+    const asleep = tab.sleeping;
+    if (!asleep || tab.webContents.isDestroyed()) return null;
+    tab.sleeping = null;
+    const wc = tab.webContents;
+    logger()?.info("built_in_browser.tab_woke", { tabId: tab.id });
+    const history = (wc as unknown as {
+      navigationHistory?: { restore?: (options: { entries: Electron.NavigationEntry[]; index: number }) => Promise<void> };
+    }).navigationHistory;
+    const restoring = history?.restore && asleep.entries.length > 0 && asleep.index >= 0
+      ? history.restore({ entries: asleep.entries, index: asleep.index }).catch(() => loadUrlSafely(wc, asleep.url))
+      : loadUrlSafely(wc, asleep.url);
+    emitStatus();
+    return Promise.resolve(restoring).then(() => undefined, () => undefined);
+  };
+
+  /** Wake a sleeping tab and wait (bounded) for its page, before an agent uses it. */
+  const wakeTabAndWait = async (tab: BrowserTabState): Promise<void> => {
+    const waking = wakeTab(tab);
+    if (!waking) return;
+    await Promise.race([waking, new Promise<void>((resolve) => setTimeout(resolve, 15_000))]);
+  };
+
+  /**
+   * Put one background tab to sleep, as Chrome discards a tab it has not shown
+   * in a while. Never a tab on screen, playing sound, recording, being signed
+   * in on, watched, emulating, or with a text field in use (unsaved typing is
+   * the one thing a reload would lose).
+   */
+  const maybeSleepTab = async (tab: BrowserTabState): Promise<void> => {
+    const wc = tab.webContents;
+    if (tab.sleeping || wc.isDestroyed() || tab.isolation) return;
+    if (tab.id === activeTabId) return;
+    if (Date.now() - tab.lastUsedAtMs < TAB_SLEEP_AFTER_MS) return;
+    if (tab.handoff || tab.recording || tab.emulation || tab.devToolsMode || tab.networkLoggingEnabled) return;
+    if (tabCapabilities.hasPreviewWatchers(tab.id)) return;
+    if (wc.isLoading() || wc.isCurrentlyAudible() || BACKGROUND_AUDIO_WEB_CONTENTS.has(wc)) return;
+    const url = wc.getURL();
+    if (!/^https?:\/\//i.test(url)) return;
+    const editing = await wc.executeJavaScript(
+      `(() => { const a = document.activeElement; if (a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return true; for (const t of document.querySelectorAll("textarea")) { if (t.value) return true; } return false; })()`,
+      true,
+    ).catch(() => true);
+    if (editing || tab.sleeping || wc.isDestroyed() || tab.id === activeTabId) return;
+    const history = (wc as unknown as {
+      navigationHistory?: { getAllEntries?: () => Electron.NavigationEntry[]; getActiveIndex?: () => number };
+    }).navigationHistory;
+    tab.sleeping = {
+      url,
+      title: emptyToNull(wc.getTitle()),
+      entries: history?.getAllEntries?.() ?? [],
+      index: history?.getActiveIndex?.() ?? -1,
+    };
+    logger()?.info("built_in_browser.tab_slept", { tabId: tab.id });
+    await wc.loadURL("about:blank").catch(() => {});
+    emitStatus();
+  };
+
   const prepareAgentActionTab = async <T extends BuiltInBrowserAgentActionArgs>(
     tab: BrowserTabState,
     input: T,
@@ -2963,13 +3124,14 @@ function createBuiltInBrowserWindowService(args: {
     assertHandoffAllowsAgentAction(tab, input);
     assertTabLeaseAvailable(tab, input);
     await args.agentAccessController.requireUrlAccess(
-      tab.webContents.getURL(),
+      tabPageUrl(tab),
       input,
       "The agent requested an interactive browser action.",
       { waitBudgetMs: BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS },
     );
     claimTabOwnerFromInput(tab, input);
     armAgentNavigationGuard(tab, input);
+    await wakeTabAndWait(tab);
     // A recording tab may still be moving onto the recording viewport, which
     // relays the page out. Locating a target before that lands would aim at
     // the old layout.
@@ -2981,7 +3143,7 @@ function createBuiltInBrowserWindowService(args: {
     input: BuiltInBrowserTabTargetArgs,
   ): void => {
     assertTabLeaseAvailable(tab, input);
-    args.agentAccessController.assertUrlAccessSync(tab.webContents.getURL(), input);
+    args.agentAccessController.assertUrlAccessSync(tabPageUrl(tab), input);
     claimTabOwnerFromInput(tab, input);
   };
 
@@ -2993,10 +3155,11 @@ function createBuiltInBrowserWindowService(args: {
     await args.waitForProfileMigration();
     assertHandoffAllowsAgentAction(tab, input);
     assertTabLeaseAvailable(tab, input);
-    await args.agentAccessController.requireUrlAccess(tab.webContents.getURL(), input, reason, {
+    await args.agentAccessController.requireUrlAccess(tabPageUrl(tab), input, reason, {
       waitBudgetMs: BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS,
     });
     claimTabOwnerFromInput(tab, input);
+    await wakeTabAndWait(tab);
     await settleRecordingViewport(tab);
   };
 
@@ -3418,6 +3581,7 @@ function createBuiltInBrowserWindowService(args: {
       // `observe` between the click and `downloads wait` used to move it past
       // the finished file, so the wait timed out on a download it had made.
       if (DOWNLOAD_TRIGGER_ACTIONS.has(action)) tab.lastActionAtMs = Date.now();
+      tab.lastAgentInputAtMs = Date.now();
       await prepareAgentActionTab(tab, input);
       // A tab nobody is looking at has no compositor surface, and Chromium
       // drops synthesized input to it: a click found its element, was sent,
@@ -3442,6 +3606,7 @@ function createBuiltInBrowserWindowService(args: {
       touchSession(sessionEntry, { lastTraceEntryId: trace.id });
       throw error;
     } finally {
+      tab.lastAgentInputAtMs = Date.now();
       if (actionEffectTrackers.get(tab) === effectEntry) actionEffectTrackers.delete(tab);
     }
   };
@@ -3682,6 +3847,9 @@ function createBuiltInBrowserWindowService(args: {
         inspectAt: (x, y) => {
           if (live()) wc.inspectElement(x, y);
         },
+        print: () => {
+          if (live()) wc.print({}, () => {});
+        },
       });
       Menu.buildFromTemplate(template).popup({ window: host });
     });
@@ -3834,6 +4002,25 @@ function createBuiltInBrowserWindowService(args: {
       if (tab) refreshRecordingViewport(tab);
       emitStatus();
     });
+    // A person clicking or typing in the page makes an agent's tab theirs:
+    // ADE never closes it on its own after that. Opening or looking at a tab
+    // does not count, and neither does an agent's own synthetic input, which
+    // also arrives through these events (hence the quiet window after any
+    // agent action).
+    const noteHumanInput = () => {
+      const tab = tabForWebContents(wc);
+      if (!tab || tab.keptByPerson || tab.openedBy !== "chat") return;
+      if (tab.lastAgentInputAtMs != null && Date.now() - tab.lastAgentInputAtMs < AGENT_INPUT_QUIET_MS) return;
+      if (tab.id !== activeTabId || !visible || !win || win.isDestroyed() || !win.isFocused()) return;
+      keepTabForPerson(tab, "input");
+    };
+    wc.on("before-input-event", (_event, input) => {
+      if (input.type === "keyDown") noteHumanInput();
+    });
+    (wc as unknown as { on: (event: string, listener: (event: unknown, mouse: { type?: string }) => void) => void })
+      .on("before-mouse-event", (_event, mouse) => {
+        if (mouse?.type === "mouseDown") noteHumanInput();
+      });
     wc.on("page-favicon-updated", (_event, favicons: string[]) => {
       const tab = tabForWebContents(wc);
       if (!tab) return;
@@ -3967,6 +4154,9 @@ function createBuiltInBrowserWindowService(args: {
     sandbox: true,
     webSecurity: true,
     backgroundThrottling: false,
+    // Chromium's own PDF viewer, as in Chrome: a PDF link opens the document
+    // in the tab instead of downloading it. Electron gates the viewer on this.
+    plugins: true,
   });
 
   const createTabStateForView = (
@@ -4005,6 +4195,10 @@ function createBuiltInBrowserWindowService(args: {
       openedByChatSessionId: null,
       openedByLaneId: null,
       keptByPerson: false,
+      autoCloseAtMs: null,
+      lastAgentInputAtMs: null,
+      lastUsedAtMs: Date.now(),
+      sleeping: null,
       createdAt: new Date().toISOString(),
       lastActionAtMs: null,
       agentNavigationGuard: null,
@@ -4477,6 +4671,7 @@ function createBuiltInBrowserWindowService(args: {
       }
       const isActive = tab.id === activeTabId;
       const shouldAttach = visible && isActive;
+      if (shouldAttach || tabCapabilities.hasPreviewWatchers(tab.id)) void wakeTab(tab);
       if (!shouldAttach) {
         // Leaving the screen: the size it was passing through is not a size
         // the person chose.
@@ -5165,13 +5360,247 @@ function createBuiltInBrowserWindowService(args: {
     return scopeStatusForInput(getStatus(), input);
   }
 
+  /*
+    Agent tabs clean themselves up.
+
+    Agents rarely close what they open, and a tab nobody holds just sits in
+    the cap until a person finds it. So the brain tells every desktop when a
+    chat starts a turn, goes idle, or ends (`chatBrowserLifecycle`), and the
+    chat's agent tabs close 15 minutes after it goes idle, or at once when it
+    ends or its lane is archived. A tab a person kept — clicked or typed in,
+    navigated, attached to a chat, or pressed Keep on — is never closed by
+    ADE. A tab that is on screen, recording, being watched or being signed in
+    on waits and is tried again a few minutes later.
+  */
+  const chatIdleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  const isAgentWorkTab = (tab: BrowserTabState): boolean => tab.openedBy === "chat" && !tab.keptByPerson;
+  const tabBelongsToChat = (tab: BrowserTabState, chatSessionId: string): boolean => (
+    tab.ownerChatSessionId === chatSessionId
+    || (!tab.ownerChatSessionId && tab.openedByChatSessionId === chatSessionId)
+  );
+  const tabsOfChat = (chatSessionId: string): BrowserTabState[] => tabs.filter((tab) => (
+    !tab.webContents.isDestroyed() && isAgentWorkTab(tab) && tabBelongsToChat(tab, chatSessionId)
+  ));
+  /** Not now: someone is looking at it, recording it, watching it or signing in on it. */
+  const tabBusyForAutoClose = (tab: BrowserTabState): boolean => Boolean(
+    tab.handoff
+    || tab.recording
+    || tabCapabilities.hasPreviewWatchers(tab.id)
+    || (tab.id === activeTabId && visible),
+  );
+
+  const setAutoCloseAt = (chatSessionId: string, atMs: number | null): void => {
+    let changed = false;
+    for (const tab of tabsOfChat(chatSessionId)) {
+      if (tab.autoCloseAtMs === atMs) continue;
+      tab.autoCloseAtMs = atMs;
+      changed = true;
+    }
+    if (changed) emitStatus();
+  };
+
+  const cancelChatIdleClose = (chatSessionId: string): void => {
+    const timer = chatIdleTimers.get(chatSessionId);
+    if (timer) clearTimeout(timer);
+    chatIdleTimers.delete(chatSessionId);
+    setAutoCloseAt(chatSessionId, null);
+  };
+
+  /** Close a chat's agent tabs that can close now; true when some had to wait. */
+  const closeChatTabsNow = async (chatSessionId: string, reason: "idle" | "ended" | "lane"): Promise<boolean> => {
+    let deferred = false;
+    for (const tab of tabsOfChat(chatSessionId)) {
+      if (tabBusyForAutoClose(tab)) {
+        deferred = true;
+        continue;
+      }
+      try {
+        await closeTab({ tabId: tab.id });
+        logger()?.info("built_in_browser.tab_auto_closed", { tabId: tab.id, reason });
+      } catch (error) {
+        logger()?.warn("built_in_browser.tab_auto_close_failed", {
+          tabId: tab.id,
+          reason,
+          err: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return deferred;
+  };
+
+  function armChatIdleClose(chatSessionId: string, delayMs: number): void {
+    const existing = chatIdleTimers.get(chatSessionId);
+    if (existing) clearTimeout(existing);
+    if (disposed || tabsOfChat(chatSessionId).length === 0) {
+      chatIdleTimers.delete(chatSessionId);
+      return;
+    }
+    const timer = setTimeout(() => {
+      chatIdleTimers.delete(chatSessionId);
+      void closeChatTabsNow(chatSessionId, "idle").then((deferred) => {
+        if (deferred) armChatIdleClose(chatSessionId, AUTO_CLOSE_RETRY_MS);
+        else setAutoCloseAt(chatSessionId, null);
+      });
+    }, delayMs);
+    (timer as { unref?: () => void }).unref?.();
+    chatIdleTimers.set(chatSessionId, timer);
+    setAutoCloseAt(chatSessionId, Date.now() + delayMs);
+  }
+
   /**
-   * A lane was deleted or archived: its tabs stay open and become free. Its
-   * chats are gone, so nothing would ever renew or drop their leases, and
-   * every other agent would see the tabs as taken until the lease ran out.
-   * A handed-off tab is handed back to nobody.
+   * The brain's word on one chat: `running` (a turn started; nothing closes),
+   * `idle` (a turn ended; its agent tabs close in 15 minutes), `ended` (the
+   * chat was closed or deleted; they close now). Returns how many of this
+   * collection's tabs the chat holds.
+   */
+  function chatBrowserLifecycle(chatSessionId: string, state: "running" | "idle" | "ended"): number {
+    const count = tabsOfChat(chatSessionId).length;
+    if (state === "running") {
+      cancelChatIdleClose(chatSessionId);
+      return count;
+    }
+    if (state === "idle") {
+      if (count > 0) armChatIdleClose(chatSessionId, CHAT_IDLE_CLOSE_MS);
+      return count;
+    }
+    cancelChatIdleClose(chatSessionId);
+    if (count > 0) {
+      void closeChatTabsNow(chatSessionId, "ended").then((deferred) => {
+        if (deferred) armChatIdleClose(chatSessionId, AUTO_CLOSE_RETRY_MS);
+      });
+    }
+    return count;
+  }
+
+  const lastAgentTouchMs = (tab: BrowserTabState): number => Math.max(
+    Date.parse(tab.createdAt) || 0,
+    tab.ownerLastActiveAt ? Date.parse(tab.ownerLastActiveAt) || 0 : 0,
+    tab.lastAgentInputAtMs ?? 0,
+  );
+  const sweepStaleAgentTabs = (): void => {
+    if (disposed) return;
+    for (const tab of [...tabs]) void maybeSleepTab(tab).catch(() => {});
+    const cutoff = Date.now() - STALE_AGENT_TAB_MS;
+    for (const tab of [...tabs]) {
+      if (tab.webContents.isDestroyed() || !isAgentWorkTab(tab) || tab.autoCloseAtMs != null) continue;
+      if (tabBusyForAutoClose(tab) || lastAgentTouchMs(tab) > cutoff) continue;
+      void closeTab({ tabId: tab.id }).then(
+        () => logger()?.info("built_in_browser.tab_auto_closed", { tabId: tab.id, reason: "stale" }),
+        () => {},
+      );
+    }
+  };
+  const staleSweepTimer = setInterval(sweepStaleAgentTabs, STALE_SWEEP_INTERVAL_MS);
+  (staleSweepTimer as { unref?: () => void }).unref?.();
+
+  /** The person keeps a tab: ADE will not close it on its own. */
+  function keepTabForPerson(tab: BrowserTabState, reason: "input" | "keep"): void {
+    if (tab.keptByPerson) return;
+    tab.keptByPerson = true;
+    tab.autoCloseAtMs = null;
+    logger()?.info("built_in_browser.tab_kept", { tabId: tab.id, reason });
+    emitStatus();
+  }
+
+  /** This collection holds the tab (and it is alive). */
+  function hasLiveTab(tabId: string): boolean {
+    return tabs.some((tab) => tab.id === tabId && !tab.webContents.isDestroyed());
+  }
+
+  /**
+   * A frame of one tab for a viewer on another machine (a desktop pinned to
+   * this one, the phone), with what the tab is showing. See
+   * `watchTabForRemote` for the lease the poll renews.
+   */
+  function captureTabFrameForRemote(input: { tabId: string; maxWidth?: number | null }): BuiltInBrowserRemoteTabFrame | null {
+    const tab = tabs.find((entry) => entry.id === input.tabId && !entry.webContents.isDestroyed());
+    if (!tab) return null;
+    const { frame } = tabCapabilities.watchTabForRemote({ tabId: tab.id, maxWidth: input.maxWidth ?? null });
+    const status = tabStatus(tab);
+    return {
+      tabId: tab.id,
+      url: status.url,
+      title: status.title,
+      isLoading: status.isLoading,
+      frame,
+    };
+  }
+
+  /**
+   * A person on another machine took control and clicked, scrolled or typed.
+   * Coordinates arrive as fractions of the frame they saw, so the viewer's
+   * picture size never matters. A person's input keeps the tab theirs.
+   */
+  async function sendRemoteHumanInput(input: { tabId: string; event: BuiltInBrowserRemoteInputEvent }): Promise<{ ok: boolean }> {
+    const tab = tabs.find((entry) => entry.id === input.tabId && !entry.webContents.isDestroyed());
+    if (!tab) return { ok: false };
+    const wc = tab.webContents;
+    const event = input.event;
+    const point = async (at: { x: number; y: number }): Promise<{ x: number; y: number }> => {
+      const size = await wc.executeJavaScript("[window.innerWidth, window.innerHeight]", true)
+        .catch(() => [0, 0]) as [number, number];
+      const zoom = wc.getZoomFactor?.() ?? 1;
+      const fx = Math.min(1, Math.max(0, Number(at.x) || 0));
+      const fy = Math.min(1, Math.max(0, Number(at.y) || 0));
+      return { x: Math.round(fx * size[0] * zoom), y: Math.round(fy * size[1] * zoom) };
+    };
+    if (event.type === "click") {
+      const { x, y } = await point(event);
+      wc.sendInputEvent({ type: "mouseMove", x, y });
+      wc.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
+      wc.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
+    } else if (event.type === "scroll") {
+      const { x, y } = await point(event);
+      const deltaY = Math.max(-2_000, Math.min(2_000, Number(event.deltaY) || 0));
+      wc.sendInputEvent({ type: "mouseWheel", x, y, deltaX: 0, deltaY: -deltaY, canScroll: true } as Electron.MouseWheelInputEvent);
+    } else if (event.type === "key") {
+      const key = typeof event.key === "string" ? event.key.slice(0, 32) : "";
+      if (!key) return { ok: false };
+      wc.sendInputEvent({ type: "keyDown", keyCode: key });
+      wc.sendInputEvent({ type: "keyUp", keyCode: key });
+    } else if (event.type === "text") {
+      const text = typeof event.text === "string" ? event.text.slice(0, 2_000) : "";
+      if (!text) return { ok: false };
+      wc.insertText(text);
+    } else {
+      return { ok: false };
+    }
+    keepTabForPerson(tab, "input");
+    return { ok: true };
+  }
+
+  /** The tab strip's Keep: renderer-only, never an agent command. */
+  function keepTab(input: BuiltInBrowserTabArgs): BuiltInBrowserStatus {
+    const tabId = input.tabId?.trim();
+    if (!tabId) throw new Error("Browser tab id is required.");
+    const tab = tabs.find((entry) => entry.id === tabId);
+    if (!tab) throw new AdeExpectedError(`Browser tab not found: ${tabId}`, "user");
+    keepTabForPerson(tab, "keep");
+    return scopeStatusForInput(getStatus(), input);
+  }
+
+  /**
+   * A lane was deleted or archived. Its agent tabs nobody kept close now (or
+   * when they stop being on screen); every other tab it held stays open and
+   * becomes free. Its chats are gone, so nothing would ever renew or drop
+   * their leases, and every other agent would see the tabs as taken until the
+   * lease ran out. A handed-off tab is handed back to nobody.
    */
   function releaseLane(laneId: string): number {
+    const laneChats = new Set<string>();
+    for (const tab of tabs) {
+      if (tab.webContents.isDestroyed() || !isAgentWorkTab(tab)) continue;
+      const tabLane = tab.ownerLaneId ?? tab.openedByLaneId;
+      const chat = tab.ownerChatSessionId ?? tab.openedByChatSessionId;
+      if (tabLane === laneId && chat) laneChats.add(chat);
+    }
+    for (const chatSessionId of laneChats) {
+      cancelChatIdleClose(chatSessionId);
+      void closeChatTabsNow(chatSessionId, "lane").then((deferred) => {
+        if (deferred) armChatIdleClose(chatSessionId, AUTO_CLOSE_RETRY_MS);
+      });
+    }
     let released = 0;
     for (const tab of tabs) {
       let changed = false;
@@ -5825,6 +6254,7 @@ function createBuiltInBrowserWindowService(args: {
     const chatSessionId = stringOrNull(input.chatSessionId);
     const laneId = chatSessionId ? stringOrNull(input.laneId) : null;
     tab.keptByPerson = true;
+    tab.autoCloseAtMs = null;
     tab.ownerChatSessionId = chatSessionId;
     tab.ownerLaneId = laneId;
     tab.ownerClaimedAt = chatSessionId ? new Date().toISOString() : null;
@@ -6560,6 +6990,10 @@ function createBuiltInBrowserWindowService(args: {
 
   function dispose(): void {
     disposed = true;
+    for (const timer of chatIdleTimers.values()) clearTimeout(timer);
+    chatIdleTimers.clear();
+    tabCapabilities.stopRemoteWatches();
+    clearInterval(staleSweepTimer);
     if (recentlyAttendedTimer) clearTimeout(recentlyAttendedTimer);
     recentlyAttendedTimer = null;
     recentlyAttendedUntil.clear();
@@ -7545,6 +7979,11 @@ function createBuiltInBrowserWindowService(args: {
     requestOriginAccess,
     claim,
     releaseLane,
+    chatBrowserLifecycle,
+    keepTab,
+    hasLiveTab,
+    captureTabFrameForRemote,
+    sendRemoteHumanInput,
     startHandoff,
     endHandoff,
     waitForHandoff,
@@ -7769,14 +8208,15 @@ async function fetchFaviconDataUrl(wc: WebContents, value: string): Promise<stri
 
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
   const wc = tab.webContents;
-  const url = wc.isDestroyed() ? null : emptyToNull(wc.getURL());
+  const url = tab.sleeping ? tab.sleeping.url : (wc.isDestroyed() ? null : emptyToNull(wc.getURL()));
   // A launchpad tab stops being one the moment it points at a real page, even
   // if the flag has not been cleared yet (a redirect chain, a restored tab).
   const isLaunchpad = tab.isLaunchpad && (url == null || url === "about:blank");
   return {
     id: tab.id,
     url,
-    title: isLaunchpad ? "New tab" : (wc.isDestroyed() ? null : emptyToNull(wc.getTitle())),
+    title: isLaunchpad ? "New tab" : tab.sleeping ? tab.sleeping.title : (wc.isDestroyed() ? null : emptyToNull(wc.getTitle())),
+    sleeping: tab.sleeping != null,
     isLaunchpad,
     loadError: tab.loadError,
     isolatedProfile: tab.isolation?.profile ?? null,
@@ -7794,6 +8234,7 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     openedByChatSessionId: tab.openedByChatSessionId,
     openedByLaneId: tab.openedByLaneId,
     keptByPerson: tab.keptByPerson,
+    autoCloseAt: tab.autoCloseAtMs != null && !tab.keptByPerson ? new Date(tab.autoCloseAtMs).toISOString() : null,
     createdAt: tab.createdAt,
     zoomFactor: tab.zoomFactor,
     devToolsOpen: tab.devToolsMode !== null,

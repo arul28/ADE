@@ -6089,6 +6089,22 @@ function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegist
     workToolsStateService.readObservationPreview({
       path: requireString(payload.path, "workTools.readObservationPreview requires path."),
     }));
+  // A browser tab's live picture on the phone: each read renews a short watch
+  // on the desktop, so frames flow only while the sheet is open.
+  register("workTools.readBrowserTabFrame", { viewerAllowed: true, queueable: false }, async (payload) =>
+    workToolsStateService.readBrowserTabFrame({
+      tabId: requireString(payload.tabId, "workTools.readBrowserTabFrame requires tabId."),
+      maxWidth: payload.maxWidth,
+    }));
+  // Take control of a browser tab from the phone: a tap, a scroll, typing.
+  register(
+    "workTools.sendBrowserTabInput",
+    { viewerAllowed: false, controllerAllowed: true, queueable: false },
+    async (payload) => workToolsStateService.sendBrowserTabInput({
+      tabId: requireString(payload.tabId, "workTools.sendBrowserTabInput requires tabId."),
+      event: payload.event,
+    }),
+  );
   register(
     "workTools.closeBrowserTab",
     { viewerAllowed: false, controllerAllowed: true, queueable: false },

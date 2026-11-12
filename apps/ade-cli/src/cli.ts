@@ -4187,9 +4187,12 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   prefer this chat's tabs and free ones, close a held tab only when the task
   needs it, and never close a tab the user opened or kept without asking them.
   "close" prints whose tab it closed. When the browser is full, the error lists
-  only your tabs and free agent tabs; ask the user about the rest. A deleted or
-  archived lane frees its tabs (they stay open). An agent's tab is not brought
-  back after ADE restarts; a tab the user opened or kept keeps its id.
+  only your tabs and free agent tabs; ask the user about the rest. Agent tabs
+  clean themselves up: a chat's tabs close 15 minutes after it goes idle, and
+  at once when it ends or its lane is archived or deleted; a tab the user
+  clicked, typed in, navigated or kept is never closed by ADE. An agent's tab
+  is not brought back after ADE restarts; a tab the user opened or kept keeps
+  its id.
 
   Which machine. "status" prints the route: the browser "open" uses (the
   computer the user sends this chat's messages from, else this machine) and

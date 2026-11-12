@@ -4457,6 +4457,15 @@ function scopeWorkToolsAdeActionArgs(
   }
   // The desktop's once-a-minute "still watching" for a cloud computer; carries no lane.
   if (action === "noteWatching") return workToolsArgs;
+  if (action === "readBrowserTabFrame" || action === "sendBrowserTabInput") {
+    // A person watching (or driving) a tab from another machine. An agent
+    // reads pages with `ade browser observe` and acts with its own commands,
+    // which keep ownership, presence and access checks; these keep none.
+    if (!isUserClient) {
+      scopeAccessDenied(`work_tools.${action} is limited to user clients`, method);
+    }
+    return workToolsArgs;
+  }
   if (action === "setActiveTool") {
     // Writing the pane's active tool is the human's move on their own desktop.
     // Same gate shape as `built_in_browser.acknowledgeRemoteRequest`.

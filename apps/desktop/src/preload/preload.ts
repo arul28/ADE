@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { NoticeLayerRect } from "../shared/noticeLayer";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
 import type { LaneComputer, LaneFollowResult, LaneMovedEvent } from "../shared/laneComputer";
@@ -273,6 +274,8 @@ import type {
   ProviderInstanceSetDefaultArgs,
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
+  BuiltInBrowserRemoteInputEvent,
+  BuiltInBrowserRemoteTabFrame,
 } from "../shared/types";
 import { adeActionAccess, thisDesktopOnlyRefusal, thisDesktopOnlyRefusalFor } from "../shared/adeActionAccess";
 import type {
@@ -11470,6 +11473,12 @@ const adeBridge = {
       ),
     // Local IPC only: the tab is this desktop's own, and reassigning it is the
     // person's move, never the bridge's.
+    // Local IPC only: keeping a tab is the person's word, never an agent's.
+    keepTab: async (args: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserKeepTab, args),
+      ),
     handTabToChat: async (args: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> =>
       clearAround(
         () => builtInBrowserStatusCache.clear(),
@@ -14712,6 +14721,33 @@ const adeBridge = {
       );
       return runtime.handled ? runtime.result : null;
     },
+    /**
+     * A browser tab's newest frame on the machine the pin names, for a person
+     * watching from here. Each call renews a short watch there; stop calling
+     * and the frames stop. Null when that machine has no such tab.
+     */
+    readBrowserTabFrame: async (
+      args: { tabId: string; maxWidth?: number | null },
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserRemoteTabFrame | null> => {
+      const runtime = await callPinnedOrBoundRuntimeActionIfBound<BuiltInBrowserRemoteTabFrame | null>(pin,
+        "work_tools",
+        "readBrowserTabFrame",
+        { args },
+      );
+      return runtime.handled ? runtime.result : null;
+    },
+    /** A person's click, scroll or typing into that tab (Take control). */
+    sendBrowserTabInput: async (
+      args: { tabId: string; event: BuiltInBrowserRemoteInputEvent },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: boolean }> => callPinnedOrBoundRuntimeActionOr<{ ok: boolean }>(
+      pin,
+      "work_tools",
+      "sendBrowserTabInput",
+      { args },
+      async () => ({ ok: false }),
+    ),
     /** Dev servers on the lane's machine; see `builtInBrowser.getDevServers`. */
     listDevServers: async (
       args: DevServersArgs = {},
@@ -14937,6 +14973,14 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.appSetTitleBarOverlay, arg),
     onCommand: (cb: (command: AppZoomCommand) => void) =>
       subscribeAppCommand("zoom", cb),
+  },
+  /** The bottom-right cards' own window over a live browser page (`shared/noticeLayer`). */
+  noticeLayer: {
+    // See-through windows depend on the Linux compositor; there the cards
+    // stay in the corner and the page pauses behind them, as before.
+    available: process.platform !== "linux",
+    place: async (rect: NoticeLayerRect | null): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.appPlaceNoticeLayer, { rect }),
   },
   cto: {
     getState: async (

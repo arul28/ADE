@@ -4047,6 +4047,7 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
         /** "Attach to chat": move a tab's lease to one chat (or drop it). Optional for older preloads. */
+        keepTab?: (args: BuiltInBrowserTabArgs) => Promise<BuiltInBrowserStatus>;
         handTabToChat?: (args: BuiltInBrowserTabArgs) => Promise<BuiltInBrowserStatus>;
         closeTab: (
           args: BuiltInBrowserTabArgs,
@@ -5303,6 +5304,16 @@ declare global {
           observationPath: string,
           pin?: OpenProjectBinding | null,
         ) => Promise<WorkToolsObservationPreview | null>;
+        /** A browser tab's newest frame on the pinned machine; renews a short watch there. */
+        readBrowserTabFrame: (
+          args: { tabId: string; maxWidth?: number | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types").BuiltInBrowserRemoteTabFrame | null>;
+        /** A person's click, scroll or typing into that tab (Take control). */
+        sendBrowserTabInput: (
+          args: { tabId: string; event: import("../shared/types").BuiltInBrowserRemoteInputEvent },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: boolean }>;
         /** Dev servers on the lane's machine, for the Browser on any machine. */
         listDevServers: (args?: DevServersArgs, pin?: OpenProjectBinding | null) => Promise<DevServersResult>;
         /**
@@ -5365,6 +5376,11 @@ declare global {
           zoomFactor?: number;
         }) => Promise<{ applied: boolean }>;
         onCommand: (cb: (command: AppZoomCommand) => void) => () => void;
+      };
+      /** The bottom-right cards' own window over a live browser page. Absent or unavailable on the web build. */
+      noticeLayer?: {
+        available: boolean;
+        place: (rect: import("../shared/noticeLayer").NoticeLayerRect | null) => Promise<boolean>;
       };
       cto?: {
         // CTO calls take the CTO home machine's pin; null = the tab's binding.

@@ -912,8 +912,15 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     Broadcasts (`remoteBrowserBroadcast.ts`) reach every desktop that holds a
     pin on this machine at once: `listTabsForAgent` (a project's tabs, read
     without building the collection; never the personal collection) for
-    `ade browser status`, and `releaseLaneTabs` when a lane is deleted or
-    archived. A tab list waits for the desktops that answered the last ones,
+    `ade browser status`, `releaseLaneTabs` when a lane is deleted or
+    archived, and `chatBrowserLifecycle` (`running` / `idle` / `ended`) as a
+    chat that used the browser through this brain starts a turn, finishes one,
+    or ends, so its agent tabs close on every desktop that holds them.
+    Watching another machine's tab is not a broadcast: a desktop or phone polls
+    `work_tools.readBrowserTabFrame` on that machine's runtime (user clients
+    only), which renews a short preview-stream watch on the desktop there, and
+    `work_tools.sendBrowserTabInput` carries a person's clicks and typing
+    (Take control). A tab list waits for the desktops that answered the last ones,
     or 1.2 s when none has; after a list nobody answered, lists are skipped
     for two minutes or until a desktop takes a command.
 

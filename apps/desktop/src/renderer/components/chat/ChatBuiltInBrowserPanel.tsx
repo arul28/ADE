@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import {
   Check,
   WarningCircle,
@@ -87,7 +87,10 @@ import {
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type { BuiltInBrowserRemoteRequest } from "../../../shared/types/builtInBrowserRemote";
 import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
-import { useAppStore, type WorkProjectViewState } from "../../state/appStore";
+import { projectStateKeyForBinding, useAppStore, type WorkProjectViewState } from "../../state/appStore";
+import { useSessionsForPin } from "../../state/crossMachineLanes";
+import { primarySessionLabel } from "../../lib/sessions";
+import { focusWorkSession } from "../../lib/workSessionRequests";
 import {
   commitTunnelApproval,
   reconcileTabTunnels,
@@ -111,7 +114,9 @@ import { BrowserProfilePanel } from "./browser/BrowserProfilePanel";
 import { BrowserStage, type BrowserLaunchpadGroup } from "./browser/BrowserStage";
 import { BrowserTabStrip } from "./browser/BrowserTabStrip";
 import { orderBrowserTabsByLane } from "./browser/browserTabGroups";
+import { browserTabVisibleInLane } from "./browser/browserTabOwnership";
 import { BrowserToolbarRow } from "./browser/BrowserToolbarRow";
+import { RemoteBrowserTabRow, RemoteBrowserTabViewer, useRemoteBrowserTabs } from "./browser/RemoteBrowserTabs";
 import { BrowserCertificateBanner } from "./browser/BrowserCertificateBanner";
 import { useBrowserSettings } from "./browser/browserSettings";
 import { resolveBrowserSearchTemplate } from "../../../shared/types/builtInBrowser";
@@ -203,6 +208,25 @@ type PendingTunnelApproval = {
   machineLabel: string;
   decide: (decision: "once" | "always" | "deny") => void;
 };
+
+/** This computer's answer to the strip's lane toggle ("lane" or "all"). */
+const BROWSER_LANE_FILTER_KEY = "ade.browser.laneFilter";
+
+/** The other machine's tab already showing this loopback port, if any. */
+function remoteTabForDevServer(tabs: ReadonlyArray<{ id: string; url: string | null }>, port: number) {
+  return tabs.find((tab) => {
+    if (!tab.url) return false;
+    try {
+      const parsed = new URL(tab.url);
+      const host = parsed.hostname.replace(/^\[|\]$/g, "");
+      const loopback = host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".localhost");
+      const tabPort = Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80));
+      return loopback && tabPort === port;
+    } catch {
+      return false;
+    }
+  }) ?? null;
+}
 
 type ChatBuiltInBrowserPanelProps = {
   sessionId: string | null;
@@ -641,10 +665,98 @@ export function ChatBuiltInBrowserPanel({
   }, [ensureTunnelApproval]);
 
   const browserTabs = useMemo(() => status?.tabs ?? [], [status?.tabs]);
-  const orderedBrowserTabs = useMemo(
-    () => orderBrowserTabsByLane(browserTabs, activeGroupLaneId),
-    [activeGroupLaneId, browserTabs],
-  );
+  /*
+    The one lane toggle: in a lane, show that lane's tabs and your own, or
+    every tab. Remembered on this computer, one answer for every lane.
+  */
+  const [laneFilterMode, setLaneFilterMode] = useState<"lane" | "all">(() => {
+    try {
+      return window.localStorage.getItem(BROWSER_LANE_FILTER_KEY) === "all" ? "all" : "lane";
+    } catch {
+      return "lane";
+    }
+  });
+  const toggleLaneFilter = useCallback(() => {
+    setLaneFilterMode((current) => {
+      const next = current === "lane" ? "all" : "lane";
+      try {
+        window.localStorage.setItem(BROWSER_LANE_FILTER_KEY, next);
+      } catch {
+        // A renderer without storage just forgets the choice.
+      }
+      return next;
+    });
+  }, []);
+  const statusActiveTabId = status?.activeTabId ?? null;
+  const laneHiddenCount = useMemo(() => (
+    activeGroupLaneId
+      ? browserTabs.filter((tab) => tab.id !== statusActiveTabId && !browserTabVisibleInLane(tab, activeGroupLaneId)).length
+      : 0
+  ), [activeGroupLaneId, browserTabs, statusActiveTabId]);
+  const orderedBrowserTabs = useMemo(() => {
+    const ordered = orderBrowserTabsByLane(browserTabs, activeGroupLaneId);
+    if (!activeGroupLaneId || laneFilterMode === "all") return ordered;
+    // The tab on screen always has its chip, whichever lane it belongs to.
+    return ordered.filter((tab) => tab.id === statusActiveTabId || browserTabVisibleInLane(tab, activeGroupLaneId));
+  }, [activeGroupLaneId, browserTabs, laneFilterMode, statusActiveTabId]);
+  const laneFilter = useMemo(() => (
+    activeGroupLaneId && (laneHiddenCount > 0 || browserTabs.some((tab) => !browserTabVisibleInLane(tab, activeGroupLaneId)))
+      ? { mode: laneFilterMode, hiddenCount: laneFilterMode === "lane" ? laneHiddenCount : 0, onToggle: toggleLaneFilter }
+      : null
+  ), [activeGroupLaneId, browserTabs, laneFilterMode, laneHiddenCount, toggleLaneFilter]);
+  /*
+    Tabs on the other machine. A chat that runs there and used that machine's
+    own browser (started from the phone, say) has its tabs there, not here;
+    they are listed under the strip and can be watched live.
+  */
+  const remoteLaneId = contextLaneId ?? activeGroupLaneId ?? null;
+  const remoteTabs = useRemoteBrowserTabs(remotePin, remoteLaneId);
+  const remoteMachineName = remotePin?.runtimeName?.trim() || "the other machine";
+  const [remoteViewTabId, setRemoteViewTabId] = useState<string | null>(null);
+  /** A dev server the other machine already has open: watch it there, or tunnel it here. */
+  const [devServerChoice, setDevServerChoice] = useState<{ url: string; port: number; remoteTabId: string } | null>(null);
+  const remoteViewTab = remoteViewTabId ? remoteTabs.tabs.find((tab) => tab.id === remoteViewTabId) ?? null : null;
+  // A watched tab that closed over there stops being watched here.
+  useEffect(() => {
+    if (remoteViewTabId && remoteTabs.tabs.length > 0 && !remoteViewTab) setRemoteViewTabId(null);
+  }, [remoteTabs.tabs.length, remoteViewTab, remoteViewTabId]);
+  // This chat's agent started working in a tab over there: show it, once per
+  // tab, so you see what it does without hunting for it. Picking anything
+  // else (or closing the viewer) is respected after that.
+  const autoShownRemoteTabsRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (!sessionId) return;
+    const entry = remoteTabs.presence.find((item) => item.chatSessionId === sessionId && item.tabId);
+    const tabId = entry?.tabId ?? null;
+    if (!tabId || autoShownRemoteTabsRef.current.has(tabId)) return;
+    if (!remoteTabs.tabs.some((tab) => tab.id === tabId)) return;
+    autoShownRemoteTabsRef.current.add(tabId);
+    setRemoteViewTabId(tabId);
+  }, [remoteTabs.presence, remoteTabs.tabs, sessionId]);
+
+  /** Chat names for the strip's groups, from the session lists already in the store. */
+  const pinnedSessions = useSessionsForPin(chatScope.binding);
+  const boundSessions = useAppStore((state) => {
+    if (chatScope.binding) return null;
+    const key = projectStateKeyForBinding(null, chatScope.rootPath);
+    return key ? state.sessionsCacheByProject[key] ?? null : null;
+  });
+  const machineSessions = pinnedSessions ?? boundSessions;
+  const tabChatIdsKey = useMemo(() => Array.from(new Set(browserTabs.flatMap((tab) => [
+    tab.ownerChatSessionId,
+    tab.openedByChatSessionId,
+  ].filter((id): id is string => Boolean(id))))).sort().join("|"), [browserTabs]);
+  const chatNameById = useMemo(() => {
+    const names = new Map<string, string>();
+    if (!tabChatIdsKey || !machineSessions) return names;
+    const wanted = new Set(tabChatIdsKey.split("|"));
+    for (const session of machineSessions) {
+      if (!wanted.has(session.id)) continue;
+      const label = primarySessionLabel(session)?.trim();
+      if (label) names.set(session.id, label);
+    }
+    return names;
+  }, [machineSessions, tabChatIdsKey]);
   const tabIdsSignature = useMemo(() => browserTabs.map((tab) => tab.id).join("|"), [browserTabs]);
   const activeTabId = status?.activeTabId ?? browserTabs[0]?.id ?? null;
   const activeTabTunnel = activeTabId ? tabTunnels[activeTabId] ?? null : null;
@@ -895,6 +1007,9 @@ export function ChatBuiltInBrowserPanel({
     setMessage({ tone: "error", text: `Could not position browser: ${text}` });
   }, []);
 
+  /** This panel's page in the notice corner's registry (`cornerNoticeDock`). */
+  const noticePageId = `browser-page:${useId()}`;
+
   /*
     Bounds, occlusion and the frozen-frame underlay.
 
@@ -908,6 +1023,7 @@ export function ChatBuiltInBrowserPanel({
     refreshUnderlaySnapshot,
     underlay,
   } = useNativeBrowserViewBounds({
+    pageId: noticePageId,
     surfaceRef: browserSurfaceRef,
     stageRef: browserStageRef,
     viewportRef: browserViewportRef,
@@ -1410,6 +1526,14 @@ export function ChatBuiltInBrowserPanel({
       setMessage({ tone: "error", text: errorMessage(error) });
     });
   }, [contextLaneId, onAttachTab, sessionId, withBrowserScope]);
+  const handleKeepTab = useCallback((tabId: string) => {
+    void getBrowserApi()?.keepTab?.(withBrowserScope({ tabId })).catch((error: unknown) => {
+      setMessage({ tone: "error", text: errorMessage(error) });
+    });
+  }, [withBrowserScope]);
+  const handleOpenTabChat = useCallback((chatSessionId: string, laneId: string | null) => {
+    focusWorkSession(chatSessionId, laneId, chatScope.binding ?? null);
+  }, [chatScope.binding]);
   const handleAttachActiveTab = useCallback(() => {
     const tabId = statusRef.current?.activeTabId ?? null;
     if (tabId) handleAttachTab(tabId);
@@ -2518,7 +2642,12 @@ export function ChatBuiltInBrowserPanel({
             // Everything in this group came from a listening port.
             live: true,
             icon: "server" as const,
-            onSelect: () => handleSuggestion(server.url),
+            onSelect: () => {
+              const port = server.port;
+              const remoteTab = remotePin && port != null ? remoteTabForDevServer(remoteTabs.tabs, port) : null;
+              if (remoteTab && port != null) setDevServerChoice({ url: server.url, port, remoteTabId: remoteTab.id });
+              else handleSuggestion(server.url);
+            },
           };
         }),
       });
@@ -2550,6 +2679,8 @@ export function ChatBuiltInBrowserPanel({
     handleForgetRecent,
     handleSuggestion,
     recentUrls,
+    remotePin,
+    remoteTabs.tabs,
   ]);
 
   /* ── Layout ─────────────────────────────────────────────────────────────── */
@@ -2693,12 +2824,14 @@ export function ChatBuiltInBrowserPanel({
   /* ── Launchpad ──────────────────────────────────────────────────────────── */
 
   useEffect(() => {
-    launchpadVisibleRef.current = showLaunchpad;
+    // The remote viewer owns the surface the same way the launchpad does: the
+    // native page must not paint over the picture of the other machine's tab.
+    launchpadVisibleRef.current = showLaunchpad || remoteViewTabId != null;
     reportBounds(undefined, { force: true });
     // A page arrived under a focused, still-empty launchpad field: the omnibox
     // has to say where we are, not sit blank over a loaded page.
     if (!showLaunchpad) setUrlInput((current) => (current.trim() ? current : currentUrl));
-  }, [currentUrl, reportBounds, showLaunchpad]);
+  }, [currentUrl, remoteViewTabId, reportBounds, showLaunchpad]);
 
   useEffect(() => {
     if (!showLaunchpad) return undefined;
@@ -2912,7 +3045,51 @@ export function ChatBuiltInBrowserPanel({
           onCloseTab={handleCloseTab}
           onNewTab={handleNewTab}
           onAttachTab={onAttachTab ? handleAttachTab : undefined}
+          chatNameById={chatNameById}
+          onKeepTab={handleKeepTab}
+          onOpenChat={handleOpenTabChat}
+          laneFilter={laneFilter}
         />
+
+        {remotePin ? (
+          <RemoteBrowserTabRow
+            machineName={remoteMachineName}
+            tabs={remoteTabs.tabs}
+            presence={remoteTabs.presence}
+            selectedTabId={remoteViewTabId}
+            onSelect={setRemoteViewTabId}
+          />
+        ) : null}
+
+        {devServerChoice ? (
+          <Banner
+            model={{
+              id: "browser-dev-server-choice",
+              tone: "info",
+              title: `localhost:${devServerChoice.port} is already open on ${remoteMachineName}`,
+              detail: "Watch that tab live, or load the page here through a tunnel to that machine.",
+              actions: [
+                {
+                  label: `Watch on ${remoteMachineName}`,
+                  onClick: () => {
+                    setRemoteViewTabId(devServerChoice.remoteTabId);
+                    setDevServerChoice(null);
+                  },
+                },
+                {
+                  label: "Open here",
+                  variant: "secondary",
+                  onClick: () => {
+                    handleSuggestion(devServerChoice.url);
+                    setDevServerChoice(null);
+                  },
+                },
+                { label: "Cancel", variant: "link", onClick: () => setDevServerChoice(null) },
+              ],
+            }}
+            layout="inline"
+          />
+        ) : null}
 
         {pendingApproval ? (
           <Banner
@@ -3063,6 +3240,7 @@ export function ChatBuiltInBrowserPanel({
           />
         ) : null}
 
+        <div className="relative flex min-h-0 flex-1 flex-col">
         <BrowserStage
           surfaceRef={browserSurfaceRef}
           stageRef={browserStageRef}
@@ -3089,6 +3267,19 @@ export function ChatBuiltInBrowserPanel({
           busy={busy}
           onRotateEmulation={handleRotateEmulation}
         />
+        {remotePin && remoteViewTabId ? (
+          <RemoteBrowserTabViewer
+            pin={remotePin}
+            machineName={remoteMachineName}
+            tabId={remoteViewTabId}
+            onClose={() => setRemoteViewTabId(null)}
+            onOpenHere={(url) => {
+              setRemoteViewTabId(null);
+              handleSuggestion(url);
+            }}
+          />
+        ) : null}
+        </div>
 
       </div>
       <BrowserLoginImportDialog

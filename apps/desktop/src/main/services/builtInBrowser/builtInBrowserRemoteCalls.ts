@@ -98,7 +98,12 @@ export async function runRemoteAgentBrowserCall(args: {
     try {
       const result = args.method === "listTabsForAgent"
         ? args.service.listTabsForAgent(args.input)
-        : args.service.releaseLaneTabs({ laneId: typeof args.input.laneId === "string" ? args.input.laneId : null });
+        : args.method === "chatBrowserLifecycle"
+          ? args.service.chatBrowserLifecycle({
+            chatSessionId: typeof args.input.chatSessionId === "string" ? args.input.chatSessionId : null,
+            state: typeof args.input.state === "string" ? args.input.state : null,
+          })
+          : args.service.releaseLaneTabs({ laneId: typeof args.input.laneId === "string" ? args.input.laneId : null });
       return { ok: true, result, files: [], machineName: machineName() };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error), machineName: machineName() };

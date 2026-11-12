@@ -94,15 +94,62 @@ describe("built-in browser profile migration", () => {
     });
     expect(global.flushStore).toHaveBeenCalledTimes(1);
 
+    // Every live persistent cookie is now in the shared profile, so the old
+    // profile is retired, and deleted at the start of the next launch.
+    const afterFirst = JSON.parse(fs.readFileSync(path.join(root, "ade-browser-profile-migration-v1.json"), "utf8"));
+    expect(afterFirst).toMatchObject({ version: 1, completedPartitions: [legacyName], retiredPartitions: [legacyName] });
+    expect(fs.existsSync(path.join(root, "Partitions", legacyName))).toBe(true);
+
     const second = await migrateLegacyBuiltInBrowserProfiles({
       userDataPath: root,
       getSession: (partition) => sessions.get(partition)!,
     });
-    expect(second.migratedCookieCount).toBe(0);
+    expect(second).toMatchObject({ migratedCookieCount: 0, deletedPartitionCount: 1, discoveredPartitionCount: 0 });
     expect(global.set).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(path.join(root, "Partitions", legacyName))).toBe(false);
     const marker = JSON.parse(fs.readFileSync(path.join(root, "ade-browser-profile-migration-v1.json"), "utf8"));
-    expect(marker).toMatchObject({ version: 1, completedPartitions: [legacyName] });
+    expect(marker).toMatchObject({ version: 1, completedPartitions: [], retiredPartitions: [] });
     expect(fs.statSync(path.join(root, "ade-browser-profile-migration-v1.json")).mode & 0o777).toBe(0o600);
+  });
+
+  it("never deletes an old profile whose cookies did not all reach the shared profile", async () => {
+    const root = createTempDir("ade-browser-profile-migration-");
+    const legacyName = "ade-browser-project-00112233445566aa";
+    fs.mkdirSync(path.join(root, "Partitions", legacyName), { recursive: true });
+    const global = sessionWithCookies([]);
+    // The shared store accepts the write but never shows the cookie again.
+    global.set.mockImplementation(async () => {});
+    const legacy = sessionWithCookies([profileCookie({ name: "signed-in", value: "token" })]);
+    const sessions = new Map<string, Session>([
+      ["persist:ade-browser", global.session],
+      [`persist:${legacyName}`, legacy.session],
+    ]);
+    const run = () => migrateLegacyBuiltInBrowserProfiles({
+      userDataPath: root,
+      getSession: (partition) => sessions.get(partition)!,
+    });
+
+    await run();
+    const second = await run();
+    expect(second.deletedPartitionCount).toBe(0);
+    expect(fs.existsSync(path.join(root, "Partitions", legacyName))).toBe(true);
+    const marker = JSON.parse(fs.readFileSync(path.join(root, "ade-browser-profile-migration-v1.json"), "utf8"));
+    expect(marker.retiredPartitions).toEqual([]);
+  });
+
+  it("deletes only names that look like an old per-project profile, whatever the marker says", async () => {
+    const root = createTempDir("ade-browser-profile-migration-");
+    fs.mkdirSync(path.join(root, "Partitions", "ade-browser"), { recursive: true });
+    fs.writeFileSync(path.join(root, "ade-browser-profile-migration-v1.json"), JSON.stringify({
+      version: 1,
+      completedPartitions: [],
+      retiredPartitions: ["ade-browser", "../../etc", "ade-browser-project-zz"],
+      updatedAt: new Date(0).toISOString(),
+    }));
+    const global = sessionWithCookies([]);
+    await expect(migrateLegacyBuiltInBrowserProfiles({ userDataPath: root, getSession: () => global.session }))
+      .resolves.toMatchObject({ deletedPartitionCount: 0 });
+    expect(fs.existsSync(path.join(root, "Partitions", "ade-browser"))).toBe(true);
   });
 
   it("ignores unrelated partition directories", async () => {

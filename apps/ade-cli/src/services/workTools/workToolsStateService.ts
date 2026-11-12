@@ -14,6 +14,10 @@ import type { BuiltInBrowserRuntimeStatus } from "../../../../desktop/src/shared
 // Shared, not main: this is a plain Node process, and a value-import of an
 // Electron-main module would pull `electron` into it.
 import { BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS } from "../../../../desktop/src/shared/types/builtInBrowser";
+import type {
+  BuiltInBrowserRemoteInputEvent,
+  BuiltInBrowserRemoteTabFrame,
+} from "../../../../desktop/src/shared/types/builtInBrowser";
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
 import {
   MAC_DESKTOP_OBSERVATION_CACHE_SEGMENTS,
@@ -164,6 +168,13 @@ export type WorkToolsStateServiceArgs = {
    * Omitted entirely on a runtime with no bridge at all.
    */
   getBrowserStatus?: WorkToolsBrowserStatusReader | null;
+  /**
+   * One browser tab's newest frame, from this machine's desktop (Take a look
+   * from another machine or the phone). Absent with no bridge.
+   */
+  captureBrowserTabFrame?: ((input: { tabId: string; maxWidth: number | null }) => Promise<BuiltInBrowserRemoteTabFrame | null>) | null;
+  /** A person's input into one browser tab from another machine (Take control). */
+  sendBrowserTabInput?: ((input: { tabId: string; event: BuiltInBrowserRemoteInputEvent }) => Promise<{ ok: boolean }>) | null;
   /** The daemon's own App Control service, when it has one. */
   getAppControlStatus?: WorkToolsAppControlStatusReader | null;
   /**
@@ -249,6 +260,14 @@ export type WorkToolsStateService = {
   readObservationPreview(
     args: WorkToolsReadObservationPreviewArgs,
   ): Promise<WorkToolsObservationPreview | null>;
+  /**
+   * A browser tab's newest frame, for a person watching from another machine
+   * or the phone. Each call renews a short watch on the desktop; frames stop a
+   * few seconds after the last one. Null when the tab is not on this machine.
+   */
+  readBrowserTabFrame(args: { tabId?: unknown; maxWidth?: unknown } | null): Promise<BuiltInBrowserRemoteTabFrame | null>;
+  /** A person's click, scroll or typing into a browser tab from another machine. */
+  sendBrowserTabInput(args: { tabId?: unknown; event?: unknown } | null): Promise<{ ok: boolean }>;
   /**
    * Ask the desktop showing this chat to open a surface, and report what it
    * did: shown, held until the user opens the chat, or no desktop at all.
@@ -942,6 +961,35 @@ export function createWorkToolsStateService(
         macDesktop,
         capturedAt: new Date().toISOString(),
       };
+    },
+
+    async readBrowserTabFrame(input) {
+      const tabId = trimmedOrNull(input?.tabId);
+      const reader = args.captureBrowserTabFrame;
+      if (!tabId || !reader) return null;
+      const maxWidth = Number(input?.maxWidth);
+      try {
+        return await reader({
+          tabId,
+          maxWidth: Number.isFinite(maxWidth) && maxWidth > 0 ? Math.min(1_920, Math.round(maxWidth)) : null,
+        });
+      } catch (error) {
+        if (error instanceof DesktopBridgeUnavailableError) return null;
+        throw error;
+      }
+    },
+
+    async sendBrowserTabInput(input) {
+      const tabId = trimmedOrNull(input?.tabId);
+      const sender = args.sendBrowserTabInput;
+      const event = input?.event;
+      if (!tabId || !sender || !event || typeof event !== "object") return { ok: false };
+      try {
+        return await sender({ tabId, event: event as BuiltInBrowserRemoteInputEvent });
+      } catch (error) {
+        if (error instanceof DesktopBridgeUnavailableError) return { ok: false };
+        throw error;
+      }
     },
 
     async readObservationPreview(input) {
