@@ -421,6 +421,8 @@ import { describeAutoCreateStart } from "../lanes/laneStartOptions";
 import { autoLaneMachine, isAdeCloudLaneComputer, originUrlForBinding } from "../lanes/laneMachines";
 import { draftCloneRowTargetId, useDraftMachineSetup } from "./useDraftMachineSetup";
 import { ADE_CLOUD_MACHINE_ID, useAdeCloudComposer, useAdeCloudDraft, type AdeCloudSend } from "./useAdeCloudDraft";
+import { useAdeCloudSignInNeed } from "./useAdeCloudSignInNeed";
+import { adeCloudSettingsSearch } from "../settings/SettingsMachineScope";
 import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
 import { useFollowLaneMoves } from "../cloudLane/useFollowLaneMoves";
 import { AdeCloudTray, CloudSizeButton, useCloudLaneWithoutComputerForChat } from "./AdeCloudComposerParts";
@@ -17535,6 +17537,25 @@ export function AgentChatPane({
     ? `Sign in to ${providerSignInSpec(providerSignInNeed.provider)?.label ?? providerSignInNeed.provider} first`
     : null;
   const signInSendBlocked = signInSendBlockReason != null;
+  /**
+   * The same card for a draft bound for ADE Cloud, asked of the account's ADE
+   * Cloud sign-ins (`useAdeCloudSignInNeed`), not of this computer. Send stays
+   * off until the provider is signed in there (or another model is picked).
+   */
+  const { need: adeCloudSignInNeed, recheck: recheckAdeCloudSignIn } = useAdeCloudSignInNeed({
+    enabled: !selectedSessionId && adeCloudMode && !turnActive && !subagentView && !personalScope && !parallelDraftActive,
+    provider: signInLoginProvider,
+  });
+  const adeCloudSignInBlockReason = adeCloudSignInNeed
+    ? adeCloudSignInNeed.kind === "claude-pass"
+      ? "Claude needs a pass on ADE Cloud first"
+      : `Sign in to ${providerSignInSpec(adeCloudSignInNeed.provider)?.label ?? adeCloudSignInNeed.provider} on ADE Cloud first`
+    : null;
+  const openAdeCloudSignIn = useCallback(() => {
+    if (!adeCloudSignInNeed) return;
+    // Settings › Providers › ADE Cloud, on that provider's page (Claude's has the pass sheet).
+    navigate(`/settings${adeCloudSettingsSearch({ provider: adeCloudSignInNeed.provider })}`);
+  }, [adeCloudSignInNeed, navigate]);
   // One status read at a time for the sign-in checks below.
   const signInRecheckInFlightRef = useRef(false);
   /**
@@ -17563,13 +17584,15 @@ export function AgentChatPane({
   }, [refreshAvailableModels, resolveAiStatusRuntimeScope]);
   /** Send or Enter while the login is missing: bring back the strip (Not now hid it) and check again. */
   const handleSendBlocked = useCallback(() => {
+    // Signed in on ADE Cloud elsewhere (another window, the phone): read the account again.
+    if (adeCloudSignInNeed) recheckAdeCloudSignIn();
     if (!signInSendBlocked) return;
     // Back as the one-line strip, never the card: the card takes focus, and a
     // second Enter would then start a provider sign-in. Focus stays in the box.
     setSignInCardKey(null);
     setDismissedSignInKey(null);
     recheckProviderSignIn("press");
-  }, [recheckProviderSignIn, signInSendBlocked]);
+  }, [adeCloudSignInNeed, recheckAdeCloudSignIn, recheckProviderSignIn, signInSendBlocked]);
   /**
    * Commands that need no login of the provider, or that are the login, still
    * run while Send is off for the sign-in. Each one is answered without a
@@ -17707,7 +17730,18 @@ export function AgentChatPane({
         </ProviderSignInCardHolder>
       );
     }
-    if (!providerSignInShown) return null;
+    if (!providerSignInShown) {
+      return adeCloudSignInNeed ? (
+        <ProviderSignInStrip
+          key={adeCloudSignInNeed.key}
+          provider={adeCloudSignInNeed.provider}
+          machineName="ADE Cloud"
+          runsHere={false}
+          adeCloudPass={adeCloudSignInNeed.kind === "claude-pass"}
+          onSignIn={openAdeCloudSignIn}
+        />
+      ) : null;
+    }
     const openedFromStrip = providerSignInShown.key === signInCardKey;
     if (providerSignInShown.reason === "no-login" && !openedFromStrip) {
       return (
@@ -17741,10 +17775,12 @@ export function AgentChatPane({
     );
   }, [
     accountSwitchShown,
+    adeCloudSignInNeed,
     changeSwitchBack,
     composerRuntimePin,
     continueSwitchInNewThread,
     handleProviderSignedIn,
+    openAdeCloudSignIn,
     openSignInSettings,
     providerSignInShown,
     returnFocusToComposer,
@@ -19606,7 +19642,7 @@ export function AgentChatPane({
             onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
             onOpenAiSettings={openProviderSignIn}
             aboveComposerSlot={composerAboveSlot}
-            sendBlockedReason={signInSendBlockReason ?? adeCloudNotice?.message ?? null}
+            sendBlockedReason={signInSendBlockReason ?? adeCloudSignInBlockReason ?? adeCloudNotice?.message ?? null}
             onSendBlocked={handleSendBlocked}
             sendBlockExempt={sendRunsWithoutSignIn}
             onOpenLinearSettings={openLinearSettings}
