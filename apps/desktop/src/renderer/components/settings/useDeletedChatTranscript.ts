@@ -43,8 +43,10 @@ export function useDeletedChatTranscript(
     setLoadingOlder(false);
     loadingOlderRef.current = false;
     let cancelled = false;
+    const readPin = pinRef.current;
+    if (!readPin) return;
     const timer = setTimeout(() => {
-      void window.ade.agentChat.getDeletedDetail({ id: chatId }, pinRef.current)
+      void window.ade.agentChat.getDeletedDetail({ id: chatId }, readPin)
         .then((detail) => {
           if (cancelled) return;
           if (!detail.sourcePath && !detail.events?.length && !detail.messages?.length) {
@@ -65,11 +67,12 @@ export function useDeletedChatTranscript(
 
   const loadOlder = useCallback(() => {
     const cursor = stateRef.current.olderCursor;
-    if (!cursor || loadingOlderRef.current) return;
+    const readPin = pinRef.current;
+    if (!cursor || !readPin || loadingOlderRef.current) return;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     setOlderError(null);
-    void window.ade.agentChat.getDeletedDetail({ id: chatId, before: cursor }, pinRef.current)
+    void window.ade.agentChat.getDeletedDetail({ id: chatId, before: cursor }, readPin)
       .then((page) => {
         setState((prev) => prev.olderCursor !== cursor ? prev : {
           ...prev,

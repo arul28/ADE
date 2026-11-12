@@ -32,6 +32,7 @@ import { McpServerDialog } from "../mcp/McpServerDialog";
 import { showToast } from "../../app/toast/toastStore";
 import "../providers/providerPage.css";
 import "./integrationPage.css";
+import { requirePin } from "../../../state/repositoryScope";
 
 /** A page under Integrations: GitHub, Linear or Jira, or the MCP servers. */
 export type IntegrationsPageId = IntegrationId | "mcp";
@@ -75,7 +76,7 @@ async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): P
   if (id === "linear") {
     const cto = window.ade.cto;
     if (!cto) return UNKNOWN;
-    const status = await cto.getLinearConnectionStatus(pin);
+    const status = await cto.getLinearConnectionStatus(requirePin(pin));
     if (status.connected) {
       const workspace = status.organizationName?.trim() || status.organizationUrlKey?.trim();
       return { tone: "ok", label: workspace ? `Connected to ${workspace}` : "Connected" };

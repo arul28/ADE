@@ -5,6 +5,7 @@ import { ModernSection } from "./primitives";
 import "./machineSettings.css";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { Banner } from "../ui/notice";
+import { requirePin } from "../../state/repositoryScope";
 
 function basename(filePath: string): string {
   const parts = filePath.split(/[/\\]/);
@@ -82,12 +83,13 @@ export function ProjectSection() {
   const [configOpen, setConfigOpen] = useState(false);
 
   const refresh = useCallback(async () => {
-    const next = await window.ade.project.getSnapshot(pin);
+    const next = await window.ade.project.getSnapshot(requirePin(pin));
     setSnapshot(next);
     return next;
   }, [pin]);
 
   useEffect(() => {
+    if (!pin) return undefined;
     void refresh().catch((err) => {
       setError(err instanceof Error ? err.message : String(err));
     });
@@ -167,7 +169,7 @@ export function ProjectSection() {
             className="ade-modern-btn"
             data-variant="ghost"
             disabled={busy != null}
-            onClick={() => void runAction("integrity", () => window.ade.project.runIntegrityCheck(pin))}
+            onClick={() => void runAction("integrity", async () => window.ade.project.runIntegrityCheck(requirePin(pin)))}
           >
             {busy === "integrity" ? "Repairing..." : "Repair session logs"}
           </button>
@@ -176,7 +178,7 @@ export function ProjectSection() {
             className="ade-modern-btn"
             data-tone={actionableIssues > 0 ? "primary" : undefined}
             disabled={busy != null}
-            onClick={() => void runAction("repair", () => window.ade.project.initializeOrRepair(pin))}
+            onClick={() => void runAction("repair", async () => window.ade.project.initializeOrRepair(requirePin(pin)))}
           >
             {busy === "repair" ? "Repairing..." : "Fix .ade folder"}
           </button>

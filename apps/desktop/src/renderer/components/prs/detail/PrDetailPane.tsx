@@ -68,7 +68,7 @@ import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
 import { navigateToAppTarget, openLinkFromUi } from "../../../lib/openExternal";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { PrRuntimePinProvider, usePrRuntimePin } from "../state/prMachines";
-import { pinArg, type MachineChipModel } from "../../../state/laneMachineRouting";
+import { type MachineChipModel } from "../../../state/laneMachineRouting";
 import { forgetGitHubPrSearchResults } from "../tabs/useGitHubPrFilterSearch";
 
 // ---- Sub-tab type ----
@@ -430,7 +430,30 @@ export type PrDetailRuntime = {
 
 export type { UnmappedAffordance };
 
-export function PrDetailPane({
+/**
+ * The PR's detail. Every call goes to `runtime.pin` (the lane owner's machine,
+ * for a PR that lives on another machine), else the machine of the PR list
+ * around it. With neither online it says so and calls nothing.
+ */
+export function PrDetailPane(props: PrDetailPaneProps) {
+  const contextPin = usePrRuntimePin();
+  const runtimePin = props.runtime?.pin ?? contextPin;
+  if (!runtimePin) {
+    return (
+      <div
+        data-testid="pr-detail-no-computer"
+        className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center text-sm text-muted-fg"
+      >
+        <span>No computer with this project is online.</span>
+        <span className="text-xs">The pull request shows again when one connects.</span>
+      </div>
+    );
+  }
+  return <PrDetailPaneOnMachine {...props} runtimePin={runtimePin} />;
+}
+
+function PrDetailPaneOnMachine({
+  runtimePin,
   pr,
   status: liveStatus,
   checks: liveChecks,
@@ -455,14 +478,12 @@ export function PrDetailPane({
   mergeBlockedReason = null,
   prSwitcher = null,
   autoOpenMergeCard = true,
-}: PrDetailPaneProps) {
+}: PrDetailPaneProps & { runtimePin: OpenProjectBinding }) {
   // The machine every call below targets: the lane owner's when the PR lives on
   // another machine (`runtime`), else the machine of the surrounding PR list
   // (the repository reader, from `PrsProvider`).
-  const contextPin = usePrRuntimePin();
   const foreignRuntimePin = runtime?.pin ?? null;
-  const runtimePin = foreignRuntimePin ?? contextPin;
-  const onPin = React.useMemo(() => pinArg(runtimePin), [runtimePin]);
+  const onPin = React.useMemo((): [OpenProjectBinding] => [runtimePin], [runtimePin]);
   // Chat hand-offs keep the lane's machine: a foreign chat is focused with its
   // binding and a new chat starts as a draft on the owner machine.
   const chatHandoff = usePrChatHandoff(runtimePin);

@@ -18,6 +18,7 @@ import {
   sortLanes,
   type LaneFilter,
 } from "./laneListModel";
+import { requirePin } from "../../../state/repositoryScope";
 
 const ARCHIVE_TOAST_ID = "settings-lanes-archive";
 /** Rows shown before "Show N more". */
@@ -129,13 +130,13 @@ export function LaneList({
       // have picked up changes or a running chat since the list was read.
       for (const lane of selectedLanes) {
         try {
-          const risk = await window.ade.lanes.getReclaimRisk({ laneId: lane.laneId }, pin);
+          const risk = await window.ade.lanes.getReclaimRisk({ laneId: lane.laneId }, requirePin(pin));
           const skipReason = laneBulkArchiveSkipReason(fresh?.get(lane.laneId) ?? { ...lane, pr: null }, risk);
           if (skipReason) {
             skipped.push(`${lane.name}: ${skipReason}`);
             continue;
           }
-          const result = await window.ade.lanes.archiveAndReclaim({ laneId: lane.laneId, confirmation: "RECLAIM" }, pin);
+          const result = await window.ade.lanes.archiveAndReclaim({ laneId: lane.laneId, confirmation: "RECLAIM" }, requirePin(pin));
           freed += result.reclaimedBytes;
           archived.push(lane.name);
         } catch (err) {

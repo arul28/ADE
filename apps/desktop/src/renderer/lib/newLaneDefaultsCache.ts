@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { NewLaneDefaults } from "../../shared/laneStart";
 import type { NewLaneDefaultsSnapshot, OpenProjectBinding } from "../../shared/types";
 import { cacheScopePin } from "./tabBindingKey";
+import { requirePin } from "./requirePin";
 
 /**
  * The project's new-lane defaults, per machine, read once and shared by every
@@ -11,7 +12,7 @@ import { cacheScopePin } from "./tabBindingKey";
  * computer or the phone saved them) re-reads what is cached; nothing polls.
  */
 
-type ReadArgs = { projectRoot?: string | null; pin?: OpenProjectBinding | null };
+type ReadArgs = { projectRoot?: string | null; pin: OpenProjectBinding | null };
 
 type Entry = {
   value?: NewLaneDefaultsSnapshot | null;
@@ -78,7 +79,8 @@ function addListener(key: string, listener: () => void): () => void {
 
 export function getNewLaneDefaultsCached(args: {
   projectRoot?: string | null;
-  pin?: OpenProjectBinding | null;
+  /** The copy new lanes start on. Null: none is online, so nothing is read. */
+  pin: OpenProjectBinding | null;
   force?: boolean;
 }): Promise<NewLaneDefaultsSnapshot | null> {
   const key = cacheKey(args.projectRoot, args.pin);
@@ -98,7 +100,8 @@ export function getNewLaneDefaultsCached(args: {
     notify();
     return Promise.resolve(null);
   }
-  const promise: Promise<NewLaneDefaultsSnapshot | null> = (args.pin ? read(args.pin) : read())
+  if (!args.pin) return Promise.resolve(null);
+  const promise: Promise<NewLaneDefaultsSnapshot | null> = read(args.pin)
     .then((value) => {
       // A save or a newer read landed while this one was in flight; it wins.
       if (cache.get(key)?.promise !== promise) return cache.get(key)?.value ?? value;
@@ -127,13 +130,11 @@ export function peekNewLaneDefaultsCached(args: {
 
 export async function saveNewLaneDefaults(args: {
   projectRoot?: string | null;
-  pin?: OpenProjectBinding | null;
+  pin: OpenProjectBinding | null;
   /** Only the fields that change; the brain keeps the rest. */
   defaults: Partial<NewLaneDefaults>;
 }): Promise<NewLaneDefaultsSnapshot> {
-  const value = args.pin
-    ? await window.ade.lanes.setNewLaneDefaults({ defaults: args.defaults }, args.pin)
-    : await window.ade.lanes.setNewLaneDefaults({ defaults: args.defaults });
+  const value = await window.ade.lanes.setNewLaneDefaults({ defaults: args.defaults }, requirePin(args.pin));
   cache.set(cacheKey(args.projectRoot, args.pin), { value, args: { projectRoot: args.projectRoot, pin: args.pin } });
   notify();
   return value;
@@ -142,7 +143,8 @@ export async function saveNewLaneDefaults(args: {
 /** Reads the defaults on mount (once per machine) and follows later saves. */
 export function useNewLaneDefaults(args: {
   projectRoot?: string | null;
-  pin?: OpenProjectBinding | null;
+  /** The copy new lanes start on (the Start-on copy). Null: none is online. */
+  pin: OpenProjectBinding | null;
   enabled?: boolean;
 }): NewLaneDefaultsSnapshot | null {
   return useNewLaneDefaultsState(args).snapshot;
@@ -151,7 +153,7 @@ export function useNewLaneDefaults(args: {
 /** {@link useNewLaneDefaults} plus whether the read failed, and a retry. */
 export function useNewLaneDefaultsState(args: {
   projectRoot?: string | null;
-  pin?: OpenProjectBinding | null;
+  pin: OpenProjectBinding | null;
   enabled?: boolean;
   /** Read again on mount even when cached (the CLI or a phone may have changed them). */
   revalidate?: boolean;

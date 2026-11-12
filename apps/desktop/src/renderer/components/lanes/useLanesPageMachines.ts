@@ -37,6 +37,24 @@ export function setForeignLaneSelection(projectStateKey: string | null, key: str
 
 const machineFilterByProject = new Map<string, string>();
 
+/** Where one row's lane lives: its real id on its machine, and the pin to use. */
+export type LaneTarget =
+  /**
+   * `pin` addresses the lane's copy, the tab's own included. `machineId` is
+   * null for the tab's own machine: only another machine's rows carry one.
+   */
+  | { ok: true; laneId: string; pin: OpenProjectBinding; machineId: string | null; name: string }
+  | { ok: false; reason: string };
+
+export type ForeignLaneModel = {
+  /** Row key (`machineId:laneId`) → the machine's lane. */
+  rowByKey: ReadonlyMap<string, MachineLane>;
+  /** Foreign lanes as page rows: `id` is the row key. */
+  viewLanes: LaneSummary[];
+  /** Each other machine's own lane records, real ids. */
+  realLanesByMachineId: ReadonlyMap<string, LaneSummary[]>;
+};
+
 /**
  * The Lanes tab's view of every machine: one flat list of rows across
  * machines, the page's selection (which may be a lane on another machine),

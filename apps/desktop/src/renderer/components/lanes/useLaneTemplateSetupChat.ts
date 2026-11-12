@@ -35,7 +35,8 @@ export function useLaneTemplateSetupChat({
   const start = useCallback(async (known?: LaneDependencyStatus | null) => {
     setBusy(true);
     try {
-      const lanes: LaneSummary[] = pin && !pinTargetsTab
+      if (!pin) throw new Error(`${machineName} is not online.`);
+      const lanes: LaneSummary[] = !pinTargetsTab
         ? await window.ade.lanes.list({ includeArchived: false }, pin)
         : tabLanes;
       const primary = lanes.find((lane) => lane.laneType === "primary");

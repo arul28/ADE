@@ -235,13 +235,14 @@ export function useLaneCatchUpFailureHost(key: string | null): LaneCatchUpFailur
 export function useLaneCatchUpAskAgent(pin: OpenProjectBinding | null) {
   const handOff = useLaneChatHandoff(pin, { startDraftInLane: true });
   return useCallback(async (laneId: string, prompt: string, knownChats?: AgentChatSessionSummary[] | null) => {
-    const chats = knownChats ?? await window.ade.agentChat
+    // No machine online: a new chat draft still works; no list is read.
+    const chats = knownChats ?? (!pin ? [] : await window.ade.agentChat
       .list({ laneId, includeArchived: false }, pin)
       .catch((error) => {
         // A new chat in the lane still works; the newest one just isn't reused.
         console.warn("lane_catch_up.chat_list_failed", error);
         return [] as AgentChatSessionSummary[];
-      });
+      }));
     const chat = newestLaneWorkChat(chats);
     handOff({ laneId, sessionId: chat?.sessionId ?? null, prompt });
   }, [handOff, pin]);
@@ -296,6 +297,8 @@ export async function runLaneCatchUpDirect(args: {
   if (readLaneCatchUp(key).busy) return null;
   patchLaneCatchUp(key, { busy: action, failure: null });
   try {
+    // No machine with the lane is online: nothing to run the catch-up on.
+    if (!pin) throw new Error("No computer with this lane is online.");
     let upToDate: boolean;
     if (action === "rebase") {
       const start = await window.ade.lanes.rebaseStart({ laneId, pushMode: "none", actor: "user" }, pin);

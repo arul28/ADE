@@ -1,5 +1,6 @@
 import type { GitHubPrSnapshot, OpenProjectBinding, PrListConditionalReply, PrSummary } from "../../shared/types";
 import { cacheScopePin } from "./tabBindingKey";
+import { NO_PROJECT_COMPUTER_ONLINE } from "./requirePin";
 
 type InFlightEntry<T> = {
   promise: Promise<T>;
@@ -79,14 +80,17 @@ function coalesceInFlight<T>(
   return promise;
 }
 
-export function listPrsCoalesced(options?: {
+/** `pin`: the machine whose PR rows to read. Null: none is online, so the list is empty. */
+export function listPrsCoalesced(options: {
   projectRoot?: string | null;
-  pin?: OpenProjectBinding | null;
+  pin: OpenProjectBinding | null;
 }): Promise<PrSummary[]> {
+  const pin = options.pin;
+  if (!pin) return Promise.resolve([]);
   return coalesceInFlight(
     prListInFlight,
-    projectKey(options?.projectRoot, options?.pin),
-    () => window.ade.prs.listAll(options?.pin ?? null),
+    projectKey(options.projectRoot, pin),
+    () => window.ade.prs.listAll(pin),
   );
 }
 
@@ -110,14 +114,15 @@ const prListGeneration = new Map<string, number>();
  * the machine this window's tab is bound to, so the binding is part of the key
  * (the same root on two machines is two databases).
  */
-function prListKey(options?: PrListCacheOptions): string {
-  if (options?.pin?.key) return projectKey(null, options.pin);
-  return JSON.stringify([projectKey(options?.projectRoot), options?.bindingKey ?? null]);
+function prListKey(options: PrListCacheOptions): string {
+  if (options.pin?.key) return projectKey(null, options.pin);
+  return JSON.stringify([projectKey(options.projectRoot), options.bindingKey ?? null]);
 }
 
 type PrListCacheOptions = {
   projectRoot?: string | null;
-  pin?: OpenProjectBinding | null;
+  /** The machine whose PR rows to read. Null: none is online. */
+  pin: OpenProjectBinding | null;
   /** The window's `projectBinding.key`, for an unpinned read. */
   bindingKey?: string | null;
 };
@@ -141,6 +146,8 @@ function readPrListConditional(
   held: { value: PrSummary[]; signature: string | null } | undefined,
   pin: OpenProjectBinding | null,
 ): Promise<PrSummary[]> {
+  // No machine online: no rows, and nothing is asked.
+  if (!pin) return Promise.resolve([]);
   const prs = window.ade.prs;
   const listAllConditional = prs.listAllConditional;
   const generation = prListGeneration.get(key) ?? 0;
@@ -169,16 +176,16 @@ function readPrListConditional(
   });
 }
 
-export function listPrsCached(options?: PrListCacheOptions): Promise<PrSummary[]> {
+export function listPrsCached(options: PrListCacheOptions): Promise<PrSummary[]> {
   const key = prListKey(options);
   const settled = prListSettled.get(key);
   if (settled && !settled.stale && Date.now() - settled.at < PR_LIST_TTL_MS) return Promise.resolve(settled.value);
   // Past its time (or dropped by a PR event): ask whether it changed. An
   // unchanged list costs a signature, not the whole list again.
-  return readPrListConditional(key, settled, options?.pin ?? null);
+  return readPrListConditional(key, settled, options.pin);
 }
 
-export function invalidatePrListCache(options?: PrListCacheOptions): void {
+export function invalidatePrListCache(options: PrListCacheOptions): void {
   // Keep the list and its signature for the conditional re-read; only its
   // freshness goes, and any read already under way is superseded.
   const key = prListKey(options);
@@ -199,15 +206,16 @@ export function getGitHubSnapshotCoalesced(
      */
     automaticRefresh?: boolean;
   } = {},
-  options?: {
+  options: {
     projectRoot?: string | null;
     /** The window's `projectBinding.key`: an unpinned read follows it (see `snapshotReadScopeKey`). */
     bindingKey?: string | null;
-    /** The machine that reads GitHub for the repository (the repository reader). */
-    pin?: OpenProjectBinding | null;
+    /** The machine that reads GitHub for the repository (the repository reader). Null: none is online. */
+    pin: OpenProjectBinding | null;
   },
 ): Promise<GitHubPrSnapshot> {
-  const pin = options?.pin ?? null;
+  const pin = options.pin;
+  if (!pin) return Promise.reject(new Error(NO_PROJECT_COMPUTER_ONLINE));
   const scopeKey = snapshotReadScopeKey(options?.projectRoot, options?.bindingKey, pin);
   // A machine with no GitHub sign-in (a fresh Linux box is the usual one)
   // answers every snapshot read with the same refusal, and every PR event
@@ -248,17 +256,19 @@ const githubSnapshotAuthRefusals = new Map<string, { at: number; error: unknown 
 
 export function refreshPrsCoalesced(
   args: { prId?: string; prIds?: string[] } = {},
-  options?: { projectRoot?: string | null; pin?: OpenProjectBinding | null },
+  options: { projectRoot?: string | null; pin: OpenProjectBinding | null },
 ): Promise<PrSummary[]> {
   const prIds = args.prIds?.filter(Boolean).sort() ?? [];
+  const pin = options.pin;
+  if (!pin) return Promise.resolve([]);
   return coalesceInFlight(
     prRefreshInFlight,
     JSON.stringify({
-      projectRoot: projectKey(options?.projectRoot, options?.pin),
+      projectRoot: projectKey(options.projectRoot, pin),
       prId: args.prId ?? null,
       prIds,
     }),
-    () => window.ade.prs.refresh(args, options?.pin ?? null),
+    () => window.ade.prs.refresh(args, pin),
   );
 }
 
@@ -291,7 +301,7 @@ export function refreshLinkedPrCoalesced(
       try {
         const refreshed = await refreshPrsCoalesced(
           { prIds: [prId] },
-          { projectRoot: options?.projectRoot, pin: options?.pin },
+          { projectRoot: options?.projectRoot, pin: options?.pin ?? null },
         );
         const result = refreshed.find((next) => next.id === prId) ?? null;
         linkedPrRecentRefresh.set(key, { refreshedAt: Date.now(), result });
@@ -317,16 +327,16 @@ export const MACHINE_PR_RECONCILE_COOLDOWN_MS = 60_000;
  */
 export function requestMachinePrReconcile(
   projectRoot: string | null | undefined,
-  pin?: OpenProjectBinding | null,
+  pin: OpenProjectBinding | null,
 ): void {
   const reconcile = window.ade?.prs?.reconcileOnFocus;
-  if (typeof reconcile !== "function") return;
+  if (typeof reconcile !== "function" || !pin) return;
   const key = projectKey(projectRoot, pin);
   const now = Date.now();
   const last = machineReconcileRequestedAt.get(key);
   if (last != null && now - last < MACHINE_PR_RECONCILE_COOLDOWN_MS) return;
   machineReconcileRequestedAt.set(key, now);
-  void reconcile(pin ?? null).catch(() => {
+  void reconcile(pin).catch(() => {
     // best-effort; the next focus asks again once the cooldown passes
   });
 }

@@ -97,7 +97,9 @@ export function openChatDeeplinkTarget(
       openPr();
       return;
     }
-    void resolveProjectGitHubIssueNumber(projectRoot, prNumber)
+    // The chat runs on the tab's machine here (it has no pin of its own), so
+    // that machine asks GitHub.
+    void resolveProjectGitHubIssueNumber(projectRoot, prNumber, state.projectBinding ?? null)
       .then((resolved) => {
         if (!resolved) {
           openPr();

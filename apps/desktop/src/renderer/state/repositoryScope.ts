@@ -113,6 +113,8 @@ export function useTabCopyPin(): MachineAddress | null {
   return useStableBinding(targetState === "offline" ? null : binding);
 }
 
+export { NO_PROJECT_COMPUTER_ONLINE, requirePin } from "../lib/requirePin";
+
 /** Every copy of the open repository (see `useRepositoryCopies`). */
 export function useActiveRepositoryCopies(active = true): RepositoryCopy[] {
   return useRepositoryCopies(useActiveRepositoryTab(), active);

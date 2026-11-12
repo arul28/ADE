@@ -14,6 +14,7 @@ import {
   useActivityStore,
 } from "../state/activityStore";
 import { selectActiveProjectRoot, useAppStore } from "../state/appStore";
+import { useTabCopyPin } from "../state/repositoryScope";
 
 const EMPTY_TERMINAL_ATTENTION = {
   runningCount: 0,
@@ -49,10 +50,18 @@ export function useAppWideSessionAttention(): void {
   // mid-session; the badge has to follow without a reload.
   const dockBadgeScope = useActivityStore(selectDockBadgeScope);
   const lastDockBadgeCountRef = useRef<number | null>(null);
-  const trackedProjectRoot = showWelcome ? null : currentProjectRoot;
+  // The tab's sessions live on the tab's copy. Its computer offline: no reads,
+  // the attention count is empty like a closed project.
+  const tabCopyPin = useTabCopyPin();
+  const trackedPin = showWelcome ? null : tabCopyPin;
+  const trackedPinRef = useRef(trackedPin);
+  trackedPinRef.current = trackedPin;
+  const trackedPinKey = trackedPin?.key ?? null;
+  const trackedProjectRoot = trackedPinKey ? (showWelcome ? null : currentProjectRoot) : null;
 
   useEffect(() => {
-    if (!trackedProjectRoot) {
+    const pin = trackedPinRef.current;
+    if (!trackedProjectRoot || !pin) {
       setTerminalAttention(EMPTY_TERMINAL_ATTENTION);
       // The hook is app-wide, so route changes keep a project root and do not
       // enter this branch. Reaching it means the project was closed; clear the
@@ -124,7 +133,7 @@ export function useAppWideSessionAttention(): void {
       refreshInFlight = true;
       try {
         const sessions: TerminalSessionSummary[] = (
-          await listSessionsCached({ limit: 150 })
+          await listSessionsCached({ limit: 150 }, undefined, pin)
         );
         if (cancelled) return;
         const attention = summarizeTerminalAttention(sessions);
@@ -164,22 +173,22 @@ export function useAppWideSessionAttention(): void {
 
     const unsubscribeData = window.ade.pty.onData((event) => {
       if (isCurrentProjectEvent(event)) scheduleRefresh();
-    });
+    }, pin);
     const unsubscribeExit = window.ade.pty.onExit((event) => {
       if (!isCurrentProjectEvent(event)) return;
       // An exit changes the session's status, so rows cached before it are stale.
       invalidateSessionListCache({ projectRoot: useAppStore.getState().project?.rootPath ?? null });
       scheduleRefresh();
-    });
+    }, pin);
     const unsubscribeChat = window.ade.agentChat.onEvent((event) => {
       if (!shouldRefreshSessionListForChatEvent(event)) return;
       invalidateSessionListCache({ projectRoot: useAppStore.getState().project?.rootPath ?? null });
       scheduleRefresh(0);
-    });
+    }, pin);
     const unsubscribeSession = window.ade.sessions.onChanged(() => {
       invalidateSessionListCache({ projectRoot: useAppStore.getState().project?.rootPath ?? null });
       scheduleRefresh(0);
-    });
+    }, pin);
     // Safety net for state that changes without an event. Events drive the
     // refreshes, so this is a slow backstop, not the primary cadence.
     const interval = window.setInterval(() => {
@@ -209,5 +218,7 @@ export function useAppWideSessionAttention(): void {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [trackedProjectRoot, setTerminalAttention, ctoAwaitingInput, dockBadgeScope]);
+    // `trackedPinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackedProjectRoot, trackedPinKey, setTerminalAttention, ctoAwaitingInput, dockBadgeScope]);
 }

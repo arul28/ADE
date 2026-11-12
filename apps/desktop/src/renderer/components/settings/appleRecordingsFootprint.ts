@@ -34,7 +34,7 @@ export async function readAppleRecordingsTotalBytes(projectRoot: string, pin: Op
   const files = window.ade?.files;
   if (!root || !pin || !files?.listWorkspaces || !files.listTree) return 0;
   try {
-    const workspaces = await files.listWorkspaces(pin);
+    const workspaces = await files.listWorkspaces({}, pin);
     const workspace = workspaces.find((entry) => entry.rootPath === root)
       ?? workspaces.find((entry) => entry.kind === "primary")
       ?? workspaces[0];

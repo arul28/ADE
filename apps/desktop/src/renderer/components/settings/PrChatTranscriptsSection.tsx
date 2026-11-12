@@ -5,6 +5,7 @@ import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitiv
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { captureError } from "../../../shared/sentry/capture";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
+import { requirePin } from "../../state/repositoryScope";
 
 export function PrChatTranscriptsSection() {
   // A per-checkout switch in `.ade/local.yaml`, on the machine the page shows.
@@ -20,8 +21,8 @@ export function PrChatTranscriptsSection() {
     let cancelled = false;
     setTranscriptGistsEnabled(null);
     setLoadFailed(false);
-    window.ade.projectConfig
-      .get(pin)
+    Promise.resolve()
+      .then(() => window.ade.projectConfig.get(requirePin(pin)))
       .then((snapshot) => {
         if (cancelled) return;
         setTranscriptGistsEnabled(snapshot.effective.github?.prTranscriptGists?.enabled === true);

@@ -1428,10 +1428,10 @@ declare global {
         getSnapshot: (args: { forceRefresh?: boolean; measureLanes?: boolean } | undefined, pin: OpenProjectBinding) => Promise<StorageSnapshot>;
         compressNow: (pin: OpenProjectBinding) => Promise<StorageCompressionResult>;
         runMaintenanceNow: (pin: OpenProjectBinding) => Promise<MaintenanceRunReport>;
-        deletedLaneChatsSummary: (pin?: OpenProjectBinding | null) => Promise<DeletedLaneChatsSummary>;
+        deletedLaneChatsSummary: (pin: OpenProjectBinding) => Promise<DeletedLaneChatsSummary>;
         laneBuildOutputRemoved?: (
           laneId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<import("../shared/types/storage").StorageItem["buildOutputRemoved"] | null>;
         cleanupPreview: (targets: StorageCleanupTarget[], pin: OpenProjectBinding) => Promise<StorageCleanupPreview>;
         cleanup: (
@@ -1451,10 +1451,10 @@ declare global {
        * the machine it is showing.
        */
       archive: {
-        list: (args?: ArchiveListArgs, pin?: OpenProjectBinding | null) => Promise<ArchiveListResult>;
-        summary: (args?: ArchiveSummaryArgs, pin?: OpenProjectBinding | null) => Promise<ArchiveSummary>;
-        restore: (args: ArchiveActionArgs, pin?: OpenProjectBinding | null) => Promise<ArchiveActionResult>;
-        delete: (args: ArchiveActionArgs, pin?: OpenProjectBinding | null) => Promise<ArchiveActionResult>;
+        list: (args: ArchiveListArgs | undefined, pin: OpenProjectBinding) => Promise<ArchiveListResult>;
+        summary: (args: ArchiveSummaryArgs | undefined, pin: OpenProjectBinding) => Promise<ArchiveSummary>;
+        restore: (args: ArchiveActionArgs, pin: OpenProjectBinding) => Promise<ArchiveActionResult>;
+        delete: (args: ArchiveActionArgs, pin: OpenProjectBinding) => Promise<ArchiveActionResult>;
       };
       project: {
         openRepo: (args?: { rootPath?: string; trustGitOwnership?: boolean }) => Promise<ProjectInfo | null>;
@@ -1476,8 +1476,8 @@ declare global {
         getDroppedPath: (file: File) => string;
         openAdeFolder: () => Promise<void>;
         clearLocalData: (
-          args?: ClearLocalAdeDataArgs,
-          pin?: OpenProjectBinding | null,
+          args: ClearLocalAdeDataArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<ClearLocalAdeDataResult>;
         listRecent: () => Promise<RecentProjectSummary[]>;
         /** The account's project list as this computer (or the pinned machine) last read it. Optional: the hosted web client has none yet. */
@@ -1513,11 +1513,11 @@ declare global {
         ) => Promise<CreateProjectResult>;
         clone: (input: CloneProjectInput) => Promise<CloneProjectResult>;
         getDefaultParentDir: () => Promise<string>;
-        getSnapshot: (pin?: OpenProjectBinding | null) => Promise<AdeProjectSnapshot>;
-        initializeOrRepair: (pin?: OpenProjectBinding | null) => Promise<AdeCleanupResult>;
-        runIntegrityCheck: (pin?: OpenProjectBinding | null) => Promise<AdeCleanupResult>;
+        getSnapshot: (pin: OpenProjectBinding) => Promise<AdeProjectSnapshot>;
+        initializeOrRepair: (pin: OpenProjectBinding) => Promise<AdeCleanupResult>;
+        runIntegrityCheck: (pin: OpenProjectBinding) => Promise<AdeCleanupResult>;
         onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
-        onStateEvent: (cb: (event: AdeProjectEvent) => void, pin?: OpenProjectBinding | null) => () => void;
+        onStateEvent: (cb: (event: AdeProjectEvent) => void, pin: OpenProjectBinding) => () => void;
       };
       /**
        * Optional as a GROUP, because an older preload has no `diagnostics` at
@@ -1746,14 +1746,14 @@ declare global {
         set: (overrides: KeybindingOverride[], pin?: OpenProjectBinding | null) => Promise<KeybindingsSnapshot>;
       };
       projectSecrets: {
-        list: (pin?: OpenProjectBinding | null) => Promise<ProjectSecretsListResult>;
-        get: (args: ProjectSecretGetArgs, pin?: OpenProjectBinding | null) => Promise<ProjectSecretValueResult>;
-        set: (args: ProjectSecretSetArgs, pin?: OpenProjectBinding | null) => Promise<ProjectSecretSummary>;
-        delete: (args: ProjectSecretDeleteArgs, pin?: OpenProjectBinding | null) => Promise<{ deleted: boolean; name: string }>;
-        pullFromAccount: (pin?: OpenProjectBinding | null) => Promise<ProjectSecretPullResult>;
-        chooseEnvFile: (pin?: OpenProjectBinding | null) => Promise<ProjectSecretsImportPreview | null>;
-        importEnv: (args: ProjectSecretsImportArgs, pin?: OpenProjectBinding | null) => Promise<ProjectSecretsImportResult>;
-        exportEnv: (pin?: OpenProjectBinding | null) => Promise<ProjectSecretsExportResult>;
+        list: (pin: OpenProjectBinding) => Promise<ProjectSecretsListResult>;
+        get: (args: ProjectSecretGetArgs, pin: OpenProjectBinding) => Promise<ProjectSecretValueResult>;
+        set: (args: ProjectSecretSetArgs, pin: OpenProjectBinding) => Promise<ProjectSecretSummary>;
+        delete: (args: ProjectSecretDeleteArgs, pin: OpenProjectBinding) => Promise<{ deleted: boolean; name: string }>;
+        pullFromAccount: (pin: OpenProjectBinding) => Promise<ProjectSecretPullResult>;
+        chooseEnvFile: (pin: OpenProjectBinding) => Promise<ProjectSecretsImportPreview | null>;
+        importEnv: (args: ProjectSecretsImportArgs, pin: OpenProjectBinding) => Promise<ProjectSecretsImportResult>;
+        exportEnv: (pin: OpenProjectBinding) => Promise<ProjectSecretsExportResult>;
       };
       ai: {
         /**
@@ -1910,48 +1910,48 @@ declare global {
         cursorAuthCancel: (pin?: OpenProjectBinding | null) => Promise<void>;
         onCursorAuthStatus: (cb: (event: CursorSdkAuthEvent) => void, pin?: OpenProjectBinding | null) => () => void;
         /** `refresh` skips the host's few-minute cache (Retry). */
-        cursorCloudListRepositories: (args?: { refresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<CursorCloudRepository[]>;
-        cursorCloudListAgents: (args?: {
+        cursorCloudListRepositories: (args: { refresh?: boolean } | undefined, pin: OpenProjectBinding) => Promise<CursorCloudRepository[]>;
+        cursorCloudListAgents: (args: {
           includeArchived?: boolean;
           limit?: number;
           cursor?: string | null;
-        }, pin?: OpenProjectBinding | null) => Promise<CursorCloudListAgentsResult>;
+        } | undefined, pin: OpenProjectBinding) => Promise<CursorCloudListAgentsResult>;
         cursorCloudListRuns: (args: {
           agentId: string;
           limit?: number;
           cursor?: string | null;
-        }, pin?: OpenProjectBinding | null) => Promise<CursorCloudListRunsResult>;
+        }, pin: OpenProjectBinding) => Promise<CursorCloudListRunsResult>;
         cursorCloudCreateRun: (
           args: CursorCloudCreateRunRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CursorCloudCreateRunResult>;
-        cursorCloudGetLaneSecretNames: (laneId: string, pin?: OpenProjectBinding | null) => Promise<string[]>;
-        cursorCloudArchiveAgent: (agentId: string, pin?: OpenProjectBinding | null) => Promise<void>;
-        cursorCloudUnarchiveAgent: (agentId: string, pin?: OpenProjectBinding | null) => Promise<void>;
-        cursorCloudDeleteAgent: (agentId: string, pin?: OpenProjectBinding | null) => Promise<void>;
+        cursorCloudGetLaneSecretNames: (laneId: string, pin: OpenProjectBinding) => Promise<string[]>;
+        cursorCloudArchiveAgent: (agentId: string, pin: OpenProjectBinding) => Promise<void>;
+        cursorCloudUnarchiveAgent: (agentId: string, pin: OpenProjectBinding) => Promise<void>;
+        cursorCloudDeleteAgent: (agentId: string, pin: OpenProjectBinding) => Promise<void>;
         cursorCloudGetAgent: (
           agentId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CursorCloudAgentSummary | null>;
         cursorCloudGetUsage: (
           args: CursorAgentUsageRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CursorAgentUsage>;
         cursorCloudStreamRun: (
           args: CursorCloudStreamRunRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CursorCloudStreamRunResult>;
         cursorCloudCancelRun: (args: {
           agentId: string;
           runId: string;
-        }, pin?: OpenProjectBinding | null) => Promise<void>;
+        }, pin: OpenProjectBinding) => Promise<void>;
         cursorCloudFollowUp: (
           args: CursorCloudFollowUpRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CursorCloudFollowUpResult>;
         cursorCloudListArtifacts: (
           agentId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CursorCloudArtifactSummary[]>;
         cursorCloudDownloadArtifact: (args: {
           agentId: string;
@@ -1959,27 +1959,27 @@ declare global {
         }, pin?: OpenProjectBinding | null) => Promise<CursorCloudArtifactDownload>;
         cursorCloudOpenChat: (
           args: CursorCloudOpenChatRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CursorCloudOpenChatResult>;
         cursorCloudWatchMirror: (
           args: CursorCloudWatchMirrorRequest,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
-        cursorCloudFleet: (args?: {
+        cursorCloudFleet: (args: {
           includeArchived?: boolean;
           limit?: number;
-        }, pin?: OpenProjectBinding | null) => Promise<CursorCloudFleetResult>;
+        } | undefined, pin: OpenProjectBinding) => Promise<CursorCloudFleetResult>;
         cursorCloudPullIntoLane: (
           agentId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CursorCloudPullIntoLaneResult>;
         cursorCloudResolveLane: (
           agentId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ laneId: string; laneName: string; created: boolean }>;
         cursorCloudStopRun: (
           agentId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ stopped: boolean }>;
         onCursorCloudFleetEvent: (
           cb: (event: CursorCloudFleetEvent) => void,
@@ -2058,17 +2058,17 @@ declare global {
         getRuntimeName: (pin?: OpenProjectBinding | null) => Promise<{ runtimeName: string | null }>;
         setRuntimeName: (name: string, pin?: OpenProjectBinding | null) => Promise<SyncRoleSnapshot>;
         clearRuntimeName: (pin?: OpenProjectBinding | null) => Promise<SyncRoleSnapshot>;
-        setActiveLanePresence: (args: { laneIds: string[] }, pin?: OpenProjectBinding | null) => Promise<void>;
+        setActiveLanePresence: (args: { laneIds: string[] }, pin: OpenProjectBinding) => Promise<void>;
         getCloudRelayStatus: (pin?: OpenProjectBinding | null) => Promise<SyncCloudRelayStatus>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       /** Devin Cloud sessions and Cursor Cloud agents, one contract for both panels. */
       cloudAgents: {
-        list: (args: CloudAgentListArgs, pin?: OpenProjectBinding | null) => Promise<CloudAgentList>;
-        open: (args: CloudAgentRef, pin?: OpenProjectBinding | null) => Promise<CloudAgentOpenResult>;
-        stop: (args: CloudAgentRef, pin?: OpenProjectBinding | null) => Promise<{ stopped: true }>;
-        archive: (args: CloudAgentArchiveArgs, pin?: OpenProjectBinding | null) => Promise<{ archived: boolean }>;
-        launch: (args: CloudAgentLaunchArgs, pin?: OpenProjectBinding | null) => Promise<CloudAgentOpenResult>;
+        list: (args: CloudAgentListArgs, pin: OpenProjectBinding) => Promise<CloudAgentList>;
+        open: (args: CloudAgentRef, pin: OpenProjectBinding) => Promise<CloudAgentOpenResult>;
+        stop: (args: CloudAgentRef, pin: OpenProjectBinding) => Promise<{ stopped: true }>;
+        archive: (args: CloudAgentArchiveArgs, pin: OpenProjectBinding) => Promise<{ archived: boolean }>;
+        launch: (args: CloudAgentLaunchArgs, pin: OpenProjectBinding) => Promise<CloudAgentOpenResult>;
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;
@@ -2081,10 +2081,10 @@ declare global {
         detect: (force?: boolean) => Promise<DevToolsCheckResult>;
       };
       onboarding: {
-        getStatus: (pin?: OpenProjectBinding | null) => Promise<OnboardingStatus>;
-        detectDefaults: (pin?: OpenProjectBinding | null) => Promise<OnboardingDetectionResult>;
-        setDismissed: (dismissed: boolean, pin?: OpenProjectBinding | null) => Promise<OnboardingStatus>;
-        complete: (pin?: OpenProjectBinding | null) => Promise<OnboardingStatus>;
+        getStatus: (pin: OpenProjectBinding) => Promise<OnboardingStatus>;
+        detectDefaults: (pin: OpenProjectBinding) => Promise<OnboardingDetectionResult>;
+        setDismissed: (dismissed: boolean, pin: OpenProjectBinding) => Promise<OnboardingStatus>;
+        complete: (pin: OpenProjectBinding) => Promise<OnboardingStatus>;
       };
       automations: {
         list: (pin: OpenProjectBinding) => Promise<AutomationRuleSummary[]>;
@@ -2354,93 +2354,93 @@ declare global {
       };
       lanes: {
         list: (
-          args?: ListLanesArgs,
-          pin?: OpenProjectBinding | null,
+          args: ListLanesArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<LaneSummary[]>;
-        listSnapshots: (args?: ListLanesArgs, pin?: OpenProjectBinding | null) => Promise<LaneListSnapshot[]>;
-        create: (args: CreateLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
-        importBranch: (args: ImportBranchLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
+        listSnapshots: (args: ListLanesArgs | undefined, pin: OpenProjectBinding) => Promise<LaneListSnapshot[]>;
+        create: (args: CreateLaneArgs, pin: OpenProjectBinding) => Promise<LaneSummary>;
+        importBranch: (args: ImportBranchLaneArgs, pin: OpenProjectBinding) => Promise<LaneSummary>;
         previewBranchSwitch: (
           args: LaneBranchSwitchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<LaneBranchSwitchPreview>;
         switchBranch: (
           args: LaneBranchSwitchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<LaneBranchSwitchResult>;
-        getBranchDrift: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<LaneBranchDrift | null>;
+        getBranchDrift: (args: { laneId: string }, pin: OpenProjectBinding) => Promise<LaneBranchDrift | null>;
         resolveBranchDrift: (
           args: ResolveLaneBranchDriftArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ResolveLaneBranchDriftResult>;
-        rename: (args: RenameLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        rename: (args: RenameLaneArgs, pin: OpenProjectBinding) => Promise<void>;
         /** Rename the lane's branch while it is unpushed, untracked and has no PR; `dryRun` only checks. */
-        renameBranch: (args: RenameLaneBranchArgs, pin?: OpenProjectBinding | null) => Promise<RenameLaneBranchResult>;
+        renameBranch: (args: RenameLaneBranchArgs, pin: OpenProjectBinding) => Promise<RenameLaneBranchResult>;
         /** Whether a new lane's branch can have this name on the lane's machine. */
-        checkBranchName: (args: { name: string }, pin?: OpenProjectBinding | null) => Promise<LaneBranchNameCheck>;
+        checkBranchName: (args: { name: string }, pin: OpenProjectBinding) => Promise<LaneBranchNameCheck>;
         updateAppearance: (
           args: UpdateLaneAppearanceArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         archive: (
           args: ArchiveLaneArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         archiveAndReclaim: (
           args: ArchiveAndReclaimLaneArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ArchiveAndReclaimLaneResult>;
-        unarchive: (args: ArchiveLaneArgs, pin?: OpenProjectBinding | null) => Promise<RestoreLaneResult>;
-        delete: (args: DeleteLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        revealWorktree: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
+        unarchive: (args: ArchiveLaneArgs, pin: OpenProjectBinding) => Promise<RestoreLaneResult>;
+        delete: (args: DeleteLaneArgs, pin: OpenProjectBinding) => Promise<void>;
+        revealWorktree: (args: { laneId: string }, pin: OpenProjectBinding) => Promise<void>;
         /** `rootPath` names a project on this machine; `pin` a project on another one. */
         revealLeftoverWorktree: (
           args: { laneId: string; rootPath?: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         deleteLeftoverWorktree: (
           args: { laneId: string; rootPath?: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ removed: boolean }>;
         cancelDelete: (
           args: { laneId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ cancelled: boolean; reason?: string }>;
         /** Stops the git checkout of a create, child create, import or branch switch started with this `operationId`. */
         cancelGitWrite: (
           args: CancelLaneGitWriteArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CancelLaneGitWriteResult>;
-        listDeleteProgress: (pin?: OpenProjectBinding | null) => Promise<LaneDeleteProgress[]>;
+        listDeleteProgress: (pin: OpenProjectBinding) => Promise<LaneDeleteProgress[]>;
         /** Deleted lanes whose unsaved work ADE kept (30 days), newest first. */
-        listDeleted: (pin?: OpenProjectBinding | null) => Promise<DeletedLaneSnapshot[]>;
+        listDeleted: (pin: OpenProjectBinding) => Promise<DeletedLaneSnapshot[]>;
         /** Brings a deleted lane back as a new lane, with its uncommitted files. */
-        restoreDeleted: (args: RestoreDeletedLaneArgs, pin?: OpenProjectBinding | null) => Promise<RestoreDeletedLaneResult>;
+        restoreDeleted: (args: RestoreDeletedLaneArgs, pin: OpenProjectBinding) => Promise<RestoreDeletedLaneResult>;
         /** Drops a deleted lane's saved work for good. */
-        removeDeleted: (args: RemoveDeletedLaneArgs, pin?: OpenProjectBinding | null) => Promise<{ removed: boolean }>;
+        removeDeleted: (args: RemoveDeletedLaneArgs, pin: OpenProjectBinding) => Promise<{ removed: boolean }>;
         /** "Push this branch?" before an ADE Cloud launch: is the start branch on GitHub? Runs on the pin's machine. */
         cloudStartBranch?: (
           args: import("../shared/types").CloudStartBranchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<import("../shared/types").CloudStartBranchCheck>;
         /** Pushes that start branch to origin, then answers the check again. */
         pushCloudStartBranch?: (
           args: import("../shared/types").CloudStartBranchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<import("../shared/types").CloudStartBranchCheck>;
         getDeleteRisk: (
           args: { laneId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<LaneDeleteRisk>;
         getReclaimRisk: (
           args: { laneId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<LaneReclaimRisk>;
         onDeleteEvent: (
           cb: (ev: LaneDeleteEvent) => void,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => () => void;
-        onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void, pin?: OpenProjectBinding | null) => () => void;
+        onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void, pin: OpenProjectBinding) => () => void;
         attachLinearIssueToSession: (args: {
           chatSessionId: string;
           issues: LaneLinearIssue[];
@@ -2448,10 +2448,10 @@ declare global {
           source?: string;
           includeInPr?: boolean;
           closeOnMerge?: boolean;
-        }, pin?: OpenProjectBinding | null) => Promise<SessionLinearIssueLink[]>;
-        detachLinearIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
-        listLinearIssuesForSession: (args: { chatSessionId: string }, pin?: OpenProjectBinding | null) => Promise<SessionLinearIssueLink[]>;
-        listLinearIssuesForLaneSessions: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<SessionLinearIssueLink[]>;
+        }, pin: OpenProjectBinding) => Promise<SessionLinearIssueLink[]>;
+        detachLinearIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin: OpenProjectBinding) => Promise<boolean>;
+        listLinearIssuesForSession: (args: { chatSessionId: string }, pin: OpenProjectBinding) => Promise<SessionLinearIssueLink[]>;
+        listLinearIssuesForLaneSessions: (args: { laneId: string }, pin: OpenProjectBinding) => Promise<SessionLinearIssueLink[]>;
         attachGitHubIssueToSession: (args: {
           chatSessionId: string;
           issues: LaneGitHubIssue[];
@@ -2459,10 +2459,10 @@ declare global {
           source?: string;
           includeInPr?: boolean;
           closeOnMerge?: boolean;
-        }, pin?: OpenProjectBinding | null) => Promise<SessionGitHubIssueLink[]>;
-        detachGitHubIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
-        listGitHubIssuesForSession: (args: { chatSessionId: string }, pin?: OpenProjectBinding | null) => Promise<SessionGitHubIssueLink[]>;
-        listGitHubIssuesForLaneSessions: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<SessionGitHubIssueLink[]>;
+        }, pin: OpenProjectBinding) => Promise<SessionGitHubIssueLink[]>;
+        detachGitHubIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin: OpenProjectBinding) => Promise<boolean>;
+        listGitHubIssuesForSession: (args: { chatSessionId: string }, pin: OpenProjectBinding) => Promise<SessionGitHubIssueLink[]>;
+        listGitHubIssuesForLaneSessions: (args: { laneId: string }, pin: OpenProjectBinding) => Promise<SessionGitHubIssueLink[]>;
         attachJiraIssueToSession: (args: {
           chatSessionId: string;
           issues: LaneJiraIssue[];
@@ -2470,196 +2470,196 @@ declare global {
           source?: string;
           includeInPr?: boolean;
           closeOnMerge?: boolean;
-        }, pin?: OpenProjectBinding | null) => Promise<SessionJiraIssueLink[]>;
-        detachJiraIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
-        listJiraIssuesForSession: (args: { chatSessionId: string }, pin?: OpenProjectBinding | null) => Promise<SessionJiraIssueLink[]>;
-        listJiraIssuesForLaneSessions: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<SessionJiraIssueLink[]>;
-        unlinkLinearIssues: (args: { laneId: string; issueId?: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
-        rebaseStart: (args: RebaseStartArgs, pin?: OpenProjectBinding | null) => Promise<RebaseStartResult>;
-        rebasePush: (args: RebasePushArgs, pin?: OpenProjectBinding | null) => Promise<RebaseRun>;
-        rebaseRollback: (args: RebaseRollbackArgs, pin?: OpenProjectBinding | null) => Promise<RebaseRun>;
-        rebaseAbort: (args: RebaseAbortArgs, pin?: OpenProjectBinding | null) => Promise<RebaseRun>;
+        }, pin: OpenProjectBinding) => Promise<SessionJiraIssueLink[]>;
+        detachJiraIssueFromSession: (args: { chatSessionId: string; issueId?: string }, pin: OpenProjectBinding) => Promise<boolean>;
+        listJiraIssuesForSession: (args: { chatSessionId: string }, pin: OpenProjectBinding) => Promise<SessionJiraIssueLink[]>;
+        listJiraIssuesForLaneSessions: (args: { laneId: string }, pin: OpenProjectBinding) => Promise<SessionJiraIssueLink[]>;
+        unlinkLinearIssues: (args: { laneId: string; issueId?: string }, pin: OpenProjectBinding) => Promise<boolean>;
+        rebaseStart: (args: RebaseStartArgs, pin: OpenProjectBinding) => Promise<RebaseStartResult>;
+        rebasePush: (args: RebasePushArgs, pin: OpenProjectBinding) => Promise<RebaseRun>;
+        rebaseRollback: (args: RebaseRollbackArgs, pin: OpenProjectBinding) => Promise<RebaseRun>;
+        rebaseAbort: (args: RebaseAbortArgs, pin: OpenProjectBinding) => Promise<RebaseRun>;
         rebaseSubscribe: (
           cb: (ev: RebaseRunEventPayload) => void,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => () => void;
-        openFolder: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
-        initEnv: (args: InitLaneEnvArgs, pin?: OpenProjectBinding | null) => Promise<LaneEnvInitProgress>;
+        openFolder: (args: { laneId: string }, pin: OpenProjectBinding) => Promise<void>;
+        initEnv: (args: InitLaneEnvArgs, pin: OpenProjectBinding) => Promise<LaneEnvInitProgress>;
         getEnvStatus: (
           args: GetLaneEnvStatusArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<LaneEnvInitProgress | null>;
-        getOverlay: (args: GetLaneOverlayArgs, pin?: OpenProjectBinding | null) => Promise<LaneOverlayOverrides>;
-        onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void, pin?: OpenProjectBinding | null) => () => void;
-        listTemplates: (pin?: OpenProjectBinding | null) => Promise<LaneTemplate[]>;
+        getOverlay: (args: GetLaneOverlayArgs, pin: OpenProjectBinding) => Promise<LaneOverlayOverrides>;
+        onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void, pin: OpenProjectBinding) => () => void;
+        listTemplates: (pin: OpenProjectBinding) => Promise<LaneTemplate[]>;
         /** Lockfiles in the main checkout of the pinned (or tab's) machine and whether each install is current. */
         getDependencyStatus: (
-          args?: GetLaneDependencyStatusArgs,
-          pin?: OpenProjectBinding | null,
+          args: GetLaneDependencyStatusArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<LaneDependencyStatus>;
         acknowledgeDependencyStatus: (
-          args?: AcknowledgeLaneDependencyStatusArgs,
-          pin?: OpenProjectBinding | null,
+          args: AcknowledgeLaneDependencyStatusArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<LaneDependencyStatus>;
         getTemplate: (
           args: GetLaneTemplateArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<LaneTemplate | null>;
-        getNewLaneDefaults: (pin?: OpenProjectBinding | null) => Promise<NewLaneDefaultsSnapshot>;
+        getNewLaneDefaults: (pin: OpenProjectBinding) => Promise<NewLaneDefaultsSnapshot>;
         setNewLaneDefaults: (
           args: { defaults: Partial<NewLaneDefaults> },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<NewLaneDefaultsSnapshot>;
-        getDefaultTemplate: (pin?: OpenProjectBinding | null) => Promise<string | null>;
-        setDefaultTemplate: (args: SetDefaultLaneTemplateArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        getDefaultTemplate: (pin: OpenProjectBinding) => Promise<string | null>;
+        setDefaultTemplate: (args: SetDefaultLaneTemplateArgs, pin: OpenProjectBinding) => Promise<void>;
         applyTemplate: (
           args: ApplyLaneTemplateArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<LaneEnvInitProgress>;
-        saveTemplate: (args: SaveLaneTemplateArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        deleteTemplate: (args: DeleteLaneTemplateArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        portGetLease: (args: GetPortLeaseArgs, pin?: OpenProjectBinding | null) => Promise<PortLease | null>;
-        portListLeases: (pin?: OpenProjectBinding | null) => Promise<PortLease[]>;
-        portAcquire: (args: AcquirePortLeaseArgs, pin?: OpenProjectBinding | null) => Promise<PortLease>;
-        portRelease: (args: ReleasePortLeaseArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        portListConflicts: (pin?: OpenProjectBinding | null) => Promise<PortConflict[]>;
-        portRecoverOrphans: (pin?: OpenProjectBinding | null) => Promise<PortLease[]>;
-        onPortEvent: (cb: (ev: PortAllocationEvent) => void, pin?: OpenProjectBinding | null) => () => void;
-        proxyGetStatus: (pin?: OpenProjectBinding | null) => Promise<ProxyStatus>;
-        proxyStart: (args?: StartProxyArgs, pin?: OpenProjectBinding | null) => Promise<ProxyStatus>;
-        proxyStop: (pin?: OpenProjectBinding | null) => Promise<void>;
-        proxyAddRoute: (args: AddProxyRouteArgs, pin?: OpenProjectBinding | null) => Promise<ProxyRoute>;
-        proxyRemoveRoute: (args: RemoveProxyRouteArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        saveTemplate: (args: SaveLaneTemplateArgs, pin: OpenProjectBinding) => Promise<void>;
+        deleteTemplate: (args: DeleteLaneTemplateArgs, pin: OpenProjectBinding) => Promise<void>;
+        portGetLease: (args: GetPortLeaseArgs, pin: OpenProjectBinding) => Promise<PortLease | null>;
+        portListLeases: (pin: OpenProjectBinding) => Promise<PortLease[]>;
+        portAcquire: (args: AcquirePortLeaseArgs, pin: OpenProjectBinding) => Promise<PortLease>;
+        portRelease: (args: ReleasePortLeaseArgs, pin: OpenProjectBinding) => Promise<void>;
+        portListConflicts: (pin: OpenProjectBinding) => Promise<PortConflict[]>;
+        portRecoverOrphans: (pin: OpenProjectBinding) => Promise<PortLease[]>;
+        onPortEvent: (cb: (ev: PortAllocationEvent) => void, pin: OpenProjectBinding) => () => void;
+        proxyGetStatus: (pin: OpenProjectBinding) => Promise<ProxyStatus>;
+        proxyStart: (args: StartProxyArgs | undefined, pin: OpenProjectBinding) => Promise<ProxyStatus>;
+        proxyStop: (pin: OpenProjectBinding) => Promise<void>;
+        proxyAddRoute: (args: AddProxyRouteArgs, pin: OpenProjectBinding) => Promise<ProxyRoute>;
+        proxyRemoveRoute: (args: RemoveProxyRouteArgs, pin: OpenProjectBinding) => Promise<void>;
         proxyGetPreviewInfo: (
           args: GetPreviewInfoArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<LanePreviewInfo | null>;
-        proxyOpenPreview: (args: OpenPreviewArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        onProxyEvent: (cb: (ev: LaneProxyEvent) => void, pin?: OpenProjectBinding | null) => () => void;
-        oauthGetStatus: (pin?: OpenProjectBinding | null) => Promise<OAuthRedirectStatus>;
+        proxyOpenPreview: (args: OpenPreviewArgs, pin: OpenProjectBinding) => Promise<void>;
+        onProxyEvent: (cb: (ev: LaneProxyEvent) => void, pin: OpenProjectBinding) => () => void;
+        oauthGetStatus: (pin: OpenProjectBinding) => Promise<OAuthRedirectStatus>;
         oauthUpdateConfig: (
           args: UpdateOAuthRedirectConfigArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         oauthGenerateRedirectUris: (
           args: GenerateRedirectUrisArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<RedirectUriInfo[]>;
-        oauthEncodeState: (args: EncodeOAuthStateArgs, pin?: OpenProjectBinding | null) => Promise<string>;
+        oauthEncodeState: (args: EncodeOAuthStateArgs, pin: OpenProjectBinding) => Promise<string>;
         oauthDecodeState: (
           args: DecodeOAuthStateArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<DecodeOAuthStateResult>;
-        oauthListSessions: (pin?: OpenProjectBinding | null) => Promise<OAuthSession[]>;
-        onOAuthEvent: (cb: (ev: OAuthRedirectEvent) => void, pin?: OpenProjectBinding | null) => () => void;
-        diagnosticsGetStatus: (pin?: OpenProjectBinding | null) => Promise<RuntimeDiagnosticsStatus>;
+        oauthListSessions: (pin: OpenProjectBinding) => Promise<OAuthSession[]>;
+        onOAuthEvent: (cb: (ev: OAuthRedirectEvent) => void, pin: OpenProjectBinding) => () => void;
+        diagnosticsGetStatus: (pin: OpenProjectBinding) => Promise<RuntimeDiagnosticsStatus>;
         diagnosticsGetLaneHealth: (
           args: GetLaneHealthArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<LaneHealthCheck | null>;
         diagnosticsRunHealthCheck: (
           args: RunHealthCheckArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<LaneHealthCheck>;
-        diagnosticsRunFullCheck: (pin?: OpenProjectBinding | null) => Promise<LaneHealthCheck[]>;
+        diagnosticsRunFullCheck: (pin: OpenProjectBinding) => Promise<LaneHealthCheck[]>;
         diagnosticsActivateFallback: (
           args: ActivateFallbackArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         diagnosticsDeactivateFallback: (
           args: DeactivateFallbackArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         onDiagnosticsEvent: (
           cb: (ev: RuntimeDiagnosticsEvent) => void,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => () => void;
       };
       sessions: {
         list: (
-          args?: ListSessionsArgs,
-          pin?: OpenProjectBinding | null,
+          args: ListSessionsArgs | undefined,
+          pin: OpenProjectBinding,
           options?: ListSessionsOptions,
         ) => Promise<TerminalSessionSummary[]>;
         get: (
           sessionId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
           options?: GetSessionOptions,
         ) => Promise<TerminalSessionDetail | null>;
         delete: (
           args: DeleteSessionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         updateMeta: (
           args: UpdateSessionMetaArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<TerminalSessionSummary | null>;
         settle: (
           sessionId: string,
-          opts?: { outcome?: string; dismissPendingInput?: boolean },
-          pin?: OpenProjectBinding | null,
+          opts: { outcome?: string; dismissPendingInput?: boolean } | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         unsettle: (
           sessionId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
-         settleMany: (sessionIds: string[], pin?: OpenProjectBinding | null) => Promise<string[]>;
-         unsettleMany: (sessionIds: string[], pin?: OpenProjectBinding | null) => Promise<void>;
+         settleMany: (sessionIds: string[], pin: OpenProjectBinding) => Promise<string[]>;
+         unsettleMany: (sessionIds: string[], pin: OpenProjectBinding) => Promise<void>;
         snoozeSession: (
           sessionId: string,
           untilIso: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<boolean>;
         wakeSession: (
           sessionId: string,
-          reason?: SessionWakeReason,
-          pin?: OpenProjectBinding | null,
+          reason: SessionWakeReason | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<boolean>;
         snoozeSessions: (
           sessionIds: string[],
           untilIso: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<string[]>;
         wakeSessions: (
           sessionIds: string[],
-          reason?: SessionWakeReason,
-          pin?: OpenProjectBinding | null,
+          reason: SessionWakeReason | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<string[]>;
         setSettleOverride: (
           sessionId: string,
           override: SessionSettleOverride | null,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<boolean>;
         moveOnBoard: (
           sessionId: string,
           to: WorkBoardMoveTarget,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<SessionBoardMoveResult>;
         undoBoardMove: (
           sessionId: string,
           moveId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<SessionBoardMoveUndoResult>;
         clearWokeMarker: (
           sessionId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<boolean>;
-        getLifecycleSettings: (pin?: OpenProjectBinding | null) => Promise<SessionLifecycleSettings>;
+        getLifecycleSettings: (pin: OpenProjectBinding) => Promise<SessionLifecycleSettings>;
         updateLifecycleSettings: (
           settings: SessionLifecycleSettings,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<SessionLifecycleSettings>;
         readTranscriptTail: (
           args: ReadTranscriptTailArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<string>;
         getDelta: (
           sessionId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<SessionDeltaSummary | null>;
         onChanged: (
           cb: (ev: TerminalSessionChangedEvent) => void,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => () => void;
       };
       chatLaunch: {
@@ -2679,33 +2679,33 @@ declare global {
         ) => () => void;
       };
       agentChat: {
-        list: (args?: AgentChatListArgs, pin?: OpenProjectBinding | null) => Promise<AgentChatSessionSummary[]>;
+        list: (args: AgentChatListArgs | undefined, pin: OpenProjectBinding) => Promise<AgentChatSessionSummary[]>;
         getSummary: (
           args: AgentChatGetSummaryArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatSessionSummary | null>;
-        create: (args: AgentChatCreateArgs, pin?: OpenProjectBinding | null) => Promise<AgentChatSession>;
-        launch: (args: AgentChatLaunchArgs, pin?: OpenProjectBinding | null) => Promise<AgentChatSession>;
+        create: (args: AgentChatCreateArgs, pin: OpenProjectBinding) => Promise<AgentChatSession>;
+        launch: (args: AgentChatLaunchArgs, pin: OpenProjectBinding) => Promise<AgentChatSession>;
         launchCli: (
           args: AgentChatLaunchCliArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatLaunchCliResult>;
         suggestLaneName: (
           args: AgentChatSuggestLaneNameArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<string>;
         generateAutoLaneIdentity: (
           args: AgentChatSuggestLaneNameArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AutoLaneIdentitySuggestion>;
         parallelLaunchState: {
           get: (
             args: AgentChatParallelLaunchStateArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<AgentChatParallelLaunchState | null>;
           set: (
             args: AgentChatSetParallelLaunchStateArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<void>;
         };
         /**
@@ -2720,144 +2720,144 @@ declare global {
         };
         handoff: (
           args: AgentChatHandoffArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatHandoffResult>;
         startSideChat: (
           args: AgentChatStartSideChatArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatStartSideChatResult>;
         endSideChat: (
           args: AgentChatEndSideChatArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatEndSideChatResult>;
         prepareCrossMachineHandoff: (
           args: AgentChatPrepareCrossMachineHandoffArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatPrepareCrossMachineHandoffResult>;
         validateCrossMachineSource: (
           args: AgentChatValidateCrossMachineSourceArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         markCrossMachineHandoff: (
           args: AgentChatMarkCrossMachineHandoffArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         getCrossMachineHandoffOptions: (
           args: AgentChatCrossMachineHandoffSessionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineHandoffOptionsResult>;
         previewCrossMachineHandoff: (
           args: AgentChatPreviewCrossMachineHandoffArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatPreviewCrossMachineHandoffResult>;
         startCrossMachineHandoff: (
           args: AgentChatStartCrossMachineHandoffArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineHandoffRecord>;
         cancelCrossMachineHandoff: (
           args: AgentChatCrossMachineHandoffSessionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
         retryCrossMachineHandoff: (
           args: AgentChatRetryCrossMachineHandoffArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineHandoffRecord>;
         startCrossMachineBatchMove: (
           args: AgentChatCrossMachineBatchMoveArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineBatchMoveRecord>;
         getCrossMachineBatchMove: (
           args: AgentChatGetCrossMachineBatchMoveArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineBatchMoveRecord | null>;
         retryCrossMachineBatchMove: (
           args: AgentChatRetryCrossMachineBatchMoveArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineBatchMoveRecord>;
         resolveCrossMachineBatchMoveApproval: (
           args: AgentChatResolveCrossMachineBatchMoveApprovalArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineBatchMoveRecord>;
         resolveCrossMachineHandoffApproval: (
           args: AgentChatResolveCrossMachineHandoffApprovalArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
         acknowledgeCrossMachineHandoff: (
           args: AgentChatAcknowledgeCrossMachineHandoffArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
-        send: (args: AgentChatSendArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        send: (args: AgentChatSendArgs, pin: OpenProjectBinding) => Promise<void>;
         steer: (
           args: AgentChatSteerArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatSteerResult>;
         cancelSteer: (
           args: AgentChatCancelSteerArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
-        editSteer: (args: AgentChatEditSteerArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        editSteer: (args: AgentChatEditSteerArgs, pin: OpenProjectBinding) => Promise<void>;
         moveSteer: (
           args: AgentChatMoveSteerArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         dispatchSteer: (
           args: AgentChatDispatchSteerArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatDispatchSteerResult>;
         cancelDispatchedSteer: (
           args: AgentChatCancelDispatchedSteerArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCancelDispatchedSteerResult>;
         interrupt: (
           args: AgentChatInterruptArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatInterruptResult>;
         stopTask: (
           args: AgentChatStopTaskArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatStopTaskResult>;
         /** Note or follow-up task to one subagent (Muse: `subagent/sendMessage` / `followupTask`). */
         messageSubagent: (
           args: AgentChatMessageSubagentArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatMessageSubagentResult>;
         /** Interrupt/resume/reopen/close a subagent, pause/resume a workflow, skip/retry a workflow child. */
         controlSubagent: (
           args: AgentChatControlSubagentArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatControlSubagentResult>;
         /** Stop the provider process, keep the conversation; the next message starts fresh. */
         restartSession: (
           args: AgentChatRestartSessionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatRestartSessionResult>;
         restoreCancelledQueue: (
           args: AgentChatRestoreCancelledQueueArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatRestoreCancelledQueueResult>;
         recoverTurn: (
           args: AgentChatRecoverTurnArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatRecoverTurnResult>;
         recoverCodexTurn: (
           args: AgentChatRecoverCodexTurnArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatRecoverCodexTurnResult>;
         resolveUnprocessedMessage: (
           args: AgentChatResolveUnprocessedMessageArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatResolveUnprocessedMessageResult>;
         recoverContinuity: (
           args: AgentChatRecoverContinuityArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatContinuityRecoveryResult>;
         approve: (
           args: AgentChatApproveArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         respondToInput: (
           args: AgentChatRespondToInputArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         /**
          * Throw away a non-blocking provider question. Rejects for any card the
@@ -2866,247 +2866,247 @@ declare global {
          */
         dismissPendingInput: (
           args: AgentChatDismissPendingInputArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
-        launchDefaults: (pin?: OpenProjectBinding | null) => Promise<AgentChatLaunchDefaults | null>;
+        launchDefaults: (pin: OpenProjectBinding) => Promise<AgentChatLaunchDefaults | null>;
         models: (
           args: AgentChatModelsArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatModelInfo[]>;
         modelCatalog: (
-          args?: AgentChatModelCatalogArgs,
+          args: AgentChatModelCatalogArgs | undefined,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatModelCatalog>;
         archive: (
           args: AgentChatArchiveArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         unarchive: (
           args: AgentChatArchiveArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
-        delete: (args: AgentChatDeleteArgs, pin?: OpenProjectBinding | null) => Promise<AgentChatDeleteResult | null>;
-        listDeleted: (args?: DeletedChatListArgs, pin?: OpenProjectBinding | null) => Promise<DeletedChatListResult>;
-        getDeletedDetail: (args: DeletedChatDetailArgs, pin?: OpenProjectBinding | null) => Promise<ExternalSessionDetail>;
-        reopenDeleted: (args: DeletedChatReopenArgs, pin?: OpenProjectBinding | null) => Promise<DeletedChatReopenResult>;
-        removeDeleted: (args: DeletedChatRemoveArgs, pin?: OpenProjectBinding | null) => Promise<DeletedChatRemoveResult>;
+        delete: (args: AgentChatDeleteArgs, pin: OpenProjectBinding) => Promise<AgentChatDeleteResult | null>;
+        listDeleted: (args: DeletedChatListArgs | undefined, pin: OpenProjectBinding) => Promise<DeletedChatListResult>;
+        getDeletedDetail: (args: DeletedChatDetailArgs, pin: OpenProjectBinding) => Promise<ExternalSessionDetail>;
+        reopenDeleted: (args: DeletedChatReopenArgs, pin: OpenProjectBinding) => Promise<DeletedChatReopenResult>;
+        removeDeleted: (args: DeletedChatRemoveArgs, pin: OpenProjectBinding) => Promise<DeletedChatRemoveResult>;
         updateSession: (
           args: AgentChatUpdateSessionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatSession>;
         regenerateSessionMetadata: (
           args: AgentChatRegenerateSessionMetadataArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatRegenerateSessionMetadataResult>;
         createScheduledWork: (
           args: AgentChatCreateScheduledWorkArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCreateScheduledWorkResult>;
         listScheduledWork: (
-          args?: AgentChatListScheduledWorkArgs,
-          pin?: OpenProjectBinding | null,
+          args: AgentChatListScheduledWorkArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatScheduledWorkItem[]>;
         cancelScheduledWork: (
           args: AgentChatCancelScheduledWorkArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCancelScheduledWorkResult>;
         resumeUsageLimitNow: (
           args: AgentChatResumeUsageLimitNowArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatResumeUsageLimitNowResult>;
         continueUsageLimitOnAlternate: (
           args: AgentChatContinueUsageLimitOnAlternateArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatContinueUsageLimitOnAlternateResult>;
         switchAccount: (
           args: AgentChatSwitchAccountArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatSwitchAccountResult>;
         setScheduledWorkPaused: (
           args: AgentChatSetScheduledWorkPausedArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatSetScheduledWorkPausedResult>;
         warmupModel: (
           args: {
             sessionId: string;
             modelId: string;
           },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         onEvent: (
           cb: (ev: AgentChatEventEnvelope) => void,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
           options?: { forcePinned?: boolean },
         ) => () => void;
         slashCommands: (
           args: AgentChatSlashCommandsArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatSlashCommand[]>;
         listClaudePlugins: (
-          args?: AgentChatClaudePluginsArgs,
-          pin?: OpenProjectBinding | null,
+          args: AgentChatClaudePluginsArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatClaudePlugin[]>;
         listCodexPlugins: (
-          args?: AgentChatCodexPluginsArgs,
-          pin?: OpenProjectBinding | null,
+          args: AgentChatCodexPluginsArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatCodexPlugin[]>;
         reloadClaudePlugins: (
           args: AgentChatReloadClaudePluginsArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatReloadClaudePluginsResult>;
         listClaudeOutputStyles: (
-          args?: AgentChatClaudeOutputStylesArgs,
-          pin?: OpenProjectBinding | null,
+          args: AgentChatClaudeOutputStylesArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatClaudeOutputStyle[]>;
         setClaudeOutputStyle: (
           args: AgentChatSetClaudeOutputStyleArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatSession>;
         listClaudeSessions: (
-          args?: AgentChatClaudeSessionListArgs,
-          pin?: OpenProjectBinding | null,
+          args: AgentChatClaudeSessionListArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatClaudeSessionInfo[]>;
         getClaudeSessionInfo: (
           args: AgentChatClaudeSessionInfoArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatClaudeSessionInfo | null>;
         getClaudeSessionMessages: (
           args: AgentChatClaudeSessionMessagesArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatClaudeSessionMessage[]>;
         getMainTranscript: (
           args: AgentChatMainTranscriptArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatSubagentTranscriptMessage[] | null>;
         getSubagentTranscript: (
           args: AgentChatSubagentTranscriptArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatSubagentTranscriptMessage[] | null>;
         getContextUsage: (
           args: AgentChatContextUsageArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatContextUsage | null>;
         getClaudeUsage: (
           args: AgentChatClaudeUsageArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ClaudeUsageReport>;
         rewindFiles: (
           args: AgentChatRewindFilesArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatRewindFilesResult>;
         fileSearch: (
           args: AgentChatFileSearchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatFileSearchResult[]>;
         // Optional: the webclient adapter's agentChat surface does not
         // implement it, and callers must degrade to an empty menu section.
         listMentionSuggestions?: (
           args: ChatMentionSuggestArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ChatMentionSuggestResult>;
         drafts: {
           list: (
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<DraftEntry[]>;
           create: (
             args: DraftCreateArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<DraftEntry>;
           update: (
             args: DraftUpdateArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<DraftEntry | null>;
           claim: (
             args: DraftClaimArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<DraftEntry | null>;
           delete: (
             args: DraftDeleteArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<boolean>;
           /** Deliver now, whatever the fire time; keeps the schedule armed. */
           sendNow: (
             args: DraftDeleteArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<{ ok: boolean; error?: string }>;
         };
         /** Claude mod UI. Absent in a client that draws none (the hosted web client). */
         claudePluginUi?: {
-          get: (args: ClaudePluginUiGetArgs, pin?: OpenProjectBinding | null) => Promise<ClaudePluginUiSnapshot>;
-          act: (args: ClaudePluginUiActArgs, pin?: OpenProjectBinding | null) => Promise<ClaudePluginUiActResult>;
+          get: (args: ClaudePluginUiGetArgs, pin: OpenProjectBinding) => Promise<ClaudePluginUiSnapshot>;
+          act: (args: ClaudePluginUiActArgs, pin: OpenProjectBinding) => Promise<ClaudePluginUiActResult>;
         };
         threadComments: {
-          list: (args: ChatThreadCommentListArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment[]>;
-          create: (args: ChatThreadCommentCreateArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment>;
-          update: (args: ChatThreadCommentUpdateArgs, pin?: OpenProjectBinding | null) => Promise<ChatThreadComment>;
-          delete: (args: ChatThreadCommentDeleteArgs, pin?: OpenProjectBinding | null) => Promise<{ deleted: boolean }>;
+          list: (args: ChatThreadCommentListArgs, pin: OpenProjectBinding) => Promise<ChatThreadComment[]>;
+          create: (args: ChatThreadCommentCreateArgs, pin: OpenProjectBinding) => Promise<ChatThreadComment>;
+          update: (args: ChatThreadCommentUpdateArgs, pin: OpenProjectBinding) => Promise<ChatThreadComment>;
+          delete: (args: ChatThreadCommentDeleteArgs, pin: OpenProjectBinding) => Promise<{ deleted: boolean }>;
         };
         getTurnFileDiff: (
           args: AgentChatGetTurnFileDiffArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatTurnFileDiff | null>;
         listSubagents: (
           args: AgentChatSubagentListArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatSubagentSnapshot[]>;
         killDroidWorker: (
           args: AgentChatKillDroidWorkerArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         getSessionCapabilities: (
           args: AgentChatSessionCapabilitiesArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatSessionCapabilities>;
         saveTempAttachment: (
           args: {
             data: string;
             filename: string;
           },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ path: string }>;
         getAttachmentStagingMode: (
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ChatAttachmentStagingMode>;
         stageFileAttachment: (
           args: AgentChatCopyTempAttachmentArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ path: string }>;
         getImageDataUrl: (
           path: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ dataUrl: string }>;
-        resolveSmartLinkPreview: (args: { url: string }, pin?: OpenProjectBinding | null) => Promise<SmartLinkPreview | null>;
+        resolveSmartLinkPreview: (args: { url: string }, pin: OpenProjectBinding) => Promise<SmartLinkPreview | null>;
         /** A preview's og:image as a data URL (null: unavailable). Fetched lazily by the hover card. */
-        resolveSmartLinkImage: (args: { url: string }, pin?: OpenProjectBinding | null) => Promise<{ dataUrl: string | null }>;
+        resolveSmartLinkImage: (args: { url: string }, pin: OpenProjectBinding) => Promise<{ dataUrl: string | null }>;
         /** The MCP App a tool call produced, from the machine that owns the chat. */
         getMcpApp: (
           args: import("../shared/mcpApp").McpAppGetArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<import("../shared/mcpApp").McpAppGetResult>;
         /** One call from an MCP App's frame, to the server the app came from. */
         mcpAppRequest: (
           args: import("../shared/mcpApp").McpAppRequestArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<import("../shared/mcpApp").McpAppRequestResult>;
         /** The tools the user always allows for the server an app came from. */
         listMcpAppGrants: (
           args: import("../shared/mcpApp").McpAppGrantsArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<import("../shared/mcpApp").McpAppGrantsResult>;
         /** Take one "always allow" back; answers the grants that are left. */
         revokeMcpAppGrant: (
           args: import("../shared/mcpApp").McpAppRevokeGrantArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<import("../shared/mcpApp").McpAppGrantsResult>;
         /** Sources favicons as data URLs (null: the site has none), keyed by each domain as given. */
-        resolveSourceFavicons: (args: { domains: string[] }, pin?: OpenProjectBinding | null) => Promise<{ icons: Record<string, string | null> }>;
+        resolveSourceFavicons: (args: { domains: string[] }, pin: OpenProjectBinding) => Promise<{ icons: Record<string, string | null> }>;
         getEventHistory: (
           args: {
             sessionId: string;
             maxEvents?: number;
             maxBytes?: number;
           },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatEventHistorySnapshot>;
         getEventHistoryPage: (
           args: {
@@ -3114,45 +3114,45 @@ declare global {
             beforeOffset: number;
             maxBytes?: number;
           },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatEventHistoryPage>;
         codex: {
           getGoal: (
             args: AgentChatCodexGetGoalArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<CodexThreadGoal | null>;
           setGoal: (
             args: AgentChatCodexSetGoalArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<CodexThreadGoal | null>;
           setGoalStatus: (
             args: AgentChatCodexSetGoalStatusArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<CodexThreadGoal | null>;
           clearGoal: (
             args: AgentChatCodexClearGoalArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<CodexThreadGoal | null>;
           /** Experimental: relay a WebRTC offer for Codex voice; returns the SDP answer. */
           realtimeStart: (
             args: AgentChatCodexRealtimeStartArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<AgentChatCodexRealtimeStartResult>;
           realtimeStop: (
             args: AgentChatCodexRealtimeStopArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<void>;
           realtimeState: (
             args: AgentChatCodexRealtimeStateArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<AgentChatCodexRealtimeState>;
           resetMemory: (
             args: AgentChatCodexResetMemoryArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<void>;
           terminateBackgroundTerminal: (
             args: AgentChatCodexTerminateBackgroundTerminalArgs,
-            pin?: OpenProjectBinding | null,
+            pin: OpenProjectBinding,
           ) => Promise<void>;
         };
         readTranscript: (args: {
@@ -3252,11 +3252,11 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorDevice[]>;
         listLaunchTargets: (
-          args?: IosSimulatorListLaunchTargetsArgs,
+          args: IosSimulatorListLaunchTargetsArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorLaunchTarget[]>;
         launch: (
-          args?: IosSimulatorLaunchArgs,
+          args: IosSimulatorLaunchArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorLaunchResult>;
         attachToChatSession: (
@@ -3268,19 +3268,19 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorSession | null>;
         shutdown: (
-          args?: IosSimulatorShutdownArgs,
+          args: IosSimulatorShutdownArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorShutdownResult>;
         screenshot: (
-          args?: IosSimulatorScreenshotArgs,
+          args: IosSimulatorScreenshotArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorScreenshot>;
         getScreenSnapshot: (
-          args?: IosScreenSnapshotArgs,
+          args: IosScreenSnapshotArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosScreenSnapshot>;
         getInspectorSnapshot: (
-          args?: { deviceUdid?: string | null },
+          args: { deviceUdid?: string | null } | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosInspectorSnapshot | null>;
         inspectPoint: (
@@ -3288,23 +3288,23 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorInspectResult>;
         getPreviewCapability: (
-          args?: IosSimulatorListPreviewsArgs,
+          args: IosSimulatorListPreviewsArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorPreviewCapability>;
         listPreviewTargets: (
-          args?: IosSimulatorListPreviewsArgs,
+          args: IosSimulatorListPreviewsArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorPreviewTarget[]>;
         resolvePreviewMatch: (
-          args?: IosSimulatorListPreviewsArgs,
+          args: IosSimulatorListPreviewsArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorPreviewMatch>;
         ensurePreviewWorkspace: (
-          args?: IosSimulatorEnsurePreviewWorkspaceArgs,
+          args: IosSimulatorEnsurePreviewWorkspaceArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorEnsurePreviewWorkspaceResult>;
         renderCurrentPreview: (
-          args?: IosSimulatorRenderCurrentPreviewArgs,
+          args: IosSimulatorRenderCurrentPreviewArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorRenderCurrentPreviewResult>;
         renderPreview: (
@@ -3312,11 +3312,11 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorRenderPreviewResult>;
         openPreviewWorkspace: (
-          args?: IosSimulatorOpenPreviewWorkspaceArgs,
+          args: IosSimulatorOpenPreviewWorkspaceArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<{ ok: true; path: string }>;
         startStream: (
-          args?: IosSimulatorStartStreamArgs,
+          args: IosSimulatorStartStreamArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorStreamStatus>;
         stopStream: (
@@ -3328,7 +3328,7 @@ declare global {
           args?: { laneId?: string | null; chatSessionId?: string | null },
         ) => Promise<IosSimulatorStreamStatus>;
         deviceCreate: (
-          args?: AppleDeviceCreateArgs,
+          args: AppleDeviceCreateArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<AppleLaneDevice>;
         deviceAttach: (
@@ -3341,7 +3341,7 @@ declare global {
          * live view. Progress arrives on `onEvent` as `apple.device.state`.
          */
         deviceStart: (
-          args?: AppleDeviceStartArgs,
+          args: AppleDeviceStartArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorStreamStatus>;
         /**
@@ -3351,7 +3351,7 @@ declare global {
          * session and leaves the device booted (round 5 §S1).
          */
         deviceStop: (
-          args?: AppleDeviceStopArgs,
+          args: AppleDeviceStopArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<AppleDeviceStopResult>;
         /**
@@ -3368,12 +3368,12 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleDeviceListResult>;
         deviceDelete: (
-          args?: AppleDeviceDeleteArgs,
+          args: AppleDeviceDeleteArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<AppleDeviceDeleteResult>;
         /** The lane gives up its device and the simulator stays installed. */
         deviceDetach: (
-          args?: AppleDeviceDetachArgs,
+          args: AppleDeviceDetachArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<AppleLaneDevice | null>;
         deviceDeleteInstalled: (
@@ -3407,19 +3407,19 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleXcodeStatus>;
         frame: (
-          args?: AppleFrameArgs,
+          args: AppleFrameArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<AppleFrameResult>;
         recordStart: (
-          args?: AppleRecordStartArgs,
+          args: AppleRecordStartArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<SimRecording>;
         recordStop: (
-          args?: AppleRecordStopArgs,
+          args: AppleRecordStopArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<SimRecording | null>;
         recordList: (
-          args?: AppleRecordListArgs,
+          args: AppleRecordListArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<SimRecording[]>;
         recordDelete: (
@@ -3459,7 +3459,7 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<AppleSetPostureResult>;
         getPosture: (
-          args?: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null },
+          args: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null } | undefined,
           pin: OpenProjectBinding,
         ) => Promise<AppleDevicePosture>;
         getDuoModel: (pin?: OpenProjectBinding | null) => Promise<AppleDuoModelResult>;
@@ -3469,7 +3469,7 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<{ ok: boolean }>;
         duoAppStoreScreenshots: (
-          args?: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null },
+          args: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null } | undefined,
           pin: OpenProjectBinding,
         ) => Promise<AppleDuoAppStoreScreenshotsResult>;
         attachRenderProof: (
@@ -3477,7 +3477,7 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<AppleRenderProofResult>;
         addDuoSkill: (
-          args?: { laneId?: string | null; chatSessionId?: string | null },
+          args: { laneId?: string | null; chatSessionId?: string | null } | undefined,
           pin: OpenProjectBinding,
         ) => Promise<AppleAddDuoSkillResult>;
         /** The helper's re-anchoring scroll gesture, by viewport direction. */
@@ -3513,15 +3513,15 @@ declare global {
         // element-named actions. Every one takes the same pin as the calls
         // above, because the simulator lives on the machine that owns the lane.
         openDevice: (
-          args?: IosSimulatorOpenDeviceArgs,
+          args: IosSimulatorOpenDeviceArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorDeviceSession>;
         closeDevice: (
-          args?: IosSimulatorCloseDeviceArgs,
+          args: IosSimulatorCloseDeviceArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorCloseDeviceResult>;
         getDeviceSettings: (
-          args?: IosSimulatorDeviceArgs,
+          args: IosSimulatorDeviceArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorDeviceSettings>;
         setAppearance: (
@@ -3541,7 +3541,7 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorDeviceSettings>;
         clearLocation: (
-          args?: IosSimulatorDeviceArgs,
+          args: IosSimulatorDeviceArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorDeviceSettings>;
         setPermission: (
@@ -3573,7 +3573,7 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         clearStatusBar: (
-          args?: IosSimulatorDeviceArgs,
+          args: IosSimulatorDeviceArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<{ ok: true }>;
         getAppState: (
@@ -3581,7 +3581,7 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorAppState>;
         getForegroundApp: (
-          args?: { deviceUdid?: string | null; laneId?: string | null; waitMs?: number | null },
+          args: { deviceUdid?: string | null; laneId?: string | null; waitMs?: number | null } | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorForegroundApp>;
         startEventLog: (
@@ -3589,11 +3589,11 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorEventLogPage>;
         stopEventLog: (
-          args?: IosSimulatorStopEventLogArgs,
+          args: IosSimulatorStopEventLogArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorEventLogPage>;
         getEventLog: (
-          args?: IosSimulatorEventLogArgs,
+          args: IosSimulatorEventLogArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorEventLogPage>;
         findElement: (
@@ -3617,7 +3617,7 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorElementActionResult>;
         captureProofBundle: (
-          args?: IosSimulatorProofBundleArgs,
+          args: IosSimulatorProofBundleArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<IosSimulatorProofBundle>;
         // The stream URL names loopback on the simulator's own machine, so a
@@ -4234,7 +4234,7 @@ declare global {
         ) => Promise<TerminalWatchSummary[]>;
       };
       localhost: {
-        probePort: (port: number, pin?: OpenProjectBinding | null) => Promise<boolean>;
+        probePort: (port: number, pin: OpenProjectBinding) => Promise<boolean>;
       };
       search: {
         query: (args: SearchQueryArgs, pin: OpenProjectBinding) => Promise<SearchQueryResult>;
@@ -4243,16 +4243,16 @@ declare global {
       };
       externalSessions: {
         list: (
-          args?: ExternalSessionListArgs,
-          pin?: OpenProjectBinding | null,
+          args: ExternalSessionListArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<ExternalSessionSummary[]>;
         import: (
           args: ExternalSessionImportArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ExternalSessionImportResult>;
         getDetail: (
           args: ExternalSessionDetailArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ExternalSessionDetail>;
         watchDetail: (args: ExternalSessionDetailWatchArgs) => Promise<ExternalSessionDetail>;
         unwatchDetail: (args: { watchId: string }) => Promise<{ ok: true }>;
@@ -4359,18 +4359,18 @@ declare global {
         ) => Promise<ProviderInstance[]>;
       };
       pty: {
-        create: (args: PtyCreateArgs, pin?: OpenProjectBinding | null) => Promise<PtyCreateResult>;
+        create: (args: PtyCreateArgs, pin: OpenProjectBinding) => Promise<PtyCreateResult>;
         resumeSession: (
           args: PtyResumeSessionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PtyResumeSessionResult>;
         sendToSession: (
           args: PtySendToSessionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PtySendToSessionResult>;
         write: (
           args: { ptyId: string; data: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         resize: (
           args: {
@@ -4378,9 +4378,9 @@ declare global {
             cols: number;
             rows: number;
           },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
-        dispose: (args: { ptyId: string; sessionId?: string }, pin?: OpenProjectBinding | null) => Promise<PtyDisposeResult>;
+        dispose: (args: { ptyId: string; sessionId?: string }, pin: OpenProjectBinding) => Promise<PtyDisposeResult>;
         /** The terminal machine's installed shells and its default for new shells. */
         getShellSettings: (pin?: OpenProjectBinding | null) => Promise<TerminalShellSettings>;
         /** Save that machine's default shell: a reported id, or null for Automatic. */
@@ -4390,21 +4390,21 @@ declare global {
         ) => Promise<TerminalShellSettings>;
         setDataSubscriptions: (
           args: { ptyIds: string[] },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<void>;
         onData: (
           cb: (ev: PtyDataEvent) => void,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => () => void;
         onExit: (
           cb: (ev: PtyExitEvent) => void,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => () => void;
       };
       diff: {
         getChanges: (
           args: GetDiffChangesArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<DiffChanges>;
         /**
          * Every file the lane's commits changed since its base (uncommitted
@@ -4413,15 +4413,15 @@ declare global {
          */
         getBranchChanges?: (
           args: GetDiffChangesArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<import("../shared/types").BranchDiffChanges | null>;
         getFile: (
           args: GetFileDiffArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<FileDiff>;
         getFilePatch: (
           args: GetFilePatchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<FilePatch>;
       };
       // `pin` addresses one machine explicitly: omitted or null means "the
@@ -4441,7 +4441,7 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<void>;
         listWorkspaces: (
-          args?: FilesListWorkspacesArgs,
+          args: FilesListWorkspacesArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<FilesWorkspace[]>;
         listTree: (
@@ -4513,120 +4513,120 @@ declare global {
       git: {
         stageFile: (
           args: GitFileActionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         stageAll: (
           args: GitBatchFileActionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         unstageFile: (
           args: GitFileActionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         unstageAll: (
           args: GitBatchFileActionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         discardFile: (
           args: GitFileActionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         restoreStagedFile: (
           args: GitFileActionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         commit: (
           args: GitCommitArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         listRecentCommits: (
           args: GitListRecentCommitsArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitCommitSummary[]>;
         listCommitFiles: (
           args: GitListCommitFilesArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<string[]>;
         getCommitMessage: (
           args: GitGetCommitMessageArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<string>;
         getCommit: (
           args: { laneId: string; commitSha: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitCommitSummary | null>;
         isCommitInLaneHistory: (
           args: { laneId: string; commitSha: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<boolean>;
         revertCommit: (
           args: GitRevertArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         cherryPickCommit: (
           args: GitCherryPickArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         createTag: (
           args: GitCreateTagArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         resetToCommit: (
           args: GitResetCommitArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         stashPush: (
           args: GitStashPushArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         stashList: (
           args: { laneId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitStashSummary[]>;
         stashApply: (
           args: GitStashRefArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         stashPop: (
           args: GitStashRefArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         stashDrop: (
           args: GitStashRefArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         stashClear: (
           args: { laneId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
-        fetch: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<GitActionResult>;
+        fetch: (args: { laneId: string }, pin: OpenProjectBinding) => Promise<GitActionResult>;
         pull: (
           args: GitPullArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         undoLastHeadChange: (
           args: GitHeadChangeActionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         redoLastHeadChange: (
           args: GitHeadChangeActionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         getSyncStatus: (
           args: { laneId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitUpstreamSyncStatus>;
         getSyncStatuses: (
           args: GitSyncStatusesArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitSyncStatuses>;
         getOriginRemote: (
           args: { laneId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{ remoteUrl: string | null; branch: string | null }>;
         getOpenPrForBranch: (
           args: { laneId: string; branch?: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<{
           prUrl: string | null;
           prNumber: number | null;
@@ -4635,31 +4635,31 @@ declare global {
         }>;
         sync: (
           args: GitSyncArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         push: (
           args: GitPushArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         getConflictState: (
           laneId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitConflictState>;
         rebaseContinue: (
           args: string | { laneId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         rebaseAbort: (
           args: string | { laneId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         mergeContinue: (
           args: string | { laneId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         mergeAbort: (
           args: string | { laneId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
         /**
          * Merge the lane's compare base (`origin/<base>`, fetched first) into
@@ -4668,56 +4668,56 @@ declare global {
          */
         mergeBaseIn: (
           args: GitMergeBaseInArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitMergeBaseInResult>;
         listBranches: (
           args: GitListBranchesArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitBranchSummary[]>;
         getUserIdentity: (
           args: GitGetUserIdentityArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitUserIdentity>;
         checkoutBranch: (
           args: GitCheckoutBranchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitActionResult>;
       };
       conflicts: {
         getLaneStatus: (
           args: GetLaneConflictStatusArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ConflictStatus>;
-        listOverlaps: (args: ListOverlapsArgs, pin?: OpenProjectBinding | null) => Promise<ConflictOverlap[]>;
-        getRiskMatrix: (pin?: OpenProjectBinding | null) => Promise<RiskMatrixEntry[]>;
+        listOverlaps: (args: ListOverlapsArgs, pin: OpenProjectBinding) => Promise<ConflictOverlap[]>;
+        getRiskMatrix: (pin: OpenProjectBinding) => Promise<RiskMatrixEntry[]>;
         runPrediction: (
-          args?: RunConflictPredictionArgs,
-          pin?: OpenProjectBinding | null,
+          args: RunConflictPredictionArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<BatchAssessmentResult>;
-        listProposals: (laneId: string, pin?: OpenProjectBinding | null) => Promise<ConflictProposal[]>;
+        listProposals: (laneId: string, pin: OpenProjectBinding) => Promise<ConflictProposal[]>;
         prepareProposal: (
           args: PrepareConflictProposalArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ConflictProposalPreview>;
         requestProposal: (
           args: RequestConflictProposalArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ConflictProposal>;
         applyProposal: (
           args: ApplyConflictProposalArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ConflictProposal>;
         undoProposal: (
           args: UndoConflictProposalArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ConflictProposal>;
-        onEvent: (cb: (ev: ConflictEventPayload) => void, pin?: OpenProjectBinding | null) => () => void;
+        onEvent: (cb: (ev: ConflictEventPayload) => void, pin: OpenProjectBinding) => () => void;
       };
       github: {
         getStatus: (opts?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
-        getRemoteStatus: (opts?: {
+        getRemoteStatus: (opts: {
           forceRefresh?: boolean;
-        }, pin?: OpenProjectBinding | null) => Promise<GitHubRemoteStatus>;
+        } | undefined, pin: OpenProjectBinding) => Promise<GitHubRemoteStatus>;
         setToken: (token: string, pin?: OpenProjectBinding | null) => Promise<GitHubSetTokenResult>;
         clearToken: (pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
         getAppUserAuthStatus: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
@@ -4728,38 +4728,38 @@ declare global {
         clearAppUserAuth: (pin?: OpenProjectBinding | null) => Promise<GitHubAppUserAuthStatus>;
         // Optional: an older remote runtime does not implement the budget read.
         // Callers must feature-detect and fall back to their own local backoff.
-        getRequestBudget?: (pin?: OpenProjectBinding | null) => Promise<GitHubRequestBudget>;
+        getRequestBudget?: (pin: OpenProjectBinding) => Promise<GitHubRequestBudget>;
         // Optional for the same reason: an older runtime lacks the star check.
-        isRepoStarred?: (pin?: OpenProjectBinding | null) => Promise<GitHubRepoStarState>;
-        detectRepo: (pin?: OpenProjectBinding | null) => Promise<{ owner: string; name: string } | null>;
-        listRepoIssues: (args?: {
+        isRepoStarred?: (pin: OpenProjectBinding) => Promise<GitHubRepoStarState>;
+        detectRepo: (pin: OpenProjectBinding) => Promise<{ owner: string; name: string } | null>;
+        listRepoIssues: (args: {
           owner?: string;
           name?: string;
           state?: "open" | "closed" | "all";
           since?: string;
-        }, pin?: OpenProjectBinding | null) => Promise<GitHubIssueLike[]>;
+        } | undefined, pin: OpenProjectBinding) => Promise<GitHubIssueLike[]>;
         getIssue: (args: {
           owner?: string;
           name?: string;
           number: number;
-        }, pin?: OpenProjectBinding | null) => Promise<GitHubIssueLike | null>;
+        }, pin: OpenProjectBinding) => Promise<GitHubIssueLike | null>;
         /** Issues enabled + open count, one GraphQL point. */
-        getRepoIssueSummary: (args: { owner: string; name: string }, pin?: OpenProjectBinding | null) => Promise<GitHubRepoIssueSummary>;
-        listIssueComments: (args: { owner: string; name: string; number: number }, pin?: OpenProjectBinding | null) => Promise<GitHubIssueCommentLike[]>;
-        createIssue: (args: { owner: string; name: string; input: GitHubIssueCreateInput }, pin?: OpenProjectBinding | null) => Promise<GitHubIssueCreateResult>;
-        listIssueTemplates: (args: { owner: string; name: string }, pin?: OpenProjectBinding | null) => Promise<GitHubIssueTemplateSet>;
-        listIssueTypes: (args: { owner: string; name: string }, pin?: OpenProjectBinding | null) => Promise<GitHubIssueTypeOption[]>;
+        getRepoIssueSummary: (args: { owner: string; name: string }, pin: OpenProjectBinding) => Promise<GitHubRepoIssueSummary>;
+        listIssueComments: (args: { owner: string; name: string; number: number }, pin: OpenProjectBinding) => Promise<GitHubIssueCommentLike[]>;
+        createIssue: (args: { owner: string; name: string; input: GitHubIssueCreateInput }, pin: OpenProjectBinding) => Promise<GitHubIssueCreateResult>;
+        listIssueTemplates: (args: { owner: string; name: string }, pin: OpenProjectBinding) => Promise<GitHubIssueTemplateSet>;
+        listIssueTypes: (args: { owner: string; name: string }, pin: OpenProjectBinding) => Promise<GitHubIssueTypeOption[]>;
         /** Which credential an issue edit would use, and the App's issues permission. */
-        getIssueWriteAccess: (args: { owner: string; name: string; force?: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubIssueWriteAccess>;
-        updateIssue: (args: { owner: string; name: string; number: number; patch: GitHubIssuePatch }, pin?: OpenProjectBinding | null) => Promise<GitHubIssueLike | null>;
-        commentOnIssue: (args: { owner: string; name: string; number: number; body: string }, pin?: OpenProjectBinding | null) => Promise<GitHubIssueCommentLike | null>;
-        listRepoMilestones: (args: { owner: string; name: string }, pin?: OpenProjectBinding | null) => Promise<Array<{ number: number; title: string }>>;
+        getIssueWriteAccess: (args: { owner: string; name: string; force?: boolean }, pin: OpenProjectBinding) => Promise<GitHubIssueWriteAccess>;
+        updateIssue: (args: { owner: string; name: string; number: number; patch: GitHubIssuePatch }, pin: OpenProjectBinding) => Promise<GitHubIssueLike | null>;
+        commentOnIssue: (args: { owner: string; name: string; number: number; body: string }, pin: OpenProjectBinding) => Promise<GitHubIssueCommentLike | null>;
+        listRepoMilestones: (args: { owner: string; name: string }, pin: OpenProjectBinding) => Promise<Array<{ number: number; title: string }>>;
         /** Issues only (no pull requests), newest activity first, one GraphQL page. */
-        listRepoIssueList: (args: { owner: string; name: string; state: "open" | "closed" | "all" }, pin?: OpenProjectBinding | null) => Promise<GitHubIssueLike[]>;
-        listRepoAutolinks: (args?: {
+        listRepoIssueList: (args: { owner: string; name: string; state: "open" | "closed" | "all" }, pin: OpenProjectBinding) => Promise<GitHubIssueLike[]>;
+        listRepoAutolinks: (args: {
           owner?: string;
           name?: string;
-        }, pin?: OpenProjectBinding | null) => Promise<GitHubAutolink[]>;
+        } | undefined, pin: OpenProjectBinding) => Promise<GitHubAutolink[]>;
         getAppInstallationStatus: (args?: {
           owner?: string;
           name?: string;
@@ -4771,22 +4771,22 @@ declare global {
           keyPrefix: string;
           urlTemplate: string;
           isAlphanumeric?: boolean;
-        }, pin?: OpenProjectBinding | null) => Promise<GitHubAutolink>;
+        }, pin: OpenProjectBinding) => Promise<GitHubAutolink>;
         listRepoLabels: (args: {
           owner: string;
           name: string;
-        }, pin?: OpenProjectBinding | null) => Promise<Array<{ name: string; color?: string }>>;
+        }, pin: OpenProjectBinding) => Promise<Array<{ name: string; color?: string }>>;
         listRepoCollaborators: (args: {
           owner: string;
           name: string;
-        }, pin?: OpenProjectBinding | null) => Promise<Array<{ login: string; avatarUrl?: string }>>;
+        }, pin: OpenProjectBinding) => Promise<Array<{ login: string; avatarUrl?: string }>>;
         listMyRepos: (
           input?: ListMyGitHubReposInput,
           pin?: OpenProjectBinding | null,
         ) => Promise<ListMyGitHubReposResult>;
         publishCurrentProject: (
           input: PublishProjectInput,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PublishProjectResult>;
         onStatusChanged: (cb: (status: GitHubStatus) => void, pin?: OpenProjectBinding | null) => () => void;
       };
@@ -4795,7 +4795,7 @@ declare global {
         connect: (args: JiraConnectArgs, pin?: OpenProjectBinding | null) => Promise<JiraConnectionStatus>;
         disconnect: (pin?: OpenProjectBinding | null) => Promise<JiraConnectionStatus>;
         listProjects: (args?: { query?: string }, pin?: OpenProjectBinding | null) => Promise<JiraProject[]>;
-        listIssues: (args?: JiraListIssuesArgs, pin?: OpenProjectBinding | null) => Promise<JiraIssuePage>;
+        listIssues: (args: JiraListIssuesArgs | undefined, pin: OpenProjectBinding) => Promise<JiraIssuePage>;
         // Issue reads and writes (class A) go to the repository reader. The
         // connection members above are machine-global (D); `listProjects` and
         // `listIssues` keep an optional pin until Settings and the chat
@@ -5014,18 +5014,18 @@ declare global {
          * Registry servers a chat's running agent did not start with, read on
          * the chat's machine: `pin`, else the tab's runtime.
          */
-        chatStatus?: (args: { chatSessionId: string }, pin?: OpenProjectBinding | null) => Promise<McpRegistryChatStatus>;
+        chatStatus?: (args: { chatSessionId: string }, pin: OpenProjectBinding) => Promise<McpRegistryChatStatus>;
       };
       prs: {
-        createFromLane: (args: CreatePrFromLaneArgs, pin?: OpenProjectBinding | null) => Promise<PrSummary>;
-        linkToLane: (args: LinkPrToLaneArgs, pin?: OpenProjectBinding | null) => Promise<PrSummary>;
+        createFromLane: (args: CreatePrFromLaneArgs, pin: OpenProjectBinding) => Promise<PrSummary>;
+        linkToLane: (args: LinkPrToLaneArgs, pin: OpenProjectBinding) => Promise<PrSummary>;
         preflightCreateLaneFromPrBranch: (
           args: CreateLaneFromPrBranchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CreateLaneFromPrBranchPreflightResult>;
         createLaneFromPrBranch: (
           args: CreateLaneFromPrBranchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CreateLaneFromPrBranchResult>;
         /**
          * `pin` routes the read to the machine that owns the lane. A PR row
@@ -5035,178 +5035,178 @@ declare global {
          */
         getForLane: (
           laneId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PrSummary | null>;
         syncLanePr: (
           laneId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PrSummary | null>;
-        reconcileNow: (pin?: OpenProjectBinding | null) => Promise<void>;
+        reconcileNow: (pin: OpenProjectBinding) => Promise<void>;
         /** Throttled catch-up reconcile on the machine `pin` names (bound machine when omitted). */
-        reconcileOnFocus: (pin?: OpenProjectBinding | null) => Promise<void>;
-        listAll: (pin?: OpenProjectBinding | null) => Promise<PrSummary[]>;
+        reconcileOnFocus: (pin: OpenProjectBinding) => Promise<void>;
+        listAll: (pin: OpenProjectBinding) => Promise<PrSummary[]>;
         /** See preload `listAllConditional`; optional so bridges that predate it type-check. */
-        listAllConditional?: (ifNoneMatch: string | null, pin?: OpenProjectBinding | null) => Promise<PrSummary[] | PrListConditionalReply>;
-        listOpenForRepo: (pin?: OpenProjectBinding | null) => Promise<BranchPullRequest[]>;
+        listAllConditional?: (ifNoneMatch: string | null, pin: OpenProjectBinding) => Promise<PrSummary[] | PrListConditionalReply>;
+        listOpenForRepo: (pin: OpenProjectBinding) => Promise<BranchPullRequest[]>;
         refresh: (
-          args?: {
+          args: {
             prId?: string;
             prIds?: string[];
-          },
-          pin?: OpenProjectBinding | null,
+          } | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<PrSummary[]>;
         getStatus: (
           prId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PrStatus | null>;
         getChecks: (
           prId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PrCheck[]>;
         getComments: (
           prId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PrComment[]>;
         getReviews: (
           prId: string,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PrReview[]>;
-        getReviewThreads: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrReviewThread[]>;
-        updateDescription: (args: UpdatePrDescriptionArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        searchMentionables: (args: SearchPrMentionablesArgs, pin?: OpenProjectBinding | null) => Promise<SearchPrMentionablesResult>;
-        getRepoReferences: (args: GetPrRepoReferencesArgs, pin?: OpenProjectBinding | null) => Promise<PrRepoReference[]>;
-        delete: (args: DeletePrArgs, pin?: OpenProjectBinding | null) => Promise<DeletePrResult>;
-        land: (args: LandPrArgs, pin?: OpenProjectBinding | null) => Promise<LandResult>;
-        updateBranch: (args: UpdateBranchArgs, pin?: OpenProjectBinding | null) => Promise<UpdateBranchResult>;
+        getReviewThreads: (prId: string, pin: OpenProjectBinding) => Promise<PrReviewThread[]>;
+        updateDescription: (args: UpdatePrDescriptionArgs, pin: OpenProjectBinding) => Promise<void>;
+        searchMentionables: (args: SearchPrMentionablesArgs, pin: OpenProjectBinding) => Promise<SearchPrMentionablesResult>;
+        getRepoReferences: (args: GetPrRepoReferencesArgs, pin: OpenProjectBinding) => Promise<PrRepoReference[]>;
+        delete: (args: DeletePrArgs, pin: OpenProjectBinding) => Promise<DeletePrResult>;
+        land: (args: LandPrArgs, pin: OpenProjectBinding) => Promise<LandResult>;
+        updateBranch: (args: UpdateBranchArgs, pin: OpenProjectBinding) => Promise<UpdateBranchResult>;
         retargetBase: (args: {
           prId: string;
           baseBranch: string;
-        }, pin?: OpenProjectBinding | null) => Promise<void>;
-        openInGitHub: (prId: string, pin?: OpenProjectBinding | null) => Promise<void>;
-        getHealth: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrHealth>;
-        getConflictAnalysis: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrConflictAnalysis | null>;
-        listWithConflicts: (args?: {
+        }, pin: OpenProjectBinding) => Promise<void>;
+        openInGitHub: (prId: string, pin: OpenProjectBinding) => Promise<void>;
+        getHealth: (prId: string, pin: OpenProjectBinding) => Promise<PrHealth>;
+        getConflictAnalysis: (prId: string, pin: OpenProjectBinding) => Promise<PrConflictAnalysis | null>;
+        listWithConflicts: (args: {
           includeConflictAnalysis?: boolean;
-        }, pin?: OpenProjectBinding | null) => Promise<PrWithConflicts[]>;
-        listSnapshots: (args?: {
+        } | undefined, pin: OpenProjectBinding) => Promise<PrWithConflicts[]>;
+        listSnapshots: (args: {
           prId?: string;
           /** Only these PRs; an empty list returns none. */
           prIds?: string[];
-        }, pin?: OpenProjectBinding | null) => Promise<PrSnapshotHydration[]>;
-        getGitHubSnapshot: (args?: {
+        } | undefined, pin: OpenProjectBinding) => Promise<PrSnapshotHydration[]>;
+        getGitHubSnapshot: (args: {
           force?: boolean;
           includeExternalClosed?: boolean;
           historyPageLimit?: number;
-        }, pin?: OpenProjectBinding | null) => Promise<GitHubPrSnapshot>;
+        } | undefined, pin: OpenProjectBinding) => Promise<GitHubPrSnapshot>;
         listGitHubStacks: (
-          args?: ListGitHubPrStacksArgs,
-          pin?: OpenProjectBinding | null,
+          args: ListGitHubPrStacksArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<GitHubPrStack[]>;
         syncGitHubStacks: (
-          args?: ListGitHubPrStacksArgs,
-          pin?: OpenProjectBinding | null,
+          args: ListGitHubPrStacksArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<GitHubPrStack[]>;
         createGitHubStack: (
           args: CreateGitHubPrStackArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitHubPrStack>;
         addGitHubStackPullRequests: (
           args: AddGitHubPrStackPullRequestsArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitHubPrStack>;
         unstackGitHubStack: (
           args: UnstackGitHubPrStackArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<GitHubPrStack | null>;
-        linkChatSession: (args: LinkPrChatSessionArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
-        unlinkChatSession: (args: UnlinkPrChatSessionArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean }>;
+        linkChatSession: (args: LinkPrChatSessionArgs, pin: OpenProjectBinding) => Promise<{ ok: boolean }>;
+        unlinkChatSession: (args: UnlinkPrChatSessionArgs, pin: OpenProjectBinding) => Promise<{ ok: boolean }>;
         /** PR Watch / Ship for one chat; `mode: null` stops it. */
-        setChatWatch: (args: SetPrChatWatchArgs, pin?: OpenProjectBinding | null) => Promise<PrChatWatchSummary | null>;
-        getChatWatches: (args: GetPrChatWatchArgs, pin?: OpenProjectBinding | null) => Promise<PrChatWatchSummary[]>;
+        setChatWatch: (args: SetPrChatWatchArgs, pin: OpenProjectBinding) => Promise<PrChatWatchSummary | null>;
+        getChatWatches: (args: GetPrChatWatchArgs, pin: OpenProjectBinding) => Promise<PrChatWatchSummary[]>;
         /** A private repo PR attachment as a signed URL, resolved on the machine `pin` names. */
-        resolveMedia: (args: ResolvePrMediaArgs, pin?: OpenProjectBinding | null) => Promise<ResolvePrMediaResult>;
-        linkChatStack: (args: LinkPrChatStackArgs, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; linked: number }>;
+        resolveMedia: (args: ResolvePrMediaArgs, pin: OpenProjectBinding) => Promise<ResolvePrMediaResult>;
+        linkChatStack: (args: LinkPrChatStackArgs, pin: OpenProjectBinding) => Promise<{ ok: boolean; linked: number }>;
         listChatSessionsForPr: (
           args: ListPrChatSessionsArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PrChatSessionLink[]>;
         getStackLinkOffer: (args: {
           sessionId: string;
           prId?: string | null;
-        }, pin?: OpenProjectBinding | null) => Promise<StackLinkOffer | null>;
+        }, pin: OpenProjectBinding) => Promise<StackLinkOffer | null>;
         onEvent: (
           cb: (ev: PrEventPayload) => void,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => () => void;
-        getDetail: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrDetail>;
-        getDetailBundle: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrDetailBundle>;
-        getFiles: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrFile[]>;
-        getCommits: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrCommit[]>;
-        getActionRuns: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrActionRun[]>;
-        getActivity: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrActivityEvent[]>;
+        getDetail: (prId: string, pin: OpenProjectBinding) => Promise<PrDetail>;
+        getDetailBundle: (prId: string, pin: OpenProjectBinding) => Promise<PrDetailBundle>;
+        getFiles: (prId: string, pin: OpenProjectBinding) => Promise<PrFile[]>;
+        getCommits: (prId: string, pin: OpenProjectBinding) => Promise<PrCommit[]>;
+        getActionRuns: (prId: string, pin: OpenProjectBinding) => Promise<PrActionRun[]>;
+        getActivity: (prId: string, pin: OpenProjectBinding) => Promise<PrActivityEvent[]>;
         getWorkflowGraph: (
           args: GetPrWorkflowGraphArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PrWorkflowGraph>;
-        getCheckLog: (args: GetPrCheckLogArgs, pin?: OpenProjectBinding | null) => Promise<PrCheckLogExcerpt>;
-        getDetailByGithub: (coords: PrGithubCoords, pin?: OpenProjectBinding | null) => Promise<PrDetail>;
-        getFilesByGithub: (coords: PrGithubCoords, pin?: OpenProjectBinding | null) => Promise<PrFile[]>;
-        getCommitsByGithub: (coords: PrGithubCoords, pin?: OpenProjectBinding | null) => Promise<PrCommit[]>;
+        getCheckLog: (args: GetPrCheckLogArgs, pin: OpenProjectBinding) => Promise<PrCheckLogExcerpt>;
+        getDetailByGithub: (coords: PrGithubCoords, pin: OpenProjectBinding) => Promise<PrDetail>;
+        getFilesByGithub: (coords: PrGithubCoords, pin: OpenProjectBinding) => Promise<PrFile[]>;
+        getCommitsByGithub: (coords: PrGithubCoords, pin: OpenProjectBinding) => Promise<PrCommit[]>;
         getActionRunsByGithub: (
           coords: PrGithubCoords,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PrActionRun[]>;
         getActivityByGithub: (
           coords: PrGithubCoords,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PrActivityEvent[]>;
-        getStatusByGithub: (coords: PrGithubCoords, pin?: OpenProjectBinding | null) => Promise<PrStatus | null>;
-        getChecksByGithub: (coords: PrGithubCoords, pin?: OpenProjectBinding | null) => Promise<PrCheck[]>;
-        getReviewsByGithub: (coords: PrGithubCoords, pin?: OpenProjectBinding | null) => Promise<PrReview[]>;
-        getCommentsByGithub: (coords: PrGithubCoords, pin?: OpenProjectBinding | null) => Promise<PrComment[]>;
+        getStatusByGithub: (coords: PrGithubCoords, pin: OpenProjectBinding) => Promise<PrStatus | null>;
+        getChecksByGithub: (coords: PrGithubCoords, pin: OpenProjectBinding) => Promise<PrCheck[]>;
+        getReviewsByGithub: (coords: PrGithubCoords, pin: OpenProjectBinding) => Promise<PrReview[]>;
+        getCommentsByGithub: (coords: PrGithubCoords, pin: OpenProjectBinding) => Promise<PrComment[]>;
         getReviewThreadsByGithub: (
           coords: PrGithubCoords,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PrReviewThread[]>;
-        addComment: (args: AddPrCommentArgs, pin?: OpenProjectBinding | null) => Promise<PrComment>;
-        updateComment: (args: UpdatePrCommentArgs, pin?: OpenProjectBinding | null) => Promise<PrComment>;
+        addComment: (args: AddPrCommentArgs, pin: OpenProjectBinding) => Promise<PrComment>;
+        updateComment: (args: UpdatePrCommentArgs, pin: OpenProjectBinding) => Promise<PrComment>;
         replyToReviewThread: (
           args: ReplyToPrReviewThreadArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PrReviewThreadComment>;
-        resolveReviewThread: (args: ResolvePrReviewThreadArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        updateTitle: (args: UpdatePrTitleArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        updateBody: (args: UpdatePrBodyArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        setLabels: (args: SetPrLabelsArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        resolveReviewThread: (args: ResolvePrReviewThreadArgs, pin: OpenProjectBinding) => Promise<void>;
+        updateTitle: (args: UpdatePrTitleArgs, pin: OpenProjectBinding) => Promise<void>;
+        updateBody: (args: UpdatePrBodyArgs, pin: OpenProjectBinding) => Promise<void>;
+        setLabels: (args: SetPrLabelsArgs, pin: OpenProjectBinding) => Promise<void>;
         /** Optional: an older remote runtime cannot assign; the UI hides the editor. */
-        setAssignees?: (args: SetPrAssigneesArgs, pin?: OpenProjectBinding | null) => Promise<SetPrAssigneesResult>;
+        setAssignees?: (args: SetPrAssigneesArgs, pin: OpenProjectBinding) => Promise<SetPrAssigneesResult>;
         /** Optional: absent on older hosts; the filter pickers then show loaded rows only. */
-        listGitHubFilterOptions?: (args: ListGitHubPrFilterOptionsArgs, pin?: OpenProjectBinding | null) => Promise<ListGitHubPrFilterOptionsResult>;
+        listGitHubFilterOptions?: (args: ListGitHubPrFilterOptionsArgs, pin: OpenProjectBinding) => Promise<ListGitHubPrFilterOptionsResult>;
         /** Optional: absent on older hosts; filters then apply to loaded rows only. */
-        searchGitHubPrs?: (args: SearchGitHubPrsArgs, pin?: OpenProjectBinding | null) => Promise<SearchGitHubPrsResult>;
-        requestReviewers: (args: RequestPrReviewersArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        searchGitHubPrs?: (args: SearchGitHubPrsArgs, pin: OpenProjectBinding) => Promise<SearchGitHubPrsResult>;
+        requestReviewers: (args: RequestPrReviewersArgs, pin: OpenProjectBinding) => Promise<void>;
         submitReview: (
           args: SubmitPrReviewArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<SubmitPrReviewResult>;
-        close: (args: ClosePrArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        reopen: (args: ReopenPrArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        setDraft: (args: SetPrDraftArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        setAutoMerge: (args: SetPrAutoMergeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        rerunChecks: (args: RerunPrChecksArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        getDeployments: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrDeployment[]>;
+        close: (args: ClosePrArgs, pin: OpenProjectBinding) => Promise<void>;
+        reopen: (args: ReopenPrArgs, pin: OpenProjectBinding) => Promise<void>;
+        setDraft: (args: SetPrDraftArgs, pin: OpenProjectBinding) => Promise<void>;
+        setAutoMerge: (args: SetPrAutoMergeArgs, pin: OpenProjectBinding) => Promise<void>;
+        rerunChecks: (args: RerunPrChecksArgs, pin: OpenProjectBinding) => Promise<void>;
+        getDeployments: (prId: string, pin: OpenProjectBinding) => Promise<PrDeployment[]>;
         postReviewComment: (
           args: PostPrReviewCommentArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<PrReviewThreadComment>;
         setReviewThreadResolved: (
           args: SetPrReviewThreadResolvedArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<SetPrReviewThreadResolvedResult>;
-        reactToComment: (args: ReactToPrCommentArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        reactToComment: (args: ReactToPrCommentArgs, pin: OpenProjectBinding) => Promise<void>;
         cleanupBranch: (
           args: CleanupPrBranchArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CleanupPrBranchResult>;
       };
       rebase: {
@@ -5283,16 +5283,16 @@ declare global {
         onEvent: (cb: (ev: TestEvent) => void, pin: OpenProjectBinding) => () => void;
       };
       projectConfig: {
-        get: (pin?: OpenProjectBinding | null) => Promise<ProjectConfigSnapshot>;
+        get: (pin: OpenProjectBinding) => Promise<ProjectConfigSnapshot>;
         validate: (
           candidate: ProjectConfigCandidate,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ProjectConfigValidationResult>;
         save: (
           candidate: ProjectConfigCandidate,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<ProjectConfigSnapshot>;
-        diffAgainstDisk: (pin?: OpenProjectBinding | null) => Promise<ProjectConfigDiff>;
+        diffAgainstDisk: (pin: OpenProjectBinding) => Promise<ProjectConfigDiff>;
       };
       zoom: {
         getLevel: () => number;
@@ -5306,89 +5306,89 @@ declare global {
       };
       cto?: {
         // CTO calls take the CTO home machine's pin; null = the tab's binding.
-        getState: (args?: CtoGetStateArgs, pin?: OpenProjectBinding | null) => Promise<CtoSnapshot>;
+        getState: (args: CtoGetStateArgs | undefined, pin: OpenProjectBinding) => Promise<CtoSnapshot>;
         ensureSession: (
-          args?: CtoEnsureSessionArgs,
-          pin?: OpenProjectBinding | null,
+          args: CtoEnsureSessionArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<AgentChatSession>;
-        startFreshSession: (pin?: OpenProjectBinding | null) => Promise<CtoStartFreshSessionResult>;
-        getThreadHealth: (pin?: OpenProjectBinding | null) => Promise<CtoThreadHealth>;
+        startFreshSession: (pin: OpenProjectBinding) => Promise<CtoStartFreshSessionResult>;
+        getThreadHealth: (pin: OpenProjectBinding) => Promise<CtoThreadHealth>;
         listSessionLogs: (
-          args?: CtoListSessionLogsArgs,
-          pin?: OpenProjectBinding | null,
+          args: CtoListSessionLogsArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<CtoSessionLogEntry[]>;
-        updateIdentity: (args: CtoUpdateIdentityArgs, pin?: OpenProjectBinding | null) => Promise<CtoSnapshot>;
-        getMemory: (pin?: OpenProjectBinding | null) => Promise<CtoMemorySnapshot>;
-        updateMemory: (args: CtoUpdateMemoryArgs, pin?: OpenProjectBinding | null) => Promise<CtoMemorySnapshot>;
-        searchMemory: (args: CtoSearchMemoryArgs, pin?: OpenProjectBinding | null) => Promise<CtoSearchMemoryResult>;
-        getLinearConnectionStatus: (pin?: OpenProjectBinding | null) => Promise<LinearConnectionStatus>;
+        updateIdentity: (args: CtoUpdateIdentityArgs, pin: OpenProjectBinding) => Promise<CtoSnapshot>;
+        getMemory: (pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
+        updateMemory: (args: CtoUpdateMemoryArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
+        searchMemory: (args: CtoSearchMemoryArgs, pin: OpenProjectBinding) => Promise<CtoSearchMemoryResult>;
+        getLinearConnectionStatus: (pin: OpenProjectBinding) => Promise<LinearConnectionStatus>;
         setLinearToken: (
           args: CtoSetLinearTokenArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<LinearConnectionStatus>;
-        clearLinearToken: (pin?: OpenProjectBinding | null) => Promise<LinearConnectionStatus>;
-        getOnboardingState: (pin?: OpenProjectBinding | null) => Promise<CtoOnboardingState>;
+        clearLinearToken: (pin: OpenProjectBinding) => Promise<LinearConnectionStatus>;
+        getOnboardingState: (pin: OpenProjectBinding) => Promise<CtoOnboardingState>;
         completeOnboardingStep: (args: {
           stepId: string;
-        }, pin?: OpenProjectBinding | null) => Promise<CtoOnboardingState>;
-        previewSystemPrompt: (args?: {
+        }, pin: OpenProjectBinding) => Promise<CtoOnboardingState>;
+        previewSystemPrompt: (args: {
           identityOverride?: Record<string, unknown>;
-        }, pin?: OpenProjectBinding | null) => Promise<CtoSystemPromptPreview>;
-        getLinearProjects: (pin?: OpenProjectBinding | null) => Promise<CtoLinearProject[]>;
-        getLinearQuickView: (pin?: OpenProjectBinding | null) => Promise<CtoLinearQuickView>;
-        getLinearIssuePickerData: (pin?: OpenProjectBinding | null) => Promise<CtoGetLinearIssuePickerDataResult>;
+        } | undefined, pin: OpenProjectBinding) => Promise<CtoSystemPromptPreview>;
+        getLinearProjects: (pin: OpenProjectBinding) => Promise<CtoLinearProject[]>;
+        getLinearQuickView: (pin: OpenProjectBinding) => Promise<CtoLinearQuickView>;
+        getLinearIssuePickerData: (pin: OpenProjectBinding) => Promise<CtoGetLinearIssuePickerDataResult>;
         searchLinearIssues: (
-          args?: CtoSearchLinearIssuesArgs,
-          pin?: OpenProjectBinding | null,
+          args: CtoSearchLinearIssuesArgs | undefined,
+          pin: OpenProjectBinding,
         ) => Promise<CtoSearchLinearIssuesResult>;
         getLinearIssueComments: (
           args: { issueId: string },
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CtoLinearIssueComment[]>;
-        createLinearIssueComment: (args: CtoCreateLinearIssueCommentArgs, pin?: OpenProjectBinding | null) => Promise<{ commentId: string }>;
-        createLinearIssue: (args: LinearIssueCreateInput, pin?: OpenProjectBinding | null) => Promise<NormalizedLinearIssue>;
-        getLinearIssueCreateOptions: (args: { teamKey: string }, pin?: OpenProjectBinding | null) => Promise<LinearIssueCreateOptions>;
-        listLinearProjectMilestones: (args: { projectId: string }, pin?: OpenProjectBinding | null) => Promise<LinearProjectMilestone[]>;
-        uploadLinearFile: (args: { filename: string; contentType: string; dataBase64: string }, pin?: OpenProjectBinding | null) => Promise<LinearUploadResult>;
+        createLinearIssueComment: (args: CtoCreateLinearIssueCommentArgs, pin: OpenProjectBinding) => Promise<{ commentId: string }>;
+        createLinearIssue: (args: LinearIssueCreateInput, pin: OpenProjectBinding) => Promise<NormalizedLinearIssue>;
+        getLinearIssueCreateOptions: (args: { teamKey: string }, pin: OpenProjectBinding) => Promise<LinearIssueCreateOptions>;
+        listLinearProjectMilestones: (args: { projectId: string }, pin: OpenProjectBinding) => Promise<LinearProjectMilestone[]>;
+        uploadLinearFile: (args: { filename: string; contentType: string; dataBase64: string }, pin: OpenProjectBinding) => Promise<LinearUploadResult>;
         /** Full detail read (relations, parent, sub-issues). */
         getLinearIssue: (
           args: CtoGetLinearIssueArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<NormalizedLinearIssue | null>;
         /** One Linear `issueUpdate`; resolves to the refreshed issue. */
         updateLinearIssue: (
           args: CtoUpdateLinearIssueArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<NormalizedLinearIssue | null>;
         /** Moves the issue to its team's Canceled state unless it is already done or canceled. */
-        cancelLinearIssue: (issueId: string, pin?: OpenProjectBinding | null) => Promise<{ canceled: boolean; issue: NormalizedLinearIssue | null }>;
+        cancelLinearIssue: (issueId: string, pin: OpenProjectBinding) => Promise<{ canceled: boolean; issue: NormalizedLinearIssue | null }>;
         countLinearIssues: (
           args: CtoCountLinearIssuesArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CtoCountLinearIssuesResult>;
-        getLinearCustomViews: (pin?: OpenProjectBinding | null) => Promise<CtoLinearCustomView[]>;
-        getLinearAgentOverview: (pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
-        startLinearAgentInstall: (pin?: OpenProjectBinding | null) => Promise<LinearAgentInstallStart>;
-        getLinearAgentInstallSession: (sessionId: string, pin?: OpenProjectBinding | null) => Promise<LinearAgentInstallSession>;
-        registerLinearAgentMember: (args?: { replace?: boolean }, pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
-        unregisterLinearAgentMember: (pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
-        updateLinearAgentSettings: (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }, pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
-        uninstallLinearAgent: (pin?: OpenProjectBinding | null) => Promise<LinearAgentOverview>;
-        getLinearInbox: (args?: { first?: number; includeRead?: boolean }, pin?: OpenProjectBinding | null) => Promise<LinearInboxNotification[]>;
-        markLinearNotification: (args: { notificationId: string; action: "read" | "archive" }, pin?: OpenProjectBinding | null) => Promise<void>;
-        getLinearIssueRelationsIssue: (issueId: string, pin?: OpenProjectBinding | null) => Promise<LinearAgentNormalizedIssue | null>;
+        getLinearCustomViews: (pin: OpenProjectBinding) => Promise<CtoLinearCustomView[]>;
+        getLinearAgentOverview: (pin: OpenProjectBinding) => Promise<LinearAgentOverview>;
+        startLinearAgentInstall: (pin: OpenProjectBinding) => Promise<LinearAgentInstallStart>;
+        getLinearAgentInstallSession: (sessionId: string, pin: OpenProjectBinding) => Promise<LinearAgentInstallSession>;
+        registerLinearAgentMember: (args: { replace?: boolean } | undefined, pin: OpenProjectBinding) => Promise<LinearAgentOverview>;
+        unregisterLinearAgentMember: (pin: OpenProjectBinding) => Promise<LinearAgentOverview>;
+        updateLinearAgentSettings: (args: { fallbackMode: "reply" | "runner"; runner: "self" | null }, pin: OpenProjectBinding) => Promise<LinearAgentOverview>;
+        uninstallLinearAgent: (pin: OpenProjectBinding) => Promise<LinearAgentOverview>;
+        getLinearInbox: (args: { first?: number; includeRead?: boolean } | undefined, pin: OpenProjectBinding) => Promise<LinearInboxNotification[]>;
+        markLinearNotification: (args: { notificationId: string; action: "read" | "archive" }, pin: OpenProjectBinding) => Promise<void>;
+        getLinearIssueRelationsIssue: (issueId: string, pin: OpenProjectBinding) => Promise<LinearAgentNormalizedIssue | null>;
         setLinearOAuthClient: (
           args: CtoSetLinearOAuthClientArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<LinearConnectionStatus>;
-        clearLinearOAuthClient: (pin?: OpenProjectBinding | null) => Promise<LinearConnectionStatus>;
-        startLinearOAuth: (pin?: OpenProjectBinding | null) => Promise<CtoStartLinearOAuthResult>;
+        clearLinearOAuthClient: (pin: OpenProjectBinding) => Promise<LinearConnectionStatus>;
+        startLinearOAuth: (pin: OpenProjectBinding) => Promise<CtoStartLinearOAuthResult>;
         getLinearOAuthSession: (
           args: CtoGetLinearOAuthSessionArgs,
-          pin?: OpenProjectBinding | null,
+          pin: OpenProjectBinding,
         ) => Promise<CtoGetLinearOAuthSessionResult>;
-        runProjectScan: (pin?: OpenProjectBinding | null) => Promise<CtoRunProjectScanResult>;
-        getAttention: (pin?: OpenProjectBinding | null) => Promise<CtoAttentionState>;
+        runProjectScan: (pin: OpenProjectBinding) => Promise<CtoRunProjectScanResult>;
+        getAttention: (pin: OpenProjectBinding) => Promise<CtoAttentionState>;
       };
       /**
        * The owner's lane sharing (`lane_share` runtime actions, user-only).
@@ -5396,17 +5396,17 @@ declare global {
        * No pin: the machine the project tab is bound to.
        */
       laneShare: {
-        list: (args?: LaneShareListArgs, pin?: OpenProjectBinding | null) => Promise<LaneShareListResult>;
-        create: (args: LaneShareCreateArgs, pin?: OpenProjectBinding | null) => Promise<LaneShareCreateResult>;
-        updateRights: (args: LaneShareUpdateRightsArgs, pin?: OpenProjectBinding | null) => Promise<LaneShareUpdateRightsResult>;
-        revoke: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareRevokeResult>;
-        resendInvite: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareResendResult>;
-        listReceived: (pin?: OpenProjectBinding | null) => Promise<LaneShareReceivedResult>;
-        leave: (args: { grantId: string }, pin?: OpenProjectBinding | null) => Promise<LaneShareLeaveResult>;
+        list: (args: LaneShareListArgs | undefined, pin: OpenProjectBinding) => Promise<LaneShareListResult>;
+        create: (args: LaneShareCreateArgs, pin: OpenProjectBinding) => Promise<LaneShareCreateResult>;
+        updateRights: (args: LaneShareUpdateRightsArgs, pin: OpenProjectBinding) => Promise<LaneShareUpdateRightsResult>;
+        revoke: (args: { grantId: string }, pin: OpenProjectBinding) => Promise<LaneShareRevokeResult>;
+        resendInvite: (args: { grantId: string }, pin: OpenProjectBinding) => Promise<LaneShareResendResult>;
+        listReceived: (pin: OpenProjectBinding) => Promise<LaneShareReceivedResult>;
+        leave: (args: { grantId: string }, pin: OpenProjectBinding) => Promise<LaneShareLeaveResult>;
         /** A step of a chat move (`LaneShareMoveAction`), on the pinned machine. */
-        move: <T = unknown>(action: LaneShareMoveAction, args: Record<string, unknown>, pin?: OpenProjectBinding | null) => Promise<T>;
+        move: <T = unknown>(action: LaneShareMoveAction, args: Record<string, unknown>, pin: OpenProjectBinding) => Promise<T>;
         /** `lane_share_event` from the pinned machine, else the bound one. */
-        onEvent: (cb: (event: LaneShareEvent) => void, pin?: OpenProjectBinding | null) => () => void;
+        onEvent: (cb: (event: LaneShareEvent) => void, pin: OpenProjectBinding) => () => void;
       };
       /**
        * Lane sharing, the guest's side: this account's calls to the account

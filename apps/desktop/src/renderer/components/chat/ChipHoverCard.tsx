@@ -449,7 +449,7 @@ export async function loadChipCardData(
   }
   if (target.kind === "github-issue") {
     const issue = peekGitHubIssue(sources.rootPath, target.owner, target.repo, target.number)
-      ?? await loadGitHubIssue(sources.rootPath, target.owner, target.repo, target.number).catch(() => null);
+      ?? await loadGitHubIssue(sources.rootPath, target.owner, target.repo, target.number, { pin: sources.pin }).catch(() => null);
     if (!issue || issue.isPullRequest) return null;
     return {
       kind: "github-issue",
@@ -462,7 +462,7 @@ export async function loadChipCardData(
   }
   if (target.kind === "linear") {
     const issue = peekLinearIssue(sources.rootPath, target.identifier)
-      ?? await loadLinearIssue(sources.rootPath, target.identifier).catch(() => null);
+      ?? await loadLinearIssue(sources.rootPath, target.identifier, { pin: sources.pin }).catch(() => null);
     if (issue) {
       return {
         kind: "linear",

@@ -192,11 +192,8 @@ export function loadGitHubIssue(
   owner: string,
   repo: string,
   number: number,
-  /**
-   * `pin` null: no machine is online, nothing is asked. Left out, the call
-   * takes the tab's route (only callers outside the issue views do this).
-   */
-  options: { force?: boolean; pin?: GitHubIssuePin } = {},
+  /** `pin` null: no machine is online, so only the cache answers. */
+  options: { force?: boolean; pin: GitHubIssuePin },
 ): Promise<GitHubIssueDetail | null> {
   const key = issueKey(projectRoot, owner, repo, number);
   if (options.pin === null) return Promise.resolve(entries.peek(key));
@@ -271,7 +268,7 @@ type RepoEntry = { repo: GitHubRepo | null; promise: Promise<GitHubRepo | null> 
 const repos = new Map<string, RepoEntry>();
 const EMPTY_REPO: RepoEntry = { repo: null, promise: null, checked: false };
 
-function loadProjectRepo(projectRoot: string, pin: GitHubIssuePin | undefined): Promise<GitHubRepo | null> {
+function loadProjectRepo(projectRoot: string, pin: GitHubIssuePin): Promise<GitHubRepo | null> {
   const current = repos.get(projectRoot);
   if (current?.promise) return current.promise;
   if (current?.checked) return Promise.resolve(current.repo);
@@ -704,13 +701,13 @@ export async function commentOnGitHubIssue(issue: GitHubIssueDetail, body: strin
 export async function resolveProjectGitHubIssueNumber(
   projectRoot: string | null,
   number: number,
-  /** Null: no machine is online, nothing is asked. Left out: the tab's route (callers outside the issue views). */
-  pin?: GitHubIssuePin,
+  /** The machine that asks GitHub. Null: no machine is online, nothing is asked. */
+  pin: GitHubIssuePin,
 ): Promise<{ owner: string; repo: string; issue: GitHubIssueDetail } | null> {
   if (!projectRoot || pin === null) return null;
   const repo = await loadProjectRepo(projectRoot, pin);
   if (!repo) return null;
-  const issue = await loadGitHubIssue(projectRoot, repo.owner, repo.name, number, pin === undefined ? {} : { pin }).catch(() => null);
+  const issue = await loadGitHubIssue(projectRoot, repo.owner, repo.name, number, { pin }).catch(() => null);
   if (!issue || issue.isPullRequest) return null;
   return { owner: repo.owner, repo: repo.name, issue };
 }

@@ -10,7 +10,7 @@ import {
   XCircle,
   type Icon,
 } from "@phosphor-icons/react";
-import type { AutoUpdateSnapshot, NormalizedLinearIssue } from "../../../../shared/types";
+import type { AutoUpdateSnapshot, NormalizedLinearIssue, OpenProjectBinding } from "../../../../shared/types";
 import { useActivityStore } from "../../../state/activityStore";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { openIssueRef } from "../../../lib/issueNavigation";
@@ -39,6 +39,7 @@ import { FitList } from "../HomeFitList";
 import { Banner } from "../../ui/notice";
 import { relativeTimeShort } from "./widgetHooks";
 import "../homeWidgets.css";
+import { useActiveRepositoryReader } from "../../../state/repositoryScope";
 
 /**
  * One timeline across projects and machines. Reads what the page already
@@ -61,43 +62,50 @@ const KIND_ICON: Record<HomeFeedKind, { icon: Icon | null; tone: string; label: 
 // ── Linear: assigned issues, only when connected ─────────────────────
 
 const LINEAR_TTL_MS = 10 * 60_000;
-let linearCache: { at: number; issues: NormalizedLinearIssue[] | null } | null = null;
-let linearInflight: Promise<NormalizedLinearIssue[] | null> | null = null;
+let linearCache: { at: number; key: string; issues: NormalizedLinearIssue[] | null } | null = null;
+let linearInflight: { key: string; promise: Promise<NormalizedLinearIssue[] | null> } | null = null;
 
-function loadLinearAssigned(): Promise<NormalizedLinearIssue[] | null> {
-  if (linearCache && Date.now() - linearCache.at < LINEAR_TTL_MS) return Promise.resolve(linearCache.issues);
-  if (linearInflight) return linearInflight;
+/** Linear asked through `pin`, the repository reader. Null: no copy is online, so no Linear rows. */
+function loadLinearAssigned(pin: OpenProjectBinding | null): Promise<NormalizedLinearIssue[] | null> {
+  if (!pin) return Promise.resolve(null);
+  if (linearCache && linearCache.key === pin.key && Date.now() - linearCache.at < LINEAR_TTL_MS) return Promise.resolve(linearCache.issues);
+  if (linearInflight?.key === pin.key) return linearInflight.promise;
   const cto = window.ade?.cto;
   if (!cto?.getLinearConnectionStatus || !cto.getLinearQuickView) return Promise.resolve(null);
-  linearInflight = (async () => {
+  const promise = (async () => {
     try {
-      const status = await cto.getLinearConnectionStatus();
-      const issues = status?.connected ? (await cto.getLinearQuickView()).assignedIssues ?? [] : null;
-      linearCache = { at: Date.now(), issues };
+      const status = await cto.getLinearConnectionStatus(pin);
+      const issues = status?.connected ? (await cto.getLinearQuickView(pin)).assignedIssues ?? [] : null;
+      linearCache = { at: Date.now(), key: pin.key, issues };
       return issues;
     } catch {
       // No project for the CTO service, or Linear refused: no Linear rows, retry later.
-      linearCache = { at: Date.now(), issues: null };
+      linearCache = { at: Date.now(), key: pin.key, issues: null };
       return null;
     } finally {
-      linearInflight = null;
+      if (linearInflight?.key === pin.key) linearInflight = null;
     }
   })();
-  return linearInflight;
+  linearInflight = { key: pin.key, promise };
+  return promise;
 }
 
 function useLinearAssigned(active: boolean): NormalizedLinearIssue[] | null {
+  const readerPin = useActiveRepositoryReader(active);
+  const readerPinRef = useRef(readerPin);
+  readerPinRef.current = readerPin;
+  const readerPinKey = readerPin?.key ?? null;
   const [issues, setIssues] = useState<NormalizedLinearIssue[] | null>(() => linearCache?.issues ?? null);
   useEffect(() => {
     if (!active) return undefined;
     let cancelled = false;
-    void loadLinearAssigned().then((next) => {
+    void loadLinearAssigned(readerPinRef.current).then((next) => {
       if (!cancelled) setIssues(next);
     });
     return () => {
       cancelled = true;
     };
-  }, [active]);
+  }, [active, readerPinKey]);
   return issues;
 }
 

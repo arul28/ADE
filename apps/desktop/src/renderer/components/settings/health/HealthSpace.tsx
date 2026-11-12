@@ -54,6 +54,7 @@ import { useStorageBytes } from "../storage/useStorageBytes";
 import type { HealthData } from "./useHealthData";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { decodeSettingsHash } from "../settingsHash";
+import { requirePin } from "../../../state/repositoryScope";
 
 /** One storage result at a time: a new outcome replaces the last in place. */
 const STORAGE_TOAST_ID = "settings-storage-result";
@@ -157,7 +158,7 @@ export function HealthSpace({ data }: { data: HealthData }) {
 
   const restoreLane = React.useCallback(async (laneId: string) => {
     try {
-      const result = await window.ade.lanes.unarchive({ laneId }, pin);
+      const result = await window.ade.lanes.unarchive({ laneId }, requirePin(pin));
       const filesFailed = result.restoredFiles?.restored === false;
       notify(
         result.setupWarning

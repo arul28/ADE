@@ -401,6 +401,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const laneSnapshots = useAppStore((s) => s.laneSnapshots);
   const laneListFreshnessKey = useMemo(() => ({ lanes, laneSnapshots }), [lanes, laneSnapshots]);
   useLaneListInvalidation({ active: active && Boolean(activeProjectRoot), pin: tabLanePin, refreshLanes, freshnessKey: laneListFreshnessKey });
+  // The tab's lanes and their PR rows live on the tab's copy.
+  const tabLanePinRef = useRef(tabLanePin);
+  tabLanePinRef.current = tabLanePin;
+  const tabLanePinKey = tabLanePin?.key ?? null;
   const consumedLaneIdsDeepLinkSignatureRef = useRef<string | null>(null);
   const consumedCommitDeepLinkSignatureRef = useRef<string | null>(null);
 
@@ -696,7 +700,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       requestId === lanePrTagsRequestRef.current
       && getActiveProjectRoot() === startedRoot;
     try {
-      const prs = await listPrsCoalesced({ projectRoot: startedRoot });
+      const prs = await listPrsCoalesced({ projectRoot: startedRoot, pin: tabLanePinRef.current });
       if (!stillCurrent()) return;
       setLanePrTags(prs);
       if (options?.refreshMapped !== true) return;
@@ -711,7 +715,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       if (matchedPrIds.length === 0) return;
 
       try {
-        const refreshed = await refreshPrsCoalesced({ prIds: matchedPrIds }, { projectRoot: startedRoot });
+        const refreshed = await refreshPrsCoalesced({ prIds: matchedPrIds }, { projectRoot: startedRoot, pin: tabLanePinRef.current });
         if (!stillCurrent()) return;
         const refreshedById = new Map(refreshed.map((pr) => [pr.id, pr] as const));
         setLanePrTags(prs.map((pr) => refreshedById.get(pr.id) ?? pr));
@@ -730,7 +734,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   ): Promise<boolean> => {
     const requestId = ++laneGithubPrTagsRequestRef.current;
     const startedRoot = getActiveProjectRoot();
-    // The snapshot read is unpinned, so it follows the window's binding.
+    // The snapshot read names the tab's copy; the binding key keeps the old cache scope.
     const startedBindingKey = appStore.getState().projectBinding?.key ?? null;
     // The root alone does not identify the machine: two machines can show a
     // checkout at the same path, and this answer belongs to the one that was
@@ -745,7 +749,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           force: options?.force === true,
           ...(options?.automaticRefresh === true ? { automaticRefresh: true } : {}),
         },
-        { projectRoot: startedRoot, bindingKey: startedBindingKey },
+        { projectRoot: startedRoot, bindingKey: startedBindingKey, pin: tabLanePinRef.current },
       );
       if (!stillCurrent()) return false;
       setLaneGithubPrTags(snapshot.repoPullRequests);
@@ -867,7 +871,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       lanePrTagsRequestRef.current += 1;
       laneGithubPrTagsRequestRef.current += 1;
     };
-  }, [active, refreshLanePrTags, refreshLaneGithubPrTags, activeProjectRoot, lanePrBranchSignature]);
+  }, [active, refreshLanePrTags, refreshLaneGithubPrTags, activeProjectRoot, lanePrBranchSignature, tabLanePinKey]);
 
   useEffect(() => {
     if (!active || !activeProjectRoot || document.visibilityState !== "visible") return;

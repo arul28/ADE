@@ -72,6 +72,7 @@ import type {
   SettingsProviderId,
 } from "./providers/types";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { requirePin } from "../../state/repositoryScope";
 
 const KIMI_PROVIDER_ID = "kimi-for-coding";
 // Providers that have a tile of their own on this page. OpenCode's inventory
@@ -366,6 +367,7 @@ function MachineProvidersSection({
   const { pin, isThisMachine, machineName } = useSettingsMachineScope();
   // The project settings read names this page's machine, This computer included.
   const readPin = useSettingsReadPin();
+  const readPinKey = readPin?.key ?? null;
   // Claude and Codex can hold several local logins; the row says how many so
   // the count is visible without opening the page.
   const accountCounts = useProviderAccountCounts();
@@ -465,7 +467,7 @@ function MachineProvidersSection({
     ).finally(() => {
       if (!options?.silent) setLoading(false);
     });
-    const configRead = window.ade.projectConfig.get(readPin).then(
+    const configRead = Promise.resolve().then(() => window.ade.projectConfig.get(requirePin(readPin))).then(
       (next) => {
         setProjectConfigSnapshot(next);
         return next;
@@ -557,7 +559,9 @@ function MachineProvidersSection({
     // A convenience refresh when this machine's chats change model state.
     // Another machine's chat feed is not subscribed here; its status refreshes
     // on open and on every action instead.
-    if (pin) return undefined;
+    // This computer's own chats, through its copy of the project.
+    const chatPin = readPin;
+    if (pin || !chatPin) return undefined;
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
       if (!shouldRefreshAiStatusForChatEvent(envelope)) return;
       if (pendingRefreshTimerRef.current != null) return;
@@ -565,7 +569,7 @@ function MachineProvidersSection({
         pendingRefreshTimerRef.current = null;
         void refreshStatus({ silent: true });
       }, 120);
-    });
+    }, chatPin);
     return () => {
       unsubscribe();
       if (pendingRefreshTimerRef.current != null) {
@@ -573,7 +577,9 @@ function MachineProvidersSection({
         pendingRefreshTimerRef.current = null;
       }
     };
-  }, [pin, refreshStatus]);
+    // `readPinKey` carries the copy's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pin, readPinKey, refreshStatus]);
 
   const detectedAuth = useMemo(() => status?.detectedAuth ?? [], [status?.detectedAuth]);
   // Keep provider tiles neutral while the status payload is unavailable. A

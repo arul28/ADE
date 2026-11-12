@@ -5,6 +5,7 @@ import {
   type ProjectConfigSnapshot,
 } from "../../shared/types";
 import { parseCodedErrorMessage } from "../../shared/codedError";
+import { NO_PROJECT_COMPUTER_ONLINE } from "./requirePin";
 
 const MAX_ATTEMPTS = 3;
 
@@ -19,8 +20,9 @@ const MAX_ATTEMPTS = 3;
  */
 export async function saveProjectLocalConfig(
   edit: (snapshot: ProjectConfigSnapshot) => ProjectConfigFile,
-  pin?: OpenProjectBinding | null,
+  pin: OpenProjectBinding | null,
 ): Promise<ProjectConfigSnapshot> {
+  if (!pin) throw new Error(NO_PROJECT_COMPUTER_ONLINE);
   for (let attempt = 1; ; attempt += 1) {
     const snapshot = await window.ade.projectConfig.get(pin);
     // A snapshot without a hash (an older host) saves as is, as before.

@@ -331,7 +331,7 @@ export function useLaneAgents(laneIds: string[], pin: OpenProjectBinding | null)
           // The session cache is keyed for the tab's machine only.
           (cacheScopePin(listPin)
             ? window.ade.sessions.list({ limit: 500 }, listPin)
-            : listSessionsCached({ limit: 500 })
+            : listSessionsCached({ limit: 500 }, undefined, listPin)
           ).catch(() => []),
         ]);
         if (full) {

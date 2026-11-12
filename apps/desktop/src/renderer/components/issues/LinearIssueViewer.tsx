@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { CircleNotch, Copy, GitBranch, Hash, LinkSimple, MarkdownLogo, TreeStructure } from "@phosphor-icons/react";
-import type { LaneSummary, LinearIssueRef, NormalizedLinearIssue } from "../../../shared/types";
+import type { LaneSummary, LinearIssueRef, NormalizedLinearIssue, OpenProjectBinding } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import { linearIssueRef, issueRefLabel } from "../../../shared/issueRefs";
@@ -106,6 +106,7 @@ export function LinearIssueViewer({
         label={issueRefLabel(issueRef)}
         url={url}
         projectRoot={entry.projectRoot}
+        pin={entry.pin}
         onRetry={entry.refresh}
         onLeave={onClose}
       />
@@ -169,6 +170,7 @@ function IssueLoadState({
   label,
   url,
   projectRoot,
+  pin,
   onRetry,
   onLeave,
 }: {
@@ -177,6 +179,8 @@ function IssueLoadState({
   label: string;
   url: string | null;
   projectRoot: string | null;
+  /** The machine that asks Linear. Null: none is online. */
+  pin: OpenProjectBinding | null;
   onRetry: () => void;
   /** Called before an action takes the user to another page (closes the sheet). */
   onLeave?: () => void;
@@ -184,6 +188,7 @@ function IssueLoadState({
   const setShowWelcome = useAppStore((state) => state.setShowWelcome);
   const failed = status === "missing" || status === "error";
   const [reachability, setReachability] = useState<LinearReachability>("unknown");
+  const pinKey = pin?.key ?? null;
   useEffect(() => {
     if (!failed) return undefined;
     if (!projectRoot) {
@@ -192,8 +197,8 @@ function IssueLoadState({
     }
     let cancelled = false;
     const read = window.ade?.cto?.getLinearConnectionStatus;
-    if (!read) return undefined;
-    void read()
+    if (!read || !pin) return undefined;
+    void read(pin)
       .then((connection) => {
         if (!cancelled) setReachability(connection.connected ? "connected" : "disconnected");
       })
@@ -201,7 +206,9 @@ function IssueLoadState({
     return () => {
       cancelled = true;
     };
-  }, [failed, projectRoot]);
+    // `pinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [failed, pinKey, projectRoot]);
 
   if (!failed) {
     return (

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { GitCommitSummary, LaneSummary, OpenProjectBinding, PrSummary } from "../../../../shared/types";
 import { isWebClientMode } from "../../../lib/webClientMode";
@@ -102,7 +102,32 @@ export function recentActivityWindow(args: {
  * Every read is scoped to this one lane, and a section with nothing to show
  * is left out. The page is only mounted while the tab is active.
  */
-export function LaneDashboard({
+type LaneDashboardOnMachineProps = React.ComponentProps<typeof LaneDashboardOnMachine>;
+
+/**
+ * The lane overview. It reads from the lane's machine: `machine.pin` for a
+ * lane on another machine, else `pin`, the tab copy's address. With neither
+ * (the copy is offline) it says so and reads nothing.
+ */
+export function LaneDashboard(
+  props: Omit<LaneDashboardOnMachineProps, "pin"> & { pin?: OpenProjectBinding | null },
+) {
+  const pin = props.machine?.pin ?? props.pin ?? null;
+  if (!pin) {
+    return (
+      <div
+        data-testid="lane-dashboard-no-computer"
+        className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center text-sm text-muted-fg"
+      >
+        <span>No computer with this lane is online.</span>
+        <span className="text-xs">The lane shows again when that computer connects.</span>
+      </div>
+    );
+  }
+  return <LaneDashboardOnMachine {...props} pin={pin} />;
+}
+
+function LaneDashboardOnMachine({
   laneId,
   colorIndex,
   active = true,
@@ -111,7 +136,7 @@ export function LaneDashboard({
   onStartChat,
   onSelectCommit,
   onOpenLaneMenu,
-  pin: tabPin = null,
+  pin: tabPin,
   machine = null,
 }: {
   laneId: string;
@@ -126,11 +151,8 @@ export function LaneDashboard({
   onSelectCommit: (commit: GitCommitSummary) => void;
   /** Opens the lane's context menu under the given button. */
   onOpenLaneMenu: (laneId: string, anchor: DOMRect) => void;
-  /**
-   * The tab copy's address, for a lane of the tab's own copy (`machine` null).
-   * Null: the copy is offline, and nothing is read.
-   */
-  pin?: OpenProjectBinding | null;
+  /** The tab copy's address, for a lane of the tab's own copy (`machine` null). */
+  pin: OpenProjectBinding;
   /** The lane's machine, when it is not the tab's. See {@link LaneDashboardMachine}. */
   machine?: LaneDashboardMachine | null;
 }) {
@@ -320,7 +342,7 @@ export function LaneDashboard({
             onStartChat={onStartChat ? () => onStartChat(laneId) : null}
             onOpenFiles={() => openFiles()}
             onOpenHistory={() => navigate(historyCommitsPath(laneId, machine?.machineId))}
-            onReveal={() => { void revealLaneWorktree(lane.id); }}
+            onReveal={() => { void revealLaneWorktree(lane.id, pin); }}
             onOpenMenu={(anchor) => onOpenLaneMenu(laneId, anchor)}
             // A lane on another machine carries that machine's own read.
             statusStale={!machine && boundLaneStatusStale}

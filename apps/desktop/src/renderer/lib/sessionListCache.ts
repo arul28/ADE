@@ -1,4 +1,4 @@
-import type { ListSessionsArgs, TerminalSessionSummary } from "../../shared/types";
+import type { ListSessionsArgs, OpenProjectBinding, TerminalSessionSummary } from "../../shared/types";
 import {
   selectActiveProjectRoot,
   selectActiveProjectStateKey,
@@ -41,12 +41,14 @@ function normalizeArgs(args?: ListSessionsArgs): ListSessionsArgs {
   return normalized;
 }
 
-function cacheKey(args?: ListSessionsArgs): string {
+function cacheKey(args: ListSessionsArgs | undefined, pin: OpenProjectBinding): string {
   const normalized = normalizeArgs(args);
   const state = useAppStore.getState();
   return JSON.stringify({
     projectRoot: selectActiveProjectRoot(state),
     projectKey: selectActiveProjectStateKey(state),
+    // Each machine's sessions are a list of their own.
+    machine: pin.key,
     laneId: normalized.laneId ?? null,
     status: normalized.status ?? null,
     toolTypes: normalized.toolTypes ?? null,
@@ -71,11 +73,14 @@ function sliceRows(rows: TerminalSessionSummary[], limit: number | null): Termin
   return rows.slice(0, limit);
 }
 
+/** `pin`: the machine whose sessions to list. Null: none is online, so the list is empty. */
 export async function listSessionsCached(
-  args?: ListSessionsArgs,
-  options?: { force?: boolean; ttlMs?: number },
+  args: ListSessionsArgs | undefined,
+  options: { force?: boolean; ttlMs?: number } | undefined,
+  pin: OpenProjectBinding | null,
 ): Promise<TerminalSessionSummary[]> {
-  const key = cacheKey(args);
+  if (!pin) return [];
+  const key = cacheKey(args, pin);
   const ttlMs = options?.ttlMs ?? DEFAULT_SESSION_LIST_TTL_MS;
   const limit = requestedLimit(args);
   const now = Date.now();
@@ -91,7 +96,7 @@ export async function listSessionsCached(
   }
 
   let request: Promise<TerminalSessionSummary[]> | null = null;
-  request = window.ade.sessions.list(normalizeArgs(args)).then((rows) => {
+  request = window.ade.sessions.list(normalizeArgs(args), pin).then((rows) => {
     const current = cache.get(key);
     if (current?.inFlight === request) {
       cache.set(key, {

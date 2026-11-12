@@ -8,7 +8,7 @@ import type {
   PersonalChatStreamEventsArgs,
   PersonalChatStreamEventsResult,
 } from "../../../shared/types";
-import type { AgentChatApi } from "../chat/agentChatApi";
+import type { AgentChatApi, MachineBoundAgentChatApi } from "../chat/agentChatApi";
 import { CONSERVATIVE_ATTACHMENT_STAGING_MODE } from "../chat/chatAttachmentStaging";
 
 /**
@@ -73,7 +73,7 @@ export type PersonalAgentChatApi = {
     : Partial<AgentChatApi[K]>;
 };
 
-export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): AgentChatApi {
+export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): MachineBoundAgentChatApi {
   const call = async <T>(action: PersonalChatAction, args?: unknown): Promise<T> => {
     const request = (args === undefined ? { action } : { action, args }) as PersonalChatCallArgs;
     return personalCallResult<T>(await bridge.call(request));
@@ -211,5 +211,5 @@ export function createPersonalAgentChatApi(bridge: PersonalChatsBridge): AgentCh
   } satisfies PersonalAgentChatApi;
   // The one widening: callers see the full project shape, and treat the
   // methods this adapter leaves out as optional by checking for them.
-  return api as PersonalAgentChatApi as AgentChatApi;
+  return api as PersonalAgentChatApi as unknown as MachineBoundAgentChatApi;
 }

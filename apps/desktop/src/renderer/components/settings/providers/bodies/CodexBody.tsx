@@ -10,6 +10,7 @@ import type { AgentChatCodexPlugin } from "../../../../../shared/types";
 import type { ProvidersViewContext } from "../types";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { extractError } from "../../../../lib/format";
+import { requirePin } from "../../../../state/repositoryScope";
 
 function originLabel(origin: AgentChatCodexPlugin["origin"]): string {
   switch (origin) {
@@ -36,7 +37,7 @@ export function CodexBody(_props: { ctx: ProvidersViewContext }) {
     setRefreshing(true);
     setError(null);
     try {
-      setPlugins(await window.ade.agentChat.listCodexPlugins({}, pin));
+      setPlugins(await window.ade.agentChat.listCodexPlugins({}, requirePin(pin)));
     } catch (err: unknown) {
       setPlugins(null);
       setError(extractError(err));

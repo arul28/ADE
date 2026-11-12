@@ -23,6 +23,7 @@ import { useActiveProjectRoot } from "../../state/appStore";
 import { Banner } from "../ui/notice";
 import "./IntegrationsSettings.css";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
+import { requirePin } from "../../state/repositoryScope";
 
 const JIRA_API_TOKENS_URL = "https://id.atlassian.com/manage-profile/security/api-tokens";
 
@@ -79,7 +80,7 @@ export function JiraSection() {
   const loadProjectBinding = useCallback(async () => {
     setProjectError(null);
     try {
-      const snapshot = await window.ade.projectConfig.get(pinRef.current);
+      const snapshot = await window.ade.projectConfig.get(requirePin(pinRef.current));
       setProjectKeys(snapshot.effective.issueTrackers?.jira?.projectKeys ?? []);
     } catch (error) {
       setProjectError(jiraErrorMessage(error, "Couldn't load this project's Jira project bindings."));

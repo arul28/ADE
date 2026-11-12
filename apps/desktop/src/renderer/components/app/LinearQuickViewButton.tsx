@@ -69,7 +69,7 @@ type LinearVisibilityCacheEntry = {
 
 const linearVisibilityCacheByProject = new Map<string, LinearVisibilityCacheEntry>();
 
-type LinearConnectionGetter = (pin?: OpenProjectBinding | null) => Promise<{ connected?: boolean }>;
+type LinearConnectionGetter = (pin: OpenProjectBinding) => Promise<{ connected?: boolean }>;
 const linearConnectionReaders = new WeakMap<LinearConnectionGetter, Map<string, () => Promise<{ connected?: boolean }>>>();
 
 /**

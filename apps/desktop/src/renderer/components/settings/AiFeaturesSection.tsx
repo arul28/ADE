@@ -7,6 +7,7 @@ import { Clock } from "@phosphor-icons/react";
 import { showToast } from "../app/toast/toastStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import { onlineCopyPin, ProjectCopyBar, ProjectCopyUnavailable, settingsCopyScope, useProjectCopyPage } from "./ProjectCopyScope";
+import { requirePin } from "../../state/repositoryScope";
 
 /**
  * Scheduled work: the global pause, then the live job list in the same panel,
@@ -94,7 +95,7 @@ export function AiFeaturesSection() {
       const result = await window.ade.agentChat.cancelScheduledWork({
         sessionId: item.sessionId,
         scheduleId: item.id,
-      }, pin);
+      }, requirePin(pin));
       if (result.schedule.status === "cancelled") {
         setScheduledWork((current) => current.filter((candidate) => candidate.id !== item.id));
       }

@@ -17,6 +17,7 @@ import { buildLinearAgentRuleDraft } from "../automations/templates/templateData
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { IntegrationCard } from "./integrations/IntegrationChrome";
 import { useThisComputerCopyPin } from "./ProjectCopyScope";
+import { requirePin } from "../../state/repositoryScope";
 
 const INSTALL_POLL_MS = 1_500;
 
@@ -87,10 +88,10 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
     }
     setLoading(true);
     try {
-      let next = await cto.getLinearAgentOverview(pin);
+      let next = await cto.getLinearAgentOverview(requirePin(pin));
       if (next.status && !next.status.me.registered && !registeredOnceRef.current) {
         registeredOnceRef.current = true;
-        next = await cto.registerLinearAgentMember(undefined, pin).catch(() => next);
+        next = await cto.registerLinearAgentMember(undefined, requirePin(pin)).catch(() => next);
       }
       setOverview(next);
       setError(null);
@@ -111,7 +112,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
     const timer = window.setInterval(() => {
       const sessionId = installSessionRef.current;
       const cto = window.ade?.cto;
-      if (!sessionId || !cto?.getLinearAgentInstallSession) return;
+      if (!sessionId || !pin || !cto?.getLinearAgentInstallSession) return;
       void cto.getLinearAgentInstallSession(sessionId, pin).then((session) => {
         if (session.status === "pending") return;
         installSessionRef.current = null;
@@ -130,7 +131,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
     setError(null);
     setInstalling(true);
     try {
-      const session = await cto.startLinearAgentInstall(pin);
+      const session = await cto.startLinearAgentInstall(requirePin(pin));
       installSessionRef.current = session.sessionId;
       await openExternal(session.authUrl);
     } catch (err) {
@@ -185,7 +186,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
       confirmLabel: "Remove",
       destructive: true,
     });
-    if (confirmed) await run("uninstall", () => ctoApi().uninstallLinearAgent(pin));
+    if (confirmed) await run("uninstall", () => ctoApi().uninstallLinearAgent(requirePin(pin)));
   }, [overview?.status?.orgName, pin, run]);
 
   // The last overview outlives a disconnect; while disconnected it says nothing.
@@ -243,7 +244,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
             actions: [{
               label: busy === "member" ? "Routing…" : "Route to this account",
               variant: "secondary",
-              onClick: () => void run("member", () => ctoApi().registerLinearAgentMember({ replace: true }, pin)),
+              onClick: () => void run("member", () => ctoApi().registerLinearAgentMember({ replace: true }, requirePin(pin))),
             }],
           }}
         />
@@ -377,7 +378,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
                   title={status.installedByMe ? undefined : "Only the person who added the agent can change this."}
                   onChange={(event) => {
                     const mode = event.target.value === "runner" ? "runner" : "reply";
-                    void run("settings", () => ctoApi().updateLinearAgentSettings({ fallbackMode: mode, runner: mode === "runner" ? "self" : null }, pin));
+                    void run("settings", () => ctoApi().updateLinearAgentSettings({ fallbackMode: mode, runner: mode === "runner" ? "self" : null }, requirePin(pin)));
                   }}
                 >
                   <option value="reply">Reply that they need ADE</option>

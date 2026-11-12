@@ -13,6 +13,7 @@ import { ModernRow, ModernRows, ModernSection, SettingsColumn } from "./primitiv
 import "./SecretsSection.css";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { requirePin } from "../../state/repositoryScope";
 
 /** The anchor `secrets.secrets` in `settingsManifest.ts` points at. */
 const ANCHOR = "secrets";
@@ -101,7 +102,7 @@ export function SecretsSection() {
   const load = React.useCallback(async () => {
     try {
       setError(null);
-      const next = await window.ade.projectSecrets.list(pin);
+      const next = await window.ade.projectSecrets.list(requirePin(pin));
       setSnapshot(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -137,7 +138,7 @@ export function SecretsSection() {
   const fetchSecretValue = React.useCallback(async (secretName: string, cache: boolean): Promise<string> => {
     const cached = revealedValues[secretName];
     if (cache && cached != null) return cached;
-    const result = await window.ade.projectSecrets.get({ name: secretName }, pin);
+    const result = await window.ade.projectSecrets.get({ name: secretName }, requirePin(pin));
     if (cache) {
       setRevealedValues((current) => ({ ...current, [secretName]: result.value }));
     }
@@ -152,7 +153,7 @@ export function SecretsSection() {
     setMessage(null);
     setError(null);
     try {
-      const saved = await window.ade.projectSecrets.set({ name: nextName, value, storage }, pin);
+      const saved = await window.ade.projectSecrets.set({ name: nextName, value, storage }, requirePin(pin));
       setValue("");
       setName("");
       setConfirmDeleteName(null);
@@ -227,7 +228,7 @@ export function SecretsSection() {
     setError(null);
     setMessage(null);
     try {
-      await window.ade.projectSecrets.delete({ name: secretName, confirmName: secretName }, pin);
+      await window.ade.projectSecrets.delete({ name: secretName, confirmName: secretName }, requirePin(pin));
       setConfirmDeleteName(null);
       if (copiedName === secretName) resetCopied();
       setVisibleNames((current) => {
@@ -254,7 +255,7 @@ export function SecretsSection() {
     setMessage(null);
     setError(null);
     try {
-      const preview = await window.ade.projectSecrets.chooseEnvFile(pin);
+      const preview = await window.ade.projectSecrets.chooseEnvFile(requirePin(pin));
       if (!preview) return;
       setImportPreview(preview);
       setImportError(null);
@@ -277,7 +278,7 @@ export function SecretsSection() {
         secrets: importPreview.secrets
           .filter((secret) => selectedImportNames.has(secret.name))
           .map(({ name: secretName, value: secretValue }) => ({ name: secretName, value: secretValue })),
-      }, pin);
+      }, requirePin(pin));
       const total = result.imported.length + result.replaced.length;
       const changedNames = [...result.imported, ...result.replaced];
       setVisibleNames((current) => {
@@ -313,7 +314,7 @@ export function SecretsSection() {
     setMessage(null);
     setError(null);
     try {
-      const result = await window.ade.projectSecrets.exportEnv(pin);
+      const result = await window.ade.projectSecrets.exportEnv(requirePin(pin));
       note(`Exported ${result.secretCount} secret${result.secretCount === 1 ? "" : "s"} to ${result.filePath} on ${machineName}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -330,7 +331,7 @@ export function SecretsSection() {
     setMessage(null);
     setError(null);
     try {
-      const result = await window.ade.projectSecrets.pullFromAccount(pin);
+      const result = await window.ade.projectSecrets.pullFromAccount(requirePin(pin));
       note(projectSecretPullSummary(result), result.state === "unavailable" ? "warning" : "success");
       // A pull can replace a value this section already revealed and cached, so
       // drop every revealed value, reveal toggle and copy confirmation with it.

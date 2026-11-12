@@ -106,6 +106,11 @@ export function LaneCatchUpMenu({
   const [conflict, setConflict] = useState<LaneCatchUpConflict>({ state: "checking" });
   useEffect(() => {
     if (!open || !laneId) return;
+    // No machine with the lane online: the conflict check reads as failed.
+    if (!pin) {
+      setConflict({ state: "failed" });
+      return;
+    }
     let cancelled = false;
     setSyncPushed(null);
     setChats(null);

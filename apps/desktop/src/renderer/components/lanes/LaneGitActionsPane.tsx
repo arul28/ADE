@@ -238,7 +238,32 @@ function TruncatedChangesNotice({ total, noun, onShowAll }: { total: number; nou
   );
 }
 
-export function LaneGitActionsPane({
+type LaneGitActionsPaneOnMachineProps = React.ComponentProps<typeof LaneGitActionsPaneOnMachine>;
+
+/**
+ * The Git pane of one lane. `runtimePin` is the machine the lane lives on;
+ * every git, diff and file call goes there. Null: the lane has no machine
+ * online, so the pane shows that and calls nothing.
+ */
+export function LaneGitActionsPane(
+  props: Omit<LaneGitActionsPaneOnMachineProps, "runtimePin"> & { runtimePin: OpenProjectBinding | null },
+) {
+  if (!props.runtimePin) {
+    return (
+      <div
+        data-testid="lane-git-no-computer"
+        className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center text-sm"
+        style={{ color: COLORS.textMuted }}
+      >
+        <span style={{ color: COLORS.textSecondary }}>No computer with this lane is online.</span>
+        <span className="text-xs">Its git actions come back when that computer connects.</span>
+      </div>
+    );
+  }
+  return <LaneGitActionsPaneOnMachine {...props} runtimePin={props.runtimePin} />;
+}
+
+function LaneGitActionsPaneOnMachine({
   laneId,
   active = true,
   rebaseLine,
@@ -255,7 +280,7 @@ export function LaneGitActionsPane({
   currentMachineName,
   currentMachineId,
   currentMachineHeadSha = null,
-  runtimePin = null,
+  runtimePin,
 }: {
   laneId: string | null;
   active?: boolean;
@@ -298,13 +323,11 @@ export function LaneGitActionsPane({
   /** This machine's head commit, when a caller knows it. Unknown is fine. */
   currentMachineHeadSha?: string | null;
   /**
-   * Machine this lane actually lives on. `null` (the default, and every
-   * pre-existing call site) means the tab's bound machine. When set, every
-   * git/diff read and write is routed there instead, and the panel's cached
-   * state is keyed on the pin so a tab switch never shows another machine's
-   * changes.
+   * The machine this lane lives on. Every git/diff read and write goes there,
+   * and the panel's cached state is keyed on it so a tab switch never shows
+   * another machine's changes.
    */
-  runtimePin?: OpenProjectBinding | null;
+  runtimePin: OpenProjectBinding;
 }) {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
@@ -317,7 +340,7 @@ export function LaneGitActionsPane({
   const crossMachineLanesByMachineId = useAppStore((s) => s.crossMachineLanesByMachineId ?? EMPTY_CROSS_MACHINE_LANES);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
-  const pin = runtimePin ?? null;
+  const pin = runtimePin;
   // Lane ids are only unique per machine, so a pinned panel gets its own cache
   // namespace. Always key through `projectStateKeyForBinding` of the effective
   // session machine: local stays on the checkout path across a bound→pinned

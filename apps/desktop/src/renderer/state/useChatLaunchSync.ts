@@ -11,6 +11,7 @@ import {
   retireChatLaunchBridgesForSession,
   useChatLaunchSelector,
 } from "./chatLaunchStore";
+import { useTabCopyPin } from "./repositoryScope";
 
 const sameString = (a: string, b: string) => a === b;
 
@@ -184,9 +185,18 @@ export function useChatLaunchSync(): void {
   // window whose roster never listed it. Window-wide (not Work-only) because the
   // roster that would synthesize the row may mount later. Archive emits no delete,
   // so an archived chat ends on the reads instead.
-  useEffect(() => window.ade?.sessions?.onChanged?.((event) => {
-    if (event.reason === "deleted") retireChatLaunchBridgesForSession(event.sessionId);
-  }), []);
+  // The tab copy's session feed; another machine's chats retire on its reads.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
+  const tabCopyPinKey = tabCopyPin?.key ?? null;
+  useEffect(() => {
+    const pin = tabCopyPinRef.current;
+    if (!pin) return undefined;
+    return window.ade?.sessions?.onChanged?.((event) => {
+      if (event.reason === "deleted") retireChatLaunchBridgesForSession(event.sessionId);
+    }, pin);
+  }, [tabCopyPinKey]);
 
   // A chat whose launch still reads as live but is already exchanging
   // messages (or has written its finished setup card) means a launch update
@@ -222,7 +232,9 @@ export function useChatLaunchSync(): void {
       if (!liveIds.has(key.split("\u0001")[0] ?? "")) witnessed.delete(key);
     }
     const onEvent = window.ade?.agentChat?.onEvent;
-    if (typeof onEvent !== "function") return undefined;
+    // The active binding's launches run on the tab's copy.
+    const feedPin = tabCopyPinRef.current;
+    if (typeof onEvent !== "function" || !feedPin) return undefined;
     let unsubscribe: () => void = () => {};
     try {
       unsubscribe = onEvent((envelope) => {
@@ -243,7 +255,7 @@ export function useChatLaunchSync(): void {
         if (witnessed.has(witnessKey)) return;
         witnessed.add(witnessKey);
         refreshChatLaunch(launchId);
-      });
+      }, feedPin);
     } catch {
       unsubscribe = () => {};
     }
@@ -254,7 +266,7 @@ export function useChatLaunchSync(): void {
         // ignore
       }
     };
-  }, [liveChatLaunchSignature]);
+  }, [liveChatLaunchSignature, tabCopyPinKey]);
 
   // The lane a launch creates joins the active project's lane list the moment
   // the host reports it, so its sidebar group and lane chips resolve without

@@ -42,13 +42,14 @@ function cacheKey(args: AgentChatListArgs | undefined, pin: OpenProjectBinding |
   });
 }
 
-/** `pin`: the machine whose chats to list. Left out, the call takes the old route. */
+/** `pin`: the machine whose chats to list. Null: none is online, so the list is empty. */
 export async function listAgentChatSessionsCached(
-  args?: AgentChatListArgs,
-  options?: { force?: boolean; ttlMs?: number },
-  pin?: OpenProjectBinding | null,
+  args: AgentChatListArgs | undefined,
+  options: { force?: boolean; ttlMs?: number } | undefined,
+  pin: OpenProjectBinding | null,
 ): Promise<AgentChatSessionSummary[]> {
-  const key = cacheKey(args, pin ?? null);
+  if (!pin) return [];
+  const key = cacheKey(args, pin);
   const now = Date.now();
   const ttlMs = options?.ttlMs ?? DEFAULT_TTL_MS;
   const cached = chatSessionListCache.get(key);
@@ -59,7 +60,7 @@ export async function listAgentChatSessionsCached(
   if (!options?.force && cached?.promise) return cached.promise;
 
   const normalized = normalizeArgs(args);
-  const promise = (pin ? window.ade.agentChat.list(normalized, pin) : window.ade.agentChat.list(normalized)).then((value) => {
+  const promise = window.ade.agentChat.list(normalized, pin).then((value) => {
     const current = chatSessionListCache.get(key);
     if (current?.promise === promise) {
       chatSessionListCache.set(key, {

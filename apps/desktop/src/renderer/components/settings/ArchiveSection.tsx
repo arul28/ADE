@@ -21,6 +21,7 @@ import { SettingsColumn } from "./primitives";
 import { Banner } from "../ui/notice";
 import "./primitives/settingsModern.css";
 import "./machineSettings.css";
+import { requirePin } from "../../state/repositoryScope";
 
 /**
  * Settings → Archive: every lane, chat and shell you archived, in one place.
@@ -274,7 +275,7 @@ export function ArchiveSection() {
 
   const load = React.useCallback(async () => {
     try {
-      const result = await window.ade.archive.list({}, pin);
+      const result = await window.ade.archive.list({}, requirePin(pin));
       setItems(result.items);
       setStaleDays(result.staleAfterDays ?? DEFAULT_ARCHIVE_STALE_DAYS);
       setError(null);
@@ -340,7 +341,7 @@ export function ArchiveSection() {
     if (refs.length === 0) return;
     setBusy(true);
     try {
-      report("Restored", await window.ade.archive.restore({ items: refs }, pin));
+      report("Restored", await window.ade.archive.restore({ items: refs }, requirePin(pin)));
     } catch (err) {
       showToast({ id: ARCHIVE_TOAST_ID, title: err instanceof Error ? err.message : "Couldn't restore.", tone: "error" });
     } finally {
@@ -363,7 +364,7 @@ export function ArchiveSection() {
     if (!ok) return;
     setBusy(true);
     try {
-      let result = await deleteInBatches(refs, pin);
+      let result = await deleteInBatches(refs, requirePin(pin));
       // A lane with unsaved work (uncommitted files, or submodule commits no
       // remote has) is refused unless forced. Ask once, by name, instead of
       // silently discarding someone's unfinished work. Match the refusal's
@@ -386,7 +387,7 @@ export function ArchiveSection() {
           destructive: true,
         });
         if (force) {
-          const retry = await deleteInBatches(dirtyLanes.map(({ kind, id }) => ({ kind, id })), pin, true);
+          const retry = await deleteInBatches(dirtyLanes.map(({ kind, id }) => ({ kind, id })), requirePin(pin), true);
           const retried = new Set(dirtyLanes.map(refKey));
           result = {
             done: [...result.done, ...retry.done],

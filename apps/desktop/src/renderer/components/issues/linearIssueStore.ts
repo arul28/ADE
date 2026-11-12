@@ -67,11 +67,8 @@ function entryKey(projectRoot: string | null | undefined, identifier: string): s
 export function loadLinearIssue(
   projectRoot: string | null | undefined,
   identifier: string,
-  /**
-   * `pin` null: no machine is online, nothing is asked. Left out, the call
-   * takes the tab's route (only callers outside the issue views do this).
-   */
-  options: { force?: boolean; pin?: LinearPin } = {},
+  /** `pin` null: no machine is online, so only the cache answers. */
+  options: { force?: boolean; pin: LinearPin },
 ): Promise<NormalizedLinearIssue | null> {
   const key = entryKey(projectRoot, identifier);
   if (options.pin === null) return Promise.resolve(issues.peek(key));

@@ -11,7 +11,8 @@ import type {
  * the in-flight key carries it, so two machines never share a read. A read
  * with no pin keeps the old route (the tab's copy) and notes the tripwire.
  */
-export type LaneReadOptions = { projectRoot?: string | null; pin?: OpenProjectBinding | null };
+/** `pin`: the copy whose lanes are read. Null: no copy is online, so the list is empty and nothing is asked. */
+export type LaneReadOptions = { projectRoot?: string | null; pin: OpenProjectBinding | null };
 
 type InFlightEntry<T> = {
   promise: Promise<T>;
@@ -64,9 +65,10 @@ function coalesceInFlight<T>(
 
 export function listLanesCoalesced(
   args: ListLanesArgs,
-  options?: LaneReadOptions,
+  options: LaneReadOptions,
 ): Promise<LaneSummary[]> {
-  const pin = options?.pin ?? null;
+  const pin = options.pin;
+  if (!pin) return Promise.resolve([]);
   return coalesceInFlight(
     laneListInFlight,
     keyFor(options, args),
@@ -77,9 +79,10 @@ export function listLanesCoalesced(
 
 export function listLaneSnapshotsCoalesced(
   args: ListLanesArgs,
-  options?: LaneReadOptions,
+  options: LaneReadOptions,
 ): Promise<LaneListSnapshot[]> {
-  const pin = options?.pin ?? null;
+  const pin = options.pin;
+  if (!pin) return Promise.resolve([]);
   return coalesceInFlight(
     laneSnapshotInFlight,
     keyFor(options, args),
