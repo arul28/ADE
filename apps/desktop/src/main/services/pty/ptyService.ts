@@ -195,6 +195,7 @@ import {
   type PinnedCliProvider,
   type PinnedProviderCli,
 } from "./pinnedProviderCli";
+import { holdToolInstalls } from "../../../../../ade-cli/src/services/tools/inUse";
 import { museCredentialEnv } from "../ai/museAuth";
 import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
@@ -7407,6 +7408,10 @@ export function createPtyService({
           throw lastErr ?? new Error("Unable to spawn terminal shell.");
         }
         pty = created;
+        // ADE's copy of the CLI stays on disk while the terminal runs it.
+        if (pinnedCliState?.kind === "ready") {
+          created.onExit(holdToolInstalls([pinnedCliState.cli.command, pinnedCliState.cli.leadingArgs[0]]));
+        }
       } catch (err) {
         logger.error("pty.spawn_failed", {
           ptyId,

@@ -709,6 +709,17 @@ export type ChatTranscriptGroupedEnvelope = {
    * Render-side only, like `repeatCount`.
    */
   endedAtUsageLimit?: boolean;
+  /**
+   * On a failed turn's `done` row: the turn's failure line already says what
+   * went wrong, so the turn-end line does not say "failed" again. Set only by
+   * `foldTurnFailureRows`. Render-side only.
+   */
+  failureShown?: boolean;
+  /**
+   * On a failure line: what the turn's later errors said, folded into this
+   * one line's Details. Set only by `foldTurnFailureRows`. Render-side only.
+   */
+  failureNotes?: string[];
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `timestampSynthetic`. */
   timestampSynthetic?: boolean;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `sceneScopeKey`. */

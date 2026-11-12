@@ -7953,7 +7953,8 @@ describe("ADE CLI", () => {
           method: "account.call",
           params: {
             action: "startDeviceLogin",
-            args: { projectRoot: expect.any(String), ignoreEnvCredential: true },
+            // A headless sign-in keeps trying an account directory it can't reach yet (a fresh cloud computer).
+            args: { projectRoot: expect.any(String), ignoreEnvCredential: true, retryUnreachableForMs: 45_000 },
           },
         },
         {

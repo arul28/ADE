@@ -313,6 +313,7 @@ import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
+import { ADE_CLOUD_HOME_UNAVAILABLE } from "../../../shared/automationCloud";
 import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
 import type { CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
@@ -327,7 +328,8 @@ import {
   hasCloudLaneLaunchRecords,
   type CloudLaneLaunchBrainHost,
 } from "../adeCloud/cloudLaneLaunchBrainHost";
-import { approveInHeadlessChromium, findHeadlessChromium } from "../adeCloud/cloudHeadlessApproval";
+import { cloudGitPreflight } from "../adeCloud/cloudGitCredential";
+import { approveInHeadlessChromium, findHeadlessChromium } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
 import { createCloudMachines } from "../adeCloud/cloudMachines";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
@@ -407,10 +409,10 @@ function withoutHostOnlyChatMetadata(
 type AutomationsDomainService = {
   list(): AutomationRuleSummary[];
   get(args: { id: string }): AutomationRule | null;
-  saveRule(args: AutomationSaveDraftRequest): AutomationSaveDraftResult;
+  saveRule(args: AutomationSaveDraftRequest): Promise<AutomationSaveDraftResult>;
   deleteRule(args: { id: string }): AutomationRuleSummary[];
   toggleRule(args: { id: string; enabled: boolean }): AutomationRuleSummary[];
-  setRunOn(args: { id: string; deviceId?: string | null; name?: string | null }): AutomationRuleSummary[];
+  setRunOn(args: { id: string; deviceId?: string | null; name?: string | null; cloud?: boolean }): Promise<AutomationRuleSummary[]>;
   triggerManually(args: AutomationManualTriggerRequest): Promise<AutomationRun>;
   planTest(args: AutomationTestRequest): Promise<AutomationTestPlan>;
   runTest(args: AutomationTestRequest): Promise<AutomationRun>;
@@ -450,6 +452,11 @@ function requireWebhooks(runtime: AdeRuntime) {
   return runtime.automationIngressService.webhooks;
 }
 
+/** ADE Cloud as a rule's home needs the account to have it: refused here, as the editor hides the choice. */
+async function requireAdeCloudHome(runtime: AdeRuntime): Promise<void> {
+  if (!(await cloudAccessEnabled(cloudAccessDeps(runtime)))) throw new Error(ADE_CLOUD_HOME_UNAVAILABLE);
+}
+
 function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainService | null {
   const automationService = runtime.automationService;
   const plannerService = runtime.automationPlannerService;
@@ -462,10 +469,16 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
       if (!trimmed) return null;
       return projectConfigService.get().effective.automations.find((r) => r.id === trimmed) ?? null;
     },
-    saveRule: (args) => plannerService.saveDraft(args),
+    saveRule: async (args) => {
+      if (args?.draft?.home === "ade-cloud") await requireAdeCloudHome(runtime);
+      return plannerService.saveDraft(args);
+    },
     deleteRule: ({ id }) => automationService.deleteRule({ id }),
     toggleRule: ({ id, enabled }) => automationService.toggle({ id, enabled }),
-    setRunOn: (args) => automationService.setRunOn(args),
+    setRunOn: async (args) => {
+      if (args?.cloud) await requireAdeCloudHome(runtime);
+      return automationService.setRunOn(args);
+    },
     triggerManually: (args) => automationService.triggerManually(args),
     planTest: (args) => automationService.planTest(args),
     runTest: async (args) => {
@@ -4281,6 +4294,12 @@ function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnT
     // A lane's computer is made here, not by the maker: the sign-in renewal learns of it the same way.
     onComputerCreated: noteCloudComputerMade,
     analytics: runtime.productAnalyticsService ?? null,
+    // C4: a private repository with no GitHub sign-in in the account is refused before a computer is made.
+    gitPreflight: (originUrl) => cloudGitPreflight({
+      vault: (key) => (runtime.accountVaultStore && runtime.accountAuthService?.getStatus().signedIn === true
+        ? cloudVaultFromStore(runtime.accountVaultStore, key)
+        : null),
+    }, originUrl),
   });
   return cloudLaneLaunchHost;
 }

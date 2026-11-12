@@ -236,10 +236,15 @@ describe("createAgentChatService", () => {
       });
       expect(events.some((entry) => entry.event.type === "status" && entry.event.turnStatus === "failed")).toBe(true);
       expect(events.some((entry) => entry.event.type === "done" && entry.event.status === "failed")).toBe(true);
-      expect(events.filter((entry) => entry.event.type === "system_notice")).toHaveLength(1);
-      expect(events.find((entry) => entry.event.type === "system_notice")?.event).toMatchObject({
-        detail: { kind: "disk_pressure", state: "exhausted" },
+      // One state for the refused turn: the person's message, then one error
+      // that says why. No error notice beside it.
+      const error = events.find((entry) => entry.event.type === "error")?.event;
+      expect(error).toMatchObject({ errorInfo: { presentation: { title: "Not enough storage" } } });
+      expect(events.find((entry) => entry.event.type === "user_message")?.event).toMatchObject({
+        text: "Start new work.",
+        turnId: (error as { turnId?: string } | undefined)?.turnId,
       });
+      expect(events.filter((entry) => entry.event.type === "system_notice")).toHaveLength(0);
       service.forceDisposeAll();
     });
 
@@ -271,9 +276,9 @@ describe("createAgentChatService", () => {
       // provider work started.
       expect(result).toBeUndefined();
       expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/start" || p.method === "turn/steer")).toBe(false);
-      expect(events.some((entry) => entry.event.type === "system_notice"
-        && typeof entry.event.detail === "object"
-        && (entry.event.detail as { kind?: string }).kind === "disk_pressure")).toBe(true);
+      expect(events.some((entry) => entry.event.type === "error"
+        && typeof entry.event.errorInfo === "object"
+        && entry.event.errorInfo?.code === "disk_full")).toBe(true);
       service.forceDisposeAll();
     });
 
@@ -355,9 +360,9 @@ describe("createAgentChatService", () => {
       // The send's own disk gate reports the refusal; the comments are not spent.
       expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(1);
       expect(events.some((entry) =>
-        entry.event.type === "system_notice"
-        && typeof entry.event.detail === "object"
-        && (entry.event.detail as { kind?: string }).kind === "disk_pressure")).toBe(true);
+        entry.event.type === "error"
+        && typeof entry.event.errorInfo === "object"
+        && entry.event.errorInfo?.code === "disk_full")).toBe(true);
       service.forceDisposeAll();
     });
 

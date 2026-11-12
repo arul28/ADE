@@ -1,5 +1,5 @@
 /**
- * The ADE GitHub App sign-in that belongs to the account (migration 0029).
+ * The ADE GitHub App sign-in that belongs to the account (migration 0031).
  * Paths, request and response shapes, and limits only: nothing here imports
  * the Worker, so the desktop, the brain, the web client and the phone can
  * `import type` it or mirror it.

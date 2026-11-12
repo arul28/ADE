@@ -30,7 +30,7 @@ export async function installBrainProviderLoginSync(args: {
     { createProviderLoginSync, installProviderLoginSync, providerLoginSync },
     { cloudAccessDepsFor, getCloudProvider, onCloudAccessAnswerChanged, readCloudAccessState },
     { getOrCreateLocalAccountMachineIdentity },
-    { isCloudMachine },
+    { isAdeCloudComputer },
     { BORROW_RENEW_AHEAD_MS, renewProviderLogin, withMachineRenewLock },
     { codexConfigHome, grokConfigHome },
     { createCloudComputerCheck },
@@ -39,7 +39,7 @@ export async function installBrainProviderLoginSync(args: {
     import("../../../../desktop/src/main/services/providerLogins/providerLoginSync"),
     import("../../../../desktop/src/main/services/adeCloud/cloudAccess"),
     import("../../../../desktop/src/main/services/account/localMachineIdentity"),
-    import("../power/cloudKeepAwake"),
+    import("../../../../desktop/src/main/services/adeCloud/cloudComputerRules"),
     import("../proxy/borrowedLogins"),
     import("../../../../desktop/src/main/services/shared/providerConfigHomes"),
     import("../../../../desktop/src/main/services/providerLogins/providerLoginCloudComputers"),
@@ -82,7 +82,7 @@ export async function installBrainProviderLoginSync(args: {
   // asked only by the renewal planner when a sign-in owned here is otherwise
   // due. A cloud computer has no planner, so it never asks. The brain's own
   // cloud actions also tell it, free (adeActions/registry.ts).
-  const cloudComputers = args.staticOff || isCloudMachine() ? null : createCloudComputerCheck({
+  const cloudComputers = args.staticOff || isAdeCloudComputer() ? null : createCloudComputerCheck({
     accountId,
     count: async () => {
       const provider = await getCloudProvider(accessDeps);
@@ -117,7 +117,7 @@ export async function installBrainProviderLoginSync(args: {
     },
     cloudAccess: () => readCloudAccessState(accessDeps),
     onCloudAccessChanged: onCloudAccessAnswerChanged,
-    cloudComputer: isCloudMachine(),
+    cloudComputer: isAdeCloudComputer(),
     logger: args.logger,
     // Renewal ahead on the owner computer (step 3a), and on a cloud computer
     // that took the renewal over (step 3b): the proxy's renew call,

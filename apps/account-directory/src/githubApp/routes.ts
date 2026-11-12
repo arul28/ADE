@@ -41,7 +41,7 @@ export type { GithubAppEnv } from "./grants";
 
 /**
  * The ADE GitHub App sign-in that belongs to the account (README, "GitHub
- * App sign-in"; tables in migration 0029; shapes in `contract.ts`).
+ * App sign-in"; tables in migration 0031; shapes in `contract.ts`).
  *
  * Every bearer route reads only the caller's own grant (`user_id` in every
  * statement). The refresh token and the client secret never leave this

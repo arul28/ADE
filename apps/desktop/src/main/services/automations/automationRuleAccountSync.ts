@@ -2,11 +2,15 @@ import type {
   AutomationRule,
   AutomationRuleHome,
   AutomationRuleLocalReason,
+  AutomationTrigger,
   ConfigAutomationRule,
 } from "../../../shared/types";
-import { AUTOMATION_HOME_HANDOVER_MS } from "../../../shared/automationHome";
+import { ADE_CLOUD_HOME_DEVICE_ID, ADE_CLOUD_HOME_NAME, AUTOMATION_HOME_HANDOVER_MS, isAdeCloudHome } from "../../../shared/automationHome";
+import { automationCloudHomeProblem, localTimeZone } from "../../../shared/automationCloud";
 import type { Logger } from "../logging/logger";
 import {
+  AUTOMATION_RULE_KEY_PREFIX,
+  automationRuleAccountId,
   automationRuleAccountKey,
   fitsInAccount,
   isChatScopedAutomationRule,
@@ -44,12 +48,41 @@ import {
 /** A lost race is only a race when the two writes were this close together. */
 const RACE_WINDOW_MS = 10 * 60_000;
 
+/**
+ * A rule as it goes to ADE Cloud: its runs make their lanes there
+ * (`execution.cloud`), and each trigger names the zone its schedule, and the
+ * prompt's `{{date}}` and `{{time}}`, are read in (this computer's, unless it
+ * has one), so every brain compiles the same rule.
+ */
+function forCloudHome(rule: ConfigAutomationRule): ConfigAutomationRule {
+  const zone = localTimeZone();
+  const withZone = (trigger: AutomationTrigger): AutomationTrigger =>
+    !trigger.timezone ? { ...trigger, timezone: zone } : trigger;
+  return {
+    ...rule,
+    ...(rule.triggers ? { triggers: rule.triggers.map(withZone) } : {}),
+    ...(rule.trigger ? { trigger: withZone(rule.trigger) } : {}),
+    ...(rule.execution ? { execution: { ...rule.execution, cloud: rule.execution.cloud ?? {} } } : {}),
+  };
+}
+
+/** See `AutomationRuleAccountSync.cloudHomes`. */
+export type CloudHomesView = {
+  onCloud: Array<{ rule: ConfigAutomationRule; version: string }>;
+  released: Map<string, { version: string; hookId: string | null; leftCloud: boolean }>;
+};
+
+/** The custom webhook a rule's trigger names, if any. */
+export const webhookIdOf = (rule: Pick<ConfigAutomationRule, "triggers" | "trigger">): string | null =>
+  (rule.triggers ?? (rule.trigger ? [rule.trigger] : [])).find((trigger) => trigger.type === "webhook")?.webhook?.hookId ?? null;
+
 type Note = { needsNewerAde?: true; localReason?: AutomationRuleLocalReason; accountRunCount?: number };
 
 type AccountRule = {
   rule: ConfigAutomationRule;
   needsNewerAde: boolean;
   runCount?: number;
+  version?: string;
 };
 
 export type AutomationRuleAccountSync = ReturnType<typeof createAutomationRuleAccountSync>;
@@ -78,8 +111,7 @@ export function createAutomationRuleAccountSync(args: {
   const sameContent = (a: ConfigAutomationRule, b: ConfigAutomationRule): boolean => stableJson(content(a)) === stableJson(content(b));
 
   /** The account's rules for this repository, or null when there are none to have (no remote). */
-  const readAccount = (): AccountRule[] | null => {
-    const read = store.read();
+  const readAccount = (read = store.read()): AccountRule[] | null => {
     if (!read) return null;
     if (cache?.fingerprint === read.fingerprint) return cache.rules;
     const rules: AccountRule[] = [];
@@ -106,7 +138,7 @@ export function createAutomationRuleAccountSync(args: {
         }
       }
       seen.add(rule.id);
-      rules.push({ rule, needsNewerAde, ...(row.runCount ? { runCount: row.runCount } : {}) });
+      rules.push({ rule, needsNewerAde, ...(row.runCount ? { runCount: row.runCount } : {}), ...(row.version ? { version: row.version } : {}) });
     }
     cache = { fingerprint: read.fingerprint, rules };
     return rules;
@@ -156,11 +188,13 @@ export function createAutomationRuleAccountSync(args: {
   };
 
   const resolveHome = (
-    requested: AutomationRuleHome | "this-computer",
+    requested: AutomationRuleHome | "this-computer" | "ade-cloud",
     current: AutomationRuleHome | undefined,
   ): AutomationRuleHome => {
     let home: AutomationRuleHome | null;
-    if (requested === "this-computer") {
+    if (requested === "ade-cloud" || (typeof requested === "object" && isAdeCloudHome(requested))) {
+      home = { kind: "cloud", deviceId: ADE_CLOUD_HOME_DEVICE_ID, name: ADE_CLOUD_HOME_NAME, chosenAt: new Date(now()).toISOString(), checkout: null };
+    } else if (requested === "this-computer") {
       home = store.thisComputerHome();
       if (!home) throw new Error("This computer is still being identified. Try again in a moment.");
     } else {
@@ -169,6 +203,7 @@ export function createAutomationRuleAccountSync(args: {
       // The checkout on another computer is that computer's to claim.
       home = { ...home, checkout: home.deviceId === store.thisDeviceId() ? store.checkout : null };
     }
+    if (!home) throw new Error("A rule's computer needs a device id and a name.");
     // Choosing the same computer again keeps the home as it is, wait
     // included: dropping an active handover would let it start before the
     // old home's lease runs out.
@@ -183,6 +218,52 @@ export function createAutomationRuleAccountSync(args: {
     /** Changes whenever the account's rules for this repository do. */
     fingerprint(): string | null {
       return store.read()?.fingerprint ?? null;
+    },
+
+    /**
+     * What ADE Cloud's server copy of this repository's rules must follow,
+     * or null when the account can't be read with confidence (no remote,
+     * signed out, unreadable, not synced since ADE started): then nothing is
+     * sent and, above all, nothing is taken off the server.
+     *
+     * - `onCloud`: rules homed on ADE Cloud that this ADE reads whole, with
+     *   the version the server compares. A rule a newer ADE wrote is never
+     *   sent: a newer brain sends it.
+     * - `released`: the positive evidence that a server copy must go, by
+     *   account id: the rule's home is now a computer (`leftCloud` when it
+     *   just left ADE Cloud), or some computer deleted it. Its version is
+     *   that row's time, so the server never drops a newer save for it.
+     */
+    cloudHomes(): CloudHomesView | null {
+      const read = store.read();
+      if (!read || read.signedOut || read.unreadable || !store.hasSynced()) return null;
+      const onCloud: CloudHomesView["onCloud"] = [];
+      const released: CloudHomesView["released"] = new Map();
+      for (const entry of readAccount(read) ?? []) {
+        const home = entry.rule.home;
+        if (!home || entry.needsNewerAde) continue;
+        const version = entry.version ?? home.chosenAt;
+        if (isAdeCloudHome(home)) {
+          onCloud.push({ rule: entry.rule, version });
+          continue;
+        }
+        released.set(automationRuleAccountId(entry.rule.id), {
+          version,
+          hookId: webhookIdOf(entry.rule),
+          leftCloud: home.previousDeviceId === ADE_CLOUD_HOME_DEVICE_ID,
+        });
+      }
+      // Rows still there (even ones this ADE can't read) were not deleted.
+      const present = new Set(read.rows.flatMap((row) => {
+        const id = row.value && typeof row.value === "object" ? (row.value as { id?: unknown }).id : null;
+        return typeof id === "string" && id ? [automationRuleAccountId(id)] : [];
+      }));
+      for (const [key, deletedAt] of store.deletedRuleStamps()) {
+        const accountId = key.slice(AUTOMATION_RULE_KEY_PREFIX.length);
+        if (present.has(accountId) || released.has(accountId)) continue;
+        released.set(accountId, { version: deletedAt, hookId: null, leftCloud: false });
+      }
+      return { onCloud, released };
     },
 
     /**
@@ -434,12 +515,25 @@ export function createAutomationRuleAccountSync(args: {
      * signed out): the caller saves it in `.ade/local.yaml`.
      */
     save(
-      rule: ConfigAutomationRule,
-      options: { home?: AutomationRuleHome | "this-computer" | null },
+      saved: ConfigAutomationRule,
+      options: { home?: AutomationRuleHome | "this-computer" | "ade-cloud" | null },
     ): { handled: true } | { handled: false; keepHome?: AutomationRuleHome } {
-      const existing = accountRule(rule.id);
+      const existing = accountRule(saved.id);
       if (existing?.needsNewerAde) {
-        throw new Error(`'${existing.rule.name ?? rule.id}' was made with a newer ADE. Update ADE on this computer to change it.`);
+        throw new Error(`'${existing.rule.name ?? saved.id}' was made with a newer ADE. Update ADE on this computer to change it.`);
+      }
+      // ADE Cloud as the home (asked for now, or kept): the rule must be one its server can run.
+      const toCloud = options.home === "ade-cloud" || (typeof options.home === "object" && isAdeCloudHome(options.home));
+      const staysOnCloud = !options.home && isAdeCloudHome(existing?.rule.home);
+      let rule = saved;
+      if (toCloud || staysOnCloud) {
+        if (isChatScopedAutomationRule(saved) || !store.scope()) {
+          throw new Error("Only a rule in a repository with a GitHub remote can run on ADE Cloud.");
+        }
+        rule = forCloudHome(saved);
+        const problem = automationCloudHomeProblem(rule);
+        if (problem) throw new Error(problem);
+        if (!store.signedIn()) throw new Error("Sign in to ADE to run this automation on ADE Cloud.");
       }
       if (isChatScopedAutomationRule(rule) || !store.scope()) return { handled: false };
       const fileCopy = args.readFileRules().find((entry) => entry.id === rule.id);
@@ -448,7 +542,10 @@ export function createAutomationRuleAccountSync(args: {
         if (options.home) throw new Error("This automation belongs to another ADE account. Sign in to that account to change which computer runs it.");
         return { handled: false, keepHome: fileCopy?.home };
       }
+      // A rule bound for ADE Cloud is never kept in the file: there it would run on this computer.
+      const cloudRefused = new Error("ADE couldn't save this automation to your ADE account yet, so it can't move to ADE Cloud. Try again in a moment.");
       if (!existing) {
+        if (toCloud && (!canFollow(rule) || !store.hasSynced())) throw cloudRefused;
         // A new rule, or one still waiting in the file: filed in the account
         // now when it can be, else kept in the file to move later.
         if (!canFollow(rule)) return { handled: false };
@@ -460,6 +557,7 @@ export function createAutomationRuleAccountSync(args: {
         }
         const home = options.home ? resolveHome(options.home, undefined) : store.thisComputerHome();
         if (!home || !fileInAccount(rule, home)) {
+          if (toCloud) throw cloudRefused;
           store.noteOfflineSave(rule.id, "new");
           return { handled: false };
         }
@@ -489,6 +587,7 @@ export function createAutomationRuleAccountSync(args: {
         ? !homeToWrite || store.writeHome(rule.id, homeToWrite)
         : fileInAccount(rule, homeToWrite);
       if (!ok) {
+        if (toCloud || staysOnCloud) throw cloudRefused;
         store.noteOfflineSave(rule.id, "edit");
         return { handled: false, keepHome: currentHome ?? undefined };
       }

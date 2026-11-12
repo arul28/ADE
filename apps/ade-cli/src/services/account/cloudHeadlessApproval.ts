@@ -4,8 +4,11 @@
  * account), opened in a headless Chromium on this machine. The provider
  * template ships Chromium, so a cloud machine can approve the sign-in of a
  * machine it made itself, and a chat there that needs a VM never waits on a
- * tap. The brain decides when this is allowed (cloudBrainMaker.ts); this
- * file only opens the link and reports how it ended, as the window does.
+ * tap. The brain decides when this is allowed (cloudBrainMaker.ts). A new
+ * cloud computer of a server launch also opens its own join link here
+ * (`cloudBootLaunch.ts`). This file only opens the link and reports how it
+ * ended, as the window does. One implementation for both: it lives in the
+ * CLI so a brain with no desktop code path still has it.
  *
  * It never types or clicks. A page that stops on something a person has to
  * confirm (a consent screen, a challenge) ends it as `closed`, and the caller
@@ -17,7 +20,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
-import type { CloudApprovalWindowResult } from "./cloudMachineCreator";
+
+/** How the approval ended; the same values as the desktop's window (`CloudApprovalWindowResult`). */
+export type HeadlessApprovalResult = "signed_in" | "closed" | "timed_out" | "cancelled";
 
 type Logger = {
   info?(event: string, meta?: Record<string, unknown>): void;
@@ -137,7 +142,7 @@ export async function approveInHeadlessChromium(args: {
   signal: AbortSignal;
   logger?: Logger;
   platform?: NodeJS.Platform;
-}): Promise<CloudApprovalWindowResult> {
+}): Promise<HeadlessApprovalResult> {
   const platform = args.platform ?? process.platform;
   const logger = args.logger ?? {};
   if (args.signal.aborted) return "cancelled";

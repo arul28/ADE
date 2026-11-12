@@ -1,5 +1,6 @@
 import type { CloudAgentMaker } from "../../../shared/adeCloud";
 import { githubRepoOf } from "../../../shared/cloudLaneLaunch";
+import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { DEFAULT_LANE_START } from "../../../shared/laneStart";
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import type {
@@ -65,6 +66,13 @@ export type CloudLaneLaunchDeps = {
   defaultParentDir: (targetId: string) => Promise<string>;
   /** Clones with the computer's own Git sign-in: no credential from this computer goes with it. */
   cloneProject: (targetId: string, input: CloneProjectInput) => Promise<RemoteRuntimeProjectRecord>;
+  /**
+   * Contract C4, at the start, before anything is made: can a new cloud
+   * computer clone this repository (`cloudGitPreflight` in
+   * `cloudGitCredential.ts`)? A refusal ends the start with its words.
+   * Unset: no check.
+   */
+  gitPreflight?: (originUrl: string) => Promise<CloudGitPreflight>;
   resolveBinding: (targetId: string, projectId: string, rootPath: string) => Promise<RemoteBinding>;
   /** One `chat` action on the computer's brain, through its pin. */
   callChatAction: (binding: RemoteBinding, action: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -164,10 +172,16 @@ export function githubClone(originUrl: string | null): { identity: string; clone
 /**
  * The lane recipe the computer's brain gets: always from the pushed copy of
  * its branch. A lane on an existing branch keeps that branch.
+ *
+ * Never renamed from the prompt afterwards (`autoName` is dropped): the new
+ * computer is named after the lane before the brain could rename it, so a
+ * later AI name gave one lane two names (the lane, its computer, the ADE
+ * Cloud page). The name the launch starts with (the one the person chose, or
+ * the title from the prompt) is the lane's one name.
  */
 export function cloudLaneConfig(config: ChatLaunchLaneConfig | null | undefined): ChatLaunchLaneConfig {
   if (config?.mode === "existing") return config;
-  const base: ChatLaunchLaneConfig = config ?? { mode: "new", autoName: true };
+  const { autoName: _autoName, ...base }: ChatLaunchLaneConfig = config ?? { mode: "new" };
   return { ...base, mode: "new", start: { ...(base.start ?? DEFAULT_LANE_START), on: "remote" } };
 }
 

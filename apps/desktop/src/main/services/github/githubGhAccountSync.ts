@@ -44,6 +44,7 @@ import type { GitHubAccountCredentialState } from "../../../shared/types/git";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import { readAccountVaultItem, safeVault } from "../account/accountVaultRead";
 import { describeVaultFailure } from "../account/vaultWrite";
+import { ACCOUNT_GITHUB_VAULT_KIND, GITHUB_CLI_VAULT_KEY } from "./accountGithubTokenItem";
 
 /** The account's copy of a `gh` login, adopted on this machine. Holds nothing else. */
 export const GITHUB_GH_ACCOUNT_TOKEN_KEY = "github.ghAccountToken.v1";
@@ -51,8 +52,8 @@ export const GITHUB_GH_ACCOUNT_TOKEN_KEY = "github.ghAccountToken.v1";
 const GITHUB_GH_ACCOUNT_OWNER_KEY = "github.ghAccountToken.owner.v1";
 /** `<accountUserId>:<sha256>` of the `gh` token this machine last published. */
 const GITHUB_GH_ACCOUNT_PUBLISHED_KEY = "github.ghAccountToken.published.v1";
-export const GITHUB_GH_VAULT_KIND = "integration";
-export const GITHUB_GH_VAULT_KEY = "github-cli";
+export const GITHUB_GH_VAULT_KIND = ACCOUNT_GITHUB_VAULT_KIND;
+export const GITHUB_GH_VAULT_KEY = GITHUB_CLI_VAULT_KEY;
 
 const VAULT_UNAVAILABLE_MESSAGE =
   "ADE's background service isn't running on this computer, so the account can't be changed right now.";

@@ -5,10 +5,11 @@ import path from "node:path";
 import { CLOUD_DISK_USAGE_MAX_ITEMS } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageReport, CloudLaneWork } from "../../../shared/adeCloud";
 import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
+import { resolveToolsRootLayout } from "../../../../../ade-cli/src/services/tools/paths";
 
 /**
  * A cloud computer measures what uses its disk (repository, dependencies,
- * Docker, Android, caches) and clears its caches on request. It measures at
+ * Docker, Android, caches, agent programs, ADE data) and clears its caches on request. It measures at
  * its idle step, while it is awake anyway, at most every `CLOUD_DISK_MEASURE_EVERY_MS`,
  * and sends the measure with its last work to ADE's server
  * (`POST .../disk-usage`). The dashboard reads it with the computer list, so
@@ -72,6 +73,16 @@ const CLOUD_CLEARABLE_CACHES: readonly string[] = [
   ".cargo/registry/cache",
 ];
 
+/**
+ * Where the agent programs are: the tools cache and its per-user root (the
+ * same resolver installs use, so `ADE_TOOLS_ROOT` counts). A root on the
+ * image's own layer is left out by the disk check.
+ */
+function defaultToolsRoots(): string[] {
+  const layout = resolveToolsRootLayout();
+  return [layout.primary, ...(layout.fallback ? [layout.fallback] : [])];
+}
+
 /** The Android SDK and emulator images, where the image installs them. */
 function androidFolders(home: string): string[] {
   const env = [process.env.ANDROID_HOME, process.env.ANDROID_SDK_ROOT].filter((value): value is string => Boolean(value?.trim()));
@@ -86,12 +97,27 @@ function exists(folder: string): boolean {
   }
 }
 
-/** Kilobytes under each folder, from one `du -sk` call; a folder that isn't there is left out. */
-async function duKb(run: Run, folders: string[], extra: string[] = []): Promise<Map<string, number>> {
-  const present = folders.filter(exists);
+/** Whether a folder is there, and on the disk with device `disk` (`stat().dev`). */
+function folderOnDisk(folder: string, disk: number): boolean {
+  try {
+    const stats = fs.statSync(folder);
+    return stats.isDirectory() && stats.dev === disk;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Kilobytes under each folder, from one `du -skx` call. A folder that isn't
+ * there is left out, and so is one on another disk than `disk` (the image's
+ * own layer: an SDK there uses none of the computer's billed disk). `-x` keeps
+ * `du` on each folder's own disk below it too (a bind mount, a tmpfs).
+ */
+async function duKb(run: Run, folders: string[], disk: number, extra: string[] = []): Promise<Map<string, number>> {
+  const present = folders.filter((folder) => folderOnDisk(folder, disk));
   const sizes = new Map<string, number>();
   if (!present.length) return sizes;
-  const out = await run("du", ["-sk", ...extra, ...present]).catch(leftOut("du"));
+  const out = await run("du", ["-skx", ...extra, ...present]).catch(leftOut("du"));
   for (const line of out.split("\n")) {
     const match = /^(\d+)\s+(.+)$/.exec(line.trim());
     if (match) sizes.set(match[2]!, Number(match[1]));
@@ -147,21 +173,44 @@ function usedDiskGb(folder: string): number | null {
  * What uses the disk now. `projectRoots` are the projects open on this
  * computer (each lane's worktree is inside its project).
  */
-async function measureCloudDisk(input: { home?: string; projectRoots: string[]; run?: Run; now?: number }): Promise<CloudDiskUsage | null> {
+async function measureCloudDisk(input: {
+  home?: string;
+  /** ADE's own folder on this computer (`layout.adeDir`). */
+  adeHome: string;
+  /** The agent programs' folders (`resolveToolsRootLayout`), measured before ADE home so nothing counts twice. */
+  toolsRoots?: string[];
+  projectRoots: string[];
+  run?: Run;
+  now?: number;
+}): Promise<CloudDiskUsage | null> {
   const home = input.home ?? os.homedir();
   const run = input.run ?? defaultRun;
   const totalGb = usedDiskGb(home);
   if (totalGb == null) return null;
+  let homeDisk: number;
+  try {
+    homeDisk = fs.statSync(home).dev;
+  } catch {
+    return null;
+  }
   const roots = [...new Set(input.projectRoots.map((root) => path.resolve(root)))];
   const modules = await nodeModulesFolders(run, roots);
-  const [repoKb, modulesKb, androidKb, cachesKb, docker] = await Promise.all([
-    duKb(run, roots, ["--exclude=node_modules"]),
-    duKb(run, modules),
-    duKb(run, androidFolders(home)),
-    duKb(run, CLOUD_CLEARABLE_CACHES.map((folder) => path.join(home, folder))),
+  // Every part is on the measured disk only (`totalGb` is the home disk's).
+  const adeHome = path.resolve(input.adeHome);
+  const toolsRoots = [...new Set((input.toolsRoots ?? defaultToolsRoots()).map((root) => path.resolve(root)))].filter((root) => root !== adeHome);
+  const [repoKb, modulesKb, androidKb, cachesKb, adeAndToolsKb, docker] = await Promise.all([
+    duKb(run, roots, homeDisk, ["--exclude=node_modules"]),
+    duKb(run, modules, homeDisk),
+    duKb(run, androidFolders(home), homeDisk),
+    duKb(run, CLOUD_CLEARABLE_CACHES.map((folder) => path.join(home, folder)), homeDisk),
+    // One call, tools first: `du` counts each file once, so ADE home's line
+    // leaves out the agent programs when they sit inside it.
+    duKb(run, [...toolsRoots, adeHome], homeDisk),
     dockerParts(run),
   ]);
   const sum = (sizes: Map<string, number>) => gbFromKb([...sizes.values()].reduce((total, kb) => total + kb, 0));
+  const toolsKb = new Map([...adeAndToolsKb].filter(([folder]) => folder !== adeHome));
+  const adeKb = new Map([...adeAndToolsKb].filter(([folder]) => folder === adeHome));
   const parts = ([
     { kind: "repository", label: roots.length === 1 ? "Repository" : "Repositories", gb: sum(repoKb), clearable: false },
     { kind: "dependencies", label: "Dependencies", gb: sum(modulesKb), clearable: false },
@@ -169,6 +218,9 @@ async function measureCloudDisk(input: { home?: string; projectRoots: string[]; 
     { kind: "docker", label: "Docker build cache", gb: docker.buildCacheGb, clearable: true },
     { kind: "android", label: "Android SDK and emulators", gb: sum(androidKb), clearable: false },
     { kind: "caches", label: "Caches", gb: sum(cachesKb), clearable: true },
+    // The server knows six kinds; these two go as `other` with their own names, so older servers keep them.
+    { kind: "other", label: "Agent programs", gb: sum(toolsKb), clearable: false },
+    { kind: "other", label: "ADE data (chats and lanes)", gb: sum(adeKb), clearable: false },
   ] satisfies CloudDiskUsageItem[] as CloudDiskUsageItem[]).filter((part) => part.gb >= MIN_PART_GB);
   const known = parts.reduce((total, part) => total + part.gb, 0);
   const other = Math.round(Math.max(0, totalGb - known) * 1000) / 1000;
@@ -207,6 +259,8 @@ export async function clearCloudDiskCaches(input: { home?: string; run?: Run } =
  */
 export function createCloudDiskUsageReporter(deps: {
   instanceId: string;
+  /** ADE's own folder on this computer (`layout.adeDir`), measured as "ADE data". */
+  adeHome: string;
   stateFile: string;
   projectRoots: () => string[];
   send: (report: CloudDiskUsageReport) => Promise<void>;
@@ -238,7 +292,7 @@ export function createCloudDiskUsageReporter(deps: {
       if (!deps.instanceId) return;
       let usage: CloudDiskUsage | null = null;
       if (forceNext || now() - lastMeasuredAt() >= CLOUD_DISK_MEASURE_EVERY_MS) {
-        usage = await measure({ projectRoots: deps.projectRoots(), now: now() }).catch((error: unknown) => {
+        usage = await measure({ adeHome: deps.adeHome, projectRoots: deps.projectRoots(), now: now() }).catch((error: unknown) => {
           deps.logger?.warn("cloud.disk_measure_failed", { error: error instanceof Error ? error.message : String(error) });
           return null;
         });

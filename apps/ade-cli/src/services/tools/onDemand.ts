@@ -2,15 +2,23 @@ import { pinnedToolFetchPending } from "./cacheLookup";
 import { asToolError, type ToolError, type ToolErrorKind } from "./errors";
 import type { ToolProgress, ToolsContext } from "./install";
 import { findToolPin, loadToolsManifest } from "./manifest";
+import { setToolsLogger, warnTools } from "./toolsLog";
+import { noteToolUse, toolUsageRootFor } from "./usage";
 
 /**
  * Download a pinned tool the moment something needs it.
  *
  * Launch and `ade serve` fetch only the tools this machine shows signs of using
- * (`agentToolDemand.ts`), so a chat, a one-shot task or a status refresh can
- * meet a tool that is pinned and simply not downloaded yet. Those callers await
- * `pinnedToolDownload` before they resolve the binary, and the resolver then
+ * (`agentToolDemand.ts`), so a chat, a one-shot task or a terminal can meet a
+ * tool that is pinned and simply not downloaded yet. Those callers await
+ * `pinnedToolDownload` right before they run the tool, and the resolver then
  * finds the fresh copy. Muse keeps its own `ensureMuseBinary`, which predates this.
+ *
+ * `pinnedToolDownload` means "this machine is about to run the tool": it is
+ * the only call that records a use (`usage.ts`). A status row, a model list, a
+ * sign-in check or a usage read never calls it; they report the state
+ * (`getPinnedToolStatus`) and leave the download to the first real use or to
+ * the person's own Download (`retryPinnedToolDownload`).
  *
  * Off until a process turns it on (`enablePinnedToolFetch`), so a test never
  * starts a 100-450 MB download. A source checkout turns it on for the tools
@@ -55,11 +63,12 @@ export function enablePinnedToolFetch(logger: FetchLogger, options: { downloadOn
   fetchEnabled = true;
   fetchDownloadOnly = options.downloadOnly === true;
   fetchLogger = logger;
+  setToolsLogger(logger);
 }
 
 /** Log cache bookkeeping failures through the logger installed for tool fetches. */
 export function warnPinnedToolFetch(event: string, fields: Record<string, unknown>): void {
-  fetchLogger?.warn(event, fields);
+  warnTools(event, fields);
 }
 
 /** False when downloads are off here, or this is a checkout and the tool lives in its node_modules. */
@@ -164,6 +173,9 @@ export function trackPinnedToolFetch(name: string, run: () => Promise<unknown>):
  * so a tool that is already on disk adds no await before its spawn.
  */
 export function pinnedToolDownload(name: string, context: ToolsContext = {}): Promise<ToolError | null> | null {
+  if (fetchEnabled) {
+    noteToolUse(name, toolUsageRootFor(context));
+  }
   const running = inFlight.get(name);
   if (running) return running;
   if (!pinnedToolNeedsFetch(name, context)) return null;

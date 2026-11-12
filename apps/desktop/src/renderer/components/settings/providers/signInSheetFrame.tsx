@@ -44,6 +44,8 @@ export type SignInSheetView = {
   stage: SignInStage;
   /** A line beside step 1 while it runs ("Getting Kimi ready…"). */
   startHint?: string | null;
+  /** The footer while the sign-in is checked ("Checking the code…" after a paste). */
+  verifyingHint?: string | null;
   url: string | null;
   deviceCode: string | null;
   /** One line under the page buttons. */
@@ -91,9 +93,22 @@ type SignInSheetFrameProps = {
   closeLabel?: string;
 };
 
+/**
+ * A running sign-in whose pasted code is with the CLI and not answered yet
+ * (`checkingCode`, set by the runner): the sheet shows the verifying stage.
+ */
+export function isCheckingCode(status: { state: string; checkingCode?: boolean } | null | undefined): boolean {
+  return status?.state === "running" && status.checkingCode === true;
+}
+
+/** The verifying footer for a sign-in: "Checking the code…" after a paste, else null (the stage's own words). */
+export function verifyingHintFor(status: { state: string; checkingCode?: boolean } | null | undefined): string | null {
+  return isCheckingCode(status) ? "Checking the code…" : null;
+}
+
 function footerWords(view: SignInSheetView): string {
   if (view.stage === "starting") return view.startHint ?? "Starting the sign-in…";
-  if (view.stage === "verifying") return "Checking the sign-in…";
+  if (view.stage === "verifying") return view.verifyingHint ?? "Checking the sign-in…";
   return view.approveLabel ? "Waiting for the terminal" : "Waiting for you to approve in the browser";
 }
 

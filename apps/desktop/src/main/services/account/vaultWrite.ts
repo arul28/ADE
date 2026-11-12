@@ -26,19 +26,32 @@ function defaultSchedule(callback: () => void, delayMs: number): void {
   timer.unref?.();
 }
 
-/** Queue a vault mutation without making local credential persistence wait on the brain. */
+/**
+ * Queue a vault mutation without making local credential persistence wait on
+ * the brain. The returned promise is for a caller that wants to act once the
+ * write settled: true when it landed, false when every attempt failed or the
+ * account refused it as stale (a newer revision replaced the one it named). It
+ * never rejects, so nobody has to await it.
+ */
 export function fireAndForgetVaultWrite(
   options: VaultWriteOptions,
   operation: "set" | "remove",
   call: (vault: AccountVaultBridge) => Promise<unknown>,
-): void {
+): Promise<boolean> {
   const retryDelayMs = options.retryDelayMs ?? VAULT_WRITE_RETRY_DELAY_MS;
   const maxAttempts = options.maxAttempts ?? VAULT_WRITE_MAX_ATTEMPTS;
   const schedule = options.schedule ?? defaultSchedule;
   let attempt = 0;
+  let settle: (landed: boolean) => void = () => {};
+  const settled = new Promise<boolean>((resolve) => {
+    settle = resolve;
+  });
 
   const retryOrStop = (): void => {
-    if (attempt >= maxAttempts) return;
+    if (attempt >= maxAttempts) {
+      settle(false);
+      return;
+    }
     schedule(run, retryDelayMs);
   };
 
@@ -74,11 +87,17 @@ export function fireAndForgetVaultWrite(
       return;
     }
     void Promise.resolve(pending).then((result) => {
-      if (result && typeof result === "object" && "ok" in result && result.ok === true) return;
+      if (result && typeof result === "object" && "ok" in result && result.ok === true) {
+        settle(true);
+        return;
+      }
       // A write that named a revision the item no longer has is an answer, not
-      // a failure: the same write again would be refused again. The caller
-      // reads again on its next sync and decides again.
-      if (result && typeof result === "object" && "stale" in result && result.stale === true) return;
+      // a failure: the same write again would be refused again. It did not
+      // land; the caller reads again on its next sync and decides again.
+      if (result && typeof result === "object" && "stale" in result && result.stale === true) {
+        settle(false);
+        return;
+      }
       fail(result);
     }).catch((error: unknown) => {
       fail(error);
@@ -86,4 +105,5 @@ export function fireAndForgetVaultWrite(
   };
 
   run();
+  return settled;
 }

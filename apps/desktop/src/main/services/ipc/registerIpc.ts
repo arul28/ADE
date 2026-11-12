@@ -123,7 +123,7 @@ import type { MachineInventoryDetail } from "../../../shared/types/machineInvent
 import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { noteProviderLoginChanged } from "../ai/providerLoginChanged";
-import { buildClaudeAvailabilityFromConnection } from "../ai/claudeAvailability";
+import { buildClaudeAvailabilityFromConnection, connectionListable } from "../ai/claudeAvailability";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
@@ -960,6 +960,8 @@ import {
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
 import { cloudAccountChanged, registerCloudIpc } from "../adeCloud/registerCloudIpc";
 import { registerCloudLaneLifeIpc } from "../adeCloud/registerCloudLaneLifeIpc";
+import { registerMachineConnectIpc } from "../machines/registerMachineConnectIpc";
+import type { MachineWakeResult } from "../machines/machineConnector";
 import { registerCloudLaneLaunchIpc } from "../adeCloud/registerCloudLaneLaunchIpc";
 import { getMachineMainLogger } from "../logging/machineLogger";
 import { registerCloudSavedChatsIpc } from "../cloudChats/registerCloudSavedChatsIpc";
@@ -1648,9 +1650,9 @@ async function buildGlobalAiStatus(args?: { force?: boolean; onPhase?: (phase: s
     mode: hasConfirmedSubscriptionProvider ? "subscription" : "guest",
     availableProviders: {
       claude: buildClaudeAvailabilityFromConnection(providerConnections.claude),
-      codex: providerConnections.codex.runtimeAvailable,
-      cursor: providerConnections.cursor.runtimeAvailable,
-      droid: providerConnections.droid.runtimeAvailable,
+      codex: connectionListable(providerConnections.codex),
+      cursor: connectionListable(providerConnections.cursor),
+      droid: connectionListable(providerConnections.droid),
     },
     models: {
       claude: [],
@@ -12185,11 +12187,18 @@ export function registerIpc({
 
   handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubSetTokenResult> => {
     const ctx = getCtx();
-    ctx.githubService.setToken(arg.token);
+    const { accountCopy } = ctx.githubService.setToken(arg.token);
     const status = await ctx.githubService.getStatus();
     const credentialVerification = await ctx.githubService.verifyStoredPat(status);
     const verifiedStatus = { ...status, credentialVerification };
     broadcastGithubStatus(verifiedStatus);
+    // Told again once the account's copy is written: a reader of that copy
+    // (the ADE Cloud git preflight) can race the first broadcast.
+    void accountCopy
+      .then(() => broadcastGithubStatus(verifiedStatus))
+      .catch((error: unknown) => {
+        ctx.logger.warn("github.status_rebroadcast_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
     return verifiedStatus;
   });
 
@@ -12742,8 +12751,27 @@ export function registerIpc({
     }
   });
 
+  // Contract C2: any machine of the account by its key (machineConnector.ts).
+  // ADE Cloud's handlers (just below) supply the wake before a pairing.
+  let cloudWakeForPair: ((machineKey: string) => Promise<MachineWakeResult>) | null = null;
+  const machineConnector = registerMachineConnectIpc({
+    localMachineKey: () => runtimeBridge.getLocalMachineIdentity()?.machineKey ?? null,
+    signedIn: () => accountBridge.status().signedIn,
+    savedTarget: (machineKey) => {
+      const id = runtimeBridge.resolveTargetIdForMachineKey(machineKey);
+      return id ? { id, name: runtimeBridge.resolveTargetNameForMachineKey(machineKey) ?? "" } : null;
+    },
+    isConnected: (targetId) => runtimeBridge.isTargetConnected(targetId),
+    listAccountMachines: () => accountBridge.listMachines(),
+    pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
+    connect: (targetId) => runtimeBridge.remoteForMain.connect(targetId),
+    wake: (machineKey) => cloudWakeForPair?.(machineKey) ?? Promise.resolve({ state: "not_cloud" as const }),
+    logger: getMachineMainLogger(),
+  });
+
   // the provider: the account-wide key and new machines made on it (no pin; see the module).
-  const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient } = registerCloudIpc({
+  const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient, wakeForPair: cloudWakeForPairFn, gitPreflight: cloudGitPreflightFn } = registerCloudIpc({
+    machineConnector: () => machineConnector,
     // Its items in this computer's brain, also with no project here: then the
     // brain opens only those (`accountVault.call`).
     vaultBridge: createAccountVaultBridge({ ...vaultBridgeOptions, machineFallback: true }),
@@ -12821,6 +12849,7 @@ export function registerIpc({
     },
     logger: { info: (event, meta) => getCtx().logger.info(event, meta), warn: (event, meta) => getCtx().logger.warn(event, meta) },
   });
+  cloudWakeForPair = cloudWakeForPairFn;
 
   // "ADE Cloud" picked for a new lane: this app makes the computer, then
   // hands the launch to that computer's brain. Machine-wide, so its log is
@@ -12834,8 +12863,7 @@ export function registerIpc({
     forgetMachineConnections: (machine) => {
       runtimeBridge.removeTargetsForMachine({ machineKey: machine.machineKey, hostname: machine.instanceId });
     },
-    pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
-    targetIdForMachine: (machineKey) => runtimeBridge.resolveTargetIdForMachineKey(machineKey),
+    machineConnector,
     remote: runtimeBridge.remoteForMain,
     analytics: productAnalyticsService ?? null,
     logger: getMachineMainLogger(),
@@ -12850,6 +12878,8 @@ export function registerIpc({
     pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
     remote: runtimeBridge.remoteForMain,
     analytics: productAnalyticsService ?? null,
+    // C4: the account's GitHub sign-in, checked before a computer is made.
+    gitPreflight: cloudGitPreflightFn,
     logger: getMachineMainLogger(),
   });
 
@@ -14445,15 +14475,12 @@ export function registerIpc({
       const machineKey = args.machineKey.trim();
       if (!machineKey) throw new Error("Activity machine identity is required.");
       // Seeing the item already proves the machine is on this account, so an
-      // unknown machine is paired rather than refused.
-      let targetId = runtimeBridge.resolveTargetIdForMachineKey(machineKey);
-      if (!targetId) {
-        try {
-          targetId = (await accountBridge.pairMachine(machineKey)).targetId;
-        } catch (error) {
-          throw describeAttentionOpenFailure(error, "pair", args.machineName);
-        }
-      }
+      // unknown machine is paired rather than refused (contract C2; the open
+      // below connects).
+      const reached = await machineConnector.connect(machineKey, { connect: false });
+      if (!reached.ok) throw describeAttentionOpenFailure(new Error(reached.message), "pair", args.machineName);
+      if (reached.address.kind !== "remote") throw describeAttentionOpenFailure(new Error("That is this computer."), "pair", args.machineName);
+      const targetId = reached.address.targetId;
       try {
         return await runtimeBridge.openRemoteProjectForWindow({
           targetId,

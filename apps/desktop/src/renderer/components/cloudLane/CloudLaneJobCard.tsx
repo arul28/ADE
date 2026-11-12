@@ -38,7 +38,8 @@ import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import { LaneIcon } from "../ui/vcsIcons";
 import { Banner } from "../ui/notice";
 import { cn } from "../ui/cn";
-import { cancelCloudLaneJob, retryCloudLaneJob } from "./cloudLaneActions";
+import type { NoticeTone } from "../ui/notice/noticeTones";
+import { cancelCloudLaneJob, dismissCloudLaneJob, retryCloudLaneJob } from "./cloudLaneActions";
 import "./cloudLane.css";
 
 /**
@@ -67,20 +68,91 @@ function sizeLabel(account: CloudAccountState | null, id: string | null): string
   return cloudTier(cloudCatalogOf(account), id)?.label ?? id;
 }
 
-function cloudLaneJobTitle(job: CloudLaneJobSnapshot, account: CloudAccountState | null): string {
+/**
+ * How every surface words and colours a job, by phase, in one place: the chat
+ * card, the corner panel and the dashboard's row all read from here.
+ * - `title`: the job in one line. A finished move says plainly that the chat
+ *   follows the lane to its new computer (same chat, same lane).
+ * - `stepLine`: the step running now (or why it failed), "Copy lane · Copying files…".
+ * - `tone`: the corner panel's tone for the row.
+ * - `note`: the card's sentence under the steps.
+ * - `row`: what the dashboard row's State cell says; null when it says the computer's own state.
+ */
+export type CloudLaneJobPresentation = {
+  title: string;
+  stepLine: string | null;
+  tone: NoticeTone;
+  note: string | null;
+  row: { state: "starting" | "failed" | "awake"; label: string } | null;
+};
+
+export function cloudLaneJobPresentation(job: CloudLaneJobSnapshot, account: CloudAccountState | null): CloudLaneJobPresentation {
   const to = sizeLabel(account, job.toSizeId) ?? "the new size";
+  const move = job.kind === "move";
   switch (job.phase) {
     case "waiting":
-      return `${job.laneName} changes to ${to} when the agent is idle`;
+      return {
+        title: `${job.laneName} changes to ${to} when the agent is idle`,
+        stepLine: liveStepLine(job),
+        tone: "accent",
+        note: "ADE waits for the agent to finish its turn. Your files and chats stay.",
+        row: { state: "starting", label: "Changes when idle" },
+      };
     case "running":
-      return job.kind === "move" ? `Moving ${job.laneName} to a ${to} computer` : `Changing ${job.laneName} to ${to}`;
+      return {
+        title: move ? `Moving ${job.laneName} to a ${to} computer` : `Changing ${job.laneName} to ${to}`,
+        stepLine: liveStepLine(job),
+        tone: "accent",
+        note: "Your files and chats stay. A message you send waits until ADE on the computer answers. You can close this window.",
+        row: { state: "starting", label: move ? "Moving" : "Changing size" },
+      };
     case "online":
-      return `${job.laneName} is online at ${to}`;
+      return {
+        title: move ? `Moved to a ${to} computer · your chat follows` : `${job.laneName} is online at ${to}`,
+        stepLine: move ? `${job.laneName} is online. The old computer is gone.` : null,
+        tone: "success",
+        note: move
+          ? "Same lane, same chats, on the new computer. ADE points this chat, its tools and Android there."
+          : "ADE connected to the computer again.",
+        row: { state: "awake", label: move ? "Moved" : "Resized" },
+      };
     case "failed":
-      return job.kind === "move" ? `The move to ${to} stopped` : `The change to ${to} stopped`;
+      return {
+        title: move ? `The move to ${to} stopped` : `The change to ${to} stopped`,
+        stepLine: job.error ?? job.stages.find((stage) => stage.status === "failed")?.error ?? null,
+        tone: "error",
+        note: null,
+        row: { state: "failed", label: move ? "Move stopped" : "Size change stopped" },
+      };
     case "cancelled":
-      return `Kept ${job.laneName} at ${sizeLabel(account, job.fromSizeId) ?? "its size"}`;
+      return {
+        title: `Kept ${job.laneName} at ${sizeLabel(account, job.fromSizeId) ?? "its size"}`,
+        stepLine: null,
+        tone: "neutral",
+        note: null,
+        row: null,
+      };
   }
+}
+
+/** The job in one line, the same in the chat, on the dashboard and in the corner panel. */
+export function cloudLaneJobTitle(job: CloudLaneJobSnapshot, account: CloudAccountState | null): string {
+  return cloudLaneJobPresentation(job, account).title;
+}
+
+/** A waiting or running job's step now, as one line. */
+function liveStepLine(job: CloudLaneJobSnapshot): string | null {
+  const stage = job.stages.find((entry) => entry.status === "running")
+    ?? job.stages.find((entry) => entry.status === "pending")
+    ?? null;
+  if (!stage) return null;
+  const label = CLOUD_LANE_JOB_STAGE_LABELS[stage.id];
+  return stage.detail?.trim() ? `${label} · ${stage.detail.trim()}` : label;
+}
+
+/** Cards stay until the person closes them only when the job is over. */
+function cloudLaneJobDismissable(job: CloudLaneJobSnapshot): boolean {
+  return job.phase === "failed" || job.phase === "online" || job.phase === "cancelled";
 }
 
 /** Cancel works only before the size changes: while the job waits, or saves the work. */
@@ -138,16 +210,19 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
   job,
   account,
   variant = "thread",
+  headless = false,
   className,
 }: {
   job: CloudLaneJobSnapshot;
   /** For the size names and rates; null shows the size ids' own names. */
   account: CloudAccountState | null;
-  /** `thread`: a chat card. `panel`: inside the dashboard's lane panel. */
+  /** `thread`: a chat card. `panel`: inside the dashboard's lane panel or the corner panel. */
   variant?: "thread" | "panel";
+  /** Inside a row that already shows the title (the corner panel): only the steps and actions. */
+  headless?: boolean;
   className?: string;
 }) {
-  const [busy, setBusy] = useState<"retry" | "cancel" | null>(null);
+  const [busy, setBusy] = useState<"retry" | "cancel" | "dismiss" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const compact = variant === "panel";
   const failed = job.phase === "failed";
@@ -156,7 +231,7 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
   // Above the prompt box the card folds to one line. It is open by default
   // only while a step runs or has failed; the person's own choice holds
   // until the job's phase changes.
-  const foldable = variant === "thread";
+  const foldable = variant === "thread" && !headless;
   const openByDefault = job.phase === "running" || failed;
   const [openChoice, setOpenChoice] = useState<{ phase: CloudLaneJobSnapshot["phase"]; open: boolean } | null>(null);
   const open = !foldable || (openChoice?.phase === job.phase ? openChoice.open : openByDefault);
@@ -171,11 +246,12 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
   const fromLabel = sizeLabel(account, job.fromSizeId);
   const toLabel = sizeLabel(account, job.toSizeId);
 
-  const run = async (kind: "retry" | "cancel") => {
+  const run = async (kind: "retry" | "cancel" | "dismiss") => {
     setBusy(kind);
     setError(null);
     try {
       if (kind === "retry") await retryCloudLaneJob(job.jobId);
+      else if (kind === "dismiss") await dismissCloudLaneJob(job.jobId);
       else await cancelCloudLaneJob(job.jobId);
     } catch (runError) {
       setError(ipcErrorMessage(runError) || "ADE couldn't do that. Try again in a moment.");
@@ -197,13 +273,8 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
     ]);
   };
 
-  const notice = job.phase === "waiting"
-    ? "ADE waits for the agent to finish its turn. Your files and chats stay."
-    : job.phase === "running"
-      ? "Your files and chats stay. A message you send waits until ADE on the computer answers. You can close this window."
-      : job.phase === "online"
-        ? "ADE connected to the computer again."
-        : null;
+  const notice = cloudLaneJobPresentation(job, account).note;
+  const dismissable = cloudLaneJobDismissable(job);
 
   return (
     <div
@@ -218,6 +289,7 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
         className,
       )}
     >
+      {headless ? null : (
       <StepCardHeader
         tileTone={tileTone}
         tileIcon={failed ? <Warning size={13} weight="bold" /> : <CloudMark size={13} bold />}
@@ -228,6 +300,18 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
         trailing={(
           <>
             <JobElapsed job={job} className={cn("ml-auto text-fg/38", metaSize)} />
+            {dismissable ? (
+              <button
+                type="button"
+                className="adecl-job-dismiss"
+                aria-label={failed ? "Dismiss this failure" : "Dismiss"}
+                title="Dismiss"
+                disabled={busy != null}
+                onClick={() => void run("dismiss")}
+              >
+                <X size={10} weight="bold" aria-hidden />
+              </button>
+            ) : null}
             {foldable ? (
               <button
                 type="button"
@@ -256,12 +340,14 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
               <span>{toLabel}</span>
             </Chip>
             {job.kind === "move" ? <Chip title="A new computer gets the lane's files, then the old one goes">New computer</Chip> : null}
+            {job.diskGb ? <Chip title="The disk grows in the same restart">Disk to {job.diskGb} GB</Chip> : null}
           </>
         ) : null}
       />
+      )}
       {open ? (
       <div id={bodyId}>
-      <LaunchProgressRail stages={job.stages} cloud className="mb-1 mt-3" />
+      <LaunchProgressRail stages={job.stages} cloud className={headless ? "mb-1" : "mb-1 mt-3"} />
       <ul className="divide-y divide-fg/[0.045]" aria-label="Steps">
         {job.stages.map((stage) => (
           <li key={stage.id} data-stage-id={stage.id} data-stage-status={stage.status}>

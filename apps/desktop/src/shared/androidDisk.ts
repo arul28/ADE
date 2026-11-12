@@ -7,6 +7,13 @@
  * numbers back to offer a bigger disk. One owner for both sides.
  */
 
+/**
+ * The data partition ADE gives a device it makes (`disk.dataPartition.size`
+ * in `androidHardwareProfiles.ts`). With the emulator's rule below, a first
+ * start needs about 7.2 GB free.
+ */
+export const ADE_ANDROID_DATA_PARTITION_MB = 6 * 1024;
+
 /** The emulator's own rule: free space of at least 1.2 times the partition. */
 const ANDROID_USERDATA_FREE_FACTOR = 1.2;
 
@@ -16,6 +23,11 @@ export function androidUserdataNeedMb(partitionMb: number): number {
 }
 
 const gb = (mb: number): string => (mb / 1024).toFixed(1);
+
+/** What a device ADE makes needs free on its first start, in MB. */
+export function androidFirstStartNeedMb(): number {
+  return androidUserdataNeedMb(ADE_ANDROID_DATA_PARTITION_MB);
+}
 
 /** The refusal's one sentence. `parseAndroidLowDisk` reads the numbers back. */
 export function androidLowDiskSentence(neededMb: number, freeMb: number): string {

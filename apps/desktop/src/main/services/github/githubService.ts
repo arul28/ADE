@@ -1298,22 +1298,25 @@ export function createGithubService({
   });
   lastAccountGhToken = ghAccountSync.readAccountToken();
 
-  const persistToken = (token: string | null): void => {
+  /** Stores the token here; the promise settles once the account's copy did (at once when there is none to write). */
+  const persistToken = (token: string | null): Promise<void> => {
     const clean = (token ?? "").trim();
     // Read before the local copy goes: the account's copy goes only if it is this token.
     if (!clean) patAccountSync.unpublish();
     persistEncryptedToken(tokenPath, token);
     persistMachineToken(token);
+    let accountCopy: Promise<void> = Promise.resolve();
     if (clean) {
       patAccountSync.markLocal();
       // A token pasted here follows the account to its other machines.
-      patAccountSync.publish(clean);
+      accountCopy = patAccountSync.publish(clean);
     }
     if (!(token ?? "").trim()) {
       removeTokenFile(legacyTokenPath);
     } else if (fs.existsSync(legacyTokenPath)) {
       removeTokenFile(legacyTokenPath);
     }
+    return accountCopy;
   };
 
   const detectRepo = async (): Promise<GitHubRepoRef | null> => {
@@ -2948,15 +2951,21 @@ export function createGithubService({
       return status;
     },
 
-    setToken(token: string): void {
+    /**
+     * Stores the token here before it returns. `accountCopy` settles once the
+     * account's vault copy was written (or couldn't be): a reader of the
+     * account's copy (the ADE Cloud git preflight) is told after that.
+     */
+    setToken(token: string): { accountCopy: Promise<void> } {
       const previousToken = readStoredPatToken();
-      persistToken(token);
+      const accountCopy = persistToken(token);
       tokenDecryptionFailed = false;
       const currentToken = token.trim();
       credentialsChanged({
         tokensToClear: [previousToken, currentToken],
         clearGhCaches: true,
       });
+      return { accountCopy };
     },
 
     /**

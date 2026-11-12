@@ -23,6 +23,7 @@ import { useCloudMachines } from "../../../remoteTargets/useCloudMachines";
 import { useSettingsMachines } from "../../machines/settingsMachinesContext";
 import type { AdeCloudAccountPart, AdeCloudCloudPart } from "./adeCloudSignInModel";
 import { usePinnedProviderLoginStatus } from "./usePinnedProviderLoginStatus";
+import { useAccountMachineNames, withMachineNames } from "./useAccountMachineNames";
 
 export type AdeCloudSignInsState = {
   account: AdeCloudAccountPart;
@@ -128,9 +129,13 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
   // ── Reads ──
   const accountRead = usePinnedProviderLoginStatus({ pin: accountPin, warning: "[providers] reading ADE Cloud sign-ins failed" });
   const { apply: applyAccountRead, refresh: refreshAccountRead, reload: reloadAccount } = accountRead;
+  // Each sign-in's computer by the name the account's machine list gives it now.
+  const machineNames = useAccountMachineNames();
   const account = useMemo<AdeCloudAccountPart>(
-    () => (accountRead.status ? { state: "ok", status: accountRead.status } : accountRead.failed ? { state: "failed" } : { state: "loading" }),
-    [accountRead.failed, accountRead.status],
+    () => (accountRead.status
+      ? { state: "ok", status: withMachineNames(accountRead.status, machineNames) }
+      : accountRead.failed ? { state: "failed" } : { state: "loading" }),
+    [accountRead.failed, accountRead.status, machineNames],
   );
   const [cloudStatus, setCloudStatus] = useState<{ key: string; status: ProviderLoginStatus | null; failed: boolean } | null>(null);
   const [cloudAi, setCloudAi] = useState<{ key: string; ai: AiSettingsStatus | null } | null>(null);
@@ -226,8 +231,8 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
     if (!status) return { state: "loading", computerName };
     if (status.failed || !status.status || !status.status.thisComputer.cloudComputer) return { state: "no_answer", computerName };
     const ai = cloudAi?.key === cloudKey ? cloudAi.ai : null;
-    return { state: "ok", computerName, status: status.status, ai };
-  }, [cloudAi, cloudKey, cloudResult, cloudStatus, reporting]);
+    return { state: "ok", computerName, status: withMachineNames(status.status, machineNames), ai };
+  }, [cloudAi, cloudKey, cloudResult, cloudStatus, machineNames, reporting]);
 
   // ── Re-check ──
   const [rechecking, setRechecking] = useState(false);

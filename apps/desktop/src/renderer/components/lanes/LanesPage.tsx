@@ -91,6 +91,7 @@ import { laneCompareBase, laneRebaseLine, useLaneRebaseNeeds, type LaneRebaseLin
 import { confirmForeignLaneDeleted, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { deleteCloudLaneWithCheck, useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
 import { CloudLanesWithoutComputerList } from "../cloudLane/CloudLaneWithoutComputer";
+import { CloudLanesOnDeletedComputers } from "../cloudLane/CloudLanesOnDeletedComputers";
 import { originUrlForBinding } from "./laneMachines";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced } from "../../lib/prReadCache";
@@ -2169,10 +2170,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     />
   ) : null;
   // This project's ADE Cloud lanes whose computer was freed or removed: each says so and offers a new one.
+  // Then the lanes whose computer was deleted: one place, apart from the live lanes.
   const machineFilterToolbar = (
     <>
       {machineFilterChipsNode}
       <CloudLanesWithoutComputerList originUrl={originUrlForBinding(projectBinding)} />
+      <CloudLanesOnDeletedComputers />
     </>
   );
 

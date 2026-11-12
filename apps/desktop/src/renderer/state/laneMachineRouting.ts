@@ -26,6 +26,7 @@
  * visible, never a new polling loop.
  */
 
+import { savedChatsMachineKey } from "../../shared/cloudSavedChats";
 import { useMemo, useState } from "react";
 import type {
   LaneSummary,
@@ -216,9 +217,14 @@ export function buildForeignSessionLanes(
   return byMachineId;
 }
 
-/** The machines a call can be sent to (the tab's own, and every addressable other). */
+/**
+ * The machines a call can be sent to (the tab's own, and every addressable
+ * other). A cloud computer's saved chats (`cloud-saved:<key>`, listed while it
+ * isn't connected) are left out: they answer only for those chats, and
+ * anything more would have to wake the computer.
+ */
 export function routableMachines(machines: readonly LaneMachine[]): LaneMachine[] {
-  return machines.filter((machine) => machine.routable);
+  return machines.filter((machine) => machine.routable && savedChatsMachineKey(machine.machineId) == null);
 }
 
 function activeMachineFor(binding: OpenProjectBinding | null): { machineId: string; machineName: string } {

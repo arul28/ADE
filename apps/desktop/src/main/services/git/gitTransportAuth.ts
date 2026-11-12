@@ -56,13 +56,22 @@ export function githubExtraHeaderGitEnv(token: string | null | undefined): NodeJ
   const trimmed = token?.trim();
   if (!trimmed) return env;
   const basic = Buffer.from(`x-access-token:${trimmed}`, "utf8").toString("base64");
+  return { ...env, ...githubAuthHeaderGitEnv(`basic ${basic}`) };
+}
+
+/**
+ * One GitHub Authorization header (`basic …`) for one git command, through
+ * Git's config environment (Git 2.31+): the empty entry first resets any
+ * header from .git/config or a global config, then ADE's. Never in command
+ * arguments, remote URLs or anything persisted.
+ */
+export function githubAuthHeaderGitEnv(authHeader: string): NodeJS.ProcessEnv {
   return {
-    ...env,
     GIT_CONFIG_COUNT: "2",
     GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
     GIT_CONFIG_VALUE_0: "",
     GIT_CONFIG_KEY_1: "http.https://github.com/.extraheader",
-    GIT_CONFIG_VALUE_1: `AUTHORIZATION: basic ${basic}`,
+    GIT_CONFIG_VALUE_1: `AUTHORIZATION: ${authHeader}`,
   };
 }
 

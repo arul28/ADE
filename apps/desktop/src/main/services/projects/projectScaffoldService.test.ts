@@ -390,50 +390,64 @@ describe("cloneRepository", () => {
     expect(error?.message).toContain("Could not resolve host: github.com");
   });
 
-  // The header goes to that one git command through Git's config environment,
-  // never as `-c` (which `git clone` writes into the new .git/config).
-  const storedToken = "ghp_secret_token";
-  const storedBasic = Buffer.from(`x-access-token:${storedToken}`, "utf8").toString("base64");
-  it.each([
-    {
-      label: "the stored GitHub token",
-      getTokenOrThrow: () => storedToken,
-      githubAuthHeader: undefined as string | undefined,
-      header: `basic ${storedBasic}`,
-      secret: storedToken,
-    },
-    {
-      label: "an explicit one-shot header (a remote clone request)",
-      getTokenOrThrow: () => {
-        throw new Error("No local token on this machine.");
-      },
-      githubAuthHeader: "basic one-shot",
-      header: "basic one-shot",
-      secret: "one-shot",
-    },
-  ])("clones with $label without putting the auth header in the clone's arguments", async ({ getTokenOrThrow, githubAuthHeader, header, secret }) => {
+  it("injects the available GitHub token via http.extraheader so private clones succeed without a credential helper", async () => {
     runGitMock.mockResolvedValue(gitOk());
     const parentDir = makeTempDir("ade-scaffold-clone-auth-");
     const service = createProjectScaffoldService({
       logger: makeLogger(),
-      githubService: makeGithubServiceStub({ getTokenOrThrow: vi.fn(getTokenOrThrow) }),
+      githubService: makeGithubServiceStub({
+        getTokenOrThrow: vi.fn(() => "ghp_secret_token"),
+      }),
     });
 
     await service.cloneRepository({
       url: "https://github.com/octocat/Hello-World",
       parentDir,
-      ...(githubAuthHeader ? { githubAuthHeader } : {}),
     });
 
     const cloneCall = runGitMock.mock.calls.find((c) => (c[0] as string[])[0] === "clone");
-    expect(cloneCall, "a clone ran").toBeDefined();
-    const args = cloneCall![0] as string[];
+    expect(cloneCall).toBeDefined();
+    const args = cloneCall?.[0] as string[];
+    const expectedBasic = Buffer.from("x-access-token:ghp_secret_token", "utf8").toString("base64");
+    // The header reaches git for this one command through its config environment,
+    // never as `clone -c`, which would save the token in the new .git/config.
     expect(args).toEqual(["clone", "--", "https://github.com/octocat/Hello-World", path.join(parentDir, "Hello-World")]);
-    expect(args.join(" ")).not.toContain(secret);
-    const env = (cloneCall![1] as { env?: Record<string, string> }).env ?? {};
-    expect(env.GIT_CONFIG_COUNT).toBe("1");
-    expect(env.GIT_CONFIG_KEY_0).toBe("http.https://github.com/.extraheader");
-    expect(env.GIT_CONFIG_VALUE_0).toBe(`AUTHORIZATION: ${header}`);
+    expect(cloneCall?.[1]?.env).toMatchObject({
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_0: "",
+      GIT_CONFIG_KEY_1: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_1: `AUTHORIZATION: basic ${expectedBasic}`,
+    });
+  });
+
+  it("uses an explicit one-shot GitHub auth header for remote clone requests", async () => {
+    runGitMock.mockResolvedValue(gitOk());
+    const parentDir = makeTempDir("ade-scaffold-clone-explicit-auth-");
+    const service = createProjectScaffoldService({
+      logger: makeLogger(),
+      githubService: makeGithubServiceStub({
+        getTokenOrThrow: vi.fn(() => {
+          throw new Error("No local token on this machine.");
+        }),
+      }),
+    });
+
+    await service.cloneRepository({
+      url: "https://github.com/octocat/Hello-World",
+      parentDir,
+      githubAuthHeader: "basic one-shot",
+    });
+
+    const cloneCall = runGitMock.mock.calls.find((c) => (c[0] as string[])[0] === "clone");
+    expect(cloneCall?.[0]).toEqual(["clone", "--", "https://github.com/octocat/Hello-World", path.join(parentDir, "Hello-World")]);
+    expect(cloneCall?.[1]?.env).toMatchObject({
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_0: "",
+      GIT_CONFIG_KEY_1: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_1: "AUTHORIZATION: basic one-shot",
+    });
   });
 
   it("falls back to a plain clone (no extraheader) when no token is stored", async () => {
