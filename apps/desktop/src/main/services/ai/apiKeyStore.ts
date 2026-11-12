@@ -108,6 +108,11 @@ const ENV_KEY_PROVIDERS: Record<string, string> = {
   moonshotai: "MOONSHOT_API_KEY",
 };
 
+/** A provider id the key store knows by name (it has an environment variable). */
+export function isKnownApiKeyProvider(provider: string): boolean {
+  return Object.prototype.hasOwnProperty.call(ENV_KEY_PROVIDERS, provider.trim().toLowerCase());
+}
+
 const MACOS_SECURITY_BIN = "/usr/bin/security";
 const MACOS_KEYCHAIN_SERVICE = "com.ade.desktop.api-keys.v1";
 const MACOS_KEYCHAIN_PROVIDER_INDEX_ACCOUNT = "__ade_provider_index__";
@@ -1639,6 +1644,127 @@ export async function hydrateApiKeysFromVault(): Promise<ApiKeyHydrationResult> 
     }
   }
   return { collisions };
+}
+
+/** What happened to a provider key found in plain text (see `adoptPlaintextApiKey`). */
+export type PlaintextApiKeyOutcome =
+  /** A stored credential of the provider already holds this value. */
+  | "already_stored"
+  /** Saved as the provider's default key on this machine and read back. */
+  | "stored"
+  /** The provider's default key holds a different value; nothing was written. */
+  | "conflict"
+  /** Not a usable provider id or key. */
+  | "invalid"
+  /** The store could not be written or read back. */
+  | "failed";
+
+/**
+ * The value the persistent store holds for one credential: the OS-bound
+ * credential store or the encrypted file. Never the in-memory cache (a write
+ * that failed can still be in it), never the environment, never a host key.
+ */
+function readPersistedCredentialValue(scope: ApiKeyScopeState, storageKey: string): string | null {
+  if (scope.credentialStore) return readCredentialSecret(scope, credentialProviderKey(storageKey));
+  const value = loadEncryptedStore(scope)[storageKey];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Copy a key that was just adopted on this machine to the account vault, only
+ * when the account has no row for it (also no deleted one). The same rule as
+ * the account migration's `provider_api_keys` source: a key another machine
+ * already put in the account wins, so two machines with different values both
+ * keep their own and the account keeps the first. That migration runs once
+ * per process, so a key adopted later would otherwise stay on this machine.
+ */
+async function copyAdoptedApiKeyToVault(storageKey: string, value: string): Promise<void> {
+  const accountUserId = getAccountUserId?.()?.trim() || null;
+  if (!accountUserId) return;
+  const vault = resolveAccountVault("adopt", storageKey);
+  if (!vault) return;
+  try {
+    const listed = await vault.list("all");
+    if (!listed.ok) {
+      logVaultFailure("adopt", storageKey, listed);
+      return;
+    }
+    if (listed.value.some((item) => item.scope === "all" && item.kind === "provider_api_key" && item.key === storageKey)) return;
+    const existing = await vault.get("all", "provider_api_key", storageKey);
+    if (!existing.ok) {
+      logVaultFailure("adopt", storageKey, existing);
+      return;
+    }
+    if (existing.value !== null) return;
+    if ((getAccountUserId?.()?.trim() || null) !== accountUserId) return;
+    const saved = await vault.set("all", "provider_api_key", storageKey, value, { expectedAccountUserId: accountUserId });
+    if (!saved.ok) logVaultFailure("adopt", storageKey, saved);
+  } catch (error) {
+    logVaultFailure("adopt", storageKey, error);
+  }
+}
+
+/**
+ * Take a provider API key found in plain text (`.ade/local.yaml`) into this
+ * machine's key store, without replacing anything that is already there.
+ *
+ * - The same value in any stored credential of the provider: `already_stored`.
+ * - A different value in the provider's default credential: `conflict`. The
+ *   caller keeps its copy, because that copy is the one in use for its project
+ *   today (a config key outranks a stored one, `detectAllAuth`).
+ * - No default credential: saved as the default, device-only, then read back
+ *   from the persistent store. A signed-in machine then copies it to the
+ *   account vault when the account has none (`copyAdoptedApiKeyToVault`).
+ *
+ * The caller removes its copy only after `stored` or `already_stored`.
+ */
+export function adoptPlaintextApiKey(provider: string, key: string): PlaintextApiKeyOutcome {
+  const normalizedProvider = normalizeProvider(provider);
+  const value = typeof key === "string" ? key.trim() : "";
+  if (!normalizedProvider || !isSafeIdentifier(normalizedProvider) || !value || /\s/.test(value)) return "invalid";
+  const scope = projectScope;
+  if (!scope.credentialStore && !scope.storePath) return "failed";
+  const storageKey = credentialStorageKey(normalizedProvider, DEFAULT_CREDENTIAL_ID);
+  if (!storageKey) return "invalid";
+  try {
+    // Loads the store and moves a legacy keychain entry in, as a normal read does.
+    getApiCredentialKeyIn(scope, normalizedProvider, DEFAULT_CREDENTIAL_ID);
+    const storedIds = new Set<string>([DEFAULT_CREDENTIAL_ID]);
+    for (const summary of storedCredentialSummaries(scope, normalizedProvider)) storedIds.add(summary.credentialId);
+    for (const credentialId of storedIds) {
+      const stored = readPersistedCredentialValue(scope, credentialStorageKey(normalizedProvider, credentialId));
+      if (stored === value) return "already_stored";
+    }
+    if (readPersistedCredentialValue(scope, storageKey) !== null) return "conflict";
+    storeApiKeyIn(scope, normalizedProvider, value, { deviceOnly: true });
+    if (readPersistedCredentialValue(scope, storageKey) !== value) return "failed";
+  } catch (error) {
+    vaultLogger?.warn("ai.api_key_adopt_failed", {
+      provider: normalizedProvider,
+      error: error instanceof Error ? error.name : "unknown",
+    });
+    return "failed";
+  }
+  void copyAdoptedApiKeyToVault(storageKey, value);
+  return "stored";
+}
+
+/**
+ * A provider key that a project config write offers (`storeOfferedApiKey`
+ * of `createProjectConfigService`): it goes to this store, never to the file.
+ * The same value already stored, or no default yet: as `adoptPlaintextApiKey`
+ * (an echo of a key that just moved changes nothing, here or in the account).
+ * A different value than the default: the writer chose a new key, so it
+ * replaces the default the way Settings does. Throws when it cannot be saved.
+ */
+export function saveOfferedApiKey(provider: string, key: string): void {
+  const outcome = adoptPlaintextApiKey(provider, key);
+  if (outcome === "stored" || outcome === "already_stored") return;
+  if (outcome === "conflict") {
+    storeApiKey(provider, key);
+    return;
+  }
+  throw new Error(`The API key for '${normalizeProvider(provider) || "?"}' could not be saved in ADE's key store.`);
 }
 
 /**
