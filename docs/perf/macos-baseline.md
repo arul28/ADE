@@ -897,6 +897,23 @@ Where the growth came from (bisected on main's first-parent history):
   which pulled in the app store and its 842 KB scene image. Fixed on
   `ade/account-web-cli-links` (import from `lib/requirePin`).
 
+Measured again after the rebase (same script, `--runs 3`, load average
+4–6):
+
+| Metric | main `aa55f74a6` | Joined branch (PR #2205) `96682f195` | `ade/account-web-cli-links` `502572197` | Ceiling |
+| --- | ---: | ---: | ---: | ---: |
+| Requests | 74 | 96 | 67 | 60 |
+| Transfer (KB) | 1,607 | 2,475 | 1,498 | 2,000 |
+| JS (KB) | 1,358 | 1,663 | 1,253 | 950 |
+| Images (KB) | 82 | 642 | 82 | 100 |
+| Heap after GC (MB) | 3.7 | 4.6 | 3.6 | 3.5 |
+| Gate visible (ms) | 91 | 122 | 100 | 190 |
+
+The rows still over on the branch (requests, JS, heap) are over by more on
+main. The Sentry chunk alone is 445 KB of the branch's 1,253 KB JS; without
+it, JS is about 808 KB, under the ceiling. The settings manifest chunk is
+166 KB.
+
 ## Mac Studio (M4 Max), ADE-175 pass
 
 A second machine, so a second set of columns and not new values for the tables
