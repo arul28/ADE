@@ -41232,6 +41232,13 @@ async function applyAccountProjectSelector(options: GlobalOptions): Promise<void
   const layout = resolveMachineAdeLayout();
   const state = readAccountProjectState(layout.adeDir);
   const listed = state.userId !== null && state.cursor !== null;
+  if (remote && !listed) {
+    // This shell's own home has no list (another home, or `--socket` to
+    // another brain): the other machine matches the value against its own
+    // folders, by account link or by origin.
+    options.projectSelector = null;
+    return;
+  }
   if (selector.kind === "id" && !listed) {
     throw new CliUsageError(
       `ADE has not read your account's projects on this computer, so it cannot find ${selector.id}. `
