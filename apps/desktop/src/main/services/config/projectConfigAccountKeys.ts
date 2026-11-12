@@ -48,6 +48,8 @@ export type MovedKey = MovedKeySpec & {
   hold(value: unknown): MovedKeyHold | null;
   /** The account's value with this computer's local parts from `here` put back. */
   combine(accountValue: unknown, here: unknown): unknown;
+  /** Only this computer's local parts of `here` (undefined when it has none): what stays when the account row goes. */
+  localOnly(here: unknown): unknown;
 };
 
 /**
@@ -250,6 +252,14 @@ function keyFromSpec(spec: MovedKeySpec, rules: ProjectConfigRules, access?: {
       for (const part of spec.localParts ?? []) {
         const mine = getIn(here, part);
         if (mine !== undefined) next = setIn(next, part, mine);
+      }
+      return next;
+    },
+    localOnly: (here) => {
+      let next: unknown = undefined;
+      for (const part of spec.localParts ?? []) {
+        const mine = getIn(here, part);
+        if (mine !== undefined) next = setIn(next ?? {}, part, mine);
       }
       return next;
     },

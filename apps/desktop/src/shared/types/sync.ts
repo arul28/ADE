@@ -3263,6 +3263,7 @@ export type SyncRemoteCommandAction =
   | "jira.createIssue"
   | "projectConfig.get"
   | "projectConfig.save"
+  | "projectConfig.resolveAccountSettingNotice"
   | "ai.getStatus"
   | "ai.jevDecide"
   | "ai.jevStatus"

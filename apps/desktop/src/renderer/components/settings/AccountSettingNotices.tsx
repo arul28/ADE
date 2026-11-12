@@ -33,7 +33,10 @@ export function AccountSettingNotices({
   useEffect(() => {
     let cancelled = false;
     setNotices([]);
-    window.ade.projectConfig
+    // A host without project settings (or an older bridge) has no notices.
+    const projectConfig = window.ade?.projectConfig;
+    if (!projectConfig?.get) return;
+    projectConfig
       .get(pin)
       .then((snapshot) => {
         if (!cancelled) setNotices((snapshot.accountNotices ?? []).filter(shows));

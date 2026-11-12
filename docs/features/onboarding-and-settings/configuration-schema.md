@@ -77,10 +77,14 @@ computer signed in to the account gets them
 - **Move.** When the account syncs, each key the account does not have yet is
   written to it (write-if-absent). A joined list takes the union. A different
   value keeps the account's and records a notice; the person answers with
-  "Use this computer's value" or "Keep" where the setting is edited.
+  "Use this computer's value" or "Keep" where the setting is edited. A joined
+  list the account refuses gets a notice too. Until the first move for the
+  signed-in account, the file alone is the setting, so nothing replaces this
+  computer's values before the move has seen them. After it, a value the file
+  got from the account is never moved back: the account's newer value wins.
 - **Save.** A changed value goes to the account. A cleared value removes the
   row, and the other computers remove their copy only when it came from the
-  account. For one release ADE also writes the account values back into
+  account. This computer's own parts (the `writablePaths` lists) stay. For one release ADE also writes the account values back into
   `local.yaml` (the mirror), so an older ADE on the same computer still reads
   them.
 - **Held on this computer.** A value with a credential-shaped key (for
