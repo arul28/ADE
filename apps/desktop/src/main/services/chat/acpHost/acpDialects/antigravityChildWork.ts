@@ -48,6 +48,9 @@ const DESCRIPTION_LIMIT = 400;
 const SUMMARY_LIMIT = 8_000;
 const TOOL_OUTPUT_LIMIT = 16_000;
 const TITLE_LIMIT = 200;
+/** Steps per log read, and how many reads one pass may take (a turn of 5,000 steps). */
+const READ_BATCH = 200;
+const MAX_READ_BATCHES = 25;
 
 type Launch = { role: string; prompt: string; typeName: string | null };
 
@@ -203,7 +206,14 @@ export function createAntigravityBackgroundWork(args: {
    */
   const readParent = (outsideTurn: boolean, events: AcpBackgroundEvent[]) => {
     if (!parentFile) return;
-    const steps: AntigravityStep[] = readAntigravitySteps(parentFile, cursor) ?? [];
+    // Every unread step, a batch at a time: a long turn can add more than
+    // one batch, and a launch past the first must not be missed.
+    const steps: AntigravityStep[] = [];
+    for (let batch = 0; batch < MAX_READ_BATCHES; batch++) {
+      const read = readAntigravitySteps(parentFile, steps.at(-1)?.idx ?? cursor, READ_BATCH) ?? [];
+      steps.push(...read);
+      if (read.length < READ_BATCH) break;
+    }
     const items: AcpBackgroundItem[] = [];
     for (const step of steps) {
       cursor = Math.max(cursor, step.idx);

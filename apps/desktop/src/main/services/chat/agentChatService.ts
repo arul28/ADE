@@ -37343,6 +37343,10 @@ export function createAgentChatService(args: {
           if (!isCurrentRuntime || !runtime) return;
           runtime.processFailed = true;
           runtime.interrupted = true;
+          // The agent's subagents and background tools died with it: settle
+          // their cards, and stop counting them as work that keeps the chat open.
+          runtime.backgroundWork?.dispose();
+          runtime.backgroundWork = null;
           managed.runtimeInvalidated = true;
           managed.acpReasoningEffortInvalidated = false;
           cancelPendingInputsFrom(managed, "acp", "ade");

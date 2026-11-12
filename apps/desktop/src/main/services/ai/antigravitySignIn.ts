@@ -6,14 +6,14 @@
  *   start    begin the chosen method's sign-in
  *   status   the flow's state plus the disk check (cheap; polled by Settings
  *            only while a flow runs)
- *   complete hand the code (or the address Google's last page shows) to the
- *            waiting sign-in
+ *   complete hand the code (pasted, or read from the address Google's last page
+ *            shows) to the waiting sign-in
  *   cancel   end the flow and its process
  *
  * Google account (`oauth-personal`): ADE runs the pinned CLI's own terminal
  * sign-in, `agy acp --login`. It prints a Google link whose `redirect_uri` is
  * `https://antigravity.google/oauth-callback`, a page that shows a code, and
- * then reads the code (or that page's full address) from stdin. Nothing
+ * then reads the code from stdin (ADE takes it out of a pasted address). Nothing
  * listens on the machine, so the same paste works from any computer, the
  * phone and ADE Cloud. ADE validates the link and the pasted value, writes the
  * value to the CLI's stdin, and never logs either.
@@ -168,7 +168,8 @@ export function readAntigravityLoginPaste(
   if (codes.length !== 1 || !AUTH_CODE.test(codes[0] ?? "")) {
     return { ok: false, error: "That address carries no sign-in code. Paste the code the Antigravity page shows." };
   }
-  return { ok: true, line: url.toString() };
+  // The CLI is handed the code itself: that is what a pasted code gives it too.
+  return { ok: true, line: codes[0]! };
 }
 
 // ── State ───────────────────────────────────────────────────────────────────

@@ -83,6 +83,11 @@ export function antigravityConversationFile(conversationId: string, cliDir?: str
 /** A length-delimited field's bytes, or a varint's value. */
 type Field = readonly [number, Uint8Array | number];
 
+/**
+ * The fields of one message. A payload read with a size cap can end inside a
+ * field: that field keeps the bytes that are there, and the fields before it
+ * are kept, so a long message is shortened rather than lost.
+ */
 function fields(bytes: Uint8Array): Field[] {
   const out: Field[] = [];
   let offset = 0;
@@ -96,30 +101,28 @@ function fields(bytes: Uint8Array): Field[] {
     }
     throw new Error("overlong");
   };
-  while (offset < bytes.length) {
-    const key = varint();
-    const wire = key % 8;
-    const field = Math.floor(key / 8);
-    if (wire === 0) out.push([field, varint()]);
-    else if (wire === 1) offset += 8;
-    else if (wire === 5) offset += 4;
-    else if (wire === 2) {
-      const length = varint();
-      if (offset + length > bytes.length) throw new Error("truncated");
-      out.push([field, bytes.subarray(offset, offset + length)]);
-      offset += length;
-    } else throw new Error("wire");
+  try {
+    while (offset < bytes.length) {
+      const key = varint();
+      const wire = key % 8;
+      const field = Math.floor(key / 8);
+      if (wire === 0) out.push([field, varint()]);
+      else if (wire === 1) offset += 8;
+      else if (wire === 5) offset += 4;
+      else if (wire === 2) {
+        const length = varint();
+        out.push([field, bytes.subarray(offset, Math.min(bytes.length, offset + length))]);
+        offset += length;
+      } else throw new Error("wire");
+    }
+  } catch {
+    // Cut or unreadable from here on: keep what came before.
   }
   return out;
 }
 
 function safeFields(bytes: Uint8Array | undefined): Field[] {
-  if (!bytes) return [];
-  try {
-    return fields(bytes);
-  } catch {
-    return [];
-  }
+  return bytes ? fields(bytes) : [];
 }
 
 const decoder = new TextDecoder("utf-8");
