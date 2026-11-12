@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb, type AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
+import { windowsScaledTimeout } from "../../../vitest.timeouts";
 import {
   createSyncService,
   shouldReclaimStaleViewerDraftAfterTransportFailure,
@@ -330,7 +331,7 @@ describe("createSyncService", () => {
       await service.dispose();
       db.close();
     }
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("refuses an explicit host transfer from a runtime that may not host, leaving the record alone", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-non-host-transfer-");
@@ -365,7 +366,7 @@ describe("createSyncService", () => {
       await service.dispose();
       db.close();
     }
-  }, 30_000);
+  }, windowsScaledTimeout(30_000));
 
   it("keeps the local device registry when connectToBrain fails before handshake", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-connect-fail-");

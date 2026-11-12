@@ -2120,6 +2120,7 @@ Stages:
    - `test-ade-cli` — full ade-cli vitest (covers the brain push publisher and tunnel client under `services/push/` + `services/sync/`).
    - `test-sdk` — hermetic `@ade-dev/sdk` typecheck + test + build. The live fixture (`test/live.integration.test.ts`) skips unless `ADE_SDK_LIVE_BINARY` is set.
    - `test-chat-ui` — builds `packages/sdk` first (`dist/` is gitignored and chat-ui's `file:../sdk` exports point at it), then typecheck + test + build `@ade-dev/chat-ui`.
+   - `test-ios` — builds the `ADE` scheme and runs `ADETests` on a macOS runner. A path gate (`ios-gate`) skips it with a printed reason when the diff touches neither `apps/ios/**` nor the shared fixtures, and picks the destination: GitHub's `xcode-27` image by default, or a self-hosted Mac Studio when `MAC_STUDIO_READY` holds a stamp fresher than ten minutes published by `scripts/ci/mac-studio-readiness.mjs` (free disk, free memory and idle cores). Fork pull requests are never routed to a self-hosted runner; that rule lives in `scripts/ci/ios-runner.mjs`. The build enables Xcode's compilation cache for Swift as well as C/Objective-C, and the simulator is pinned by name so both runners build the same screen.
    - `test-webhook-relay`, `test-push-relay`, `test-tunnel-relay`, `test-account-directory` — the four Cloudflare Workers.
    - `build` — desktop, ade-cli, and web built sequentially after install.
    - `validate-docs` — `node scripts/validate-docs.mjs`.
