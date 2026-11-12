@@ -749,7 +749,9 @@ const RETURN_MESSAGES: Record<string, { heading: string; line: string }> = {
 
 function returnPage(url: URL, method: string): Response {
   if (method !== "GET") return json({ error: "method not allowed" }, 405);
-  const message = RETURN_MESSAGES[url.searchParams.get("to") ?? ""] ?? RETURN_MESSAGES.portal;
+  // Own keys only: `?to=constructor` or `?to=__proto__` must not read an inherited value.
+  const to = url.searchParams.get("to") ?? "";
+  const message = Object.hasOwn(RETURN_MESSAGES, to) ? RETURN_MESSAGES[to] : RETURN_MESSAGES.portal;
   const html = brandDocument({
     title: message.heading,
     card: `<p class="sub">${escapeHtml(message.line)}</p>`,
