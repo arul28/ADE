@@ -56,6 +56,8 @@ export const GITHUB_GH_VAULT_KEY = "github-cli";
 
 const VAULT_UNAVAILABLE_MESSAGE =
   "ADE's background service isn't running on this computer, so the account can't be changed right now.";
+const ACCOUNT_CHANGED_MESSAGE = "Your ADE account changed while ADE was saving. Try again.";
+const VAULT_WRITE_FAILED_MESSAGE = "The account could not be changed. Try again.";
 
 /** Variables `gh auth token` prints in place of the stored login. */
 const ENVIRONMENT_TOKEN_VARIABLES = [
@@ -142,8 +144,11 @@ export type GithubGhAccountSyncArgs = {
   readGhHostsSignature?: () => Promise<string>;
   readGhLoginHost?: () => Promise<"github.com" | "other" | "unknown">;
   readEnvironmentTokens?: () => string[];
-  /** Told when the adopted account copy changed (adopted, replaced or dropped). */
-  onTokenChanged?: () => void;
+  /**
+   * Told when the adopted account copy changed (adopted, replaced or dropped)
+   * or the sharing state in `state()` changed, so a cached status is stale.
+   */
+  onChanged?: () => void;
 };
 
 export type GithubGhAccountState = {
@@ -176,6 +181,9 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
   let collisionLogged = false;
   let hydrateInFlight: Promise<void> | null = null;
   let hydrateQueued = false;
+  // Background syncs and the person's own changes run one at a time, so a
+  // sync that read the vault before a removal cannot publish over it.
+  let queue: Promise<unknown> = Promise.resolve();
 
   const safeGet = (key: string): string | null => {
     try {
@@ -187,24 +195,17 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
 
   const readCopy = (): string | null => safeGet(GITHUB_GH_ACCOUNT_TOKEN_KEY);
 
-  const writeCopy = (token: string | null): void => {
-    if (!store) return;
-    const current = readCopy();
-    if ((current ?? null) === (token ?? null)) return;
-    if (token) {
-      // Owner before value, so a failed write never leaves a copy with no owner.
-      const owner = accountUserId();
-      if (owner) store.setSync(GITHUB_GH_ACCOUNT_OWNER_KEY, owner);
-      store.setSync(GITHUB_GH_ACCOUNT_TOKEN_KEY, token);
-    } else {
-      store.deleteSync(GITHUB_GH_ACCOUNT_TOKEN_KEY);
-      store.deleteSync(GITHUB_GH_ACCOUNT_OWNER_KEY);
-    }
-    try {
-      args.onTokenChanged?.();
-    } catch {
-      // A cache reset is best effort.
-    }
+  /** Stores `token` as the account's copy, adopted for account `owner`. */
+  const storeCopy = (token: string, owner: string): void => {
+    if (!store || readCopy() === token) return;
+    // Owner before value, so a failed write never leaves a copy with no owner.
+    store.setSync(GITHUB_GH_ACCOUNT_OWNER_KEY, owner);
+    store.setSync(GITHUB_GH_ACCOUNT_TOKEN_KEY, token);
+  };
+  const dropCopy = (): void => {
+    if (!store || !readCopy()) return;
+    store.deleteSync(GITHUB_GH_ACCOUNT_TOKEN_KEY);
+    store.deleteSync(GITHUB_GH_ACCOUNT_OWNER_KEY);
   };
 
   /** The digest this machine last published for `userId`, or null. */
@@ -232,25 +233,34 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
    */
   const readShareableLocal = async (options: { fresh?: boolean } = {}): Promise<{ known: boolean; token: string | null }> => {
     const signature = await readSignature();
+    const host = await readLoginHost();
+    const hostsChanged = options.fresh === true || (observedToken !== undefined && signature !== observedSignature);
+    // A failed lookup (hosts.yml lists github.com, no token came back) is asked
+    // again on each sync. It is not `fresh`, so the service's own failure
+    // backoff decides whether that starts `gh`.
+    const lookupFailed = observedToken === null && host === "github.com";
     let token: string | null;
-    if (!options.fresh && observedToken !== undefined && signature === observedSignature) {
+    if (observedToken !== undefined && !hostsChanged && !lookupFailed) {
       token = observedToken;
     } else {
-      token = (await args.readLocalGhToken({ fresh: options.fresh === true || observedToken !== undefined })) ?? null;
+      token = (await args.readLocalGhToken({ fresh: hostsChanged })) ?? null;
       observedSignature = signature;
       observedToken = token;
     }
     if (token && readEnvironmentTokens().includes(token)) return { known: false, token: null };
-    const host = await readLoginHost();
     if (host === "unknown") return { known: false, token: null };
     if (host === "other") return { known: true, token: null };
     // hosts.yml lists a github.com login: with no token, the lookup failed.
     return token ? { known: true, token } : { known: false, token: null };
   };
 
-  const setVaultValue = async (vault: AccountVaultBridge, value: object): Promise<boolean> => {
+  // Each write names the account it was decided for; the vault refuses it
+  // once a different account is signed in.
+  const setVaultValue = async (vault: AccountVaultBridge, value: object, userId: string): Promise<boolean> => {
     try {
-      const result = await vault.set(vaultRef.scope, vaultRef.kind, vaultRef.key, JSON.stringify(value));
+      const result = await vault.set(vaultRef.scope, vaultRef.kind, vaultRef.key, JSON.stringify(value), {
+        expectedAccountUserId: userId,
+      });
       if (result.ok) return true;
       logFailure("set", result);
       return false;
@@ -260,9 +270,9 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
     }
   };
 
-  const removeVaultValue = async (vault: AccountVaultBridge): Promise<boolean> => {
+  const removeVaultValue = async (vault: AccountVaultBridge, userId: string): Promise<boolean> => {
     try {
-      const result = await vault.remove(vaultRef.scope, vaultRef.kind, vaultRef.key);
+      const result = await vault.remove(vaultRef.scope, vaultRef.kind, vaultRef.key, { expectedAccountUserId: userId });
       if (result.ok) return true;
       logFailure("remove", result);
       return false;
@@ -279,7 +289,7 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
     // was seen) is not this account's, whatever the vault says.
     const owner = safeGet(GITHUB_GH_ACCOUNT_OWNER_KEY);
     if (readCopy() && owner !== userId) {
-      writeCopy(null);
+      dropCopy();
       args.logger?.info?.("github.gh_account_foreign_copy_dropped", {});
     }
     const vault = resolveVault();
@@ -296,7 +306,13 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
     let accountToken = remote?.kind === "token" ? remote.token : null;
     const published = readPublishedDigest(userId);
     if (remote?.kind === "removed") {
-      if (published) writePublishedDigest(userId, null);
+      // Removed stays until a person shares again. Nothing is published, but
+      // the digest follows this machine's login: a share made later on another
+      // machine is then newer than it and is not overwritten from here.
+      if (local.known && local.token) {
+        const localDigest = tokenDigest(local.token);
+        if (published !== localDigest) writePublishedDigest(userId, localDigest);
+      }
     } else if (local.known && local.token) {
       const localDigest = tokenDigest(local.token);
       const accountDigest = accountToken ? tokenDigest(accountToken) : null;
@@ -307,7 +323,7 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
       } else if (!accountToken || published !== localDigest) {
         // No copy yet, or a new login here since this machine last published:
         // the newest login becomes the account's copy.
-        if (await setVaultValue(vault, { v: 1, token: local.token })) {
+        if (await setVaultValue(vault, { v: 1, token: local.token }, userId)) {
           writePublishedDigest(userId, localDigest);
           accountToken = local.token;
           collisionLogged = false;
@@ -321,14 +337,17 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
     } else if (local.known && published) {
       // gh signed out here. Release the account's copy only if it is the one
       // this machine published; a newer login from another machine stays.
-      if (accountToken && tokenDigest(accountToken) === published) {
-        if (await removeVaultValue(vault)) {
-          accountToken = null;
-          args.logger?.info?.("github.gh_account_released", {});
-        }
+      if (!accountToken || tokenDigest(accountToken) !== published) {
+        writePublishedDigest(userId, null);
+      } else if (await removeVaultValue(vault, userId)) {
+        accountToken = null;
+        writePublishedDigest(userId, null);
+        args.logger?.info?.("github.gh_account_released", {});
       }
-      writePublishedDigest(userId, null);
+      // A failed release keeps the digest: the next sync tries again, and the
+      // copy still counts as this machine's own login, so it is not adopted.
     }
+    if (accountUserId() !== userId) return;
 
     lastAccountState = remote?.kind === "removed" ? "removed" : accountToken ? "active" : "absent";
     lastAccountDigest = accountToken ? tokenDigest(accountToken) : null;
@@ -338,9 +357,54 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
       && (accountToken === local.token || tokenDigest(accountToken) === readPublishedDigest(userId));
     const copy = accountToken && !ownLogin ? accountToken : null;
     if (copy !== readCopy()) {
-      writeCopy(copy);
-      if (copy) args.logger?.info?.("github.gh_account_adopted", {});
+      if (copy) {
+        storeCopy(copy, userId);
+        args.logger?.info?.("github.gh_account_adopted", {});
+      } else {
+        dropCopy();
+      }
     }
+  };
+
+  const readState = (): GithubGhAccountState => {
+    const userId = accountUserId();
+    const published = userId ? readPublishedDigest(userId) : null;
+    return {
+      ghFromAccount: Boolean(userId && readCopy()),
+      ghSharedFromHere: Boolean(published && lastAccountState === "active" && lastAccountDigest === published),
+      ghRemovedFromAccount: Boolean(userId && lastAccountState === "removed"),
+    };
+  };
+
+  /** What a status shows from this module: the sharing state and which copy is adopted. */
+  const changeKey = (): string => {
+    const state = readState();
+    const copy = readCopy();
+    return [state.ghFromAccount, state.ghSharedFromHere, state.ghRemovedFromAccount, copy ? tokenDigest(copy) : ""].join("|");
+  };
+  const notifyIfChanged = (before: string): void => {
+    if (changeKey() === before) return;
+    try {
+      args.onChanged?.();
+    } catch (error) {
+      args.logger?.warn?.("github.gh_account_change_notify_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  /** Runs `work` after every earlier sync or change, and tells the owner when it changed the state. */
+  const exclusive = <T>(work: () => Promise<T>): Promise<T> => {
+    const run = queue.then(async () => {
+      const before = changeKey();
+      try {
+        return await work();
+      } finally {
+        notifyIfChanged(before);
+      }
+    });
+    queue = run.catch(() => undefined);
+    return run;
   };
 
   /** Runs one reconcile at a time; a request during one runs once more after it. */
@@ -353,7 +417,7 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
       do {
         hydrateQueued = false;
         try {
-          await reconcile();
+          await exclusive(reconcile);
         } catch (error) {
           logFailure("hydrate", error);
         }
@@ -410,51 +474,61 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
       if (!userId) throw new Error("Sign in to your ADE account to change what it holds.");
       const vault = resolveVault();
       if (!vault) throw new Error(VAULT_UNAVAILABLE_MESSAGE);
-      const result = await vault.set(vaultRef.scope, vaultRef.kind, vaultRef.key, JSON.stringify({ v: 1, removed: true }));
-      if (!result.ok) throw new Error(result.message || "The account could not be changed. Try again.");
-      writePublishedDigest(userId, null);
-      lastAccountState = "removed";
-      lastAccountDigest = null;
-      writeCopy(null);
+      await exclusive(async () => {
+        const result = await vault.set(vaultRef.scope, vaultRef.kind, vaultRef.key, JSON.stringify({ v: 1, removed: true }), {
+          expectedAccountUserId: userId,
+        });
+        if (!result.ok) throw new Error(result.message || VAULT_WRITE_FAILED_MESSAGE);
+        // The removal reached the account the person chose; a newer account
+        // signed in since then keeps its own state.
+        if (accountUserId() !== userId) return;
+        // The published digest stays (see reconcile): a later share from another
+        // machine must not read this machine's unchanged login as a new one.
+        lastAccountState = "removed";
+        lastAccountDigest = null;
+        dropCopy();
+      });
     },
 
     /** Share this machine's `gh` login with the account again (after a removal). */
     async shareWithAccount(): Promise<void> {
       const userId = accountUserId();
       if (!userId) throw new Error("Sign in to your ADE account to share your GitHub CLI sign-in.");
-      const local = await readShareableLocal({ fresh: true });
-      if (!local.token) {
-        throw new Error(local.known
-          ? "This computer has no GitHub CLI sign-in for github.com. Run `gh auth login`, then try again."
-          : "ADE can't read this computer's GitHub CLI sign-in. Run `gh auth status` to check it, and unset GH_TOKEN, GITHUB_TOKEN or GH_HOST if one is set.");
-      }
       const vault = resolveVault();
       if (!vault) throw new Error(VAULT_UNAVAILABLE_MESSAGE);
-      const result = await vault.set(vaultRef.scope, vaultRef.kind, vaultRef.key, JSON.stringify({ v: 1, token: local.token }));
-      if (!result.ok) throw new Error(result.message || "The account could not be changed. Try again.");
-      const digest = tokenDigest(local.token);
-      writePublishedDigest(userId, digest);
-      lastAccountState = "active";
-      lastAccountDigest = digest;
-      writeCopy(null);
+      await exclusive(async () => {
+        const local = await readShareableLocal({ fresh: true });
+        if (accountUserId() !== userId) throw new Error(ACCOUNT_CHANGED_MESSAGE);
+        if (!local.token) {
+          throw new Error(local.known
+            ? "This computer has no GitHub CLI sign-in for github.com. Run `gh auth login`, then try again."
+            : "ADE can't read this computer's GitHub CLI sign-in. Run `gh auth status` to check it, and unset GH_TOKEN, GITHUB_TOKEN or GH_HOST if one is set.");
+        }
+        const result = await vault.set(vaultRef.scope, vaultRef.kind, vaultRef.key, JSON.stringify({ v: 1, token: local.token }), {
+          expectedAccountUserId: userId,
+        });
+        if (!result.ok) throw new Error(result.message || VAULT_WRITE_FAILED_MESSAGE);
+        // The digest is keyed on the account, so it is right for that account
+        // even if a newer one signed in since; the in-memory state is not.
+        const digest = tokenDigest(local.token);
+        writePublishedDigest(userId, digest);
+        if (accountUserId() !== userId) return;
+        lastAccountState = "active";
+        lastAccountDigest = digest;
+        dropCopy();
+      });
     },
 
     /** At sign-out: drop the adopted copy. The account keeps its copy; this machine's own gh login is untouched. */
     purgeAccountCredentials(): void {
-      writeCopy(null);
+      const before = changeKey();
+      dropCopy();
       lastAccountState = "unknown";
       lastAccountDigest = null;
+      notifyIfChanged(before);
     },
 
-    state(): GithubGhAccountState {
-      const userId = accountUserId();
-      const published = userId ? readPublishedDigest(userId) : null;
-      return {
-        ghFromAccount: Boolean(userId && readCopy()),
-        ghSharedFromHere: Boolean(published && lastAccountState === "active" && lastAccountDigest === published),
-        ghRemovedFromAccount: Boolean(userId && lastAccountState === "removed"),
-      };
-    },
+    state: readState,
   };
 }
 
