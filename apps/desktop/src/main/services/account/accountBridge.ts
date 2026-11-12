@@ -63,6 +63,14 @@ import {
   warnDevelopmentClerkIgnored,
 } from "../../../shared/accountDirectory";
 import { createLaneShareGuestDirectory } from "../../../shared/laneShareGuestDirectory";
+import {
+  ACCOUNT_PROJECT_ID_PATTERN,
+  ACCOUNT_PROJECT_PATHS,
+  accountProjectAddRequestForOrigin,
+  accountProjectRemovePath,
+  coerceAccountProjectView,
+  type AccountProjectChangeResult,
+} from "../../../shared/accountProject";
 import type { LaneShareGuestBridge } from "../../../shared/types/laneShare";
 import {
   LaneShareGrantError,
@@ -505,6 +513,12 @@ export type AccountBridge = {
    * sees only the one-use ticket that `connect` returns.
    */
   laneShareGuest(): LaneShareGuestBridge;
+  /**
+   * Adds a GitHub repository to the account's project list, or removes a
+   * project from it (S13), with this machine's token, here in main.
+   */
+  addAccountProject(origin: string): Promise<AccountProjectChangeResult>;
+  removeAccountProject(projectId: string): Promise<AccountProjectChangeResult>;
 };
 
 export type AccountBridgePairMachineOptions = {
@@ -638,6 +652,39 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       process.env.ADE_TUNNEL_RELAY_URL?.trim() ? [process.env.ADE_TUNNEL_RELAY_URL.trim()] : [],
     ),
   });
+  // The account's project list (S13): one add or remove, answered as a
+  // project row or a coded failure. Removed rows coerce to null, so the
+  // remove answer is read from its fields here.
+  const changeAccountProject = async (
+    request: { method: "POST"; path: string; body?: Record<string, unknown> },
+  ): Promise<AccountProjectChangeResult> => {
+    let answer: { status: number; body: unknown };
+    try {
+      answer = await sendLaneShareDirectoryRequest(
+        laneShareDirectoryAccess,
+        resolveLaneShareDirectoryBase(laneShareDirectoryAccess),
+        request,
+      );
+    } catch (error) {
+      const code = error instanceof LaneShareGrantError && (error.code === "signed_out" || error.code === "no_directory")
+        ? error.code
+        : "unavailable";
+      return { ok: false, code, message: code === "signed_out" ? "Sign in to ADE to change your projects." : "ADE couldn't reach your account. Try again." };
+    }
+    const body = answer.body && typeof answer.body === "object" ? answer.body as Record<string, unknown> : {};
+    if (answer.status < 200 || answer.status >= 300) {
+      const error = body.error && typeof body.error === "object" ? body.error as Record<string, unknown> : {};
+      return {
+        ok: false,
+        code: typeof error.code === "string" ? error.code : `http_${answer.status}`,
+        message: typeof error.message === "string" && error.message.trim() ? error.message : "Your account refused the change.",
+      };
+    }
+    const raw = body.project && typeof body.project === "object" ? body.project as Record<string, unknown> : null;
+    const project = raw ? coerceAccountProjectView({ ...raw, removedAt: null, mergedInto: null }) : null;
+    if (!project) return { ok: false, code: "bad_answer", message: "Your account sent an answer ADE can't read." };
+    return { ok: true, project, created: body.created === true, revived: body.revived === true };
+  };
   const directoryService = () => new AccountMachineDirectoryService(service(), {
     directoryBaseUrl: () => resolveDirectoryBaseUrl(options.getProjectRoot()),
     deviceName: () => `ADE Desktop on ${os.hostname()}`,
@@ -849,6 +896,19 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     },
 
     laneShareGuest: () => laneShareGuestDirectory,
+
+    addAccountProject: async (origin) => {
+      const request = accountProjectAddRequestForOrigin(origin);
+      if (!request) return { ok: false, code: "invalid_repository", message: "That is not a GitHub repository." };
+      return await changeAccountProject({ method: "POST", path: ACCOUNT_PROJECT_PATHS.root, body: { ...request } });
+    },
+
+    removeAccountProject: async (projectId) => {
+      if (!ACCOUNT_PROJECT_ID_PATTERN.test(projectId)) {
+        return { ok: false, code: "not_found", message: "That project is not on your account." };
+      }
+      return await changeAccountProject({ method: "POST", path: accountProjectRemovePath(projectId) });
+    },
 
     listMachines: async (): Promise<AdeAccountMachinesResult> => {
       const result = await directoryService().listMachines();

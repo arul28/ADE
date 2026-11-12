@@ -76,6 +76,42 @@ let lastReadAt = 0;
 let readInFlight: Promise<void> | null = null;
 let lastNamesReadAt = 0;
 
+/**
+ * Adds and removes this client made (S13) that the brain may not have read
+ * yet: the brain reads the list only after a heartbeat sees the change. Laid
+ * over each answer until the answer agrees, or for five minutes.
+ */
+const PENDING_CHANGE_MS = 5 * 60_000;
+const pendingChanges = new Map<string, { project: AccountProjectView | null; at: number }>();
+
+function withPendingChanges(projects: readonly AccountProjectView[]): AccountProjectView[] {
+  const now = Date.now();
+  let next = [...projects];
+  for (const [id, change] of pendingChanges) {
+    const listed = next.some((project) => project.id === id);
+    const agrees = change.project ? listed : !listed;
+    if (agrees || now - change.at > PENDING_CHANGE_MS) {
+      pendingChanges.delete(id);
+      continue;
+    }
+    next = change.project ? [...next, change.project] : next.filter((project) => project.id !== id);
+  }
+  return next;
+}
+
+/**
+ * Shows an add or a remove at once, before the brain reads it: the Add
+ * project form and the Delete window call this with the account's answer.
+ */
+export function noteAccountProjectChange(change: { added: AccountProjectView } | { removedId: string }): void {
+  const id = "added" in change ? change.added.id : change.removedId;
+  pendingChanges.set(id, { project: "added" in change ? change.added : null, at: Date.now() });
+  if (current.state !== "ready") return;
+  const projects = withPendingChanges(current.projects.filter((project) => project.id !== id));
+  publish({ ...current, projects });
+  writeCache({ v: 1, userId: currentUserId, projects, machineNames: { ...(current.machineNames ?? {}) } });
+}
+
 function publish(next: AccountProjectListState): void {
   const unchanged = next.state === current.state
     && sameProjects(next.projects, current.projects)
@@ -134,9 +170,10 @@ async function readList(): Promise<void> {
   }
   currentUserId = userId;
   const machineNames = current.machineNames ?? {};
-  publish({ state: "ready", projects: answer.projects, machineNames });
-  writeCache({ v: 1, userId, projects: answer.projects, machineNames: { ...machineNames } });
-  await readMachineNames(answer.projects, machineNames);
+  const projects = withPendingChanges(answer.projects);
+  publish({ state: "ready", projects, machineNames });
+  writeCache({ v: 1, userId, projects, machineNames: { ...machineNames } });
+  await readMachineNames(projects, machineNames);
 }
 
 /** Reads the list now, or joins the read in flight. */

@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, type MouseEvent } from "react";
 import type { FixedAnchor } from "../../hooks/useClampedFixedPosition";
 import type { RecentProjectSummary, RemoteOpenProjectBinding, RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
 import { projectRecordScope } from "../../../shared/projectRecord";
+import { ACCOUNT_PROJECT_ID_PATTERN } from "../../../shared/accountProject";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { activeMachineForGroup, type ProjectTabGroup } from "../app/projectTabGrouping";
 import { rememberLastUsedMachine } from "../app/useRepositoryTabs";
@@ -169,7 +170,11 @@ export function useProjectCopiesMenu(args: {
     (RemoveProjectTarget & { groupId: string; recordScope: string | null }) | null
   >(null);
   const closeRemoveDialog = useCallback(() => setRemoveTarget(null), []);
-  const openRemoveDialog = useCallback((groupId: string) => {
+  /**
+   * Opens the remove dialog of one tab. `currentBindingKey` names the copy
+   * "From this computer" acts on (the Location page's row); else the copy in use.
+   */
+  const openRemoveDialog = useCallback((groupId: string, options?: { currentBindingKey?: string; extraCopy?: RemovalCopy }) => {
     const model = copiesModelFor(groupId);
     if (!model) return;
     const toCopy = (row: CopiesMenuRow): RemovalCopy | null => {
@@ -183,8 +188,11 @@ export function useProjectCopiesMenu(args: {
       };
     };
     const copies = model.rows.map(toCopy).filter((copy): copy is RemovalCopy => copy !== null);
-    const inUseKey = model.rows.find((row) => row.inUse)?.copy?.bindingKey ?? null;
-    const current = copies.find((copy) => copy.bindingKey === inUseKey) ?? copies[0];
+    const extra = options?.extraCopy;
+    if (extra && !copies.some((copy) => copy.bindingKey === extra.bindingKey)) copies.push(extra);
+    const inUseKey = options?.currentBindingKey ?? model.rows.find((row) => row.inUse)?.copy?.bindingKey ?? null;
+    const current = inUseKey ? copies.find((copy) => copy.bindingKey === inUseKey) : copies[0];
+    // A named copy the model does not know is never swapped for another one.
     if (!current) return;
     setRemoveTarget({
       groupId,
@@ -193,8 +201,23 @@ export function useProjectCopiesMenu(args: {
       repoKey: model.repoKey,
       current,
       copies,
+      accountProjectId: ACCOUNT_PROJECT_ID_PATTERN.test(groupId) ? groupId : null,
     });
   }, [copiesModelFor]);
+
+  /** The remove dialog of a tab with no computer online: it can only leave the account. */
+  const openRemoveNoMachineDialog = useCallback((tab: { id: string; displayName: string }) => {
+    if (!ACCOUNT_PROJECT_ID_PATTERN.test(tab.id)) return;
+    setRemoveTarget({
+      groupId: tab.id,
+      recordScope: null,
+      projectName: tab.displayName,
+      repoKey: null,
+      current: null,
+      copies: [],
+      accountProjectId: tab.id,
+    });
+  }, []);
 
   const handleCopiesMenuSwitch = useCallback(
     (row: CopiesMenuRow) => {
@@ -234,6 +257,7 @@ export function useProjectCopiesMenu(args: {
     addLocalCopyFromTab,
     removeTarget,
     openRemoveDialog,
+    openRemoveNoMachineDialog,
     closeRemoveDialog,
     handleCopiesMenuSwitch,
     openCopiesMenuFor,

@@ -994,7 +994,7 @@ import {
   FAST_MODE_SETTING_SCOPE,
 } from "../../../shared/fastModePolicy";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
-import { coerceAccountProjectListResult, type AccountProjectListResult } from "../../../shared/accountProject";
+import { coerceAccountProjectListResult, type AccountProjectChangeResult, type AccountProjectListResult } from "../../../shared/accountProject";
 import { PROVIDER_LOGINS_CLOUD_SETTING } from "../../../shared/providerLoginsCloudSetting";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
@@ -13101,6 +13101,13 @@ export function registerIpc({
   handle(IPC.accountListMachines, async (): Promise<AdeAccountMachinesResult> => {
     return accountBridge.listMachines();
   });
+
+  // The account's project list (S13): account calls with this computer's own
+  // token. No machine pin: the list belongs to the account, not to a machine.
+  handle(IPC.projectAccountAdd, async (_event, arg: { origin?: unknown } = {}): Promise<AccountProjectChangeResult> =>
+    accountBridge.addAccountProject(typeof arg?.origin === "string" ? arg.origin.trim().slice(0, 2048) : ""));
+  handle(IPC.projectAccountRemove, async (_event, arg: { projectId?: unknown } = {}): Promise<AccountProjectChangeResult> =>
+    accountBridge.removeAccountProject(typeof arg?.projectId === "string" ? arg.projectId.trim() : ""));
 
   // Lane sharing, the guest's side: account calls from this computer to the
   // account directory, with this computer's own token (it stays in main). No

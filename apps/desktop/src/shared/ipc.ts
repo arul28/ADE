@@ -132,6 +132,8 @@ export const IPC = {
   projectClearLocalData: "ade.project.clearLocalData",
   projectListRecent: "ade.project.listRecent",
   projectAccountList: "ade.project.accountList",
+  projectAccountAdd: "ade.project.accountAdd",
+  projectAccountRemove: "ade.project.accountRemove",
   projectFindForRepo: "ade.project.findForRepo",
   projectCreateLocal: "ade.project.createLocal",
   projectClone: "ade.project.clone",

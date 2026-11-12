@@ -3043,3 +3043,25 @@ in the list read 4,000 ms; they are left out. One idle window taken after
 manual tests on three tabs (two closed just before) read 140 per minute. The
 same build read 105 after a reload, so that window does not count. The DOM
 node count of the chat row drops from about 900 to about 800 per chat.
+
+### Tab restore and project flows (S5 restore, S13a/b/c, 2026-11-12)
+
+Dev app on `ade/account-desktop-b5-project-flows` (holds the b4 restore
+commits) against the S4 head `75fe3617e`, checked out over the same tree.
+Same Mac (Mac Studio M4 Max), `--first-run --keep --home`, the account brain
+on its own socket, the dev test machine "tabs" connected, four tabs (two
+local, one repository with copies on two computers, one remote), nothing
+streaming. Load average 6–12 from other agents. The Location and remove rows
+are new surfaces, so they have no "before".
+
+| Row | Before (S4) | After (b5) | Ceiling |
+| --- | --- | --- | --- |
+| Process start to first window, warm (`desktop-main-start.mjs --mode warm --runs 7`), median | 569 ms (sd 42) | 581 ms (sd 19) | not set |
+| Settings › Location from Work to the Copies rows painted (scratch probe, 7 runs), median / worst long task | — | 23 ms / 0 ms | — |
+| Remove window: request to the scope choices painted (scratch probe, 7 runs), median / worst long task | — | 18 ms / 0 ms | — |
+
+The restore adds two IPC handlers and one state key, and no timer or poll.
+The renderer sends the tab strip only when its JSON changes. The Location
+copies read this computer's project list on mount, on window focus, and
+after a removal or a finished copy in the same window; no poll. The
+account add and remove are one server call each, on a press.

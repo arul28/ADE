@@ -12,6 +12,8 @@ import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { copyMachines, repoKeyForOriginIdentity } from "./projectCopies";
 import { startCopyJob, useCopyJobs } from "./projectCopyJobs";
+import { requestRemoveProject } from "./removeProjectRequest";
+import { ACCOUNT_PROJECT_ID_PATTERN } from "../../../shared/accountProject";
 
 /** The repository tab of a no-machine tab: the account project when the account knows it. */
 function repositoryTabOf(tab: NoMachineRepositoryTab, list: ReturnType<typeof useAccountProjectList>): RepositoryTab {
@@ -84,6 +86,10 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   };
 
   const canAddLocal = !webMode && copyRepoKey != null && !copies.some((copy) => copy.isThisMachine);
+  // Leaving the account needs the account project id and this computer's account call (desktop).
+  const canLeaveAccount = !webMode
+    && ACCOUNT_PROJECT_ID_PATTERN.test(tab.id)
+    && typeof window.ade?.project?.accountRemove === "function";
 
   return (
     <div className="flex h-full min-h-0 w-full items-center justify-center p-6">
@@ -100,9 +106,13 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
           <div className="flex items-start gap-2">
             <WifiSlash size={16} aria-hidden className="mt-0.5 shrink-0" style={{ color: "var(--kit-text-3)" }} />
             <div className="flex min-w-0 flex-col gap-0.5">
-              <strong className="text-[13px] font-semibold">No computer with this project is online</strong>
+              <strong className="text-[13px] font-semibold">
+                {copies.length > 0 ? "No computer with this project is online" : "No computer has a copy yet"}
+              </strong>
               <span className="text-[12px]" style={{ color: "var(--kit-text-2)" }}>
-                The project opens here as soon as one is.
+                {copies.length > 0
+                  ? "The project opens here as soon as one is."
+                  : "Add a copy on a computer to work on it."}
               </span>
             </div>
           </div>
@@ -149,6 +159,17 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
             >
               Close tab
             </button>
+            {canLeaveAccount ? (
+              <button
+                type="button"
+                className="kit-btn kit-btn-ghost"
+                data-tone="crit"
+                style={{ marginLeft: "auto" }}
+                onClick={() => requestRemoveProject({ kind: "no-machine", id: tab.id, displayName: tab.displayName })}
+              >
+                Remove from account…
+              </button>
+            ) : null}
           </div>
         </div>
       </section>

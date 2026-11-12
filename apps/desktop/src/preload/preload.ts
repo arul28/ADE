@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
-import type { AccountProjectListResult } from "../shared/accountProject";
+import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type {
@@ -5542,6 +5542,10 @@ const adeBridge = {
     // machine: no server call.
     accountList: async (pin?: OpenProjectBinding | null): Promise<AccountProjectListResult> =>
       ipcRenderer.invoke(IPC.projectAccountList, pin?.kind === "remote" ? { targetId: pin.targetId } : {}),
+    accountAdd: async (origin: string): Promise<AccountProjectChangeResult> =>
+      ipcRenderer.invoke(IPC.projectAccountAdd, { origin }),
+    accountRemove: async (projectId: string): Promise<AccountProjectChangeResult> =>
+      ipcRenderer.invoke(IPC.projectAccountRemove, { projectId }),
     findForRepo: async (args: {
       repoOwner: string;
       repoName: string;

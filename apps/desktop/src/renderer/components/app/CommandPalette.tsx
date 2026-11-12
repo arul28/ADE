@@ -706,8 +706,8 @@ export function CommandPalette({
       // Clones onto this machine, and the web client has no clone surface for it.
       ...(isWebClientMode() ? [] : [{
         id: "project-clone",
-        title: "Clone from GitHub",
-        hint: "Paste a URL or pick a repo",
+        title: "Add from GitHub",
+        hint: "Pick a repository, then the computers for a copy",
         group: "Projects",
         closeOnRun: false,
         run: startProjectClone,
