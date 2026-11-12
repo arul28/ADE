@@ -66,6 +66,12 @@ export function useCtoModelOptions(pin: OpenProjectBinding | null = null): {
 
   useEffect(() => {
     let cancelled = false;
+    if (!pin) {
+      // No home machine to ask yet.
+      setAvailableModelIds([]);
+      setLoadingModels(false);
+      return () => { cancelled = true; };
+    }
     void (async () => {
       try {
         // The CTO runs on its home machine, so its models are that machine's.
@@ -86,7 +92,9 @@ export function useCtoModelOptions(pin: OpenProjectBinding | null = null): {
     return () => {
       cancelled = true;
     };
-  }, [pin]);
+    // Keyed on the pin's key, not the object (CLAUDE.md, remote machines item 3).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pin?.key]);
 
   const openProviderSettings = useCallback(() => {
     navigate(settingsRouteFor("agents.providers"));
