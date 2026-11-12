@@ -6,6 +6,10 @@ import { makeGitHubIssueContextAttachment } from "../../../shared/chatContextAtt
 import type { LaneGitHubIssue } from "../../../shared/types";
 import { clearPendingIssueSheetRequest, subscribeIssueSheetRequests } from "../../lib/issueNavigation";
 import { UserMessageIssueContext } from "./UserMessageIssueContext";
+import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
+
+/** The chat's machine: its issue links are changed there. */
+const CHAT_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
 
 vi.mock("../app/LinearIssueSelectModal", () => ({
   LinearIssueSelectModal: () => null,
@@ -59,15 +63,17 @@ describe("UserMessageIssueContext", () => {
     });
 
     render(
-      <UserMessageIssueContext
-        attachments={[]}
-        contextAttachments={[
-          makeGitHubIssueContextAttachment(first),
-          makeGitHubIssueContextAttachment(second),
-        ]}
-        mode="standard"
-        sessionId="chat-1"
-      />,
+      <ChatRuntimeScopeProvider pin={CHAT_PIN} binding={CHAT_PIN} laneId={null} sessionId="chat-1">
+        <UserMessageIssueContext
+          attachments={[]}
+          contextAttachments={[
+            makeGitHubIssueContextAttachment(first),
+            makeGitHubIssueContextAttachment(second),
+          ]}
+          mode="standard"
+          sessionId="chat-1"
+        />
+      </ChatRuntimeScopeProvider>,
     );
 
     // With no Work tools pane registered, a click opens the issue in the sheet.
@@ -87,7 +93,7 @@ describe("UserMessageIssueContext", () => {
     expect(detachGitHubIssueFromSession).toHaveBeenCalledWith({
       chatSessionId: "chat-1",
       issueId: "ade/app#42",
-    }, null);
+    }, CHAT_PIN);
     expect(screen.getAllByTestId("github-issue-context-chip")).toHaveLength(1);
     expect(screen.getByText("First issue")).toBeTruthy();
     expect(screen.queryByText("Second issue")).toBeNull();

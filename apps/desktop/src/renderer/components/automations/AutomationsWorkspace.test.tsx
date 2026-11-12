@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { AutomationsWorkspace, readCursorCloudConnectionForAutomation } from "./AutomationsWorkspace";
+import { useAppStore } from "../../state/appStore";
 
 describe("automation Cursor Cloud connection probe", () => {
   it("does not fail the automation refresh when AI status is unavailable", async () => {
@@ -23,7 +24,7 @@ describe("New automation", () => {
    * blank draft with that rule a moment after New automation was pressed.
    */
   it("keeps a new draft open across a background refresh", async () => {
-    const listeners: Array<() => void> = [];
+    const listeners: Array<(event: { type: string }) => void> = [];
     const rule = {
       id: "rule-a",
       name: "Rule A",
@@ -52,7 +53,7 @@ describe("New automation", () => {
     const ade = new Proxy({
       automations: new Proxy({
         list: vi.fn(async () => [rule]),
-        onEvent: (listener: () => void) => {
+        onEvent: (listener: (event: { type: string }) => void) => {
           listeners.push(listener);
           return () => {};
         },
@@ -67,6 +68,8 @@ describe("New automation", () => {
       cloud: { onCloudSignInChanged: vi.fn(() => () => {}) },
     }, { get: (target, key) => (key in target ? target[key as keyof typeof target] : new Proxy({}, { get: () => vi.fn(async () => null) })) });
     Object.defineProperty(window, "ade", { configurable: true, writable: true, value: ade });
+    // The tab's copy: its rules are listed there.
+    useAppStore.setState({ projectBinding: { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } });
 
     try {
       render(
@@ -81,13 +84,14 @@ describe("New automation", () => {
       await waitFor(() => expect(name().value).toBe(""));
 
       await act(async () => {
-        for (const listener of listeners) listener();
+        for (const listener of listeners) listener({ type: "runs-updated" });
       });
       await act(async () => {});
       expect(name().value).toBe("");
       expect(screen.getAllByText("New automation").length).toBeGreaterThan(0);
     } finally {
       cleanup();
+      useAppStore.setState({ projectBinding: null });
     }
   });
 });

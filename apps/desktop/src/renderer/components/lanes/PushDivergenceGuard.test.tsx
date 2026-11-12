@@ -5,7 +5,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GitUpstreamSyncStatus, LaneSummary } from "../../../shared/types";
+import type { GitUpstreamSyncStatus, LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import type { MachineBranchState } from "../../../shared/laneDivergence";
 import { __resetLaneGitActionRuntimeForTests, LaneGitActionsPane } from "./LaneGitActionsPane";
 
@@ -28,6 +28,7 @@ let mockStoreState: {
   selectLane: ReturnType<typeof vi.fn>;
   smartTooltipsEnabled: boolean;
   project: { rootPath: string } | null;
+  laneCacheByProject: Record<string, unknown>;
   projectBinding:
     | { kind: "local"; key: string; rootPath: string }
     | {
@@ -107,6 +108,7 @@ describe("LaneGitActionsPane push divergence guard", () => {
       smartTooltipsEnabled: false,
       project: { rootPath: "/tmp/ade" },
       projectBinding: { kind: "local", key: "local:/tmp/ade", rootPath: "/tmp/ade" },
+      laneCacheByProject: {},
     };
     mockSyncStatus = {
       hasUpstream: true,
@@ -161,6 +163,8 @@ describe("LaneGitActionsPane push divergence guard", () => {
           selectedMode={null}
           selectedCommit={null}
           selectedCommitSha={null}
+          // The lane lives on the tab's machine in these cases.
+          runtimePin={mockStoreState.projectBinding as OpenProjectBinding}
           {...overrides}
         />
       </MemoryRouter>,
@@ -177,7 +181,7 @@ describe("LaneGitActionsPane push divergence guard", () => {
     await clickPush();
 
     await waitFor(() => {
-      expect(window.ade.git.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: false }, null);
+      expect(window.ade.git.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: false }, mockStoreState.projectBinding);
     });
     expect(screen.queryByRole("dialog")).toBeNull();
   });
@@ -238,7 +242,7 @@ describe("LaneGitActionsPane push divergence guard", () => {
     await userEvent.click(screen.getByRole("button", { name: "Push anyway" }));
 
     await waitFor(() => {
-      expect(window.ade.git.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: false }, null);
+      expect(window.ade.git.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: false }, mockStoreState.projectBinding);
     });
     expect(screen.queryByRole("dialog")).toBeNull();
   });
