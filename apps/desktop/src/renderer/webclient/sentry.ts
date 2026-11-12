@@ -6,6 +6,11 @@
  * an error in the first few hundred milliseconds is the price. Production
  * builds only, unless `?ade_sentry_dev=1` is on the URL for testing the
  * wiring. The browser's Do Not Track setting is honoured.
+ *
+ * Errors report from the first page, signed in or not. The release-health
+ * session starts only when the signed-in workspace opens
+ * (`startWebClientSentrySession`), so the signed-out page sends no session
+ * envelope (the cold-load request budget counts it).
  */
 import * as Sentry from "@sentry/react";
 import { connectSentry, setSentryUserResolver } from "../../shared/sentry/capture";
@@ -31,6 +36,8 @@ export function initWebClientSentry(): void {
     // Errors only. Browser tracing would add about a third to this chunk, and
     // the cold-load budget counts it; no trace headers go anywhere.
     tracePropagationTargets: [],
+    // The session starts later, with the signed-in workspace.
+    integrations: (defaults) => defaults.filter((integration) => integration.name !== "BrowserSession"),
     dataCollection: SENTRY_DATA_COLLECTION,
     // A desktop-only member called on web is expected, not a crash.
     // A page the browser translated has had its text nodes swapped under
@@ -55,6 +62,22 @@ export function initWebClientSentry(): void {
   });
   setSentryUserResolver(webAccountUserHash);
   void refreshAccountHash();
+  if (sessionWanted) startWebClientSentrySession();
+}
+
+let sessionWanted = false;
+let sessionStarted = false;
+
+/**
+ * Starts the release-health session once the signed-in workspace opens.
+ * Before `initWebClientSentry` it only records the wish, and init starts it.
+ * With Sentry off (dev, Do Not Track, opt-out) it does nothing.
+ */
+export function startWebClientSentrySession(): void {
+  sessionWanted = true;
+  if (sessionStarted || !Sentry.getClient()) return;
+  sessionStarted = true;
+  Sentry.addIntegration(Sentry.browserSessionIntegration());
 }
 
 /**

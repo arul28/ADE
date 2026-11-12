@@ -22,7 +22,8 @@ import {
   SESSION_LIFECYCLE_ATTRIBUTE,
   installSessionLifecycleChrome,
 } from "../sessionLifecycleChrome";
-import { parseOpenTarget, parseWebPath, targetToWebPath } from "../webRoutes";
+import { parseOpenTarget, parseWebPath } from "../webRoutes";
+import { targetToWebPath } from "../webTargetPaths";
 
 const mocks = vi.hoisted(() => {
   const federated = {

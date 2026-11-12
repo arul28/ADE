@@ -2983,7 +2983,7 @@ describe("createAdeWebAdapter", () => {
     } as const;
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
-    const unsupported = /cross-machine web routing is not implemented/;
+    const unsupported = /to another machine.s connection; it was not run/;
 
     await expect(adapter.ade.pty.create({
       laneId: "lane-1",
@@ -3063,7 +3063,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
 
-    await expect(adapter.ade.prs.reconcileNow(pin)).rejects.toThrow(/cross-machine web routing is not implemented/);
+    await expect(adapter.ade.prs.reconcileNow(pin)).rejects.toThrow(/to another machine.s connection; it was not run/);
     expect(fake.commandCalls).toHaveLength(0);
 
     adapter.dispose();
@@ -3237,7 +3237,7 @@ describe("createAdeWebAdapter", () => {
       title: "Pinned shell",
       cols: 80,
       rows: 24,
-    }, otherProjectPin)).rejects.toThrow(/cross-machine web routing is not implemented/);
+    }, otherProjectPin)).rejects.toThrow(/to another machine.s connection; it was not run/);
     expect(fake.commandCalls).toHaveLength(0);
 
     adapter.dispose();

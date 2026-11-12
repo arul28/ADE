@@ -13,11 +13,15 @@
 // Keep the three in step.
 // ---------------------------------------------------------------------------
 
-import type { DeeplinkOwnership, DeeplinkTarget } from "../../../shared/deeplinks";
+import {
+  accountProjectIdOfTarget,
+  ownershipOfTarget,
+  type DeeplinkOwnership,
+  type DeeplinkTarget,
+} from "../../../shared/deeplinks";
 export { ownershipOfTarget } from "../../../shared/deeplinks";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { WebMachineEntry } from "../workspace/webWorkspaceModel";
-import { targetToWebPath } from "./webRoutes";
 
 /** The GitHub repo a target names, when it names one. */
 function targetRepo(target: DeeplinkTarget): { owner: string; name: string } | null {
@@ -143,7 +147,13 @@ export type OwnedLinkFailureKind =
   | "project-missing"
   | "host-outdated"
   | "open-failed"
-  | "entity-missing";
+  | "entity-missing"
+  /** The link's account project was removed from the account. */
+  | "project-removed"
+  /** The account does not hold the link's account project. */
+  | "project-unknown"
+  /** No computer that is online has a copy; the repository opened with no machine. */
+  | "no-copy";
 
 export type OwnedLinkFailure = {
   kind: OwnedLinkFailureKind;
@@ -276,7 +286,11 @@ export async function resolveOwnedLink(
   const project = match.project;
   const projectName = project.displayName || repo?.name || "the project";
   deps.onStage({ kind: "opening", machineName, projectName });
+  let targetToWebPath: (target: DeeplinkTarget) => string;
   try {
+    // The route mapping carries the settings manifest, so it loads here,
+    // after sign-in, and never on the signed-out page.
+    ({ targetToWebPath } = await import("./webTargetPaths"));
     await deps.openProject(targetId, project.id);
   } catch (error) {
     const detail = errorText(error);
@@ -328,4 +342,9 @@ export async function resolveOwnedLink(
 export function navigateMountedApp(path: string): void {
   if (!path.startsWith("/")) return;
   window.location.hash = `#${path}`;
+}
+
+/** A link this resolver handles: one with an owner pair or an account project id. */
+export function isOwnedOrAccountLink(target: DeeplinkTarget | null | undefined): target is DeeplinkTarget {
+  return Boolean(target && (ownershipOfTarget(target) || accountProjectIdOfTarget(target)));
 }

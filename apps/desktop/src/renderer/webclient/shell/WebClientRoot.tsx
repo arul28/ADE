@@ -21,9 +21,10 @@ import type { WebMachineEntry } from "../workspace/webWorkspaceModel";
 import { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
 import { mergeWebMachines, webMachineCatalogKeys } from "../workspace/webWorkspaceModel";
 import { createAccountNamespace } from "../adapter/account";
-import { parseOpenTarget, parseWebPath, targetToWebPath } from "./webRoutes";
+import { parseOpenTarget, parseWebPath } from "./webRoutes";
 import { readPendingTarget, stashPendingTarget } from "./pendingTarget";
 import {
+  isOwnedOrAccountLink,
   matchOwnedProject,
   navigateMountedApp,
   ownedLinkStageText,
@@ -31,11 +32,14 @@ import {
   resolveOwnedLink,
   type OwnedLinkResult,
 } from "./ownedLinkResolution";
+import { accountProjectIdOfTarget } from "../../../shared/deeplinks";
 import type { WebOwnedLinkState } from "../workspace/WebWorkspaceContext";
 import { ScreenShell } from "./ScreenShell";
 import { installSessionLifecycleChrome } from "./sessionLifecycleChrome";
 import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
-import { requirePin } from "../../state/repositoryScope";
+// Not from `state/repositoryScope`: that module pulls the app store into the
+// signed-out page.
+import { requirePin } from "../../lib/requirePin";
 
 async function loadFederatedAdapter(
   manager: WebMachineSessionManager,
@@ -63,6 +67,15 @@ async function loadFederatedAdapter(
  */
 function loadAppStylesheet(): Promise<unknown> {
   return import("../../index.css");
+}
+
+/**
+ * Target -> route mapping. It imports the settings manifest (with the MCP
+ * catalogue), so only a signed-in boot loads it; the signed-out page only
+ * parses links.
+ */
+function loadTargetPaths(): Promise<typeof import("./webTargetPaths")> {
+  return import("./webTargetPaths");
 }
 
 async function loadAppRoot(): Promise<React.ComponentType> {
@@ -96,6 +109,7 @@ async function loadAppRoot(): Promise<React.ComponentType> {
 function preloadWorkspaceModules(): void {
   void Promise.all([
     loadAppStylesheet(),
+    loadTargetPaths(),
     import("../adapter/federated"),
     import("../../components/app/App"),
     import("../../components/app/RendererErrorBoundary"),
@@ -226,6 +240,8 @@ export function WebClientRoot({
   const federatedAdapterGenerationRef = useRef(0);
   const accountRef = useRef(account);
   const pendingTargetRef = useRef<DeeplinkTarget | null>(null);
+  // Set by the signed-in boot, before the workspace mounts.
+  const targetPathRef = useRef<((target: DeeplinkTarget) => string) | null>(null);
   const workspaceSnapshotRef = useRef(workspaceSnapshot);
   accountRef.current = account;
   workspaceSnapshotRef.current = workspaceSnapshot;
@@ -325,10 +341,32 @@ export function WebClientRoot({
    * `onStage` reports each step; the result is the route or the failure.
    */
   const resolveOwnedTarget = useCallback(async (
-    target: DeeplinkTarget,
+    linkTarget: DeeplinkTarget,
     adapter: FederatedWebAdapter,
     onStage: (message: string) => void,
   ): Promise<OwnedLinkResult | null> => {
+    let target = linkTarget;
+    if (accountProjectIdOfTarget(target)) {
+      // The link names an account project (L33): the account list picks a
+      // copy on a computer that is online, follows a merge, or says the
+      // project is gone. With no copy online, the repository opens with no
+      // machine, as on the desktop.
+      const list = await accountClient.readAccountProjects().catch(() => ({ state: "not_loaded" as const, projects: [] as [] }));
+      const online = accountClient.getSnapshot().machines
+        .filter((machine) => machine.online)
+        .map((machine) => machine.machineKey);
+      const { accountProjectLinkStep } = await import("./accountProjectLink");
+      const step = accountProjectLinkStep(target, list, online);
+      if (step.kind === "stop") {
+        if (step.noCopy) {
+          const { useAppStore } = await import("../../state/appStore");
+          useAppStore.getState().showNoMachineTab({ id: step.noCopy.id, displayName: step.noCopy.name, iconDataUrl: null });
+          return { ok: false, failure: { ...step.failure, projectPath: WELCOME_PATH } };
+        }
+        return { ok: false, failure: step.failure };
+      }
+      target = step.target;
+    }
     const ownership = ownershipOfTarget(target);
     if (!ownership) return null;
     // The binding the link opened; the existence checks ask that machine.
@@ -570,14 +608,25 @@ export function WebClientRoot({
         if (disposed) return;
         Object.assign(window.ade, { account: createAccountNamespace(accountClient) });
         window.history.replaceState(null, "", WELCOME_PATH);
-        setPhase({ kind: "signed-out", SignIn: WebSignInScreen });
+        // A link waits for the sign-in; the card says so.
+        const linkWaiting = (pendingTargetRef.current ?? readPendingTarget()) != null;
+        setPhase({
+          kind: "signed-out",
+          SignIn: linkWaiting ? function SignInForLink() { return <WebSignInScreen linkWaiting />; } : WebSignInScreen,
+        });
         return;
       }
 
       const linkTarget = pendingTargetRef.current ?? readPendingTarget();
-      const ownedLinkTarget = ownershipOfTarget(linkTarget) ? linkTarget : null;
+      const ownedLinkTarget = isOwnedOrAccountLink(linkTarget) ? linkTarget : null;
+      const targetPathsLoad = loadTargetPaths();
+      // Awaited below; a failure there reaches the error screen with Retry.
+      targetPathsLoad.catch(() => undefined);
       const installed = await installFederatedAdapter(snapshot, { restore: !ownedLinkTarget });
       if (disposed) return;
+      const { targetToWebPath } = await targetPathsLoad;
+      if (disposed) return;
+      targetPathRef.current = targetToWebPath;
       let restored = installed.restored;
       let initialPath: string;
       if (ownedLinkTarget) {
@@ -619,6 +668,8 @@ export function WebClientRoot({
       window.history.replaceState(null, "", initialPath);
       const AppRoot = await loadAppRoot();
       if (!disposed) setPhase({ kind: "ready", AppRoot });
+      // The Sentry session starts with the workspace, not on the signed-out page.
+      if (!disposed) void import("../sentry").then((module) => module.startWebClientSentrySession()).catch(() => undefined);
       // Nothing to restore means the welcome surface is what the user sees, and
       // it has already painted from the persisted catalogs. Bringing the last
       // machine back is a background refresh, never a gate on first paint.
@@ -683,7 +734,7 @@ export function WebClientRoot({
   const retryOwnedLink = useCallback(() => {
     const target = pendingTargetRef.current ?? readPendingTarget();
     const adapter = federatedAdapterRef.current;
-    if (!target || !adapter || !ownershipOfTarget(target)) {
+    if (!target || !adapter || !isOwnedOrAccountLink(target)) {
       setOwnedLink(null);
       return;
     }
@@ -729,7 +780,7 @@ export function WebClientRoot({
   useEffect(() => {
     openOwnedDeeplinkRef.current = async (url) => {
       const parsed = parseDeeplink(url);
-      if (!parsed.ok || !ownershipOfTarget(parsed.target)) return false;
+      if (!parsed.ok || !isOwnedOrAccountLink(parsed.target)) return false;
       pendingTargetRef.current = parsed.target;
       stashPendingTarget(parsed.target);
       retryOwnedLink();
@@ -757,11 +808,12 @@ export function WebClientRoot({
       dismissNotice: () => setWorkspaceNotice(null),
       consumePendingProjectPath() {
         const target = pendingTargetRef.current ?? readPendingTarget();
-        if (!target) return null;
+        const toPath = targetPathRef.current;
+        if (!target || !toPath) return null;
         if (!pendingTargetBelongsToActiveProject(target)) return null;
         clearPendingTarget();
         setOwnedLink(null);
-        return targetToWebPath(target);
+        return toPath(target);
       },
       ownedLink,
       retryOwnedLink,

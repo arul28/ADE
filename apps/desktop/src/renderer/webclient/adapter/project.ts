@@ -14,12 +14,14 @@ export function createProjectNamespace(infra: AdapterInfra): AdeNamespace<"proje
 
   async function listRecent() {
     const projects = await refreshCatalog();
-    // Deliberately no `gitOriginUrl`: cross-machine lane discovery keys off it
-    // (crossMachineLanes.resolveThisMachineBindingForOrigin), and the web
-    // adapter's lanes/sessions shims cannot route pinned reads. Adding the
-    // field here would silently point those reads at the wrong machine — see
-    // the contract-gap guard in sessionsPty.ts.
+    // The repository identity joins this machine's rows with the same
+    // repository on other machines (S14). The federated proxy routes each
+    // pinned read to its own machine's adapter, so the join no longer points
+    // a read at the wrong machine.
     return projects.map((project) => ({
+      gitOriginUrl: project.repoOwner && project.repoName
+        ? `https://github.com/${project.repoOwner}/${project.repoName}`
+        : null,
       rootPath: project.rootPath,
       displayName: project.displayName,
       baseRef: project.defaultBaseRef,

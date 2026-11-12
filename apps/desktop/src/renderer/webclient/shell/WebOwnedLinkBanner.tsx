@@ -5,13 +5,21 @@ import { APP_BANNER_PRIORITY, useAppBanner } from "../../components/ui/notice/ap
 import type { BannerModel } from "../../components/ui/notice/Banner";
 import type { NoticeAction } from "../../components/ui/notice/NoticeParts";
 import { useOptionalWebWorkspace } from "../workspace/WebWorkspaceContext";
-import { navigateMountedApp } from "./ownedLinkResolution";
+import { navigateMountedApp, type OwnedLinkFailureKind } from "./ownedLinkResolution";
 
 /**
  * The app banner for a link that opens on the machine and project that own it:
  * a busy line while ADE connects and opens, then what went wrong and how to go
  * on. Loaded with the app chunk, so the boot entry carries no notice code.
  */
+
+const WARNING_KINDS: ReadonlySet<OwnedLinkFailureKind> = new Set<OwnedLinkFailureKind>([
+  "entity-missing",
+  "project-removed",
+  "project-unknown",
+  "no-copy",
+]);
+
 export function WebOwnedLinkBanner(): null {
   const workspace = useOptionalWebWorkspace();
   const state = workspace?.ownedLink ?? null;
@@ -41,7 +49,9 @@ export function WebOwnedLinkBanner(): null {
     }
     model = {
       id: "web-owned-link",
-      tone: failure.kind === "entity-missing" ? "warning" : "error",
+      // A missing item, a removed project or no copy online is a state of
+      // the account, not a fault.
+      tone: WARNING_KINDS.has(failure.kind) ? "warning" : "error",
       title: failure.title,
       ...(failure.detail ? { detail: failure.detail } : {}),
       actions,

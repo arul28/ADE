@@ -7862,7 +7862,12 @@ async function runTool(args: {
       if (!own || `${own.owner}/${own.name}`.toLowerCase() !== repo) return none;
     }
     const ownership = localLinkOwnership(runtime.projectRoot, { logger: runtime.logger });
-    return { accountMachineKey: ownership?.accountMachineKey ?? null, projectId: ownership?.projectId ?? null };
+    return {
+      accountMachineKey: ownership?.accountMachineKey ?? null,
+      projectId: ownership?.projectId ?? null,
+      // Additive: the account project of this folder, which links add (L33).
+      ...(ownership?.accountProjectId ? { accountProjectId: ownership.accountProjectId } : {}),
+    };
   }
 
   if (name === "list_lanes") {

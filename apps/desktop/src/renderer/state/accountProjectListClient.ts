@@ -5,8 +5,9 @@
  *
  * - The source is this computer's brain (`projects.accountList`), a read of a
  *   JSON file the brain keeps current from the account directory. It makes no
- *   server call. The hosted web client has no brain of its own and no reader
- *   yet: there the list stays `unknown` and the app keeps its recents.
+ *   server call. The hosted web client has no brain of its own: there
+ *   `project.accountList` reads the account directory (only the changes
+ *   after the first read), so its focus reads are spaced further apart.
  * - A copy in localStorage paints the first frame and covers a brain that is
  *   still starting or offline. A signed-out answer clears it.
  * - Reads: once at start and on window focus (at most one in 15 s), and when
@@ -24,6 +25,8 @@ import { publishAccountProjectList, type AccountProjectListState } from "./useRe
 
 export const ACCOUNT_PROJECT_LIST_CACHE_KEY = "ade.accountProjects.cache.v1";
 const FOCUS_READ_MIN_MS = 15_000;
+/** The web reads the account directory, a server call: at most once a minute on focus. */
+const WEB_FOCUS_READ_MIN_MS = 60_000;
 const MACHINE_NAMES_MIN_MS = 10 * 60_000;
 
 type CachedList = {
@@ -150,12 +153,26 @@ async function readMachineNames(projects: readonly AccountProjectView[], known: 
   writeCache({ v: 1, userId: currentUserId, projects: [...current.projects], machineNames: names });
 }
 
+/**
+ * Drops the list another account left: the one in memory and the copy in
+ * localStorage. A browser can be shared, so on the web a new account must
+ * never see the last account's projects, not even until its first read ends.
+ */
+function forgetOtherAccount(userId: string | null): void {
+  if (!userId || !currentUserId || currentUserId === userId) return;
+  currentUserId = userId;
+  pendingChanges.clear();
+  writeCache(null);
+  publish({ state: "unknown", projects: [] });
+}
+
 async function readList(): Promise<void> {
   const accountList = window.ade?.project?.accountList;
   if (typeof accountList !== "function") return;
   lastReadAt = Date.now();
   const status = await window.ade?.account?.status?.().catch(() => null);
   const userId = status?.userId ?? null;
+  forgetOtherAccount(userId);
   const answer = await accountList().catch((error: unknown) => {
     // The cached list stays on screen; the next focus reads again.
     captureError(error, { fingerprint: ["account-projects", "list-read"], level: "warning", handled: true });
@@ -171,17 +188,9 @@ async function readList(): Promise<void> {
   }
   if (answer.state === "not_loaded") {
     // The brain has not read the list for this account yet: keep the copy
-    // this account left, and only that account's copy.
-    if (current.state === "ready" && currentUserId && userId && currentUserId !== userId) {
-      currentUserId = userId;
-      pendingChanges.clear();
-      writeCache(null);
-      publish({ state: "unknown", projects: [] });
-    }
+    // this account left, and only that account's copy (dropped above).
     return;
   }
-  // Another account's adds and removes never lay over this account's list.
-  if (currentUserId && userId && currentUserId !== userId) pendingChanges.clear();
   currentUserId = userId;
   const machineNames = current.machineNames ?? {};
   const projects = withPendingChanges(answer.projects);
@@ -193,7 +202,8 @@ async function readList(): Promise<void> {
 /** Reads the list now, or joins the read in flight. */
 export function refreshAccountProjectList(options?: { force?: boolean }): Promise<void> {
   if (readInFlight) return readInFlight;
-  if (!options?.force && Date.now() - lastReadAt < FOCUS_READ_MIN_MS) return Promise.resolve();
+  const minGap = isWebClientMode() ? WEB_FOCUS_READ_MIN_MS : FOCUS_READ_MIN_MS;
+  if (!options?.force && Date.now() - lastReadAt < minGap) return Promise.resolve();
   readInFlight = readList().finally(() => {
     readInFlight = null;
   });
@@ -206,7 +216,19 @@ function start(): () => void {
     const cached = readCache();
     if (cached && current.state === "unknown") {
       currentUserId = cached.userId;
-      publish({ state: "ready", projects: cached.projects, machineNames: cached.machineNames });
+      // On the web the copy paints only for the account that left it; the
+      // browser's account status is an in-memory read there.
+      if (!isWebClientMode()) publish({ state: "ready", projects: cached.projects, machineNames: cached.machineNames });
+      else {
+        void window.ade?.account?.status?.()
+          .then((status) => {
+            forgetOtherAccount(status?.userId ?? null);
+            if (cached.userId && status?.userId === cached.userId && current.state === "unknown") {
+              publish({ state: "ready", projects: cached.projects, machineNames: cached.machineNames });
+            }
+          })
+          .catch(() => undefined);
+      }
     }
   }
   void refreshAccountProjectList({ force: starts === 1 });
@@ -218,10 +240,7 @@ function start(): () => void {
   };
 }
 
-/** Keeps the account project list current while the caller is mounted (desktop only). */
+/** Keeps the account project list current while the caller is mounted (desktop and web). */
 export function useAccountProjectListClient(): void {
-  useEffect(() => {
-    if (isWebClientMode()) return undefined;
-    return start();
-  }, []);
+  useEffect(() => start(), []);
 }

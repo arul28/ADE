@@ -186,14 +186,6 @@ export function machineBlockedReason(
   return null;
 }
 
-/**
- * The trailing pin argument for a preload call: `[pin]`, or nothing when there
- * is no address. A pin that names the tab's own copy costs what no pin cost
- * (preload `isBoundCopyPin`).
- */
-export function pinArg(pin: OpenProjectBinding | null | undefined): [] | [OpenProjectBinding] {
-  return pin ? [pin] : [];
-}
 
 /**
  * `binding`, held by its key: the same object back until the key changes. The

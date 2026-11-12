@@ -79,7 +79,20 @@ export type DeeplinkOwnership = {
    * rescues a legacy link whose `projectId` is the publisher's private uuid.
    */
   projectRoot?: string;
+  /**
+   * The account project of the owning folder (`ap_<32 hex>`), when the owner
+   * knows it (`get_link_ownership`). A minted link adds it next to the pair,
+   * as the phone does.
+   */
+  accountProjectId?: string;
 };
+
+/** The account project id pattern of the account directory (`ap_` and 32 hex). */
+export const ACCOUNT_PROJECT_ID_PATTERN = /^ap_[0-9a-f]{32}$/;
+
+export function isAccountProjectId(value: unknown): value is string {
+  return typeof value === "string" && ACCOUNT_PROJECT_ID_PATTERN.test(value);
+}
 
 /** Link kinds that name the computer and project they belong to. */
 export type OwnedDeeplinkTarget = Extract<DeeplinkTarget, { kind: "lane" | "session" | "pr" }>;
@@ -104,7 +117,19 @@ export function parseDeeplinkOwnership(value: unknown): DeeplinkOwnership | null
   const record = value as Record<string, unknown>;
   const accountMachineKey = typeof record.accountMachineKey === "string" ? record.accountMachineKey.trim() : "";
   const projectId = typeof record.projectId === "string" ? record.projectId.trim() : "";
-  return accountMachineKey && projectId ? { accountMachineKey, projectId } : null;
+  if (!accountMachineKey || !projectId) return null;
+  const accountProjectId = typeof record.accountProjectId === "string" ? record.accountProjectId.trim() : "";
+  return { accountMachineKey, projectId, ...(isAccountProjectId(accountProjectId) ? { accountProjectId } : {}) };
+}
+
+/**
+ * The account project a link names: its own `accountProjectId`, else the one
+ * its ownership carries. Old links have neither and keep their old route.
+ */
+export function accountProjectIdOfTarget(target: DeeplinkTarget | null | undefined): string | null {
+  if (!target || !deeplinkTargetTakesOwnership(target)) return null;
+  const id = target.accountProjectId ?? target.ownership?.accountProjectId ?? null;
+  return isAccountProjectId(id) ? id : null;
 }
 
 export type DeeplinkLaneTarget = {
@@ -112,6 +137,8 @@ export type DeeplinkLaneTarget = {
   laneId: string;
   envelope?: DeeplinkEnvelope;
   ownership?: DeeplinkOwnership;
+  /** The account project (`accountProjectId=ap_…`). It may come without the pair. */
+  accountProjectId?: string;
 };
 export type DeeplinkSessionTarget = {
   kind: "session";
@@ -121,6 +148,8 @@ export type DeeplinkSessionTarget = {
   offset?: number;
   envelope?: DeeplinkEnvelope;
   ownership?: DeeplinkOwnership;
+  /** The account project (`accountProjectId=ap_…`). It may come without the pair. */
+  accountProjectId?: string;
 };
 export type DeeplinkFileTarget = {
   kind: "file";
@@ -173,6 +202,8 @@ export type DeeplinkPrTarget = {
   /** Detail sub-tab to open on. Omitted → the PRs page picks its own default. */
   detailTab?: DeeplinkPrDetailTab;
   ownership?: DeeplinkOwnership;
+  /** The account project (`accountProjectId=ap_…`). It may come without the pair. */
+  accountProjectId?: string;
 };
 /**
  * Linear hand-off form: Linear's "Open in coding tool" passes us the issue
@@ -317,10 +348,16 @@ function appendEnvelopeParams(params: URLSearchParams, envelope: DeeplinkEnvelop
 function appendOwnershipParams(
   params: URLSearchParams,
   ownership: DeeplinkOwnership | undefined,
+  accountProjectId?: string,
 ): void {
+  // The old pair stays and the account id is added (the phone mints the same).
+  const id = accountProjectId ?? ownership?.accountProjectId;
+  if (ownership) {
+    params.set("accountMachineKey", ownership.accountMachineKey);
+    params.set("projectId", ownership.projectId);
+  }
+  if (isAccountProjectId(id)) params.set("accountProjectId", id);
   if (!ownership) return;
-  params.set("accountMachineKey", ownership.accountMachineKey);
-  params.set("projectId", ownership.projectId);
   // `projectRoot` is intentionally not re-emitted: it is a parse-only
   // compatibility field, and minting it would put a local absolute path back
   // into every shareable link.
@@ -329,7 +366,28 @@ function appendOwnershipParams(
 /** Longest project root a deeplink may carry out of the URL. */
 const MAX_DEEPLINK_PROJECT_ROOT_LENGTH = 4_096;
 
+/**
+ * The link's ownership pair and its `accountProjectId`. A link may carry the
+ * account id alone. A value that is not an account project id breaks the
+ * link, as on the phone.
+ */
 function readOwnershipParams(
+  searchParams: URLSearchParams,
+  rawUrl: string,
+):
+  | { ok: true; ownership?: DeeplinkOwnership; accountProjectId?: string }
+  | { ok: false; error: ParseError; rawUrl: string } {
+  const rawAccountProjectId = searchParams.get("accountProjectId");
+  const accountProjectId = rawAccountProjectId?.trim() ?? "";
+  if (rawAccountProjectId != null && !isAccountProjectId(accountProjectId)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid account project id" }, rawUrl };
+  }
+  const pair = readOwnershipPair(searchParams, rawUrl);
+  if (!pair.ok || !accountProjectId) return pair;
+  return { ...pair, accountProjectId };
+}
+
+function readOwnershipPair(
   searchParams: URLSearchParams,
   rawUrl: string,
 ):
@@ -457,7 +515,7 @@ function buildAdeUrl(target: DeeplinkTarget): string {
     case "lane": {
       const params = new URLSearchParams();
       appendEnvelopeParams(params, target.envelope);
-      appendOwnershipParams(params, target.ownership);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
       const qs = params.toString();
       const base = `${ADE_DEEPLINK_SCHEME}://lane/${encodeURIComponent(target.laneId)}`;
       return qs ? `${base}?${qs}` : base;
@@ -468,7 +526,7 @@ function buildAdeUrl(target: DeeplinkTarget): string {
       if (target.event != null) params.set("event", String(target.event));
       if (target.offset != null) params.set("offset", String(target.offset));
       appendEnvelopeParams(params, target.envelope);
-      appendOwnershipParams(params, target.ownership);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
       const qs = params.toString();
       const base = `${ADE_DEEPLINK_SCHEME}://session/${encodeURIComponent(target.sessionId)}`;
       return qs ? `${base}?${qs}` : base;
@@ -503,7 +561,7 @@ function buildAdeUrl(target: DeeplinkTarget): string {
     case "pr": {
       const params = new URLSearchParams();
       if (target.detailTab) params.set("tab", target.detailTab);
-      appendOwnershipParams(params, target.ownership);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
       const base = target.repoOwner && target.repoName
         ? `${ADE_DEEPLINK_SCHEME}://pr/${encodeURIComponent(target.repoOwner)}/${encodeURIComponent(target.repoName)}/${target.prNumber}`
         : `${ADE_DEEPLINK_SCHEME}://pr/${target.prNumber}`;
@@ -534,7 +592,7 @@ function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget |
       params.set("type", "lane");
       params.set("id", target.laneId);
       appendEnvelopeParams(params, target.envelope);
-      appendOwnershipParams(params, target.ownership);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
       break;
     case "session":
       params.set("type", "session");
@@ -543,7 +601,7 @@ function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget |
       if (target.event != null) params.set("event", String(target.event));
       if (target.offset != null) params.set("offset", String(target.offset));
       appendEnvelopeParams(params, target.envelope);
-      appendOwnershipParams(params, target.ownership);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
       break;
     case "file":
       params.set("type", "file");
@@ -575,7 +633,7 @@ function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget |
       }
       params.set("number", String(target.prNumber));
       if (target.detailTab) params.set("tab", target.detailTab);
-      appendOwnershipParams(params, target.ownership);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
       break;
     case "linear-issue":
       params.set("type", "linear-issue");
@@ -866,7 +924,7 @@ function buildPrTarget(
   const detailTab = parsePrDetailTabParam(detailTabRaw);
   const ownershipResult = readOwnershipParams(new URL(rawUrl).searchParams, rawUrl);
   if (!ownershipResult.ok) return ownershipResult;
-  if (!hasRepoIdentity && !ownershipResult.ownership) {
+  if (!hasRepoIdentity && !ownershipResult.ownership && !ownershipResult.accountProjectId) {
     return {
       ok: false,
       error: {
@@ -884,6 +942,7 @@ function buildPrTarget(
       prNumber: number,
       ...(detailTab ? { detailTab } : {}),
       ...(ownershipResult.ownership ? { ownership: ownershipResult.ownership } : {}),
+      ...(ownershipResult.accountProjectId ? { accountProjectId: ownershipResult.accountProjectId } : {}),
     },
     rawUrl,
   };
@@ -900,6 +959,7 @@ function buildLaneTarget(laneId: string, searchParams: URLSearchParams, rawUrl: 
       laneId,
       ...(envelope ? { envelope } : {}),
       ...(ownershipResult.ownership ? { ownership: ownershipResult.ownership } : {}),
+      ...(ownershipResult.accountProjectId ? { accountProjectId: ownershipResult.accountProjectId } : {}),
     },
     rawUrl,
   };
@@ -927,6 +987,7 @@ function buildSessionTarget(sessionId: string, searchParams: URLSearchParams, ra
       ...(offset != null ? { offset } : {}),
       ...(envelope ? { envelope } : {}),
       ...(ownershipResult.ownership ? { ownership: ownershipResult.ownership } : {}),
+      ...(ownershipResult.accountProjectId ? { accountProjectId: ownershipResult.accountProjectId } : {}),
     },
     rawUrl,
   };
@@ -1053,6 +1114,7 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
         laneId: target.laneId,
         envelope: target.envelope ?? null,
         ...(target.ownership ? { ownership: target.ownership } : {}),
+        ...(target.accountProjectId ? { accountProjectId: target.accountProjectId } : {}),
       };
     case "session":
       return {
@@ -1063,6 +1125,7 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
         event: target.event ?? null,
         offset: target.offset ?? null,
         ...(target.ownership ? { ownership: target.ownership } : {}),
+        ...(target.accountProjectId ? { accountProjectId: target.accountProjectId } : {}),
       };
     case "file":
       return {
@@ -1092,6 +1155,7 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
         ...(target.repoName ? { repoName: target.repoName } : {}),
         ...(target.detailTab ? { detailTab: target.detailTab } : {}),
         ...(target.ownership ? { ownership: target.ownership } : {}),
+        ...(target.accountProjectId ? { accountProjectId: target.accountProjectId } : {}),
       };
     case "branch":
       return {

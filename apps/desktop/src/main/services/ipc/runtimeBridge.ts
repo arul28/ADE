@@ -4,7 +4,7 @@ import type { ProductAnalyticsService } from "../analytics/productAnalyticsServi
 import { cloudAsleepForUse, cloudRestChanged, cloudUpdateBlocker, cloudWakeForUse } from "../adeCloud/cloudWakeHook";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
-import { localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
+import { accountProjectIdForCopy, localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
 import type { DeeplinkOwnership } from "../../../shared/deeplinks";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
@@ -1204,7 +1204,10 @@ export function registerRuntimeBridge({
         const target = remoteConnectionService.listTargets().find((entry) => entry.id === binding.targetId);
         const accountMachineKey = target?.pairedMachine?.machineKey?.trim() ?? "";
         const projectId = binding.projectId?.trim() ?? "";
-        return accountMachineKey && projectId ? { accountMachineKey, projectId } : null;
+        if (!accountMachineKey || !projectId) return null;
+        // The account project of that copy, from this computer's list (L33).
+        const accountProjectId = accountProjectIdForCopy(accountMachineKey, projectId);
+        return { accountMachineKey, projectId, ...(accountProjectId ? { accountProjectId } : {}) };
       }
       return localLinkOwnership(binding.rootPath ?? "", {
         logger: getMachineMainLogger(),

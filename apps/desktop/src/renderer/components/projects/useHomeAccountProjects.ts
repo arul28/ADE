@@ -56,6 +56,8 @@ export function useHomeAccountProjects(args: {
 }): {
   visibleProjectGroups: RecentProjectGroup[];
   openNoMachineTab: (rp: RecentProjectSummary) => boolean;
+  /** How many live projects the account has; 0 until the list is read. */
+  accountProjectCount: number;
 } {
   const { webMode, recentProjects, webRecents, remoteSnapshot, pendingForgetKeys } = args;
   const accountList = useAccountProjectList();
@@ -73,12 +75,15 @@ export function useHomeAccountProjects(args: {
       recentProjects: kept,
       remoteSnapshot: webMode ? null : remoteSnapshot,
     });
-    const fromAccount = !webMode && accountProjects
+    // On the web too (S14): the account's projects come from the account
+    // directory there, so a project on a computer this browser never
+    // connected to, or on no computer, still has a row.
+    const fromAccount = accountProjects
       ? accountProjectGroups({
           projects: accountProjects,
           shownGroups: groups,
-          remoteSnapshot,
-          thisMachineKey,
+          remoteSnapshot: webMode ? null : remoteSnapshot,
+          thisMachineKey: webMode ? null : thisMachineKey,
           machineNames: accountList.machineNames,
         })
       : [];
@@ -100,5 +105,5 @@ export function useHomeAccountProjects(args: {
     return true;
   }, [accountProjects, showNoMachineTab]);
 
-  return { visibleProjectGroups, openNoMachineTab };
+  return { visibleProjectGroups, openNoMachineTab, accountProjectCount: accountProjects?.length ?? 0 };
 }

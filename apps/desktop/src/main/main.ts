@@ -82,6 +82,7 @@ import {
 import {
   appNavigationOwnership,
   dispatchOwnerAwareNavigation,
+  resolveAccountProjectNavigation,
   ownerNavigationFailureCopy,
 } from "./services/deeplinks/ownerAwareNavigation";
 import { resolveLocalProjectRoot } from "./services/deeplinks/localProjectResolution";
@@ -9996,8 +9997,22 @@ app.whenReady().then(async () => {
     }
   };
 
-  dispatchAppNavigationRequest = (request) => {
+  dispatchAppNavigationRequest = (incoming) => {
     void (async () => {
+      // A link that names an account project goes to a reachable copy of it,
+      // or opens its tab with no machine (L33). Old links pass unchanged.
+      const request = await resolveAccountProjectNavigation(incoming, {
+        readAccountList: async () => ipcBridge?.readAccountProjectList() ?? { state: "not_loaded", projects: [] },
+        getLocalMachineKey: () => ipcBridge?.getLocalMachineIdentity().machineKey ?? "",
+        connectedMachineKeys: () => ipcBridge?.connectedMachineKeys() ?? [],
+        onlineMachineKeys: async () => {
+          const listed = await Promise.race([
+            ipcBridge?.listAccountMachines() ?? Promise.resolve(null),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 4_000)),
+          ]);
+          return listed?.state === "ok" ? listed.machines.filter((machine) => machine.online).map((machine) => machine.machineKey) : [];
+        },
+      });
       const handledByOwner = await dispatchOwnerAwareNavigation(request, {
         getLocalMachineKey: () =>
           ipcBridge?.getLocalMachineIdentity().machineKey ?? "",
@@ -10084,7 +10099,7 @@ app.whenReady().then(async () => {
       targetWindow.focus();
       targetWindow.webContents.send(IPC.appNavigate, request);
     })().catch((error: unknown) => {
-      const ownership = appNavigationOwnership(request.target);
+      const ownership = appNavigationOwnership(incoming.target);
       getActiveContext().logger.warn("deeplink.dispatch_window_failed", {
         ...(ownership
           ? {
