@@ -31,6 +31,9 @@ struct HubScreen: View {
   @State private var composerExpanded = false
   @State private var composerSwitchingMachine = false
   @State private var projectOpenFailureToast: ADEToastMessage?
+  /// The account project the Delete sheet is open for.
+  @State private var deleteProjectTarget: AccountProject?
+  @State private var locationTarget: HubAccountHomeTarget?
   /// The Hub notice waiting for a covering pane to close.
   @State private var heldHubNoticeId: UUID?
   // Set when a hub chat row is tapped — drives the chat cover (wired in
@@ -59,6 +62,19 @@ struct HubScreen: View {
   // local resolution without creating a request loop.
   @State private var requestedRosterLookupRequestId: String?
   @State private var rosterFilter: HubRosterFilter = .all
+  // The account's project list: which projects exist, with or without a
+  // computer. `accountJoin` matches the machines' cards to it.
+  @ObservedObject private var accountProjects = AccountProjectStore.shared
+  @ObservedObject private var account = AccountService.shared
+  @State private var accountJoin = HubAccountJoin()
+  /// Account projects no reachable machine shows, by card id (the project id).
+  @State private var accountOnlyProjects: [String: AccountProject] = [:]
+  /// The live account projects by id, for each card's computer chip.
+  @State private var accountProjectById: [String: AccountProject] = [:]
+  @State private var accountHomeTarget: HubAccountHomeTarget?
+  /// The saved order came from the per-machine layout and still names that
+  /// machine's ids; the next rebuild maps them to account project ids.
+  @State private var legacyOrderPending = false
   @Environment(\.scenePhase) private var scenePhase
   /// The inner display is wide enough for the two-page Home.
   @Environment(\.duoLayout) private var duo
@@ -66,9 +82,13 @@ struct HubScreen: View {
   private var isNoMachineBlankState: Bool {
     // A send switching machines keeps the hub (and its composer) up through
     // the reconnect, so its draft and any error stay on screen.
+    // Saved projects never hide behind it: the account's list, or a machine's
+    // cached projects, keep the grid up with a status line above it.
     !composerSwitchingMachine
       && (syncService.connectionState == .disconnected || syncService.connectionState == .error)
       && fleetMerge.extraProjects.isEmpty
+      && !accountProjects.governsHub
+      && syncService.projects.isEmpty
   }
 
   private var canShowProjects: Bool {
@@ -87,6 +107,13 @@ struct HubScreen: View {
     .sheet(isPresented: $addProjectSheetPresented) {
       RemoteProjectAddSheet().environmentObject(syncService)
     }
+    .hubAccountProjectSheets(
+      home: $accountHomeTarget,
+      location: $locationTarget,
+      remove: $deleteProjectTarget,
+      onConnectComputer: { syncService.settingsPresented = true },
+      onNotice: { text in projectOpenFailureToast = ADEToastMessage(text: text) }
+    )
     .hubChatCover(target: $openChatTarget)
     .overlay(alignment: .bottom) {
       if let toast = createdToast {
@@ -99,7 +126,8 @@ struct HubScreen: View {
     .animation(.spring(response: 0.35, dampingFraction: 0.85), value: createdToast)
     // A project the machine refused to open says why, instead of the tap
     // looking like it hung on the hub.
-    .adeToast($projectOpenFailureToast)
+    // Above the composer, as the created-chat toast is.
+    .adeToast($projectOpenFailureToast, bottomInset: 66)
     // A tap from outside the app that could not land where it pointed lands
     // here and says why ("Arul's Mac Studio is offline.").
     .onChange(of: syncService.hubNotice, initial: true) { _, _ in
@@ -117,8 +145,14 @@ struct HubScreen: View {
       )
       syncService.projectOpenFailure = nil
     }
-    .task(id: hubCollapseDefaultsConnectionKey) {
-      loadHubLayoutForConnection(hubCollapseDefaultsConnectionKey)
+    .task(id: hubLayoutKey) {
+      loadHubLayoutForConnection(hubLayoutKey)
+    }
+    // A connect past the live limit dropped the oldest computer: say which.
+    .onChange(of: machineFleet.autoDisconnectNotice) { _, notice in
+      guard let notice else { return }
+      projectOpenFailureToast = ADEToastMessage(text: notice.message, kind: .info)
+      machineFleet.autoDisconnectNotice = nil
     }
     .task(id: workSessionDeepLinkKey) {
       handleRequestedWorkSessionNavigation()
@@ -315,6 +349,14 @@ struct HubScreen: View {
     }
     .task(id: machineFleet.machines) { rebuildHubProjectPresentations() }
     .onChange(of: switchingRemoteProjectId) { _, _ in rebuildHubProjectPresentations() }
+    .task(id: accountRebuildKey) {
+      guard accountRebuildKey != nil else { return }
+      rebuildHubProjectPresentations()
+    }
+    // The Hub coming into view reads the account list (at most once a minute).
+    .task(id: hubIsActive) {
+      if hubIsActive { accountProjects.refreshIfStale() }
+    }
   }
 
   /// The inner display gets the two-page Home; every other iPhone (and the
@@ -371,7 +413,7 @@ struct HubScreen: View {
 
   @ViewBuilder
   private var rosterFilterBar: some View {
-    if (canShowProjects && !syncService.projects.isEmpty) || !fleetMerge.extraProjects.isEmpty {
+    if !hubProjectPresentations.isEmpty {
       HubRosterFilterBar(counts: hubRosterFilterCounts, selection: $rosterFilter)
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
@@ -407,6 +449,11 @@ struct HubScreen: View {
     }
     .scrollIndicators(.hidden)
     .scrollDismissesKeyboard(.interactively)
+    // Pull to refresh: the account list, the computers, and the live rosters.
+    .refreshable {
+      await reloadAccount()
+      if canShowProjects { syncService.requestRosterSnapshot() }
+    }
   }
 
   @ViewBuilder
@@ -415,36 +462,71 @@ struct HubScreen: View {
     // back to the connecting card when there's nothing to show yet. The
     // switching row carries its own spinner and the others disable, so the list
     // never blanks to a full-screen connecting swap (M12).
-    if !canShowProjects && hubProjectPresentations.isEmpty {
-      HubConnectingCard()
-    } else if syncService.projects.isEmpty && hubProjectPresentations.isEmpty {
-      HubEmptyProjectsCard()
+    let statusInputs = accountStatusInputs
+    if let notice = hubAccountNotice(statusInputs) {
+      HubAccountStatusCard(
+        notice: notice,
+        onRetryList: { Task { await reloadAccount() } },
+        onReconnect: { Task { await syncService.reconnectIfPossible(userInitiated: true) } },
+        onConnectComputer: { syncService.settingsPresented = true },
+        onOpenSettings: { syncService.settingsPresented = true }
+      )
+    }
+    if hubProjectPresentations.isEmpty {
+      HubAccountEmptyCard(
+        kind: hubAccountEmptyKind(statusInputs),
+        onRetryList: { Task { await reloadAccount() } },
+        onConnectComputer: { syncService.settingsPresented = true },
+        onAddProject: { addProjectSheetPresented = true }
+      )
     } else if filteredHubProjectPresentations.isEmpty {
       HubRosterFilterEmptyState(filter: effectiveRosterFilter)
     } else {
       LazyVGrid(columns: HubProjectGridMetrics.columns, spacing: HubProjectGridMetrics.spacing) {
       ForEach(filteredHubProjectPresentations) { presentation in
         let project = presentation.project
+        let orderKey = hubOrderKey(project.id)
+        let accountOnly = accountOnlyProjects[project.id]
+        let accountId = accountJoin.accountIdByCardId[project.id] ?? accountOnly?.id
+        let chip = hubComputerChip(for: project, accountOnly: accountOnly)
         HubProjectTile(
           presentation: presentation,
-          machineLabel: hubMachineLabel(for: project),
-          machineCount: hubMachineCount(for: project),
-          canChangeIcon: hubCanChangeIcon(for: project),
-          canMoveToTop: projectOrder.first != project.id,
-          onOpenProject: { openHubProject(project) },
+          machineLabel: chip.label,
+          machineCount: chip.total,
+          machineLive: chip.live,
+          canChangeIcon: accountOnly == nil && hubCanChangeIcon(for: project),
+          canMoveToTop: projectOrder.first != orderKey,
+          canForget: accountId == nil,
+          canRemoveFromADE: accountProjects.governsHub && accountId != nil,
+          accountProjectId: accountId,
+          onOpenProject: {
+            if let accountOnly {
+              accountHomeTarget = HubAccountHomeTarget(id: accountOnly.id)
+            } else {
+              openHubProject(project)
+            }
+          },
           onChangeIcon: { png in changeHubProjectIcon(project, png: png) },
-          onMoveToTop: { moveProjectToTop(project.id) },
+          onMoveToTop: { moveProjectToTop(orderKey) },
           onForget: {
             // A project that lives only on another machine is forgotten there.
             guard fleetMerge.projectOwners[project.id] == nil else { return }
             syncService.forgetProject(project)
+          },
+          onRemoveFromADE: {
+            guard let accountId else { return }
+            deleteProjectTarget = accountProjects.liveProjects.first { $0.id == accountId }
+          },
+          onLocation: {
+            guard let accountId else { return }
+            locationTarget = HubAccountHomeTarget(id: accountId)
           }
         )
         .equatable()
-        .draggable(project.id)
+        .draggable(orderKey)
         .dropDestination(for: String.self) { items, _ in
           guard let draggedId = items.first else { return false }
-          moveProject(draggedId, onto: project.id)
+          moveProject(draggedId, onto: orderKey)
           return true
         }
         // While one project is switching in, the tapped row shows its own
@@ -517,6 +599,47 @@ struct HubScreen: View {
     hubProjectLocations(project).count + (fleetMerge.projectOwners[project.id] == nil ? 1 : 0)
   }
 
+  /// A card's computer chip: an account project's counts every computer
+  /// with a copy and how many are connected (`hubAccountProjectChip`); any
+  /// other card keeps the machine count.
+  private func hubComputerChip(for project: MobileProjectSummary, accountOnly: AccountProject?) -> HubComputerChip {
+    if let accountOnly { return hubAccountOnlyChip(accountOnly, machines: account.machines) }
+    guard let accountId = accountJoin.accountIdByCardId[project.id],
+          let accountProject = accountProjectById[accountId] else {
+      return HubComputerChip(label: hubMachineLabel(for: project), total: hubMachineCount(for: project), live: nil)
+    }
+    func accountKey(_ fleetKey: String) -> String {
+      account.machine(forFleetKey: fleetKey)?.machineKey ?? fleetKey
+    }
+    var holders: [HubChipHolder] = []
+    if fleetMerge.projectOwners[project.id] == nil, let focusedKey = syncService.focusedMachineKey {
+      holders.append(HubChipHolder(
+        accountKey: accountKey(focusedKey),
+        name: syncService.focusedMachineDisplayName,
+        isLive: syncService.connectionState == .connected
+      ))
+    }
+    for location in hubProjectLocations(project) {
+      let machine = machineFleet.machine(for: location.machineKey)
+      holders.append(HubChipHolder(accountKey: accountKey(location.machineKey), name: machine?.name, isLive: machine?.state == .live))
+    }
+    return hubAccountProjectChip(accountProject, holders: holders, machines: account.machines)
+  }
+
+  /// Reads the account's projects and computers again (pull to refresh and
+  /// Try again): a failed read lost both, so a retry needs both.
+  private func reloadAccount() async {
+    async let list: Void = accountProjects.refresh()
+    async let machines: Void = account.loadMachines()
+    _ = await (list, machines)
+  }
+
+  /// The key the saved order uses: the account project id when the card shows
+  /// one (the same on every machine), else the card's own id.
+  private func hubOrderKey(_ cardId: String) -> String {
+    accountJoin.accountIdByCardId[cardId] ?? cardId
+  }
+
   /// Change icon… shows when a machine the project is on can store one.
   private func hubCanChangeIcon(for project: MobileProjectSummary) -> Bool {
     if fleetMerge.projectOwners[project.id] == nil, syncService.supportsProjectIcon { return true }
@@ -533,43 +656,34 @@ struct HubScreen: View {
     let onFocused = fleetMerge.projectOwners[project.id] == nil
     let locations = hubProjectLocations(project)
     Task { @MainActor in
-      var failures: [String] = []
-      if onFocused {
-        do {
-          try await syncService.setProjectIcon(project, png: png)
-        } catch {
-          failures.append("\(syncService.focusedMachineDisplayName): \(error.localizedDescription)")
-        }
-      }
-      for location in locations {
-        let name = machineFleet.machine(for: location.machineKey)?.name ?? "Another machine"
-        guard let connection = machineFleet.connection(for: location.machineKey),
-              connection.isLive, connection.supportsProjectIcon else {
-          failures.append("\(name): can’t reach it, or its ADE is too old")
-          continue
-        }
-        do {
-          try await connection.setProjectIcon(
-            projectId: location.project.id,
-            rootPath: location.project.rootPath,
-            png: png
-          )
-        } catch {
-          failures.append("\(name): \(error.localizedDescription)")
-        }
-      }
+      let failures = await hubSendProjectIcon(
+        project, png: png, onFocused: onFocused, locations: locations, sync: syncService, fleet: machineFleet
+      )
       projectOpenFailureToast = failures.isEmpty
         ? ADEToastMessage(text: "Changed the icon for \(project.displayName).", kind: .info)
         : ADEToastMessage(text: "Couldn’t change the icon on \(failures.joined(separator: "; "))", kind: .failure)
     }
   }
 
+  /// The order a move starts from: the saved one, else the cards as shown.
+  private var currentHubOrder: [String] {
+    projectOrder.isEmpty ? hubProjectPresentations.map { hubOrderKey($0.project.id) } : projectOrder
+  }
+
   /// Move to top: the phone's own project order (desktop's "Pin to top"
   /// lives in its recents; the Hub's order is this phone's).
   private func moveProjectToTop(_ projectId: String) {
-    var order = projectOrder.isEmpty ? hubProjects.map(\.id) : projectOrder
-    order.removeAll { $0 == projectId }
-    order.insert(projectId, at: 0)
+    applyHubOrder(hubOrderMovingToTop(currentHubOrder, id: projectId))
+  }
+
+  /// Drag-reorder: drop `draggedId` onto `targetId`, moving it into that slot.
+  /// Purely local — desktop ordering is untouched.
+  private func moveProject(_ draggedId: String, onto targetId: String) {
+    guard let order = hubOrderMoving(currentHubOrder, draggedId, onto: targetId) else { return }
+    applyHubOrder(order)
+  }
+
+  private func applyHubOrder(_ order: [String]) {
     ADEHaptics.light()
     withAnimation(.easeInOut(duration: 0.22)) {
       projectOrder = order
@@ -616,9 +730,9 @@ struct HubScreen: View {
         $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
       }
     }
-    let rankById = Dictionary(uniqueKeysWithValues: projectOrder.enumerated().map { ($1, $0) })
+    let rankById = Dictionary(projectOrder.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
     return projects.sorted { lhs, rhs in
-      switch (rankById[lhs.id], rankById[rhs.id]) {
+      switch (rankById[hubOrderKey(lhs.id)], rankById[hubOrderKey(rhs.id)]) {
       case let (l?, r?): return l < r
       case (.some, .none): return true
       case (.none, .some): return false
@@ -699,6 +813,34 @@ struct HubScreen: View {
     return key.isEmpty ? nil : key
   }
 
+  /// The saved order's scope: the account when the account list decides the
+  /// projects (one order for every machine), else the machine as before.
+  private var hubLayoutKey: String? {
+    if accountProjects.governsHub, let userId = account.identity?.userId {
+      return HubLayoutStore.accountKey(userId: userId)
+    }
+    return hubCollapseDefaultsConnectionKey
+  }
+
+  /// What the status line and the empty grid are decided from.
+  private var accountStatusInputs: HubAccountStatusInputs {
+    hubAccountStatusInputs(
+      sync: syncService,
+      account: account,
+      list: accountProjects,
+      fleetMachines: machineFleet.machines,
+      hasCards: !hubProjectPresentations.isEmpty,
+      canAddProject: canShowProjects
+    )
+  }
+
+  /// Rebuilds the cards when the account list or the account's computers change.
+  private var accountRebuildKey: String? {
+    guard hubIsActive else { return nil }
+    let machines = account.machines.map { "\($0.machineKey):\($0.online)" }.joined(separator: ",")
+    return "\(accountProjects.revision)|\(machines)|\(account.identity?.userId ?? "")"
+  }
+
   /// Prefer the machine-wide roster for shape (all lanes/chats). For the active
   /// project, merge in the phone's local cache as a live overlay instead of
   /// replacing the roster; otherwise opening Versic collapses it to whichever
@@ -724,7 +866,7 @@ struct HubScreen: View {
     guard let remoteRoster else {
       return activeRoster
     }
-    return mergedHubRoster(remote: remoteRoster, local: activeRoster)
+    return hubMergedRoster(remote: remoteRoster, local: activeRoster)
   }
 
   private func rebuildHubProjectPresentations() {
@@ -732,7 +874,21 @@ struct HubScreen: View {
     let focusedRosters = focusedProjects.map { (project: $0, roster: rosterEntry(for: $0)) }
     // Only machines the user keeps connected: a disconnected machine's last
     // roster would keep its projects on the hub (and hide the no-machine state).
-    let merge = hubMergeFleetRosters(focused: focusedRosters, machines: machineFleet.machines.filter(\.isPinned))
+    // Signed in, the account decides which folders are one project.
+    let resolver: HubAccountResolver? = accountProjects.governsHub
+      ? hubAccountResolver(
+          live: accountProjects.liveProjects,
+          removed: accountProjects.removedProjects,
+          merged: accountProjects.mergedTargets,
+          accountMachineKey: { [account] fleetKey in account.machine(forFleetKey: fleetKey)?.machineKey }
+        )
+      : nil
+    let merge = hubMergeFleetRosters(
+      focused: focusedRosters,
+      machines: machineFleet.machines.filter(\.isPinned),
+      resolver: resolver,
+      focusedMachineKey: syncService.focusedMachineKey
+    )
     if merge != fleetMerge { fleetMerge = merge }
     var nextPresentations = focusedRosters.map { entry in
       buildHubProjectPresentation(
@@ -742,25 +898,61 @@ struct HubScreen: View {
         isSwitching: syncService.isSwitchingProject(entry.project)
       )
     }
-    // Projects that live only on other machines, in the saved order when the
-    // user placed them, else by name after the focused machine's.
-    let rankById = Dictionary(projectOrder.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
-    let extras = merge.extraProjects.sorted { lhs, rhs in
-      switch (rankById[lhs.summary.id], rankById[rhs.summary.id]) {
-      case let (l?, r?): return l < r
-      case (.some, .none): return true
-      case (.none, .some): return false
-      case (.none, .none):
-        return lhs.summary.displayName.localizedCaseInsensitiveCompare(rhs.summary.displayName) == .orderedAscending
-      }
-    }
-    nextPresentations += extras.map { extra in
+    nextPresentations += merge.extraProjects.map { extra in
       buildHubProjectPresentation(
         project: extra.summary,
         roster: extra.roster,
         isActive: false,
         isSwitching: switchingRemoteProjectId == extra.summary.id
       )
+    }
+
+    // The account list: match each card to its account project, hide cards of
+    // removed projects, and add a card for every project no machine shows.
+    var join = HubAccountJoin()
+    var accountOnly: [String: AccountProject] = [:]
+    if accountProjects.governsHub {
+      let pass = hubAccountCardPass(
+        presentations: nextPresentations,
+        cards: hubAccountJoinCards(
+          focused: focusedRosters,
+          merge: merge,
+          focusedAccountKey: account.machine(forFleetKey: syncService.focusedMachineKey)?.machineKey,
+          accountMachineKey: { [account] fleetKey in account.machine(forFleetKey: fleetKey)?.machineKey }
+        ),
+        live: accountProjects.liveProjects,
+        removed: accountProjects.removedProjects,
+        merged: accountProjects.mergedTargets,
+        display: accountProjects.display,
+        machines: account.machines
+      )
+      nextPresentations = pass.presentations
+      join = pass.join
+      accountOnly = pass.accountOnly
+      if !pass.icons.isEmpty { accountProjects.recordDisplay(pass.icons) }
+      accountProjects.noteUnknownRepositories(join.unknownIdentities)
+    }
+    if join != accountJoin { accountJoin = join }
+    let byId = accountProjects.governsHub
+      ? Dictionary(accountProjects.liveProjects.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+      : [:]
+    if byId != accountProjectById { accountProjectById = byId }
+    if accountOnly != accountOnlyProjects { accountOnlyProjects = accountOnly }
+    // A project merged into another on the account keeps its place as the
+    // project it became.
+    if let redirected = hubRedirectedOrder(projectOrder, through: accountProjects.mergedTargets) {
+      projectOrder = redirected
+      persistHubLayout()
+    }
+    if legacyOrderPending, !join.accountIdByCardId.isEmpty {
+      // The order saved per machine names that machine's ids: move it to the
+      // account project ids once, keeping every other id where it was.
+      legacyOrderPending = false
+      projectOrder = hubRedirectedOrder(projectOrder, through: join.accountIdByCardId) ?? projectOrder
+      persistHubLayout()
+    }
+    nextPresentations = hubOrderedPresentations(nextPresentations, order: projectOrder) { cardId in
+      join.accountIdByCardId[cardId] ?? cardId
     }
     if nextPresentations != hubProjectPresentations {
       hubProjectPresentations = nextPresentations
@@ -775,23 +967,27 @@ struct HubScreen: View {
     }
     guard layoutConnectionKey != connectionKey else { return }
     layoutConnectionKey = connectionKey
-    // Restore the last-known order for this machine, then place any project
-    // we've never seen.
+    // Restore the last-known order, then place any project we've never seen.
     projectOrder = HubLayoutStore.load(connectionKey).order
+    legacyOrderPending = false
+    if projectOrder.isEmpty, HubLayoutStore.isAccountKey(connectionKey),
+       let machineKey = hubCollapseDefaultsConnectionKey {
+      // The first account-wide order starts from this machine's saved one.
+      projectOrder = HubLayoutStore.load(machineKey).order
+      legacyOrderPending = !projectOrder.isEmpty
+    }
     placeNewProjects(hubProjectPresentations)
   }
 
   private func placeNewProjects(_ presentations: [HubProjectPresentation]) {
     guard layoutConnectionKey != nil else { return }
-    // Append any newly-seen project to the manual order (alphabetically among the
-    // newcomers). Never drop ids: a transient disconnect can briefly empty the
-    // roster, and we must not lose the user's saved order over a blip.
-    let orderedIds = Set(projectOrder)
-    let newProjectIds = presentations
-      .map { $0.project }
-      .filter { !orderedIds.contains($0.id) }
-      .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
-      .map(\.id)
+    // Append newly seen projects (`hubNewOrderIds`). While the order still
+    // names one machine's ids, wait for the mapping.
+    guard !legacyOrderPending else { return }
+    let newProjectIds = hubNewOrderIds(
+      order: projectOrder,
+      cards: presentations.map { (key: hubOrderKey($0.project.id), name: $0.project.displayName) }
+    )
     guard !newProjectIds.isEmpty else { return }
     projectOrder.append(contentsOf: newProjectIds)
     persistHubLayout()
@@ -800,191 +996,5 @@ struct HubScreen: View {
   private func persistHubLayout() {
     guard let connectionKey = layoutConnectionKey else { return }
     HubLayoutStore.save(HubLayoutState(order: projectOrder), for: connectionKey)
-  }
-
-  /// Drag-reorder: drop `draggedId` onto `targetId`, moving it into that slot.
-  /// Purely local — desktop ordering is untouched.
-  private func moveProject(_ draggedId: String, onto targetId: String) {
-    guard draggedId != targetId else { return }
-    var order = projectOrder.isEmpty ? hubProjects.map(\.id) : projectOrder
-    guard let from = order.firstIndex(of: draggedId) else { return }
-    order.remove(at: from)
-    let insertAt = order.firstIndex(of: targetId) ?? order.count
-    order.insert(draggedId, at: insertAt)
-    ADEHaptics.light()
-    withAnimation(.easeInOut(duration: 0.22)) {
-      projectOrder = order
-      rebuildHubProjectPresentations()
-    }
-    persistHubLayout()
-  }
-
-  private func mergedHubRoster(remote: RemoteRosterProject, local: RemoteRosterProject) -> RemoteRosterProject {
-    var merged = remote
-
-    var laneIds = Set(merged.lanes.map(\.id))
-    for lane in local.lanes where laneIds.insert(lane.id).inserted {
-      merged.lanes.append(lane)
-    }
-
-    var chatIndexById = Dictionary(uniqueKeysWithValues: merged.chats.enumerated().map { ($0.element.id, $0.offset) })
-    for localChat in local.chats {
-      if let index = chatIndexById[localChat.id] {
-        merged.chats[index] = merged.chats[index].merging(local: localChat)
-      } else {
-        chatIndexById[localChat.id] = merged.chats.count
-        merged.chats.append(localChat)
-      }
-    }
-
-    merged.booted = remote.booted || local.booted
-    merged.runningCount = merged.chats.filter(\.countsTowardRunning).count
-    merged.attentionCount = merged.chats.filter(\.needsAttention).count
-    merged.chats.sort { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
-    return merged.excludingIdentityChats()
-  }
-}
-
-/// The Hub on the phone, the Duo's outer display and every other iPhone: the
-/// header row, the roster filter row, the project list, and the composer under
-/// it as the screen's footer (the list ends above it), at the screen's bottom
-/// the way a bottom bar sits.
-struct HubPhoneLayout<Title: View, FilterBar: View, Roster: View, Composer: View>: View {
-  @Binding var composerExpanded: Bool
-  let actions: HubToolbarActions
-  @ViewBuilder var title: () -> Title
-  @ViewBuilder var filterBar: () -> FilterBar
-  @ViewBuilder var roster: () -> Roster
-  @ViewBuilder var composer: () -> Composer
-  /// Where the status bar leaves an empty band beside the clock
-  /// (`hubStatusBandReading`): the band's width and height. The header
-  /// moves up into it and everything under it gains the row's height.
-  @State private var statusBand: CGSize?
-
-  var body: some View {
-    VStack(spacing: 0) {
-      header
-      filterBar()
-      roster()
-        .frame(maxHeight: .infinity)
-        // The list ends at the composer's top, never behind it.
-        .clipped()
-        // While the composer is expanded, a dim scrim covers the list: it
-        // swallows taps and drags (no accidental row opens), and any touch on
-        // it collapses the composer.
-        .overlay {
-          if composerExpanded {
-            Color.black.opacity(0.38)
-              .ignoresSafeArea()
-              .onTapGesture { collapse() }
-              .gesture(
-                DragGesture(minimumDistance: 12).onEnded { value in
-                  if value.translation.height > 24 { collapse() }
-                }
-              )
-              .transition(.opacity)
-          }
-        }
-      HubComposerClearsCorner(content: composer)
-    }
-    .hubComposerAtScreenBottom()
-    .onGeometryChange(for: HubStatusBandGeometry.self) { proxy in
-      let reading = hubStatusBandReading(proxy)
-      return HubStatusBandGeometry(
-        band: reading.width.map { CGSize(width: $0, height: proxy.safeAreaInsets.top) },
-        detail: reading.detail
-      )
-    } action: { geometry in
-      if geometry.band != statusBand { statusBand = geometry.band }
-      HubLayoutDiagnostics.shared.hubHeader = geometry.detail
-    }
-    .navigationBarTitleDisplayMode(.inline)
-    // The header is a row of its own (under the status bar, the full width),
-    // the same row every other form of the Hub shows.
-    .toolbar(.hidden, for: .navigationBar)
-  }
-
-  @ViewBuilder
-  private var header: some View {
-    if let statusBand {
-      // In the band beside the clock, level with it, ending short of it.
-      HubHeaderRow(actions: actions, title: title)
-        .environment(\.hubHeaderInline, true)
-        .padding(.leading, 16)
-        .frame(width: max(0, statusBand.width - 8), alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: statusBand.height, alignment: .center)
-        .padding(.top, 6)
-        .padding(.top, -statusBand.height)
-        .padding(.bottom, 8)
-    } else {
-      HubHeaderRow(actions: actions, title: title)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 10)
-        .hubHeaderClearsStatusBar()
-    }
-  }
-
-  private func collapse() {
-    withAnimation(hubComposerSpring) { composerExpanded = false }
-  }
-}
-
-/// The Hub header's geometry reading: the band beside the clock (nil = a
-/// row of its own) and the facts behind it, for Settings › Advanced.
-private struct HubStatusBandGeometry: Equatable {
-  var band: CGSize?
-  var detail: String
-}
-
-/// Identifies a chat opened from the hub, carrying enough context to activate
-/// the right project and render the chat over the hub.
-struct HubChatTarget: Identifiable, Equatable {
-  let id = UUID().uuidString
-  let project: MobileProjectSummary
-  let lane: RemoteRosterLane?
-  let chat: RemoteRosterChat
-  /// Set when the chat lives on another paired machine: it opens through that
-  /// machine's roster connection and never activates the project.
-  var machineKey: String? = nil
-}
-
-// MARK: - Persisted layout
-
-/// The hub's per-machine layout: the user's manual project order. Persisted to
-/// the App Group so opening a project and returning restores the hub exactly.
-/// (Older saves also carry collapse keys from the list layout; decoding
-/// ignores them.)
-struct HubLayoutState: Codable, Equatable {
-  var order: [String] = []
-}
-
-enum HubLayoutStore {
-  private static func defaultsKey(_ connectionKey: String) -> String {
-    "ade.hub.layout.v1|\(connectionKey)"
-  }
-
-  static func load(_ connectionKey: String) -> HubLayoutState {
-    guard let data = ADESharedContainer.defaults.data(forKey: defaultsKey(connectionKey)),
-          let state = try? JSONDecoder().decode(HubLayoutState.self, from: data)
-    else { return HubLayoutState() }
-    return state
-  }
-
-  static func save(_ state: HubLayoutState, for connectionKey: String) {
-    guard let data = try? JSONEncoder().encode(state) else { return }
-    ADESharedContainer.defaults.set(data, forKey: defaultsKey(connectionKey))
-  }
-}
-
-/// While a chat opened from the hub is presented, keep the presenter mounted
-/// but collapse its expensive roster/list tree. `fullScreenCover` keeps the
-/// presenting hierarchy alive; leaving the whole hub underneath chat detail
-/// makes roster updates diff both screens during streaming and scrolling.
-private struct HubCoverParkingSurface: View {
-  var body: some View {
-    ADEColor.pageBackground
-      .ignoresSafeArea()
-      .accessibilityHidden(true)
   }
 }

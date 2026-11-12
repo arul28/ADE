@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAccountProjectSync, readAccountProjectState, type AccountProjectHeartbeat } from "./accountProjectSync";
 import type { ProjectRecord, ProjectRegistry } from "./projectRegistry";
+import { publicAccountProjectFields, publicProjectRecord } from "./publicProjectRecord";
 
 /** A JWT whose payload names `sub`. The sync reads the subject without checking the signature. */
 function tokenFor(sub: string): string {
@@ -72,5 +73,23 @@ describe("account project sync", () => {
 
     expect(methods).not.toContain("PUT");
     expect(readAccountProjectState(adeDir).published).toBeNull();
+  });
+
+  // What a phone or another computer receives for a linked folder: the link
+  // only for the account it was made for, and never the account id.
+  it.each<[string, string | null, boolean]>([
+    ["the owner is signed in", "account-a", true],
+    ["another account is signed in", "account-b", false],
+    ["no account is signed in", null, false],
+  ])("sends a folder's account project link only when %s", (_label, signedIn, sendsLink) => {
+    const linkId = "ap_0123456789abcdef0123456789abcdef";
+    const record = { projectId: "project-1", accountProjectId: linkId, accountProjectUserId: "account-a", githubRepoId: 42 };
+    const answer = publicProjectRecord(record, () => signedIn);
+    const fields = publicAccountProjectFields(record, signedIn);
+
+    expect(answer.projectId).toBe("project-1");
+    expect(answer.accountProjectId).toBe(sendsLink ? linkId : undefined);
+    expect(fields).toEqual(sendsLink ? { accountProjectId: linkId, githubRepoId: 42 } : { githubRepoId: 42 });
+    expect(JSON.stringify([answer, fields])).not.toContain("account-a");
   });
 });

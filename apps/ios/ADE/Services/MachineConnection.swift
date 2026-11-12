@@ -514,7 +514,12 @@ final class MachineConnection {
         resolve(requestId: pre.requestId, result: .failure(NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: message])))
       }
     case "command_result", "chat_history", "chat_tool_result", "file_response", "relay_reauthorize_result",
-         "project_set_icon_result", "roster_chats", "terminal_snapshot", "terminal_history":
+         "project_set_icon_result", "roster_chats", "terminal_snapshot", "terminal_history",
+         // The project actions Start on and Add project send to a computer
+         // that is not the primary.
+         "project_browse_result", "project_default_parent_dir", "project_open_result",
+         "project_create_result", "project_clone_result", "project_forget_result",
+         "project_list_my_github_repos_result":
       resolve(requestId: pre.requestId, result: .success(payload))
     case "terminal_data":
       handleTerminalData(payload)
