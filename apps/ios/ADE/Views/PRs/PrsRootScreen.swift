@@ -12,6 +12,8 @@ struct PRsTabView: View, Equatable {
   /// Open PRs read straight from GitHub while the computer is not reachable.
   @StateObject private var directPrs = PrDirectPullsModel()
   @State private var directOpened: GitHubDirectPull?
+  /// The repository read from GitHub the last time the tab showed.
+  @State private var lastActiveDirectRepo: String?
   let isActive: Bool
   let inputs: PrsRootInputs
 
@@ -345,7 +347,22 @@ struct PRsTabView: View, Equatable {
       githubHistoryPageLimit = 2
       laneContextLaneId = nil
       duoSelectedPrId = nil
+      directOpened = nil
       path = NavigationPath()
+    }
+    // A computer came online (or the repository changed): the PR read from
+    // GitHub gives way to the machine's list.
+    // A hidden tab's inputs drop the repository, so the check runs when the
+    // tab shows again: the same repository keeps the open PR, and a computer
+    // that came online meanwhile closes it.
+    .onChange(of: "\(isActive)|\(directRepo?.fullName ?? "")", initial: true) { _, _ in
+      let repo = directRepo?.fullName
+      guard isActive, repo != lastActiveDirectRepo else { return }
+      lastActiveDirectRepo = repo
+      directOpened = nil
+      // The machine's PR beside the list cannot update any more, and it
+      // would hide a PR picked from the GitHub list.
+      if repo != nil { duoSelectedPrId = nil }
     }
     .onChange(of: remotePrs.machines) { _, _ in recomputeGitHubDerived() }
     .onChange(of: githubCategoryRawValue) { _, _ in
@@ -446,13 +463,32 @@ struct PRsTabView: View, Equatable {
   var duoPrsSplitBody: some View {
     DuoSplitScaffold(
       adaptive: true,
-      selection: duoSelectedPrId,
-      wantsWholeDisplay: duoSelectedPrId != nil
+      selection: duoSelectedPrId ?? directOpened.map { "github-direct-\($0.number)" },
+      wantsWholeDisplay: duoSelectedPrId != nil || duoDirectPull != nil
     ) { _ in
       duoPrsListColumn
     } detail: {
       duoPrDetailColumn
     }
+  }
+
+  /// A PR read from GitHub (no computer online), shown in the detail column
+  /// on the inner display.
+  private var duoDirectPull: GitHubDirectPull? {
+    directRepo == nil ? nil : directOpened
+  }
+
+  /// The phone pushes a PR read from GitHub; the inner display shows it
+  /// beside the list instead. Unfolding pops the push without dropping the
+  /// PR, so the detail column picks it up, and folding pushes it again.
+  private var directOpenedPush: Binding<GitHubDirectPull?> {
+    Binding(
+      get: { duoLayout.isWide ? nil : directOpened },
+      set: { pull in
+        guard pull != nil || !duoLayout.isWide else { return }
+        directOpened = pull
+      }
+    )
   }
 
   private func duoRowIsSelected(_ item: GitHubPrListItem) -> Bool {
@@ -482,8 +518,14 @@ struct PRsTabView: View, Equatable {
           repo: directRepo,
           computerName: inputs.directComputerName,
           model: directPrs,
-          searchText: searchText
-        ) { directOpened = $0 }
+          searchText: searchText,
+          selectedNumber: duoLayout.isWide ? directOpened?.number : nil
+        ) { pull in
+          // The detail column shows a machine PR first; a PR picked here
+          // replaces it.
+          duoSelectedPrId = nil
+          directOpened = pull
+        }
       } else {
         noticeRows
         if isLoadingSkeleton {
@@ -513,7 +555,7 @@ struct PRsTabView: View, Equatable {
         Color.clear.prDirectPolling(directRepo, model: directPrs)
       }
     }
-    .navigationDestination(item: $directOpened) { pull in
+    .navigationDestination(item: directOpenedPush) { pull in
       if let directRepo {
         PrDirectDetailScreen(
           repo: directRepo,
@@ -625,6 +667,16 @@ struct PRsTabView: View, Equatable {
           .toolbar { DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar) }
       }
       .id(prId)
+    } else if let pull = duoDirectPull, let directRepo {
+      NavigationStack {
+        PrDirectDetailScreen(
+          repo: directRepo,
+          pull: pull,
+          computerName: inputs.directComputerName
+        )
+        .toolbar { DuoAppTabsToolbar(includesUtilities: !duoLayout.hasEdgeBar) }
+      }
+      .id(pull.number)
     } else {
       DuoSplitPlaceholder(
         symbol: "arrow.triangle.pull",
