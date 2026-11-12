@@ -5664,7 +5664,7 @@ export function AgentChatPane({
     : null;
   // The offer reads the setting and the plugins of this tab's own project, so a
   // chat pinned to another runtime (another machine, another open project) gets none.
-  useClaudeModsPrompt(chatForeignPin ? null : claudeModUiSessionId);
+  useClaudeModsPrompt(chatForeignPin ? null : claudeModUiSessionId, chatRuntimePin);
   const threadCommentSendCount = countCommentsForNextSend(threadComments);
   const threadCommentSendCountRef = useRef(threadCommentSendCount);
   threadCommentSendCountRef.current = threadCommentSendCount;

@@ -18,6 +18,7 @@ import {
   type PaneSplit,
   type DropEdge
 } from "./paneTreeOps";
+import { readClientLayout, writeClientLayout } from "./clientLayoutStore";
 
 /* Re-export types for backward compat */
 export type { PaneLeaf, PaneSplit, PaneLayoutEntry } from "./paneTreeOps";
@@ -228,7 +229,7 @@ export function PaneTilingLayout({
     }
     setLiveTree(next);
     if (resetLayout) saveLayout({});
-    window.ade.tilingTree.set(layoutId, next).catch(() => {});
+    writeClientLayout("tiling", layoutId, next);
   }, [layoutId, saveLayout]);
 
   // Load persisted tree on mount
@@ -236,8 +237,7 @@ export function PaneTilingLayout({
     let cancelled = false;
     setTreeLoaded(false);
     setLiveTree(tree);
-    window.ade.tilingTree
-      .get(layoutId)
+    void readClientLayout("tiling", layoutId)
       .then((saved) => {
         if (cancelled) return;
         if (saved && typeof saved === "object" && (saved as PaneSplit).type === "split") {
@@ -274,7 +274,7 @@ export function PaneTilingLayout({
       saveLayout({});
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => {
-        window.ade.tilingTree.set(layoutId, next).catch(() => {});
+        writeClientLayout("tiling", layoutId, next);
       }, 300);
     },
     [layoutId, saveLayout]

@@ -242,6 +242,8 @@ export type WorkBoardBuckets = Record<WorkBoardColumn, TerminalSessionSummary[]>
 
 import type { WorkBoardWaitingReason } from "../../../shared/types/chat";
 import { lanePrWaitingReason } from "../../../shared/sessionCanonicalState";
+import { useTabCopyPin } from "../../state/repositoryScope";
+import { NO_CHAT_MACHINE_MESSAGE } from "../chat/chatMachinePin";
 
 export type { WorkBoardWaitingReason };
 export { lanePrWaitingReason };
@@ -755,6 +757,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const remoteTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
   const activeBindingKey = useAppStore((s) => s.projectBinding?.key ?? null);
+  // The host roster is the tab copy's roster: its reads and feeds name that
+  // copy. No copy: no read, and the list shows its empty state.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
+  const tabCopyPinKey = tabCopyPin?.key ?? null;
   const lanes = useAppStore((s) => s.lanes);
   const focusSession = useAppStore((s) => s.focusSession);
   const selectLane = useAppStore((s) => s.selectLane);
@@ -1760,6 +1768,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       hasAuthoritativeSessionsRef.current = false;
       return;
     }
+    const hostPin = tabCopyPinRef.current;
+    if (!hostPin) {
+      setHostSessions([]);
+      setLoading(false);
+      return;
+    }
     const showLoading = options.showLoading ?? true;
     if (refreshInFlightRef.current) {
       if (refreshQueuedRef.current) {
@@ -1797,6 +1811,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           options.force || awaitingHostRow
             ? { force: true }
             : undefined,
+          hostPin,
         )
       ).filter((session) => !session.archivedAt);
       if (projectRootRef.current !== requestedProjectRoot) {
@@ -2024,7 +2039,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       load: (attempt) => refresh({ showLoading: attempt === 1 && isInitialLoad, force: isInitialLoad || attempt > 1 }),
       onRetryingChange: setFirstLoadRetrying,
     });
-  }, [isWorkRoute, projectRoot, projectStateKey, refresh, remoteTargetId]);
+  }, [isWorkRoute, projectRoot, projectStateKey, refresh, remoteTargetId, tabCopyPinKey]);
 
   // Held under CTO or History, the list is on screen in the sidebar even though
   // Work is not: load it once, or it reads "No sessions" when the app opens
@@ -2193,12 +2208,13 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   }, [focusSession, isWorkRoute, searchParams, selectLaneForActiveTab, sessionsById, setProjectViewState]);
 
   useEffect(() => {
-    if (!isWorkRoute) return;
+    const hostPin = tabCopyPinRef.current;
+    if (!isWorkRoute || !hostPin) return;
     const unsubExit = window.ade.pty.onExit((event) => {
       const currentProjectRoot = projectRootRef.current;
       if (event.projectRoot && event.projectRoot !== currentProjectRoot) return;
       markSessionListDirtyOrRefresh(120);
-    });
+    }, hostPin);
     const intervalMs = isRemoteProject
       ? REMOTE_RUNNING_SESSION_REFRESH_INTERVAL_MS
       : LOCAL_RUNNING_SESSION_REFRESH_INTERVAL_MS;
@@ -2215,24 +2231,26 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       }
       clearInterval(t);
     };
-  }, [isRemoteProject, isWorkRoute, markSessionListDirtyOrRefresh, projectRoot, scheduleBackgroundRefresh]);
+  }, [isRemoteProject, isWorkRoute, markSessionListDirtyOrRefresh, projectRoot, scheduleBackgroundRefresh, tabCopyPinKey]);
 
   useEffect(() => {
-    if (!isWorkRoute) return;
+    const hostPin = tabCopyPinRef.current;
+    if (!isWorkRoute || !hostPin) return;
     const unsubscribe = window.ade.agentChat.onEvent((payload) => {
       if (!shouldRefreshSessionListForChatEvent(payload)) return;
       markSessionListDirtyOrRefresh(220);
-    });
+    }, hostPin);
     return unsubscribe;
-  }, [isWorkRoute, markSessionListDirtyOrRefresh]);
+  }, [isWorkRoute, markSessionListDirtyOrRefresh, tabCopyPinKey]);
 
   useEffect(() => {
-    if (!isWorkRoute) return;
+    const hostPin = tabCopyPinRef.current;
+    if (!isWorkRoute || !hostPin) return;
     const unsubscribe = window.ade.sessions.onChanged(() => {
       markSessionListDirtyOrRefresh(80);
-    });
+    }, hostPin);
     return unsubscribe;
-  }, [isWorkRoute, markSessionListDirtyOrRefresh]);
+  }, [isWorkRoute, markSessionListDirtyOrRefresh, tabCopyPinKey]);
 
   useEffect(() => {
     return () => {
@@ -2602,9 +2620,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       let disposeError: unknown = null;
       try {
         const disposeArgs = { ptyId, ...(sessionId ? { sessionId } : {}) };
-        const result = pin
-          ? await window.ade.pty.dispose(disposeArgs, pin)
-          : await window.ade.pty.dispose(disposeArgs);
+        // No machine for the session: the stop cannot reach it.
+        if (!pin) throw new Error(NO_CHAT_MACHINE_MESSAGE);
+        const result = await window.ade.pty.dispose(disposeArgs, pin);
         if (result?.disposed === false) {
           if (result.reason === "owned-by-peer" || result.reason === "session-mismatch") {
             forgetStoppedRuntime(sessionId);
@@ -2661,7 +2679,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           throw new Error("This lane lives on Cursor Cloud, which has no shell. Open the agent on cursor.com to take over its desktop.");
         }
         if (cloud === "devin") {
-          const chats = await window.ade.agentChat.list({ laneId: args.laneId }).catch(() => []);
+          const lanePin = args.pin ?? machineRouter.pinForSession({ laneId: args.laneId });
+          const chats = lanePin
+            ? await window.ade.agentChat.list({ laneId: args.laneId }, lanePin).catch(() => [])
+            : [];
           const latest = chats
             .filter((chat) => Boolean(chat.devinSessionId))
             .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt))[0];
@@ -2711,9 +2732,11 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       await ensureHarnessPresetOnBrain(args.runtimeCliLaunch?.presetId, {
         targetsAnotherMachine: args.pin?.kind === "remote",
       });
-      const result = args.pin
-        ? await window.ade.pty.create(createArgs, args.pin)
-        : await window.ade.pty.create(createArgs);
+      // The lane's machine starts the shell. A lane with no known machine has
+      // nowhere to start it.
+      const createPin = args.pin ?? machineRouter.pinForSession({ laneId: args.laneId });
+      if (!createPin) throw new Error(NO_CHAT_MACHINE_MESSAGE);
+      const result = await window.ade.pty.create(createArgs, createPin);
       machineRouter.rememberSessionPin(result, args.pin);
       if (!canMutatePinnedProjectUi(args.pin)) {
         return result;

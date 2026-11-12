@@ -1,4 +1,4 @@
-import type { ListSessionsArgs, TerminalSessionSummary } from "../../shared/types";
+import type { ListSessionsArgs, OpenProjectBinding, TerminalSessionSummary } from "../../shared/types";
 import {
   selectActiveProjectRoot,
   selectActiveProjectStateKey,
@@ -41,10 +41,11 @@ function normalizeArgs(args?: ListSessionsArgs): ListSessionsArgs {
   return normalized;
 }
 
-function cacheKey(args?: ListSessionsArgs): string {
+function cacheKey(args?: ListSessionsArgs, pin?: OpenProjectBinding | null): string {
   const normalized = normalizeArgs(args);
   const state = useAppStore.getState();
   return JSON.stringify({
+    machine: pin?.key ?? null,
     projectRoot: selectActiveProjectRoot(state),
     projectKey: selectActiveProjectStateKey(state),
     laneId: normalized.laneId ?? null,
@@ -71,11 +72,17 @@ function sliceRows(rows: TerminalSessionSummary[], limit: number | null): Termin
   return rows.slice(0, limit);
 }
 
+/**
+ * One machine's session list, cached for a moment. Pass the copy's `pin`: each
+ * machine has its own entry. A call with no pin is the old route to the tab's
+ * machine; callers move to a pin (see the account-projects contract).
+ */
 export async function listSessionsCached(
   args?: ListSessionsArgs,
   options?: { force?: boolean; ttlMs?: number },
+  pin?: OpenProjectBinding | null,
 ): Promise<TerminalSessionSummary[]> {
-  const key = cacheKey(args);
+  const key = cacheKey(args, pin);
   const ttlMs = options?.ttlMs ?? DEFAULT_SESSION_LIST_TTL_MS;
   const limit = requestedLimit(args);
   const now = Date.now();
@@ -91,7 +98,9 @@ export async function listSessionsCached(
   }
 
   let request: Promise<TerminalSessionSummary[]> | null = null;
-  request = window.ade.sessions.list(normalizeArgs(args)).then((rows) => {
+  request = (pin
+    ? window.ade.sessions.list(normalizeArgs(args), pin)
+    : window.ade.sessions.list(normalizeArgs(args))).then((rows) => {
     const current = cache.get(key);
     if (current?.inFlight === request) {
       cache.set(key, {
