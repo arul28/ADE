@@ -17,6 +17,10 @@ import {
   CLOUD_INSTANCE_HEADER,
   CLOUD_PATHS,
   type CloudAccountState,
+  type CloudAutomationRegistered,
+  type CloudAutomationRegistration,
+  type CloudAutomationRun,
+  type CloudAutomationSummary,
   type CloudInstance,
   type CloudLaunchJoinRequest,
   type CloudLaunchJoinResult,
@@ -117,6 +121,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
 
   const launchPath = (launchId: string) => `${CLOUD_PATHS.launches}/${encodeURIComponent(launchId)}`;
   const instancePath = (instanceId: string) => `${CLOUD_PATHS.instances}/${encodeURIComponent(instanceId)}`;
+  const automationPath = (ruleId: string) => `${CLOUD_PATHS.automations}/${encodeURIComponent(ruleId)}`;
 
   return {
     /* ---- List ---- */
@@ -162,6 +167,18 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       request<CloudProjectComputersDeleteStarted>("POST", CLOUD_PATHS.projectComputersDelete, { body: { origin, instanceIds } }),
     projectComputersJob: (jobId: string) =>
       request<CloudProjectComputersJob>("GET", `${CLOUD_PATHS.projectComputersDelete}/${encodeURIComponent(jobId)}`),
+
+    /* ---- Automations whose home is ADE Cloud (C9) ---- */
+    /** This account's cloud-homed rules (of one repository when `origin` is set), each with its last runs. */
+    listAutomations: async (origin?: string | null) =>
+      (await request<{ automations: CloudAutomationSummary[] }>("GET", `${CLOUD_PATHS.automations}${origin ? `?origin=${encodeURIComponent(origin)}` : ""}`)).automations,
+    /** The brain that saved the cloud home (or saw it drift): one write per rule change; the same version writes nothing. */
+    registerAutomation: (ruleId: string, registration: CloudAutomationRegistration) =>
+      request<CloudAutomationRegistered>("PUT", automationPath(ruleId), { body: registration, timeoutMs: timeoutMs * 2 }),
+    unregisterAutomation: (ruleId: string) => request<{ deleted: boolean }>("DELETE", automationPath(ruleId)),
+    /** Run now: a run made on ADE Cloud, under the agent limits. */
+    runAutomation: (ruleId: string) => request<CloudAutomationRun>("POST", `${automationPath(ruleId)}/run`, { timeoutMs: timeoutMs * 4 }),
+    automationRuns: async (ruleId: string) => (await request<{ runs: CloudAutomationRun[] }>("GET", `${automationPath(ruleId)}/runs`)).runs,
 
     /* ---- From the new computer itself ---- */
     /** No account token: the one-time join code and this computer's own instance id. */

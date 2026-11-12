@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { automationCloudProblem, automationCloudTarget, parseAutomationCloudTarget } from "../../../shared/automationCloud";
+import { automationCloudHomeProblem, automationCloudProblem, automationCloudTarget, localTimeZone, parseAutomationCloudTarget } from "../../../shared/automationCloud";
+import type { CloudAutomationSpec, CloudAutomationTrigger } from "../../../../../account-directory/src/cloud/contract";
+import { isAdeCloudHome } from "../../../shared/automationHome";
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -22,6 +24,7 @@ import type {
   AutomationRuleOrigin,
   AutomationRuleScope,
   AutomationRuleSummary,
+  AutomationCloudHomeState,
   AutomationRun,
   AutomationRunDetail,
   AutomationRunListArgs,
@@ -1972,7 +1975,9 @@ export function createAutomationService({
   const notHomeMessage = (rule: AutomationRule): string =>
     rule.needsNewerAde
       ? `'${rule.name}' was made with a newer ADE. Update ADE on this computer to run it here.`
-      : `'${rule.name}' runs on ${rule.home?.name ?? "another computer"}, not this one. Change "Runs on" to this computer to run it here.`;
+      : isAdeCloudHome(rule.home)
+        ? `'${rule.name}' runs on ADE Cloud: ADE's server starts each run on its own cloud computer. Change "Runs on" to this computer to run it here.`
+        : `'${rule.name}' runs on ${rule.home?.name ?? "another computer"}, not this one. Change "Runs on" to this computer to run it here.`;
   /**
    * True while this home must not start a rule on a trigger: a new home waits
    * past the old home's lease after a change of home, and a home that has not
@@ -4340,6 +4345,7 @@ export function createAutomationService({
    */
   /** Told after a rule is deleted, e.g. so its webhook URL stops answering. */
   const ruleDeletedListeners = new Set<(rule: AutomationRule) => void>();
+  let cloudHomeStateSource: ((ruleId: string) => AutomationCloudHomeState | null) | null = null;
   const boundChatQueues = new Map<string, Promise<unknown>>();
   const BOUND_CHAT_BUSY_RETRY_MS = 5_000;
   const BOUND_CHAT_BUSY_GIVE_UP_MS = 30 * 60_000;
@@ -5808,6 +5814,7 @@ export function createAutomationService({
           )?.cnt ?? 0,
           confidence: runRow ? normalizeConfidence(safeJsonParse(runRow.confidence_json ?? "null", null)) : null,
           homeGaps: homeGaps(rule, suiteIds),
+          ...(isAdeCloudHome(rule.home) ? { cloud: cloudHomeStateSource?.(rule.id) ?? null } : {}),
           source: rule.home
             ? "account"
             : localRuleIds.has(rule.id) && sharedRuleIds.has(rule.id)
@@ -5824,17 +5831,20 @@ export function createAutomationService({
      * No device id means this computer. A rule kept on this computer only
      * (no remote, chat-scoped, signed out) has no other computer to go to.
      */
-    setRunOn(args: { id: string; deviceId?: string | null; name?: string | null }): AutomationRuleSummary[] {
+    setRunOn(args: { id: string; deviceId?: string | null; name?: string | null; cloud?: boolean }): AutomationRuleSummary[] {
       const id = args.id?.trim();
       if (!id) throw new Error("Automation id is required");
       const stored = (projectConfigService.get().local.automations ?? []).find((rule) => rule?.id === id);
       if (!stored) throw new Error(`Automation not found: ${id}`);
       const deviceId = args.deviceId?.trim() || null;
       const name = args.name?.trim() || null;
+      if (args.cloud && deviceId) throw new Error("Pick ADE Cloud or a computer, not both.");
       if (deviceId && !name) throw new Error("Name the computer too (--name), so other computers can show it.");
       const current = findRule(id);
+      // ADE Cloud as the home: ADE's server watches the trigger (C9); the brain's
+      // registrar sends it the rule after the sync this write starts.
       projectConfigService.saveAutomationRule(stored, {
-        home: deviceId ? { deviceId, name: name!, chosenAt: nowIso() } : "this-computer",
+        home: args.cloud ? "ade-cloud" : deviceId ? { deviceId, name: name!, chosenAt: nowIso() } : "this-computer",
       });
       const saved = findRule(id);
       if (!saved?.home) {
@@ -5846,6 +5856,76 @@ export function createAutomationService({
       emit({ type: "runs-updated", automationId: id });
       if (current?.home?.deviceId !== saved.home.deviceId) onRunOnChanged?.();
       return this.list();
+    },
+
+    /**
+     * The rule compiled for ADE Cloud's server (C9, its home is ADE Cloud):
+     * the trigger the server watches and each run's chat, as this ADE would
+     * start it on ADE Cloud (`startRunOnAdeCloud`). The trigger's own facts
+     * are filled in by the server. A problem when the rule can't run there.
+     */
+    cloudHomeSpec(id: string, originUrl: string): { spec: CloudAutomationSpec } | { problem: string } {
+      const rule = findRule(id.trim());
+      if (!rule) return { problem: `Automation not found: ${id}` };
+      const problem = automationCloudHomeProblem(rule);
+      if (problem) return { problem };
+      let resolved: ReturnType<typeof resolveAutomationModelDescriptor>;
+      try {
+        resolved = resolveAutomationModelDescriptor(rule);
+      } catch (error) {
+        return { problem: error instanceof Error ? error.message : String(error) };
+      }
+      const resolvedChat = resolveChatProviderForDescriptor(resolved.modelDescriptor);
+      const permissionConfig = buildPermissionConfig(rule, { publishPhase: false });
+      const held = requiresPublishGate(rule) || rule.verification.mode === "dry-run";
+      const permissions = held ? "plan" : resolveProviderPermissionMode(resolved.providerGroup, permissionConfig) ?? "full-auto";
+      const effort = rule.execution?.session?.reasoningEffort ?? rule.modelConfig?.thinkingLevel ?? null;
+      const lines = [
+        `Automation rule: ${rule.name}`,
+        `Mode: ${rule.mode}`,
+        `Review profile: ${rule.reviewProfile}`,
+        `Executor: ${rule.executor.mode}`,
+        "",
+        rule.prompt?.trim()
+          || (rule.mode === "review"
+            ? "Review the latest relevant changes, surface only high-signal findings, and summarize merge readiness."
+            : rule.mode === "fix"
+              ? "Investigate the triggered issue, prepare a fix plan, implement when safe, and leave a concise artifact trail."
+              : "Monitor the triggered state, summarize notable deltas, and report only meaningful deviations."),
+        "",
+        `Output mode: ${rule.outputs.disposition}`,
+      ];
+      if (requiresPublishGate(rule)) {
+        lines.push("Publish-capable tools are intentionally withheld for this phase. Produce a proposed outcome and wait for queue acceptance before any external side effects.");
+      } else if (rule.verification.verifyBeforePublish) {
+        lines.push("Do not publish external side effects. This rule is running in dry-run verification mode.");
+      }
+      const triggers: CloudAutomationTrigger[] = rule.triggers.map((trigger) => {
+        if (trigger.type === "schedule") return { kind: "schedule", cron: (trigger.cron ?? "").trim(), timezone: trigger.timezone ?? localTimeZone() };
+        if (trigger.type === "webhook") {
+          return { kind: "webhook", hookId: trigger.webhook!.hookId, ...(trigger.webhook?.maxAgeMinutes ? { maxAgeMinutes: trigger.webhook.maxAgeMinutes } : {}) };
+        }
+        return { kind: "manual" };
+      });
+      const cloud = rule.execution?.cloud ?? null;
+      return {
+        spec: {
+          name: rule.name,
+          project: { origin: originUrl },
+          triggers,
+          sizeId: cloud?.sizeId ?? "small",
+          chat: {
+            provider: resolvedChat.provider,
+            modelId: resolved.modelId,
+            ...(effort ? { effort } : {}),
+            permissions,
+            ...(rule.execution?.session?.fastMode === true && modelSupportsFastMode(resolved.modelDescriptor) ? { fast: true } : {}),
+            prompt: lines.join("\n"),
+          },
+          lane: { from: null },
+          limits: { maxRunsPerHour: cloud?.maxRunsPerHour ?? null, keepComputer: cloud?.keepComputer === true },
+        },
+      };
     },
 
     /** The editor changed a rule's home through `saveDraft`; see `onRunOnChanged`. */
@@ -6089,6 +6169,20 @@ export function createAutomationService({
 
     listUnstartedIngressEventKeys(sources: readonly AutomationIngressSource[]) {
       return listUnstartedIngressEventKeys(sources);
+    },
+
+    /**
+     * Where a cloud-homed rule's server state comes from (the brain's
+     * registrar, C9). Read by `list`; the source reads the server at most
+     * once a minute and says `runs-updated` when it has news.
+     */
+    setCloudHomeStateSource(source: ((ruleId: string) => AutomationCloudHomeState | null) | null): void {
+      cloudHomeStateSource = source;
+    },
+
+    /** Tells the editor a cloud-homed rule's server state changed. */
+    noteCloudHomeStateChanged(): void {
+      emit({ type: "runs-updated" });
     },
 
     onRuleDeleted(listener: (rule: AutomationRule) => void): () => void {

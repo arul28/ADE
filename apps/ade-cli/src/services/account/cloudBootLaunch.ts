@@ -38,7 +38,7 @@ import type {
   CloudLaunchStagesUpdate,
   CloudServerLaunchRequest,
 } from "../../../../account-directory/src/cloud/contract";
-import { CLOUD_LAUNCH_ENV } from "../../../../account-directory/src/cloud/contract";
+import { CLOUD_AUTOMATION_RUN_STAGE, CLOUD_LAUNCH_ENV, CLOUD_LAUNCH_MAX_STAGES } from "../../../../account-directory/src/cloud/contract";
 import type { CloudProvider } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { parseChatLaunchArgs } from "../../../../desktop/src/main/services/chat/chatLaunchArgs";
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
@@ -87,6 +87,12 @@ export type CloudBootLaunchDeps = {
   afterJoin?: () => Promise<void>;
   /** Holds the computer awake from the join to the hand-off (nothing on its busy list sees them). */
   hold?: <T>(run: () => Promise<T>) => Promise<T>;
+  /**
+   * Resolves once the launch's chat ended its run (its turn finished, or it
+   * stopped). For an automation's run (C9) the computer then reports the
+   * `run` stage, and ADE Cloud saves its chats, pushes its work and frees it.
+   */
+  waitForChatEnd?: (projectId: string, sessionId: string) => Promise<{ ok: boolean; error?: string | null }>;
   sleep?: (ms: number) => Promise<void>;
 };
 
@@ -226,7 +232,11 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const state = readState(deps.stateFile, logger);
   const known = state?.launchId === launchId ? state : null;
-  if (known?.phase === "ended") return;
+  if (known?.phase === "ended") {
+    // A restart after the hand-off: an automation's run may still owe its end.
+    if (known.projectId) await reportAutomationRunEnd(deps, known.projectId);
+    return;
+  }
   const hold = deps.hold ?? (<T>(run: () => Promise<T>) => run());
 
   const report: ReportStages = async (update) => {
@@ -248,6 +258,7 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
 
   if (known?.phase === "handed_off" && known.projectId) {
     await follow(deps, known.projectId, report);
+    await reportAutomationRunEnd(deps, known.projectId);
     return;
   }
 
@@ -325,7 +336,37 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
   });
 
   const after = readState(deps.stateFile, logger);
-  if (after?.launchId === launchId && after.phase === "handed_off" && after.projectId) await follow(deps, after.projectId, report);
+  if (after?.launchId === launchId && after.phase === "handed_off" && after.projectId) {
+    await follow(deps, after.projectId, report);
+    await reportAutomationRunEnd(deps, after.projectId);
+  }
+}
+
+/**
+ * An automation's run (C9): once its chat ends, the computer says so with the
+ * `run` stage, one write. Nobody watches an automation's chat, so this is how
+ * ADE Cloud knows to save its chats, push its work and free the computer.
+ * Any other launch, or a run already reported, writes nothing.
+ */
+async function reportAutomationRunEnd(deps: CloudBootLaunchDeps, projectId: string): Promise<void> {
+  const { launchId, logger } = deps;
+  const api = deps.api();
+  if (!api || !deps.waitForChatEnd) return;
+  const record = await api.launchStatus(launchId).catch(() => null);
+  if (!record || record.request?.madeBy?.kind !== "automation" || record.state !== "done" || !record.sessionId) return;
+  if (record.stages.some((stage) => stage.id === CLOUD_AUTOMATION_RUN_STAGE && (stage.status === "done" || stage.status === "failed"))) return;
+  const end = await deps.waitForChatEnd(projectId, record.sessionId).catch((error: unknown) => ({
+    ok: false,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+  const runStage: CloudLaunchStage = { id: CLOUD_AUTOMATION_RUN_STAGE, status: end.ok ? "done" : "failed", error: end.ok ? null : end.error ?? "The run's chat stopped with an error." };
+  const stages = [...record.stages.filter((stage) => stage.id !== CLOUD_AUTOMATION_RUN_STAGE).slice(-(CLOUD_LAUNCH_MAX_STAGES - 1)), runStage];
+  try {
+    await api.reportLaunchStages(launchId, { stages, ...(end.ok ? {} : { error: runStage.error }) });
+    logger.info("cloud_boot_launch.automation_run_ended", { launchId, ok: end.ok });
+  } catch (error) {
+    logger.warn("cloud_boot_launch.automation_run_end_report_failed", { launchId, error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 /**
@@ -556,6 +597,8 @@ export type CloudBootLaunchHost = {
   /** This brain's ADE Cloud client (`cloudBrainAccess`). */
   cloudClient: () => Promise<CloudProvider | null>;
   holdCloudWork: HoldCloudWork | null;
+  /** An automation's run (C9): resolves when the run's chat ends (`CloudBootLaunchDeps.waitForChatEnd`). */
+  waitForChatEnd?: CloudBootLaunchDeps["waitForChatEnd"];
 };
 
 /**
@@ -632,6 +675,7 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
         ? (url, signal) => headless.approveInHeadlessChromium({ url, signal, binary: chromium, logger })
         : null,
       setUpProject: async (originUrl) => await setUpRepositoryOnThisMachine(host.projectRegistry, originUrl, host.holdCloudWork),
+      waitForChatEnd: host.waitForChatEnd,
       launches: async (projectId) => {
         const service = await host.chatLaunchService(projectId);
         if (!service) throw new Error("This ADE runtime can't run a lane launch.");

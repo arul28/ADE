@@ -64,6 +64,11 @@ function keySuffix(ruleId: string): string {
   return `h.${createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
 }
 
+/** A rule's id as the account (and ADE Cloud's server) carries it. Ids the relay cannot carry are hashed. */
+export function automationRuleAccountId(ruleId: string): string {
+  return keySuffix(ruleId);
+}
+
 /** The account key a rule is stored under. Ids the relay cannot carry are hashed. */
 export function automationRuleAccountKey(ruleId: string): string {
   return `${AUTOMATION_RULE_KEY_PREFIX}${keySuffix(ruleId)}`;
@@ -107,6 +112,8 @@ export type AutomationAccountRow = {
   home: unknown;
   /** Runs counted so far across every home, when the rule has a run limit. */
   runCount?: number;
+  /** The newer of the rule's and its home's stored times: ADE Cloud keeps the newest it was sent (C9). */
+  version?: string;
 };
 
 /**
@@ -246,12 +253,18 @@ export function createAutomationRuleAccountStore(args: {
     const rules = new Map<string, unknown>();
     const homes = new Map<string, unknown>();
     const runs = new Map<string, number>();
+    const versions = new Map<string, string>();
+    const noteVersion = (suffix: string, updatedAt: string) => {
+      if ((versions.get(suffix) ?? "") < updatedAt) versions.set(suffix, updatedAt);
+    };
     let fingerprint = where;
     for (const row of args.backend.list(where)) {
       if (row.key.startsWith(AUTOMATION_RULE_KEY_PREFIX)) {
         rules.set(row.key.slice(AUTOMATION_RULE_KEY_PREFIX.length), row.value);
+        noteVersion(row.key.slice(AUTOMATION_RULE_KEY_PREFIX.length), row.updatedAt);
       } else if (row.key.startsWith(AUTOMATION_HOME_KEY_PREFIX)) {
         homes.set(row.key.slice(AUTOMATION_HOME_KEY_PREFIX.length), row.value);
+        noteVersion(row.key.slice(AUTOMATION_HOME_KEY_PREFIX.length), row.updatedAt);
       } else if (row.key.startsWith(AUTOMATION_RUNS_KEY_PREFIX)) {
         const count = row.value && typeof row.value === "object" ? (row.value as { count?: unknown }).count : null;
         if (typeof count === "number" && Number.isFinite(count) && count > 0) {
@@ -266,6 +279,7 @@ export function createAutomationRuleAccountStore(args: {
       value,
       home: homes.get(suffix),
       ...(runs.has(suffix) ? { runCount: runs.get(suffix)! } : {}),
+      ...(versions.has(suffix) ? { version: versions.get(suffix)! } : {}),
     }));
     return { fingerprint, rows };
   };

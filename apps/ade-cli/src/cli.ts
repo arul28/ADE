@@ -4989,9 +4989,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade automations update <id> --from-file <path>
     $ ade automations delete <id>                   Remove a rule (on every computer when it follows your account)
     $ ade automations toggle <id> --enabled true|false
-    $ ade automations run-on <id> [--device <sync-device-id> --name <computer>]
+    $ ade automations run-on <id> [--device <sync-device-id> --name <computer> | --cloud]
                                                      Choose the one computer that runs a rule that
-                                                     follows your account. Default: this computer
+                                                     follows your account. Default: this computer.
+                                                     --cloud: ADE Cloud watches its schedule or
+                                                     webhook and starts each run on a new computer
     $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
           [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
                                                      Test a rule with an event. preview shows
@@ -22378,6 +22380,7 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     // Flags first, so their values are not taken for the rule id.
     const deviceId = readValue(args, ["--device", "--device-id"]);
     const name = readValue(args, ["--name"]);
+    const cloud = readFlag(args, ["--cloud"]);
     const id = requireValue(
       readValue(args, ["--id"]) ?? firstPositional(args),
       "rule id",
@@ -22385,13 +22388,16 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     if (deviceId && !name) {
       throw new CliUsageError("automations run-on --device needs --name <computer name> too.");
     }
+    if (cloud && deviceId) {
+      throw new CliUsageError("automations run-on takes --cloud or --device, not both.");
+    }
     return {
       kind: "execute",
       label: `automations run-on ${id}`,
       steps: [
         actionStep("result", "automations", "setRunOn", {
           id,
-          ...(deviceId ? { deviceId, name } : {}),
+          ...(cloud ? { cloud: true } : deviceId ? { deviceId, name } : {}),
         }),
       ],
     };
@@ -30731,6 +30737,33 @@ async function runServe(
       chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
       cloudClient: async () => await (await getCloudBrainAccess()).client(),
       holdCloudWork: holdCloudWork ?? null,
+      // An automation's run (C9): its chat's turn ending is the run's end.
+      waitForChatEnd: async (projectId, sessionId) => {
+        const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
+        if (!chat) return { ok: false, error: "This ADE runtime has no chats." };
+        return await new Promise((resolve) => {
+          let settled = false;
+          const finish = (result: { ok: boolean; error?: string | null }) => {
+            if (settled) return;
+            settled = true;
+            unsubscribe();
+            resolve(result);
+          };
+          const unsubscribe = chat.subscribeToEvents((envelope) => {
+            if (envelope.sessionId !== sessionId || envelope.event.type !== "done") return;
+            finish(envelope.event.status === "completed" ? { ok: true } : { ok: false, error: `The run's chat ${envelope.event.status === "interrupted" ? "was stopped" : "failed"}.` });
+          });
+          // Already over (a restart after it ended): nothing more will come. Read
+          // once, after the hand-off's first turn has surely started.
+          const check = setTimeout(() => {
+            void chat.getSessionSummary(sessionId).then((summary) => {
+              if (!summary) finish({ ok: false, error: "The run's chat is gone." });
+              else if (summary.status !== "active" && !summary.awaitingInput) finish({ ok: true });
+            }).catch(() => {});
+          }, 20_000);
+          check.unref?.();
+        });
+      },
     });
   }
 

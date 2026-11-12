@@ -84,6 +84,10 @@ import { resolveGitCommit, runGit } from "../../desktop/src/main/services/git/gi
 import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
 import { createCachedProjectOriginReader, createProjectNewLaneSettings } from "../../desktop/src/main/services/lanes/newLaneSettingsStore";
 import { createAutomationRuleAccountStore } from "../../desktop/src/main/services/automations/automationRuleAccountStore";
+import { createAutomationCloudRegistrar, type AutomationCloudRegistrar } from "../../desktop/src/main/services/automations/automationCloudRegistrar";
+import { resolveWebhookRelayBaseUrl } from "../../desktop/src/main/services/automations/customWebhookService";
+import { ACCOUNT_RELAY_TOKEN_HEADER } from "../../desktop/src/main/services/github/githubRelayConfig";
+import { createCloudApiClient } from "../../desktop/src/shared/cloudApiClient";
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
 import { createProxyService, type ProxyService } from "./services/proxy/proxyService";
@@ -1540,6 +1544,8 @@ export async function createAdeRuntime(args: {
     let onAccountAutomationRulesChangedRef: (() => void) | null = null;
     /** Account rows changed (another computer wrote): claim, confirm and re-read rules. */
     let onAccountAutomationRuleRowsChangedRef: (() => void) | null = null;
+    /** Sends ADE Cloud the rules homed there (C9) after each sync; set once automations exist. */
+    let cloudAutomationRegistrarRef: AutomationCloudRegistrar | null = null;
     const syncDeviceIdPath = path.join(
       syncRuntimeOptions?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
       "sync-device-id",
@@ -1673,6 +1679,8 @@ export async function createAdeRuntime(args: {
             const settled = projectConfigService.reconcileAutomationRules({ confirmed: confirmed && moved.moved === 0 });
             if (moved.moved > 0 || settled.claimed > 0 || settled.readded.length > 0) ruleSyncAgain = true;
             onAccountAutomationRulesChangedRef?.();
+            // Off this loop: a slow directory never holds the rules' own sync.
+            void cloudAutomationRegistrarRef?.reconcile();
           } while (ruleSyncAgain);
         } catch (error) {
           logger.warn("automations.account_rules_sync_failed", {
@@ -3406,6 +3414,44 @@ export async function createAdeRuntime(args: {
         }
         pushEvent("runtime", { type: "runs-updated", source: "automations" });
       };
+    }
+    if (automationService) {
+      // ADE Cloud as a rule's home (C9): this brain sends the server the rules
+      // homed there, after every account sync; never on a timer.
+      const readOrigin = createCachedProjectOriginReader(projectRoot);
+      const registrar = createAutomationCloudRegistrar({
+        listCloudHomes: () => projectConfigService.cloudHomedAutomationRules(),
+        compile: (ruleId) => {
+          const origin = readOrigin();
+          return origin ? automationService.cloudHomeSpec(ruleId, origin) : { problem: "This project has no GitHub remote." };
+        },
+        api: () => {
+          const baseUrl = getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] });
+          if (!baseUrl || !accountAuthService.getStatus().signedIn) return null;
+          return createCloudApiClient({ baseUrl, accessToken: async () => (await getAccountAccessToken().catch(() => null)) ?? null });
+        },
+        setHookForward: async (hookId, forward) => {
+          const token = await getAccountAccessToken().catch(() => null);
+          if (!token) throw new Error("Sign in to ADE to point this webhook at ADE Cloud.");
+          const response = await fetch(`${resolveWebhookRelayBaseUrl(db)}/hooks/forward`, {
+            method: "POST",
+            headers: { "content-type": "application/json", [ACCOUNT_RELAY_TOKEN_HEADER]: token },
+            body: JSON.stringify({ hookId, forward }),
+            signal: AbortSignal.timeout(15_000),
+          });
+          // A hook already gone (retired with its rule) forwards nowhere.
+          if (!response.ok && !(response.status === 404 && forward === null)) {
+            throw new Error(`ADE's webhook relay answered HTTP ${response.status}.`);
+          }
+        },
+        origin: () => readOrigin(),
+        onStateChanged: () => automationService.noteCloudHomeStateChanged(),
+        logger,
+      });
+      cloudAutomationRegistrarRef = registrar;
+      automationService.setCloudHomeStateSource((ruleId) => registrar.stateFor(ruleId));
+      teardown.push(automationService.onRuleDeleted((rule) => void registrar.forget(rule)));
+      void registrar.reconcile();
     }
     teardown.push(() => automationService?.dispose());
     const automationSecretService = createAutomationSecretService({

@@ -1,5 +1,6 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
-import { parseAutomationCloudTarget } from "../../../shared/automationCloud";
+import { isIanaTimeZone, parseAutomationCloudTarget } from "../../../shared/automationCloud";
+import { ADE_CLOUD_HOME_DEVICE_ID, ADE_CLOUD_HOME_NAME, isAdeCloudHome } from "../../../shared/automationHome";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -444,6 +445,8 @@ function coerceAutomationTrigger(value: unknown): AutomationTrigger | undefined 
 
   const out: AutomationTrigger = { type };
   const cron = asString(value.cron);
+  const timezone = asString(value.timezone)?.trim();
+  if (timezone && isIanaTimeZone(timezone)) out.timezone = timezone;
   const branch = asString(value.branch);
   const targetBranch = asString(value.targetBranch);
   const event = asString(value.event);
@@ -904,6 +907,17 @@ export function coerceAutomationRuleHome(value: unknown): AutomationRuleHome | u
   if (!deviceId || !name || !chosenAt) return undefined;
   const checkout = asString(value.checkout)?.trim();
   const previousDeviceId = asString(value.previousDeviceId)?.trim();
+  // ADE Cloud's home names no computer and no checkout, whatever the row says.
+  if (isAdeCloudHome({ deviceId, kind: asString(value.kind) })) {
+    return {
+      kind: "cloud",
+      deviceId: ADE_CLOUD_HOME_DEVICE_ID,
+      name: ADE_CLOUD_HOME_NAME,
+      chosenAt,
+      checkout: null,
+      ...(previousDeviceId && previousDeviceId !== ADE_CLOUD_HOME_DEVICE_ID ? { previousDeviceId } : {}),
+    };
+  }
   return {
     deviceId,
     name,
@@ -2470,6 +2484,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       triggers: triggers.map((trigger) => ({
         type: trigger.type,
         ...(trigger.cron ? { cron: trigger.cron.trim() } : {}),
+        ...(trigger.timezone ? { timezone: trigger.timezone } : {}),
         ...(trigger.branch ? { branch: trigger.branch.trim() } : {}),
         ...(trigger.targetBranch ? { targetBranch: trigger.targetBranch.trim() } : {}),
         ...(trigger.event ? { event: trigger.event.trim() } : {}),
@@ -3551,6 +3566,16 @@ export function createProjectConfigService({
       return automationRuleSync?.fingerprint() ?? null;
     },
 
+    /** Rules whose home is ADE Cloud, and those that just left it; see `AutomationRuleAccountSync.cloudHomes`. */
+    cloudHomedAutomationRules(): Array<{ rule: ConfigAutomationRule; version: string; onCloud: boolean }> {
+      try {
+        return automationRuleSync?.cloudHomes() ?? [];
+      } catch (error) {
+        logger.warn("projectConfig.cloud_homed_rules_failed", { error: error instanceof Error ? error.message : String(error) });
+        return [];
+      }
+    },
+
     /** Move rules from `.ade/local.yaml` into the account; see `AutomationRuleAccountSync.migrate`. */
     migrateAutomationRulesToAccount(): { moved: number; renamed: string[] } {
       try {
@@ -3583,7 +3608,7 @@ export function createProjectConfigService({
      */
     saveAutomationRule(
       rule: ConfigAutomationRule,
-      options: { home?: AutomationRuleHome | "this-computer" | null } = {},
+      options: { home?: AutomationRuleHome | "this-computer" | "ade-cloud" | null } = {},
     ): ProjectConfigSnapshot {
       const id = rule.id.trim();
       if (!id) throw new Error("Automation id is required");

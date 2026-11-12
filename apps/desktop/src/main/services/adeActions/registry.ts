@@ -410,7 +410,7 @@ type AutomationsDomainService = {
   saveRule(args: AutomationSaveDraftRequest): AutomationSaveDraftResult;
   deleteRule(args: { id: string }): AutomationRuleSummary[];
   toggleRule(args: { id: string; enabled: boolean }): AutomationRuleSummary[];
-  setRunOn(args: { id: string; deviceId?: string | null; name?: string | null }): AutomationRuleSummary[];
+  setRunOn(args: { id: string; deviceId?: string | null; name?: string | null; cloud?: boolean }): AutomationRuleSummary[];
   triggerManually(args: AutomationManualTriggerRequest): Promise<AutomationRun>;
   planTest(args: AutomationTestRequest): Promise<AutomationTestPlan>;
   runTest(args: AutomationTestRequest): Promise<AutomationRun>;
