@@ -693,6 +693,8 @@ final class GitHubAccountConnection: ObservableObject {
   func seedPreview(state: GitHubAccountState) {
     userId = "preview"
     self.state = state
+    // A screen's status read would replace the fixed state.
+    lastStatusAt = .distantFuture
   }
 #endif
 }
