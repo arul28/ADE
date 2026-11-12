@@ -70,7 +70,9 @@ const USER_SETTING_WRITES = {
   // user-only below: outside apps and agents read the status, never change it.
   provider_logins: { actions: [...PROVIDER_LOGIN_PERSON_ACTIONS], entryId: "agents.providers" },
   keybindings: { actions: ["set"], entryId: null },
-  project_config: { actions: ["setPrTranscriptGists"], entryId: "lanes-git.pr-chat-transcripts" },
+  // Answering a moved setting's notice can turn on PR chat transcripts
+  // (`use_local`), and the notices show on that card.
+  project_config: { actions: ["setPrTranscriptGists", "resolveAccountSettingNotice"], entryId: "lanes-git.pr-chat-transcripts" },
   keep_awake: { actions: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"], entryId: "general.keep-awake" },
   pty: { actions: ["setDefaultShell"], entryId: "behaviour.terminal-shell" },
   budget: { actions: ["updateConfig"], entryId: "agents.budget" },
@@ -1169,7 +1171,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
-  project_config: ["diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
+  project_config: ["diffAgainstDisk", "get", "resolveAccountSettingNotice", "save", "setPrTranscriptGists", "validate"],
   // `request` asks the person through the private secret card; it returns the
   // outcome only, never the value, so it is not secret-bearing.
   project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request"],

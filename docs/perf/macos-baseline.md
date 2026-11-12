@@ -1545,6 +1545,29 @@ like GitHub (scratch harness, not committed). Not the baseline machine.
 | App not installed on the owner, visible | 14 requests per hour (a retry every 5 minutes, diagnosis cached 5 minutes) | not set yet; needs approval |
 | Requests in flight | at most 6 (the desktop shares the main-process gate) | 6 |
 
+Account issue reads through the same store (`useAccountGithubIssues`,
+`useAccountGithubIssue`), 2026-11-12, measured the same way: the store on a
+virtual clock for one hour, with a fake client that answers `304` after the
+first read (scratch harness, not committed). No screen draws them yet.
+
+| Metric | Measured | Ceiling |
+|---|---|---|
+| Issue list, unchanged, one page, two components on it | 61 requests per hour, 1 counts | not set yet; needs approval |
+| One issue open (the issue and its comments), unchanged | 122 requests per hour, 2 count | not set yet; needs approval |
+| Issue list, window hidden for 40 of the 60 minutes | 21 requests, 0 while hidden | 0 while hidden |
+| Issue list, App not installed on the owner | 13 requests per hour (a retry every 5 minutes) | not set yet; needs approval |
+
+Project config snapshot read (`projectConfigService.get()`) with the account
+settings layer on, 2026-11-12, Mac Studio with other agents running: a
+`local.yaml` with 6 test suites and the AI keys, an in-memory account store
+holding the same rows, 200 reads in one process (scratch harness, not
+committed). Coercion and validation answers are kept for 5 seconds.
+
+| Metric | Measured | Ceiling |
+|---|---|---|
+| One snapshot read, no account layer (signed out, no remote) | 0.31 ms | not set yet; needs approval |
+| One snapshot read, account layer on | 0.64 ms (3.4 ms before the 5-second cache) | not set yet; needs approval |
+
 ## iOS app: Lanes and PRs (simulator)
 
 The iOS app is measured on its own columns: a simulator on the Mac Studio
@@ -2921,3 +2944,22 @@ showed no remote `streamEvents` call from +15 s to +120 s. After a manual
 Disconnect, it showed none for 38 s. After Connect, the parked pumps polled
 again within 0.3 s and caught up on a reply that the test machine made while
 it was disconnected.
+
+### Pins on every preload member (B2, 2026-11-12)
+
+Dev app on `ade/account-desktop-b2-preload-pass` against the B1 head
+`ad5d1ffa4` (the old preload, checked out over the same tree). Same Mac
+(Mac Studio M4 Max), same steps for both: `--first-run --keep`, the account
+brain on its own socket, the dev test machine "tabs" connected, one local
+project tab, nothing streaming. The Lanes row is the IPC in the 4 s after a
+move from Work to Lanes, from a perf run, 3 runs. The chat row is
+`interaction.mjs chats 4` on the same tab.
+
+| Row | Before (B1) | After (B2) | Ceiling |
+| --- | --- | --- | --- |
+| Lanes: IPC on open (perf run), 2 machines connected | 41, 44, 44 calls; 0.8–1.8 s total | 40, 39, 44 calls; 0.8–0.9 s total | 70 calls (Lanes row) |
+| Work chat switch, warm, 2 machines: first changed frame median / settled median / worst long frame | 34 / 143 ms / 0 ms | 32 / 144 ms / 0 ms | 60 ms first frame |
+
+B2 adds an optional `pin` to each member. A call with no pin takes the same
+route as before, so the counts do not move. The total time of the Lanes calls
+follows the GitHub PR calls, which vary from run to run.

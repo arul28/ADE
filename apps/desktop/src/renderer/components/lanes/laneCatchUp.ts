@@ -344,7 +344,9 @@ export async function runLaneCatchUpDirect(args: {
     return { ok: false, failure };
   } finally {
     try {
-      if (pin) requestCrossMachineLanesForMachine(args.machineId ?? machineIdForBinding(pin));
+      // A pin that names the tab's own copy refreshes the tab's lanes.
+      const foreignPin = cacheScopePin(pin);
+      if (foreignPin) requestCrossMachineLanesForMachine(args.machineId ?? machineIdForBinding(foreignPin));
       else {
         await args.refreshLanes();
         requestLaneRebaseNeedsRescan();

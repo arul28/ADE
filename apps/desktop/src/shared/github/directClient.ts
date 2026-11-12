@@ -8,6 +8,7 @@ import type {
   GithubDirectError,
   GithubDirectErrorKind,
   GithubDirectIssue,
+  GithubDirectIssueDetail,
   GithubDirectListState,
   GithubDirectMeta,
   GithubDirectOp,
@@ -22,6 +23,7 @@ import type {
   GithubDirectReview,
   GithubDirectUser,
 } from "../types";
+import { GITHUB_DIRECT_ACCOUNT_CHANGED } from "../types/githubDirect";
 import type { AccountAppTokenClient } from "./accountAppTokenClient";
 import { appGrantMissingPermissions, appGrantNeedsApproval, appInstallationGrantForOwner } from "./githubAppGrant";
 
@@ -157,6 +159,17 @@ export function buildGithubDirectRequest(request: unknown): GithubDirectBuiltReq
           maxPages,
         }],
       };
+    }
+    case "getIssue":
+    case "listIssueComments": {
+      const repo = checkRepo(params);
+      if (typeof repo === "string") return invalid(repo);
+      const number = checkNumber((params as Record<string, unknown>).number);
+      if (number == null) return invalid("number is a positive whole number");
+      const base = `${repoPath(repo)}/issues/${number}`;
+      return request.op === "getIssue"
+        ? { ok: true, op: "getIssue", repo, steps: [{ path: base, query: {}, maxPages: 1 }] }
+        : { ok: true, op: "listIssueComments", repo, steps: [{ path: `${base}/comments`, query: { per_page: "100" }, maxPages: SUBLIST_MAX_PAGES }] };
     }
     case "getPull":
     case "listReviews":
@@ -493,6 +506,19 @@ function mapIssue(value: unknown): GithubDirectIssue | null {
   };
 }
 
+function mapIssueDetail(value: unknown): GithubDirectIssueDetail | null {
+  const issue = mapIssue(value);
+  if (!issue || !isRecord(value)) return null;
+  const assignees = Array.isArray(value.assignees) ? value.assignees : [];
+  return {
+    ...issue,
+    body: str(value.body) ?? "",
+    assignees: assignees.map((assignee) => user(assignee)?.login ?? null).filter((login): login is string => Boolean(login)),
+    milestone: isRecord(value.milestone) ? str(value.milestone.title) : null,
+    closedAt: str(value.closed_at),
+  };
+}
+
 const listOf = <T>(map: (value: unknown) => T | null) => (body: unknown): T[] =>
   (Array.isArray(body) ? body : []).map(map).filter((item): item is T => item !== null);
 
@@ -780,6 +806,10 @@ export function createGithubDirectClient(options: GithubDirectClientOptions) {
         return listOf(mapPull)(first!.items);
       case "listIssues":
         return listOf(mapIssue)(first!.items);
+      case "getIssue":
+        return mapIssueDetail(first!.single);
+      case "listIssueComments":
+        return listOf(mapComment("issue"))(first!.items);
       case "getPull":
         return mapPullDetail(first!.single);
       case "listReviews":
@@ -836,7 +866,7 @@ export function createGithubDirectClient(options: GithubDirectClientOptions) {
     // account's data nor the new account's token may cross over.
     const scope = options.credential.scopeKey() ?? "anonymous";
     const accountChanged = (): boolean => (options.credential.scopeKey() ?? "anonymous") !== scope;
-    const changedAnswer = { ok: false as const, error: { kind: "github_unavailable" as const, message: "The ADE account changed during the read." } };
+    const changedAnswer = { ok: false as const, error: { kind: "github_unavailable" as const, message: "The ADE account changed during the read.", reason: GITHUB_DIRECT_ACCOUNT_CHANGED } };
     const tokenAnswer = await options.credential.getToken().catch(() => null);
     if (accountChanged()) return changedAnswer;
     if (!tokenAnswer) return { ok: false, error: { kind: "github_unavailable", message: "The GitHub sign-in could not be read." } };
@@ -846,7 +876,7 @@ export function createGithubDirectClient(options: GithubDirectClientOptions) {
       if (built.op === "diagnoseRepository") {
         const diagnosis = await diagnose(built.repo!, token, scope);
         if ("kind" in diagnosis) return fail(diagnosis);
-        return { ok: true, data: diagnosis as GithubDirectData[O], meta: { pagesRead: 2, notModified: 0, truncated: false, fetchedAt: now() } };
+        return { ok: true, data: diagnosis as GithubDirectData[O], meta: { pagesRead: 2, notModified: 0, truncated: false, fetchedAt: now(), scope } };
       }
       const answers: Array<Extract<StepAnswer, { ok: true }>> = [];
       for (const step of built.steps) {
@@ -871,6 +901,7 @@ export function createGithubDirectClient(options: GithubDirectClientOptions) {
         notModified: answers.reduce((sum, answer) => sum + answer.notModified, 0),
         truncated: answers.some((answer) => answer.truncated),
         fetchedAt: now(),
+        scope,
       };
       return { ok: true, data: data as GithubDirectData[O], meta };
     };

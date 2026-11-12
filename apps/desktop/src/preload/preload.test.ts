@@ -1446,6 +1446,13 @@ describe("preload Apple device input routing", () => {
 
     expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
     expect(invoke).toHaveBeenCalledWith(IPC.lanesOpenFolder, { laneId: "lane-1" });
+
+    // A local pin for another project names that project, so main does not
+    // look the lane up in the window's project.
+    const otherProject = { kind: "local", key: "local:/other", rootPath: "/other", displayName: "Other" };
+    await bridge.lanes.openFolder({ laneId: "lane-2" }, otherProject);
+    expect(invoke).toHaveBeenCalledWith(IPC.lanesOpenFolder, { laneId: "lane-2", rootPath: "/other" });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.lanesOpenFolder, { laneId: "lane-2" });
   });
 
   it("surfaces local runtime action failures instead of falling back to in-process IPC", async () => {
@@ -7127,6 +7134,16 @@ describe("preload remote project binding", () => {
     await import("./preload");
     const bridge = (globalThis as any).__adeBridge;
     await expect(bridge.sync.getStatus()).resolves.toBe(status);
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallSync, {
+      rootPath: "/repo",
+      method: "sync.getStatus",
+      params: {},
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.syncGetStatus, undefined);
+
+    // A pin on this computer keeps the same fallback.
+    invoke.mockClear();
+    await expect(bridge.sync.getStatus(undefined, binding)).resolves.toBe(status);
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallSync, {
       rootPath: "/repo",
       method: "sync.getStatus",

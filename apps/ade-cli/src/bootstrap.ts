@@ -1729,6 +1729,13 @@ export async function createAdeRuntime(args: {
             ruleSyncAgain = false;
             const confirmed = await ruleStore.syncedEverything({ sync: options.sync || !first });
             first = false;
+            if (confirmed) {
+              // The account answered, so another computer's rows are known:
+              // move this project's settings that follow the account
+              // (write-if-absent), and the old per-computer new-lane choices.
+              projectConfigService.moveSettingsToAccount();
+              newLaneSettings.adoptLegacySettings();
+            }
             const moved = projectConfigService.migrateAutomationRulesToAccount();
             const settled = projectConfigService.reconcileAutomationRules({ confirmed: confirmed && moved.moved === 0 });
             if (moved.moved > 0 || settled.claimed > 0 || settled.readded.length > 0) ruleSyncAgain = true;
@@ -1759,9 +1766,18 @@ export async function createAdeRuntime(args: {
         if (ruleSyncTimer) clearTimeout(ruleSyncTimer);
         ruleSyncTimer = null;
       });
+      const readProjectOrigin = createCachedProjectOriginReader(projectRoot);
+      // Small project settings follow the account under the repository
+      // (`projectConfigAccountLayer.ts`); `.ade/local.yaml` keeps a mirror.
+      projectConfigService.setAccountSettingsStore({
+        backend: () => accountStoreForRules,
+        accountUserId: () => accountAuthService.getStatus().userId ?? null,
+        readOriginUrl: readProjectOrigin,
+        statePath: path.join(paths.adeDir, "account-settings-move.state.json"),
+      });
       const ruleStore = createAutomationRuleAccountStore({
         backend: accountStoreForRules,
-        readOriginUrl: createCachedProjectOriginReader(projectRoot),
+        readOriginUrl: readProjectOrigin,
         thisComputer: () => {
           let name: string | null = null;
           try {

@@ -39,6 +39,9 @@ export type GithubDirectErrorKind =
   | "forbidden"
   | "invalid_request";
 
+/** `reason` of a read whose ADE account changed while it ran: its old data is another account's. */
+export const GITHUB_DIRECT_ACCOUNT_CHANGED = "account_changed";
+
 export type GithubDirectError = {
   kind: GithubDirectErrorKind;
   /** Technical detail for logs; the screen uses `githubDirectStateCopy`. */
@@ -69,6 +72,11 @@ export type GithubDirectMeta = {
   truncated: boolean;
   /** Epoch ms of the answer. */
   fetchedAt: number;
+  /**
+   * The ADE account the answer belongs to (opaque; "anonymous" with none).
+   * A cache of answers drops another account's data on a switch.
+   */
+  scope?: string;
 };
 
 export type GithubDirectResult<T> =
@@ -171,6 +179,14 @@ export type GithubDirectIssue = {
   htmlUrl: string | null;
 };
 
+/** One issue with its text, as the issue pane shows it. */
+export type GithubDirectIssueDetail = GithubDirectIssue & {
+  body: string;
+  assignees: string[];
+  milestone: string | null;
+  closedAt: string | null;
+};
+
 /** What `diagnoseRepository` found, in the spec's detection order. */
 export type GithubDirectRepositoryDiagnosis = {
   /**
@@ -196,6 +212,8 @@ export type GithubDirectRequest =
   | { op: "listReviews"; params: GithubDirectRepoRef & { number: number } }
   | { op: "listComments"; params: GithubDirectRepoRef & { number: number } }
   | { op: "listIssues"; params: GithubDirectRepoRef & { state?: GithubDirectListState; maxPages?: number } }
+  | { op: "getIssue"; params: GithubDirectRepoRef & { number: number } }
+  | { op: "listIssueComments"; params: GithubDirectRepoRef & { number: number } }
   | { op: "diagnoseRepository"; params: GithubDirectRepoRef };
 
 export type GithubDirectOp = GithubDirectRequest["op"];
@@ -209,6 +227,8 @@ export type GithubDirectData = {
   listReviews: GithubDirectReview[];
   listComments: GithubDirectComment[];
   listIssues: GithubDirectIssue[];
+  getIssue: GithubDirectIssueDetail;
+  listIssueComments: GithubDirectComment[];
   diagnoseRepository: GithubDirectRepositoryDiagnosis;
 };
 
