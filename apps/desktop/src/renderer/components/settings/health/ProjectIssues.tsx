@@ -17,7 +17,8 @@ export function useProjectFix(pin: OpenProjectBinding | null, onReport: (report:
   const [fixingId, setFixingId] = React.useState<string | null>(null);
   const runFix = React.useCallback(async (issue: ProjectHealthIssue) => {
     const fix = issue.fix;
-    if (!fix || fixingId) return;
+    // No copy online: there is nothing to fix on.
+    if (!fix || fixingId || !pin) return;
     if (fix.kind === "change") {
       const confirmed = await confirmDialog({
         title: `${fix.label}?`,

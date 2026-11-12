@@ -12,6 +12,7 @@ import {
 } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { createPinnedFilesApi } from "../files/v2/pinnedFilesApi";
+import { requireChatPin } from "./chatMachinePin";
 import { streamFileBytes } from "../files/v2/streamBytes";
 import { cn } from "../ui/cn";
 import { isPathEqualOrDescendant, isWindowsAbsolutePath } from "../../lib/pathUtils";
@@ -91,7 +92,7 @@ export function ChatInlineMedia({
         let next: Resolution = null;
         if (media.kind === "resolved") {
           next = media.target;
-          await createPinnedFilesApi(pin).readFileRange({
+          await createPinnedFilesApi(requireChatPin(pin)).readFileRange({
             workspaceId: next.workspaceId,
             path: next.relativePath,
             offset: 0,
@@ -262,12 +263,13 @@ function InlineImage({
     let objectUrl: string | null = null;
     setUrl(null);
     setFailed(false);
-    void streamFileBytes(
-      createPinnedFilesApi(pin),
+    // Deferred so a chat with no known computer fails like a failed read.
+    void Promise.resolve().then(() => streamFileBytes(
+      createPinnedFilesApi(requireChatPin(pin)),
       target.workspaceId,
       target.relativePath,
       { maxBytes: INLINE_IMAGE_MAX_BYTES },
-    ).then((bytes) => {
+    )).then((bytes) => {
       if (cancelled) return;
       objectUrl = URL.createObjectURL(new Blob([bytes], { type: inlineMediaMime(name) }));
       setUrl(objectUrl);
@@ -344,7 +346,7 @@ function InlineVideo({
     setUrl(null);
     try {
       const bytes = await streamFileBytes(
-        createPinnedFilesApi(pin),
+        createPinnedFilesApi(requireChatPin(pin)),
         target.workspaceId,
         target.relativePath,
         { maxBytes: INLINE_VIDEO_MAX_BYTES },
@@ -539,12 +541,12 @@ function AudioPlayer({
     setLoading(true);
     setFailed(false);
     setTooLarge(false);
-    const request = streamFileBytes(
-      createPinnedFilesApi(pin),
+    const request = Promise.resolve().then(() => streamFileBytes(
+      createPinnedFilesApi(requireChatPin(pin)),
       target.workspaceId,
       target.relativePath,
       { maxBytes: INLINE_AUDIO_MAX_BYTES },
-    ).then((bytes) => {
+    )).then((bytes) => {
       // An unmounted row has no effect left to revoke the URL; never create it.
       if (!mountedRef.current) return null;
       const nextUrl = URL.createObjectURL(new Blob([bytes], { type: inlineMediaMime(name, mimeType) }));

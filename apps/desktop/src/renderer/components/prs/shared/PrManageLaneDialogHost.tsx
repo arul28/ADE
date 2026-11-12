@@ -1,6 +1,5 @@
 import { memo, useCallback, useMemo, useState } from "react";
 import { usePrRuntimePin } from "../state/prMachines";
-import { pinArg } from "../../../state/laneMachineRouting";
 
 import type { DeleteLaneArgs, LaneSummary } from "../../../../shared/types";
 import {
@@ -14,6 +13,7 @@ import { useAppStore } from "../../../state/appStore";
 import { requestCrossMachineLanesForMachine, useLanesForPin } from "../../../state/crossMachineLanes";
 import { machineIdForBinding } from "../../../../shared/machineIdentity";
 import { useCloudLaneDelete } from "../../cloudLane/deleteCloudLane";
+import { requirePin } from "../../../state/repositoryScope";
 
 export type PrManageLaneDialogHostProps = {
   open: boolean;
@@ -30,7 +30,6 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   // The lane lives where the PR's runtime pin says; archive/delete run there.
   const runtimePin = usePrRuntimePin();
-  const onPin = useMemo(() => pinArg(runtimePin), [runtimePin]);
   // A pinned lane is resolved (parent, stack, children) against its own
   // machine's lanes only; the tab machine may hold a same-id lane.
   const ownerLanes = useLanesForPin(runtimePin);
@@ -76,9 +75,9 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
   const handleArchive = useCallback(async () => {
     if (!lane || lane.laneType === "primary") return false;
     return await runLaneAction(async () => {
-      await window.ade.lanes.archive({ laneId: lane.id }, ...onPin);
+      await window.ade.lanes.archive({ laneId: lane.id }, requirePin(runtimePin));
     }, "Archiving lane…", "archive");
-  }, [lane, onPin, runLaneAction]);
+  }, [lane, runLaneAction, runtimePin]);
 
   // A lane on its own ADE Cloud computer gets the cloud delete.
   const cloud = useCloudLaneDelete();
@@ -101,10 +100,10 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
     }
 
     await runLaneAction(async () => {
-      await window.ade.lanes.delete(args, ...onPin);
+      await window.ade.lanes.delete(args, requirePin(runtimePin));
     }, "Deleting lane…", "delete");
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
-  }, [cloud, deleteForce, deleteSelection, lane, onOpenChange, onPin, refreshOwnerLanes, runLaneAction, runtimePin]);
+  }, [cloud, deleteForce, deleteSelection, lane, onOpenChange, refreshOwnerLanes, runLaneAction, runtimePin]);
 
   // A lane on its own ADE Cloud computer gets the cloud delete: nothing to pick, no Force gate.
   const cloudLaneIds = useMemo(

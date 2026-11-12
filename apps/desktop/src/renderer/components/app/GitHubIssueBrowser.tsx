@@ -11,6 +11,7 @@ import { useLatestCallback } from "../../lib/stableIdentity";
 import { cn } from "../ui/cn";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { fgTint } from "../lanes/laneDesignTokens";
+import { useGitHubIssuePin, useProjectGitHubRepo } from "../issues/githubIssueStore";
 
 type IssueStateFilter = "open" | "closed" | "all";
 
@@ -49,6 +50,17 @@ export function GitHubIssueBrowser({
   onRemoveIssue?: (issue: LaneGitHubIssue) => void;
 }) {
   const [repo, setRepo] = useState<{ owner: string; name: string } | null>(null);
+  // The project's repository (named by an account project, else asked of the
+  // reader machine) and the machine that reads its issues. Null pin: no
+  // machine is online, and nothing is asked.
+  const projectRepo = useProjectGitHubRepo();
+  const projectRepoKey = projectRepo.repo ? `${projectRepo.repo.owner}/${projectRepo.repo.name}` : null;
+  const projectRepoRef = useRef(projectRepo);
+  projectRepoRef.current = projectRepo;
+  const pin = useGitHubIssuePin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const [issues, setIssues] = useState<LaneGitHubIssue[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,7 +87,21 @@ export function GitHubIssueBrowser({
     setError(null);
     setBusy(true);
     try {
-      const detected = await window.ade.github.detectRepo();
+      const readPin = pinRef.current;
+      if (!readPin) {
+        setRepo(projectRepoRef.current.repo);
+        setIssues(selectedIssue ? [selectedIssue] : []);
+        setError("No computer is online. ADE reads issues through a computer that has this project.");
+        return;
+      }
+      // The repository check is not done yet: show no rows of the last
+      // repository while it runs. The check's answer loads again.
+      if (!projectRepoRef.current.checked) {
+        setRepo(null);
+        setIssues(selectedIssue ? [selectedIssue] : []);
+        return;
+      }
+      const detected = projectRepoRef.current.repo;
       setRepo(detected);
       notifyRepoChange?.(detected);
       if (!detected) {
@@ -86,7 +112,7 @@ export function GitHubIssueBrowser({
         owner: detected.owner,
         name: detected.name,
         state: stateFilter,
-      });
+      }, readPin);
       const mapped = rows
         .map((row) => githubIssueToLaneIssue(detected.owner, detected.name, row))
         .filter((issue): issue is LaneGitHubIssue => Boolean(issue));
@@ -101,7 +127,9 @@ export function GitHubIssueBrowser({
     } finally {
       setBusy(false);
     }
-  }, [notifyRepoChange, setBusy, stateFilter]);
+    // The pin and the repository are compared by key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notifyRepoChange, pinKey, projectRepo.checked, projectRepoKey, setBusy, stateFilter]);
 
   // Reload when the selection changes, not on every new object with the same id.
   useEffect(() => {

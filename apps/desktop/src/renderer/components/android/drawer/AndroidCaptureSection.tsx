@@ -51,7 +51,7 @@ export function AndroidCaptureSection({
     }
     if (revealProofArtifactRow(artifactId)) return;
     // No proof drawer on screen: open the file, when it is on this machine.
-    if (!remoteMachineName) void window.ade.app.openPath(recording.path).catch((cause: unknown) => reportError(cause));
+    if (!remoteMachineName) void window.ade.app.openPath(recording.path, pinRef.current).catch((cause: unknown) => reportError(cause));
   };
 
   const finished = (recordings ?? []).filter((recording) => !recording.active)
@@ -85,7 +85,7 @@ export function AndroidCaptureSection({
             artifactId={recording.proofArtifactIds[0] ?? null}
             enabled={visible}
             onOpenProof={(artifactId) => openProof(recording, artifactId)}
-            onReveal={() => { void window.ade.app.revealPath(recording.path).catch((cause: unknown) => reportError(cause)); }}
+            onReveal={() => { void window.ade.app.revealPath(recording.path, pinRef.current).catch((cause: unknown) => reportError(cause)); }}
             revealUnavailable={remoteMachineName ? `On ${remoteMachineName}` : null}
             onDelete={() => remove(recording)}
           />

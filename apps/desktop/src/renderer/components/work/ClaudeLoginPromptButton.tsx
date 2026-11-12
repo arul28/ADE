@@ -3,6 +3,7 @@ import { SpinnerGap, Terminal, X } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { CLAUDE_AUTH_LOGIN_COMMAND } from "../../lib/claudeAuthPrompt";
 import { cn } from "../ui/cn";
+import { withChatPin } from "../chat/chatMachinePin";
 
 type RevealTerminalRequest = {
   terminalId: string;
@@ -22,10 +23,10 @@ async function resolveClaudeLoginLaneId(
 ): Promise<string> {
   if (laneId) return laneId;
   const listLanes = window.ade?.lanes?.list;
-  const availableLanes = typeof listLanes === "function" ? await listLanes({
+  const availableLanes = typeof listLanes === "function" ? await withChatPin(runtimePin, (chatPin) => listLanes({
     includeArchived: false,
     includeStatus: false,
-  }, runtimePin) : [];
+  }, chatPin)) : [];
   const primaryLane = availableLanes.find((lane) => lane.laneType === "primary") ?? null;
   const resolvedLaneId = primaryLane?.id ?? availableLanes[0]?.id ?? null;
   if (!resolvedLaneId) {
@@ -48,7 +49,7 @@ export async function createClaudeLoginTerminal({
     throw new Error("Terminal sessions are not available in this ADE runtime.");
   }
   const resolvedLaneId = await resolveClaudeLoginLaneId(laneId, runtimePin);
-  const created = await window.ade.pty.create({
+  const created = await withChatPin(runtimePin, (chatPin) => window.ade.pty.create({
     laneId: resolvedLaneId,
     ...(chatSessionId ? { chatSessionId } : {}),
     cols: 100,
@@ -57,7 +58,7 @@ export async function createClaudeLoginTerminal({
     tracked: true,
     toolType: "shell",
     startupCommand: CLAUDE_AUTH_LOGIN_COMMAND,
-  }, runtimePin);
+  }, chatPin));
   return {
     laneId: resolvedLaneId,
     terminalId: created.sessionId,

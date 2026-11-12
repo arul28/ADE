@@ -2,6 +2,7 @@ import type { FileContent } from "../../../../../shared/types";
 import type { MonacoModelRegistry } from "../../monacoModelRegistry";
 import type { EditorTab } from "../editorGroupsStore";
 import type { PinnedFilesApi } from "../pinnedFilesApi";
+import type { OpenProjectBinding } from "../../../../../shared/types/core";
 
 export type EditorThemeMode = "light" | "dark";
 
@@ -29,6 +30,11 @@ export type ViewerProps = {
   files: PinnedFilesApi;
   /** Absolute workspace root path (for "open externally" actions). */
   rootPath: string;
+  /**
+   * The copy that path actions ("open externally", reveal) name. These run on
+   * this computer, so a file on another computer gets a clear refusal.
+   */
+  pathPin: OpenProjectBinding;
   tab: EditorTab;
   content: FileContent;
   readOnly: boolean;

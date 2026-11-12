@@ -8,7 +8,7 @@ import { useAppStore } from "../../state/appStore";
 import { clearPrReadInFlightForTest } from "../../lib/prReadCache";
 import { selectPrsForChat } from "../../../shared/prChatScope";
 import type { PrSummary } from "../../../shared/types";
-import { ChatGitToolbar } from "./ChatGitToolbar";
+import { ChatGitToolbar as ToolbarUnderTest } from "./ChatGitToolbar";
 
 const originalAde = globalThis.window.ade;
 
@@ -60,6 +60,16 @@ function installAdeMocks() {
       openExternal: vi.fn().mockResolvedValue(undefined),
     },
   } as any;
+}
+
+/** The tab's copy, the machine a chat on it reads from. */
+function tabPin() {
+  return useAppStore.getState().projectBinding;
+}
+
+/** The toolbar as its callers render it: always with the lane's machine. */
+function ChatGitToolbar(props: React.ComponentProps<typeof ToolbarUnderTest>) {
+  return <ToolbarUnderTest {...props} runtimePin={props.runtimePin ?? tabPin()} />;
 }
 
 function resetStore(options?: { remote?: boolean }) {
@@ -175,7 +185,7 @@ describe("ChatGitToolbar", () => {
 
     renderToolbar();
 
-    await waitFor(() => expect(window.ade.prs.getForLane).toHaveBeenCalledWith("lane-1", null));
+    await waitFor(() => expect(window.ade.prs.getForLane).toHaveBeenCalledWith("lane-1", tabPin()));
 
     expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
   });
@@ -387,7 +397,7 @@ describe("ChatGitToolbar", () => {
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/prs?tab=normal&prId=pr-1");
     });
-    expect(window.ade.prs.getForLane).toHaveBeenCalledWith("lane-1", null);
+    expect(window.ade.prs.getForLane).toHaveBeenCalledWith("lane-1", tabPin());
     expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
   });
 
@@ -464,7 +474,7 @@ describe("ChatGitToolbar", () => {
     fireEvent.click(badge.closest("button")!);
 
     await waitFor(() => {
-      expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-1"] }, null);
+      expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-1"] }, tabPin());
     });
     expect(await screen.findByText("MERGED #333")).toBeTruthy();
   });
@@ -573,8 +583,8 @@ describe("ChatGitToolbar", () => {
       },
       expectedCalls: 1,
     },
-    { name: "a project bound to a remote machine", remoteStore: true, runtimePin: null, expectedCalls: 1 },
-    { name: "a chat on this computer", remoteStore: false, runtimePin: null, expectedCalls: 0 },
+    { name: "a project bound to a remote machine", remoteStore: true, runtimePin: undefined, expectedCalls: 1 },
+    { name: "a chat on this computer", remoteStore: false, runtimePin: undefined, expectedCalls: 0 },
   ])("asks the lane's machine for a PR reconcile only for $name", async ({ remoteStore, runtimePin, expectedCalls }) => {
     resetStore({ remote: remoteStore });
 
@@ -588,7 +598,7 @@ describe("ChatGitToolbar", () => {
 
     const reconcile = vi.mocked(window.ade.prs.reconcileOnFocus);
     expect(reconcile).toHaveBeenCalledTimes(expectedCalls);
-    if (expectedCalls > 0) expect(reconcile).toHaveBeenCalledWith(runtimePin);
+    if (expectedCalls > 0) expect(reconcile).toHaveBeenCalledWith(runtimePin ?? tabPin());
   });
 
   it("ignores stale toolbar live refresh results after switching lanes", async () => {
@@ -660,7 +670,7 @@ describe("ChatGitToolbar", () => {
     fireEvent.click((await screen.findByText("PR #111")).closest("button")!);
 
     await waitFor(() => {
-      expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-lane-1"] }, null);
+      expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-lane-1"] }, tabPin());
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Switch lane" }));

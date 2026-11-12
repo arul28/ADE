@@ -37,10 +37,13 @@ const {
   takeAppleMiniPlayerPoster,
 } = await import("../apple/appleMiniPlayerStore");
 const { isWorkSurfaceElementMounted, resetWorkToolOnScreenForTests, workSurfaceKey } = await import("../../lib/workToolOnScreen");
+const { useAppStore } = await import("../../state/appStore");
 
 const LANE = "lane-1";
 const UDID = "UDID-1";
-const KEY = appleStreamLeaseKey({ pin: null, bound: null, laneId: LANE, deviceUdid: UDID });
+/** The tab's copy: the lane's device runs on its machine. */
+const TAB = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+const KEY = appleStreamLeaseKey({ pin: null, bound: TAB, laneId: LANE, deviceUdid: UDID });
 
 const LANE_DEVICE = {
   laneId: LANE,
@@ -95,6 +98,7 @@ beforeEach(() => {
   decoder.height = 640;
   resetAppleStreamLeases();
   resetAppleMiniPlayerForTests();
+  useAppStore.setState({ projectBinding: TAB });
   deviceList = vi.fn(async () => ({ lane: LANE_DEVICE, installed: [{ udid: UDID, state: "Booted" }] }));
   onEvent = vi.fn(() => () => {});
   (window as unknown as { ade: unknown }).ade = {
@@ -107,6 +111,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  useAppStore.setState({ projectBinding: null });
   resetAppleStreamLeases();
   resetAppleMiniPlayerForTests();
   vi.restoreAllMocks();
@@ -131,12 +136,12 @@ describe("the Apple tool panel's handover", () => {
       family: "iphone",
       runtimePin: null,
     });
-    expect(isWorkSurfaceElementMounted(workSurfaceKey("ios", "bound", LANE))).toBe(false);
+    expect(isWorkSurfaceElementMounted(workSurfaceKey("ios", TAB.key, LANE))).toBe(false);
     const view = render(<WorkIosTool {...props()} />);
     expect(getAppleMiniPlayerTarget()).toBeNull();
-    expect(isWorkSurfaceElementMounted(workSurfaceKey("ios", "bound", LANE))).toBe(true);
+    expect(isWorkSurfaceElementMounted(workSurfaceKey("ios", TAB.key, LANE))).toBe(true);
     view.unmount();
-    expect(isWorkSurfaceElementMounted(workSurfaceKey("ios", "bound", LANE))).toBe(false);
+    expect(isWorkSurfaceElementMounted(workSurfaceKey("ios", TAB.key, LANE))).toBe(false);
   });
 
   it("caches the lane's device while it is open, so the unmount needs no question", async () => {
@@ -151,7 +156,7 @@ describe("the Apple tool panel's handover", () => {
 
   it("photographs the last frame and floats the device in one pass on unmount", async () => {
     // The pane, streaming.
-    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
+    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: TAB.key });
     const view = render(<WorkIosTool {...props()} />);
     await vi.waitFor(() => expect(getAppleMiniPlayerLaneDevice({ laneId: LANE, runtimePin: null })).not.toBeNull());
 
@@ -185,7 +190,7 @@ describe("the Apple tool panel's handover", () => {
      */
     decoder.width = 300;
     decoder.height = 150;
-    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
+    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: TAB.key });
     const view = render(<WorkIosTool {...props()} />);
     await vi.waitFor(() => expect(getAppleMiniPlayerLaneDevice({ laneId: LANE, runtimePin: null })).not.toBeNull());
     view.unmount();
@@ -212,7 +217,7 @@ describe("the Mac Desktop tool panel on a read-only surface", () => {
   it("registers the read-only view as the lane's Mac Desktop surface", () => {
     resetWorkToolOnScreenForTests();
     const WorkMacDesktopTool = WORK_TOOL_COMPONENTS["mac-desktop"];
-    const key = workSurfaceKey("mac-desktop", "bound", LANE);
+    const key = workSurfaceKey("mac-desktop", TAB.key, LANE);
     expect(isWorkSurfaceElementMounted(key)).toBe(false);
     const view = render(
       <WorkMacDesktopTool

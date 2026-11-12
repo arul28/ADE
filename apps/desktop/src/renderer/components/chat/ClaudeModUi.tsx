@@ -14,6 +14,7 @@ import { INERT_ATTR } from "../shared/inertAttr";
 import { ModTree } from "./ClaudeModTree";
 import { setClaudeModUiCollapsed, useClaudeModUiCollapsed } from "./claudeModUiPrefs";
 import { claudeModUiApi, useClaudeModUi } from "./claudeModUiStore";
+import { withChatPin } from "./chatMachinePin";
 import "./ClaudeModUi.css";
 
 const BAND_SITE: ClaudePluginUiSite = { component: "AbovePrompt" };
@@ -53,7 +54,7 @@ export const ClaudeModUi = memo(function ClaudeModUi(props: {
     // miss invites a second press. One toast, replaced in place.
     const warn = (title: string, message: string) =>
       showToast({ id: `claude-mod-action:${sessionId}`, title, message, tone: "warning" });
-    void api.act({ sessionId, generation, ...action }, pinRef.current ?? null).then(
+    void withChatPin(pinRef.current ?? null, (chatPin) => api.act({ sessionId, generation, ...action }, chatPin)).then(
       (result) => {
         if (result.unanswered) warn("The mod did not answer", "It may still have run. Check before you press again.");
       },

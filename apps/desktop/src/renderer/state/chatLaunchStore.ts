@@ -487,11 +487,14 @@ export function refreshChatLaunch(launchId: string | null | undefined): void {
   const entry = launchId ? chatLaunchStore.getState().entries[launchId] : undefined;
   const api = typeof window !== "undefined" ? window.ade?.chatLaunch : undefined;
   if (!entry || !entry.hostSeen || !api?.get || refreshingLaunchIds.has(entry.launchId)) return;
+  // A launch with no machine has nowhere to be read from.
+  const pin = entry.binding;
+  if (!pin) return;
   const id = entry.launchId;
   refreshingLaunchIds.add(id);
   let request: Promise<ChatLaunchSnapshot | null>;
   try {
-    request = api.get({ launchId: id }, entry.binding ?? undefined);
+    request = api.get({ launchId: id }, pin);
   } catch {
     refreshingLaunchIds.delete(id);
     return;
@@ -529,14 +532,14 @@ export const CHAT_LAUNCH_HYDRATE_RETRY_MS = 20_000;
 export function hydrateChatLaunchFromHost(launchId: string | null | undefined, binding: OpenProjectBinding | null): void {
   if (!launchId || chatLaunchStore.getState().entries[launchId] || hydratingLaunchIds.has(launchId)) return;
   const api = typeof window !== "undefined" ? window.ade?.chatLaunch : undefined;
-  if (!api?.get) return;
+  if (!api?.get || !binding) return;
   const last = hydrateAttemptedAt.get(launchId);
   if (last != null && Date.now() - last < CHAT_LAUNCH_HYDRATE_RETRY_MS) return;
   hydratingLaunchIds.add(launchId);
   hydrateAttemptedAt.set(launchId, Date.now());
   let request: Promise<ChatLaunchSnapshot | null>;
   try {
-    request = api.get({ launchId }, binding ?? undefined);
+    request = api.get({ launchId }, binding);
   } catch {
     hydratingLaunchIds.delete(launchId);
     return;

@@ -12,6 +12,7 @@ import type {
 import { getGitHubSnapshotCoalesced, listPrsCoalesced } from "../../lib/prReadCache";
 import { useAccountStatus } from "../../lib/account";
 import { useAppStore } from "../../state/appStore";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { usageProviderLogo } from "../terminals/ToolLogos";
 import { providerColor } from "../usage/providerColors";
 import { usageLeftLevel, usageLeftLevelColor } from "../usage/usageDesign";
@@ -490,7 +491,12 @@ export type HomePullRequests = {
 };
 
 export function usePullRequests(projectRoot: string | null): HomePullRequests {
-  const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
+  // A repository read: the reader copy (the tab's copy while it has one). With
+  // none online, the card shows its empty state and reads nothing.
+  const reader = useActiveRepositoryReader();
+  const readerKey = reader?.key ?? null;
+  const readerRef = useRef(reader);
+  readerRef.current = reader;
   const [data, setData] = useState<{ snapshot: GitHubPrSnapshot | null; tracked: PrSummary[] } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
@@ -508,7 +514,8 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
     lastSignatureRef.current = null;
     setLoadError(null);
     const bridge = window.ade?.prs;
-    if (!projectRoot || !bridge?.getGitHubSnapshot) {
+    const pin = readerRef.current;
+    if (!projectRoot || !pin || !bridge?.getGitHubSnapshot) {
       forceNextRef.current = false;
       forcedInFlightRef.current = false;
       setData({ snapshot: null, tracked: [] });
@@ -528,8 +535,8 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
       // One page of closed history (cached ten minutes in main) brings the
       // week's merges with it; open PRs come in the same snapshot.
       const [snapshotResult, trackedResult] = await Promise.allSettled([
-        getGitHubSnapshotCoalesced({ automaticRefresh: !force, force, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: projectBindingKey }),
-        listPrsCoalesced({ projectRoot }),
+        getGitHubSnapshotCoalesced({ automaticRefresh: !force, force, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: pin.key, pin }),
+        listPrsCoalesced({ projectRoot, pin }),
       ]);
       if (requestRef.current !== request) return;
       if (force) forcedInFlightRef.current = false;
@@ -562,7 +569,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
     };
     void load();
     // PR events arrive in bursts during a sync; one reload per quiet second.
-    const unsubscribe = bridge.onEvent?.(soon);
+    const unsubscribe = bridge.onEvent?.(soon, pin);
     window.addEventListener("focus", soon);
     return () => {
       if (timer != null) window.clearTimeout(timer);
@@ -573,7 +580,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
       unsubscribe?.();
       window.removeEventListener("focus", soon);
     };
-  }, [projectRoot, projectBindingKey, reloadKey]);
+  }, [projectRoot, readerKey, reloadKey]);
   return useMemo(() => {
     const snapshot = data?.snapshot ?? null;
     const trackedById = new Map((data?.tracked ?? []).map((pr) => [pr.id, pr]));

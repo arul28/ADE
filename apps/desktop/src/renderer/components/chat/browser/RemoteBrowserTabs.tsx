@@ -59,9 +59,10 @@ export function useRemoteBrowserTabs(pin: RemotePin | null, laneId: string | nul
     let timer: number | null = null;
     const read = async () => {
       timer = null;
-      if (document.visibilityState === "visible") {
+      const readPin = pinRef.current;
+      if (readPin && document.visibilityState === "visible") {
         try {
-          const lane = await getLaneState(laneId, pinRef.current);
+          const lane = await getLaneState(laneId, readPin);
           if (!cancelled) {
             setState((current) => {
               const tabs = lane?.browser?.tabs ?? [];

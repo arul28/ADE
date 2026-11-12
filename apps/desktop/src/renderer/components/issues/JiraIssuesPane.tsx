@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Check, CircleNotch, MagnifyingGlass, Rocket } from "@phosphor-icons/react";
 import type { JiraIssueListState, JiraIssueSummary } from "../../../shared/types/jira";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { parseJiraError, jiraErrorMessage } from "../../../shared/jiraErrors";
 import { subscribeIssueCreated } from "../../lib/issueCreateRequests";
 import { useJiraIssueList, useJiraProjects } from "./jiraIssueStore";
@@ -59,7 +60,17 @@ function listError(id: string, title: string, error: string | null, retry: () =>
   };
 }
 
-export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refreshKey: number }) {
+export function JiraIssuesPane({
+  siteUrl,
+  refreshKey,
+  pin,
+}: {
+  siteUrl: string;
+  refreshKey: number;
+  /** The machine whose Jira connection serves this project (the repository reader). */
+  pin: OpenProjectBinding | null;
+}) {
+  const pinKey = pin?.key ?? null;
   const projectRoot = useActiveProjectRoot();
   const project = useAppStore((state) => state.project);
   const [state, setState] = useState<JiraIssueListState>("open");
@@ -72,7 +83,7 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
   const [projectConfigLoaded, setProjectConfigLoaded] = useState(false);
   const [projectConfigRefresh, setProjectConfigRefresh] = useState(0);
   const [selectedProjectKey, setSelectedProjectKey] = useState("");
-  const projectCatalog = useJiraProjects(true, siteUrl);
+  const projectCatalog = useJiraProjects(true, siteUrl, pin);
   const availableProjects = useMemo(() => projectCatalog.projects.length
     ? projectCatalog.projects
     : boundProjectKeys.map((key) => ({ key, name: key, id: key, avatarUrl: null })), [boundProjectKeys, projectCatalog.projects]);
@@ -89,13 +100,14 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
     assignee: mine ? "me" as const : "any" as const,
     query: debouncedQuery,
   }), [boundProjectKeys, debouncedQuery, mine, selectedProjectKey, state]);
-  const list = useJiraIssueList(filters, projectConfigLoaded && !projectConfigError, siteUrl);
+  const list = useJiraIssueList(filters, projectConfigLoaded && !projectConfigError, siteUrl, pin);
 
   useEffect(() => {
+    if (!pin) return undefined;
     let cancelled = false;
     setProjectConfigLoaded(false);
     setProjectConfigError(null);
-    void window.ade.projectConfig.get()
+    void window.ade.projectConfig.get(pin)
       .then((snapshot) => {
         if (cancelled) return;
         const keys = snapshot.effective.issueTrackers?.jira?.projectKeys ?? [];
@@ -108,7 +120,9 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
         setProjectConfigLoaded(true);
       });
     return () => { cancelled = true; };
-  }, [projectConfigRefresh, projectRoot, project?.rootPath]);
+    // `pin` is compared by key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinKey, projectConfigRefresh, projectRoot, project?.rootPath]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
@@ -301,6 +315,7 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
               ...(selectedIssue?.url ? { url: selectedIssue.url } : {}),
             }}
             variant="pane"
+            pin={pin}
             onOpenRelated={(ref) => { if (ref.provider === "jira") setSelectedKey(ref.key); }}
           />
           </React.Suspense>

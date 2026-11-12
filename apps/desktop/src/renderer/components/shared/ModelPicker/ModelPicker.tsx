@@ -594,7 +594,8 @@ export const ModelPicker = memo(function ModelPicker({
             {open ? (
               <ModelPickerContent
                 catalogScopeKey={catalogScopeKey}
-                value={effectiveValue}
+                value={value}
+                openAtValue={effectiveValue}
                 models={modelList}
                 isAvailable={isAvailable}
                 {...(providerAuthStatus ? { providerAuthStatus } : {})}
@@ -627,7 +628,7 @@ export const ModelPicker = memo(function ModelPicker({
                     const nextTier = fastModeAllowed ? next : "standard";
                     const model = modelList.find((entry) => entry.id === modelId);
                     if (!model) return;
-                    if (modelId === effectiveValue) {
+                    if (modelId === value) {
                       onServiceTierChange?.(nextTier);
                       return;
                     }

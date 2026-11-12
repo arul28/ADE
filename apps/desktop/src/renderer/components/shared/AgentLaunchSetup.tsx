@@ -14,6 +14,7 @@ import { useModelRecents } from "./ModelPicker/useModelRecents";
 import { showToast } from "../app/toast/toastStore";
 import "../ui/dialog/dialog.css";
 import "./agentLaunchSetup.css";
+import { requirePin } from "../../state/repositoryScope";
 
 /**
  * Set up and start one agent chat in place: model, effort, permissions and the
@@ -77,12 +78,13 @@ export function AgentLaunchSetup({
     setStarting(true);
     try {
       if (!modelId && !config.presetId) throw new Error("Pick a model for the agent.");
+      const launchPin = requirePin(pin);
       const laneId = resolveLaneId
         ? await resolveLaneId()
-        : await primaryLaneId(pin);
+        : await primaryLaneId(launchPin);
       const target = config.presetId ? resolveHarnessLaunchTarget(config.presetId, harnessPresets) : null;
       if (config.presetId && !target) throw new Error("That custom provider is no longer available. Pick another one.");
-      await ensureHarnessPresetOnBrain(config.presetId ?? null, { targetsAnotherMachine: pin != null });
+      await ensureHarnessPresetOnBrain(config.presetId ?? null, { targetsAnotherMachine: launchPin.kind === "remote" });
       const { permissionMode, ...launchArgs } = issueChatLaunchArgs({
         laneId,
         config: {
@@ -100,7 +102,7 @@ export function AgentLaunchSetup({
         ...launchArgs,
         ...(permissionMode != null ? { permissionMode } : {}),
         title: chatTitle,
-      }, pin);
+      }, launchPin);
       openChat(session, laneId, pin, projectRoot);
       onLaunched?.();
     } catch (cause) {
@@ -136,7 +138,7 @@ export function AgentLaunchSetup({
   );
 }
 
-async function primaryLaneId(pin: OpenProjectBinding | null): Promise<string> {
+async function primaryLaneId(pin: OpenProjectBinding): Promise<string> {
   const lanes = await window.ade.lanes.list({ includeStatus: false }, pin);
   const primary = lanes.find((lane) => lane.laneType === "primary");
   if (!primary) throw new Error("This project's main lane isn't ready yet. Try again in a moment.");

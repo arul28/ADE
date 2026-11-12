@@ -48,6 +48,7 @@ import { RoutePills } from "../account/MachineRoutes";
 import { machineReachHeadline, machineRouteItems } from "../account/machineRouteModel";
 import { routesAvailable } from "../account/useMachineRoutes";
 import { rgbCss, useProfilePalette } from "../account/useProfilePalette";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import "../remoteTargets/connections.css";
 
 type ConnectionsPanelProps = {
@@ -210,6 +211,9 @@ export function ConnectionsPanel({
   const [connectionSnapshot, setConnectionSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const sync = useSyncConnections();
+  // GitHub status comes from the reader copy of the open repository.
+  // No copy online: no status, and the GitHub row shows "not connected".
+  const githubReaderPin = useActiveRepositoryReader();
 
   useEffect(() => {
     setTab(initialTab);
@@ -217,8 +221,12 @@ export function ConnectionsPanel({
 
   useEffect(() => {
     let cancelled = false;
+    if (!githubReaderPin) {
+      setGithubStatus(null);
+      return undefined;
+    }
     void window.ade.github
-      ?.getStatus?.()
+      ?.getStatus?.(undefined, githubReaderPin)
       .then((next) => {
         if (!cancelled) setGithubStatus(next);
       })
@@ -226,7 +234,8 @@ export function ConnectionsPanel({
     return () => {
       cancelled = true;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [githubReaderPin?.key]);
 
   // Track remote-machine connections so the Machines tab can show a live dot.
   // The Phone/Web dots reuse the sync device list already fetched above.

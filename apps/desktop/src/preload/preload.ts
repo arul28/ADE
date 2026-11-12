@@ -1,4 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
+import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { NoticeLayerRect } from "../shared/noticeLayer";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
@@ -5237,6 +5239,7 @@ const adeBridge = {
       binding: OpenProjectBinding | null;
       openProjectTabs: ProjectInfo[];
       openProjectTabRoots?: string[];
+      repositoryTabs?: SavedWindowRepositoryTabs | null;
     }> => {
       const session = (await ipcRenderer.invoke(IPC.appGetWindowSession)) as {
         windowId: number | null;
@@ -5244,6 +5247,7 @@ const adeBridge = {
         binding: OpenProjectBinding | null;
         openProjectTabs?: ProjectInfo[];
         openProjectTabRoots?: string[];
+        repositoryTabs?: SavedWindowRepositoryTabs | null;
       };
       rememberProjectBinding(session.binding);
       return { ...session, openProjectTabs: session.openProjectTabs ?? [] };
@@ -5270,6 +5274,8 @@ const adeBridge = {
       rootPaths: string[],
     ): Promise<{ openProjectTabs: ProjectInfo[] }> =>
       ipcRenderer.invoke(IPC.appSetWindowProjectTabs, { rootPaths }),
+    setWindowRepositoryTabs: async (tabs: SavedWindowRepositoryTabs): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.appSetWindowRepositoryTabs, { tabs }),
     newWindow: async (): Promise<{ windowId: number | null }> =>
       ipcRenderer.invoke(IPC.appNewWindow),
     openProjectInNewWindow: async (
@@ -5606,6 +5612,15 @@ const adeBridge = {
       ),
     listRecent: async (): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectListRecent),
+    // The account's project list as this computer's brain last read it, or
+    // as a connected machine read it (a remote pin). A file read on that
+    // machine: no server call.
+    accountList: async (pin?: OpenProjectBinding | null): Promise<AccountProjectListResult> =>
+      ipcRenderer.invoke(IPC.projectAccountList, pin?.kind === "remote" ? { targetId: pin.targetId } : {}),
+    accountAdd: async (origin: string): Promise<AccountProjectChangeResult> =>
+      ipcRenderer.invoke(IPC.projectAccountAdd, { origin }),
+    accountRemove: async (projectId: string): Promise<AccountProjectChangeResult> =>
+      ipcRenderer.invoke(IPC.projectAccountRemove, { projectId }),
     findForRepo: async (args: {
       repoOwner: string;
       repoName: string;

@@ -13,7 +13,6 @@ import { useAppStore } from "../../state/appStore";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { removeStoredProjectRoute } from "./projectRouteStorage";
 import { activeMachineForGroup, tabOrderKey, type ProjectTabGroup } from "./projectTabGrouping";
-import { forgetExplicitRemotePicks } from "./usePreferLocalCheckout";
 import {
   cssToScreenScale,
   insertIndexAtClientX,
@@ -122,11 +121,6 @@ export function useProjectTabLifecycle({
         setOpenRemoteProjectTabs((prev) => prev.filter((entry) => !remoteKeys.has(entry.key)));
         setTabOrder((prev) => prev.filter((key) => !localRoots.has(key) && !remoteKeys.has(key)));
         if (opts.forgetState) {
-          // A real close also ends the person's deliberate pick for these
-          // remote bindings. A tab moved to another window (`forgetState:
-          // false`) is not a close: that window owns it, and its restored tab
-          // must stay on the machine it was picked on.
-          forgetExplicitRemotePicks(remoteKeys);
           for (const key of remoteKeys) {
             evictProjectState(key);
             removeStoredProjectRoute(key);

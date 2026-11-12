@@ -12,8 +12,18 @@ import type {
   AppControlStatus,
   AppControlTarget,
 } from "../../../shared/types";
-import { ChatAppControlPanel } from "./ChatAppControlPanel";
+import type { ComponentProps } from "react";
+import type { OpenProjectBinding } from "../../../shared/types";
+import { ChatAppControlPanel as PanelUnderTest } from "./ChatAppControlPanel";
 import { WorkToolsMaximizeContext } from "../terminals/workToolsMaximize";
+
+/** The machine the lane (and its App Control session) lives on. */
+const LANE_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
+/** The panel as a chat renders it: always with the lane's machine. */
+function ChatAppControlPanel(props: ComponentProps<typeof PanelUnderTest>) {
+  return <PanelUnderTest runtimePin={LANE_PIN} {...props} />;
+}
 
 const transparentPngDataUrl =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
@@ -370,7 +380,7 @@ describe("ChatAppControlPanel", () => {
     await waitFor(() => {
       expect(api.appControl.launchInTerminal).toHaveBeenCalledWith(
         expect.objectContaining({ command: "pnpm dev", projectRoot: "/repo", laneId: "lane-1" }),
-        null,
+        LANE_PIN,
       );
     });
 
@@ -440,7 +450,7 @@ describe("ChatAppControlPanel", () => {
     expect(switcher).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Switch to Settings"));
     await waitFor(() => {
-      expect(api.appControl.switchWindow).toHaveBeenCalledWith({ laneId: "lane-1", targetId: "target-2" }, null);
+      expect(api.appControl.switchWindow).toHaveBeenCalledWith({ laneId: "lane-1", targetId: "target-2" }, LANE_PIN);
     });
   });
 
@@ -540,7 +550,7 @@ describe("ChatAppControlPanel", () => {
         y: 15,
         coordinateSpace: "viewport",
         includeScreenshot: false,
-      }, null);
+      }, LANE_PIN);
     });
     expect(screen.getByText("hovering")).toBeTruthy();
 
@@ -554,7 +564,7 @@ describe("ChatAppControlPanel", () => {
         y: 60,
         coordinateSpace: "viewport",
         includeScreenshot: false,
-      }, null);
+      }, LANE_PIN);
     });
     expect(onAddContext).toHaveBeenCalledWith(expect.objectContaining({
       id: "context-1",
@@ -655,7 +665,7 @@ describe("ChatAppControlPanel", () => {
     // assigned after the bound, so a smaller bound would renumber elements.
     expect(api.appControl.observe).toHaveBeenCalledWith(
       { laneId: "lane-1", includeDom: true, includeDiagnostics: true, includeDataUrl: false },
-      null,
+      LANE_PIN,
     );
     expect(badge.textContent).toBe("①");
 
@@ -689,7 +699,7 @@ describe("ChatAppControlPanel", () => {
     );
 
     await waitFor(() => {
-      expect(api.appControl.getTrace).toHaveBeenCalledWith({ laneId: "lane-1", limit: 20 }, null);
+      expect(api.appControl.getTrace).toHaveBeenCalledWith({ laneId: "lane-1", limit: 20 }, LANE_PIN);
     });
     expect(await screen.findByText("last: click ① · 1.2s")).toBeTruthy();
 

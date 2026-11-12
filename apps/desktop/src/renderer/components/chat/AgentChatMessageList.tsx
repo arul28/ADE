@@ -332,6 +332,7 @@ import { useChatComposerOverlayInset } from "./chatComposerOverlayInset";
 import { ChatJumpToLatestPill } from "./ChatJumpToLatestPill";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { parseMessageAuthor } from "../../../shared/messageAuthor";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * A line that opens a scene fence, as `chatScene.ts`'s scanner reads one: up to
@@ -484,7 +485,7 @@ function SubagentAnswerUnsentNoticeRow({
     if (!sessionId || !answerText || !isAdeAvailable(call)) return;
     setState("sending");
     try {
-      await call({ sessionId, text: answerText }, pin);
+      await withChatPin(pin, (chatPin) => call({ sessionId, text: answerText }, chatPin));
       setState("sent");
     } catch {
       setState("failed");

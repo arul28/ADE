@@ -136,10 +136,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** The chat's machine, as the session menu resolves it before the modal opens. */
+const CHAT_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 function renderModal(existingRules: AutomationRuleSummary[] = []) {
   const onClose = vi.fn();
   render(
-    <AutoHandoffModal session={makeSession()} existingRules={existingRules} onClose={onClose} />,
+    <AutoHandoffModal session={makeSession()} binding={CHAT_PIN} existingRules={existingRules} onClose={onClose} />,
   );
   return { onClose };
 }

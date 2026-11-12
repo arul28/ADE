@@ -53,7 +53,7 @@ export function useAppleRuntimes({
   onError,
   createDevice,
 }: {
-  runtimePinRef: MutableRefObject<OpenProjectBinding | null>;
+  runtimePinRef: MutableRefObject<OpenProjectBinding>;
   /** `pin?.key`: the effects re-run when the target machine changes, not when the pin object is rebuilt. */
   pinKey: string | null;
   laneId: string | null;

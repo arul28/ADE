@@ -2,7 +2,9 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { ArchiveSection } from "./ArchiveSection";
+import { ArchiveSection as ArchiveSectionUnderTest } from "./ArchiveSection";
+import { SettingsMachineScopeProvider, settingsMachineScope } from "./SettingsMachineScope";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { confirmDialog } from "../ui/dialog/confirm";
 import type { ArchivedItem, ArchiveActionArgs, ArchiveActionResult } from "../../../shared/types/archive";
 
@@ -23,6 +25,26 @@ vi.mock("../app/toast/toastStore", () => ({
 }));
 
 const OLD = "2020-01-01T00:00:00.000Z";
+
+/** The machine Settings is looking at: its archive is listed and deleted there. */
+const MACHINE_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
+function ArchiveSection() {
+  return (
+    <SettingsMachineScopeProvider
+      scope={settingsMachineScope({
+        machineId: "local",
+        machineName: "This Mac",
+        target: { kind: "pinned", binding: MACHINE_PIN },
+        isThisMachine: true,
+        isActiveBinding: true,
+        online: true,
+      })}
+    >
+      <ArchiveSectionUnderTest />
+    </SettingsMachineScopeProvider>
+  );
+}
 const originalAde = (globalThis.window as any)?.ade;
 
 function laneItem(id: string, title: string): ArchivedItem {

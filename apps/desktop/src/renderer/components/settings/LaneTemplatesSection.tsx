@@ -31,6 +31,7 @@ import { AccountSettingNotices } from "./AccountSettingNotices";
 import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
 import { getNewLaneDefaultsCached } from "../../lib/newLaneDefaultsCache";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { requirePin } from "../../state/repositoryScope";
 
 function generateId(): string {
   return `tpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -248,8 +249,8 @@ export function LaneTemplatesSection() {
   const refresh = useCallback(async () => {
     try {
       const [tpls, defId] = await Promise.all([
-        window.ade.lanes.listTemplates(pin),
-        window.ade.lanes.getDefaultTemplate(pin),
+        window.ade.lanes.listTemplates(requirePin(pin)),
+        window.ade.lanes.getDefaultTemplate(requirePin(pin)),
       ]);
       setTemplates(tpls);
       setDefaultId(defId);
@@ -266,7 +267,7 @@ export function LaneTemplatesSection() {
   const handleSetDefault = useCallback(async (templateId: string) => {
     const newId = templateId || null;
     try {
-      await window.ade.lanes.setDefaultTemplate({ templateId: newId }, pin);
+      await window.ade.lanes.setDefaultTemplate({ templateId: newId }, requirePin(pin));
       setDefaultId(newId);
     } catch {
       await refresh();
@@ -276,7 +277,7 @@ export function LaneTemplatesSection() {
 
   const handleSave = useCallback(async (template: LaneTemplate) => {
     try {
-      await window.ade.lanes.saveTemplate({ template }, pin);
+      await window.ade.lanes.saveTemplate({ template }, requirePin(pin));
       setEditing(null);
       await refresh();
       refreshNewLaneDefaults();
@@ -287,7 +288,7 @@ export function LaneTemplatesSection() {
 
   const handleDelete = useCallback(async (templateId: string) => {
     try {
-      await window.ade.lanes.deleteTemplate({ templateId }, pin);
+      await window.ade.lanes.deleteTemplate({ templateId }, requirePin(pin));
       await refresh();
       refreshNewLaneDefaults();
     } catch (err: unknown) {

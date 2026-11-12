@@ -20,6 +20,7 @@ import {
 } from "../../lib/sessionSnooze";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { sendWithCloudWakeMark } from "../../state/cloudSavedChatsSync";
+import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 
 /**
  * One place for every write the Work tab's menus make against a session: the
@@ -44,14 +45,10 @@ export async function renameSession(
   }
   const input = { sessionId: session.id, title, manuallyNamed: true };
   if (isChatToolType(session.toolType)) {
-    await (pin
-      ? window.ade.agentChat.updateSession(input, pin)
-      : window.ade.agentChat.updateSession(input));
+    await withChatPin(pin, (target) => window.ade.agentChat.updateSession(input, target));
     return;
   }
-  await (pin
-    ? window.ade.sessions.updateMeta(input, pin)
-    : window.ade.sessions.updateMeta(input));
+  await withChatPin(pin, (target) => window.ade.sessions.updateMeta(input, target));
 }
 
 function reportFailure(action: string, sessionId: string, error: unknown): void {
@@ -76,9 +73,7 @@ export async function snoozeSessionForDuration(
 ): Promise<void> {
   const untilIso = snoozeDeadlineIso(key, nowMs);
   try {
-    await (pin
-      ? window.ade.sessions.snoozeSession(session.id, untilIso, pin)
-      : window.ade.sessions.snoozeSession(session.id, untilIso));
+    await withChatPin(pin, (target) => window.ade.sessions.snoozeSession(session.id, untilIso, target));
   } catch (error) {
     reportFailure("Snooze", session.id, error);
     return;
@@ -90,9 +85,7 @@ export async function snoozeSessionForDuration(
     actions: [{
       label: "Undo",
       onClick: () => {
-        const wake = pin
-          ? window.ade.sessions.wakeSession(session.id, "manual", pin)
-          : window.ade.sessions.wakeSession(session.id, "manual");
+        const wake = withChatPin(pin, (target) => window.ade.sessions.wakeSession(session.id, "manual", target));
         void wake
           .catch((error: unknown) => reportFailure("Undo snooze", session.id, error));
       },
@@ -146,9 +139,7 @@ export async function snoozeSessionsForDuration(
 ): Promise<void> {
   if (!targets.length) return;
   const untilIso = snoozeDeadlineIso(key, nowMs);
-  const snoozed = await runBulkLifecycle("Snooze", targets, ({ session, pin }) => (pin
-    ? window.ade.sessions.snoozeSession(session.id, untilIso, pin)
-    : window.ade.sessions.snoozeSession(session.id, untilIso)));
+  const snoozed = await runBulkLifecycle("Snooze", targets, ({ session, pin }) => withChatPin(pin, (target) => window.ade.sessions.snoozeSession(session.id, untilIso, target)));
   if (!snoozed.length) return;
   showToast({
     // Unique per batch: two batches snoozed to the same deadline each keep
@@ -162,9 +153,7 @@ export async function snoozeSessionsForDuration(
 
 /** Wake every snoozed row in a selection. */
 export async function wakeSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
-  await runBulkLifecycle("Wake", targets, ({ session, pin }) => (pin
-    ? window.ade.sessions.wakeSession(session.id, "manual", pin)
-    : window.ade.sessions.wakeSession(session.id, "manual")));
+  await runBulkLifecycle("Wake", targets, ({ session, pin }) => withChatPin(pin, (target) => window.ade.sessions.wakeSession(session.id, "manual", target)));
 }
 
 /**
@@ -173,9 +162,7 @@ export async function wakeSessions(targets: ReadonlyArray<BulkLifecycleTarget>):
  * out, and none of these writes carries `dismissPendingInput`.
  */
 export async function settleSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
-  const settled = await runBulkLifecycle("Settle", targets, ({ session, pin }) => (pin
-    ? window.ade.sessions.settle(session.id, undefined, pin)
-    : window.ade.sessions.settle(session.id)));
+  const settled = await runBulkLifecycle("Settle", targets, ({ session, pin }) => withChatPin(pin, (target) => window.ade.sessions.settle(session.id, undefined, target)));
   if (!settled.length) return;
   showToast({
     id: `session-settle-bulk:${++bulkToastSeq}`,
@@ -194,16 +181,12 @@ export async function setSessionsPinned(
   targets: ReadonlyArray<BulkLifecycleTarget>,
   pinned: boolean,
 ): Promise<BulkLifecycleTarget[]> {
-  return runBulkLifecycle(pinned ? "Pin" : "Unpin", targets, ({ session, pin }) => (pin
-    ? window.ade.sessions.updateMeta({ sessionId: session.id, pinned }, pin)
-    : window.ade.sessions.updateMeta({ sessionId: session.id, pinned })));
+  return runBulkLifecycle(pinned ? "Pin" : "Unpin", targets, ({ session, pin }) => withChatPin(pin, (target) => window.ade.sessions.updateMeta({ sessionId: session.id, pinned }, target)));
 }
 
 /** Lift the settle on every settled row in a selection. */
 export async function unsettleSessions(targets: ReadonlyArray<BulkLifecycleTarget>): Promise<void> {
-  await runBulkLifecycle("Unsettle", targets, ({ session, pin }) => (pin
-    ? window.ade.sessions.unsettle(session.id, pin)
-    : window.ade.sessions.unsettle(session.id)));
+  await runBulkLifecycle("Unsettle", targets, ({ session, pin }) => withChatPin(pin, (target) => window.ade.sessions.unsettle(session.id, target)));
 }
 
 /** Wake a snoozed row right now (the user asked, so the reason is "manual"). */
@@ -212,9 +195,7 @@ export async function wakeSessionNow(
   pin?: OpenProjectBinding | null,
 ): Promise<void> {
   try {
-    await (pin
-      ? window.ade.sessions.wakeSession(session.id, "manual", pin)
-      : window.ade.sessions.wakeSession(session.id, "manual"));
+    await withChatPin(pin, (target) => window.ade.sessions.wakeSession(session.id, "manual", target));
   } catch (error) {
     reportFailure("Wake", session.id, error);
   }
@@ -230,9 +211,7 @@ export async function setSessionSettleOverride(
   pin?: OpenProjectBinding | null,
 ): Promise<void> {
   try {
-    await (pin
-      ? window.ade.sessions.setSettleOverride(session.id, override, pin)
-      : window.ade.sessions.setSettleOverride(session.id, override));
+    await withChatPin(pin, (target) => window.ade.sessions.setSettleOverride(session.id, override, target));
   } catch (error) {
     reportFailure(override === "active" ? "Keep active" : "Settle", session.id, error);
   }
@@ -251,9 +230,7 @@ export async function settleSession(
     ? { dismissPendingInput: true }
     : undefined;
   try {
-    await (pin
-      ? window.ade.sessions.settle(session.id, options, pin)
-      : window.ade.sessions.settle(session.id, options));
+    await withChatPin(pin, (target) => window.ade.sessions.settle(session.id, options, target));
   } catch (error) {
     reportFailure("Settle", session.id, error);
   }
@@ -269,9 +246,7 @@ export async function unsettleSession(
   pin?: OpenProjectBinding | null,
 ): Promise<void> {
   try {
-    await (pin
-      ? window.ade.sessions.unsettle(session.id, pin)
-      : window.ade.sessions.unsettle(session.id));
+    await withChatPin(pin, (target) => window.ade.sessions.unsettle(session.id, target));
   } catch (error) {
     reportFailure("Unsettle", session.id, error);
   }
@@ -284,7 +259,8 @@ export function clearSessionWokeMarker(
 ): void {
   const clear = window.ade.sessions?.clearWokeMarker;
   if (!clear) return;
-  void (pin ? clear(sessionId, pin) : clear(sessionId))
+  if (!pin) return;
+  void clear(sessionId, pin)
     .catch((error: unknown) => {
       console.error("[sessionLifecycle] clearWokeMarker failed", { sessionId, error });
     });
@@ -314,7 +290,7 @@ export async function listAutomationRules(
   const list = window.ade?.automations?.list;
   if (!list) return null;
   try {
-    return await list(pin);
+    return await withChatPin(pin, (chatPin) => list(chatPin));
   } catch (error) {
     console.error("[sessionLifecycle] automations.list failed", error);
     return null;
@@ -343,7 +319,7 @@ export async function saveAutoHandoffRules(args: {
   }
   try {
     for (const draft of args.drafts) {
-      await automations.saveDraft({ draft }, args.pin);
+      await withChatPin(args.pin, (chatPin) => automations.saveDraft({ draft }, chatPin));
     }
     // A delete that failed for anything other than "already gone" leaves the
     // rule the user just turned off still ARMED, so its result decides the
@@ -390,7 +366,7 @@ export async function deleteAutomationRules(
   let failure: unknown = null;
   for (const id of ruleIds) {
     try {
-      await deleteRule({ id }, pin);
+      await withChatPin(pin, (chatPin) => deleteRule({ id }, chatPin));
     } catch (error) {
       // `deleteRule` throws for an id that is not in the local config. A rule
       // this menu armed can retire itself (one-shot, or `maxRuns` reached), so
@@ -435,9 +411,7 @@ export async function setChatSpawnKind(
 ): Promise<void> {
   const action = spawnKind === "peer" ? "Take over" : "Promote to subagent";
   try {
-    await (pin
-      ? window.ade.agentChat.updateSession({ sessionId: session.id, spawnKind }, pin)
-      : window.ade.agentChat.updateSession({ sessionId: session.id, spawnKind }));
+    await withChatPin(pin, (target) => window.ade.agentChat.updateSession({ sessionId: session.id, spawnKind }, target));
   } catch (error) {
     reportFailure(action, session.id, error);
   }
@@ -455,7 +429,7 @@ export async function restartAgentSession(
 ): Promise<void> {
   const call = (stopFirst: boolean) => {
     const args = { sessionId: session.id, ...(stopFirst ? { stopFirst: true } : {}) };
-    return pin ? window.ade.agentChat.restartSession(args, pin) : window.ade.agentChat.restartSession(args);
+    return withChatPin(pin, (target) => window.ade.agentChat.restartSession(args, target));
   };
   try {
     let result;
@@ -503,12 +477,10 @@ export async function setChatGoal(
   if (!objective) return;
   try {
     if (session.toolType === "codex-chat") {
-      await (pin
-        ? window.ade.agentChat.codex.setGoal({ sessionId: session.id, objective }, pin)
-        : window.ade.agentChat.codex.setGoal({ sessionId: session.id, objective }));
+      await withChatPin(pin, (target) => window.ade.agentChat.codex.setGoal({ sessionId: session.id, objective }, target));
     } else {
       const args = { sessionId: session.id, text: `/goal ${objective}` };
-      await sendWithCloudWakeMark(session.id, pin, () => (pin ? window.ade.agentChat.send(args, pin) : window.ade.agentChat.send(args)));
+      await sendWithCloudWakeMark(session.id, pin, () => withChatPin(pin, (target) => window.ade.agentChat.send(args, target)));
     }
     showToast({ id: `chat-goal:${session.id}`, title: "Goal set", message: objective });
   } catch (error) {
@@ -526,9 +498,7 @@ export async function archiveAgentCliSession(
   pin?: OpenProjectBinding | null,
 ): Promise<boolean> {
   try {
-    await (pin
-      ? window.ade.agentChat.archive({ sessionId: session.id }, pin)
-      : window.ade.agentChat.archive({ sessionId: session.id }));
+    await window.ade.agentChat.archive({ sessionId: session.id }, requireChatPin(pin));
     showToast({
       id: `archive-cli:${session.id}`,
       title: "CLI session archived",
@@ -557,7 +527,7 @@ export async function handoffAgentCliSession(
   showToast({ id: toastId, title: mode === "fork" ? "Forking into a chat…" : "Handing off to a chat…" });
   try {
     const args = { sourceSessionId: session.id, targetModelId: "", mode };
-    const result = pin ? await window.ade.agentChat.handoff(args, pin) : await window.ade.agentChat.handoff(args);
+    const result = await window.ade.agentChat.handoff(args, requireChatPin(pin));
     window.dispatchEvent(new CustomEvent("ade:work:select-session", {
       detail: { sessionId: result.session.id, laneId: result.session.laneId, ...(pin ? { binding: pin } : {}) },
     }));

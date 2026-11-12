@@ -1,7 +1,9 @@
 import React from "react";
 import type { LaneSummary } from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
+import { ContextMenuSurface } from "../ui/ContextMenu";
 import { useAppStore } from "../../state/appStore";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { MenuSubmenu } from "../ui/MenuSubmenu";
 import { COLORS, SANS_FONT } from "./laneDesignTokens";
 import {
@@ -92,6 +94,7 @@ function LaneMenuEntryView({
         <OpenInSubmenu
           rootPath={entry.rootPath}
           remote={entry.remote}
+          pin={entry.pin ?? null}
           onClose={onClose}
           style={submenuTriggerStyle}
           hoverBackground={COLORS.hoverBg}
@@ -193,7 +196,8 @@ export function LaneContextMenu({
   workPinnedLaneIds?: string[];
 }) {
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
-  const projectBinding = useAppStore((s) => s.projectBinding);
+  // This menu lists the lanes of the tab's copy, so their machine is that copy.
+  const lanePin = useTabCopyPin();
   const ctxLane = lanesById.get(laneContextMenu.laneId) ?? null;
 
   const { ref: menuRef, position: menuPosition } = useClampedFixedPosition(
@@ -212,13 +216,17 @@ export function LaneContextMenu({
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
+  // Keyboard users start on the first item, once the panel is placed (a
+  // hidden panel cannot take focus).
+  const menuPlaced = menuPosition != null;
   React.useEffect(() => {
-    menuRef.current?.focus();
-  }, []);
+    if (!menuPlaced) return;
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled]), button:not([disabled])')?.focus();
+  }, [menuPlaced, menuRef]);
 
-  const openIn = resolveOpenInTarget({ worktreePath: ctxLane?.worktreePath, binding: projectBinding });
-  // This menu acts on the tab's own machine (no pin), as its other writes do.
-  const share = useLaneShareMenu({ laneId: ctxLane?.id ?? null, laneName: ctxLane?.name ?? null, pin: null });
+  const openInTarget = lanePin ? resolveOpenInTarget({ worktreePath: ctxLane?.worktreePath, binding: lanePin }) : null;
+  const openIn = openInTarget ? { ...openInTarget, pin: lanePin } : null;
+  const share = useLaneShareMenu({ laneId: ctxLane?.id ?? null, laneName: ctxLane?.name ?? null, pin: lanePin });
   const args: LaneMenuArgs = {
     laneId: laneContextMenu.laneId,
     lane: ctxLane,
@@ -242,26 +250,17 @@ export function LaneContextMenu({
   };
 
   return (
-    <div
-      ref={menuRef}
+    <ContextMenuSurface
+      menuRef={menuRef}
       role="menu"
-      tabIndex={-1}
-      className="ade-liquid-glass-menu"
-      style={{
-        position: "fixed",
-        zIndex: 40,
-        minWidth: 200,
-        maxHeight: "calc(100vh - 20px)",
-        overflowY: "auto",
-        border: `1px solid ${COLORS.outlineBorder}`,
-        padding: "4px 0",
-        left: menuPosition?.left ?? laneContextMenu.x,
-        top: menuPosition?.top ?? laneContextMenu.y,
-        visibility: menuPosition ? "visible" : "hidden",
-      }}
-      onPointerDown={(e) => e.stopPropagation()}
+      label={ctxLane ? `${ctxLane.name} actions` : "Lane actions"}
+      left={menuPosition?.left ?? laneContextMenu.x}
+      top={menuPosition?.top ?? laneContextMenu.y}
+      positioned={menuPosition != null}
+      onClose={onClose}
+      className="min-w-[200px] max-h-[calc(100vh-20px)] overflow-y-auto"
     >
       <LaneMenuGroups groups={buildLaneMenuGroups(args)} onClose={onClose} />
-    </div>
+    </ContextMenuSurface>
   );
 }

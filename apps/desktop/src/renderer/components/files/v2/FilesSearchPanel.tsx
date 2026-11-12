@@ -21,11 +21,11 @@ export const SEARCH_PANEL_SURFACE: React.CSSProperties = {
   boxShadow: "0 24px 60px rgba(0,0,0,0.45)",
 };
 
-/** Shared dimmed backdrop for the centred Files modals. */
+/** Shared dimmed backdrop for the centred Files modals: inside the Files pane, so an in-surface layer (notices.md). */
 export function Backdrop({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
   return (
     <div
-      className="absolute inset-0 z-50 flex items-start justify-center pt-[10vh]"
+      className="absolute inset-0 z-40 flex items-start justify-center pt-[10vh]"
       style={{ background: "rgba(0,0,0,0.4)" }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -115,11 +115,10 @@ function groupMatches(matches: FilesSearchTextMatch[]): FileMatchGroup[] {
 export type FilesSearchPanelProps = {
   workspaceId: string;
   /**
-   * Machine that owns this workspace. Forwarded verbatim as the `pin` argument
-   * on every window.ade.files.* call. Undefined/null = the machine this project
-   * tab is bound to (today's behavior).
+   * The copy that owns this workspace, the tab's own copy included. Forwarded
+   * verbatim as the `pin` argument on every window.ade.files.* call.
    */
-  pin?: OpenProjectBinding | null;
+  pin: OpenProjectBinding;
   query: string;
   onQueryChange: (next: string) => void;
   /** Open a result. `line` is 1-based when the hit came from file contents. */
@@ -165,7 +164,7 @@ export function FilesSearchPanel({
   // from re-firing when the caller hands us a new-but-equivalent binding.
   const pinRef = useRef(pin);
   pinRef.current = pin;
-  const pinKey = pin ? `${pin.kind}:${pin.key}` : "";
+  const pinKey = `${pin.kind}:${pin.key}`;
 
   // Identity of the answer we want on screen. Results carrying a different key
   // are stale, which is also how "still searching" is derived.

@@ -5,6 +5,7 @@ import { logRendererDebugEvent } from "../../lib/debugLog";
 import { useLatestCallback } from "../../lib/stableIdentity";
 import { useWorkspacePathOpener, type ChatWorkspacePathOpener } from "../chat/chatWorkspacePaths";
 import type { TerminalPathLinkContext } from "./terminalPathLinks";
+import { requireChatPin } from "../chat/chatMachinePin";
 
 export type TerminalPathLinkHandle = {
   openWorkspacePath: ChatWorkspacePathOpener;
@@ -42,9 +43,7 @@ export function TerminalPathLinkBridge({
     if (held?.key === scopeKey) return held.read;
     const read = (async () => {
       try {
-        const detail = runtimePin
-          ? await window.ade.sessions.get(sessionId, runtimePin)
-          : await window.ade.sessions.get(sessionId);
+        const detail = await window.ade.sessions.get(sessionId, requireChatPin(runtimePin));
         return detail?.laneId ?? null;
       } catch (error) {
         logRendererDebugEvent("terminal.path_link_lane_read_failed", { error: error instanceof Error ? error.message : String(error) });

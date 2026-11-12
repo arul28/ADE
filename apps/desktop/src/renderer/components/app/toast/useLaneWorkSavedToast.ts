@@ -7,18 +7,18 @@ import { extractError } from "../../../lib/format";
 import { captureLaneSetupAnalytics } from "../../../lib/laneSetupAnalytics";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { navigateToAppTarget } from "../../../lib/openExternal";
-import { useAppStore } from "../../../state/appStore";
+import { useTabCopyPin } from "../../../state/repositoryScope";
 import { restoredLaneToast } from "./restoredLaneToast";
 import { READABLE_TOAST_DURATION_MS, showToast } from "./toastStore";
 
 /**
  * The project a finished delete ran in: the user can switch tabs while it
  * runs, so what follows it must not use the active tab. The event's `origin`
- * names it; the active tab is only the fallback for a delete this window did
- * not start.
+ * names it; the copy the event came from (`subscribedPin`) is the fallback
+ * for a delete this window did not start.
  */
-export function deleteEventBinding(event: LaneDeleteEvent): OpenProjectBinding | null {
-  return event.origin !== undefined ? event.origin : useAppStore.getState().projectBinding ?? null;
+export function deleteEventBinding(event: LaneDeleteEvent, subscribedPin: OpenProjectBinding | null): OpenProjectBinding | null {
+  return event.origin !== undefined ? event.origin : subscribedPin;
 }
 
 /**
@@ -26,16 +26,20 @@ export function deleteEventBinding(event: LaneDeleteEvent): OpenProjectBinding |
  * with a way back: Restore now, or the list in Recently deleted.
  */
 export function useLaneWorkSavedToast(): void {
+  // Follows the open copy's deletes, as before; its machine is named.
+  const tabPin = useTabCopyPin();
+  const tabPinKey = tabPin?.key ?? null;
   useEffect(() => {
     const subscribe = window.ade?.lanes?.onDeleteEvent;
-    if (!subscribe) return;
+    const subscribedPin = tabPin;
+    if (!subscribe || !subscribedPin) return;
     const announced = new Set<string>();
     return subscribe((event) => {
       const { savedWork: saved, overallStatus } = event.progress;
       const finished = overallStatus === "completed" || overallStatus === "completed_with_warnings";
       if (!finished || !saved || announced.has(saved.id)) return;
       announced.add(saved.id);
-      const binding = deleteEventBinding(event);
+      const binding = deleteEventBinding(event, subscribedPin);
       const toastId = `lane-work-saved:${saved.id}`;
       const openRecentlyDeleted = () => navigateToAppTarget({
         kind: "settings",
@@ -46,7 +50,9 @@ export function useLaneWorkSavedToast(): void {
       const restore = () => {
         showToast({ id: toastId, tone: "info", title: `Restoring ${saved.laneName}…`, durationMs: 0, replayMask });
         // ADE Web has no route to a local pin; its own machine is the default.
-        void window.ade.lanes.restoreDeleted({ id: saved.id }, isWebClientMode() && binding?.kind === "local" ? null : binding)
+        const restorePin = isWebClientMode() && binding?.kind === "local" ? subscribedPin : binding;
+        if (!restorePin) return;
+        void window.ade.lanes.restoreDeleted({ id: saved.id }, restorePin)
           .then((result) => {
             captureLaneSetupAnalytics({ action: "deleted_lane_restored", outcome: result.restoredUncommitted ? "completed" : "failed" });
             showToast({ id: toastId, ...restoredLaneToast(saved, result) });
@@ -76,6 +82,8 @@ export function useLaneWorkSavedToast(): void {
           { label: "Recently deleted", onClick: openRecentlyDeleted },
         ],
       });
-    });
-  }, []);
+    }, subscribedPin);
+    // `tabPinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabPinKey]);
 }

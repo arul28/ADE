@@ -33,6 +33,7 @@ import { FastModeSection } from "./FastModeSection";
 import { ClaudeModsSection } from "./ClaudeModsSection";
 import { PromptSuggestionsSection } from "./PromptSuggestionsSection";
 import { SmartDecisionsSection } from "./SmartDecisionsSection";
+import { ProjectCopyBlock } from "./ProjectCopyScope";
 import { AccountSettingNotices } from "./AccountSettingNotices";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { ContinueAfterRestartSection } from "./ContinueAfterRestartSection";
@@ -57,8 +58,13 @@ import "./ChatSection.css";
 /** Every AI preference row that follows the account (`projectConfigAccountKeys.ts`). */
 const AI_ACCOUNT_KEYS = ["ai."] as const;
 
+/** The account notices of the copy that `ProjectCopyBlock` picked. */
+function CopyAccountSettingNotices({ keys, onResolved }: { keys: readonly string[]; onResolved: () => void }) {
+  const { pin } = useSettingsMachineScope();
+  return <AccountSettingNotices pin={pin} keys={keys} onResolved={onResolved} />;
+}
+
 export function ChatSection() {
-  const { pin: settingsPin } = useSettingsMachineScope();
   // Bumped when the person applies this computer's value from a notice, so
   // the cards below read the config again.
   const [accountAnswer, setAccountAnswer] = useState(0);
@@ -195,11 +201,11 @@ export function ChatSection() {
                 detail="Next prompt suggestions, Smart decisions and Claude mods are saved in each project."
               />
             ) : (
-              <>
+              // Saved in each copy of the project: the block reads the picked copy.
+              <ProjectCopyBlock page="chat">
                 {/* The project's AI preferences follow the account; a
-                    different value this computer had when they moved shows here. */}
-                <AccountSettingNotices
-                  pin={settingsPin}
+                    different value the copy's computer had when they moved shows here. */}
+                <CopyAccountSettingNotices
                   keys={AI_ACCOUNT_KEYS}
                   onResolved={() => setAccountAnswer((value) => value + 1)}
                 />
@@ -212,7 +218,7 @@ export function ChatSection() {
 
                   <ClaudeModsSection />
                 </React.Fragment>
-              </>
+              </ProjectCopyBlock>
             )}
 
             {/* One value per machine, not per project, so it shows with or without one open. */}

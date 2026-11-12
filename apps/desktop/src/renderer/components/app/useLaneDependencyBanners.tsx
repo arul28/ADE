@@ -72,16 +72,23 @@ export function useLaneDependencyBanners({
   // How the ADE Tips row names where this applies.
   const projectContext = [projectName, projectBinding?.kind === "remote" ? machineName : null].filter(Boolean).join(" · ") || null;
   const scopeKey = projectRoot ? `${machineIdForBinding(projectBinding)}:${projectRoot}` : null;
-  // The tab's own machine: unpinned calls reach it.
-  const { start: startTemplateChat, busy: templateChatBusy } = useLaneTemplateSetupChat({ pin: null, machineName, origin: "banner" });
+  // Every call goes to the copy whose main checkout the banner is about.
+  const pinRef = useRef(projectBinding);
+  pinRef.current = projectBinding;
+  const { start: startTemplateChat, busy: templateChatBusy } = useLaneTemplateSetupChat({ pin: projectBinding, machineName, origin: "banner" });
 
   // Bumped on every project switch, so an answer for the previous project is dropped.
   const generationRef = useRef(0);
   const check = useCallback(async (refresh = false) => {
     lastCheckRef.current = Date.now();
     const generation = generationRef.current;
+    const pin = pinRef.current;
+    if (!pin) {
+      setStatus(null);
+      return;
+    }
     try {
-      const next = await window.ade.lanes.getDependencyStatus({ refresh }, null);
+      const next = await window.ade.lanes.getDependencyStatus({ refresh }, pin);
       if (generation === generationRef.current) setStatus(next);
     } catch {
       // A runtime that predates the action, or a closed project: show nothing.
@@ -138,7 +145,8 @@ export function useLaneDependencyBanners({
   const primaryLane = lanes.find((lane) => lane.laneType === "primary") ?? null;
 
   const runUpdate = useCallback(async () => {
-    if (!status || !primaryLane || updatingRef.current) return;
+    const pin = pinRef.current;
+    if (!status || !primaryLane || !pin || updatingRef.current) return;
     const folders = status.folders.filter((folder) => folder.outOfDate && folder.installCommand);
     if (!folders.length) return;
     updatingRef.current = true;
@@ -156,7 +164,7 @@ export function useLaneDependencyBanners({
           tracked: true,
           toolType: "shell",
           startupCommand: folder.installCommand!,
-        });
+        }, pin);
         if (first === null) {
           captureLaneSetupAnalytics({ action: "deps_update_started", outcome: "completed" });
         }
@@ -166,7 +174,7 @@ export function useLaneDependencyBanners({
       // their installs have started (not before: a failed start keeps Update).
       const untracked = folders.filter((folder) => !folder.tracksInstall).map((folder) => folder.lockfile);
       if (untracked.length) {
-        await window.ade.lanes.acknowledgeDependencyStatus({ lockfiles: untracked }, null).catch(() => null);
+        await window.ade.lanes.acknowledgeDependencyStatus({ lockfiles: untracked }, pin).catch(() => null);
       }
       // Watch only installs that leave a record; the others cleared above.
       if (folders.some((folder) => folder.tracksInstall)) setWatchUntil(Date.now() + UPDATE_WATCH_MAX_MS);

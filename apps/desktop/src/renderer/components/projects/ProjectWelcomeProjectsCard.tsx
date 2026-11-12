@@ -1,14 +1,12 @@
 import type { KeyboardEvent as ReactKeyboardEvent, MutableRefObject } from "react";
 import { FolderSimple } from "@phosphor-icons/react";
 import type { RecentProjectGroup } from "../app/projectTabGrouping";
-import { rememberExplicitRemotePick } from "../app/usePreferLocalCheckout";
 import type { AppState } from "../../state/appStore";
 import type { useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import { FitList } from "../home/HomeFitList";
 import { WelcomeCardHead } from "./ProjectWelcomeSidePanels";
 import { RecentProjectRow, type WebRowChrome } from "./ProjectWelcomeWebRows";
 import type { RecentProjectSummary, RemoteRuntimeConnectionState } from "../../../shared/types";
-import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 
 type WebMachine = ReturnType<typeof useWebMachines>[number];
 
@@ -82,10 +80,8 @@ function ProjectsCardRowView({ row, ctx }: { row: ProjectsCardRow; ctx: RowConte
       primary={group.primary}
       locations={group.locations}
       onSelectMachine={(location) => {
-        // Picking another machine here is on purpose: the tab must stay on
-        // that machine's copy, not move back to this computer's checkout.
-        const remote = location.summary.kind === "remote" ? location.summary.remote : null;
-        if (remote) rememberExplicitRemotePick(remoteProjectBindingKey(remote.targetId, remote.projectId));
+        // The copy on the machine picked here opens, and the tab stays on it
+        // (F6): a row of another machine never opens as this computer's folder.
         ctx.onOpen(location.summary);
       }}
       lastActiveAt={group.lastOpenedAt}

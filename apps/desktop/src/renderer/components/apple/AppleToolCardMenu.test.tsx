@@ -35,6 +35,9 @@ afterEach(() => {
   cleanup();
 });
 
+/** The lane's machine: the menu always acts on one. */
+const LANE_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 function renderMenu(over: Partial<AppleLaneDeviceCard> = {}) {
   const onOpenTool = vi.fn();
   const onMutated = vi.fn();
@@ -44,7 +47,7 @@ function renderMenu(over: Partial<AppleLaneDeviceCard> = {}) {
         device={{ ...OFF_CLONE, ...over }}
         laneId="lane-1"
         chatSessionId="chat-1"
-        runtimePin={null}
+        runtimePin={LANE_PIN}
         onOpenTool={onOpenTool}
         onMutated={onMutated}
       />
@@ -81,7 +84,7 @@ describe("AppleToolCardMenu", () => {
     await waitFor(() => expect(ios.deviceStart).toHaveBeenCalledTimes(1));
     expect(ios.deviceStart).toHaveBeenCalledWith(
       { laneId: "lane-1", chatSessionId: "chat-1", udid: "udid-e" },
-      null,
+      LANE_PIN,
     );
     await waitFor(() => expect(onOpenTool).toHaveBeenCalledTimes(1));
     expect(onMutated).toHaveBeenCalledTimes(1);
@@ -95,7 +98,7 @@ describe("AppleToolCardMenu", () => {
 
     await waitFor(() => expect(ios.deviceDetach).toHaveBeenCalledWith(
       { laneId: "lane-1", udid: "udid-e", chatSessionId: "chat-1", ignoreOwnership: true },
-      null,
+      LANE_PIN,
     ));
   });
 
@@ -113,7 +116,7 @@ describe("AppleToolCardMenu", () => {
     if (keep) fireEvent.click(screen.getByText(/Keep it as a free simulator instead/u));
     fireEvent.click(screen.getByRole("button", { name: "Release" }));
 
-    await waitFor(() => expect(ios.deviceDetach).toHaveBeenCalledWith(expected, null));
+    await waitFor(() => expect(ios.deviceDetach).toHaveBeenCalledWith(expected, LANE_PIN));
   });
 
   it("releases nothing when the ADE device's release is cancelled", async () => {
@@ -142,7 +145,7 @@ describe("AppleToolCardMenu", () => {
     fireEvent.click(screen.getByText("Delete for good"));
     await waitFor(() => expect(ios.deviceDelete).toHaveBeenCalledWith(
       { laneId: "lane-1", udid: "udid-e", chatSessionId: "chat-1", ignoreOwnership: true },
-      null,
+      LANE_PIN,
     ));
   });
 

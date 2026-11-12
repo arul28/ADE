@@ -28,6 +28,7 @@ import { showToast } from "../app/toast/toastStore";
 import { describeTravellingChanges, openChatOnOtherMachine } from "../chat/CrossMachineHandoffBanner";
 import { MENU_ITEM_CLASS, MenuRowIcon, MenuSeparator, MenuSubmenu, MenuSubmenuStatus } from "../ui/MenuSubmenu";
 import { cn } from "../ui/cn";
+import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 
 /**
  * Session menu "Hand off ▸ Another machine ▸". The panel paints at once and
@@ -100,8 +101,8 @@ export function CrossMachineMoveSubmenu({
   const load = () => {
     const request = ++requestRef.current;
     setOptions({ status: "loading" });
-    void window.ade.agentChat
-      .getCrossMachineHandoffOptions({ sourceSessionId: session.id }, binding)
+    void withChatPin(binding, (chatPin) => window.ade.agentChat
+      .getCrossMachineHandoffOptions({ sourceSessionId: session.id }, chatPin))
       .then((result) => {
         if (request === requestRef.current) setOptions({ status: "ready", result });
       })
@@ -129,7 +130,7 @@ export function CrossMachineMoveSubmenu({
   const cancelMove = async (outcome: { title: string; message: string }) => {
     onClose();
     try {
-      await window.ade.agentChat.cancelCrossMachineHandoff({ sourceSessionId: session.id }, binding);
+      await withChatPin(binding, (chatPin) => window.ade.agentChat.cancelCrossMachineHandoff({ sourceSessionId: session.id }, chatPin));
       showToast({ tone: "info", ...outcome });
     } catch (error) {
       showToast({ tone: "warning", title: "Couldn't cancel the move", message: errorText(error) });
@@ -139,7 +140,7 @@ export function CrossMachineMoveSubmenu({
   const retryMove = async () => {
     onClose();
     try {
-      await window.ade.agentChat.retryCrossMachineHandoff({ sourceSessionId: session.id }, binding);
+      await withChatPin(binding, (chatPin) => window.ade.agentChat.retryCrossMachineHandoff({ sourceSessionId: session.id }, chatPin));
     } catch (error) {
       showToast({ tone: "warning", title: "Couldn't retry the move", message: errorText(error) });
     }
@@ -156,7 +157,7 @@ export function CrossMachineMoveSubmenu({
         mode: "fork",
         ...(changeCount > 0 ? { includeChanges: true } : {}),
         ...(busy ? { whenTurnEnds: true } : {}),
-      }, binding);
+      }, requireChatPin(binding));
       showToast({
         tone: "info",
         title: started.state === "pending"
@@ -181,7 +182,7 @@ export function CrossMachineMoveSubmenu({
   const workHereInstead = async (handoffId: string) => {
     onClose();
     try {
-      await window.ade.agentChat.acknowledgeCrossMachineHandoff({ sourceSessionId: session.id, handoffId }, binding);
+      await window.ade.agentChat.acknowledgeCrossMachineHandoff({ sourceSessionId: session.id, handoffId }, requireChatPin(binding));
       showToast({ tone: "info", title: "Working here again", message: "Resume starts this CLI here." });
     } catch (error) {
       showToast({ tone: "warning", title: "Couldn't keep it here", message: errorText(error) });
@@ -195,7 +196,7 @@ export function CrossMachineMoveSubmenu({
     }
     onClose();
     try {
-      const summary = await window.ade.agentChat.getSummary({ sessionId: session.id }, binding);
+      const summary = await withChatPin(binding, (chatPin) => window.ade.agentChat.getSummary({ sessionId: session.id }, chatPin));
       const target = summary ? targetFromSummary(summary) : null;
       if (!target) {
         showToast({
@@ -205,14 +206,14 @@ export function CrossMachineMoveSubmenu({
         });
         return;
       }
-      const started = await window.ade.agentChat.startCrossMachineHandoff({
+      const started = await withChatPin(binding, (chatPin) => window.ade.agentChat.startCrossMachineHandoff({
         ...target,
         sourceSessionId: session.id,
         machine: machineKey,
         mode: "brief",
         ...(changeCount > 0 ? { includeChanges: true } : {}),
         ...(busy ? { whenTurnEnds: true } : {}),
-      }, binding);
+      }, chatPin));
       const model = getModelById(started.targetModelId)?.displayName ?? started.targetModelId;
       // Info, not success: the move has only started; the banner reports how it ends.
       showToast({

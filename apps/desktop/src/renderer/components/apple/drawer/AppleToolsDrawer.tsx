@@ -36,7 +36,7 @@ import { PreviewLabSection, type AppleRenderedPreview } from "./sections/Preview
  * because a bare key cannot reach a remote runtime.
  */
 export interface AppleToolsDrawerProps {
-  pin: OpenProjectBinding | null;
+  pin: OpenProjectBinding;
   laneId: string;
   device: AppleLaneDevice;
   visible: boolean;
@@ -104,7 +104,7 @@ export function AppleToolsDrawer({
 }: AppleToolsDrawerProps) {
   // A ref, never a dep: the binding object is rebuilt on every cross-machine
   // merge, and depending on its identity would re-read settings on that timer.
-  const pinRef = useRef<OpenProjectBinding | null>(pin);
+  const pinRef = useRef<OpenProjectBinding>(pin);
   pinRef.current = pin;
   const scope = useMemo<AppleDrawerScope>(() => ({ laneId, deviceUdid: device.udid, chatSessionId: null }), [device.udid, laneId]);
   const actions = useAppleDrawerActions({ scope, pinRef, visible });

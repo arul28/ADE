@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DiffChanges, GitConflictState, GitStashSummary, GitUpstreamSyncStatus, LaneSummary } from "../../../shared/types";
+import type { DiffChanges, GitConflictState, GitStashSummary, GitUpstreamSyncStatus, LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { __resetLaneGitActionRuntimeForTests, formatLaneGitError, LaneGitActionsPane } from "./LaneGitActionsPane";
 
 const commitTimelineMock = vi.hoisted(() => vi.fn((props: Record<string, unknown>) => null));
@@ -278,6 +278,11 @@ describe("LaneGitActionsPane rescue action", () => {
     }
   });
 
+  /** The lane's machine: the tab's own copy in these tests. */
+  function tabPin(): OpenProjectBinding {
+    return mockStoreState.projectBinding as unknown as OpenProjectBinding;
+  }
+
   function renderPane(overrides?: Partial<React.ComponentProps<typeof LaneGitActionsPane>>) {
     return render(
       <MemoryRouter>
@@ -289,6 +294,7 @@ describe("LaneGitActionsPane rescue action", () => {
           selectedMode={null}
           selectedCommit={null}
           selectedCommitSha={null}
+          runtimePin={tabPin()}
           {...overrides}
         />
       </MemoryRouter>,
@@ -308,13 +314,13 @@ describe("LaneGitActionsPane rescue action", () => {
     await user.click(screen.getByTestId("git-pane-push"));
     await waitFor(() => expect(window.ade.git.push).toHaveBeenCalledWith(
       { laneId: "lane-1", forceWithLease: false },
-      null,
+      tabPin(),
     ));
 
     await user.click(screen.getByTestId("git-pane-pull"));
     await waitFor(() => expect(window.ade.git.sync).toHaveBeenCalledWith(
       expect.objectContaining({ laneId: "lane-1" }),
-      null,
+      tabPin(),
     ));
   });
 
@@ -351,6 +357,7 @@ describe("LaneGitActionsPane rescue action", () => {
           selectedMode={null}
           selectedCommit={null}
           selectedCommitSha={null}
+          runtimePin={tabPin()}
         />
       </MemoryRouter>,
     );
@@ -385,6 +392,7 @@ describe("LaneGitActionsPane rescue action", () => {
           selectedMode={null}
           selectedCommit={null}
           selectedCommitSha={null}
+          runtimePin={tabPin()}
         />
       </MemoryRouter>
     );
@@ -450,6 +458,7 @@ describe("LaneGitActionsPane rescue action", () => {
           selectedMode={null}
           selectedCommit={null}
           selectedCommitSha={null}
+          runtimePin={tabPin()}
         />
       </MemoryRouter>,
     );
@@ -468,8 +477,8 @@ describe("LaneGitActionsPane rescue action", () => {
     await screen.findByTestId("git-pane-push");
 
     expect(mockStoreState.refreshLanes).not.toHaveBeenCalled();
-    expect(window.ade.diff.getChanges).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
-    expect(window.ade.git.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
+    expect(window.ade.diff.getChanges).toHaveBeenCalledWith({ laneId: "lane-1" }, tabPin());
+    expect(window.ade.git.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" }, tabPin());
     expect(window.ade.git.getSyncStatus).toHaveBeenCalledTimes(1);
   });
 
@@ -504,12 +513,12 @@ describe("LaneGitActionsPane rescue action", () => {
     await user.click(screen.getByRole("button", { name: /abort merge/i }));
 
     await waitFor(() => {
-      expect((window.ade.git as any).mergeAbort).toHaveBeenCalledWith("lane-1", null);
+      expect((window.ade.git as any).mergeAbort).toHaveBeenCalledWith("lane-1", tabPin());
     });
   });
 
   it.each([
-    { where: "a lane on this machine", runtimePin: null },
+    { where: "a lane on this machine", runtimePin: { kind: "local", key: "local:/tmp/ade", rootPath: "/tmp/ade" } },
     {
       where: "a lane on another machine",
       runtimePin: {
@@ -540,7 +549,7 @@ describe("LaneGitActionsPane rescue action", () => {
         start: { from: "branch", branch: "feature/parent", on: "uncommitted" },
       }, runtimePin);
     });
-    if (runtimePin) {
+    if (runtimePin.kind === "remote") {
       // The new lane is on the other machine: this tab's lane list and Lanes
       // page cannot select it, so the pane stays and says where it went.
       expect(await screen.findByText(/created rescue lane with a copy of these changes/i)).toBeTruthy();
@@ -572,7 +581,7 @@ describe("LaneGitActionsPane rescue action", () => {
       expect(window.ade.git.restoreStagedFile).toHaveBeenCalledWith({
         laneId: "lane-1",
         path: ".claude/worktrees/fix-session-auto-naming",
-      }, null);
+      }, tabPin());
     });
     await waitFor(() => {
       expect(mockStoreState.refreshLanes).toHaveBeenCalledWith({
@@ -598,7 +607,7 @@ describe("LaneGitActionsPane rescue action", () => {
       expect(window.ade.git.stageFile).toHaveBeenCalledWith({
         laneId: "lane-1",
         path: "src/file.ts",
-      }, null);
+      }, tabPin());
     });
 
     cleanup();
@@ -616,7 +625,7 @@ describe("LaneGitActionsPane rescue action", () => {
       expect(window.ade.git.unstageFile).toHaveBeenCalledWith({
         laneId: "lane-1",
         path: "src/file.ts",
-      }, null);
+      }, tabPin());
     });
   });
 
@@ -640,7 +649,7 @@ describe("LaneGitActionsPane rescue action", () => {
         laneId: "lane-1",
         message: "stash untracked audit",
         includeUntracked: true,
-      }, null);
+      }, tabPin());
     });
   });
 
@@ -770,7 +779,7 @@ describe("LaneGitActionsPane rescue action", () => {
         laneId: "lane-1",
         stashRef: "stash@{0}",
         stashOid: "oid-drop",
-      }, null);
+      }, tabPin());
     });
     await waitFor(() => {
       expect(screen.getByText("1 saved")).toBeTruthy();
@@ -808,7 +817,7 @@ describe("LaneGitActionsPane rescue action", () => {
         laneId: "lane-1",
         stashRef: "stash@{0}",
         stashOid: "oid-restore",
-      }, null);
+      }, tabPin());
     });
     await waitFor(() => {
       expect(screen.getByText("1 saved")).toBeTruthy();
@@ -835,7 +844,7 @@ describe("LaneGitActionsPane rescue action", () => {
         laneId: "lane-1",
         stashRef: "stash@{0}",
         stashOid: "oid-copy",
-      }, null);
+      }, tabPin());
     });
   });
 
@@ -912,7 +921,7 @@ describe("LaneGitActionsPane rescue action", () => {
     await user.click(screen.getByRole("button", { name: "Delete all" }));
 
     await waitFor(() => {
-      expect(window.ade.git.stashClear).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
+      expect(window.ade.git.stashClear).toHaveBeenCalledWith({ laneId: "lane-1" }, tabPin());
     });
     await waitFor(() => {
       expect(screen.getByText("None saved")).toBeTruthy();

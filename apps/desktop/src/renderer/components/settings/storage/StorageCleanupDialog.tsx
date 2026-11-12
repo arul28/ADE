@@ -200,6 +200,12 @@ export function StorageCleanupDialog({
     setError(null);
     setStage("loading");
     setPreview(null);
+    if (!pin) {
+      setError("No computer with this project is online.");
+      setErrorPhase("checking");
+      setStage("error");
+      return Promise.resolve();
+    }
     return window.ade.storage
       .cleanupPreview(openTargets, pin)
       .then((next) => {
@@ -235,7 +241,7 @@ export function StorageCleanupDialog({
     setStage("removing");
     setError(null);
     try {
-      if (!preview) {
+      if (!preview || !pin) {
         if (requestRef.current === requestId) setStage("review");
         return;
       }

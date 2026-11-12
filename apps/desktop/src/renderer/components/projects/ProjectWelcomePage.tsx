@@ -31,7 +31,7 @@ import { CommandPalette } from "../app/CommandPalette";
 import { Banner } from "../ui/notice";
 import { dismissToast, showToast } from "../app/toast/toastStore";
 import {
-  groupRecentProjects,
+  ACCOUNT_MACHINE_TARGET_PREFIX,
   recentProjectLocationKey,
   localBindingFromRecent,
   remoteBindingFromRecent,
@@ -61,6 +61,7 @@ import type {
 } from "../../../shared/types";
 import "./ProjectWelcomePage.css";
 import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
+import { useHomeAccountProjects } from "./useHomeAccountProjects";
 
 // Edit mode's toolbar, gallery and appearance sliders: loaded the first time
 // someone customizes the page, never on the boot path.
@@ -267,16 +268,15 @@ export function ProjectWelcomePage() {
     if (!workspace.adapter.getActiveBinding()) workspace.adapter.activateHub();
   }, [webMode, workspace]);
 
-  const visibleProjectGroups = useMemo(() => {
-    const kept = (webMode ? webRecents : recentProjects).filter((rp) => {
-      if (rp.kind === "remote") return true;
-      return rp.exists && !rp.rootPath.includes("ade-project");
-    });
-    return groupRecentProjects({
-      recentProjects: kept,
-      remoteSnapshot: webMode ? null : remoteSnapshot,
-    }).filter((group) => !pendingForgetKeys.has(group.id));
-  }, [pendingForgetKeys, recentProjects, remoteSnapshot, webMode, webRecents]);
+  // The account's projects (S4) join the recents; a project with no computer
+  // online opens as its repository tab with no machine (0M).
+  const { visibleProjectGroups, openNoMachineTab } = useHomeAccountProjects({
+    webMode,
+    recentProjects,
+    webRecents,
+    remoteSnapshot,
+    pendingForgetKeys,
+  });
 
   const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
 
@@ -356,12 +356,16 @@ export function ProjectWelcomePage() {
         const key = recentKey(rp);
         const targetId = rp.remote.targetId;
         const projectId = rp.remote.projectId;
+        // A copy on a machine this computer has no connection to: nothing to
+        // connect, so the repository opens with no machine.
+        if (targetId.startsWith(ACCOUNT_MACHINE_TARGET_PREFIX)) {
+          if (!openNoMachineTab(rp)) setRowError("No computer with this project is online.");
+          return;
+        }
         const state = connectionByTarget.get(targetId) ?? null;
         if (state === "connected") {
           void switchRemoteProject(targetId, projectId).catch((error) => {
-            setRowError(
-              error instanceof Error ? error.message : String(error),
-            );
+            setRowError(error instanceof Error ? error.message : String(error));
           });
           return;
         }
@@ -372,9 +376,9 @@ export function ProjectWelcomePage() {
             await window.ade.remoteRuntime.connect(targetId);
             await switchRemoteProject(targetId, projectId);
           } catch (error) {
-            setRowError(
-              error instanceof Error ? error.message : String(error),
-            );
+            // The machine did not come online: the repository still opens, as
+            // a tab with no machine that opens a copy when one is online.
+            if (!openNoMachineTab(rp)) setRowError(error instanceof Error ? error.message : String(error));
           } finally {
             setConnectingKeys((prev) => {
               const next = new Set(prev);
@@ -394,6 +398,7 @@ export function ProjectWelcomePage() {
     [
       cancelNewTab,
       connectionByTarget,
+      openNoMachineTab,
       openWebProject,
       project?.rootPath,
       switchProjectToPath,

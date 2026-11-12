@@ -38,7 +38,7 @@ type Mode = "canvas" | "outline";
  * created when the slide changes or the viewer unmounts.
  */
 export function PresentationViewer(props: ViewerProps) {
-  const { files, workspaceId, tab, rootPath, content } = props;
+  const { files, workspaceId, tab, rootPath, pathPin, content } = props;
   const declaredSize = content.totalSize ?? content.size;
 
   return (
@@ -49,7 +49,7 @@ export function PresentationViewer(props: ViewerProps) {
       byteCap={MAX_PRESENTATION_STREAM_BYTES}
       declaredSize={declaredSize}
       loadingLabel={`Loading ${tab.title}…`}
-      fallback={{ rootPath, title: tab.title, mimeType: content.mimeType ?? null, size: content.size }}
+      fallback={{ rootPath, pathPin, title: tab.title, mimeType: content.mimeType ?? null, size: content.size }}
       load={async (bytes) => {
         // Imported on demand: the deck reader is not on the Files route.
         const { openPptx } = await import("./office/pptx");

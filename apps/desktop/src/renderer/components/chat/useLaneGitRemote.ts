@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import type { OpenProjectBinding } from "../../../shared/types/core";
+import { withChatPin } from "./chatMachinePin";
 
 export type LaneGitRemoteStatus = "idle" | "loading" | "ready" | "error";
 
@@ -97,9 +98,7 @@ export function useLaneGitRemote(
         return;
       }
       const activePin = pinRef.current;
-      const request = activePin
-        ? getOriginRemote({ laneId }, activePin)
-        : getOriginRemote({ laneId });
+      const request = withChatPin(activePin, (chatPin) => getOriginRemote({ laneId }, chatPin));
       void request
         .then((info) => {
           if (cancelled) return;

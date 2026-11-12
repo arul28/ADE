@@ -38,6 +38,7 @@ import {
   readUnsavedDraftBody,
   unsavedDraftKey,
 } from "./threadCommentsStore";
+import { withChatPin } from "./chatMachinePin";
 
 const HIGHLIGHT_PENDING = "ade-thread-comment";
 const HIGHLIGHT_HELD = "ade-thread-comment-held";
@@ -515,7 +516,7 @@ export function ThreadCommentLayer({
     const settle = addLocalThreadComment(sessionId, fields);
     discardDraft();
     try {
-      settle(await api.create({ sessionId, ...fields }, pin ?? null));
+      settle(await withChatPin(pin ?? null, (chatPin) => api.create({ sessionId, ...fields }, chatPin)));
     } catch (error) {
       settle(null);
       // Reopen the box with the text and the reason, unless another comment

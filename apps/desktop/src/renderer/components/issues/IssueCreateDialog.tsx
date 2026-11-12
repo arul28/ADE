@@ -48,6 +48,7 @@ import { submitGitHubIssue, submitJiraIssue, submitLinearIssue } from "./issueCr
 import type { PickerOption } from "./IssuePickerMenu";
 import { useActiveProjectRoot } from "../../state/appStore";
 import { useLinearPickerCatalog } from "./linearIssueStore";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { useSimilarIssues } from "./useSimilarIssues";
 import type { JiraCreateMeta, JiraUser } from "../../../shared/types/jira";
 import {
@@ -117,6 +118,11 @@ function imageFiles(list: FileList | null | undefined): File[] {
 
 export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRequest; onClose: () => void }) {
   const projectRoot = useActiveProjectRoot();
+  // Every tracker call goes to the repository reader; null when no machine is online.
+  const pin = useActiveRepositoryReader();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const parent = request.prefill?.parent ?? null;
   const jiraParent = parent?.provider === "jira" ? parent : null;
   // One read of the draft for the whole form, keyed to this project.
@@ -170,26 +176,28 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   const teamKey = linear.teamKey && teams.some((team) => team.key === linear.teamKey) ? linear.teamKey : teams[0]?.key ?? null;
   const [createOptions, setCreateOptions] = useState<LinearIssueCreateOptions | null>(null);
   useEffect(() => {
-    if (provider !== "linear" || !teamKey) return;
+    const readPin = pinRef.current;
+    if (provider !== "linear" || !teamKey || !readPin) return;
     let cancelled = false;
     setCreateOptions(null);
-    void window.ade?.cto?.getLinearIssueCreateOptions?.({ teamKey })
+    void window.ade?.cto?.getLinearIssueCreateOptions?.({ teamKey }, readPin)
       .then((options) => { if (!cancelled) setCreateOptions(options); })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [provider, teamKey]);
+  }, [pinKey, provider, teamKey]);
   const [milestones, setMilestones] = useState<LinearProjectMilestone[]>([]);
   useEffect(() => {
-    if (!linear.projectId) {
+    const readPin = pinRef.current;
+    if (!linear.projectId || !readPin) {
       setMilestones([]);
       return;
     }
     let cancelled = false;
-    void window.ade?.cto?.listLinearProjectMilestones?.({ projectId: linear.projectId })
+    void window.ade?.cto?.listLinearProjectMilestones?.({ projectId: linear.projectId }, readPin)
       .then((list) => { if (!cancelled) setMilestones(list ?? []); })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [linear.projectId]);
+  }, [linear.projectId, pinKey]);
 
   /* GitHub data */
   // A sub-issue goes where its parent is, which need not be this project's repo.
@@ -202,16 +210,16 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   const repoCatalog = useGitHubRepoCatalog(provider === "github" ? repo : null);
   const createCatalog = useGitHubCreateCatalog(provider === "github" ? repo : null);
   useEffect(() => {
-    if (provider === "github" && repo) loadGitHubRepoCatalog(repo);
-  }, [provider, repo]);
+    if (provider === "github" && repo) loadGitHubRepoCatalog(repo, pinRef.current);
+  }, [pinKey, provider, repo]);
   const templates = createCatalog.templates?.templates ?? [];
   const template: GitHubIssueTemplate | null = templates.find((entry) => entry.key === github.templateKey) ?? null;
   const formTemplate = template?.kind === "form" ? template : null;
   const templateRequired = provider === "github" && createCatalog.templates?.blankIssuesEnabled === false && templates.length > 0;
 
   /* Jira data */
-  const jiraConnection = useJiraConnectionStatus(provider === "jira");
-  const jiraProjects = useJiraProjects(provider === "jira" && jiraConnection.status?.connected === true, jiraConnection.status?.siteUrl ?? "");
+  const jiraConnection = useJiraConnectionStatus(provider === "jira", pin);
+  const jiraProjects = useJiraProjects(provider === "jira" && jiraConnection.status?.connected === true, jiraConnection.status?.siteUrl ?? "", pin);
   const [jiraMeta, setJiraMeta] = useState<JiraCreateMeta | null>(null);
   const [jiraMetaError, setJiraMetaError] = useState<string | null>(null);
   const [jiraUsers, setJiraUsers] = useState<JiraUser[]>([]);
@@ -225,11 +233,12 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   const jiraProjectDefaulted = useRef(false);
   const jiraProjectTouched = useRef(false);
   useEffect(() => {
-    if (provider !== "jira") return;
+    const readPin = pinRef.current;
+    if (provider !== "jira" || !readPin) return;
     let cancelled = false;
     setJiraBindingLoaded(false);
     setJiraBindingError(null);
-    void window.ade.projectConfig.get()
+    void window.ade.projectConfig.get(readPin)
       .then((snapshot) => {
         if (cancelled) return;
         setJiraBoundProjectKeys(snapshot.effective.issueTrackers?.jira?.projectKeys ?? []);
@@ -241,7 +250,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
         setJiraBindingLoaded(true);
       });
     return () => { cancelled = true; };
-  }, [jiraBindingRetry, projectRoot, provider]);
+  }, [jiraBindingRetry, pinKey, projectRoot, provider]);
   useEffect(() => {
     const siteUrl = jiraConnection.status?.siteUrl;
     if (provider !== "jira" || !jiraConnection.status?.connected || !siteUrl) {
@@ -250,13 +259,13 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     }
     let cancelled = false;
     setJiraProjectsLoaded(false);
-    void loadJiraProjects(projectRoot, { siteUrl }).then(() => {
+    void loadJiraProjects(projectRoot, { siteUrl, pin: pinRef.current }).then(() => {
       if (!cancelled) setJiraProjectsLoaded(true);
     }).catch(() => {
       if (!cancelled) setJiraProjectsLoaded(true);
     });
     return () => { cancelled = true; };
-  }, [jiraConnection.status?.connected, jiraConnection.status?.siteUrl, projectRoot, provider]);
+  }, [jiraConnection.status?.connected, jiraConnection.status?.siteUrl, pinKey, projectRoot, provider]);
   useEffect(() => {
     if (provider !== "jira" || !jiraProjectsLoaded || !jiraBindingLoaded || jiraProjectDefaulted.current) return;
     jiraProjectDefaulted.current = true;
@@ -279,7 +288,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     setJiraMeta(null);
     setJiraMetaError(null);
     setJiraCatalogError(null);
-    void loadJiraCreateMeta(projectRoot, jira.projectKey).then((meta) => {
+    void loadJiraCreateMeta(projectRoot, jira.projectKey, false, pinRef.current).then((meta) => {
       if (cancelled) return;
       setJiraMeta(meta);
       setJira((current) => {
@@ -291,15 +300,15 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
       if (!cancelled) setJiraMetaError(error instanceof Error ? error.message : "Couldn't load Jira issue types.");
     });
     void Promise.all([
-      loadJiraAssignableUsers(projectRoot, { projectKey: jira.projectKey }),
-      loadJiraLabels(projectRoot),
+      loadJiraAssignableUsers(projectRoot, { projectKey: jira.projectKey }, pinRef.current),
+      loadJiraLabels(projectRoot, "", pinRef.current),
     ]).then(([users, labels]) => {
       if (!cancelled) { setJiraUsers(users); setJiraLabels(labels); }
     }).catch((error: unknown) => {
       if (!cancelled) setJiraCatalogError(error instanceof Error ? error.message : "Couldn't load Jira fields.");
     });
     return () => { cancelled = true; };
-  }, [jira.projectKey, jiraConnection.status?.connected, projectRoot, provider]);
+  }, [jira.projectKey, jiraConnection.status?.connected, pinKey, projectRoot, provider]);
   const refreshJiraProjects = useCallback(() => { void jiraProjects.refresh().catch(() => undefined); }, [jiraProjects.refresh]);
 
   const applyGitHubTemplate = (next: GitHubIssueTemplate | null) => {
@@ -365,14 +374,15 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
       return;
     }
     const upload = window.ade?.cto?.uploadLinearFile;
-    if (!upload) {
+    const uploadPin = pinRef.current;
+    if (!upload || !uploadPin) {
       setError({ message: "Uploading pictures to Linear is not available here.", kind: "status" });
       return;
     }
     for (const file of files) {
       setUploads((count) => count + 1);
       try {
-        const result = await upload({ filename: file.name || "image.png", contentType: file.type || "image/png", dataBase64: await fileToBase64(file) });
+        const result = await upload({ filename: file.name || "image.png", contentType: file.type || "image/png", dataBase64: await fileToBase64(file) }, uploadPin);
         insertAtCursor(`![${result.filename}](${result.assetUrl})\n`);
       } catch (cause) {
         setError({ message: cause instanceof Error ? cause.message : "Linear refused the picture.", kind: "failure" });
@@ -414,7 +424,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     setError(null);
     try {
       if (provider === "linear") {
-        const issue = await submitLinearIssue({ teamKey, title: trimmed, description: `${body}${contextFooter}`, fields: linear });
+        const issue = await submitLinearIssue({ teamKey, title: trimmed, description: `${body}${contextFooter}`, fields: linear, pin });
         showToast({
           tone: "success",
           title: `Created ${issue.identifier}`,
@@ -432,15 +442,15 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
             throw new Error("Connect Jira in Settings before creating an issue.");
           }
           const siteUrl = jiraConnection.status.siteUrl;
-          const created = await submitJiraIssue({ title: trimmed, description: `${body}${contextFooter}`, fields: jira, meta: jiraMeta });
+          const created = await submitJiraIssue({ title: trimmed, description: `${body}${contextFooter}`, fields: jira, meta: jiraMeta, pin });
           announceIssueCreated({
             provider: "jira",
             siteUrl: jiraConnection.status.siteUrl,
             key: created.key,
             projectKey: jira.projectKey,
           });
-          void loadJiraIssue(projectRoot, { provider: "jira", siteUrl: jiraConnection.status.siteUrl, key: created.key }, { force: true })
-            .then((issue) => { if (issue) noteJiraIssueCreated(projectRoot, issue); })
+          void loadJiraIssue(projectRoot, { provider: "jira", siteUrl: jiraConnection.status.siteUrl, key: created.key }, { force: true, pin })
+            .then((issue) => { if (issue) noteJiraIssueCreated(projectRoot, issue, pin); })
             .catch(() => undefined);
           showToast({
             tone: "success",
@@ -449,7 +459,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
             actions: [{
               label: "Start lane",
               onClick: () => {
-                void loadJiraIssue(projectRoot, { provider: "jira", siteUrl, key: created.key })
+                void loadJiraIssue(projectRoot, { provider: "jira", siteUrl, key: created.key }, { pin })
                   .then((issue) => {
                     const launchIssue = issue ? buildJiraLaunchIssue(issue, siteUrl) : null;
                     if (!launchIssue) throw new Error(`Could not read ${created.key} from Jira.`);
@@ -478,8 +488,9 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
           templateRequired,
           formAnswers,
           attachments,
+          pin,
         });
-        noteGitHubIssueCreated(projectRoot, issue);
+        noteGitHubIssueCreated(projectRoot, issue, pin);
         // A warning (not linked under the parent, fields not set) is worth reading.
         showToast({
           tone: warnings.length ? "warning" : "success",
@@ -640,7 +651,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
               title: `Couldn't load ${jira.projectKey} issue types`,
               detail: jiraMetaError,
               actions: [{ label: "Retry", onClick: () => {
-                void loadJiraCreateMeta(projectRoot, jira.projectKey, true).then(setJiraMeta).catch((cause: unknown) => setJiraMetaError(cause instanceof Error ? cause.message : "Couldn't load Jira issue types."));
+                void loadJiraCreateMeta(projectRoot, jira.projectKey, true, pin).then(setJiraMeta).catch((cause: unknown) => setJiraMetaError(cause instanceof Error ? cause.message : "Couldn't load Jira issue types."));
               } }],
             }} /></div>
           ) : null}
@@ -654,8 +665,8 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
                 if (!jira.projectKey) return;
                 setJiraCatalogError(null);
                 void Promise.all([
-                  loadJiraAssignableUsers(projectRoot, { projectKey: jira.projectKey }),
-                  loadJiraLabels(projectRoot),
+                  loadJiraAssignableUsers(projectRoot, { projectKey: jira.projectKey }, pin),
+                  loadJiraLabels(projectRoot, "", pin),
                 ]).then(([users, nextLabels]) => { setJiraUsers(users); setJiraLabels(nextLabels); }).catch((cause: unknown) => setJiraCatalogError(cause instanceof Error ? cause.message : "Couldn't load Jira fields."));
               } }],
             }} /></div>

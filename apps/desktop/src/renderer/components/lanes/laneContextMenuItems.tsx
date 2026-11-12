@@ -40,6 +40,7 @@ import { promptDialog } from "../ui/dialog";
 import { branchNameProblem } from "../../../shared/laneBranchName";
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import type { LaneMenuShareArgs } from "../laneShare/useLaneShareMenu";
+import { requirePin } from "../../state/repositoryScope";
 
 export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
   return (
@@ -143,10 +144,11 @@ function branchNameFromRef(ref: string | null | undefined): string {
   return ref.replace(/^refs\/heads\//, "");
 }
 
-async function fetchRepoForCopy(): Promise<{ owner: string; name: string } | null> {
+/** The repository of the lane's copy, read on the lane's machine. */
+async function fetchRepoForCopy(pin: OpenProjectBinding | null): Promise<{ owner: string; name: string } | null> {
   try {
-    const status = await window.ade.github.getRemoteStatus();
-    return status.repo ?? null;
+    const status = await (pin ? window.ade.github.getRemoteStatus({}, pin) : null);
+    return status?.repo ?? null;
   } catch {
     return null;
   }
@@ -239,7 +241,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       dataTour: "lanes.manageLane",
       onSelect: () => {
         onClose();
-        void revealLaneWorktree(laneId);
+        void revealLaneWorktree(laneId, runtimePin);
       },
     });
   }
@@ -273,10 +275,8 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       onSelect: () => {
         onClose();
         void (async () => {
-          const repo = await fetchRepoForCopy();
-          const pr = await (runtimePin
-            ? window.ade.prs.getForLane(lane.id, runtimePin)
-            : window.ade.prs.getForLane(lane.id)).catch(() => null);
+          const repo = await fetchRepoForCopy(runtimePin);
+          const pr = runtimePin ? await window.ade.prs.getForLane(lane.id, runtimePin).catch(() => null) : null;
           const ownership = await linkOwnershipFor(runtimePin);
           const url = buildDeeplink(
             {
@@ -310,7 +310,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
         icon: GitBranch,
         onSelect: () => {
           onClose();
-          void fetchRepoForCopy().then((repo) => {
+          void fetchRepoForCopy(runtimePin).then((repo) => {
             if (!repo) {
               // No GitHub origin — fall back to lane link as the best we can offer.
               const fallback = buildDeeplink({ kind: "lane", laneId }, { form: "ade" });
@@ -518,7 +518,7 @@ async function renameLaneBranch(
   const errorText = (error: unknown) =>
     (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "");
   try {
-    const check = await window.ade.lanes.renameBranch({ laneId: lane.id, dryRun: true }, runtimePin);
+    const check = await window.ade.lanes.renameBranch({ laneId: lane.id, dryRun: true }, requirePin(runtimePin, "No computer with this lane is online."));
     if (check.blocked) {
       showToast({ title: `Can't rename ${check.branchRef}`, message: check.blocked, tone: "warning" });
       return;
@@ -534,7 +534,7 @@ async function renameLaneBranch(
     if (!next || next === current) return;
     let result: Awaited<ReturnType<typeof window.ade.lanes.renameBranch>>;
     try {
-      result = await window.ade.lanes.renameBranch({ laneId: lane.id, branchName: next }, runtimePin);
+      result = await window.ade.lanes.renameBranch({ laneId: lane.id, branchName: next }, requirePin(runtimePin, "No computer with this lane is online."));
     } catch (error) {
       captureLaneSetupAnalytics({ action: "branch_renamed", outcome: "failed" });
       throw error;
@@ -586,7 +586,7 @@ export function ColorSwatchRow({
     setError(null);
     setBusy(true);
     try {
-      await window.ade.lanes.updateAppearance({ laneId: ctxLane.id, color: next }, runtimePin);
+      await window.ade.lanes.updateAppearance({ laneId: ctxLane.id, color: next }, requirePin(runtimePin, "No computer with this lane is online."));
       await onChanged?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to set color");
@@ -637,7 +637,7 @@ function LaneEmojiRow({
   const apply = async (next: string | null) => {
     setBusy(true);
     try {
-      await window.ade.lanes.updateAppearance({ laneId: lane.id, emoji: next }, runtimePin);
+      await window.ade.lanes.updateAppearance({ laneId: lane.id, emoji: next }, requirePin(runtimePin, "No computer with this lane is online."));
       await onChanged?.();
     } catch (err) {
       showToast({

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { GitHubPrListItem, LaneSummary, PrSummary } from "../../../shared/types";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced } from "../../lib/prReadCache";
 import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
+import { useActiveRepositoryReader, useTabCopyPin } from "../../state/repositoryScope";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import {
   selectGithubLanePrTags,
@@ -158,8 +159,16 @@ export function lanePrsForMachine(
  */
 export function useLanePrsByLaneId(): Map<string, PrSummary[]> {
   const projectRoot = useAppStore(selectActiveProjectRoot);
-  // The GitHub snapshot is an unpinned read, so it follows the window's binding.
+  // The binding key keeps the snapshot's cache scope.
   const bindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
+  // The tab's lanes and their PR rows live on the tab's copy; GitHub is read
+  // through the repository's reader copy.
+  const tabCopyPin = useTabCopyPin();
+  const readerPin = useActiveRepositoryReader(true);
+  const pinsRef = useRef({ tabCopyPin, readerPin });
+  pinsRef.current = { tabCopyPin, readerPin };
+  const tabCopyPinKey = tabCopyPin?.key ?? null;
+  const readerPinKey = readerPin?.key ?? null;
   const lanes = useAppStore((state) => state.lanes);
   const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
   const [prs, setPrs] = useState<PrSummary[]>([]);
@@ -169,9 +178,13 @@ export function useLanePrsByLaneId(): Map<string, PrSummary[]> {
     // `window.ade` mock); no-op gracefully so the badge just doesn't render.
     if (!window.ade?.prs) return;
     let cancelled = false;
+    const { tabCopyPin: listPin, readerPin: snapshotPin } = pinsRef.current;
+    const readSnapshot = () => (snapshotPin
+      ? getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey, pin: snapshotPin })
+      : Promise.resolve(null));
     const refresh = () => Promise.all([
-      listPrsCoalesced({ projectRoot }),
-      getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey }),
+      listPrsCoalesced({ projectRoot, pin: listPin }),
+      readSnapshot(),
     ])
       .then(([list, snapshot]) => {
         if (cancelled) return;
@@ -180,20 +193,22 @@ export function useLanePrsByLaneId(): Map<string, PrSummary[]> {
       })
       .catch(() => {});
     void refresh();
-    const unsubscribe = window.ade.prs.onEvent((event) => {
-      if (event.type !== "prs-updated") return;
-      setPrs(event.prs);
-      void getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey })
-        .then((snapshot) => {
-          if (!cancelled) setGithubPrs(snapshot?.repoPullRequests ?? []);
-        })
-        .catch(() => {});
-    });
+    const unsubscribe = listPin
+      ? window.ade.prs.onEvent((event) => {
+        if (event.type !== "prs-updated") return;
+        setPrs(event.prs);
+        void readSnapshot()
+          .then((snapshot) => {
+            if (!cancelled) setGithubPrs(snapshot?.repoPullRequests ?? []);
+          })
+          .catch(() => {});
+      }, listPin)
+      : () => undefined;
     return () => {
       cancelled = true;
       unsubscribe();
     };
-  }, [projectRoot, bindingKey]);
+  }, [projectRoot, bindingKey, tabCopyPinKey, readerPinKey]);
   // Derived, not searched. `isEligibleMachineOption` excludes the tab's own
   // machine from the union, so looking it up in `machines` would always miss and
   // the composite key would never be filled — leaving correctness resting on

@@ -64,7 +64,7 @@ type AppleHeldLease = {
    */
   epoch: number;
   /** Cleanup targets the runtime that acquired the lease, even if props move on. */
-  pin: OpenProjectBinding | null;
+  pin: OpenProjectBinding;
 };
 
 /** The lane and chat a stop names. */
@@ -107,7 +107,7 @@ export type UseAppleDeviceStreamArgs = {
    * object is rebuilt on each cross-machine merge and depending on its identity
    * would restart the stream on that timer.
    */
-  runtimePinRef: MutableRefObject<OpenProjectBinding | null>;
+  runtimePinRef: MutableRefObject<OpenProjectBinding>;
   /** Where a stream failure surfaces. Must be stable. */
   onError: (message: string | null) => void;
 };

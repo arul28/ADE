@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseDeeplink, type DeeplinkTarget } from "../../../shared/deeplinks";
 import type { WebClientEnvironmentRecord, WebRelayAccess, AdeSyncClient } from "../sync";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { WebClientEnvStore } from "../sync";
 import {
   BrowserAccountClient,
@@ -34,6 +35,7 @@ import type { WebOwnedLinkState } from "../workspace/WebWorkspaceContext";
 import { ScreenShell } from "./ScreenShell";
 import { installSessionLifecycleChrome } from "./sessionLifecycleChrome";
 import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
+import { requirePin } from "../../state/repositoryScope";
 
 async function loadFederatedAdapter(
   manager: WebMachineSessionManager,
@@ -329,6 +331,8 @@ export function WebClientRoot({
   ): Promise<OwnedLinkResult | null> => {
     const ownership = ownershipOfTarget(target);
     if (!ownership) return null;
+    // The binding the link opened; the existence checks ask that machine.
+    let openedBinding: OpenProjectBinding | null = null;
     return await resolveOwnedLink(target, ownership, {
       machines: currentMachines,
       directoryUnavailable: () => accountClient.getSnapshot().state === "directory_unavailable",
@@ -337,19 +341,20 @@ export function WebClientRoot({
       // The manager skips the switch when the project is already the open
       // one, and the adapter still has to bind the tab to it.
       openProject: async (targetId, projectId) => {
-        await adapter.openProject(targetId, projectId);
+        openedBinding = await adapter.openProject(targetId, projectId);
       },
       sessionExists: async (sessionId) => {
-        // Unpinned on purpose: the owning project was just opened, so the
-        // displayed adapter is that machine's. Authoritative, so null is "gone"
+        // The owning project was just opened. Authoritative, so null is "gone"
         // and a host that cannot answer rejects instead.
+        const pin = requirePin(openedBinding);
         return await answerWithin(
-          adapter.ade.sessions.get(sessionId, undefined, { authoritative: true }).then((detail) => detail != null),
+          adapter.ade.sessions.get(sessionId, pin, { authoritative: true }).then((detail) => detail != null),
         );
       },
       laneExists: async (laneId) => {
+        const pin = requirePin(openedBinding);
         return await answerWithin(
-          adapter.ade.lanes.list({ includeArchived: true, includeStatus: false }).then((lanes) => {
+          adapter.ade.lanes.list({ includeArchived: true, includeStatus: false }, pin).then((lanes) => {
             // A project always has its primary lane; an empty list is a read
             // that fell back, not an answer.
             if (!Array.isArray(lanes) || lanes.length === 0) return null;

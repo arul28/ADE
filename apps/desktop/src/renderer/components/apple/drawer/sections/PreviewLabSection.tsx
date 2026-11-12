@@ -151,7 +151,7 @@ export function PreviewLabSection({
       if (!changeMatchesTarget(event.path, target)) return;
       if (timer !== null) window.clearTimeout(timer);
       timer = window.setTimeout(() => { void renderCurrentRef.current(target); }, WATCH_DEBOUNCE_MS);
-    });
+    }, pin);
     void window.ade.files.listWorkspaces({}, pin)
       .then((workspaces) => {
         if (cancelled) return;

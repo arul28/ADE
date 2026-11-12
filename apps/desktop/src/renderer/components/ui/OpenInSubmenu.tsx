@@ -3,9 +3,12 @@ import { AppWindow } from "@phosphor-icons/react";
 
 import {
   editorTargetDefinition,
+  isRemoteEditorOpenRequest,
   type EditorTarget,
   type OpenPathInEditorRemote,
 } from "../../../shared/editorTargets";
+import type { OpenProjectBinding } from "../../../shared/types/core";
+import { pathElsewhereMessage } from "../files/pathOnThisComputer";
 import {
   MENU_ITEM_CLASS,
   MenuSubmenu,
@@ -18,6 +21,7 @@ import { useInstalledTargets } from "./useInstalledTargets";
 export function OpenInSubmenu({
   rootPath,
   remote,
+  pin,
   onClose,
   className = MENU_ITEM_CLASS,
   style,
@@ -27,6 +31,12 @@ export function OpenInSubmenu({
 }: {
   rootPath: string;
   remote?: OpenPathInEditorRemote | null;
+  /**
+   * The lane's copy. An editor starts on this computer: a remote editor (SSH)
+   * reaches a copy on another computer, and a local editor cannot, so the menu
+   * says where the lane is instead of opening a local path of the same name.
+   */
+  pin?: OpenProjectBinding | null;
   onClose: () => void;
   className?: string;
   style?: CSSProperties;
@@ -40,6 +50,8 @@ export function OpenInSubmenu({
   // A row that failed to launch is its own message, distinct from "detection
   // failed" — the list is still valid, one editor just would not start.
   const [openError, setOpenError] = useState<string | null>(null);
+  const viaRemoteEditor = isRemoteEditorOpenRequest(remote);
+  const elsewhere = pin && !viaRemoteEditor ? pathElsewhereMessage(pin, "This lane") : null;
   const eligible = (items ?? []).filter((target) => {
     const definition = editorTargetDefinition(target);
     if (!definition) return false;
@@ -47,12 +59,13 @@ export function OpenInSubmenu({
   });
 
   const open = async (target: EditorTarget) => {
+    if (elsewhere) return;
     try {
       await window.ade.app.openPathInEditor({
         rootPath,
         target,
         ...(remote ? { remote } : {}),
-      });
+      }, pin);
       onClose();
     } catch (reason) {
       setOpenError(reason instanceof Error ? reason.message : String(reason));
@@ -83,7 +96,9 @@ export function OpenInSubmenu({
       }}
       panelMinWidth={230}
     >
-      {items === null ? (
+      {elsewhere ? (
+        <MenuSubmenuStatus>{elsewhere}</MenuSubmenuStatus>
+      ) : items === null ? (
         <MenuSubmenuStatus>Detecting editors…</MenuSubmenuStatus>
       ) : eligible.length > 0 ? (
         eligible.map((target) => {

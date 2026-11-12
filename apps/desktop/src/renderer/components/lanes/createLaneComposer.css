@@ -325,6 +325,7 @@
 .cl-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .cl-foot-hint { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--kit-text-3); white-space: nowrap; }
 .cl-foot-hint[data-tone="warn"] { color: var(--kit-warn); }
+.cl-foot-starts-on { min-width: 0; max-width: 240px; overflow: hidden; text-overflow: ellipsis; color: var(--kit-text-2); }
 .cl-foot-hint kbd {
   display: inline-block;
   min-width: 18px;

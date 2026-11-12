@@ -175,6 +175,9 @@ const EMPTY_BOARD: Record<WorkBoardColumn, TerminalSessionSummary[]> = {
 
 const WAITING_REASONS = new Map<string, WorkBoardWaitingReason>([["s-ci", "ci"]]);
 
+/** The tab's own copy: its rows carry no binding and resolve to this machine. */
+const BOARD_PIN = { kind: "local", key: "local:/tmp/repo", rootPath: "/tmp/repo", displayName: "repo" } as const;
+
 function renderBoard(props: Partial<ComponentProps<typeof SessionListPane>> = {}) {
   const all = Object.values(FULL_BOARD).flat();
   return render(
@@ -208,7 +211,7 @@ function renderBoard(props: Partial<ComponentProps<typeof SessionListPane>> = {}
         workCollapsedSectionIds={[]}
         toggleWorkSectionCollapsed={vi.fn()}
         sessionsGroupedByLane={new Map()}
-        resolveSessionRuntimePin={() => null}
+        resolveSessionRuntimePin={() => BOARD_PIN}
         {...props}
       />
     </MemoryRouter>,
@@ -530,7 +533,8 @@ describe("WorkKanbanBoard", () => {
 
     fireDrag(column("done"), "drop", dt);
     expect(moveOnBoard).toHaveBeenCalledTimes(1);
-    expect(moveOnBoard.mock.calls[0]!.slice(0, 2)).toEqual(["s-needs", "done"]);
+    // A row of the tab's own copy moves on that copy's machine.
+    expect(moveOnBoard.mock.calls[0]).toEqual(["s-needs", "done", BOARD_PIN]);
   });
 
   it("sends the action's column name for Needs you, not the board's label", () => {

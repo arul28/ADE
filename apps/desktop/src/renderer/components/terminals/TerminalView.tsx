@@ -60,6 +60,7 @@ import type {
   TerminalSnapshotRow,
   TerminalSessionStatus,
 } from "../../../shared/types";
+import { requireChatPin } from "../chat/chatMachinePin";
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
 type TerminalRendererMode = "webgl" | "dom";
@@ -867,16 +868,16 @@ function scheduleFailedPtyResizeRetry(runtime: CachedRuntime, dims: TerminalDims
 }
 
 function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
-  if (runtime.disposed) return;
+  // A terminal with no known machine has no PTY to resize.
+  const runtimePin = runtime.runtimePin;
+  if (runtime.disposed || !runtimePin) return;
   runtime.ptyResizeInFlight = true;
   runtime.inFlightPtyResizeDims = dims;
   reportTerminalDimsMismatch(runtime, { reason: "pty-resize-send", sentResize: dims });
-  const resize = runtime.runtimePin
-    ? window.ade.pty.resize(
-        { ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows },
-        runtime.runtimePin,
-      )
-    : window.ade.pty.resize({ ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows });
+  const resize = window.ade.pty.resize(
+    { ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows },
+    runtimePin,
+  );
   resize
     .then(
       () => {
@@ -1153,8 +1154,7 @@ function updatePtyDataSubscriptions(removedRuntime?: CachedRuntime): void {
     && pinnedPtyDataSubscriptionSignatures.size === 0
     && !removedRuntime?.runtimePin
   ) {
-    // Preserve the original unpinned subscription path: one Set, one sorted
-    // array, the existing signature check, and the one-argument preload call.
+    // Only runtimes with no known machine: track the signature, ask nothing.
     const ptyIds = new Set<string>();
     for (const [ptyId, runtimes] of ptyDataRuntimesByPtyId) {
       for (const runtime of runtimes) {
@@ -1170,9 +1170,7 @@ function updatePtyDataSubscriptions(removedRuntime?: CachedRuntime): void {
     if (signature === ptyDataSubscriptionSignature) return;
     ptyDataSubscriptionSignature = signature;
 
-    const setDataSubscriptions = window.ade.pty.setDataSubscriptions;
-    if (typeof setDataSubscriptions !== "function") return;
-    setDataSubscriptions({ ptyIds: next }).catch(() => {});
+    // A runtime with no known machine has no data feed to ask for.
     return;
   }
 
@@ -1209,11 +1207,7 @@ function updatePtyDataSubscriptions(removedRuntime?: CachedRuntime): void {
     const signature = next.join("\0");
     if (signature !== ptyDataSubscriptionSignature) {
       ptyDataSubscriptionSignature = signature;
-      if (typeof setDataSubscriptions === "function") {
-        // The overwhelmingly common local path intentionally retains the
-        // original one-argument call shape and allocation count.
-        setDataSubscriptions({ ptyIds: next }).catch(() => {});
-      }
+      // A runtime with no known machine has no data feed to ask for.
     }
   }
 
@@ -1320,11 +1314,9 @@ function clearPtyInputFlushTimer(runtime: CachedRuntime): void {
 
 function writePtyInputNow(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
-  if (runtime.runtimePin) {
-    window.ade.pty.write({ ptyId: runtime.ptyId, data }, runtime.runtimePin).catch(() => {});
-    return;
-  }
-  window.ade.pty.write({ ptyId: runtime.ptyId, data }).catch(() => {});
+  // A terminal with no known machine has no PTY to write to.
+  if (!runtime.runtimePin) return;
+  window.ade.pty.write({ ptyId: runtime.ptyId, data }, runtime.runtimePin).catch(() => {});
 }
 
 function consumePendingPtyInput(runtime: CachedRuntime): string {
@@ -2304,10 +2296,8 @@ function subscribeRuntimePtyData(runtime: CachedRuntime): () => void {
         ),
       );
     }
-  } else if (!sharedPtyDataUnsub) {
-    // Keep the original active-project listener and call arity untouched.
-    sharedPtyDataUnsub = window.ade.pty.onData((ev) => dispatchPtyDataEvent(ev, null));
   }
+  // A runtime with no known machine has no feed.
   return () => {
     removeRuntimePtySubscription(ptyDataRuntimesByPtyId, runtime);
     if (runtime.runtimePin) pinnedPtyRuntimeCount = Math.max(0, pinnedPtyRuntimeCount - 1);
@@ -2345,10 +2335,8 @@ function subscribeRuntimePtyExit(runtime: CachedRuntime): () => void {
         ),
       );
     }
-  } else if (!sharedPtyExitUnsub) {
-    // Keep the original active-project listener and call arity untouched.
-    sharedPtyExitUnsub = window.ade.pty.onExit((ev) => dispatchPtyExitEvent(ev, null));
   }
+  // A runtime with no known machine has no feed.
   return () => {
     removeRuntimePtySubscription(ptyExitRuntimesByPtyId, runtime);
     if (subscriptionKey && !hasRuntimeForSubscriptionKey(ptyExitRuntimesByPtyId, subscriptionKey)) {
@@ -2417,10 +2405,8 @@ async function readPreviewHydrationData(
         terminalId: runtime.sessionId,
         maxBytes: HYDRATE_TAIL_BYTES,
       }, runtime.runtimePin)
-    : await window.ade.terminal.preview({
-        terminalId: runtime.sessionId,
-        maxBytes: HYDRATE_TAIL_BYTES,
-      });
+    // No machine for the session: there is no screen to read.
+    : null;
   if (preview?.snapshot) {
     reportTerminalDimsMismatch(runtime, {
       reason: "snapshot-hydrate",
@@ -2442,9 +2428,7 @@ async function readTerminalInputModeRefreshData(runtime: CachedRuntime): Promise
       maxBytes: HYDRATE_TAIL_BYTES,
       raw: true,
     };
-    transcript = (runtime.runtimePin
-      ? await window.ade.sessions.readTranscriptTail(args, runtime.runtimePin)
-      : await window.ade.sessions.readTranscriptTail(args)) || "";
+    transcript = (await window.ade.sessions.readTranscriptTail(args, requireChatPin(runtime.runtimePin))) || "";
     if (hasTerminalPrivateModeSequence(transcript, TERMINAL_BRACKETED_PASTE_MODE)) {
       return transcript;
     }
@@ -2458,10 +2442,8 @@ async function readTerminalInputModeRefreshData(runtime: CachedRuntime): Promise
           terminalId: runtime.sessionId,
           maxBytes: HYDRATE_TAIL_BYTES,
         }, runtime.runtimePin)
-      : await window.ade.terminal.preview({
-          terminalId: runtime.sessionId,
-          maxBytes: HYDRATE_TAIL_BYTES,
-        });
+      // No machine for the session: there is no screen to read.
+      : null;
     const snapshot = preview?.snapshot?.serialized ?? "";
     const previewTranscript = preview?.transcript ?? "";
     return `${snapshot}${previewTranscript}${transcript}`;
@@ -2478,9 +2460,7 @@ async function readReplayHydrationData(runtime: CachedRuntime): Promise<InitialH
     maxBytes: REPLAY_TRANSCRIPT_MAX_BYTES,
     raw: true,
   };
-  const data = runtime.runtimePin
-    ? await window.ade.sessions.readTranscriptTail(args, runtime.runtimePin)
-    : await window.ade.sessions.readTranscriptTail(args);
+  const data = await window.ade.sessions.readTranscriptTail(args, requireChatPin(runtime.runtimePin));
   if (!data) return { source: "empty", text: "" };
   return { source: "replay", text: stripFullScreenRedrawSequences(data) };
 }
@@ -2521,9 +2501,7 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
   let sessionStatus: TerminalSessionStatus | null = null;
   let sessionExitCode: number | null = null;
   try {
-    const detail = runtime.runtimePin
-      ? await window.ade.sessions.get(runtime.sessionId, runtime.runtimePin)
-      : await window.ade.sessions.get(runtime.sessionId);
+    const detail = await window.ade.sessions.get(runtime.sessionId, requireChatPin(runtime.runtimePin));
     sessionStatus = detail?.status ?? null;
     sessionExitCode = detail?.exitCode ?? null;
   } catch {
@@ -2547,10 +2525,8 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
           terminalId: runtime.sessionId,
           maxBytes: HYDRATE_TAIL_BYTES,
         }, runtime.runtimePin)
-      : await window.ade.terminal.preview({
-          terminalId: runtime.sessionId,
-          maxBytes: HYDRATE_TAIL_BYTES,
-        });
+      // No machine for the session: there is no screen to read.
+      : null;
     const previewSessionStatus = preview?.session?.status ?? sessionStatus;
     const previewSessionExitCode = preview?.session?.exitCode ?? sessionExitCode;
 
@@ -2585,9 +2561,7 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
     maxBytes: HYDRATE_TAIL_BYTES,
     raw: true,
   };
-  const transcript = runtime.runtimePin
-    ? await window.ade.sessions.readTranscriptTail(transcriptArgs, runtime.runtimePin)
-    : await window.ade.sessions.readTranscriptTail(transcriptArgs);
+  const transcript = await window.ade.sessions.readTranscriptTail(transcriptArgs, requireChatPin(runtime.runtimePin));
   return transcript
     ? { source: "transcript", text: transcript }
     : { source: "empty", text: "" };

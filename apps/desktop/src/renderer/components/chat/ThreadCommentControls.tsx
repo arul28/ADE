@@ -11,6 +11,7 @@ import { Banner } from "../ui/notice";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { parseMessageAuthor } from "../../../shared/messageAuthor";
+import { requireChatPin } from "./chatMachinePin";
 import {
   countCommentsForNextSend,
   isLocalThreadComment,
@@ -59,14 +60,14 @@ export function useThreadCommentActions(
     if (!sessionId || isLocalThreadComment(commentId)) return null;
     // The change shows at once; if the host refuses it, show the host's list again.
     patchThreadComment(sessionId, commentId, patch);
-    const result = await run(() => threadCommentsApi()?.update({ sessionId, commentId, ...patch }, pin ?? null));
+    const result = await run(() => threadCommentsApi()?.update({ sessionId, commentId, ...patch }, requireChatPin(pin)));
     if (!result) void refreshThreadComments(sessionId, pin);
     return result;
   };
   const remove = async (commentId: string) => {
     if (!sessionId || isLocalThreadComment(commentId)) return null;
     removeThreadCommentLocally(sessionId, commentId);
-    const result = await run(() => threadCommentsApi()?.delete({ sessionId, commentId }, pin ?? null));
+    const result = await run(() => threadCommentsApi()?.delete({ sessionId, commentId }, requireChatPin(pin)));
     // The row went early; if the host kept it, show the host's list again.
     if (!result) void refreshThreadComments(sessionId, pin);
     return result;

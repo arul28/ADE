@@ -1,9 +1,8 @@
 import { MachineChip } from "../shared/MachineChip";
-import { machineChipFor, shouldShowMachineChips } from "../../state/laneMachineRouting";
-import { useTimelineStore } from "./useTimelineStore";
+import { rowMachineChip } from "../../state/laneMachineRouting";
 import type { TimelineMachineTag } from "./timelineTypes";
 
-/** Which machine recorded an event; shown on every row once History spans machines. */
+/** Which machine recorded an event; shown only when it is not this computer. */
 export function EventMachineChip({
   event,
   compact = false,
@@ -12,9 +11,8 @@ export function EventMachineChip({
   /** Icon only: the dense timeline tables have no width to spare. */
   compact?: boolean;
 }) {
-  const machineCount = useTimelineStore((s) => s.machines.length);
-  if (!event.machine || !shouldShowMachineChips(machineCount)) return null;
-  return <MachineChip subject="This event" compact={compact} machine={machineChipFor(event.machine)} />;
+  const chip = rowMachineChip(event.machine);
+  return chip ? <MachineChip subject="This event" compact={compact} machine={chip} /> : null;
 }
 
 /** Rows from an offline machine stay visible but read as inert. */

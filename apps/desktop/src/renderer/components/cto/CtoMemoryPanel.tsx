@@ -297,7 +297,7 @@ export function CtoMemoryPanel({ accent = "#34D399" }: { accent?: string } = {})
 
   const load = useCallback(async () => {
     const bridge = window.ade?.cto;
-    if (!bridge?.getMemory) {
+    if (!bridge?.getMemory || !ctoPin) {
       setLoading(false);
       return;
     }
@@ -310,7 +310,9 @@ export function CtoMemoryPanel({ accent = "#34D399" }: { accent?: string } = {})
     } finally {
       setLoading(false);
     }
-  }, [ctoPin]);
+    // Keyed on the pin's key: a rebuilt pin for the same machine reads nothing new.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctoPin?.key]);
 
   useEffect(() => {
     void load();
@@ -320,7 +322,7 @@ export function CtoMemoryPanel({ accent = "#34D399" }: { accent?: string } = {})
 
   const handleSave = useCallback(async () => {
     const bridge = window.ade?.cto;
-    if (!bridge?.updateMemory) return;
+    if (!bridge?.updateMemory || !ctoPin) return;
     setSaving(true);
     setError(null);
     try {

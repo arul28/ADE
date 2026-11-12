@@ -18,9 +18,12 @@ beforeEach(() => {
 /** §B1's four, in order. Nine flat sections are gone. */
 const GROUPS = ["Device", "App", "Capture", "Preview Lab"];
 
+/** The lane's machine: the drawer's device calls go there. */
+const DEVICE_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 function props(overrides: Partial<AppleToolsDrawerProps> = {}): AppleToolsDrawerProps {
   return {
-    pin: null,
+    pin: DEVICE_PIN,
     laneId: "lane-1",
     device: DEVICE,
     visible: true,
@@ -107,7 +110,7 @@ describe("AppleToolsDrawer", () => {
     expect(iosSimulator.getForegroundApp).not.toHaveBeenCalled();
     fireEvent.click(header("App"));
     await waitFor(() => expect(screen.getByTestId("apple-drawer-foreground").textContent).toBe("com.other.fromxcode"));
-    expect(iosSimulator.getForegroundApp).toHaveBeenCalledWith({ laneId: "lane-1", deviceUdid: "UDID-1" }, null);
+    expect(iosSimulator.getForegroundApp).toHaveBeenCalledWith({ laneId: "lane-1", deviceUdid: "UDID-1" }, DEVICE_PIN);
     expect(iosSimulator.getStatus).not.toHaveBeenCalled();
   });
 
@@ -138,7 +141,7 @@ describe("AppleToolsDrawer", () => {
     render(<AppleToolsDrawer {...props()} />);
     await waitFor(() => expect(iosSimulator.getDeviceSettings).toHaveBeenCalledWith(
       { laneId: "lane-1", deviceUdid: "UDID-1", chatSessionId: null },
-      null,
+      DEVICE_PIN,
     ));
   });
 

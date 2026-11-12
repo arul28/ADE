@@ -367,7 +367,7 @@ function useProjectChoices(kind: NotifyLinkKind, pin: OpenProjectBinding | null)
   }, [pin, pinnedLanes, wantsLanes]);
 
   useEffect(() => {
-    if (!wantsSessions || sessions) return;
+    if (!pin || !wantsSessions || sessions) return;
     let cancelled = false;
     void window.ade.sessions.list({ limit: 60 }, pin)
       .then((rows) => { if (!cancelled) setSessions(rows); })
@@ -376,7 +376,7 @@ function useProjectChoices(kind: NotifyLinkKind, pin: OpenProjectBinding | null)
   }, [pin, sessions, wantsSessions]);
 
   useEffect(() => {
-    if (!wantsPrs || prs) return;
+    if (!pin || !wantsPrs || prs) return;
     let cancelled = false;
     void window.ade.prs.listAll(pin)
       .then((rows) => { if (!cancelled) setPrs(rows); })
@@ -708,7 +708,7 @@ export function NotifyStepEditor({
 
   const sendTest = async () => {
     const send = window.ade?.attention?.sendNotification;
-    if (!isAdeAvailable(send) || titleProblem) return;
+    if (!isAdeAvailable(send) || titleProblem || !runtimePin) return;
     setTest({ state: "sending" });
     try {
       // A link with trigger values has nothing to fill them with yet, so the

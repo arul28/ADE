@@ -30,6 +30,7 @@ import { HelpHint } from "../primitives/HelpHint";
 import { ModernSection } from "../primitives/SettingsModern";
 import "./customProviders.css";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
+import { useSettingsReadPin } from "../ProjectCopyScope";
 import { useApiCredentialsPin } from "../providers/keys/useApiCredentials";
 import { bodyLogoFamily } from "./presetFacts";
 import { CustomHero, CustomEquation } from "./CustomProviderHero";
@@ -105,7 +106,9 @@ export function CustomProvidersSection({
     if (!error) return;
     showToast({ tone: "warning", title: "Not on your ADE account yet", message: error });
   }, []);
-  const reach = useHarnessReach({ enabled: true, pin });
+  // The accounts read names this page's machine, This computer included.
+  const readPin = useSettingsReadPin();
+  const reach = useHarnessReach({ enabled: true, pin: readPin });
   const [dialog, setDialog] = useState<DialogState>({ mode: "closed" });
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
