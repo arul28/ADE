@@ -7352,6 +7352,10 @@ export function AgentChatPane({
     && !turnActive
     && activeProviderConnection
     && !activeProviderConnection.runtimeAvailable
+    // ADE's copy is downloading, or downloads at this chat's first turn: an
+    // expected wait the chat shows itself ("Getting <agent> ready" on the
+    // turn), never a runtime problem with a Report button.
+    && activeProviderConnection.runtimeDownloadPending !== true
     // ADE's copy is there and only the login is missing: the sign-in card in
     // the composer says that, with the button that fixes it. Where that card
     // cannot show (a personal chat, a subagent's view, a provider signed in
