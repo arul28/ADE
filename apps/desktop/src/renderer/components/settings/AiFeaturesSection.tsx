@@ -6,7 +6,7 @@ import type {
 import { Clock } from "@phosphor-icons/react";
 import { showToast } from "../app/toast/toastStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
-import { NoProjectCopyNotice, ProjectCopyBar, settingsCopyScope, useProjectCopyPage } from "./ProjectCopyScope";
+import { onlineCopyPin, ProjectCopyBar, ProjectCopyUnavailable, settingsCopyScope, useProjectCopyPage } from "./ProjectCopyScope";
 
 /**
  * Scheduled work: the global pause, then the live job list in the same panel,
@@ -17,7 +17,8 @@ export function AiFeaturesSection() {
   // Scheduled work is saved in each copy of the project: the page reads the
   // copy picked here, the tab's copy by default.
   const copy = useProjectCopyPage(settingsCopyScope("notifications"));
-  const pin = copy.page?.pin ?? null;
+  // No call while the copy's computer is offline.
+  const pin = onlineCopyPin(copy);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [configLoadFailed, setConfigLoadFailed] = useState(false);
@@ -107,7 +108,7 @@ export function AiFeaturesSection() {
   if (!pin) {
     return (
       <ModernSection group="Scheduled work" title="Scheduled work" hint="Jobs agents schedule.">
-        <NoProjectCopyNotice />
+        <ProjectCopyUnavailable copy={copy} />
       </ModernSection>
     );
   }

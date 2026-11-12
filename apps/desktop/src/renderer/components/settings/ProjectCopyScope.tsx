@@ -6,7 +6,7 @@ import { useActiveRepositoryCopies, useCopyPick, useOnlineCopyPins, useTabCopyPi
 import { Banner } from "../ui/notice";
 import { MachinePicker } from "./ProvidersMachinePicker";
 import { settingsMachineScope, SettingsMachineScopeProvider, useSettingsMachineScope } from "./SettingsMachineScope";
-import { settingsMachinePageFor, type SettingsMachinePage } from "./SettingsMachinesNav";
+import { MachineUnavailableNotice, settingsMachinePageFor, type SettingsMachinePage } from "./SettingsMachinesNav";
 import { useSettingsMachines } from "./machines/settingsMachinesContext";
 import "./machines/machinesPage.css";
 
@@ -174,6 +174,26 @@ export function NoProjectCopyNotice() {
   );
 }
 
+/** The pin a project block calls through: the picked copy, only while its computer is online. */
+export function onlineCopyPin(copy: ProjectCopyPage): OpenProjectBinding | null {
+  return copy.page?.online ? copy.page.pin : null;
+}
+
+/**
+ * What a project block shows in place of its settings when it cannot call:
+ * the picked copy's computer is offline (the line still offers the others),
+ * or no computer with a copy is online.
+ */
+export function ProjectCopyUnavailable({ copy }: { copy: ProjectCopyPage }) {
+  if (!copy.page) return <NoProjectCopyNotice />;
+  return (
+    <>
+      <ProjectCopyBar copy={copy} />
+      <MachineUnavailableNotice machine={copy.page} />
+    </>
+  );
+}
+
 /**
  * Hands a project page the picked copy as its machine scope. Keyed by the
  * copy, so nothing one copy loaded lingers into, or is saved onto, another.
@@ -199,7 +219,7 @@ export function ProjectCopyScopeProvider({
  */
 export function ProjectCopyBlock({ page, children }: { page: string; children: React.ReactNode }) {
   const copy = useProjectCopyPage(settingsCopyScope(page));
-  if (!copy.page) return <NoProjectCopyNotice />;
+  if (!copy.page || !onlineCopyPin(copy)) return <ProjectCopyUnavailable copy={copy} />;
   return (
     <ProjectCopyScopeProvider page={copy.page}>
       <ProjectCopyBar copy={copy} />

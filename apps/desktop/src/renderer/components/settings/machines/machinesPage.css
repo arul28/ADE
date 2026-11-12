@@ -610,4 +610,10 @@ button.ade-mx-hero-chip {
 /* The copy line above a project page sits close to the page it names. */
 .ade-copy-scope-column {
   padding-bottom: 0;
+  /* The page stack spaces its children 32px apart; the line sits nearer both. */
+  margin-top: -12px;
+  margin-bottom: -18px;
+}
+.ade-copy-scope-column .ade-copy-scope {
+  margin-bottom: 0;
 }

@@ -28,8 +28,7 @@ import { settingsRouteFor } from "../settingsManifest";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { isDegradedSyncSnapshot } from "../../../lib/localSyncStatusReader";
 import type { OpenProjectBinding } from "../../../../shared/types";
-import { useCopyPick } from "../../../state/repositoryScope";
-import { settingsCopyScope, useThisComputerCopyPin } from "../ProjectCopyScope";
+import { onlineCopyPin, settingsCopyScope, useProjectCopyPage, useThisComputerCopyPin } from "../ProjectCopyScope";
 
 /**
  * Settings → General's "Needs attention": every problem ADE can see, from
@@ -593,8 +592,9 @@ export function attentionAgentPrompt(items: readonly AttentionItem[], projectRoo
  * computer's copy when it has one, the machine General is about.
  */
 export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
-  const locationPin = useCopyPick(settingsCopyScope("location"), hasProject).pin;
-  const integrationsPin = useCopyPick(settingsCopyScope("integrations"), hasProject).pin;
+  // Only a copy whose computer is online: an offline one is not called.
+  const locationPin = onlineCopyPin(useProjectCopyPage(settingsCopyScope("location"), hasProject));
+  const integrationsPin = onlineCopyPin(useProjectCopyPage(settingsCopyScope("integrations"), hasProject));
   const thisComputerPin = useThisComputerCopyPin(hasProject);
   const projectPin = hasProject ? locationPin : null;
   const connectionsPin = hasProject ? integrationsPin : null;
