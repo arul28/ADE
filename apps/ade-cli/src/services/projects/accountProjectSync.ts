@@ -161,7 +161,7 @@ export function accountProjectStatePath(adeDir: string): string {
   return path.join(adeDir, STATE_FILE);
 }
 
-export function readAccountProjectState(adeDir: string): AccountProjectSyncState {
+export function readAccountProjectState(adeDir: string, logger?: Logger): AccountProjectSyncState {
   try {
     const parsed = JSON.parse(fs.readFileSync(accountProjectStatePath(adeDir), "utf8")) as Partial<AccountProjectSyncState>;
     if (!parsed || typeof parsed !== "object" || parsed.version !== STATE_VERSION) return emptyState();
@@ -173,7 +173,12 @@ export function readAccountProjectState(adeDir: string): AccountProjectSyncState
       repoLookups: parsed.repoLookups && typeof parsed.repoLookups === "object" ? parsed.repoLookups : {},
       fills: parsed.fills && typeof parsed.fills === "object" ? parsed.fills : {},
     };
-  } catch {
+  } catch (error) {
+    // A missing file is the normal first run. Any other failure (a corrupt or
+    // unreadable file) resets the state, so the log must say that it happened.
+    if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
+      logger?.warn?.("account_projects.state_read_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
     return emptyState();
   }
 }
@@ -484,7 +489,8 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
         let result: GithubRepoLookupResult;
         try {
           result = await options.lookupRepo({ host: identity.host, owner: identity.owner, name: identity.name });
-        } catch {
+        } catch (error) {
+          logger.warn?.("account_projects.repo_lookup_threw", { error: error instanceof Error ? error.message : String(error) });
           result = { kind: "unavailable", reason: "lookup_threw" };
         }
         state.repoLookups[identity.repoKey] = nextLookupEntry(state.repoLookups[identity.repoKey], result, now());
@@ -561,7 +567,7 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
       if (key === lastGate.key && at < lastGate.dueAt && at - lastGate.at < FULL_RECHECK_MS) return;
     }
 
-    const loaded = readAccountProjectState(options.adeDir);
+    const loaded = readAccountProjectState(options.adeDir, logger);
     const state = stateForAccount(loaded, userId);
     const switched = state !== loaded;
     if (switched) logger.info?.("account_projects.account_changed", { hadAccount: loaded.userId !== null });
