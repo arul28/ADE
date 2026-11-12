@@ -625,7 +625,10 @@ struct HubCopyRow<Trailing: View>: View {
       }
       .layoutPriority(1)
       Spacer(minLength: 8)
+      // A button keeps its label ("Wake", "Open"); the status line gives way.
       trailing()
+        .fixedSize()
+        .layoutPriority(2)
     }
     .padding(.horizontal, ADEKit.inset)
     .padding(.vertical, 10)
@@ -855,7 +858,7 @@ struct AccountProjectHomeScreen: View {
             dismiss()
             onRemoved(text)
           }
-          .presentationDetents([.medium, .large])
+          .hubAccountPageDetents()
         }
       }
     }
@@ -907,15 +910,21 @@ struct AccountProjectHomeScreen: View {
             }
           }
         }
-        Button {
-          locationPresented = true
-        } label: {
-          Label("Location", systemImage: "folder")
-            .font(.system(size: 14, weight: .medium))
+        // A row like Pull requests below it, not a bare text link.
+        ADESettingsRows {
+          Button {
+            locationPresented = true
+          } label: {
+            ADESettingsRow(title: "Location", hint: "Where each computer keeps its copy", symbol: "folder", tint: .slate) {
+              ADESettingsChevron()
+            }
+          }
+          .buttonStyle(ADEKitRowButtonStyle())
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(ADEColor.accent)
-        .padding(.top, 4)
+      }
+
+      if project.host == "github.com", let repo = GitHubDirectRepoRef(owner: project.owner, name: project.name) {
+        pullRequestsLink(repo, computerName: held.first?.machine?.displayName)
       }
 
       Button(role: .destructive) {
@@ -927,6 +936,26 @@ struct AccountProjectHomeScreen: View {
       }
       .buttonStyle(.plain)
       .padding(.top, 6)
+    }
+  }
+
+  /// The project's open PRs, read straight from GitHub (spec 3.10): this
+  /// screen shows a project with no computer the phone is on.
+  private func pullRequestsLink(_ repo: GitHubDirectRepoRef, computerName: String?) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("On GitHub")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+      ADESettingsRows {
+        NavigationLink {
+          PrDirectListScreen(repo: repo, computerName: computerName)
+        } label: {
+          ADESettingsRow(title: "Pull requests", hint: repo.fullName, symbol: "arrow.triangle.pull", tint: .violet) {
+            ADESettingsChevron()
+          }
+        }
+        .buttonStyle(ADEKitRowButtonStyle())
+      }
     }
   }
 
