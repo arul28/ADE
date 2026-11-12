@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb, type AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
+import { windowsScaledTimeout } from "../../../vitest.timeouts";
 import { createSharedSyncListener } from "./sharedSyncListener";
 import { createSyncCloudRelayStore } from "./syncCloudRelayStore";
 import { createSyncService, type SyncService } from "./syncService";
@@ -573,7 +574,7 @@ describe("sync loopback collision recovery", () => {
     } finally {
       await listener.close();
     }
-  }, 15_000);
+  }, windowsScaledTimeout(15_000));
 
   // Finding #3 (bound): a persistently-shadowed ephemeral bind must still
   // terminate with a failure rather than spin forever.
@@ -597,5 +598,5 @@ describe("sync loopback collision recovery", () => {
     } finally {
       await listener.close();
     }
-  }, 15_000);
+  }, windowsScaledTimeout(15_000));
 });
