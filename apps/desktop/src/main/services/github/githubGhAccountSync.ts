@@ -293,14 +293,24 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
   };
 
   // Each write names the account it was decided for; the vault refuses it
-  // once a different account is signed in.
-  const setVaultValue = async (vault: AccountVaultBridge, value: object, userId: string): Promise<boolean> => {
+  // once a different account is signed in. A sync's write also names the
+  // revision it read: the vault refuses it when the item changed since (a
+  // removal on another machine, a newer login), so a decision made on an old
+  // copy never replaces a newer one. A refusal is not a failure: nothing is
+  // recorded, and the next sync reads again and decides again.
+  const setVaultValue = async (
+    vault: AccountVaultBridge,
+    value: object,
+    userId: string,
+    expectedRevision: string | undefined,
+  ): Promise<boolean> => {
     try {
       const result = await vault.set(vaultRef.scope, vaultRef.kind, vaultRef.key, JSON.stringify(value), {
         expectedAccountUserId: userId,
+        ...(expectedRevision !== undefined ? { expectedRevision } : {}),
       });
       if (result.ok) return true;
-      logFailure("set", result);
+      if (!("stale" in result)) logFailure("set", result);
       return false;
     } catch (error) {
       logFailure("set", error);
@@ -308,11 +318,18 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
     }
   };
 
-  const removeVaultValue = async (vault: AccountVaultBridge, userId: string): Promise<boolean> => {
+  const removeVaultValue = async (
+    vault: AccountVaultBridge,
+    userId: string,
+    expectedRevision: string | undefined,
+  ): Promise<boolean> => {
     try {
-      const result = await vault.remove(vaultRef.scope, vaultRef.kind, vaultRef.key, { expectedAccountUserId: userId });
+      const result = await vault.remove(vaultRef.scope, vaultRef.kind, vaultRef.key, {
+        expectedAccountUserId: userId,
+        ...(expectedRevision !== undefined ? { expectedRevision } : {}),
+      });
       if (result.ok) return true;
-      logFailure("remove", result);
+      if (!("stale" in result)) logFailure("remove", result);
       return false;
     } catch (error) {
       logFailure("remove", error);
@@ -365,7 +382,7 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
       } else if (!accountToken || published !== localDigest) {
         // No copy yet, or a new login here since this machine last published:
         // the newest login becomes the account's copy.
-        if (await setVaultValue(vault, { v: 1, token: local.token }, userId)) {
+        if (await setVaultValue(vault, { v: 1, token: local.token }, userId, read.revision)) {
           writePublishedDigest(userId, localDigest);
           accountToken = local.token;
           collisionLogged = false;
@@ -381,7 +398,7 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
       // this machine published; a newer login from another machine stays.
       if (!accountToken || tokenDigest(accountToken) !== published) {
         writePublishedDigest(userId, null);
-      } else if (await removeVaultValue(vault, userId)) {
+      } else if (await removeVaultValue(vault, userId, read.revision)) {
         accountToken = null;
         writePublishedDigest(userId, null);
         args.logger?.info?.("github.gh_account_released", {});
