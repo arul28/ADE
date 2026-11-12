@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { AccountProjectView } from "../../../../desktop/src/shared/accountProject";
 import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
 import {
   captureAdeMcpAnalytics,
@@ -126,6 +127,8 @@ export function createRemoteMcpService(args: {
   activityPath: string;
   machineName: () => string;
   listProjects: () => RemoteMcpProject[];
+  /** The account's projects as this computer last read them (see `RemoteMcpProtocolDeps`). */
+  accountProjects?: () => Readonly<Record<string, AccountProjectView>> | null;
   /** The provider and model this computer last launched a chat with. */
   launchDefaults?: () => { provider: string; model: string; reasoningEffort?: string | null } | null;
   logger?: {
@@ -618,6 +621,7 @@ export function createRemoteMcpService(args: {
   const protocol = createRemoteMcpProtocol({
     machineName: args.machineName,
     listProjects: args.listProjects,
+    ...(args.accountProjects ? { accountProjects: args.accountProjects } : {}),
     ...(args.launchDefaults ? { launchDefaults: args.launchDefaults } : {}),
     record,
     warn: (event, data) => args.logger?.warn?.(event, data),

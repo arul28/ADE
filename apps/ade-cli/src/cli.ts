@@ -37960,6 +37960,10 @@ function formatProviderAccounts(value: unknown): string {
   );
 }
 
+const ACCOUNT_SIGN_IN_NEXT_STEP =
+  "Sign in with `ade login` (`ade login --headless` on a computer with no browser), "
+  + "or set ADE_ACCOUNT_TOKEN from `ade account token create` for CI and agents.";
+
 /**
  * `ade projects list --account`: the account's projects with a computer name
  * on each copy. Signed out or not read yet throws with the next step, so a
@@ -37968,7 +37972,7 @@ function formatProviderAccounts(value: unknown): string {
 function shapeAccountProjects(list: unknown, roster: unknown): JsonObject {
   const state = isRecord(list) ? asString(list.state) : null;
   if (state === "signed_out") {
-    throw new CliUsageError("ADE projects belong to your ADE account. Sign in with `ade login`, then run this again.");
+    throw new CliUsageError(`ADE projects belong to your ADE account. ${ACCOUNT_SIGN_IN_NEXT_STEP}`);
   }
   if (state !== "ready") {
     throw new CliExecutionError("ADE has not read your account's projects on this computer yet.", {
@@ -41231,7 +41235,7 @@ async function applyAccountProjectSelector(options: GlobalOptions): Promise<void
   if (selector.kind === "id" && !listed) {
     throw new CliUsageError(
       `ADE has not read your account's projects on this computer, so it cannot find ${selector.id}. `
-      + "Sign in with `ade login`; `ade doctor` shows the account state.",
+      + `${ACCOUNT_SIGN_IN_NEXT_STEP} \`ade doctor\` shows the account state.`,
     );
   }
   const resolved = resolveAccountProject(selector, listed ? state.projects : {});
