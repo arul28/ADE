@@ -84,6 +84,11 @@ export function createGithubSessionEnv(deps: {
   readGrant: AppGrantReader;
   /** The owner of the project's GitHub repository, or null. */
   readRepoOwner: () => Promise<string | null>;
+  /**
+   * The owner from the repository's own config file, no process started; null
+   * when it does not say. Lets the first chat of a project know the owner.
+   */
+  peekRepoOwner?: () => string | null;
   hasOwnGhLogin?: (env: NodeJS.ProcessEnv) => boolean;
   now?: () => number;
 }) {
@@ -92,15 +97,18 @@ export function createGithubSessionEnv(deps: {
   let lastOwner: string | null = null;
   let warming: Promise<unknown> | null = null;
 
-  const envFor = (token: string, env: NodeJS.ProcessEnv, owner: string): GithubSessionEnv => {
+  /** The per-call shim for `owner`, or null when the shim is off. */
+  const shimFor = (env: NodeJS.ProcessEnv, owner: string): GithubSessionEnv | null => {
     const shim = githubShellShimEnv(env, owner);
-    if (!shim) return { GH_TOKEN: token, [GH_TOKEN_SOURCE_ENV]: GH_TOKEN_SOURCE_ACCOUNT_APP };
+    if (!shim) return null;
     // A frozen token an older ADE parent left would outlive its renewal: empty it.
     if (env[GH_TOKEN_SOURCE_ENV] === GH_TOKEN_SOURCE_ACCOUNT_APP) {
       return { ...shim, GH_TOKEN: "", [GH_TOKEN_SOURCE_ENV]: "" };
     }
     return shim;
   };
+  const envFor = (token: string, env: NodeJS.ProcessEnv, owner: string): GithubSessionEnv =>
+    shimFor(env, owner) ?? { GH_TOKEN: token, [GH_TOKEN_SOURCE_ENV]: GH_TOKEN_SOURCE_ACCOUNT_APP };
 
   /**
    * The shim's question, on every `gh` or `git` run: the current account App
@@ -148,18 +156,26 @@ export function createGithubSessionEnv(deps: {
   };
 
   /**
-   * For a synchronous environment build (a chat's): cached values only. A cold
-   * cache answers null and fills itself for the next process.
+   * For a synchronous environment build (a chat's): cached values only. With
+   * the owner known but the token or the installation answer not cached, the
+   * chat still gets the shim, which asks for the token on each run (and steps
+   * aside while ADE has none). With no owner yet, or the shim off, a cold
+   * cache answers null. Either way the cache fills itself for the next process.
    */
   const peekForSession = (env: NodeJS.ProcessEnv): GithubSessionEnv | null => {
     try {
       if (!needsToken(env)) return null;
+      if (!lastOwner) lastOwner = deps.peekRepoOwner?.() ?? null;
       const owner = lastOwner;
-      const token = deps.peekAccountAppToken();
-      const cached = owner ? deps.readGrant.peek?.(owner, "account_app") ?? null : null;
-      if (!owner || !token || !cached || now() - cached.checkedAt > GRANT_STALE_MAX_MS) {
+      if (!owner) {
         warm(env);
         return null;
+      }
+      const token = deps.peekAccountAppToken();
+      const cached = deps.readGrant.peek?.(owner, "account_app") ?? null;
+      if (!token || !cached || now() - cached.checkedAt > GRANT_STALE_MAX_MS) {
+        warm(env);
+        return shimFor(env, owner);
       }
       if (cached.stale) warm(env);
       return cached.grant?.installed ? envFor(token, env, owner) : null;

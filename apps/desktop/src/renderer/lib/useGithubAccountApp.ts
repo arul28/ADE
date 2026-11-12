@@ -177,7 +177,10 @@ export function useGithubAccountApp() {
   useEffect(() => {
     const listener = () => setVersion((value) => value + 1);
     store.listeners.add(listener);
-    if (!store.loaded && !store.inFlight) void refreshGithubAccountApp();
+    // Read again on each open while the last answer said "not available"
+    // (signed out, the server not answering): a later sign-in must show the
+    // Connect flow without a window reload. A usable answer is kept.
+    if ((!store.loaded || !store.status?.available) && !store.inFlight) void refreshGithubAccountApp();
     return () => {
       store.listeners.delete(listener);
     };

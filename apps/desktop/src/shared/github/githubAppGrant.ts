@@ -254,10 +254,16 @@ export async function describeIssueWriteAccess<T extends { source: GitHubCredent
   const app = args.candidates.find((candidate) => isAppSource(candidate.source)) ?? null;
   const identity = app?.source === "account_app" ? "account_app" : "app";
   const grant = app ? await args.readGrant(args.owner, app.token, { force: args.force, identity }) : null;
+  // Each App credential is gated on its own grant: during a login mismatch
+  // the legacy sign-in may lack the right that the account's sign-in has.
+  // The grant read above serves its own credential; another one reads its own.
   const writable = await gateAppCandidates(args.candidates, {
     capability: "issue-write",
     owner: args.owner,
-    readGrant: async () => grant,
+    readGrant: async (owner, token, options) =>
+      app && token === app.token && (options?.identity ?? "app") === identity
+        ? grant
+        : args.readGrant(owner, token, { ...options, force: args.force }),
   });
   const issues = grant?.permissions.issues;
   const issuesPermission: GitHubAppIssuePermission = issues === "write" ? "write" : issues === "read" ? "read" : "none";

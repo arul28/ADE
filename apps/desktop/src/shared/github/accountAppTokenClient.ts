@@ -35,12 +35,17 @@ import { readBoundedAccountDirectoryJson } from "../accountDirectory";
 /** The machine credential store key of the cache entry. */
 export const GITHUB_ACCOUNT_APP_TOKEN_KEY = "github.accountAppToken.v1";
 
-/** How long one process may hold the right to ask the server for a token. */
-const FETCH_LEASE_MS = 20_000;
+/** How long one process may hold the right to ask the server for a token. Longer than one request. */
+const FETCH_LEASE_MS = 50_000;
 const LEASE_POLL_INTERVAL_MS = 250;
 /** About three seconds of waiting for a peer's answer. */
 const LEASE_POLL_MAX_ATTEMPTS = 12;
-const REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * One token request. The server may first wait out its closing window (15 s)
+ * and then renew at GitHub (up to 20 s), so a shorter limit would abort a
+ * renewal that works and leave a network failure cached for a minute.
+ */
+const REQUEST_TIMEOUT_MS = 45_000;
 /** A token the inventory read may still hand out after this entry says stop. */
 const DEFAULT_HOLD_MARGIN_MS = 30_000;
 /** At most one "rejected" question per token per process in this window. */
@@ -579,18 +584,24 @@ export function createAccountAppTokenClient(options: AccountAppTokenClientOption
         if (now() - at >= REJECTED_GUARD_MS) scope.rejectedAt.delete(key);
       }
     }
+    // A token is the answer for the account that asked: one that arrives after
+    // a switch to another account is not handed to the caller.
+    const forThisAccount = (answer: AccountAppTokenResult): AccountAppTokenResult =>
+      (options.getAccountUserId()?.trim() || null) === userId
+        ? answer
+        : { ok: false, state: "unavailable", reason: "account_changed", retryAtEpochMs: null };
     const key = `${userId}:${rejected ? "rejected" : "current"}:${args.force ? "force" : ""}`;
-    if (scope.inFlight && scope.inFlightKey === key) return await scope.inFlight;
-    if (scope.inFlight && !rejected) {
+    if (scope.inFlight && scope.inFlightKey === key) return forThisAccount(await scope.inFlight);
+    if (scope.inFlight && !rejected && scope.inFlightKey?.startsWith(`${userId}:`)) {
       // Another read for this account is asking already; its answer serves this one.
       const answer = await scope.inFlight.catch(() => null);
-      if (answer?.ok) return answer;
+      if (answer?.ok) return forThisAccount(answer);
     }
     const work = resolveToken(userId, rejected, args.force === true);
     scope.inFlight = work;
     scope.inFlightKey = key;
     try {
-      return await work;
+      return forThisAccount(await work);
     } finally {
       if (scope.inFlight === work) {
         scope.inFlight = null;

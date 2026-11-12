@@ -2489,6 +2489,10 @@ export function createGithubService({
     peekAccountAppToken: () => accountApp.peekToken(),
     readGrant: readAppIssueGrant,
     readRepoOwner: async () => (await detectRepo().catch(() => null))?.owner ?? null,
+    peekRepoOwner: () => {
+      const configOriginUrl = readOriginUrlFromGitConfig(projectRoot);
+      return configOriginUrl ? parseGitHubRepoFromRemoteUrl(configOriginUrl)?.owner ?? null : null;
+    },
   });
 
   const getIssue = async (owner: string, name: string, number: number): Promise<GitHubIssue | null> => {

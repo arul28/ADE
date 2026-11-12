@@ -90,6 +90,8 @@ const HOLD_AFTER_CLIENT_STOP_MS = 15_000;
 const CLIENT_SAFETY_MS = GITHUB_APP_CLIENT_SAFETY_SEC * 1000;
 const WAIT_POLL_MS = 250;
 const WAIT_TOTAL_MS = 3_000;
+/** How long a report of the live token's 401 waits for another request's check to settle. */
+const REJECTED_WAIT_MS = 5_000;
 const BACKOFF_MIN_MS = 60_000;
 const BACKOFF_MAX_MS = 60 * 60_000;
 const PERSIST_ATTEMPTS = 3;
@@ -177,6 +179,13 @@ export async function serveToken(
         return { kind: "token", token: await serveRow(rt, row, now, { verified: true }), reason: "verified" };
       }
       if (check.kind === "invalid") return renew(rt, row, now, { force: true });
+    } else {
+      // Another request checks (or checked) this token. Wait for its renewal
+      // instead of handing back the token this client just saw refused; if
+      // none comes, the check found it valid and it is served below.
+      const settled = await waitForRenewal(rt, row, REJECTED_WAIT_MS);
+      if (settled) return settled;
+      now = Date.now();
     }
   }
 
@@ -245,7 +254,7 @@ export async function renew(rt: GithubAppRuntime, row: GrantRow, now: number, op
       and (lease_until is null or lease_until <= ?)
       and (refresh_not_before is null or refresh_not_before <= ?)
   `).bind(leaseId, now + LEASE_MS, row.user_id, row.generation, now, now).run();
-  if ((take.meta?.changes ?? 0) !== 1) return waitForRenewal(rt, row);
+  if ((take.meta?.changes ?? 0) !== 1) return (await waitForRenewal(rt, row)) ?? { kind: "renewing", retryAfterSec: 2 };
 
   let refreshToken: string;
   try {
@@ -262,10 +271,22 @@ export async function renew(rt: GithubAppRuntime, row: GrantRow, now: number, op
   const after = Date.now();
 
   if (result.ok) {
-    const saved = await persistRefresh(rt, row, leaseId, result.tokens, after);
-    if (saved) {
+    const persisted = await persistRefresh(rt, row, leaseId, result.tokens, after);
+    if (persisted.kind === "saved") {
+      const saved = persisted.row;
       logGithubApp({ event: "github_app.refreshed", userId: row.user_id, generation: saved.generation, forced: options.force });
       return { kind: "token", token: await serveRow(rt, saved, after), reason: "refreshed" };
+    }
+    if (persisted.kind === "replaced") {
+      // A new sign-in or a disconnect replaced the row during the refresh:
+      // this chain is no longer the account's. Its new token is deleted at
+      // GitHub and never served; the caller gets what the account has now.
+      await deleteToken(rt.config, result.tokens.accessToken);
+      logGithubApp({ event: "github_app.refresh_replaced", userId: row.user_id, generation: row.generation });
+      const current = await loadGrant(rt.db, row.user_id);
+      if (!current) return { kind: "not_connected" };
+      if (current.state === "needs_reauth") return { kind: "needs_reauth", reason: current.state_reason ?? "bad_refresh_token" };
+      return { kind: "token", token: await serveRow(rt, current, after), reason: "current" };
     }
     // GitHub took the refresh but D1 did not save it. The caller still gets
     // a working token; the next refresh finds the stored refresh token spent
@@ -316,7 +337,13 @@ export async function renew(rt: GithubAppRuntime, row: GrantRow, now: number, op
   return degraded(rt, { ...row, refresh_not_before: notBefore, refresh_failures: failures }, after);
 }
 
-async function persistRefresh(rt: GithubAppRuntime, row: GrantRow, leaseId: string, tokens: GithubTokens, now: number): Promise<GrantRow | null> {
+/**
+ * `saved`: the row has the new chain. `replaced`: the lease is gone because a
+ * new sign-in or a disconnect replaced the row. `failed`: D1 did not answer.
+ */
+type PersistOutcome = { kind: "saved"; row: GrantRow } | { kind: "replaced" } | { kind: "failed" };
+
+async function persistRefresh(rt: GithubAppRuntime, row: GrantRow, leaseId: string, tokens: GithubTokens, now: number): Promise<PersistOutcome> {
   const accessSealed = await seal(rt.key, tokens.accessToken, grantAad(row.user_id, "access"));
   const accessHash = await sha256Hex(tokens.accessToken);
   // GitHub always sends a new refresh token; if one ever did not, the old
@@ -335,19 +362,23 @@ async function persistRefresh(rt: GithubAppRuntime, row: GrantRow, leaseId: stri
           refresh_not_before = null, refresh_failures = 0, last_rejected_check_at = null, updated_at = ?
         where user_id = ? and lease_id = ?
       `).bind(accessSealed, accessHash, tokens.accessExpiresAt, refreshSealed, refreshExpiresAt, now, row.user_id, leaseId).run();
-      if ((result.meta?.changes ?? 0) === 1) return await loadGrant(rt.db, row.user_id);
-      // Someone replaced the row (a new sign-in, a disconnect): this chain is no longer the account's.
-      return null;
+      if ((result.meta?.changes ?? 0) !== 1) return { kind: "replaced" };
+      const saved = await loadGrant(rt.db, row.user_id);
+      return saved ? { kind: "saved", row: saved } : { kind: "replaced" };
     } catch {
       if (attempt < PERSIST_ATTEMPTS - 1) await sleep(200 * (attempt + 1));
     }
   }
-  return null;
+  return { kind: "failed" };
 }
 
-/** Another request holds the lease: read the row until the new generation (or a verdict) shows up. */
-async function waitForRenewal(rt: GithubAppRuntime, row: GrantRow): Promise<TokenOutcome> {
-  for (let waited = 0; waited < WAIT_TOTAL_MS; waited += WAIT_POLL_MS) {
+/**
+ * Another request holds the lease (or checks the token): read the row until
+ * the new generation (or a verdict) shows up. Null when nothing changed in
+ * `totalMs`.
+ */
+async function waitForRenewal(rt: GithubAppRuntime, row: GrantRow, totalMs: number = WAIT_TOTAL_MS): Promise<TokenOutcome | null> {
+  for (let waited = 0; waited < totalMs; waited += WAIT_POLL_MS) {
     await sleep(WAIT_POLL_MS);
     const now = Date.now();
     const current = await loadGrant(rt.db, row.user_id);
@@ -361,7 +392,7 @@ async function waitForRenewal(rt: GithubAppRuntime, row: GrantRow): Promise<Toke
       return degraded(rt, current, now);
     }
   }
-  return { kind: "renewing", retryAfterSec: 2 };
+  return null;
 }
 
 // ---------------------------------------------------------------------------

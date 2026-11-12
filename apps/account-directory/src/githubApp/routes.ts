@@ -643,6 +643,14 @@ async function handleAdopt(request: Request, rt: GithubAppRuntime, userId: strin
 
   const existing = await loadGrant(rt.db, userId);
   if (existing?.state === "active") {
+    // A retry of an adoption that was saved but whose answer was lost: the
+    // account holds this very token. Say adopted, so the machine deletes its
+    // copy instead of keeping a second holder of the same refresh chain.
+    if (existing.access_token_sha256 && constantTimeEqual(await sha256Hex(accessToken), existing.access_token_sha256)) {
+      logGithubApp({ event: "github_app.adopted", userId, generation: existing.generation, repeated: true });
+      const repeated: GithubAppAdoptResponse = { adopted: true, githubLogin: existing.github_login, generation: existing.generation };
+      return json(repeated, 200);
+    }
     return fail("already_connected", "Your ADE account already has GitHub connected.", 409, { githubLogin: existing.github_login });
   }
 

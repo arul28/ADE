@@ -1708,10 +1708,14 @@ async function copyAdoptedApiKeyToVault(storageKey: string, value: string): Prom
  * Take a provider API key found in plain text (`.ade/local.yaml`) into this
  * machine's key store, without replacing anything that is already there.
  *
- * - The same value in any stored credential of the provider: `already_stored`.
- * - A different value in the provider's default credential: `conflict`. The
- *   caller keeps its copy, because that copy is the one in use for its project
- *   today (a config key outranks a stored one, `detectAllAuth`).
+ * Only the provider's default credential counts: it is the one the project
+ * falls back to once its copy is gone (`getAllApiKeys` gives `detectAllAuth`
+ * the defaults only). A named credential with the same value does not.
+ *
+ * - The same value in the default credential: `already_stored`.
+ * - A different value in the default credential: `conflict`. The caller keeps
+ *   its copy, because that copy is the one in use for its project today (a
+ *   config key outranks a stored one, `detectAllAuth`).
  * - No default credential: saved as the default, device-only, then read back
  *   from the persistent store. A signed-in machine then copies it to the
  *   account vault when the account has none (`copyAdoptedApiKeyToVault`).
@@ -1729,13 +1733,9 @@ export function adoptPlaintextApiKey(provider: string, key: string): PlaintextAp
   try {
     // Loads the store and moves a legacy keychain entry in, as a normal read does.
     getApiCredentialKeyIn(scope, normalizedProvider, DEFAULT_CREDENTIAL_ID);
-    const storedIds = new Set<string>([DEFAULT_CREDENTIAL_ID]);
-    for (const summary of storedCredentialSummaries(scope, normalizedProvider)) storedIds.add(summary.credentialId);
-    for (const credentialId of storedIds) {
-      const stored = readPersistedCredentialValue(scope, credentialStorageKey(normalizedProvider, credentialId));
-      if (stored === value) return "already_stored";
-    }
-    if (readPersistedCredentialValue(scope, storageKey) !== null) return "conflict";
+    const stored = readPersistedCredentialValue(scope, storageKey);
+    if (stored === value) return "already_stored";
+    if (stored !== null) return "conflict";
     storeApiKeyIn(scope, normalizedProvider, value, { deviceOnly: true });
     if (readPersistedCredentialValue(scope, storageKey) !== value) return "failed";
   } catch (error) {
