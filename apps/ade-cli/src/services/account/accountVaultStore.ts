@@ -20,7 +20,10 @@ import {
   type AccountVaultWrite,
   type AccountWriteResult,
 } from "../push/accountRelayRows";
-import type { AccountVaultWriteOptions } from "../../../../desktop/src/shared/types/accountVault";
+import {
+  ACCOUNT_VAULT_NO_REVISION,
+  type AccountVaultWriteOptions,
+} from "../../../../desktop/src/shared/types/accountVault";
 
 /**
  * The machine's copy of the vault.
@@ -75,7 +78,22 @@ type PendingWrite = {
   /** Cache-owned; see `AccountCachePending`. */
   queuedAt?: string;
   parked?: { reason: string; at: string };
+  /**
+   * The account's revision of the item this write replaces, as far as this
+   * machine knows (`ACCOUNT_VAULT_NO_REVISION` for none). Absent on an entry
+   * queued before revisions existed.
+   */
+  baseRevision?: string;
+  /** The caller named a revision: the relay writes this only while the row still has `baseRevision`. */
+  checkRevision?: true;
 };
+
+/**
+ * What a write answers: `queued` (this machine holds it and uploads it),
+ * `stale` (it named a revision the item no longer has here; nothing changed),
+ * or `refused` (signed out, another account, or the cache could not be saved).
+ */
+export type AccountVaultWriteAnswer = "queued" | "stale" | "refused";
 
 type AccountVaultStoreWriteOptions = AccountVaultWriteOptions & {
   /** Relay metadata stays local to the brain store and is never a wire arg. */
@@ -131,6 +149,7 @@ function decodePendingWrite(value: unknown): PendingWrite | null {
     || !Number.isSafeInteger(value.seq)
     || value.seq <= 0
   ) return null;
+  const baseRevision = nonEmptyString(value.baseRevision);
   return {
     scope,
     kind,
@@ -139,6 +158,9 @@ function decodePendingWrite(value: unknown): PendingWrite | null {
     deleted: value.deleted,
     refreshOwner,
     seq: value.seq,
+    ...(baseRevision ? { baseRevision } : {}),
+    // A check without a revision to check against would never pass; it goes as a plain write.
+    ...(baseRevision && value.checkRevision === true ? { checkRevision: true as const } : {}),
   };
 }
 
@@ -180,7 +202,7 @@ export type AccountVaultRelay = {
     scope: string,
     kind: string,
     key: string,
-    options?: { writtenAt?: string | null; deviceId?: string | null },
+    options?: { writtenAt?: string | null; deviceId?: string | null; ifRevision?: string | null },
   ): Promise<boolean | AccountStaleDelete<AccountVaultItem> | null>;
 };
 
@@ -311,12 +333,14 @@ export function createAccountVaultStore(args: {
             value: entry.value!,
             refreshOwner: entry.refreshOwner,
             ...(entry.queuedAt ? { writtenAt: entry.queuedAt } : {}),
+            ...(entry.checkRevision && entry.baseRevision ? { ifRevision: entry.baseRevision } : {}),
           })),
           deviceId,
         ),
         del: (entry) => relay.deleteAccountVaultItem(entry.scope, entry.kind, entry.key, {
           writtenAt: entry.queuedAt ?? null,
           deviceId,
+          ...(entry.checkRevision && entry.baseRevision ? { ifRevision: entry.baseRevision } : {}),
         }),
       });
     },
@@ -352,6 +376,98 @@ export function createAccountVaultStore(args: {
     },
   });
 
+  /**
+   * Revisions. A row that came from the account (a pull, a landed write, a
+   * refused write's answer) carries the relay's `updatedAt`, which is the
+   * account's revision of it. A row with a write still queued here gets
+   * `local:<seq>`: two local writes can share a clock stamp, a sequence never
+   * repeats, so a caller that read before the other one never matches after.
+   */
+  const pendingFor = (current: { pending: PendingWrite[] }, composite: string): PendingWrite | undefined =>
+    current.pending.find((entry) => cacheKey(entry.scope, entry.kind, entry.key) === composite);
+
+  const revisionOf = (
+    current: { pending: PendingWrite[]; rows: Record<string, CachedItem> },
+    composite: string,
+  ): string => {
+    const pending = pendingFor(current, composite);
+    if (pending) return `local:${pending.seq}`;
+    return current.rows[composite]?.updatedAt ?? ACCOUNT_VAULT_NO_REVISION;
+  };
+
+  /**
+   * The account's revision a new write replaces. A queued write that the new
+   * one replaces never reaches the account, so its base carries over; if it was
+   * already in flight and lands first, the relay lets the new one through as
+   * this device's own last write. Undefined when a queued entry is older than
+   * revisions, so its base is not known.
+   */
+  const baseFor = (
+    current: { pending: PendingWrite[]; rows: Record<string, CachedItem> },
+    composite: string,
+  ): string | undefined => {
+    const pending = pendingFor(current, composite);
+    if (pending) return pending.baseRevision;
+    return current.rows[composite]?.updatedAt ?? ACCOUNT_VAULT_NO_REVISION;
+  };
+
+  /**
+   * One write or delete. With `expectedRevision`, it goes only while the item
+   * here still has that revision (else `stale`, and nothing changes), and the
+   * relay checks it again against the account's row when it uploads.
+   */
+  const write = (
+    scope: string,
+    kind: AccountVaultItemKind,
+    key: string,
+    value: string | null,
+    options: AccountVaultStoreWriteOptions | undefined,
+  ): AccountVaultWriteAnswer => {
+    const expectedRevision = options?.expectedRevision;
+    let stale = false;
+    const queued = cache.mutate((current, queue) => {
+      const composite = cacheKey(scope, kind, key);
+      const baseRevision = baseFor(current, composite);
+      if (expectedRevision !== undefined
+        && (revisionOf(current, composite) !== expectedRevision || baseRevision === undefined)) {
+        stale = true;
+        return;
+      }
+      const check = expectedRevision !== undefined ? { checkRevision: true as const } : {};
+      const revision = baseRevision !== undefined ? { baseRevision } : {};
+      if (value === null) {
+        // Keep a local tombstone rather than dropping the row. It is what stops
+        // a stale page from a cursor taken before this delete from resurrecting
+        // the key here, and it is what the pull hands to a consumer on another
+        // machine so it can drop its own copy too.
+        current.rows[composite] = {
+          value: null,
+          updatedAt: new Date(now()).toISOString(),
+          writerDeviceId: args.getDeviceId?.() ?? null,
+          refreshOwner: null,
+          deleted: true,
+        };
+        queue({ scope, kind, key, value: null, deleted: true, refreshOwner: null, ...revision, ...check });
+        return;
+      }
+      const refreshOwner = options?.refreshOwner !== undefined
+        ? options.refreshOwner
+        : kind === "linear_refresh_token"
+          ? (args.getDeviceId?.() ?? null)
+          : null;
+      // Writing the key again is what un-deletes it: the tombstone goes.
+      current.rows[composite] = {
+        value,
+        updatedAt: new Date(now()).toISOString(),
+        writerDeviceId: args.getDeviceId?.() ?? null,
+        refreshOwner,
+      };
+      queue({ scope, kind, key, value, deleted: false, refreshOwner, ...revision, ...check });
+    }, { expectedAccountUserId: options?.expectedAccountUserId });
+    if (!queued) return "refused";
+    return stale ? "stale" : "queued";
+  };
+
   return {
     /**
      * Every item this machine knows about, with values omitted.
@@ -370,19 +486,25 @@ export function createAccountVaultStore(args: {
       refreshOwner: string | null;
       /** True on a tombstone, so a consumer can drop its own copy of the key. */
       deleted?: boolean;
+      /** Pass back as `expectedRevision` to write only while the item is still this. */
+      revision: string;
     }> {
       const current = cache.readCache();
+      const queuedSeq = new Map(current.pending.map((entry) => [cacheKey(entry.scope, entry.kind, entry.key), entry.seq]));
       const rows = [];
       for (const [composite, item] of Object.entries(current.rows)) {
         const split = splitCacheKey(composite);
         if (!split) continue;
         if (scope && split.scope !== scope) continue;
+        const seq = queuedSeq.get(composite);
         rows.push({
           ...split,
           updatedAt: item.updatedAt,
           readable: item.value !== null,
           refreshOwner: item.refreshOwner,
           ...(item.deleted === true ? { deleted: true } : {}),
+          // Same rule as `revisionOf`, without a scan of the queue per row.
+          revision: seq !== undefined ? `local:${seq}` : item.updatedAt,
         });
       }
       return rows.sort((left, right) => left.key.localeCompare(right.key));
@@ -393,6 +515,7 @@ export function createAccountVaultStore(args: {
       return cache.readCache().rows[cacheKey(scope, kind, key)]?.value ?? null;
     },
 
+    /** Queue a write. False when it was refused, or (with `expectedRevision`) stale. */
     set(
       scope: string,
       kind: AccountVaultItemKind,
@@ -400,43 +523,38 @@ export function createAccountVaultStore(args: {
       value: string,
       options?: AccountVaultStoreWriteOptions,
     ): boolean {
-      const refreshOwner = options?.refreshOwner !== undefined
-        ? options.refreshOwner
-        : kind === "linear_refresh_token"
-          ? (args.getDeviceId?.() ?? null)
-          : null;
-      return cache.mutate((current, queue) => {
-        // Writing the key again is what un-deletes it: the tombstone goes.
-        current.rows[cacheKey(scope, kind, key)] = {
-          value,
-          updatedAt: new Date(now()).toISOString(),
-          writerDeviceId: args.getDeviceId?.() ?? null,
-          refreshOwner,
-        };
-        queue({ scope, kind, key, value, deleted: false, refreshOwner });
-      }, { expectedAccountUserId: options?.expectedAccountUserId });
+      return write(scope, kind, key, value, options) === "queued";
     },
 
+    /** Queue a delete (a tombstone). False when it was refused, or (with `expectedRevision`) stale. */
     remove(
       scope: string,
       kind: AccountVaultItemKind,
       key: string,
       options?: AccountVaultWriteOptions,
     ): boolean {
-      return cache.mutate((current, queue) => {
-        // Keep a local tombstone rather than dropping the row. It is what stops
-        // a stale page from a cursor taken before this delete from resurrecting
-        // the key here, and it is what the pull hands to a consumer on another
-        // machine so it can drop its own copy too.
-        current.rows[cacheKey(scope, kind, key)] = {
-          value: null,
-          updatedAt: new Date(now()).toISOString(),
-          writerDeviceId: args.getDeviceId?.() ?? null,
-          refreshOwner: null,
-          deleted: true,
-        };
-        queue({ scope, kind, key, value: null, deleted: true, refreshOwner: null });
-      }, { expectedAccountUserId: options?.expectedAccountUserId });
+      return write(scope, kind, key, null, options) === "queued";
+    },
+
+    /** `set` with the answer, so a caller that named a revision can tell `stale` from refused. */
+    trySet(
+      scope: string,
+      kind: AccountVaultItemKind,
+      key: string,
+      value: string,
+      options?: AccountVaultStoreWriteOptions,
+    ): AccountVaultWriteAnswer {
+      return write(scope, kind, key, value, options);
+    },
+
+    /** `remove` with the answer; see `trySet`. */
+    tryRemove(
+      scope: string,
+      kind: AccountVaultItemKind,
+      key: string,
+      options?: AccountVaultWriteOptions,
+    ): AccountVaultWriteAnswer {
+      return write(scope, kind, key, null, options);
     },
 
     /**

@@ -7,10 +7,12 @@
  * rejected renderer call.
  */
 
-import type {
-  AccountVaultItem,
-  AccountVaultResult,
-  AccountVaultWriteOptions,
+import {
+  ACCOUNT_VAULT_STALE_MESSAGE,
+  type AccountVaultItem,
+  type AccountVaultResult,
+  type AccountVaultWriteOptions,
+  type AccountVaultWriteResult,
 } from "../../../shared/types/accountVault";
 import {
   createAccountActionBridge,
@@ -73,8 +75,22 @@ function toItem(value: unknown): AccountVaultItem | null {
     updatedAt,
     ...(refreshOwner !== undefined ? { refreshOwner } : {}),
     ...(value.deleted === true ? { deleted: true } : {}),
+    ...(typeof value.revision === "string" && value.revision ? { revision: value.revision } : {}),
   };
 }
+
+/**
+ * The brain answers a write `true`, `false` (refused: signed out or another
+ * account), or `"stale"` (it named a revision the item no longer has).
+ */
+function writeResult(result: AccountVaultResult<"stale" | null>): AccountVaultWriteResult {
+  if (!result.ok) return result;
+  return result.value === "stale"
+    ? { ok: false, rejected: true, stale: true, message: ACCOUNT_VAULT_STALE_MESSAGE }
+    : { ok: true, value: null };
+}
+
+const decodeWriteAnswer = (raw: unknown): "stale" | null => (raw === "stale" ? "stale" : null);
 
 export function createAccountVaultBridge(options: AccountVaultBridgeOptions) {
   const bridge = createAccountActionBridge<AccountVaultItem>({
@@ -108,11 +124,11 @@ export function createAccountVaultBridge(options: AccountVaultBridgeOptions) {
       key: string,
       value: string,
       options?: AccountVaultWriteOptions,
-    ): Promise<AccountVaultResult<null>> {
-      return await bridge.call("set", [scope, kind, key, value], () => null, {
+    ): Promise<AccountVaultWriteResult> {
+      return writeResult(await bridge.call("set", [scope, kind, key, value], decodeWriteAnswer, {
         rejectFalse: true,
         ...options,
-      });
+      }));
     },
 
     async remove(
@@ -120,11 +136,11 @@ export function createAccountVaultBridge(options: AccountVaultBridgeOptions) {
       kind: string,
       key: string,
       options?: AccountVaultWriteOptions,
-    ): Promise<AccountVaultResult<null>> {
-      return await bridge.call("remove", [scope, kind, key], () => null, {
+    ): Promise<AccountVaultWriteResult> {
+      return writeResult(await bridge.call("remove", [scope, kind, key], decodeWriteAnswer, {
         rejectFalse: true,
         ...options,
-      });
+      }));
     },
 
     /**

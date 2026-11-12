@@ -651,6 +651,10 @@ const ADE_MCP_ACCOUNT_ROWS_REFUSED =
  * MCP service reads and writes them in-process (remoteMcpShared.ts), never
  * through this domain.
  */
+function vaultWriteWireAnswer(answer: "queued" | "stale" | "refused"): boolean | "stale" {
+  return answer === "stale" ? "stale" : answer === "queued";
+}
+
 function buildAccountVaultDomainService(runtime: AccountDomainRuntime): OpaqueService | null {
   const store = runtime.accountVaultStore;
   if (!store) return null;
@@ -664,13 +668,15 @@ function buildAccountVaultDomainService(runtime: AccountDomainRuntime): OpaqueSe
       guard(args[1]);
       return store.get(...args);
     },
-    set: (...args: Parameters<Store["set"]>) => {
+    // `true`, `false` (refused), or `"stale"` when the write named a revision
+    // the item no longer has; the desktop bridge reads all three.
+    set: (...args: Parameters<Store["trySet"]>) => {
       guard(args[1]);
-      return store.set(...args);
+      return vaultWriteWireAnswer(store.trySet(...args));
     },
-    remove: (...args: Parameters<Store["remove"]>) => {
+    remove: (...args: Parameters<Store["tryRemove"]>) => {
       guard(args[1]);
-      return store.remove(...args);
+      return vaultWriteWireAnswer(store.tryRemove(...args));
     },
     sync: (...args: Parameters<Store["sync"]>) => store.sync(...args),
     pendingKeys: (...args: Parameters<Store["pendingKeys"]>) => {
