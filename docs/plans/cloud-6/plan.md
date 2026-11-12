@@ -3,19 +3,37 @@
 Scope: `cloud-6-work-ledger.md` (final split at the top) and `cloud-beta12-test-ledger.md` in this folder.
 Plan of record: `~/.claude/plans/account-owned-projects/plan-final.md`.
 
-## Stack (bottom up)
+## Delivery
 
-| Layer | Branch | Contents |
-|---|---|---|
-| 1 | `ade/cloud-6-fixes-launcher-and-contracts` | C2 + C3 contracts, G1 (lifecycle blockers) |
-| 2 | `ade/cloud-6-connections` | G2 (B14-31, B14-35, B14-32, one lane id / chat id) on top of C2/C3 |
-| 3 | `ade/cloud-6-sign-ins` | C4 (git credential check, no token in `.git/config`), G3, C5 (sync down, one card per account) |
-| 4 | `ade/cloud-6-launcher` | C6 (server launcher), C7 (browser/phone routes), C8 (sign-in from phone/web) |
-| 5 | `ade/cloud-6-automations` | C9 (Runs on: ADE Cloud), C10 (delete a project's cloud computers) |
-| 6 | `ade/cloud-6-chat-ux` | G4 |
-| 7 | `ade/cloud-6-dashboard` | G5 |
+One bundled PR to main, #2201 (branch `ade/cloud-6-fixes-launcher-and-contracts`), the owner's call on
+2026-11-12. It replaced the seven stacked PRs #2187–#2192 and #2199. Migrations are `0029_cloud_launches`
+and `0030_cloud_automations`, after lane L's `0028_account_projects`.
 
-No PR merges until the whole stack is complete; then the owner runs the deep review.
+## Contracts other lanes use (as built)
+
+- **C2.**
+  - `window.ade.machines.connect(machineKey, { connect? })` returns a `MachineConnectResult`: an address
+    for one machine, or `not_in_account`, `unreachable`, `signed_out` or `invalid`.
+  - `window.ade.machines.addressFor(machineKey)`.
+  - Renderer helpers: `connectMachine` and `projectPinOnMachine` (`renderer/lib/machineConnect.ts`).
+- **C3.**
+  - `window.ade.cloud.laneComputer(laneId)`, `window.ade.cloud.followLane(laneId, { connect? })` and
+    `window.ade.cloud.onLaneMoved`, with types in `shared/laneComputer.ts`.
+  - Pins to a lane's old computer reach the new one (`machines/goneTargets.ts`), and saved-chat stand-in
+    pins (`cloud-saved:<key>`) do too.
+- **C4.**
+  - `window.ade.cloud.gitPreflight({ originUrl })`. No renderer calls it yet; the launch start checks.
+  - The server launcher refuses `git_credential_missing`.
+  - A clone keeps no token in `.git/config`. A cloud computer removes the header older clones saved,
+    once per boot.
+  - `CloneProjectResult.githubSignInMissing` and `RemoteRuntimeProjectRecord.githubSignInMissing` are set
+    when another computer's one-shot header made the clone.
+- **Launch snapshot.** It now carries `ChatLaunchCloudState.warning` and
+  `ChatLaunchArgs` / `ChatLaunchSnapshot.setupStartedAt`.
+- **C10.** `POST /cloud/projects/computers/delete` needs the preview's `instanceIds` and answers
+  `{ jobId, accepted, skipped, truncated }`.
+- **C9.** The relay forwards to `POST /cloud/automations/:ruleId/deliveries/:userId`, HMAC-signed.
+- **Machine pickers.** `routableMachines` leaves out saved-chat stand-ins.
 
 ## C2 — connect to any machine of the account by machine key
 
