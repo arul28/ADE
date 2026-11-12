@@ -107,7 +107,8 @@ function credentialSourceLabel(source: GitHubStatus["authSource"] | undefined): 
     case "pat":
       return "Personal access token";
     case "account_gh":
-      return "GitHub CLI from your ADE account";
+      // Short enough for the hero's "Reads with" cell.
+      return "GitHub CLI from account";
     case "environment":
       return "Environment token";
     default:
@@ -115,33 +116,75 @@ function credentialSourceLabel(source: GitHubStatus["authSource"] | undefined): 
   }
 }
 
-/** Where a sign-in comes from, in a few words. */
+/** Where a sign-in comes from, in a few words: one line beside the controls. */
 function credentialSourceDetail(
-  credential: GitHubCredentialState,
+  source: GitHubCredentialState["source"],
   account: GitHubStatus["accountCredentials"] | undefined,
-  /** The active credential's scopes lack what ADE needs. */
-  missingScopes: boolean,
 ): string {
-  switch (credential.source) {
+  switch (source) {
     case "app":
       return "ADE's GitHub app";
     case "gh":
-      return account?.ghSharedFromHere ? "Your gh auth login, shared with your ADE account" : "Your gh auth login";
+      return "Your gh auth login";
     case "pat":
       return account?.patFromAccount ? "From your ADE account" : "Saved in ADE on this machine";
     case "account_gh":
-      // The fix for this copy is on the computer it came from, not here.
-      if (credential.failure?.kind === "invalid_token") {
-        return "From your ADE account. GitHub refused it: sign in with gh again on the computer it came from";
-      }
-      if (credential.failure?.kind === "permission_denied" || (missingScopes && credential.activeFor.length > 0)) {
-        return "From your ADE account. It lacks the repo scope: run gh auth refresh on the computer it came from";
-      }
-      return "From your ADE account, signed in with gh on another computer";
+      return "Signed in with gh on another computer";
     case "environment":
       return "GITHUB_TOKEN or GH_TOKEN variable";
     default:
       return "";
+  }
+}
+
+type AccountLineAction = "remove-gh" | "share-gh" | "remove-pat";
+
+/**
+ * How a sign-in row relates to the ADE account, as a line under the row (it
+ * wraps, so a fix is never cut off), with the one action that changes it and,
+ * for a broken account copy, the command to run where it came from.
+ * Null when the row has nothing to do with the account.
+ */
+function accountLine(
+  credential: GitHubCredentialState,
+  account: GitHubStatus["accountCredentials"] | null,
+  patTokenStored: boolean,
+  /** The active credential's scopes lack what ADE needs. */
+  missingScopes: boolean,
+): { note: string; command?: string; action: AccountLineAction } | null {
+  if (!account) return null;
+  switch (credential.source) {
+    case "gh":
+      if (account.ghSharedFromHere) {
+        return { note: "Shared with your ADE account, so your other computers can use it.", action: "remove-gh" };
+      }
+      if (account.ghRemovedFromAccount && credential.available) {
+        return { note: "Not shared with your ADE account.", action: "share-gh" };
+      }
+      return null;
+    case "pat":
+      return patTokenStored && account.patFromAccount
+        ? { note: "Pasted on another computer.", action: "remove-pat" }
+        : null;
+    case "account_gh":
+      // The fix for this copy is on the computer it came from, not here.
+      if (credential.failure?.kind === "invalid_token") {
+        return {
+          note: "GitHub refused it. Sign in with gh again on the computer it came from:",
+          command: GH_AUTH_LOGIN_COMMAND,
+          action: "remove-gh",
+        };
+      }
+      if (credential.failure?.kind === "permission_denied" || (missingScopes && credential.activeFor.length > 0)) {
+        return {
+          note: "It is missing scopes ADE needs. Add them on the computer it came from:",
+          command: GH_AUTH_REFRESH_COMMAND,
+          action: "remove-gh",
+        };
+      }
+      return { note: "Shared with this computer through your ADE account.", action: "remove-gh" };
+    default:
+      return null;
   }
 }
 
@@ -335,7 +378,7 @@ export function GitHubSection() {
     if (!enabled) {
       const confirmed = await confirmDialog({
         title: "Remove the GitHub CLI sign-in from your ADE account?",
-        message: "Your other computers and ADE Cloud computers stop using it. A gh sign-in made on a computer stays on that computer.",
+        message: "Every computer that uses it through your account stops, ADE Cloud computers too. A gh sign-in made on a computer stays on that computer.",
         confirmLabel: "Remove from my account",
         destructive: true,
       });
@@ -816,38 +859,22 @@ export function GitHubSection() {
               const badge = credentialStateBadge(credential, outage != null, appAccount);
               const isPat = credential.source === "pat";
               const active = credential.activeFor.length > 0;
+              const account = accountLine(credential, accountCredentials, githubStatus?.patTokenStored === true, hasMissingScopes);
+              // An older runtime has no gh sharing action; its account line has no button.
+              const accountAction = account && (account.action === "remove-pat" || setGhAccountSharing) ? account.action : null;
               return (
                 <div key={credential.source} className="ade-ig-method" data-active={active ? "true" : undefined}>
                   <span className="ade-ig-method-icon" aria-hidden>{credentialSourceIcon(credential.source)}</span>
                   <span className="ade-ig-method-name">
                     <b>{credentialSourceLabel(credential.source)}</b>
                     <small>
-                      {credential.source === "app" ? "Reads only · set up on the right" : credentialSourceDetail(credential, accountCredentials, hasMissingScopes)}
+                      {credential.source === "app" ? "Reads only · set up on the right" : credentialSourceDetail(credential.source, accountCredentials)}
                     </small>
                   </span>
                   <span className="ade-ig-method-side">
-                    {isPat && githubStatus?.patTokenStored ? (
-                      accountCredentials?.patFromAccount ? (
-                        <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={githubBusy} onClick={() => void handleRemovePatFromAccount()}>
-                          Remove from my account
-                        </button>
-                      ) : (
-                        <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={githubBusy} onClick={handleClearToken}>
-                          Remove
-                        </button>
-                      )
-                    ) : null}
-                    {setGhAccountSharing && (
-                      credential.source === "account_gh"
-                      || (credential.source === "gh" && accountCredentials?.ghSharedFromHere)
-                    ) ? (
-                      <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={githubBusy} onClick={() => void handleGhAccountSharing(false)}>
-                        Remove from my account
-                      </button>
-                    ) : null}
-                    {setGhAccountSharing && credential.source === "gh" && credential.available && accountCredentials?.ghRemovedFromAccount ? (
-                      <button type="button" className="ade-modern-btn" data-size="sm" disabled={githubBusy} onClick={() => void handleGhAccountSharing(true)}>
-                        Share with my account
+                    {isPat && githubStatus?.patTokenStored && !accountCredentials?.patFromAccount ? (
+                      <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={githubBusy} onClick={handleClearToken}>
+                        Remove
                       </button>
                     ) : null}
                     {isPat ? (
@@ -857,6 +884,29 @@ export function GitHubSection() {
                     ) : null}
                     {tag(badge.tone, badge.label)}
                   </span>
+                  {account ? (
+                    <div className="ade-ig-method-extra">
+                      <p className="ade-ig-note ade-ig-account-line">
+                        <span>{account.note}</span>
+                        {accountAction ? (
+                          <button
+                            type="button"
+                            className="ade-modern-btn"
+                            data-variant={accountAction === "share-gh" ? undefined : "ghost"}
+                            data-size="sm"
+                            disabled={githubBusy}
+                            onClick={() => {
+                              if (accountAction === "remove-pat") void handleRemovePatFromAccount();
+                              else void handleGhAccountSharing(accountAction === "share-gh");
+                            }}
+                          >
+                            {accountAction === "share-gh" ? "Share with my account" : "Remove from my account"}
+                          </button>
+                        ) : null}
+                      </p>
+                      {account.command ? <code className="ade-int-command" style={{ marginTop: 0 }}>{account.command}</code> : null}
+                    </div>
+                  ) : null}
                   {isPat && showPatSetup ? tokenForm : null}
                   {credential.source === activeWriteSource && !(isPat && showPatSetup) ? scopeChips : null}
                 </div>

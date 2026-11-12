@@ -158,7 +158,7 @@ import {
 } from "../../desktop/src/main/services/github/githubCredentialHealth";
 import { githubAutolinksAccessError } from "../../desktop/src/shared/githubAutolinks";
 import { createGithubPatAccountSync } from "../../desktop/src/main/services/github/githubPatAccountSync";
-import { createGithubGhAccountSync } from "../../desktop/src/main/services/github/githubGhAccountSync";
+import { createGithubGhAccountSync, readGithubAccountCredentialState } from "../../desktop/src/main/services/github/githubGhAccountSync";
 
 type HeadlessGitHubStatus = GitHubStatus;
 export type HeadlessGitHubService = GithubService;
@@ -947,11 +947,16 @@ export function createHeadlessGitHubService(
     build: buildAppCredentialAsync,
   });
 
-  const invalidateStatusCache = (): void => {
+  /** Forgets the cached status only; this machine's own gh lookup stays cached. */
+  const resetStatusCache = (): void => {
     cachedStatus = null;
     cachedAt = 0;
     cachedStatusBinding = null;
     statusLookupGeneration += 1;
+  };
+
+  const invalidateStatusCache = (): void => {
+    resetStatusCache();
     // A re-authorization or a sign-out just replaced the App credential this
     // cache holds, so it cannot outlive the status it fed.
     appCredentialCache.clear();
@@ -2067,23 +2072,11 @@ export function createHeadlessGitHubService(
       if (previous) clearGithubCredentialHealth(previous);
       if (lastAccountGhToken) clearGithubCredentialHealth(lastAccountGhToken);
       credentialRevision += 1;
-      cachedStatus = null;
-      cachedAt = 0;
-      cachedStatusBinding = null;
-      statusLookupGeneration += 1;
+      resetStatusCache();
       emitStatusChanged();
     },
   });
   lastAccountGhToken = ghAccountSync.readAccountToken();
-
-  /** Which stored credentials came from the account, for the status. */
-  const accountCredentialState = (): GitHubStatus["accountCredentials"] => {
-    try {
-      return { patFromAccount: patAccountSync.isFromAccount(), ...ghAccountSync.state() };
-    } catch {
-      return null;
-    }
-  };
 
   // One warn per credential source and cause; a status read probes every
   // credential, so a repeat would otherwise warn on every read.
@@ -2426,7 +2419,7 @@ export function createHeadlessGitHubService(
           return null;
         }),
       ]);
-      return { ...status, gitTransport, accountCredentials: accountCredentialState() };
+      return { ...status, gitTransport, accountCredentials: readGithubAccountCredentialState(patAccountSync, ghAccountSync) };
     },
     async getBackgroundRequestPauseUntilMs() {
       const inventory = await readCredentialInventoryAsync();
@@ -2600,10 +2593,7 @@ export function createHeadlessGitHubService(
     async setGhAccountSharing(args: { enabled: boolean }): Promise<void> {
       if (args?.enabled === true) await ghAccountSync.shareWithAccount();
       else await ghAccountSync.removeFromAccount();
-      cachedStatus = null;
-      cachedAt = 0;
-      cachedStatusBinding = null;
-      statusLookupGeneration += 1;
+      resetStatusCache();
       emitStatusChanged();
     },
     /** See the desktop service: a signed-URL cache keys on the effective token. */

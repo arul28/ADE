@@ -395,6 +395,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   archive: ["delete"],
   // Dropping a deleted lane's saved work means it can no longer be restored.
   lane: ["removeDeletedLane"],
+  // Sharing a gh sign-in with the account hands it to every computer the
+  // person signs in to; only the person decides, from Settings › GitHub.
+  github: ["setGhAccountSharing"],
   // Only the person's desktop saves a key or runs Claude's sign-in for new machines.
   // Entering an invite code sets the account's referrer once, forever: the
   // person enters it in Settings › Account (desktop, or the phone's own

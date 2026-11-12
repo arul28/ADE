@@ -346,6 +346,10 @@
 .ade-ig-method-name small { display: block; font-size: 11px; color: var(--kit-text-3, var(--color-muted-fg)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ade-ig-method-side { display: flex; align-items: center; gap: 6px; }
 .ade-ig-method-extra { grid-column: 2 / -1; display: flex; flex-direction: column; gap: 10px; }
+/* How a sign-in relates to the ADE account: the note wraps, its one action stays at the right edge. */
+.ade-ig-note.ade-ig-account-line { flex-wrap: nowrap; justify-content: space-between; gap: 12px; }
+.ade-ig-note.ade-ig-account-line > span { flex: 1 1 auto; min-width: 0; }
+.ade-ig-note.ade-ig-account-line > button { flex: none; }
 
 /* Sign-in choices: a recommended path and the alternative. */
 .ade-ig-choice {
