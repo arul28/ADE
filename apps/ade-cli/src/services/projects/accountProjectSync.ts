@@ -142,6 +142,12 @@ export type AccountProjectSync = {
 // ---------------------------------------------------------------------------
 // State file
 
+// The code or class of an error, for logs. The message can quote file content or a path.
+function errorReason(error: unknown): string {
+  if (!(error instanceof Error)) return "unknown";
+  return (error as NodeJS.ErrnoException).code ?? error.name;
+}
+
 function emptyState(): AccountProjectSyncState {
   return {
     version: STATE_VERSION,
@@ -176,8 +182,9 @@ export function readAccountProjectState(adeDir: string, logger?: Logger): Accoun
   } catch (error) {
     // A missing file is the normal first run. Any other failure (a corrupt or
     // unreadable file) resets the state, so the log must say that it happened.
+    // Log the error code or class only. A parse error message can quote the file.
     if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
-      logger?.warn?.("account_projects.state_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      logger?.warn?.("account_projects.state_read_failed", { error: errorReason(error) });
     }
     return emptyState();
   }
@@ -490,7 +497,7 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
         try {
           result = await options.lookupRepo({ host: identity.host, owner: identity.owner, name: identity.name });
         } catch (error) {
-          logger.warn?.("account_projects.repo_lookup_threw", { error: error instanceof Error ? error.message : String(error) });
+          logger.warn?.("account_projects.repo_lookup_threw", { error: errorReason(error) });
           result = { kind: "unavailable", reason: "lookup_threw" };
         }
         state.repoLookups[identity.repoKey] = nextLookupEntry(state.repoLookups[identity.repoKey], result, now());
