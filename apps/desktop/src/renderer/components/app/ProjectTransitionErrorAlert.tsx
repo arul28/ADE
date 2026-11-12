@@ -22,7 +22,7 @@ export function ProjectTransitionErrorAlert(): null {
   const clearProjectTransitionError = useAppStore(
     (state) => state.clearProjectTransitionError,
   );
-  const switchProjectToPath = useAppStore((state) => state.switchProjectToPath);
+  const retryProjectTransition = useAppStore((state) => state.retryProjectTransition);
 
   // One problem, one notice. A failed open caused by an update replacing the
   // background service, or made while that service is down, is a symptom: the
@@ -56,8 +56,7 @@ export function ProjectTransitionErrorAlert(): null {
                 label: "Try again",
                 variant: "primary",
                 onClick: () => {
-                  clearProjectTransitionError();
-                  void switchProjectToPath(retryRootPath).catch(() => {});
+                  void retryProjectTransition();
                 },
               }]
             : undefined,

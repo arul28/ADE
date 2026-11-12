@@ -611,6 +611,10 @@ export function createProjectSecretService(projectRoot: string, options: Project
     );
     const index = readIndex();
     const entry = index.entries[name];
+    // An unreadable store reads as empty; that is not "nobody saved it".
+    if (!entry && store.getLastReadState() === "unreadable") {
+      throw new AdeExpectedError(`ADE couldn't read this project's secrets to look for '${name}'.`, "environment");
+    }
     if (!entry) throw notFound();
     const value = store.getSync(valueKey(name));
     // Indexed but with no stored value: the store lost it, which is a fault

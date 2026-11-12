@@ -63,11 +63,27 @@ export type BrainLoopBlockedFsCall = {
   blockedMs: number;
 };
 
+/** A project scope that was opening when the watchdog looked, and how far it had got. */
+export type BrainLoopProjectOpen = {
+  projectId: string;
+  /** The open's step: `prepare`, then the runtime's own steps (`db_open`, `services`…). */
+  phase: string;
+  /** Since the open started. */
+  elapsedMs: number;
+  /** Since the open entered `phase`. Absent on breadcrumbs written before it existed. */
+  phaseElapsedMs?: number;
+};
+
 export type BrainLoopWatchdogBreadcrumb = {
   lastCommand: string;
   blockedMs: number;
   ts: string;
   blockedFsCall?: BrainLoopBlockedFsCall;
+  /**
+   * Every project scope that was opening when the brain was killed. Absent on
+   * breadcrumbs written before it existed, and when nothing was opening.
+   */
+  openingProjects?: BrainLoopProjectOpen[];
   thresholdMs?: number;
   diagnostics?: BrainLoopWatchdogDiagnostics;
   diagnosticReportPath?: string | null;
@@ -398,6 +414,27 @@ export function resolveBrainLoopWatchdogThresholdMs(
   return Math.max(BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS, parsed);
 }
 
+/** The well-formed entries of a breadcrumb's `openingProjects`; anything else is dropped. */
+function readProjectOpens(value: unknown): BrainLoopProjectOpen[] {
+  if (!Array.isArray(value)) return [];
+  const opens: BrainLoopProjectOpen[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.projectId !== "string" || !record.projectId.trim()) continue;
+    const ms = (value: unknown): number | null =>
+      typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+    const phaseElapsedMs = ms(record.phaseElapsedMs);
+    opens.push({
+      projectId: record.projectId.trim(),
+      phase: typeof record.phase === "string" && record.phase ? record.phase : "unknown",
+      elapsedMs: ms(record.elapsedMs) ?? 0,
+      ...(phaseElapsedMs !== null ? { phaseElapsedMs } : {}),
+    });
+  }
+  return opens;
+}
+
 function readBreadcrumb(filePath: string): BrainLoopWatchdogBreadcrumb | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<BrainLoopWatchdogBreadcrumb>;
@@ -435,6 +472,8 @@ function readBreadcrumb(filePath: string): BrainLoopWatchdogBreadcrumb | null {
         blockedMs: Number.isFinite(fsCall.blockedMs) ? Math.max(0, Math.floor(fsCall.blockedMs)) : 0,
       };
     }
+    const openingProjects = readProjectOpens(parsed.openingProjects);
+    if (openingProjects.length > 0) breadcrumb.openingProjects = openingProjects;
     return breadcrumb;
   } catch {
     return null;
@@ -550,6 +589,59 @@ export function trackBrainLoopWatchdogCommand(action: string): () => void {
   };
 }
 
+type TrackedProjectOpen = { projectId: string; phase: string; startedAtMs: number; phaseStartedAtMs: number };
+
+let nextProjectOpenToken = 0;
+const activeProjectOpens = new Map<number, TrackedProjectOpen>();
+/** Tells a running watchdog worker which project scopes are opening; null when none runs. */
+let announceProjectOpensToWatchdog: ((opens: TrackedProjectOpen[]) => void) | null = null;
+
+/** The project scopes opening right now, with the step each one is in. */
+function currentProjectOpens(nowMs = Date.now()): BrainLoopProjectOpen[] {
+  return [...activeProjectOpens.values()].map((open) => ({
+    projectId: open.projectId,
+    phase: open.phase,
+    elapsedMs: Math.max(0, nowMs - open.startedAtMs),
+    phaseElapsedMs: Math.max(0, nowMs - open.phaseStartedAtMs),
+  }));
+}
+
+export type BrainLoopProjectOpenTracker = {
+  /** The open moved to `phase`; the worker learns it at once. */
+  phase(phase: string): void;
+  /** The open settled, either way. Idempotent. */
+  done(): void;
+};
+
+/**
+ * Mark a project scope as opening, so a freeze kill names it.
+ *
+ * Kept apart from the command tracker on purpose: a command name is "the last
+ * one that started", so a concurrent RPC would overwrite the project, and
+ * several projects can be opening at once. The worker receives the whole set
+ * on every change, by message, which it reads while the main thread is stuck.
+ */
+export function trackBrainLoopWatchdogProjectOpen(projectId: string): BrainLoopProjectOpenTracker {
+  const token = ++nextProjectOpenToken;
+  const startedAtMs = Date.now();
+  const open: TrackedProjectOpen = { projectId, phase: "prepare", startedAtMs, phaseStartedAtMs: startedAtMs };
+  activeProjectOpens.set(token, open);
+  const announce = (): void => announceProjectOpensToWatchdog?.([...activeProjectOpens.values()]);
+  announce();
+  return {
+    phase(phase) {
+      if (!activeProjectOpens.has(token) || open.phase === phase) return;
+      open.phase = phase;
+      open.phaseStartedAtMs = Date.now();
+      announce();
+    },
+    done() {
+      if (!activeProjectOpens.delete(token)) return;
+      announce();
+    },
+  };
+}
+
 export function startBrainLoopWatchdog(args: {
   runtimeDir: string;
   /**
@@ -558,6 +650,12 @@ export function startBrainLoopWatchdog(args: {
    */
   socketPath?: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * The freeze threshold, when the host resolved it already for other users
+   * of the same value (the scope registry's open queue). Otherwise read from
+   * `ADE_LOOP_WATCHDOG_MS` in `env`.
+   */
+  thresholdMs?: number;
   forceInTests?: boolean;
   warn?: (event: string, meta: Record<string, unknown>) => void;
   /**
@@ -612,7 +710,7 @@ export function startBrainLoopWatchdog(args: {
   if (env.ADE_DISABLE_LOOP_WATCHDOG === "1") return () => {};
   if (!args.forceInTests && (env.VITEST || env.NODE_ENV === "test")) return () => {};
 
-  const thresholdMs = resolveBrainLoopWatchdogThresholdMs(env.ADE_LOOP_WATCHDOG_MS);
+  const thresholdMs = args.thresholdMs ?? resolveBrainLoopWatchdogThresholdMs(env.ADE_LOOP_WATCHDOG_MS);
   const reportPath = path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_REPORT_FILE);
   const reportSignal = "SIGUSR2";
   let reportEnabled = false;
@@ -670,6 +768,16 @@ export function startBrainLoopWatchdog(args: {
     }
   };
   announceCommandToWatchdog = announceCommand;
+  const announceProjectOpens = (opens: TrackedProjectOpen[]): void => {
+    try {
+      worker.postMessage({ type: "projectOpens", opens });
+    } catch {
+      // As above.
+    }
+  };
+  announceProjectOpensToWatchdog = announceProjectOpens;
+  // An open that started before the watchdog did.
+  if (activeProjectOpens.size > 0) announceProjectOpens([...activeProjectOpens.values()]);
 
   const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
   eventLoopDelay.enable();
@@ -699,6 +807,8 @@ export function startBrainLoopWatchdog(args: {
     observedAtMonotonicMs: number;
     lagMs: number;
     lastCommand: string;
+    /** Project scopes still opening when the lag was seen: the step a stall interrupted. */
+    openingProjects: BrainLoopProjectOpen[];
     diagnostics: BrainLoopWatchdogDiagnostics;
     cpuDeltaMs: number;
     majorPageFaultsDelta: number | null;
@@ -747,6 +857,7 @@ export function startBrainLoopWatchdog(args: {
     }
     warn?.("brain.event_loop_near_miss", {
       lastCommand: held.lastCommand,
+      ...(held.openingProjects.length > 0 ? { openingProjects: held.openingProjects } : {}),
       thresholdMs,
       observedLagMs: held.lagMs,
       workerPauseCoverage,
@@ -892,6 +1003,7 @@ export function startBrainLoopWatchdog(args: {
         observedAtMonotonicMs: nowMonotonicMs,
         lagMs: lag.observedLagMs,
         lastCommand: currentCommandName(),
+        openingProjects: currentProjectOpens(),
         diagnostics,
         cpuDeltaMs,
         majorPageFaultsDelta,
@@ -967,6 +1079,7 @@ export function startBrainLoopWatchdog(args: {
     emitHeldLag();
     eventLoopDelay.disable();
     if (announceCommandToWatchdog === announceCommand) announceCommandToWatchdog = null;
+    if (announceProjectOpensToWatchdog === announceProjectOpens) announceProjectOpensToWatchdog = null;
     void worker.terminate();
   };
 }

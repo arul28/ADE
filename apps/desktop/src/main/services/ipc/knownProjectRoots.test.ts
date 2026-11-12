@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { AttemptedProjectRoots, resolveKnownProjectRoot } from "./knownProjectRoots";
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-known-roots-"));
@@ -44,6 +44,18 @@ describe("resolveKnownProjectRoot", () => {
     const noisy = path.join(openProject, ".", "sub", "..");
     expect(resolveKnownProjectRoot(noisy, sources)).toBe(openProject);
     expect(resolveKnownProjectRoot(`${openProject}${path.sep}`, sources)).toBe(openProject);
+  });
+
+  // A known root may be on a drive that stopped answering (a project the brain
+  // refused as too slow): naming it as known must not read any folder.
+  it("matches a known root as given without reading any folder", () => {
+    const realpath = vi.spyOn(fs.realpathSync, "native");
+    try {
+      expect(resolveKnownProjectRoot(recentProject, sources)).toBe(recentProject);
+      expect(realpath).not.toHaveBeenCalled();
+    } finally {
+      realpath.mockRestore();
+    }
   });
 
   it("rejects empty and non-string input", () => {

@@ -270,6 +270,8 @@ export class ProjectRegistry {
   private readonly legacyRecentProjectRoots: Set<string>;
   /** `raw` is the file's text, normalized again without another read while `identity` holds. */
   private readCache: { identity: string; at: number; raw: string | null; file: ProjectRegistryFile } | null = null;
+  /** Projects whose folder `list()` must not read (refused as too slow to open). */
+  private folderReadSkip: (projectId: ProjectId) => boolean = () => false;
 
   constructor(
     layout: MachineAdeLayout = resolveMachineAdeLayout(),
@@ -294,7 +296,19 @@ export class ProjectRegistry {
   }
 
   list(): ProjectRecord[] {
-    return this.read().projects.map(withCanonicalOrigin);
+    // A record saved without an origin reads it from the project's git config
+    // on every call; a refused project's folder is not read for it. A saved
+    // origin is still canonicalized (string work only).
+    return this.read().projects.map((record) =>
+      (!record.gitOriginUrl && this.folderReadSkip(record.projectId) ? record : withCanonicalOrigin(record)));
+  }
+
+  /**
+   * Name the projects whose folder `list()` must not read: the brain's open
+   * refusals (`projectOpenStrikes.ts`), since `list()` runs on its thread.
+   */
+  setFolderReadSkip(skip: (projectId: ProjectId) => boolean): void {
+    this.folderReadSkip = skip;
   }
 
   listRecent(): ProjectRecord[] {
@@ -318,10 +332,16 @@ export class ProjectRegistry {
    * into its project: a peer naming a root means that root.
    */
   findAtRootPath(rootPath: string): ProjectRecord | null {
+    const records = this.list();
+    // The registered root as given first: `realpath` reads the folder, which on
+    // a hung or slow mount blocks this thread.
+    const given = path.resolve(rootPath);
+    const exact = records.find((record) => pathsEqual(record.rootPath, given));
+    if (exact) return exact;
     // Registered roots are real paths (`normalizeRoot`); a peer's may go
     // through a symlink (`/tmp` → `/private/tmp`).
-    const resolved = realpathIfExists(path.resolve(rootPath));
-    return this.list().find((record) => pathsEqual(record.rootPath, resolved)) ?? null;
+    const resolved = realpathIfExists(given);
+    return records.find((record) => pathsEqual(record.rootPath, resolved)) ?? null;
   }
 
   add(
