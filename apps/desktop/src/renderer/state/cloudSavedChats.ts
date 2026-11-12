@@ -26,7 +26,14 @@ export function isSavedChatsMachineId(machineId: string): boolean {
 export const SAVED_CHAT_COMPUTER_GONE_MESSAGE = "This computer was deleted. Its chats are saved here, but it can't answer anymore.";
 
 export type SavedChatLocation = {
+  /** The machine the chat lives on now: a send goes there. */
   machineKey: string;
+  /**
+   * The machine whose saved copy is read, when it is not `machineKey`: a lane
+   * that moved to a new computer keeps its chats, and until the new computer
+   * saves them the copy is the old one's (contract C3).
+   */
+  readMachineKey?: string;
   chatId: string;
   /** Store machine id, to check whether the machine came back. */
   machineId: string;
@@ -221,7 +228,7 @@ export function withSavedChatReads(
   const savedReads: Pick<AgentChatApi, "getEventHistory" | "getEventHistoryPage" | "getSummary" | "send" | "delete"> = {
     getEventHistory: async (args, pin) => {
       const saved = async (location: SavedChatLocation) => {
-        const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId }).catch(logSavedChatReadFailure);
+        const page = await bridge.read({ machineKey: location.readMachineKey ?? location.machineKey, chatId: location.chatId }).catch(logSavedChatReadFailure);
         if (!page) return { sessionId: args.sessionId, events: [], truncated: false, sessionFound: true, hasOlderHistory: false, unavailable: true } satisfies AgentChatEventHistorySnapshot;
         return savedChatSnapshot(page, args.sessionId);
       };
@@ -230,7 +237,7 @@ export function withSavedChatReads(
     },
     getEventHistoryPage: async (args, pin) => {
       const saved = async (location: SavedChatLocation) => {
-        const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId, before: args.beforeOffset }).catch(logSavedChatReadFailure);
+        const page = await bridge.read({ machineKey: location.readMachineKey ?? location.machineKey, chatId: location.chatId, before: args.beforeOffset }).catch(logSavedChatReadFailure);
         if (!page) return { sessionId: args.sessionId, events: [], startOffset: args.beforeOffset, hasMore: false, sessionFound: true, unavailable: true } satisfies AgentChatEventHistoryPage;
         return savedChatHistoryPage(page, args.sessionId);
       };
@@ -259,7 +266,7 @@ export function withSavedChatReads(
     delete: async (args, pin) => {
       const location = locate(args.sessionId, pin);
       if (location?.computerGone) {
-        await bridge.delete({ machineKey: location.machineKey, chatId: location.chatId });
+        await bridge.delete({ machineKey: location.readMachineKey ?? location.machineKey, chatId: location.chatId });
         return null;
       }
       return api.delete(args, pin);

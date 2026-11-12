@@ -105,6 +105,11 @@ function subscribe(listener: () => void): () => void {
 
 const readState = () => state;
 
+/** The lane computers as last read, for code outside React. */
+export function adeCloudLaneComputersNow(): readonly AdeCloudLaneComputer[] {
+  return state.computers;
+}
+
 /** Whether any read (or the saved copy) filled the list: only then does a missing lane computer mean anything. */
 export function cloudLaneIndexKnown(): boolean {
   return state.known;

@@ -13,7 +13,8 @@ import { isRuntimeTransportTimeoutError } from "../../shared/runtimeErrors";
 import { sessionTurnLive } from "../../shared/sessionStatusPresentation";
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../shared/wokenMachine";
 import { rootAppStoreApi } from "./appStore";
-import { adeCloudLaneComputerForMachine, cloudLaneIndexKnown } from "./adeCloudLaneIndex";
+import { adeCloudLaneComputerForMachine, adeCloudLaneComputersNow, cloudLaneIndexKnown } from "./adeCloudLaneIndex";
+import { sameMachineKey } from "../../shared/machineAddress";
 import { MachineConnectError, projectPinOnMachine } from "../lib/machineConnect";
 import { followSessionToMachine } from "../lib/otherMachineNavigation";
 import { adeCloudEnabled } from "./cloudAccess";
@@ -115,6 +116,31 @@ const realBinding = (
   };
 };
 
+/** A saved chat row, listed under the machine its lane is on now (`savedOnMachineKey`: where its copy was saved). */
+type RoutedSavedChatRow = CloudSavedChatRow & { savedOnMachineKey?: string };
+
+/**
+ * Contract C3 for saved chats: a chat whose lane moved to a new computer is
+ * listed under that computer, from the old computer's saved copy until the new
+ * one saves its own. One row per chat and machine: the newest copy.
+ */
+function routeSavedChatsToLaneComputers(rows: readonly CloudSavedChatRow[]): RoutedSavedChatRow[] {
+  const lanes = adeCloudLaneComputersNow();
+  const kept = new Map<string, RoutedSavedChatRow>();
+  for (const row of rows) {
+    const lane = row.laneId ? lanes.find((computer) => computer.laneId === row.laneId) : undefined;
+    const moved = lane?.machineKey && !sameMachineKey(lane.machineKey, row.machineKey)
+      && !lanes.some((computer) => sameMachineKey(computer.machineKey, row.machineKey));
+    const routed: RoutedSavedChatRow = moved
+      ? { ...row, machineKey: lane!.machineKey!, instanceId: lane!.instanceId, savedOnMachineKey: row.machineKey }
+      : row;
+    const key = `${routed.machineKey.toLowerCase()}\u0000${routed.chatId}`;
+    const current = kept.get(key);
+    if (!current || routed.updatedAt > current.updatedAt) kept.set(key, routed);
+  }
+  return [...kept.values()];
+}
+
 export async function refreshCloudSavedChats(context: SavedChatsContext): Promise<void> {
   const bridge = window.ade?.cloud?.savedChats;
   if (inFlight) {
@@ -128,8 +154,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     const list = await bridge.list({ projectKey: context.projectKey, limit: 500 });
     if (!list || !context.isActive()) return;
     const store = rootAppStoreApi.getState();
-    const byMachine = new Map<string, CloudSavedChatRow[]>();
-    for (const row of list.chats) {
+    const byMachine = new Map<string, RoutedSavedChatRow[]>();
+    for (const row of routeSavedChatsToLaneComputers(list.chats)) {
       const rows = byMachine.get(row.machineKey);
       if (rows) rows.push(row);
       else byMachine.set(row.machineKey, [row]);
@@ -234,7 +260,14 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       for (const row of rows) {
         nextLocations.push({
           pinKey: binding.key,
-          location: { machineKey, chatId: row.chatId, machineId, computerGone: gone, row },
+          location: {
+            machineKey,
+            ...(row.savedOnMachineKey ? { readMachineKey: row.savedOnMachineKey } : {}),
+            chatId: row.chatId,
+            machineId,
+            computerGone: gone,
+            row,
+          },
         });
       }
     }
