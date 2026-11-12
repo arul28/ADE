@@ -9,7 +9,7 @@ import { cloudSizeFor, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isR
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
 import { runPlanCleanups } from "./planCleanup";
 import { computersJoiningLaunches } from "./launches";
-import { runCloudAutoUpdates } from "./updates";
+import { runCloudAutoUpdates, updateBootStatements } from "./updates";
 import {
   DELETION_WARNING_LATE_MS,
   PENDING_TIMEOUT_MS,
@@ -133,7 +133,7 @@ export async function runCloudMinuteCron(env: CloudEnv, options: { now?: number;
       gone.push(computer);
       continue;
     }
-    statements.push(...statusChangeStatements(env, computer, instance.status, now, "seen_by_tick"));
+    statements.push(...(updateBootStatements(env, computer, instance.status, now) ?? statusChangeStatements(env, computer, instance.status, now, "seen_by_tick")));
     if (instance.metadata.ade_machine_key && instance.metadata.ade_machine_key !== computer.machine_key) {
       computer.machine_key = instance.metadata.ade_machine_key;
       statements.push(env.DB.prepare("update cloud_computers set machine_key = ? where instance_id = ?").bind(computer.machine_key, computer.instance_id));
