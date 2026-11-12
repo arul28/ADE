@@ -36,11 +36,14 @@ The caller gets one `MachineAddress` and passes it with each call.
 
 Same lane id and chat id, new machine key, after a move or a new computer.
 
-- Types: `apps/desktop/src/shared/laneComputer.ts` — `LaneComputer`, `LaneMovedEvent`, `laneComputerChanges(prev, next)`.
+- Types: `apps/desktop/src/shared/laneComputer.ts` — `LaneComputer`, `LaneMovedEvent`, `LaneFollowResult`,
+  `LaneComputerSource`, `laneComputersOf(machines)`, `laneComputerMoves(previous, next, at)`.
 - Main: `apps/desktop/src/main/services/adeCloud/cloudLaneFollow.ts` — `createLaneFollower(deps)` →
-  `{ laneComputer(laneId), note(machines), onMoved(listener) }`.
-- IPC / preload: `window.ade.cloud.laneComputer(laneId)`, `window.ade.cloud.onLaneMoved(cb)`.
-- Renderer: `useLaneComputer(laneId)` and the chat pane re-pin.
+  `{ note(instances), laneComputer(laneId), follow(laneId, { connect? }) }`; fed by every cloud list read.
+- IPC / preload: `window.ade.cloud.laneComputer(laneId)`, `window.ade.cloud.followLane(laneId, { connect? })`,
+  `window.ade.cloud.onLaneMoved(cb)`.
+- Renderer: `renderer/components/cloudLane/useFollowLaneMoves.ts` (an open chat follows its lane).
+- Pins that outlive a connection: `main/services/machines/goneTargets.ts` (C2 + C3, see Progress).
 
 ## Progress (2026-11-12)
 
