@@ -97,6 +97,7 @@ import { isStartupRecoveryWindow } from "./services/startupRecovery/startupRecov
 import { registerMusicIpc } from "./services/music/registerMusicIpc";
 import { registerGithubAccountAppIpc } from "./services/github/registerGithubAccountAppIpc";
 import { registerGithubDirectIpc } from "./services/github/githubDirectIpc";
+import { configureGithubShellShim } from "./services/github/githubShellShim";
 import { createMusicTokenStore } from "./services/music/musicTokenStore";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
@@ -10620,6 +10621,9 @@ app.whenReady().then(async () => {
     getAccountUserId: () => getSharedAccountAuthService({ secretsDir: machineAdeLayout.secretsDir }).getStatus().userId,
     logger: getMachineMainLogger(),
   });
+  // `gh` and `git` in this window's agent shells and chats ask for the current
+  // account token on every run (githubShellShim.ts); off, they get a frozen one.
+  configureGithubShellShim({ env: process.env, logger: getMachineMainLogger() });
   // Direct GitHub reads with that sign-in (no machine). Account-scoped: no pin.
   registerGithubDirectIpc({
     tokenClient: accountGithubAppClient,
