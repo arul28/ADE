@@ -283,6 +283,21 @@ describe("account settings of a project refused as too slow to open", () => {
       expect(resolveAccountOAuthConfig({ env, projectRoots: [readBefore] }))
         .toEqual({ issuer: custom.CLERK_ISSUER, clientId: custom.CLERK_OAUTH_CLIENT_ID });
 
+      // A read that fails (the drive hiccups just before the refusal) is not
+      // an answer: it must not replace what was read with "none".
+      const readFileSync = fs.readFileSync;
+      const failing = vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
+        if (typeof file === "string" && file.startsWith(readBefore)) {
+          throw Object.assign(new Error(`EIO: i/o error, read '${file}'`), { code: "EIO" });
+        }
+        return (readFileSync as (...args: unknown[]) => unknown)(file, options);
+      }) as typeof fs.readFileSync);
+      try {
+        resolveAccountOAuthConfig({ env, projectRoots: [readBefore] });
+      } finally {
+        failing.mockRestore();
+      }
+
       refused.add(readBefore);
       refused.add(neverRead);
       // Its folder is not read again: the settings are the ones last read.

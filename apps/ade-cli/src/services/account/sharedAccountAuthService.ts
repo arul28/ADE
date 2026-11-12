@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
-import { markExpected } from "../../../../desktop/src/shared/expectedError";
+import { expectedErrorKind, markExpected } from "../../../../desktop/src/shared/expectedError";
 import { createProjectSecretService } from "../../../../desktop/src/main/services/secrets/projectSecretService";
 import {
   DEFAULT_ADE_CLERK_ISSUER,
@@ -154,8 +154,12 @@ function readProjectSecret(projectRoot: string, name: string): string | null {
   let value: string | null;
   try {
     value = createProjectSecretService(projectRoot).get({ name }).value.trim() || null;
-  } catch {
-    value = null;
+  } catch (error) {
+    // The secret service answers "not set" with an expected `user` error;
+    // anything else is a read that failed. Only a real answer is remembered,
+    // so a failed read never replaces the last good one with "none".
+    if (gate && expectedErrorKind(error) === "user") rememberProjectSecret(gate, projectRoot, name, null);
+    return null;
   }
   if (gate) rememberProjectSecret(gate, projectRoot, name, value);
   return value;
