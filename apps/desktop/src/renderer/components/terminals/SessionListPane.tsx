@@ -1682,6 +1682,19 @@ export const SessionListPane = React.memo(function SessionListPane({
   // the machine each row lives on, and every machine gets its call at once. A
   // machine that fails does not stop the others; the toast names it. A row
   // with no known machine is not sent.
+  // Another machine's rows come from the cross-machine union, which re-reads
+  // on its own slow cadence. Ask it for those machines now, so a settled row
+  // moves at once and not on the next poll.
+  const rereadForeignMachines = useCallback((groups: readonly SettleMachineGroup[]) => {
+    const machineIds = new Set<string>();
+    for (const group of groups) {
+      for (const id of group.ids) {
+        const machineId = foreignRowBySessionId.get(id)?.machineId;
+        if (machineId) machineIds.add(machineId);
+      }
+    }
+    for (const machineId of machineIds) requestCrossMachineLanesForMachine(machineId);
+  }, [foreignRowBySessionId]);
   const settleSessions = useCallback(async (sessions: readonly TerminalSessionSummary[]) => {
     const { groups: byMachine, unrouted } = groupByMachine(sessions, resolveSessionRuntimePin);
     if (unrouted.length > 0) {
@@ -1701,15 +1714,17 @@ export const SessionListPane = React.memo(function SessionListPane({
     });
     const count = settledGroups.reduce((total, group) => total + group.ids.length, 0);
     if (count > 0) setSettleUndo({ groups: settledGroups, count });
+    rereadForeignMachines(settledGroups);
     reportSettleFailures("Settle", groups, results);
-  }, [resolveSessionRuntimePin]);
+  }, [rereadForeignMachines, resolveSessionRuntimePin]);
   const undoSettle = useCallback(async () => {
     const groups = settleUndo?.groups ?? [];
     if (!groups.length) return;
     setSettleUndo(null);
     const results = await Promise.allSettled(groups.map((group) => window.ade.sessions.unsettleMany(group.ids, group.pin)));
+    rereadForeignMachines(groups);
     reportSettleFailures("Undo settle", groups, results);
-  }, [settleUndo]);
+  }, [rereadForeignMachines, settleUndo]);
   useEffect(() => {
     if (!settleUndo) return;
     const timeout = window.setTimeout(() => setSettleUndo(null), 8_000);
