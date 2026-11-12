@@ -407,6 +407,8 @@ final class DeepLinkRouter {
         id,
         owner: ownership.owner,
         machineHint: accountMachineKey(from: url),
+        // A lane lives in one folder: the link's own pair opens it.
+        itemCopy: ownership.owner,
         open: { _, project in openLane(project) },
         fallback: { [weak self] in
           if let owner = ownership.owner { self?.routeOwned(owner, open: openLane) } else { self?.postSendToMac(url: url) }
@@ -602,6 +604,7 @@ final class DeepLinkRouter {
     owner: ADEDeeplinkOwnership?,
     machineHint: String?,
     itemMachine: String? = nil,
+    itemCopy: ADEDeeplinkOwnership? = nil,
     open: @escaping @MainActor (ADEDeeplinkOwnership, MobileProjectSummary) -> Void,
     fallback: @escaping @MainActor () -> Void
   ) {
@@ -644,11 +647,17 @@ final class DeepLinkRouter {
         guard !Task.isCancelled else { return }
         target = resolve()
       }
-      // The linked item (a chat) lives on one computer: a copy elsewhere
-      // cannot open it, so the link keeps its own route.
-      if let itemMachine {
+      // The linked item lives in one place (a chat on one computer, a lane
+      // in one folder): a copy elsewhere cannot open it, so the link keeps
+      // its own route.
+      func holdsItem(_ machineKey: String, _ checkoutId: String) -> Bool {
+        if let itemCopy { return machineKey == itemCopy.accountMachineKey && checkoutId == itemCopy.projectId }
+        if let itemMachine { return machineKey == itemMachine }
+        return true
+      }
+      if itemCopy != nil || itemMachine != nil {
         switch target {
-        case .copy(let machineKey, _) where machineKey != itemMachine: return fallback()
+        case .copy(let machineKey, let checkoutId) where !holdsItem(machineKey, checkoutId): return fallback()
         case .noCopy: return fallback()
         default: break
         }

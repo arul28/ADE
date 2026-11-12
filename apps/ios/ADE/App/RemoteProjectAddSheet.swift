@@ -366,6 +366,8 @@ struct RemoteProjectAddSheet: View {
   }
 
   private var canGoBack: Bool {
+    // A running step finishes on the computer it started on.
+    guard !isSubmitting else { return false }
     switch screen {
     case .chooser, .putCopies, .success: return false
     default: return true
@@ -420,6 +422,9 @@ struct RemoteProjectAddSheet: View {
     guard !isSubmitting else { return }
     isSubmitting = true
     defer { isSubmitting = false }
+    // The computer the step runs on, read before the wait.
+    let phoneKey = targetPhoneKey ?? syncService.focusedMachineKey
+    let computerName = targetName ?? syncService.focusedMachineDisplayName
     let folder: MobileProjectSummary
     do {
       folder = try await step()
@@ -433,8 +438,8 @@ struct RemoteProjectAddSheet: View {
       kind: .computerOnly,
       name: folder.displayName,
       folder: folder,
-      folderPhoneKey: targetPhoneKey ?? syncService.focusedMachineKey,
-      computerName: targetName ?? syncService.focusedMachineDisplayName
+      folderPhoneKey: phoneKey,
+      computerName: computerName
     )
     if governsAccount, let identity = AccountProjectIdentity(folder: folder) {
       do {
