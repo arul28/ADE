@@ -127,7 +127,7 @@ import { githubAutolinksAccessError } from "../../../shared/githubAutolinks";
 import { redactGitOutput } from "../../utils/redaction";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import { createGithubPatAccountSync } from "./githubPatAccountSync";
-import { createGithubGhAccountSync } from "./githubGhAccountSync";
+import { createGithubGhAccountSync, readGithubAccountCredentialState } from "./githubGhAccountSync";
 
 export { fetchAdeLatestRelease } from "./adeReleaseFeed";
 
@@ -1242,15 +1242,6 @@ export function createGithubService({
   });
   lastAccountGhToken = ghAccountSync.readAccountToken();
 
-  /** Which stored credentials came from the account, for the status. */
-  const accountCredentialState = (): GitHubStatus["accountCredentials"] => {
-    try {
-      return { patFromAccount: patAccountSync.isFromAccount(), ...ghAccountSync.state() };
-    } catch {
-      return null;
-    }
-  };
-
   const persistToken = (token: string | null): void => {
     const clean = (token ?? "").trim();
     // Read before the local copy goes: the account's copy goes only if it is this token.
@@ -2243,7 +2234,7 @@ export function createGithubService({
     ]).then(([status, gitTransport]): GitHubStatus => ({
       ...status,
       gitTransport,
-      accountCredentials: accountCredentialState(),
+      accountCredentials: readGithubAccountCredentialState(patAccountSync, ghAccountSync),
     }));
     statusInFlight = work;
     try {

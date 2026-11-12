@@ -58,9 +58,9 @@ export function createGithubNamespace(deps: {
     getRemoteStatus: (opts?: unknown) => call("github.getRemoteStatus", opts, { repo: null, hasOrigin: false }),
     setToken: async () => githubDisconnectedStatus(),
     clearToken: async () => githubDisconnectedStatus(),
-    // No secret travels, so the machine that owns the page answers it.
-    setGhAccountSharing: (args: unknown) =>
-      call("github.setGhAccountSharing", args, githubDisconnectedStatus()),
+    // No `setGhAccountSharing`: it is user-only, which the brain grants the
+    // desktop app alone, and the field is optional, so Settings shows no
+    // sharing buttons here.
     getAppUserAuthStatus: async () => ({ ...GITHUB_APP_USER_AUTH_UNSUPPORTED }),
     startAppUserDeviceAuth: async () => ({ ok: false, error: "unsupported" }),
     pollAppUserDeviceAuth: async () => ({ status: "expired" }),

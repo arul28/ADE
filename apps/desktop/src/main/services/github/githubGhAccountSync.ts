@@ -40,6 +40,7 @@ import path from "node:path";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { ghConfigDir } from "../../../../../ade-cli/src/services/credentials/ghConfigDir";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import type { GitHubAccountCredentialState } from "../../../shared/types/git";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import { readAccountVaultItem, safeVault } from "../account/accountVaultRead";
 import { describeVaultFailure } from "../account/vaultWrite";
@@ -52,6 +53,9 @@ const GITHUB_GH_ACCOUNT_OWNER_KEY = "github.ghAccountToken.owner.v1";
 const GITHUB_GH_ACCOUNT_PUBLISHED_KEY = "github.ghAccountToken.published.v1";
 export const GITHUB_GH_VAULT_KIND = "integration";
 export const GITHUB_GH_VAULT_KEY = "github-cli";
+
+const VAULT_UNAVAILABLE_MESSAGE =
+  "ADE's background service isn't running on this computer, so the account can't be changed right now.";
 
 /** Variables `gh auth token` prints in place of the stored login. */
 const ENVIRONMENT_TOKEN_VARIABLES = [
@@ -97,11 +101,16 @@ async function defaultGhHostsSignature(): Promise<string> {
 }
 
 /**
- * Whether `gh`'s answer is a github.com login. `gh auth token` with no host
- * answers for gh's default host, which is a GitHub Enterprise host when that is
- * the only login or when GH_HOST names one. ADE talks to api.github.com only,
- * so a login for any other host is never carried. hosts.yml lists each host a
- * login exists for, also when the token itself sits in the keychain.
+ * Whether this machine has a github.com `gh` login, from hosts.yml. `gh auth
+ * token` with no host answers for gh's default host, which is a GitHub
+ * Enterprise host when that is the only login or when GH_HOST names one. ADE
+ * talks to api.github.com only, so a login for any other host is never carried.
+ * hosts.yml lists each host a login exists for, also when the token itself sits
+ * in the keychain, and `gh auth logout` takes the host out of it.
+ *
+ * `unknown` when ADE cannot tell: GH_HOST names another host, or hosts.yml is
+ * there but cannot be read (Windows can refuse a read while gh rewrites it).
+ * Only a missing file means no login.
  */
 async function defaultGhLoginHost(): Promise<"github.com" | "other" | "unknown"> {
   const ghHost = process.env.GH_HOST?.trim().toLowerCase();
@@ -109,8 +118,8 @@ async function defaultGhLoginHost(): Promise<"github.com" | "other" | "unknown">
   try {
     const raw = await fs.promises.readFile(path.join(ghConfigDir(), "hosts.yml"), "utf8");
     return raw.split(/\r?\n/).some((line) => /^github\.com\s*:/.test(line)) ? "github.com" : "other";
-  } catch {
-    return "other";
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | null)?.code === "ENOENT" ? "other" : "unknown";
   }
 }
 
@@ -215,8 +224,11 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
   /**
    * This machine's own github.com `gh` login, as far as ADE can tell.
    * `known: false` means ADE cannot see the stored login (an environment token
-   * stands in front of it, or GH_HOST names another host): then nothing is
-   * published or released on its account.
+   * stands in front of it, GH_HOST names another host, or the lookup failed
+   * while hosts.yml still lists github.com): then nothing is published or
+   * released on its account. A failed lookup (a locked keychain, a `gh` that
+   * timed out) is not a sign-out, and releasing on it would take the account's
+   * copy from every other machine until the next lookup works.
    */
   const readShareableLocal = async (options: { fresh?: boolean } = {}): Promise<{ known: boolean; token: string | null }> => {
     const signature = await readSignature();
@@ -228,12 +240,12 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
       observedSignature = signature;
       observedToken = token;
     }
-    if (!token) return { known: true, token: null };
-    if (readEnvironmentTokens().includes(token)) return { known: false, token: null };
+    if (token && readEnvironmentTokens().includes(token)) return { known: false, token: null };
     const host = await readLoginHost();
     if (host === "unknown") return { known: false, token: null };
     if (host === "other") return { known: true, token: null };
-    return { known: true, token };
+    // hosts.yml lists a github.com login: with no token, the lookup failed.
+    return token ? { known: true, token } : { known: false, token: null };
   };
 
   const setVaultValue = async (vault: AccountVaultBridge, value: object): Promise<boolean> => {
@@ -320,8 +332,11 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
 
     lastAccountState = remote?.kind === "removed" ? "removed" : accountToken ? "active" : "absent";
     lastAccountDigest = accountToken ? tokenDigest(accountToken) : null;
-    // Keep the account's copy only when it is not this machine's own login.
-    const copy = accountToken && accountToken !== local.token ? accountToken : null;
+    // Keep the account's copy only when it is not this machine's own login,
+    // also while that login cannot be read here (it is still the published one).
+    const ownLogin = accountToken !== null
+      && (accountToken === local.token || tokenDigest(accountToken) === readPublishedDigest(userId));
+    const copy = accountToken && !ownLogin ? accountToken : null;
     if (copy !== readCopy()) {
       writeCopy(copy);
       if (copy) args.logger?.info?.("github.gh_account_adopted", {});
@@ -394,7 +409,7 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
       const userId = accountUserId();
       if (!userId) throw new Error("Sign in to your ADE account to change what it holds.");
       const vault = resolveVault();
-      if (!vault) throw new Error("ADE's background service isn't running on this computer, so the account can't be changed right now.");
+      if (!vault) throw new Error(VAULT_UNAVAILABLE_MESSAGE);
       const result = await vault.set(vaultRef.scope, vaultRef.kind, vaultRef.key, JSON.stringify({ v: 1, removed: true }));
       if (!result.ok) throw new Error(result.message || "The account could not be changed. Try again.");
       writePublishedDigest(userId, null);
@@ -411,10 +426,10 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
       if (!local.token) {
         throw new Error(local.known
           ? "This computer has no GitHub CLI sign-in for github.com. Run `gh auth login`, then try again."
-          : "ADE can't read this computer's GitHub CLI sign-in while GH_TOKEN, GITHUB_TOKEN or GH_HOST is set.");
+          : "ADE can't read this computer's GitHub CLI sign-in. Run `gh auth status` to check it, and unset GH_TOKEN, GITHUB_TOKEN or GH_HOST if one is set.");
       }
       const vault = resolveVault();
-      if (!vault) throw new Error("ADE's background service isn't running on this computer, so the account can't be changed right now.");
+      if (!vault) throw new Error(VAULT_UNAVAILABLE_MESSAGE);
       const result = await vault.set(vaultRef.scope, vaultRef.kind, vaultRef.key, JSON.stringify({ v: 1, token: local.token }));
       if (!result.ok) throw new Error(result.message || "The account could not be changed. Try again.");
       const digest = tokenDigest(local.token);
@@ -444,3 +459,15 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
 }
 
 export type GithubGhAccountSync = ReturnType<typeof createGithubGhAccountSync>;
+
+/**
+ * Which stored GitHub credentials came from the ADE account, for the status.
+ * Shared by the desktop service and its headless twin so the two report the
+ * same thing. Neither read throws: each swallows a store failure as "no".
+ */
+export function readGithubAccountCredentialState(
+  pat: { isFromAccount(): boolean },
+  gh: Pick<GithubGhAccountSync, "state">,
+): GitHubAccountCredentialState {
+  return { patFromAccount: pat.isFromAccount(), ...gh.state() };
+}
