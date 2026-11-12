@@ -164,7 +164,8 @@ struct MobileAccessGateView: View {
       case .signIn:
         AccountSignInView(
           onConnect: connectToAccountMachine,
-          onFinish: onContinue
+          onFinish: onContinue,
+          finishesOnSignIn: true
         )
       case .pairMachine:
         ConnectionSettingsView(syncService: syncService, pairingOnly: true)

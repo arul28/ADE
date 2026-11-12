@@ -41,6 +41,7 @@ import {
 import { PR_STATE_COLOR } from "./commitRowModel";
 import { copyText, stripIpcErrorPrefix } from "./historyClipboard";
 import { InlineErrorNotice } from "../ui/notice";
+import { usePinTargetsTab } from "../../state/crossMachineLanes";
 
 const FILE_ROWS = 200;
 
@@ -190,8 +191,9 @@ export function CommitDetailPanel({
   }, [agent, resolvedCommit, sessionLaneId, sessions.chats, sessions.terminals]);
 
   const lanePrMap = useLanePrsByLaneId();
+  const pinTargetsTab = usePinTargetsTab(pin);
   const subjectPr = resolvedCommit ? splitPrSuffix(resolvedCommit.subject) : { text: "", pr: null };
-  const lanePr = ownerLane && !pin && !isBaseLinePrimary(ownerLane)
+  const lanePr = ownerLane && pinTargetsTab && !isBaseLinePrimary(ownerLane)
     ? prsForLaneBranch(boundMachineLanePrs(lanePrMap, ownerLane.id), ownerLane)[0] ?? null
     : null;
   const pr = lanePr

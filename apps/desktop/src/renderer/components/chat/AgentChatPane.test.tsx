@@ -1008,6 +1008,9 @@ function LocationProbe() {
 const originalAde = globalThis.window.ade;
 const originalNavigatorPlatform = window.navigator.platform;
 const originalMatchMedia = window.matchMedia;
+/** The pin a call for the tab's own copy carries: that copy's address. */
+const tabPin = () => expect.objectContaining({ key: useAppStore.getState().projectBinding?.key });
+
 const LOCAL_PROJECT_BINDING: OpenProjectBinding = {
   kind: "local",
   key: WORK_PANE_CATALOG_SCOPE,
@@ -2040,7 +2043,7 @@ describe("AgentChatPane remote startup", () => {
     await waitFor(() => {
       expect(window.ade.sessions.getDelta).toHaveBeenCalledWith(
         session.sessionId,
-        null,
+        tabPin(),
       );
     });
   });
@@ -3020,7 +3023,7 @@ describe("AgentChatPane companion drawers", () => {
     fireEvent.change(restoreSelect, { target: { value: "archived-session" } });
 
     await waitFor(() => {
-      expect(unarchive).toHaveBeenCalledWith({ sessionId: "archived-session" }, null);
+      expect(unarchive).toHaveBeenCalledWith({ sessionId: "archived-session" }, tabPin());
     });
   });
 
@@ -3353,7 +3356,7 @@ describe("AgentChatPane submit recovery", () => {
           attachedAt: "2026-03-24T05:57:47.500Z",
         }],
         metadata: { source: "auth-retry-test" },
-      }, null);
+      }, tabPin());
     });
   });
 
@@ -6240,9 +6243,10 @@ describe("AgentChatPane submit recovery", () => {
     });
     expect(await screen.findByAltText("ADE")).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(window.ade.agentChat.models).not.toHaveBeenCalledWith(
-      expect.objectContaining({ provider: "cursor" }),
-    );
+    // First argument only: a call for the tab's copy also passes its pin.
+    const probedProviders = vi.mocked(window.ade.agentChat.models).mock.calls
+      .map(([args]) => (args as { provider?: string } | undefined)?.provider);
+    expect(probedProviders).not.toContain("cursor");
   });
 
   it("uses Cursor model IDs from AI status without probing Cursor inventory", async () => {
@@ -7675,7 +7679,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: "created-session",
         text: "Ship the instant route fix.",
         displayText: "Ship the instant route fix.",
-      }), null);
+      }), tabPin());
       expect(writeClipboardText).toHaveBeenCalledWith("Ship the instant route fix.");
     });
   });
@@ -7744,7 +7748,7 @@ describe("AgentChatPane submit recovery", () => {
           type: "file",
           intent: "user_prompt",
         }],
-      }), null);
+      }), tabPin());
     });
     const messageCard = await screen.findByTestId("chat-file-attachment-chip");
     const userMessage = messageCard.closest("[data-chat-user-message-card]");
@@ -7812,7 +7816,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "Copy quietly." }), null);
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "Copy quietly." }), tabPin());
       expect(writeClipboardText).toHaveBeenCalledWith("Copy quietly.");
     });
   });
@@ -7845,7 +7849,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         text: "Do not copy this prompt.",
-      }), null);
+      }), tabPin());
     });
     expect(writeClipboardText).not.toHaveBeenCalled();
   });
@@ -7886,7 +7890,7 @@ describe("AgentChatPane submit recovery", () => {
         expect(send).toHaveBeenCalledWith(expect.objectContaining({
           sessionId: "created-session",
           text: "Keep sending despite callback failure.",
-        }), null);
+        }), tabPin());
       });
       await waitFor(() => {
         expect(consoleError).toHaveBeenCalledWith("notifySessionCreated failed:", expect.any(Error));
@@ -10410,7 +10414,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
         text: "Ship it.",
-      }), null);
+      }), tabPin());
     });
 
     expect(await screen.findByText("Fresh session reply")).toBeTruthy();
@@ -13342,7 +13346,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
     expect(useAppStore.getState().projectBinding).toEqual(machineB);
   });
 
-  it("leaves a chat on the active binding on the unpinned path", async () => {
+  it("routes a chat on the active binding to the tab's own copy", async () => {
     bindWindowToMachineA();
     const session = buildSession("chat-on-a", { laneId: "lane-a", title: "Local chat" });
     installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-a") });
@@ -13351,11 +13355,10 @@ describe("AgentChatPane per-chat runtime routing", () => {
 
     const getEventHistory = window.ade.agentChat.getEventHistory as ReturnType<typeof vi.fn>;
     await waitFor(() => expect(getEventHistory.mock.calls.length).toBeGreaterThan(0));
-    // A null pin — the unpinned path. Preload branches on `if (pin)`, so this
-    // routes exactly as the pre-routing call did.
+    // The tab's copy has its own address; a null pin would mean "unknown".
     expect(getEventHistory).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "chat-on-a" }),
-      null,
+      machineA,
     );
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
   });
@@ -13451,7 +13454,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
 
     await waitFor(() => expect(getEventHistory).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: incoming.sessionId }),
-      null,
+      machineA,
     ));
     expect(getEventHistory).not.toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: incoming.sessionId }),
@@ -13855,14 +13858,14 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
       startingRef: "current-lane",
       workOnCurrentBranch: true,
       autoCreatePR: false,
-    }), null);
+    }), tabPin());
     // The created chat keeps the exact launch settings; Cursor remains the title authority.
     await waitFor(() => expect(openChat).toHaveBeenCalledWith(expect.objectContaining({
       cloudAgentId: "cloud-agent-1",
       laneId: "lane-1",
       modelId: "composer-cloud",
       reasoningEffort: null,
-    }), null));
+    }), tabPin()));
     expect(openChat.mock.calls.at(-1)?.[0]).not.toHaveProperty("serviceTier");
   });
 
@@ -13879,7 +13882,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
       promptText: "Run this in Cursor Cloud.",
       modelId: "composer-cloud",
       reasoningEffort: null,
-    }), null));
+    }), tabPin()));
     expect(createRun.mock.calls.at(-1)?.[0]).not.toHaveProperty("serviceTier");
   });
 
@@ -13897,12 +13900,12 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
 
     await waitFor(() => expect(createRun).toHaveBeenCalled());
     expect(mocks.createLane).toHaveBeenCalled();
-    expect(push).toHaveBeenCalledWith({ laneId: "lane-created" }, null);
-    expect(getOriginRemote).toHaveBeenCalledWith({ laneId: "lane-created" }, null);
+    expect(push).toHaveBeenCalledWith({ laneId: "lane-created" }, tabPin());
+    expect(getOriginRemote).toHaveBeenCalledWith({ laneId: "lane-created" }, tabPin());
     expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
       startingRef: "ade/new-lane",
       workOnCurrentBranch: true,
-    }), null);
+    }), tabPin());
   });
 
   it("aborts the cloud send when the new branch cannot be pushed", async () => {
@@ -13935,7 +13938,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
 
     // The readiness probe targets the primary lane; the synthetic auto-create id never
     // reaches the brain. Cloud mode survives the lane switch.
-    await waitFor(() => expect(getOriginRemote).toHaveBeenCalledWith({ laneId: "lane-primary" }));
+    await waitFor(() => expect(getOriginRemote).toHaveBeenCalledWith({ laneId: "lane-primary" }, tabPin()));
     expect(getOriginRemote.mock.calls.some(([args]) => String((args as { laneId: string }).laneId).includes("__ade_auto_create_lane__"))).toBe(false);
     expect(await screen.findByRole("button", { name: "Send to Cursor Cloud" })).toBeTruthy();
   });
@@ -13962,7 +13965,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     // Origin is newer than the lane, and the cloud clones origin: nothing to push, no scary
     // non-fast-forward banner, the launch goes ahead.
     await waitFor(() => expect(createRun).toHaveBeenCalled());
-    expect(getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
+    expect(getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" }, tabPin());
     expect(push).not.toHaveBeenCalled();
   });
 
@@ -14019,7 +14022,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     // Origin listing the branch is not proof it has these commits; a failed push
     // used to be swallowed and the cloud agent cloned the stale remote.
     expect((await screen.findAllByText(/GitHub refused the push/)).length).toBeGreaterThan(0);
-    expect(push).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
+    expect(push).toHaveBeenCalledWith({ laneId: "lane-1" }, tabPin());
     expect(createRun).not.toHaveBeenCalled();
   });
 
@@ -14139,7 +14142,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
 
     await waitFor(() => expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
       modelId: "composer-cloud",
-    }), null));
+    }), tabPin()));
   });
 
   it("drops a CLI-only Cursor model from cloud mode and sends the SDK-capable one", async () => {
@@ -14168,7 +14171,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
 
     await waitFor(() => expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
       modelId: "composer-cloud",
-    }), null));
+    }), tabPin()));
   });
 
   /**
@@ -14262,7 +14265,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     await waitFor(() => expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
       modelId: "composer-2.5",
       reasoningEffort: null,
-    }), null));
+    }), tabPin()));
     expect(createRun.mock.calls.at(-1)?.[0]).not.toHaveProperty("serviceTier");
   });
 
@@ -14382,10 +14385,10 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
       startingRef: "fresh-target-lane",
       workOnCurrentBranch: true,
-    }), null);
+    }), tabPin());
     expect(createRun).not.toHaveBeenCalledWith(expect.objectContaining({
       startingRef: "stale-from-previous-lane",
-    }), null);
+    }), tabPin());
   });
 
   it("leaves the draft for the new session even when open-chat fails after create", async () => {
@@ -14672,7 +14675,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
       autoCreatePR: true,
       promptText: "Open a PR when done.",
-    }), null);
+    }), tabPin());
   });
 
   it("sends without selected secrets and does not block on an empty picker", async () => {
@@ -14691,7 +14694,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
       secretNames: [],
       rememberSecretNames: false,
       laneId: "lane-1",
-    }), null);
+    }), tabPin());
     const createArgs = createRun.mock.calls[0]?.[0] as { sessionId?: string };
     expect(createArgs.sessionId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
@@ -14699,7 +14702,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     expect(openChat).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: createArgs.sessionId,
       laneId: "lane-1",
-    }), null);
+    }), tabPin());
   });
 
   it("passes selected secret names and remember-for-lane, hiding CURSOR_ names", async () => {
@@ -14729,7 +14732,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
       secretNames: ["NPM_TOKEN", "GH_TOKEN"],
       rememberSecretNames: true,
-    }), null);
+    }), tabPin());
   });
 
   it("attaches to an existing PR instead of auto-creating another", async () => {
@@ -14757,7 +14760,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
       prUrl: "https://github.com/acme/project/pull/12",
       workOnCurrentBranch: true,
       promptText: "Work on the existing PR.",
-    }), null);
+    }), tabPin());
   });
 
   it("shows a retry state when hydrating an empty cloud chat fails", async () => {

@@ -8034,19 +8034,24 @@ export function registerIpc({
     return await ctx.laneService.rebaseAbort(arg);
   });
 
+  // `projectRoot` names a project on this computer that a pin chose (checked
+  // by `leftoverProjectRoot`); without one, the window's own project.
   const readLaneWorktreePath = async (
     event: { sender: Electron.WebContents },
     laneId: string,
+    projectRoot: string | null = null,
   ): Promise<string | null> => {
-    const ctx = getCtx();
-    if (ctx.laneService) return ctx.laneService.getLaneWorktreePath(laneId);
-    const response = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+    const ctx = projectRoot ? getProjectContext?.(projectRoot) ?? null : getCtx();
+    if (ctx?.laneService) return ctx.laneService.getLaneWorktreePath(laneId);
+    const call = (pool: LocalRuntimeConnectionPool, rootPath: string) =>
       pool.callActionForRoot(rootPath, {
         domain: "lane",
         action: "list",
         args: { includeArchived: true, includeStatus: false },
-      }),
-    );
+      });
+    const response = projectRoot
+      ? (localRuntimeConnectionPool ? await call(localRuntimeConnectionPool, projectRoot) : null)
+      : await tryLocalRuntimeSync(event, call);
     const lanes = Array.isArray(response?.result) ? (response.result as LaneSummary[]) : [];
     return lanes.find((lane) => lane.id === laneId)?.worktreePath ?? null;
   };
@@ -8098,8 +8103,8 @@ export function registerIpc({
     return laneService?.getLeftoverWorktree(laneId) ?? null;
   };
 
-  handle(IPC.lanesRevealWorktree, async (event, arg: { laneId: string }): Promise<void> => {
-    const worktreePath = await readLaneWorktreePath(event, arg.laneId);
+  handle(IPC.lanesRevealWorktree, async (event, arg: { laneId: string; rootPath?: string }): Promise<void> => {
+    const worktreePath = await readLaneWorktreePath(event, arg.laneId, leftoverProjectRoot(arg?.rootPath));
     if (!worktreePath) throw new Error("Lane worktree path is not available.");
     if (!fs.existsSync(worktreePath)) throw new Error("Lane worktree is missing.");
     shell.showItemInFolder(worktreePath);
@@ -8124,24 +8129,8 @@ export function registerIpc({
     return laneService.deleteLeftoverWorktree(arg.laneId);
   });
 
-  handle(IPC.lanesOpenFolder, async (event, arg: { laneId: string }): Promise<void> => {
-    const ctx = getCtx();
-    let worktreePath: string | null = null;
-    if (ctx.laneService) {
-      worktreePath = ctx.laneService.getLaneWorktreePath(arg.laneId);
-    } else {
-      // Runtime-backed (daemon) mode: the in-process laneService is null, so
-      // resolve the worktree path from the project's runtime via the pool.
-      const response = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-        pool.callActionForRoot(rootPath, {
-          domain: "lane",
-          action: "list",
-          args: { includeArchived: true, includeStatus: false },
-        }),
-      );
-      const lanes = Array.isArray(response?.result) ? (response.result as LaneSummary[]) : [];
-      worktreePath = lanes.find((lane) => lane.id === arg.laneId)?.worktreePath ?? null;
-    }
+  handle(IPC.lanesOpenFolder, async (event, arg: { laneId: string; rootPath?: string }): Promise<void> => {
+    const worktreePath = await readLaneWorktreePath(event, arg.laneId, leftoverProjectRoot(arg?.rootPath));
     if (!worktreePath) {
       throw new Error("Lane worktree path is not available.");
     }
@@ -8254,9 +8243,9 @@ export function registerIpc({
 
   // --- Per-Lane Hostname Isolation & Preview (Phase 5 W4) --------------------
 
-  const ensureLanePreviewInfo = async (laneId: string) => {
-    const ctx = ensureLaneContext();
-    if (!ctx.laneProxyService || !ctx.portAllocationService) return null;
+  const ensureLanePreviewInfo = async (laneId: string, projectRoot: string | null = null) => {
+    const ctx = projectRoot ? getProjectContext?.(projectRoot) ?? null : ensureLaneContext();
+    if (!ctx?.laneService || !ctx.laneProxyService || !ctx.portAllocationService) return null;
 
     const lane = (await ctx.laneService.list({ includeArchived: false, includeStatus: false })).find(
       (item) => item.id === laneId
@@ -8354,12 +8343,12 @@ export function registerIpc({
     ctx.laneProxyService?.removeRoute(args.laneId);
   });
 
-  handle(IPC.lanesProxyGetPreviewInfo, async (_event, args: { laneId: string }) => {
-    return ensureLanePreviewInfo(args.laneId);
+  handle(IPC.lanesProxyGetPreviewInfo, async (_event, args: { laneId: string; rootPath?: string }) => {
+    return ensureLanePreviewInfo(args.laneId, leftoverProjectRoot(args?.rootPath));
   });
 
-  handle(IPC.lanesProxyOpenPreview, async (_event, args: { laneId: string }) => {
-    const info = await ensureLanePreviewInfo(args.laneId);
+  handle(IPC.lanesProxyOpenPreview, async (_event, args: { laneId: string; rootPath?: string }) => {
+    const info = await ensureLanePreviewInfo(args.laneId, leftoverProjectRoot(args?.rootPath));
     if (!info) throw new Error(`No preview route for lane: ${args.laneId}`);
     const { shell } = await import("electron");
     await shell.openExternal(info.previewUrl);

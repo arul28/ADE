@@ -37,6 +37,7 @@ import { createWebProviderLoginsNamespace } from "./providerLogins";
 import { createGithubAccountAppWebMethods } from "./githubStub";
 import { createWebGithubDirectNamespace } from "../github/directAdapter";
 import type { AdapterEvents, AdapterInfra } from "./types";
+import { guardPreloadPassPinnedMembers } from "./preloadPassPins";
 
 export type AdeWebAdapter = {
   ade: Window["ade"];
@@ -278,6 +279,10 @@ export function createAdeWebAdapter(
       finalize: async () => ({ ok: true }),
     },
   };
+
+  // A member that took a pin in the desktop preload pass refuses a pin this
+  // adapter cannot serve, as the members built with a pin already do.
+  guardPreloadPassPinnedMembers(surface as unknown as Record<string, unknown>, infra);
 
   return {
     ade: withFallbackProxy(surface as unknown as Window["ade"]),

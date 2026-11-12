@@ -416,6 +416,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const tabStore = useAppStoreApi();
   const tabBinding = useAppStore((s) => s.projectBinding);
+  // The form's reads name the tab's own copy when no other machine is picked.
+  const tabBindingRef = useRef(tabBinding);
+  tabBindingRef.current = tabBinding;
   const tabScopeKey = useAppStore(selectActiveProjectStateKey);
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
 
@@ -480,8 +483,8 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   } = useLaneEmojiSuggestion({
     name: createLaneName,
     enabled: open && !configureForChat,
-    pin: targetPin,
-    pinKey: targetPinKey,
+    pin: targetPin ?? tabBinding,
+    pinKey: targetPinKey ?? tabBinding?.key ?? null,
   });
 
   /**
@@ -597,10 +600,11 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     // Fresh on every open: another computer may have changed them. An older
     // brain without new-lane defaults answers null, and the form keeps the
     // built-in default (the default branch on the remote).
-    const defaultsRead = getNewLaneDefaultsCached({ projectRoot: getActiveProjectRoot(), pin, force: true });
+    const callPin = pin ?? tabBindingRef.current;
+    const defaultsRead = getNewLaneDefaultsCached({ projectRoot: getActiveProjectRoot(), pin: callPin, force: true });
     setCreateBranchesLoading(Boolean(primary));
     if (primary) {
-      loadLaneStartMenuData(primary.id, pin, current, {
+      loadLaneStartMenuData(primary.id, callPin, current, {
         setBranches: setCreateBranches,
         setBranchesLoading: setCreateBranchesLoading,
         setGitUserName: setCreateGitUserName,
@@ -609,7 +613,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     }
     Promise.all([
       defaultsRead,
-      window.ade.lanes.listTemplates(...pinArg(pin)).catch(() => [] as LaneTemplate[]),
+      window.ade.lanes.listTemplates(...pinArg(callPin)).catch(() => [] as LaneTemplate[]),
     ]).then(([snapshot, nextTemplates]) => {
       if (!current()) return;
       setNewLaneDefaults(snapshot);
@@ -633,7 +637,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   // the lane is being created on (the account setting is shared, but the
   // machine answers with its own branch names).
   const handleMakeStartDefault = useCallback(() => {
-    const pin = targetPinRef.current;
+    const pin = targetPinRef.current ?? tabBindingRef.current;
     // Only the start: the brain keeps the rest (the default template).
     void saveNewLaneDefaults({
       projectRoot: getActiveProjectRoot(),
@@ -790,7 +794,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       return false;
     }
     try {
-      const check = await window.ade.lanes.checkBranchName({ name: branchName }, ...pinArg(pin));
+      const check = await window.ade.lanes.checkBranchName({ name: branchName }, ...pinArg(pin ?? tabBindingRef.current));
       setCreateBranchProblem(check.problem);
       return !check.problem;
     } catch (error) {
