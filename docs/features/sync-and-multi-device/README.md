@@ -1258,8 +1258,17 @@ Runtime support files outside `services/sync/`:
   `rotatingCredentialOwner.ts`, `credentialRenewalLock.ts` and
   `integrationCredentialStorage.ts` — the parts the integration credential
   syncs share. `readAccountVaultItem` finds one vault item and decodes it; each
-  sync (`github/githubPatAccountSync.ts`, `cto/linearAccountSync.ts`,
-  `jira/jiraCredentialService.ts`) then compares it with its own machine copy.
+  sync (`github/githubPatAccountSync.ts`, `github/githubGhAccountSync.ts`,
+  `cto/linearAccountSync.ts`, `jira/jiraCredentialService.ts`) then compares it
+  with its own machine copy. `githubGhAccountSync.ts` carries a github.com `gh`
+  CLI login as its own item (`all` / `integration` / `github-cli`), so it never
+  overwrites the pasted token (key `github`). The machine that most recently
+  published a new `gh` login owns the account copy, and only that machine
+  releases it at a `gh` logout. "Remove from my account" writes a `removed`
+  value that stops every machine from sharing until one shares again. A copy
+  adopted from the account lives only in the machine credential store
+  (`github.ghAccountToken.v1`), never in `gh`'s own files, and is the last
+  credential ADE tries (see `shared/githubOperationCredential.ts`).
   `credentialRenewalLock.ts` lets one process on a computer renew a rotating
   credential at a time: an exclusive-create lock file with a heartbeat, which
   its holder removes only while the file still names it.
@@ -4387,8 +4396,10 @@ feature is merged or because a deliberately isolated-port host is running.
   vault-ready sync tick pulls repository account secrets back down, so a secret
   added on one machine reaches the other. Local credential stores retain
   provenance and purge account-origin values on sign-out or account switch;
-  access tokens, GitHub tokens, and vendor CLI refresh credentials stay on the
-  machine that owns them.
+  access tokens, the GitHub App sign-in, environment GitHub tokens and vendor
+  CLI refresh credentials stay on the machine that owns them. A pasted GitHub
+  token and a github.com `gh` login follow the account (scope `all`, kind
+  `integration`, keys `github` and `github-cli`).
 - **Transport**: WebSocket auth via PIN / paired secret / bootstrap
   token on every connection. Tailscale WireGuard encryption applies
   when over tailnet; LAN connections rely on pairing token validation.

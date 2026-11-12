@@ -3557,6 +3557,10 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
       githubService.clearToken();
       return githubService.getStatus();
     },
+    async setGhAccountSharing(args?: unknown) {
+      await githubService.setGhAccountSharing({ enabled: asActionRecord(args).enabled === true });
+      return githubService.getStatus();
+    },
   };
 }
 

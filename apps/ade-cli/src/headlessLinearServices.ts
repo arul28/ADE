@@ -158,6 +158,7 @@ import {
 } from "../../desktop/src/main/services/github/githubCredentialHealth";
 import { githubAutolinksAccessError } from "../../desktop/src/shared/githubAutolinks";
 import { createGithubPatAccountSync } from "../../desktop/src/main/services/github/githubPatAccountSync";
+import { createGithubGhAccountSync } from "../../desktop/src/main/services/github/githubGhAccountSync";
 
 type HeadlessGitHubStatus = GitHubStatus;
 export type HeadlessGitHubService = GithubService;
@@ -995,6 +996,12 @@ export function createHeadlessGitHubService(
       pat: () => patToken
         ? { ...ghFallback, token: patToken, source: "pat", patTokenStored }
         : null,
+      account_gh: () => {
+        const token = ghAccountSync.readAccountToken();
+        return token
+          ? { ...ghFallback, token, source: "account_gh", patTokenStored }
+          : null;
+      },
     }, "write") ?? ghFallback;
   };
 
@@ -1036,6 +1043,10 @@ export function createHeadlessGitHubService(
     ]);
     const appStatus = appResult.status;
     const appToken = appResult.token;
+    // A different gh token than last time (a sign-in, sign-out or switch) is
+    // reconciled with the account now; the same token costs nothing.
+    ghAccountSync.noteLocalGhToken(gh.token);
+    const accountGhToken = ghAccountSync.readAccountToken();
     const candidates: HeadlessGitHubTokenCandidate[] = [];
     if (environmentToken) {
       candidates.push({
@@ -1072,6 +1083,16 @@ export function createHeadlessGitHubService(
       candidates.push({
         token: patToken,
         source: "pat",
+        patTokenStored,
+        ghCliPath: gh.ghCliPath,
+        ghAuthError: gh.ghAuthError,
+        capabilities: ["read", "write", "issue-write"],
+      });
+    }
+    if (accountGhToken) {
+      candidates.push({
+        token: accountGhToken,
+        source: "account_gh",
         patTokenStored,
         ghCliPath: gh.ghCliPath,
         ghAuthError: gh.ghAuthError,
@@ -2025,6 +2046,45 @@ export function createHeadlessGitHubService(
     },
   });
 
+  // The account's copy of a gh login made on another machine (see the desktop
+  // service). Adopting or dropping it resets the status only: this machine's
+  // own gh lookup stays cached, so a vault change starts no gh process.
+  let lastAccountGhToken: string | null = null;
+  const ghAccountSync = createGithubGhAccountSync({
+    credentialStore,
+    getAccountVault: options.getAccountVault,
+    getAccountUserId: options.getAccountUserId,
+    logger,
+    // The shared lookup is keyed on hosts.yml, so after a gh sign-in or
+    // sign-out it already answers fresh; `fresh` needs nothing more here.
+    readLocalGhToken: async () => {
+      const gh = await Promise.resolve(options.ghAuthTokenProvider?.() ?? ghAuthTokenAsync());
+      return gh.token;
+    },
+    onTokenChanged: () => {
+      const previous = lastAccountGhToken;
+      lastAccountGhToken = ghAccountSync.readAccountToken();
+      if (previous) clearGithubCredentialHealth(previous);
+      if (lastAccountGhToken) clearGithubCredentialHealth(lastAccountGhToken);
+      credentialRevision += 1;
+      cachedStatus = null;
+      cachedAt = 0;
+      cachedStatusBinding = null;
+      statusLookupGeneration += 1;
+      emitStatusChanged();
+    },
+  });
+  lastAccountGhToken = ghAccountSync.readAccountToken();
+
+  /** Which stored credentials came from the account, for the status. */
+  const accountCredentialState = (): GitHubStatus["accountCredentials"] => {
+    try {
+      return { patFromAccount: patAccountSync.isFromAccount(), ...ghAccountSync.state() };
+    } catch {
+      return null;
+    }
+  };
+
   // One warn per credential source and cause; a status read probes every
   // credential, so a repeat would otherwise warn on every read.
   const tokenValidationFailures = createRepeatedFailureGate();
@@ -2366,7 +2426,7 @@ export function createHeadlessGitHubService(
           return null;
         }),
       ]);
-      return { ...status, gitTransport };
+      return { ...status, gitTransport, accountCredentials: accountCredentialState() };
     },
     async getBackgroundRequestPauseUntilMs() {
       const inventory = await readCredentialInventoryAsync();
@@ -2523,10 +2583,29 @@ export function createHeadlessGitHubService(
       invalidateStatusCache();
       emitStatusChanged();
     },
-    /** See the desktop service. */
-    hydratePatFromVault: () => patAccountSync.hydrate(),
-    purgeAccountPat: () => patAccountSync.purgeAccountCredentials(),
+    /** See the desktop service: the pasted token and the `gh` login. */
+    hydratePatFromVault: async (): Promise<void> => {
+      await patAccountSync.hydrate();
+      await ghAccountSync.hydrate();
+    },
+    purgeAccountPat: (): void => {
+      try {
+        patAccountSync.purgeAccountCredentials();
+      } finally {
+        ghAccountSync.purgeAccountCredentials();
+      }
+    },
     getPatCredentialStorage: () => patAccountSync.storage(),
+    /** See the desktop service. */
+    async setGhAccountSharing(args: { enabled: boolean }): Promise<void> {
+      if (args?.enabled === true) await ghAccountSync.shareWithAccount();
+      else await ghAccountSync.removeFromAccount();
+      cachedStatus = null;
+      cachedAt = 0;
+      cachedStatusBinding = null;
+      statusLookupGeneration += 1;
+      emitStatusChanged();
+    },
     /** See the desktop service: a signed-URL cache keys on the effective token. */
     async getCredentialRevision(): Promise<string> {
       const revision = credentialRevision;

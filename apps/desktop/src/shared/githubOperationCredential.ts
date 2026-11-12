@@ -45,11 +45,32 @@ export type GithubOperationCredentialSource = GitHubCredentialSource;
  */
 export type GithubOperationCredentialCapability = GitHubCredentialCapability | "issue-write";
 
+/**
+ * The order ADE tries credentials in, first that works wins.
+ *
+ * 1. `environment`: ADE_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN, an explicit
+ *    override for this process.
+ * 2. `app`: the ADE GitHub App sign-in; reads and issue edits only, so every
+ *    other write skips it.
+ * 3. `gh`: this machine's own `gh` CLI login.
+ * 4. `pat`: a pasted token. One slot holds either a token pasted on this
+ *    machine or the account's pasted token; a token pasted here is never
+ *    replaced by the account's, so "own pasted" always wins over "account
+ *    pasted".
+ * 5. `account_gh`: the account's copy of a `gh` login made on another machine.
+ *
+ * A machine's own credentials come first because they are the ones its owner
+ * set up there. A pasted token comes before the account's `gh` copy because
+ * pasting a token is a deliberate choice, while the `gh` copy travels with no
+ * question. The account's `gh` copy is last: it exists so a machine with no
+ * GitHub access of its own (an ADE Cloud computer) can still work.
+ */
 export const GITHUB_OPERATION_CREDENTIALS = [
   { source: "environment", capabilities: ["read", "write", "issue-write"] },
   { source: "app", capabilities: ["read", "issue-write"] },
   { source: "gh", capabilities: ["read", "write", "issue-write"] },
   { source: "pat", capabilities: ["read", "write", "issue-write"] },
+  { source: "account_gh", capabilities: ["read", "write", "issue-write"] },
 ] as const satisfies readonly {
   source: GithubOperationCredentialSource;
   capabilities: readonly GithubOperationCredentialCapability[];
@@ -451,6 +472,7 @@ export function issueWriteSourceLabel(source: GithubOperationCredentialSource | 
   switch (source) {
     case "app": return "ADE's GitHub App";
     case "gh": return "your GitHub CLI login";
+    case "account_gh": return "your GitHub CLI login from your ADE account";
     case "pat":
     case "environment": return "your token";
     default: return null;

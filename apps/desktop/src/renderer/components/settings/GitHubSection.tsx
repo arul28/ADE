@@ -58,6 +58,7 @@ function issueAccessHint(access: GitHubIssueWriteAccess): string {
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import "./IntegrationsSettings.css";
 import { Banner } from "../ui/notice";
+import { confirmDialog } from "../ui/dialog";
 import { extractError } from "../../lib/format";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
@@ -105,6 +106,8 @@ function credentialSourceLabel(source: GitHubStatus["authSource"] | undefined): 
       return "GitHub CLI";
     case "pat":
       return "Personal access token";
+    case "account_gh":
+      return "GitHub CLI from your ADE account";
     case "environment":
       return "Environment token";
     default:
@@ -113,14 +116,28 @@ function credentialSourceLabel(source: GitHubStatus["authSource"] | undefined): 
 }
 
 /** Where a sign-in comes from, in a few words. */
-function credentialSourceDetail(source: GitHubStatus["authSource"] | undefined): string {
-  switch (source) {
+function credentialSourceDetail(
+  credential: GitHubCredentialState,
+  account: GitHubStatus["accountCredentials"] | undefined,
+  /** The active credential's scopes lack what ADE needs. */
+  missingScopes: boolean,
+): string {
+  switch (credential.source) {
     case "app":
       return "ADE's GitHub app";
     case "gh":
-      return "Your gh auth login";
+      return account?.ghSharedFromHere ? "Your gh auth login, shared with your ADE account" : "Your gh auth login";
     case "pat":
-      return "Saved in ADE on this machine";
+      return account?.patFromAccount ? "From your ADE account" : "Saved in ADE on this machine";
+    case "account_gh":
+      // The fix for this copy is on the computer it came from, not here.
+      if (credential.failure?.kind === "invalid_token") {
+        return "From your ADE account. GitHub refused it: sign in with gh again on the computer it came from";
+      }
+      if (credential.failure?.kind === "permission_denied" || (missingScopes && credential.activeFor.length > 0)) {
+        return "From your ADE account. It lacks the repo scope: run gh auth refresh on the computer it came from";
+      }
+      return "From your ADE account, signed in with gh on another computer";
     case "environment":
       return "GITHUB_TOKEN or GH_TOKEN variable";
     default:
@@ -133,6 +150,7 @@ function credentialSourceIcon(source: GitHubStatus["authSource"] | undefined) {
     case "app":
       return <WebhooksLogo size={15} weight="duotone" />;
     case "gh":
+    case "account_gh":
       return <TerminalWindow size={15} weight="duotone" />;
     case "pat":
       return <Key size={15} weight="duotone" />;
@@ -308,6 +326,43 @@ export function GitHubSection() {
       .finally(() => setGithubBusy(false));
   };
 
+  // Takes the gh login off the ADE account (every computer drops its copy), or
+  // shares this computer's gh login with it again. This computer's own gh
+  // login is never touched.
+  const setGhAccountSharing = window.ade.github.setGhAccountSharing;
+  const handleGhAccountSharing = async (enabled: boolean) => {
+    if (!setGhAccountSharing) return;
+    if (!enabled) {
+      const confirmed = await confirmDialog({
+        title: "Remove the GitHub CLI sign-in from your ADE account?",
+        message: "Your other computers and ADE Cloud computers stop using it. A gh sign-in made on a computer stays on that computer.",
+        confirmLabel: "Remove from my account",
+        destructive: true,
+      });
+      if (!confirmed) return;
+    }
+    setGithubBusy(true);
+    setActionError(null);
+    setSaveNotice(null);
+    setGhAccountSharing({ enabled }, pin)
+      .then((status) => {
+        setGithubStatus(status);
+        setSaveNotice(enabled ? "Shared with your ADE account." : "Removed from your ADE account.");
+      })
+      .catch((err) => setActionError(extractError(err)))
+      .finally(() => setGithubBusy(false));
+  };
+
+  const handleRemovePatFromAccount = async () => {
+    const confirmed = await confirmDialog({
+      title: "Remove the token from your ADE account?",
+      message: "It is removed from this computer and from your other computers. A token pasted on another computer stays there.",
+      confirmLabel: "Remove from my account",
+      destructive: true,
+    });
+    if (confirmed) handleClearToken();
+  };
+
   const handleRefreshStatus = () => {
     setGithubBusy(true);
     void readStatus(true).finally(() => setGithubBusy(false));
@@ -321,7 +376,10 @@ export function GitHubSection() {
   const authFailure = githubStatus?.authFailure ?? null;
   const authFailurePresentation = githubStatus ? describeGithubAuthFailure(githubStatus) : null;
   const credentialFallback = githubStatus?.credentialFallback ?? null;
-  const credentialStates = githubStatus?.credentialStates ?? [];
+  // The account's gh copy is a row only while this computer keeps one.
+  const credentialStates = (githubStatus?.credentialStates ?? [])
+    .filter((credential) => credential.source !== "account_gh" || credential.available);
+  const accountCredentials = githubStatus?.accountCredentials ?? null;
   // An older remote runtime reports no credential chain. The token row still
   // has to be there, since it is where a token is added, replaced or removed.
   const signInRows: GitHubCredentialState[] = githubStatus && !credentialStates.some((credential) => credential.source === "pat")
@@ -764,13 +822,32 @@ export function GitHubSection() {
                   <span className="ade-ig-method-name">
                     <b>{credentialSourceLabel(credential.source)}</b>
                     <small>
-                      {credential.source === "app" ? "Reads only · set up on the right" : credentialSourceDetail(credential.source)}
+                      {credential.source === "app" ? "Reads only · set up on the right" : credentialSourceDetail(credential, accountCredentials, hasMissingScopes)}
                     </small>
                   </span>
                   <span className="ade-ig-method-side">
                     {isPat && githubStatus?.patTokenStored ? (
-                      <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={githubBusy} onClick={handleClearToken}>
-                        Remove
+                      accountCredentials?.patFromAccount ? (
+                        <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={githubBusy} onClick={() => void handleRemovePatFromAccount()}>
+                          Remove from my account
+                        </button>
+                      ) : (
+                        <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={githubBusy} onClick={handleClearToken}>
+                          Remove
+                        </button>
+                      )
+                    ) : null}
+                    {setGhAccountSharing && (
+                      credential.source === "account_gh"
+                      || (credential.source === "gh" && accountCredentials?.ghSharedFromHere)
+                    ) ? (
+                      <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={githubBusy} onClick={() => void handleGhAccountSharing(false)}>
+                        Remove from my account
+                      </button>
+                    ) : null}
+                    {setGhAccountSharing && credential.source === "gh" && credential.available && accountCredentials?.ghRemovedFromAccount ? (
+                      <button type="button" className="ade-modern-btn" data-size="sm" disabled={githubBusy} onClick={() => void handleGhAccountSharing(true)}>
+                        Share with my account
                       </button>
                     ) : null}
                     {isPat ? (
