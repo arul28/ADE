@@ -104,7 +104,7 @@ struct ProjectLocationScreen: View {
           .font(.system(size: 20, weight: .bold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(2)
-        Text(project.host == "github.com" ? "\(project.owner)/\(project.name)" : "\(project.host)/\(project.owner)/\(project.name)")
+        Text(project.addressLabel)
           .font(.system(size: 13))
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
@@ -256,19 +256,14 @@ struct ProjectLocationScreen: View {
     guard !copyJobs.values.contains(.copying) else { return }
     copyJobs[machine.machineKey] = .copying
     Task { @MainActor in
-      switch await syncService.connectForStartOn(accountMachineKey: machine.machineKey) {
+      switch await syncService.putAccountProjectCopy(project, onAccountMachine: machine.machineKey) {
       case .failure(let failure):
         copyJobs[machine.machineKey] = .failed(failure.message)
-      case .success(let key):
-        do {
-          _ = try await syncService.copyAccountProject(project, ontoMachine: key)
-          copyJobs[machine.machineKey] = .done
-          // The new folder reaches the account on that computer's next
-          // publish; read the list once so its card shows sooner.
-          Task { await store.refresh() }
-        } catch {
-          copyJobs[machine.machineKey] = .failed(SyncUserFacingError.message(for: error))
-        }
+      case .success:
+        copyJobs[machine.machineKey] = .done
+        // The new folder reaches the account on that computer's next
+        // publish; read the list once so its card shows sooner.
+        Task { await store.refresh() }
       }
     }
   }

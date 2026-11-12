@@ -552,22 +552,31 @@ struct HubInlineComposer: View {
   private var composerEntries: [HubComposerProjectEntry]? {
     guard let resolver = syncService.accountProjectResolver() else { return nil }
     let account = AccountService.shared
+    let liveById = Dictionary(
+      AccountProjectStore.shared.liveProjects.map { ($0.id, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
     var copies: [(copy: HubComposerCopy, accountProject: AccountProject?)] = []
+    func add(_ copy: HubComposerCopy) {
+      let id = syncService.accountProjectId(forCheckout: copy.project, onMachine: copy.machineKey, resolver: resolver)
+      // A folder of a project removed from ADE: the Hub hides its card, so
+      // the picker does not offer it either.
+      if let id, resolver.removedIds.contains(id) { return }
+      copies.append((copy, id.flatMap { liveById[$0] }))
+    }
     let primaryName = syncService.focusedMachineDisplayName
     let primaryAccountKey = account.machine(forFleetKey: syncService.focusedMachineKey)?.machineKey
     for project in syncService.projects {
-      copies.append((
-        HubComposerCopy(machineKey: nil, machineName: primaryName, accountMachineKey: primaryAccountKey, project: project),
-        syncService.accountProject(forCheckout: project, onMachine: nil, resolver: resolver)
-      ))
+      add(HubComposerCopy(machineKey: nil, machineName: primaryName, accountMachineKey: primaryAccountKey, project: project))
     }
     for machine in machineFleet.composerDestinationMachines {
       let accountKey = account.machine(forFleetKey: machine.machineKey)?.machineKey
       for rosterProject in machine.projects {
-        let summary = rosterProject.asRemoteMachineProjectSummary
-        copies.append((
-          HubComposerCopy(machineKey: machine.machineKey, machineName: machine.name, accountMachineKey: accountKey, project: summary),
-          syncService.accountProject(forCheckout: summary, onMachine: machine.machineKey, resolver: resolver)
+        add(HubComposerCopy(
+          machineKey: machine.machineKey,
+          machineName: machine.name,
+          accountMachineKey: accountKey,
+          project: rosterProject.asRemoteMachineProjectSummary
         ))
       }
     }

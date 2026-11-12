@@ -95,10 +95,18 @@ extension SyncService {
     guard let fleet = machineFleet, !fleet.machines.isEmpty, let activeProject else { return [] }
     let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
       ?? workRepoIdentity(originUrl: rosterProject(for: activeProject)?.repoOriginUrl)
+    // The account's copies of this project count too: after a GitHub rename
+    // one computer can still name the old address.
+    let copies = accountProjectForActiveProject()?.copies ?? []
+    let account = AccountService.shared
     return workRemoteMachineRepos(
       machines: fleet.machines,
       identity: identity,
-      folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName)
+      folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
+      accountCheckoutIds: copies.isEmpty ? nil : { fleetKey in
+        guard let accountKey = account.machine(forFleetKey: fleetKey)?.machineKey else { return [] }
+        return Set(copies.filter { $0.machineKey == accountKey }.map(\.checkoutId))
+      }
     )
   }
 

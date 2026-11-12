@@ -459,6 +459,7 @@ final class DeepLinkRouter {
         id,
         owner: ownership.owner,
         machineHint: scope.accountMachineKey,
+        itemMachine: ownership.owner?.accountMachineKey ?? scope.accountMachineKey,
         open: { owner, project in postSession(owner.accountMachineKey, project.displayName) },
         fallback: { [weak self] in
           self?.routeSession(sessionId: sessionId, scope: scope, ownership: ownership, attentionItemId: attentionItemId)
@@ -600,6 +601,7 @@ final class DeepLinkRouter {
     _ id: String,
     owner: ADEDeeplinkOwnership?,
     machineHint: String?,
+    itemMachine: String? = nil,
     open: @escaping @MainActor (ADEDeeplinkOwnership, MobileProjectSummary) -> Void,
     fallback: @escaping @MainActor () -> Void
   ) {
@@ -608,8 +610,15 @@ final class DeepLinkRouter {
     ownedLinkTask = Task { @MainActor [weak self] in
       guard let self, let sync = SyncService.shared else { return }
       let account = AccountService.shared
-      if account.phase == .loading {
-        guard await self.waitUntilSignedIn(account), !Task.isCancelled else { return }
+      if account.phase == .loading || account.phase == .signedOut {
+        // The link names an account project: it needs the account, as an
+        // owned link does.
+        if account.phase == .signedOut { sync.landOnHub(notice: "Sign in to ADE to open this link.") }
+        guard await self.waitUntilSignedIn(account) else {
+          if !Task.isCancelled { sync.landOnHub(notice: "Sign in to ADE to open this link.") }
+          return
+        }
+        guard !Task.isCancelled else { return }
       }
       let store = AccountProjectStore.shared
       guard account.phase == .signedIn, store.governsHub else { return fallback() }
@@ -634,6 +643,15 @@ final class DeepLinkRouter {
         await account.loadMachines()
         guard !Task.isCancelled else { return }
         target = resolve()
+      }
+      // The linked item (a chat) lives on one computer: a copy elsewhere
+      // cannot open it, so the link keeps its own route.
+      if let itemMachine {
+        switch target {
+        case .copy(let machineKey, _) where machineKey != itemMachine: return fallback()
+        case .noCopy: return fallback()
+        default: break
+        }
       }
       switch target {
       case .removed:
@@ -924,170 +942,6 @@ final class DeepLinkRouter {
     }
   }
 
-  private func prDetailTab(from url: URL) -> PrDetailTab? {
-    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-      return nil
-    }
-    return prDetailTab(
-      from: components.queryItems?.first(where: { $0.name.lowercased() == "tab" })?.value
-    )
-  }
-
-  private func accountMachineKey(from url: URL) -> String? {
-    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-      return nil
-    }
-    let value = ADEDeepLinkURLParsing.adeQueryValues(from: components)["accountmachinekey"]
-    guard ADEDeepLinkURLParsing.isValidScopeComponent(value) else { return nil }
-    return value
-  }
-
-  private func eventId(from url: URL) -> String? {
-    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-      return nil
-    }
-    let value = ADEDeepLinkURLParsing.adeQueryValues(from: components)["event"]
-    guard ADEDeepLinkURLParsing.isValidScopeComponent(value) else { return nil }
-    return value
-  }
-
-  private func hasValidOptionalPrScope(_ url: URL) -> Bool {
-    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-      return false
-    }
-    let query = ADEDeepLinkURLParsing.adeQueryValues(from: components)
-    if let accountMachineKey = query["accountmachinekey"],
-       !ADEDeepLinkURLParsing.isValidScopeComponent(accountMachineKey) {
-      return false
-    }
-    if let eventId = query["event"],
-       !ADEDeepLinkURLParsing.isValidScopeComponent(eventId) {
-      return false
-    }
-    return true
-  }
-
-  private func prDetailTab(from rawValue: String?) -> PrDetailTab? {
-    switch rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-    case "overview", "activity":
-      return .overview
-    case "files":
-      return .files
-    case "checks":
-      return .checks
-    default:
-      return nil
-    }
-  }
-
-  private func sessionNavigationScope(
-    from url: URL
-  ) -> (
-    laneId: String?,
-    repoOwner: String?,
-    repoName: String?,
-    branch: String?,
-    accountMachineKey: String?,
-    itemId: String?,
-    eventId: String?,
-    event: Int?,
-    offset: Int?
-  )? {
-    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-      return nil
-    }
-    return sessionNavigationScope(from: ADEDeepLinkURLParsing.adeQueryValues(from: components))
-  }
-
-  private func sessionNavigationScope(
-    from query: [String: String]
-  ) -> (
-    laneId: String?,
-    repoOwner: String?,
-    repoName: String?,
-    branch: String?,
-    accountMachineKey: String?,
-    itemId: String?,
-    eventId: String?,
-    event: Int?,
-    offset: Int?
-  )? {
-    if let lane = query["lane"], !ADEDeepLinkURLParsing.isValidUUID(lane) {
-      return nil
-    }
-    let repo = ADEDeepLinkURLParsing.splitRepo(query["repo"])
-    if query["repo"] != nil && repo == nil { return nil }
-    if let branch = query["branch"], !ADEDeepLinkURLParsing.isValidBranch(branch) {
-      return nil
-    }
-    if let accountMachineKey = query["accountmachinekey"],
-       !ADEDeepLinkURLParsing.isValidScopeComponent(accountMachineKey) {
-      return nil
-    }
-    if let itemId = query["item"],
-       !ADEDeepLinkURLParsing.isValidScopeComponent(itemId) {
-      return nil
-    }
-    let rawEvent = query["event"]
-    let event = ADEDeepLinkURLParsing.nonNegativeInteger(rawEvent)
-    let eventId: String?
-    if event == nil, let rawEvent {
-      guard ADEDeepLinkURLParsing.isValidScopeComponent(rawEvent) else { return nil }
-      eventId = rawEvent
-    } else {
-      eventId = nil
-    }
-    let offset = ADEDeepLinkURLParsing.nonNegativeInteger(query["offset"])
-    if query["offset"] != nil && offset == nil { return nil }
-    return (
-      laneId: query["lane"],
-      repoOwner: repo?.owner,
-      repoName: repo?.repo,
-      branch: query["branch"],
-      accountMachineKey: query["accountmachinekey"],
-      itemId: query["item"],
-      eventId: eventId,
-      event: event,
-      offset: offset
-    )
-  }
-
-  private func isValidFileTarget(path: String, url: URL) -> Bool {
-    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
-    return isValidFileTarget(path: path, query: ADEDeepLinkURLParsing.adeQueryValues(from: components))
-  }
-
-  private func isValidFileTarget(path: String, query: [String: String]) -> Bool {
-    guard ADEDeepLinkURLParsing.isValidRepoRelativePath(path) else { return false }
-    if let lane = query["lane"], !ADEDeepLinkURLParsing.isValidUUID(lane) {
-      return false
-    }
-    if let line = query["line"], ADEDeepLinkURLParsing.positiveInteger(line) == nil {
-      return false
-    }
-    return true
-  }
-
-  private func isValidCommitTarget(sha: String, url: URL) -> Bool {
-    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
-    return isValidCommitTarget(sha: sha, query: ADEDeepLinkURLParsing.adeQueryValues(from: components))
-  }
-
-  private func isValidCommitTarget(sha: String, query: [String: String]) -> Bool {
-    guard ADEDeepLinkURLParsing.isValidCommitSha(sha) else { return false }
-    if let lane = query["lane"], !ADEDeepLinkURLParsing.isValidUUID(lane) {
-      return false
-    }
-    return true
-  }
-
-  private func isValidLinearIssueBranch(url: URL) -> Bool {
-    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return true }
-    let query = ADEDeepLinkURLParsing.adeQueryValues(from: components)
-    guard let branch = query["branch"] else { return true }
-    return ADEDeepLinkURLParsing.isValidBranch(branch)
-  }
-
   /// A `linear-issue` link resolves in-app when a project is open on the phone
   /// (the global Linear pane searches Linear by identifier); otherwise it bounces
   /// to the paired Mac, which owns the workspace's lane↔issue mapping.
@@ -1124,25 +978,6 @@ final class DeepLinkRouter {
       object: nil,
       userInfo: ["url": url.absoluteString]
     )
-  }
-
-  private func prNumberValue(from value: Any?) -> Int? {
-    if let number = value as? Int, number > 0 { return number }
-    if let number = value as? NSNumber {
-      let intValue = number.intValue
-      if intValue > 0 { return intValue }
-    }
-    if let string = value as? String {
-      let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-      if let number = Int(trimmed), number > 0 { return number }
-    }
-    return nil
-  }
-
-  private func stringValue(from value: Any?) -> String? {
-    guard let string = value as? String else { return nil }
-    let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? nil : trimmed
   }
 
   /// PR deep links carry either a numeric PR number (from `ade://pr/<n>`

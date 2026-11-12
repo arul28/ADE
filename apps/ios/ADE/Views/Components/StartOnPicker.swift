@@ -191,21 +191,51 @@ extension SyncService {
   }
 
   /// The account project of one machine folder (`project` as `machineKey`
-  /// lists it; nil = the primary).
+  /// lists it; nil = the primary). Pass a `resolver` for a pass over many
+  /// folders; without one, a single folder is looked up in the list
+  /// directly, with the resolver's order and no tables to build (views ask
+  /// on every render).
   func accountProject(
     forCheckout project: MobileProjectSummary,
     onMachine machineKey: String?,
     resolver: HubAccountResolver? = nil
   ) -> AccountProject? {
-    guard let resolver = resolver ?? accountProjectResolver() else { return nil }
+    let store = AccountProjectStore.shared
     let identity = workRepoIdentity(owner: project.repoOwner, name: project.repoName)
-    guard let id = resolver.accountProjectId(
+    if let resolver {
+      guard let id = accountProjectId(forCheckout: project, onMachine: machineKey, resolver: resolver),
+            resolver.liveIds.contains(id) else { return nil }
+      return store.liveProjects.first { $0.id == id }
+    }
+    guard store.governsHub else { return nil }
+    let live = store.liveProjects
+    if let sentId = project.accountProjectId, !sentId.isEmpty {
+      let id = store.mergedTargets[sentId] ?? sentId
+      return live.first { $0.id == id }
+    }
+    if let accountKey = AccountService.shared.machine(forFleetKey: machineKey ?? focusedMachineKey)?.machineKey,
+       let byCopy = live.first(where: { candidate in
+         candidate.copies.contains { $0.machineKey == accountKey && $0.checkoutId == project.id }
+       }) {
+      return byCopy
+    }
+    guard let identity else { return nil }
+    return live.first { accountProjectGitHubIdentities($0).contains(identity) }
+  }
+
+  /// The id `resolver` gives one machine folder (nil = the primary): a live,
+  /// removed or unknown project. Nil when nothing names it.
+  func accountProjectId(
+    forCheckout project: MobileProjectSummary,
+    onMachine machineKey: String?,
+    resolver: HubAccountResolver
+  ) -> String? {
+    resolver.accountProjectId(
       fleetKey: machineKey ?? focusedMachineKey,
       checkoutId: project.id,
-      gitHubIdentity: identity,
+      gitHubIdentity: workRepoIdentity(owner: project.repoOwner, name: project.repoName),
       sentId: project.accountProjectId
-    ), resolver.liveIds.contains(id) else { return nil }
-    return AccountProjectStore.shared.liveProjects.first { $0.id == id }
+    )
   }
 
   /// The phone's key for an account computer: the primary's key, or the
@@ -251,7 +281,12 @@ extension SyncService {
     guard let fleet = machineFleet else { return fail("ADE could not reach \(machine.displayName).") }
     if let key = startOnPhoneKey(for: machine) {
       if key == focusedMachineKey {
-        return connectionState == .connected ? .success(key) : fail("ADE could not reach \(machine.displayName).")
+        // The user picked this computer: bring its link back, as the
+        // Reconnect button does, before saying it is out of reach.
+        if connectionState != .connected { await reconnectIfPossible(userInitiated: true) }
+        return connectionState == .connected
+          ? .success(key)
+          : fail("ADE could not reach \(machine.displayName). Check that ADE is running on it.")
       }
       return await fleet.connect(machineKey: key, timeout: .seconds(15))
         ? .success(key)
@@ -267,6 +302,25 @@ extension SyncService {
       return await fleet.connect(machineKey: key, timeout: .seconds(15))
         ? .success(key)
         : fail("Paired with \(machine.displayName), but it is not connected yet. Try again in a moment.")
+    }
+  }
+
+  /// Connects an account computer (`connectForStartOn`), then copies the
+  /// project onto it. Answers the new folder and the computer's phone key,
+  /// or the sentence to show. Every "Put a copy" goes through here.
+  func putAccountProjectCopy(
+    _ project: AccountProject,
+    onAccountMachine accountMachineKey: String
+  ) async -> Result<(folder: MobileProjectSummary, phoneKey: String), SyncPairAlongsideFailure> {
+    switch await connectForStartOn(accountMachineKey: accountMachineKey) {
+    case .failure(let failure):
+      return .failure(failure)
+    case .success(let key):
+      do {
+        return .success((try await copyAccountProject(project, ontoMachine: key), key))
+      } catch {
+        return .failure(SyncPairAlongsideFailure(message: SyncUserFacingError.message(for: error)))
+      }
     }
   }
 

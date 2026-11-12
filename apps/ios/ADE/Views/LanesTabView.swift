@@ -384,16 +384,11 @@ struct LanesTabView: View, Equatable {
         }
       },
       copy: { candidate in
-        switch await syncService.connectForStartOn(accountMachineKey: candidate.accountMachineKey) {
+        switch await syncService.putAccountProjectCopy(project, onAccountMachine: candidate.accountMachineKey) {
         case .failure(let failure):
           return failure.message
-        case .success(let key):
-          do {
-            _ = try await syncService.copyAccountProject(project, ontoMachine: key)
-          } catch {
-            return SyncUserFacingError.message(for: error)
-          }
-          return await awaitStartOnLanes(machineKey: key, name: candidate.name)
+        case .success(let copy):
+          return await awaitStartOnLanes(machineKey: copy.phoneKey, name: candidate.name)
         }
       }
     )

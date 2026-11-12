@@ -245,3 +245,67 @@ func hubProjectFolderKey(_ rootPath: String?, displayName: String?) -> String? {
   guard let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return nil }
   return name.lowercased()
 }
+
+/// Pure: a machine roster with the phone's local cache of the active project
+/// laid over it (its lanes and chats added or merged), recounted.
+func hubMergedRoster(remote: RemoteRosterProject, local: RemoteRosterProject) -> RemoteRosterProject {
+  var merged = remote
+
+  var laneIds = Set(merged.lanes.map(\.id))
+  for lane in local.lanes where laneIds.insert(lane.id).inserted {
+    merged.lanes.append(lane)
+  }
+
+  var chatIndexById = Dictionary(uniqueKeysWithValues: merged.chats.enumerated().map { ($0.element.id, $0.offset) })
+  for localChat in local.chats {
+    if let index = chatIndexById[localChat.id] {
+      merged.chats[index] = merged.chats[index].merging(local: localChat)
+    } else {
+      chatIndexById[localChat.id] = merged.chats.count
+      merged.chats.append(localChat)
+    }
+  }
+
+  merged.booted = remote.booted || local.booted
+  merged.runningCount = merged.chats.filter(\.countsTowardRunning).count
+  merged.attentionCount = merged.chats.filter(\.needsAttention).count
+  merged.chats.sort { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
+  return merged.excludingIdentityChats()
+}
+
+/// Sends a picked icon to every machine a project is on, each with its own
+/// project id and root (a project on several machines shows the same icon on
+/// all of them). Answers one line per machine that did not change: offline,
+/// too old, or an error. The others still change.
+@MainActor
+func hubSendProjectIcon(
+  _ project: MobileProjectSummary,
+  png: Data,
+  onFocused: Bool,
+  locations: [HubRemoteOwner],
+  sync: SyncService,
+  fleet: MachineFleet
+) async -> [String] {
+  var failures: [String] = []
+  if onFocused {
+    do {
+      try await sync.setProjectIcon(project, png: png)
+    } catch {
+      failures.append("\(sync.focusedMachineDisplayName): \(error.localizedDescription)")
+    }
+  }
+  for location in locations {
+    let name = fleet.machine(for: location.machineKey)?.name ?? "Another machine"
+    guard let connection = fleet.connection(for: location.machineKey),
+          connection.isLive, connection.supportsProjectIcon else {
+      failures.append("\(name): can’t reach it, or its ADE is too old")
+      continue
+    }
+    do {
+      try await connection.setProjectIcon(projectId: location.project.id, rootPath: location.project.rootPath, png: png)
+    } catch {
+      failures.append("\(name): \(error.localizedDescription)")
+    }
+  }
+  return failures
+}

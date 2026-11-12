@@ -74,9 +74,8 @@ enum HubAccountPreviewData {
     ]
   }
 
-  static let display: [String: AccountProjectDisplay] = [
-    "ap_" + String(repeating: "a", count: 32): AccountProjectDisplay(name: "ADE"),
-  ]
+  /// No saved icons: the cards show the default project icon.
+  static let display: [String: AccountProjectDisplay] = [:]
 
   @MainActor
   static func seed(state: String) {

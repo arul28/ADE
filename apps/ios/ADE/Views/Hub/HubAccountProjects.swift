@@ -56,42 +56,25 @@ func hubJoinAccountProjects(
   merged: [String: String] = [:]
 ) -> HubAccountJoin {
   var join = HubAccountJoin()
-  let liveIds = Set(live.map(\.id))
-  let removedIds = Set(removed.map(\.id))
-  var projectByCopy: [HubAccountCopyRef: String] = [:]
-  var projectByIdentity: [String: String] = [:]
-  for project in live {
-    for copy in project.copies {
-      let ref = HubAccountCopyRef(accountMachineKey: copy.machineKey, checkoutId: copy.checkoutId)
-      if projectByCopy[ref] == nil { projectByCopy[ref] = project.id }
-    }
-    for identity in accountProjectGitHubIdentities(project) where projectByIdentity[identity] == nil {
-      projectByIdentity[identity] = project.id
-    }
-  }
-  var removedIdentities = Set<String>()
-  for project in removed {
-    for identity in accountProjectGitHubIdentities(project) where projectByIdentity[identity] == nil {
-      removedIdentities.insert(identity)
-    }
-  }
+  // The same tables the fleet merge resolves folders with.
+  let index = hubAccountResolver(live: live, removed: removed, merged: merged, accountMachineKey: { _ in nil })
 
   var claimed = Set<String>()
   for card in cards {
     if let sent = card.accountProjectId {
       let id = merged[sent] ?? sent
-      if liveIds.contains(id) {
+      if index.liveIds.contains(id) {
         if claimed.insert(id).inserted { join.accountIdByCardId[card.cardId] = id }
         continue
       }
-      if removedIds.contains(id) {
+      if index.removedIds.contains(id) {
         join.hiddenCardIds.insert(card.cardId)
         continue
       }
       join.unknownIdentities.insert("id:\(id)")
     }
-    let byCopy = card.copies.lazy.compactMap { projectByCopy[$0] }.first
-    let byName = card.gitHubIdentity.flatMap { projectByIdentity[$0] }
+    let byCopy = card.copies.lazy.compactMap { index.projectByCopy[$0] }.first
+    let byName = card.gitHubIdentity.flatMap { index.projectByIdentity[$0] }
     if let projectId = byCopy ?? byName {
       if claimed.insert(projectId).inserted {
         join.accountIdByCardId[card.cardId] = projectId
@@ -99,7 +82,7 @@ func hubJoinAccountProjects(
       continue
     }
     if let identity = card.gitHubIdentity {
-      if removedIdentities.contains(identity) {
+      if index.removedByIdentity[identity] != nil {
         join.hiddenCardIds.insert(card.cardId)
       } else {
         join.unknownIdentities.insert(identity)
@@ -359,12 +342,18 @@ func hubAccountEmptyKind(_ inputs: HubAccountStatusInputs) -> HubAccountEmptyKin
   )
 }
 
+/// One formatter for every copy row and status line (a new one per row is
+/// slow to make).
+private let hubAccountRelativeTimeFormatter: RelativeDateTimeFormatter = {
+  let formatter = RelativeDateTimeFormatter()
+  formatter.unitsStyle = .full
+  return formatter
+}()
+
 /// "2 hours ago" for an epoch-ms time; nil when unknown.
 func hubAccountRelativeTime(epochMs: Double?, now: Date = Date()) -> String? {
   guard let epochMs, epochMs > 0 else { return nil }
-  let formatter = RelativeDateTimeFormatter()
-  formatter.unitsStyle = .full
-  return formatter.localizedString(for: Date(timeIntervalSince1970: epochMs / 1000), relativeTo: now)
+  return hubAccountRelativeTimeFormatter.localizedString(for: Date(timeIntervalSince1970: epochMs / 1000), relativeTo: now)
 }
 
 // MARK: - Views
@@ -782,7 +771,7 @@ struct HubCopyChip: View {
 
 /// The projects whose "+1" hint the user hid (`ade.copiesChip.dismissed.v1`).
 enum HubCopyChipHints {
-  static let defaultsKey = "ade.copiesChip.dismissed.v1"
+  static let defaultsKey = "ade.copiesChip.dismissed.v1" // gitleaks:allow (a UserDefaults key, not a secret)
 
   static func isHidden(_ accountProjectId: String, defaults: UserDefaults = .standard) -> Bool {
     (defaults.dictionary(forKey: defaultsKey) as? [String: Bool])?[accountProjectId] == true
@@ -868,7 +857,7 @@ struct AccountProjectHomeScreen: View {
             .font(.system(size: 20, weight: .bold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(2)
-          Text(project.host == "github.com" ? "\(project.owner)/\(project.name)" : "\(project.host)/\(project.owner)/\(project.name)")
+          Text(project.addressLabel)
             .font(.system(size: 13))
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)

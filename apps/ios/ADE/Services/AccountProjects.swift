@@ -49,6 +49,11 @@ struct AccountProject: Codable, Equatable, Hashable, Identifiable {
   let copies: [AccountProjectCopy]
 
   var isLive: Bool { removedAt == nil && mergedInto == nil }
+
+  /// `owner/name` on github.com, `host/owner/name` on another GitHub host.
+  var addressLabel: String {
+    host == "github.com" ? "\(owner)/\(name)" : "\(host)/\(owner)/\(name)"
+  }
 }
 
 struct AccountProjectListResponse: Decodable, Equatable {
@@ -107,9 +112,8 @@ struct AccountProjectRemoveResponse: Decodable, Equatable {
 }
 
 /// What the Hub remembers about a project from the last machine that showed
-/// it: the account row has no display name or icon.
+/// it: the account row has no icon. (The card's name is the account's.)
 struct AccountProjectDisplay: Codable, Equatable {
-  var name: String
   var iconDataUrl: String?
 }
 
@@ -369,6 +373,10 @@ final class AccountProjectStore: ObservableObject {
   private var lastAttemptAt: Date?
   private var failureCount = 0
   private var inFlight: Task<Void, Never>?
+  /// Rows this phone added or removed, with the list cursor after each
+  /// change. A read that answers an older cursor started before the change,
+  /// so the row stays as the change left it until a read includes it.
+  private var pendingChanges: [String: (row: AccountProject, cursor: Int)] = [:]
   /// Repository identities a "this repository is new" read already asked
   /// about, so one unpublished folder does not cause a read on every rebuild.
   private var askedUnknownIdentities = Set<String>()
@@ -395,6 +403,7 @@ final class AccountProjectStore: ObservableObject {
     guard self.userId != userId else { return }
     inFlight?.cancel()
     inFlight = nil
+    pendingChanges = [:]
     self.userId = userId
     lastAttemptAt = nil
     failureCount = 0
@@ -416,6 +425,7 @@ final class AccountProjectStore: ObservableObject {
   func deactivate(deletingCacheOf ownerId: String?) {
     inFlight?.cancel()
     inFlight = nil
+    pendingChanges = [:]
     if let ownerId { deleteCache(userId: ownerId) }
     userId = nil
     lastAttemptAt = nil
@@ -461,11 +471,14 @@ final class AccountProjectStore: ObservableObject {
   }
 
   /// Reads the changes since the cursor now. A read already running is
-  /// joined rather than doubled.
-  func refresh() async {
-    if let inFlight {
-      await inFlight.value
-      return
+  /// joined rather than doubled. With `changeCursor` (the cursor after a
+  /// change this phone made), a joined read that ends before that cursor
+  /// started too early, so one more read follows.
+  func refresh(after changeCursor: Int? = nil) async {
+    while let running = inFlight {
+      await running.value
+      if inFlight == running { inFlight = nil }
+      guard let changeCursor, (state.cursor ?? Int.min) < changeCursor else { return }
     }
     let task = Task { await self.performRefresh() }
     inFlight = task
@@ -473,8 +486,8 @@ final class AccountProjectStore: ObservableObject {
     if inFlight == task { inFlight = nil }
   }
 
-  /// Remembers names and icons that live machines showed, for when no
-  /// machine is reachable. Writes the cache only when something changed.
+  /// Remembers icons that live machines showed, for when no machine is
+  /// reachable. Writes the cache only when something changed.
   func recordDisplay(_ entries: [String: AccountProjectDisplay]) {
     guard userId != nil else { return }
     var next = display
@@ -523,14 +536,22 @@ final class AccountProjectStore: ObservableObject {
       // An account switch while the read ran: the answer is the old account's.
       guard userId == requestedUserId, account.isPairingCommitAuthorized(session.authorization) else { return }
       failureCount = 0
-      let next = state.applying(response)
+      var next = state.applying(response)
+      for (id, change) in pendingChanges {
+        if response.cursor < change.cursor {
+          next.rows[id] = change.row
+        } else {
+          pendingChanges[id] = nil
+        }
+      }
       let changed = next != state || phase != .ready
       publish(state: next, display: display, lastSuccessAt: Date(), phase: .ready)
-      if changed {
-        accountProjectsLog.info(
-          "account_projects.read rows=\(response.projects.count, privacy: .public) reset=\(response.reset, privacy: .public) live=\(self.liveProjects.count, privacy: .public)"
-        )
-      }
+      // An unchanged list (most foreground reads) writes nothing: the cache
+      // only needs a time to say it holds a list.
+      guard changed else { return }
+      accountProjectsLog.info(
+        "account_projects.read rows=\(response.projects.count, privacy: .public) reset=\(response.reset, privacy: .public) live=\(self.liveProjects.count, privacy: .public)"
+      )
       writeCache()
     } catch let error as AccountProjectsClient.ListError {
       guard userId == requestedUserId else { return }
@@ -561,9 +582,9 @@ final class AccountProjectStore: ObservableObject {
     let response = try await performChange { client, baseURL, token, refresh in
       try await client.add(baseURL: baseURL, token: token, identity: identity, refreshToken: refresh)
     }
-    applyChanged(response.project)
+    applyChanged(response.project, cursor: response.cursor)
     accountProjectsLog.info("account_projects.added created=\(response.created, privacy: .public) revived=\(response.revived, privacy: .public)")
-    Task { await refresh() }
+    Task { await refresh(after: response.cursor) }
     return response
   }
 
@@ -573,9 +594,9 @@ final class AccountProjectStore: ObservableObject {
     let response = try await performChange { client, baseURL, token, refresh in
       try await client.remove(baseURL: baseURL, token: token, projectId: projectId, refreshToken: refresh)
     }
-    applyChanged(response.project)
+    applyChanged(response.project, cursor: response.cursor)
     accountProjectsLog.info("account_projects.removed")
-    Task { await refresh() }
+    Task { await refresh(after: response.cursor) }
   }
 
   private func performChange<Response>(
@@ -601,7 +622,8 @@ final class AccountProjectStore: ObservableObject {
     return response
   }
 
-  private func applyChanged(_ project: AccountProject) {
+  private func applyChanged(_ project: AccountProject, cursor: Int) {
+    pendingChanges[project.id] = (project, cursor)
     var next = state
     next.rows[project.id] = project
     publish(state: next, display: display, lastSuccessAt: lastSuccessAt, phase: phase == .loading ? .ready : phase)
@@ -624,7 +646,7 @@ final class AccountProjectStore: ObservableObject {
   ) {
     let rowsChanged = next.rows != state.rows
     state = next
-    if rowsChanged || liveProjects.isEmpty != next.liveProjects.isEmpty {
+    if rowsChanged {
       liveProjects = next.liveProjects
       removedProjects = next.removedProjects
       mergedTargets = next.mergedTargets

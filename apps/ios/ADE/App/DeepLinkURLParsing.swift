@@ -303,7 +303,14 @@ func resolveAccountProjectLink(
   state: AccountProjectListState,
   startOnOrder: (AccountProject) -> [StartOnCandidate]
 ) -> AccountProjectLinkTarget {
-  let targetId = state.mergedTargets[id] ?? id
+  // Follow the stored merge chain to its end, even to a removed project
+  // (`mergedTargets` holds only chains that end at a live one).
+  var targetId = id
+  var hops = 0
+  while let next = state.rows[targetId]?.mergedInto, hops < 8 {
+    targetId = next
+    hops += 1
+  }
   guard let project = state.rows[targetId], project.isLive else {
     if let row = state.rows[targetId], row.removedAt != nil, row.mergedInto == nil { return .removed }
     return .unknown
@@ -323,4 +330,193 @@ func resolveAccountProjectLink(
     }
   }
   return .noCopy(projectName: project.name)
+}
+
+// MARK: - The router's URL checks
+
+/// Pure checks and readers the router runs on a link's URL or payload values.
+/// They hold no router state.
+extension DeepLinkRouter {
+  func prDetailTab(from url: URL) -> PrDetailTab? {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+      return nil
+    }
+    return prDetailTab(
+      from: components.queryItems?.first(where: { $0.name.lowercased() == "tab" })?.value
+    )
+  }
+
+  func accountMachineKey(from url: URL) -> String? {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+      return nil
+    }
+    let value = ADEDeepLinkURLParsing.adeQueryValues(from: components)["accountmachinekey"]
+    guard ADEDeepLinkURLParsing.isValidScopeComponent(value) else { return nil }
+    return value
+  }
+
+  func eventId(from url: URL) -> String? {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+      return nil
+    }
+    let value = ADEDeepLinkURLParsing.adeQueryValues(from: components)["event"]
+    guard ADEDeepLinkURLParsing.isValidScopeComponent(value) else { return nil }
+    return value
+  }
+
+  func hasValidOptionalPrScope(_ url: URL) -> Bool {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+      return false
+    }
+    let query = ADEDeepLinkURLParsing.adeQueryValues(from: components)
+    if let accountMachineKey = query["accountmachinekey"],
+       !ADEDeepLinkURLParsing.isValidScopeComponent(accountMachineKey) {
+      return false
+    }
+    if let eventId = query["event"],
+       !ADEDeepLinkURLParsing.isValidScopeComponent(eventId) {
+      return false
+    }
+    return true
+  }
+
+  func prDetailTab(from rawValue: String?) -> PrDetailTab? {
+    switch rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "overview", "activity":
+      return .overview
+    case "files":
+      return .files
+    case "checks":
+      return .checks
+    default:
+      return nil
+    }
+  }
+
+  func sessionNavigationScope(
+    from url: URL
+  ) -> (
+    laneId: String?,
+    repoOwner: String?,
+    repoName: String?,
+    branch: String?,
+    accountMachineKey: String?,
+    itemId: String?,
+    eventId: String?,
+    event: Int?,
+    offset: Int?
+  )? {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+      return nil
+    }
+    return sessionNavigationScope(from: ADEDeepLinkURLParsing.adeQueryValues(from: components))
+  }
+
+  func sessionNavigationScope(
+    from query: [String: String]
+  ) -> (
+    laneId: String?,
+    repoOwner: String?,
+    repoName: String?,
+    branch: String?,
+    accountMachineKey: String?,
+    itemId: String?,
+    eventId: String?,
+    event: Int?,
+    offset: Int?
+  )? {
+    if let lane = query["lane"], !ADEDeepLinkURLParsing.isValidUUID(lane) {
+      return nil
+    }
+    let repo = ADEDeepLinkURLParsing.splitRepo(query["repo"])
+    if query["repo"] != nil && repo == nil { return nil }
+    if let branch = query["branch"], !ADEDeepLinkURLParsing.isValidBranch(branch) {
+      return nil
+    }
+    if let accountMachineKey = query["accountmachinekey"],
+       !ADEDeepLinkURLParsing.isValidScopeComponent(accountMachineKey) {
+      return nil
+    }
+    if let itemId = query["item"],
+       !ADEDeepLinkURLParsing.isValidScopeComponent(itemId) {
+      return nil
+    }
+    let rawEvent = query["event"]
+    let event = ADEDeepLinkURLParsing.nonNegativeInteger(rawEvent)
+    let eventId: String?
+    if event == nil, let rawEvent {
+      guard ADEDeepLinkURLParsing.isValidScopeComponent(rawEvent) else { return nil }
+      eventId = rawEvent
+    } else {
+      eventId = nil
+    }
+    let offset = ADEDeepLinkURLParsing.nonNegativeInteger(query["offset"])
+    if query["offset"] != nil && offset == nil { return nil }
+    return (
+      laneId: query["lane"],
+      repoOwner: repo?.owner,
+      repoName: repo?.repo,
+      branch: query["branch"],
+      accountMachineKey: query["accountmachinekey"],
+      itemId: query["item"],
+      eventId: eventId,
+      event: event,
+      offset: offset
+    )
+  }
+
+  func isValidFileTarget(path: String, url: URL) -> Bool {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+    return isValidFileTarget(path: path, query: ADEDeepLinkURLParsing.adeQueryValues(from: components))
+  }
+
+  func isValidFileTarget(path: String, query: [String: String]) -> Bool {
+    guard ADEDeepLinkURLParsing.isValidRepoRelativePath(path) else { return false }
+    if let lane = query["lane"], !ADEDeepLinkURLParsing.isValidUUID(lane) {
+      return false
+    }
+    if let line = query["line"], ADEDeepLinkURLParsing.positiveInteger(line) == nil {
+      return false
+    }
+    return true
+  }
+
+  func isValidCommitTarget(sha: String, url: URL) -> Bool {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+    return isValidCommitTarget(sha: sha, query: ADEDeepLinkURLParsing.adeQueryValues(from: components))
+  }
+
+  func isValidCommitTarget(sha: String, query: [String: String]) -> Bool {
+    guard ADEDeepLinkURLParsing.isValidCommitSha(sha) else { return false }
+    if let lane = query["lane"], !ADEDeepLinkURLParsing.isValidUUID(lane) {
+      return false
+    }
+    return true
+  }
+
+  func isValidLinearIssueBranch(url: URL) -> Bool {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return true }
+    let query = ADEDeepLinkURLParsing.adeQueryValues(from: components)
+    guard let branch = query["branch"] else { return true }
+    return ADEDeepLinkURLParsing.isValidBranch(branch)
+  }
+
+  func prNumberValue(from value: Any?) -> Int? {
+    if let number = value as? Int, number > 0 { return number }
+    if let number = value as? NSNumber {
+      let intValue = number.intValue
+      if intValue > 0 { return intValue }
+    }
+    if let string = value as? String {
+      let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+      if let number = Int(trimmed), number > 0 { return number }
+    }
+    return nil
+  }
+
+  func stringValue(from value: Any?) -> String? {
+    guard let string = value as? String else { return nil }
+    let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+  }
 }

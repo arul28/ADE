@@ -110,16 +110,21 @@ func workRemoteLaneMachineName(_ laneId: String, options: [WorkMachineFilterOpti
 /// out projects ADE registered on its own (`catalogVisibility == "system"`), so
 /// that part of desktop's rule is applied on the host. The Hub still lists
 /// every project separately.
+/// `accountCheckoutIds` maps a machine (fleet key) to the registry ids of its
+/// folders that the account names as copies of the project: they match even
+/// when the computer still names the repository by an old GitHub address.
 func workRemoteMachineRepos(
   machines: [MachineFleet.Machine],
   identity: String?,
-  folderKey: String? = nil
+  folderKey: String? = nil,
+  accountCheckoutIds: ((String) -> Set<String>)? = nil
 ) -> [WorkRemoteMachineRepo] {
-  guard identity != nil || folderKey != nil else { return [] }
+  guard identity != nil || folderKey != nil || accountCheckoutIds != nil else { return [] }
   var repos: [WorkRemoteMachineRepo] = []
   for machine in machines {
+    let accountCopies = accountCheckoutIds?(machine.machineKey) ?? []
     let matches = machine.projects.filter { project in
-      fleetProjectsMatch(
+      accountCopies.contains(project.projectId) || fleetProjectsMatch(
         identity: identity,
         folder: folderKey,
         otherIdentity: workRepoIdentity(originUrl: project.repoOriginUrl),

@@ -41,13 +41,17 @@ struct HubComposerMachineHeader: View {
 
 /// One copy of a project the composer can send to: the primary's catalog
 /// row, or the roster row of another live computer.
-struct HubComposerCopy: Equatable {
+struct HubComposerCopy: Equatable, Identifiable {
   /// Nil for the primary machine.
   let machineKey: String?
   let machineName: String
   /// The account machine key, when the account lists the computer.
   let accountMachineKey: String?
   let project: MobileProjectSummary
+
+  /// One computer can hold two folders of a project, and two computers can
+  /// share a name: the folder on its computer is the identity.
+  var id: String { "\(machineKey ?? "")|\(project.id)" }
 }
 
 /// One row of the composer's project list: an account project once, with
@@ -119,7 +123,7 @@ struct HubComposerStartOnChips: View {
         .foregroundStyle(ADEColor.textMuted)
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 6) {
-          ForEach(copies, id: \.machineName) { copy in
+          ForEach(copies) { copy in
             let selected = isSelected(copy)
             Button {
               onPick(copy)
