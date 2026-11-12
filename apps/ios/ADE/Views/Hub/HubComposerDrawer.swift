@@ -611,10 +611,10 @@ struct HubInlineComposer: View {
     Button {
       guard !isSelected else { return }
       let last = entry.accountProjectId.flatMap { StartOnMemory.lastMachine(for: $0) }
-      let main = entry.accountProjectId.flatMap { id in
-        accountProjects.liveProjects.first { $0.id == id }?.copies.first(where: \.isMain)
-      }
-      if let copy = hubComposerDefaultCopy(entry, lastAccountMachineKey: last, mainCopy: main) { pick(copy) }
+      let mains = entry.accountProjectId.flatMap { id in
+        accountProjects.liveProjects.first { $0.id == id }?.copies.filter(\.isMain)
+      } ?? []
+      if let copy = hubComposerDefaultCopy(entry, lastAccountMachineKey: last, mainCopies: mains) { pick(copy) }
     } label: {
       HStack(spacing: 9) {
         HubProjectIcon(iconDataUrl: entry.iconDataUrl, isActive: isSelected)

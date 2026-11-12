@@ -110,27 +110,30 @@ func workRemoteLaneMachineName(_ laneId: String, options: [WorkMachineFilterOpti
 /// out projects ADE registered on its own (`catalogVisibility == "system"`), so
 /// that part of desktop's rule is applied on the host. The Hub still lists
 /// every project separately.
-/// `accountCopies` maps a machine (fleet key) to the registry ids of its
-/// folders that the account names as copies of the project: they match even
-/// when the computer still names the repository by an old GitHub address.
-/// An account copy wins over a folder that matches only by address, and the
-/// account's main copy wins over the others, because new lanes go there
-/// (Location shows it as "Used for new lanes").
+/// `account` names the folders the account knows as copies of the project:
+/// they match even when the computer still names the repository by an old
+/// GitHub address. An account copy wins over a folder that matches only by
+/// address, and the account's main copy wins over the others, because new
+/// lanes go there (Location shows it as "Used for new lanes"). An address
+/// match on another GitHub host does not count for an account project.
 func workRemoteMachineRepos(
   machines: [MachineFleet.Machine],
   identity: String?,
   folderKey: String? = nil,
-  accountCopies: ((String) -> (ids: Set<String>, main: String?))? = nil
+  account: WorkAccountCopies? = nil
 ) -> [WorkRemoteMachineRepo] {
-  guard identity != nil || folderKey != nil || accountCopies != nil else { return [] }
+  guard identity != nil || folderKey != nil || account != nil else { return [] }
   var repos: [WorkRemoteMachineRepo] = []
   for machine in machines {
-    let copies = accountCopies?(machine.machineKey) ?? (ids: [], main: nil)
+    let copies = account?.onMachine(machine.machineKey) ?? (ids: [], main: nil)
     let matches = machine.projects.filter { project in
-      copies.ids.contains(project.projectId) || fleetProjectsMatch(
+      if copies.ids.contains(project.projectId) { return true }
+      let otherIdentity = workRepoIdentity(originUrl: project.repoOriginUrl)
+      if let account, otherIdentity != nil, workRepoHost(originUrl: project.repoOriginUrl) != account.host { return false }
+      return fleetProjectsMatch(
         identity: identity,
         folder: folderKey,
-        otherIdentity: workRepoIdentity(originUrl: project.repoOriginUrl),
+        otherIdentity: otherIdentity,
         otherFolder: hubProjectFolderKey(project.rootPath, displayName: project.displayName)
       )
     }
@@ -147,6 +150,15 @@ func workRemoteMachineRepos(
     ))
   }
   return repos
+}
+
+/// The account project of the focused folder, for `workRemoteMachineRepos`.
+struct WorkAccountCopies {
+  /// The project's GitHub host (`github.com`, or a GitHub Enterprise host).
+  let host: String
+  /// Fleet key -> the registry ids of the account's copies on that computer,
+  /// and the main one.
+  let onMachine: (String) -> (ids: Set<String>, main: String?)
 }
 
 /// Desktop `pickLiveCheckout` over what the roster carries: the most recently

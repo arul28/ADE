@@ -124,6 +124,14 @@ func accountRepoKeyParts(_ key: String) -> (host: String, owner: String, name: S
 /// `owner/name`, lowercased, for an origin on github.com only. A roster's
 /// origin can be any host, and only github.com addresses may match by name.
 func hubGitHubRepoIdentity(originUrl: String?) -> String? {
+  guard workRepoHost(originUrl: originUrl) == "github.com" else { return nil }
+  return workRepoIdentity(originUrl: originUrl)
+}
+
+/// The lowercase host of a git origin in any common form (`www.` and `ssh.`
+/// of github.com read as `github.com`). A roster's normalized origin
+/// (`github.com/owner/name`, no scheme) names the host first.
+func workRepoHost(originUrl: String?) -> String? {
   guard let raw = originUrl?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
   let host: String?
   if raw.contains("://") {
@@ -132,13 +140,11 @@ func hubGitHubRepoIdentity(originUrl: String?) -> String? {
     let beforeColon = raw[..<colon]
     host = beforeColon.split(separator: "@").last.map { String($0).lowercased() }
   } else if raw.contains("/") {
-    // A roster's normalized origin: `github.com/owner/name`, no scheme.
     host = raw.split(separator: "/").first.map { String($0).lowercased() }
   } else {
     host = nil
   }
-  guard host == "github.com" || host == "www.github.com" || host == "ssh.github.com" else { return nil }
-  return workRepoIdentity(originUrl: raw)
+  return host == "www.github.com" || host == "ssh.github.com" ? "github.com" : host
 }
 
 // MARK: - Resolver

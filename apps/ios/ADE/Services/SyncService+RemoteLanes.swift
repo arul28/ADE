@@ -99,19 +99,20 @@ extension SyncService {
       machines: fleet.machines,
       identity: identity,
       folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
-      accountCopies: accountCopiesOfActiveProject()
+      account: accountCopiesOfActiveProject()
     )
   }
 
-  /// The account's copies of the focused project on one computer (fleet key),
-  /// for `workRemoteMachineRepos`: they match after a GitHub rename, and the
-  /// main copy wins. Every caller passes it, so the Work list, lane links and
-  /// new lanes use the same folder. Nil when the account names no copy.
-  func accountCopiesOfActiveProject() -> ((String) -> (ids: Set<String>, main: String?))? {
-    let copies = accountProjectForActiveProject()?.copies ?? []
-    guard !copies.isEmpty else { return nil }
+  /// The focused project's account project, for `workRemoteMachineRepos`: its
+  /// copies match after a GitHub rename, the main copy wins, and an address
+  /// on another host does not match. Every caller passes it, so the Work
+  /// list, lane links and new lanes use the same folder. Nil for a folder
+  /// that is not on the account.
+  func accountCopiesOfActiveProject() -> WorkAccountCopies? {
+    guard let project = accountProjectForActiveProject() else { return nil }
+    let copies = project.copies
     let account = AccountService.shared
-    return { fleetKey in
+    return WorkAccountCopies(host: project.host) { fleetKey in
       guard let accountKey = account.machine(forFleetKey: fleetKey)?.machineKey else { return (ids: [], main: nil) }
       let onMachine = copies.filter { $0.machineKey == accountKey }
       return (ids: Set(onMachine.map(\.checkoutId)), main: onMachine.first(where: \.isMain)?.checkoutId)

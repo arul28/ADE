@@ -254,6 +254,8 @@ struct RemoteProjectDirectoryBrowser: View {
       HStack(spacing: 10) {
         Button("Cancel", action: onCancel)
           .buttonStyle(ProjectSecondaryButtonStyle())
+          // A running step finishes on the screen it started from.
+          .disabled(isSubmitting)
         Button(mode == .open ? "Open project" : "Use directory") {
           if let targetPath {
             onChoose(targetPath)
@@ -403,6 +405,8 @@ struct RemoteProjectCreateForm: View {
       HStack(spacing: 10) {
         Button("Cancel", action: onCancel)
           .buttonStyle(ProjectSecondaryButtonStyle())
+          // A running step finishes on the screen it started from.
+          .disabled(isSubmitting)
         Button("Create", action: onCreate)
           .buttonStyle(ProjectPrimaryButtonStyle())
           .disabled(!canCreate || isSubmitting)
@@ -492,6 +496,8 @@ struct RemoteProjectCloneForm: View {
       HStack(spacing: 10) {
         Button("Cancel", action: onCancel)
           .buttonStyle(ProjectSecondaryButtonStyle())
+          // A running step finishes on the screen it started from.
+          .disabled(isSubmitting)
         Button("Clone", action: onClone)
           .buttonStyle(ProjectPrimaryButtonStyle())
           .disabled(!canClone || isSubmitting)

@@ -174,7 +174,9 @@ struct AddLaneSheet: View {
     Task { @MainActor in
       let failure = await step(candidate)
       busyStartOnIds.remove(candidate.id)
-      guard startOnPicks == pickAtStart else { return }
+      // A newer pick of another computer keeps its row; the result still
+      // counts when the user picked this computer again.
+      guard startOnPicks == pickAtStart || selectedStartOnId == candidate.id else { return }
       if let failure {
         startOnError = failure
         ADEHaptics.warning()

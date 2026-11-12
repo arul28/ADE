@@ -275,7 +275,7 @@ struct WorkRootSyncInputs: Equatable {
         machines: connected,
         identity: identity,
         folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
-        accountCopies: sync.accountCopiesOfActiveProject()
+        account: sync.accountCopiesOfActiveProject()
       )
       // The Work list shows every chat of this repository on the other
       // machines, and its search and filters cover them all: a paged roster

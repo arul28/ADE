@@ -102,21 +102,23 @@ func hubComposerProjectEntries(_ copies: [(copy: HubComposerCopy, accountProject
 
 /// Pure: the copy a pick of `entry` starts on, in the Start-on order
 /// (`resolveStartOn`): the computer this phone used last for the project,
-/// else the account's main copy, else the primary's copy, else the first.
+/// else a main copy, the primary's first. On one computer its main copy
+/// (`mainCopies`, one per computer) wins over its other folders.
 func hubComposerDefaultCopy(
   _ entry: HubComposerProjectEntry,
   lastAccountMachineKey: String?,
-  mainCopy: AccountProjectCopy? = nil
+  mainCopies: [AccountProjectCopy] = []
 ) -> HubComposerCopy? {
-  if let lastAccountMachineKey,
-     let last = entry.copies.first(where: { $0.accountMachineKey == lastAccountMachineKey }) {
-    return last
+  func isMain(_ copy: HubComposerCopy) -> Bool {
+    mainCopies.contains { $0.machineKey == copy.accountMachineKey && $0.checkoutId == copy.project.id }
   }
-  if let mainCopy,
-     let main = entry.copies.first(where: { $0.accountMachineKey == mainCopy.machineKey && $0.project.id == mainCopy.checkoutId }) {
-    return main
+  if let lastAccountMachineKey {
+    let onLast = entry.copies.filter { $0.accountMachineKey == lastAccountMachineKey }
+    if let copy = onLast.first(where: isMain) ?? onLast.first { return copy }
   }
-  return entry.copies.first { $0.machineKey == nil } ?? entry.copies.first
+  let mains = entry.copies.filter(isMain)
+  return mains.first { $0.machineKey == nil } ?? mains.first
+    ?? entry.copies.first { $0.machineKey == nil } ?? entry.copies.first
 }
 
 /// The computers of the chosen project, as small chips under its row.
