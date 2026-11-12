@@ -1047,6 +1047,32 @@ describe("ADE Cloud account", () => {
  * and the free plan"). Races and hour accounting only: these have no surface
  * but the routes and the stored rows, so a test is how they are proven.
  */
+describe("ADE Cloud automatic updates", () => {
+  // An update the provider took while the computer was asleep: it boots about a minute later on its own.
+  const asleepUpdate = (startedAt: number): Row => ({
+    status: "sleeping",
+    awake_since: null,
+    update_state: "updating",
+    update_reason: "asleep",
+    update_started_at: startedAt,
+  });
+  it.each<[string, Row, boolean]>([
+    ["the boot right after an asleep update is the update's, and free", asleepUpdate(NOW - 60_000), false],
+    ["a wake with no update is metered", { status: "sleeping", awake_since: null }, true],
+    ["a wake long after the update's window is metered", asleepUpdate(NOW - 2 * HOUR), true],
+  ])("%s", async (_label, row, charged) => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, row);
+    provide(harness, INSTANCE, "running");
+    await harness.tick();
+    clock = NOW + 10 * 60_000;
+    harness.net.instances.get(INSTANCE)!.status = "sleeping";
+    await harness.tick();
+    expect(computer(harness).status).toBe("sleeping");
+    expect(usedMilli(harness) > 0).toBe(charged);
+  });
+});
+
 describe("ADE Cloud earned hours, referrals and the free plan per computer", () => {
   const COMPUTER = "a".repeat(64);
   const OTHER_COMPUTER = "b".repeat(64);
