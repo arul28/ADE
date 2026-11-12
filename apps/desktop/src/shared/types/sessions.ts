@@ -113,12 +113,12 @@ export type TerminalToolType =
   | "grok"
   | "copilot"
   | "devin"
+  | "antigravity"
   | "qwen-chat"
   | "kimi-chat"
   | "grok-chat"
   | "copilot-chat"
   | "devin-chat"
-  // Antigravity is ACP-only: it has a chat runtime and no terminal CLI.
   | "antigravity-chat"
   | "aider"
   | "continue"
@@ -137,6 +137,7 @@ export type TrackedAgentCliToolType =
   | "grok"
   | "copilot"
   | "devin"
+  | "antigravity"
   | "claude-orchestrated"
   | "codex-orchestrated"
   | "opencode-orchestrated";
@@ -176,6 +177,7 @@ export function isTrackedAgentCliToolType(
     || toolType === "grok"
     || toolType === "copilot"
     || toolType === "devin"
+    || toolType === "antigravity"
     || toolType === "claude-orchestrated"
     || toolType === "codex-orchestrated"
     || toolType === "opencode-orchestrated";
@@ -243,7 +245,8 @@ export type TerminalResumeProvider =
   | "kimi"
   | "grok"
   | "copilot"
-  | "devin";
+  | "devin"
+  | "antigravity";
 
 export type TerminalResumeTargetKind = "session" | "thread";
 

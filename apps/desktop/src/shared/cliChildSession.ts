@@ -21,6 +21,7 @@ export const TRACKED_AGENT_CLI_TOOL_TYPES: readonly TrackedAgentCliToolType[] = 
   "kimi",
   "grok",
   "copilot",
+  "antigravity",
   "claude-orchestrated",
   "codex-orchestrated",
   "opencode-orchestrated",

@@ -172,6 +172,7 @@ const LOGO_MAP: Partial<Record<TerminalToolType, React.FC<LogoProps>>> = {
   "copilot-chat": CopilotLogo,
   devin: DevinToolLogo,
   "devin-chat": DevinToolLogo,
+  antigravity: AntigravityToolLogo,
   "antigravity-chat": AntigravityToolLogo,
   shell: ShellLogo,
 };

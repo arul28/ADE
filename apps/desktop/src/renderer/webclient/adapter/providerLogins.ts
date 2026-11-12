@@ -4,7 +4,7 @@ import type { AdapterInfra } from "./types";
 
 type ProviderLoginsBridge = NonNullable<Window["ade"]["providerLogins"]>;
 
-const DESKTOP_ONLY = "Do this in the ADE desktop app on that computer: only that computer's own ADE can read its Keychain or its GitHub CLI login.";
+const DESKTOP_ONLY = "Do this in the ADE desktop app on that computer: only that computer's own ADE can read its OS keyring or its GitHub CLI login.";
 
 /**
  * `window.ade.providerLogins` for the web app: the account's sign-ins for

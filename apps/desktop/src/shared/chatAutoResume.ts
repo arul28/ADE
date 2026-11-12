@@ -324,6 +324,20 @@ export const RESTART_RESUME_PROMPT =
 export const RESTART_RESUME_REASON = "Resume after ADE restarted";
 
 /**
+ * The one line a reopened agent CLI shows in its own terminal, so every viewer
+ * of the session (this desktop, another computer, a phone) sees why it came
+ * back. `unexpected`: the runtime crashed, was killed, or lost power, rather
+ * than stopping on purpose. `continued`: its turn was running, and the agent
+ * gets the continue prompt once the CLI is ready.
+ */
+export function cliReopenedNotice(args: { unexpected: boolean; continued: boolean }): string {
+  const restarted = args.unexpected ? "ADE restarted unexpectedly" : "ADE restarted";
+  return args.continued
+    ? `${restarted} during a turn. It reopened this session and tells the agent to continue.`
+    : `${restarted} and reopened this session.`;
+}
+
+/**
  * Automatic resumes in a row before a chat waits for the user. A chat whose
  * resumed turn is cut off by another restart, again and again, is likely what
  * keeps stopping ADE (T3 #18461).

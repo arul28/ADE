@@ -38,6 +38,8 @@ const ACP_PERMISSION_FAMILIES: ReadonlySet<string> = new Set([
   "moonshot",
   "xai",
   "github-copilot",
+  // agy 1.5 has `plan` and `auto`; Full access is ADE answering each request.
+  "antigravity",
 ]);
 
 export function resolvePersistentIdentityGuardedPermissionMode(opts: {
@@ -378,44 +380,9 @@ export function getPermissionOptions(opts: {
     ];
   }
 
-  // Antigravity: the ACP ladder without Plan. The agent has no read-only mode
-  // (planning is its own `/plan` command), so offering Plan would promise a
-  // guarantee it cannot keep.
-  if (opts.isCliWrapped && normalizePermissionFamily(opts.family) === "antigravity") {
-    return [
-      {
-        value: "default",
-        label: "Ask",
-        shortDesc: "Prompts before each write or command",
-        detail: "Antigravity asks permission for every file change and every shell command. Use its /plan command to plan first.",
-        allows: ["File reads", "Code search"],
-        gates: ["File writes & edits", "Shell commands", "Web access"],
-        safety: "safe",
-      },
-      {
-        value: "edit",
-        label: "Accept edits",
-        shortDesc: "File edits auto-approved; commands still ask",
-        detail: "Antigravity edits files without asking, and still pauses before running shell commands.",
-        allows: ["File reads", "File writes & edits", "Code search"],
-        gates: ["Shell commands", "Web access"],
-        safety: "semi-auto",
-      },
-      {
-        value: "full-auto",
-        label: "Full access",
-        shortDesc: "Every request approved without asking",
-        detail: "Nothing prompts. Questions with fixed choices still need one of the offered answers.",
-        allows: ["Everything"],
-        warning: "⚠ Only use in isolated or disposable working copies.",
-        safety: "danger",
-      },
-    ];
-  }
-
-  // ACP providers (Qwen, Kimi, Grok, GitHub Copilot)
+  // ACP providers (Qwen, Kimi, Grok, GitHub Copilot, Antigravity)
   //
-  // One arm for all four. ADE writes an abstract posture and each dialect maps
+  // One arm for all of them. ADE writes an abstract posture and each dialect maps
   // it to its own native flags at the launch boundary, so the labels describe
   // what the user gets rather than any one vendor's vocabulary. The ladder
   // matches `AgentChatAcpPermissionMode`; `edit` and `full-auto` are ADE's
@@ -583,7 +550,7 @@ export function familyToPermissionKey(
     if (family === "openai") return "codex";
     if (family === "factory") return "droid";
     if (family === "muse") return "muse";
-    if (ACP_PERMISSION_FAMILIES.has(family) || family === "antigravity") return "acp";
+    if (ACP_PERMISSION_FAMILIES.has(family)) return "acp";
   }
   return "opencode";
 }

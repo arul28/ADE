@@ -350,6 +350,9 @@ struct PrDirectPullRows: View {
   @ObservedObject var model: PrDirectPullsModel
   /// The PRs header's search, applied to the open PRs read from GitHub.
   var searchText = ""
+  /// The PR shown beside the list on the Duo's inner display, marked like a
+  /// selected row of the machine's list.
+  var selectedNumber: Int? = nil
   let onOpen: (GitHubDirectPull) -> Void
   @ObservedObject private var connection = GitHubAccountConnection.shared
 
@@ -409,6 +412,14 @@ struct PrDirectPullRows: View {
             PrRowCard(item: prDirectListItem(pull, repo: repo))
           }
           .buttonStyle(.plain)
+          .accessibilityAddTraits(selectedNumber == pull.number ? .isSelected : [])
+          // Before `adeFlatRow`: the innermost row background wins.
+          .listRowBackground(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+              .fill(selectedNumber == pull.number ? ADEColor.accent.opacity(0.14) : Color.clear)
+              .padding(.horizontal, 6)
+              .padding(.vertical, 2)
+          )
           .adeFlatRow()
         }
         if model.truncated {
@@ -649,6 +660,8 @@ struct PrDirectDetailScreen: View {
         .font(.system(size: 12, weight: .semibold))
         .foregroundStyle(color)
         .frame(width: 16)
+        // The glyph is the check's only state on screen.
+        .accessibilityLabel(state.replacingOccurrences(of: "_", with: " "))
       Text(name)
         .font(.system(size: 13.5))
         .foregroundStyle(ADEColor.textPrimary)
@@ -660,7 +673,13 @@ struct PrDirectDetailScreen: View {
         } label: {
           Image(systemName: "arrow.up.right")
             .font(.system(size: 11, weight: .semibold))
+            // A wider target that keeps the row's height. It is as tall as
+            // one row plus the gap, so it never covers the next check's.
+            .frame(width: 44, height: 28)
+            .contentShape(Rectangle())
         }
+        .padding(.vertical, -5)
+        .padding(.trailing, -14)
         .buttonStyle(.plain)
         .foregroundStyle(ADEColor.textMuted)
         .accessibilityLabel("Open \(name) on GitHub")

@@ -12,7 +12,8 @@
  *
  * A browser that has to come back to the machine's localhost only works when
  * the chat runs on the computer in front of the person; elsewhere the card
- * asks for the device-code (Codex) or pasted-address (Antigravity) form.
+ * asks for the device-code form (Codex). Antigravity's Google sign-in always
+ * ends on Google's page that shows a code, which is pasted here.
  * ADE relays what the person pastes into the CLI's own login and keeps
  * nothing.
  *
@@ -306,9 +307,9 @@ function useProviderSignInFlow(args: {
         : "failed",
       url: signInPageUrl(next.authorizationUrl),
       deviceCode: null,
-      // On this computer Google returns to the agent by itself; elsewhere the
-      // address the browser ends on is pasted back.
-      awaitingCode: next.acceptsCallbackUrl && !runsHere,
+      // A Google-account sign-in ends on Google's page that shows a code, on
+      // every machine, and the code is pasted back.
+      awaitingCode: next.acceptsCallbackUrl,
       email: null,
       message: next.phase === "failed" ? next.message ?? "The sign-in did not finish. Try again." : null,
     });
@@ -595,15 +596,12 @@ export function ProviderSignInComposer({
       })
     : null), [failureDetail, failureTitle, flow.deviceCode, flow.message, flow.phase, flow.url, need.provider, runsHere, spec.label]);
   // The sheet's words for the same box.
-  const pasteLabel = spec.kind === "antigravity"
-    ? "The address the browser ended on (it starts with http://127.0.0.1)"
-    : "Paste the code from the sign-in page";
+  const pageName = spec.kind === "antigravity" ? "Google" : host ?? "The sign-in page";
+  const pasteLabel = spec.kind === "antigravity" ? "Paste the code Google shows" : "Paste the code from the sign-in page";
   const codeHint = flow.deviceCode
     ? `On ${host ?? "the sign-in page"}, check that it shows this code, then approve.`
     : flow.awaitingCode
-      ? spec.kind === "antigravity"
-        ? `Google sends the browser back to ${where}, so the last page will not load here. Paste its address below.`
-        : `${host ?? "The sign-in page"} shows a code once you approve. Paste it below.`
+      ? `${pageName} shows a code once you approve. Paste it below.`
       : `${host ?? "The sign-in page"} opens in your browser. Approve there.`;
 
   return (

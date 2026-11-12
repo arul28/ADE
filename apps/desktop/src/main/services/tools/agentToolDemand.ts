@@ -119,8 +119,9 @@ function providerSignals(tool: string, env: NodeJS.ProcessEnv, home: string, pla
     case "devin":
       return onPath("devin", env) || hasEnv(env, ["WINDSURF_API_KEY"]) || devinCredentialFiles({ ...homeArgs, platform }).some(exists);
     case "antigravity": {
-      // The agy CLI and the ACP server keep their state under GEMINI_HOME. A
-      // bare GEMINI_API_KEY is not a sign: plenty of tools read it.
+      // The agy CLI keeps its state in ~/.gemini/antigravity-cli; the old
+      // standalone ACP server used antigravity-acp. A bare GEMINI_API_KEY is
+      // not a sign: plenty of tools read it.
       const geminiHome = env.GEMINI_HOME?.trim() ? path.resolve(env.GEMINI_HOME.trim()) : path.join(home, ".gemini");
       return onPath("agy", env)
         || exists(path.join(geminiHome, "antigravity-acp"))

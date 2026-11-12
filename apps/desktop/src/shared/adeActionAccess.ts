@@ -777,14 +777,14 @@ export function adeActionAccess(domain: string, action: string): AdeActionAccess
 /**
  * Actions that only the ADE desktop app on the computer that runs them may
  * call, never a desktop driving this computer from another one: the action
- * acts on what is in front of the person (a macOS prompt on this screen).
+ * acts on what is in front of the person (an OS keyring or a prompt on this screen).
  * Each one is also user-only (`ADE_ACTION_USER_ONLY` in actionPolicy).
  * The value is the refusal the person sees, the same in the preload and in
  * the brain.
  */
 export const ADE_ACTION_THIS_DESKTOP_ONLY: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   provider_logins: {
-    allowKeychain: "Run this on that Mac. ADE reads a Mac's Keychain only on the Mac you are using.",
+    allowKeychain: "Run this on that computer. ADE reads a computer's OS keyring only on the computer you are using.",
   },
 };
 

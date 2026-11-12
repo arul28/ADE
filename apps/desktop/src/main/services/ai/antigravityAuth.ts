@@ -1,29 +1,24 @@
 /**
  * What ADE knows about an Antigravity sign-in without starting the agent.
  *
- * Google's ACP agent (`agy_acp_server`) keeps everything it owns under
- * `<GEMINI_HOME or ~/.gemini>/antigravity-acp/`. ADE leaves GEMINI_HOME at the
- * user's default, so a sign-in done here, in Zed or in JetBrains is one login.
- * ADE never writes into that directory; the agent writes it itself:
+ * The agy CLI (`agy acp` for chats, the TUI for terminals) keeps its state in
+ * `<home>/.gemini/antigravity-cli/` whatever GEMINI_HOME says. The CLI writes
+ * there; ADE writes one value only, on the person's own Google sign-in
+ * (`pointAntigravitySettingsAtGoogle`):
  *
- *   settings.json             `auth.type` (the method the last `authenticate`
- *                             picked, saved by the agent) and `gcp.project` /
- *                             `gcp.location` (written by its own Gemini
- *                             Enterprise license picker)
- *   acp_token.json            Google-account token, when the file store is used
- *   acp_business_token.json   Gemini Enterprise token, likewise
+ *   settings.json             the CLI's settings (the recorded sign-in
+ *                             method, when it keeps one)
+ *   antigravity-oauth-token   the Google sign-in, when the CLI uses its file
+ *                             store: no working OS keyring, a slow one, or a
+ *                             container or WSL (verified, agy 1.5.6 on Linux)
  *
- * Token storage (verified in the 1.4.1 sources): on macOS the agent keeps the
- * token in the login keychain (service `gemini`, account `antigravity-acp` or
- * `antigravity-acp-business`) whenever a default keychain works, and falls back
- * to the file; everywhere else it uses the file. `AGY_ACP_FORCE_FILE_STORAGE`
- * forces the file. ADE does NOT set it: forcing the file would split ADE's
- * login from the one every other client of this agent reads on a Mac, and
- * would move a token out of the keychain into a plaintext file. A user who sets
- * it themselves keeps it (it is passed through). So the status
- * check reads the file and, on macOS only, asks the keychain whether the item
- * exists (`security find-generic-password` without `-w` reads attributes only:
- * no secret, no prompt).
+ * Otherwise the Google sign-in is in the OS keyring (zalando go-keyring):
+ * service `gemini`, user `antigravity` (verified on Linux Secret Service). That
+ * is the Keychain item `-s gemini -a antigravity` on macOS and the generic
+ * credential `gemini:antigravity` in Windows Credential Manager. The status
+ * check asks only whether that item exists, never for its secret: `security
+ * find-generic-password` without `-w`, `cmdkey /list:<target>`, and Secret
+ * Service `SearchItems`. Each answer is cached, and none runs synchronously.
  *
  * The status is a heuristic, like every ACP disk check (`verified: false`).
  * Only a real `session/new` proves the token still works; the ACP auth probe
@@ -61,6 +56,8 @@ export const ANTIGRAVITY_CREDENTIAL_ENV_KEYS = [
   "AGY_ACP_CCPA_PROJECT",
   "AGY_ACP_ENABLE_OAUTH",
   "AGY_LLM_GATEWAY_URL",
+  // Turns on Application Default Credentials (documented for the CLI).
+  "AGY_ADC_AUTH",
 ] as const;
 
 /** Variables an Agent Platform login may take from the machine (ADC users set these). */
@@ -70,49 +67,50 @@ const AGENT_PLATFORM_AMBIENT_KEYS = [
   "GOOGLE_CLOUD_PROJECT",
   "GOOGLE_CLOUD_LOCATION",
   "GOOGLE_CLOUD_QUOTA_PROJECT",
+  "AGY_ADC_AUTH",
 ] as const;
 
 /** ADE key-store slots. The Gemini key is the one the provider page's key sheet saves. */
 export const ANTIGRAVITY_GEMINI_KEY_CREDENTIAL = "antigravity-gemini";
 export const ANTIGRAVITY_AGENT_PLATFORM_KEY_CREDENTIAL = "antigravity-agent-platform";
 
-/** The agent's Keychain item on a Mac: this service, with one account per Google sign-in method. */
+/**
+ * The CLI's OS keyring item (go-keyring service and user). One item holds the
+ * Google sign-in whichever Google method made it.
+ */
 export const ANTIGRAVITY_KEYCHAIN_SERVICE = "gemini";
+export const ANTIGRAVITY_KEYRING_USER = "antigravity";
+/** Kept for the sign-in sync's slot API: both Google methods share the one item. */
 export const ANTIGRAVITY_KEYCHAIN_ACCOUNT: Readonly<Partial<Record<AntigravityAuthMethod, string>>> = {
-  "oauth-personal": "antigravity-acp",
-  "oauth-business": "antigravity-acp-business",
-};
-const TOKEN_FILE: Partial<Record<AntigravityAuthMethod, string>> = {
-  "oauth-personal": "acp_token.json",
-  "oauth-business": "acp_business_token.json",
+  "oauth-personal": ANTIGRAVITY_KEYRING_USER,
+  "oauth-business": ANTIGRAVITY_KEYRING_USER,
 };
 
 export function isAntigravityAuthMethod(value: unknown): value is AntigravityAuthMethod {
   return typeof value === "string" && (ANTIGRAVITY_AUTH_METHODS as readonly string[]).includes(value);
 }
 
-/** `GEMINI_HOME` when set and non-empty, else `~/.gemini` — the agent's own rule. */
-export function antigravityGeminiHome(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = env.GEMINI_HOME?.trim();
-  return configured ? path.resolve(configured) : path.join(homedir(), ".gemini");
+/** The CLI's own directory. GEMINI_HOME does not move it. */
+export function antigravityCliDir(): string {
+  return path.join(homedir(), ".gemini", "antigravity-cli");
 }
 
-/** The agent's private directory. ADE reads it and never writes it. */
-export function antigravityAcpDir(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(antigravityGeminiHome(env), "antigravity-acp");
-}
+/** The CLI's file store for the Google sign-in (used when no OS keyring works). */
+export const ANTIGRAVITY_TOKEN_FILE = "antigravity-oauth-token";
 
 /**
- * The settings file is Hjson to the agent (comments, trailing commas). ADE
- * only needs two string fields, so it strips comments and trailing commas and
- * parses JSON; anything it still cannot read is "no method".
+ * agy reads settings.json as strict JSON: a comment or a trailing comma makes
+ * it ignore the whole file, auth method included (verified 1.5.6). ADE reads it
+ * the same way, so a file agy ignores names no method here either.
  */
-function parseLooseJson(raw: string): unknown {
-  const withoutComments = raw
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:"'\\])\/\/[^\n]*/g, "$1");
-  const withoutTrailingCommas = withoutComments.replace(/,(\s*[}\]])/g, "$1");
-  return JSON.parse(withoutTrailingCommas);
+/** Whether agy's settings set `modelProvider: "gemini"`, which outranks any sign-in. */
+function settingsUseGeminiProvider(parsed: unknown): boolean {
+  const value = (parsed as { modelProvider?: unknown } | null)?.modelProvider;
+  return typeof value === "string" && value.trim() === "gemini";
+}
+
+function parseSettingsJson(raw: string): unknown {
+  return JSON.parse(raw);
 }
 
 type SettingsRead = { method: AntigravityAuthMethod | null; gcpProject: string | null; gcpLocation: string | null };
@@ -123,8 +121,8 @@ let settingsCache: { file: string; mtimeMs: number; size: number; value: Setting
  * and cached on the file's mtime, because spawn plans read it: one `stat` per
  * call, one read per change.
  */
-export function readAntigravitySettings(env: NodeJS.ProcessEnv = process.env): SettingsRead {
-  const file = path.join(antigravityAcpDir(env), "settings.json");
+export function readAntigravitySettings(_env: NodeJS.ProcessEnv = process.env): SettingsRead {
+  const file = path.join(antigravityCliDir(), "settings.json");
   const empty: SettingsRead = { method: null, gcpProject: null, gcpLocation: null };
   let stat: fs.Stats;
   try {
@@ -137,13 +135,16 @@ export function readAntigravitySettings(env: NodeJS.ProcessEnv = process.env): S
   }
   let value = empty;
   try {
-    const parsed = parseLooseJson(fs.readFileSync(file, "utf8")) as {
+    const parsed = parseSettingsJson(fs.readFileSync(file, "utf8")) as {
       auth?: { type?: unknown };
+      modelProvider?: unknown;
       gcp?: { project?: unknown; location?: unknown };
     };
     const rawType = typeof parsed?.auth?.type === "string" ? parsed.auth.type.trim() : "";
-    // The agent still accepts the legacy `vertex-ai` spelling.
-    const method = rawType === "vertex-ai" ? "agent-platform" : rawType;
+    // `modelProvider: "gemini"` runs agy on a Gemini API key whatever
+    // `auth.type` says (verified 1.5.6). The agent still accepts the legacy
+    // `vertex-ai` spelling of Agent Platform.
+    const method = settingsUseGeminiProvider(parsed) ? "gemini-api-key" : rawType === "vertex-ai" ? "agent-platform" : rawType;
     value = {
       method: isAntigravityAuthMethod(method) ? method : null,
       gcpProject: typeof parsed?.gcp?.project === "string" && parsed.gcp.project.trim() ? parsed.gcp.project.trim() : null,
@@ -267,51 +268,164 @@ export function antigravityCredentialEnv(
 
 // ── Signed-in check ─────────────────────────────────────────────────────────
 
-const KEYCHAIN_CACHE_MS = 30_000;
+const KEYRING_CACHE_MS = 30_000;
 /**
- * A read that timed out is the keychain waiting on a password dialog (a
- * locked keychain on the search list). Asking again every 30 s only queues
- * more dialogs, so that answer is kept for longer.
+ * A read that timed out is a keyring waiting on an unlock dialog. Asking again
+ * every 30 s only queues more dialogs, so that answer is kept for longer.
  */
-const KEYCHAIN_TIMEOUT_CACHE_MS = 10 * 60_000;
-const keychainCache = new Map<string, { at: number; ttlMs: number; present: boolean }>();
+const KEYRING_TIMEOUT_CACHE_MS = 10 * 60_000;
+/** `present: null`: the check itself failed (timeout, missing command), so nobody knows. */
+let keyringCache: { at: number; ttlMs: number; present: boolean | null } | null = null;
+let keyringInFlight: Promise<boolean> | null = null;
+/** Bumped when the cache is dropped: a check started before then must not refill it. */
+let keyringGeneration = 0;
 
-/** True when the macOS login keychain holds the agent's token item. Attribute read only. */
-function keychainItemExists(account: string): Promise<boolean> {
-  if (process.platform !== "darwin") return Promise.resolve(false);
-  const cached = keychainCache.get(account);
-  if (cached && Date.now() - cached.at < cached.ttlMs) return Promise.resolve(cached.present);
-  return new Promise((resolve) => {
-    execFile(
-      "/usr/bin/security",
-      ["find-generic-password", "-s", ANTIGRAVITY_KEYCHAIN_SERVICE, "-a", account],
-      { timeout: 2_000, windowsHide: true },
-      (error) => {
-        const present = !error;
-        const ttlMs = error?.killed ? KEYCHAIN_TIMEOUT_CACHE_MS : KEYCHAIN_CACHE_MS;
-        keychainCache.set(account, { at: Date.now(), ttlMs, present });
-        resolve(present);
-      },
-    );
-  });
+/**
+ * `notFoundExit`: the exit code that means "no such item" (macOS `security`
+ * exits 44, errSecItemNotFound). Any other failure is unknown, never absent:
+ * an absent answer can let ADE drop a copied login from the account.
+ */
+type PresenceProbe = { command: string; args: string[]; present: (stdout: string) => boolean; notFoundExit?: number };
+
+/** How to ask this OS whether the item exists, without reading its secret. */
+function keyringPresenceProbe(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): PresenceProbe | null {
+  const target = `${ANTIGRAVITY_KEYCHAIN_SERVICE}:${ANTIGRAVITY_KEYRING_USER}`;
+  if (platform === "darwin") {
+    return {
+      command: "/usr/bin/security",
+      args: ["find-generic-password", "-s", ANTIGRAVITY_KEYCHAIN_SERVICE, "-a", ANTIGRAVITY_KEYRING_USER],
+      present: () => true,
+      notFoundExit: 44,
+    };
+  }
+  if (platform === "win32") {
+    const systemRoot = env.SystemRoot ?? env.SYSTEMROOT ?? "C:\\Windows";
+    // `cmdkey` lists the matching credential's target and type, not its
+    // secret. Its words are localized; the target name is not.
+    return {
+      command: path.join(systemRoot, "System32", "cmdkey.exe"),
+      args: [`/list:${target}`],
+      present: (stdout) => stdout.toLowerCase().includes(target),
+    };
+  }
+  if (platform === "linux") {
+    if (!env.DBUS_SESSION_BUS_ADDRESS?.trim()) return null;
+    // Secret Service `SearchItems` returns the unlocked and locked item paths
+    // that match; it neither unlocks a collection nor reads a secret.
+    return {
+      command: "gdbus",
+      args: [
+        "call", "--session", "--dest", "org.freedesktop.secrets",
+        "--object-path", "/org/freedesktop/secrets",
+        "--method", "org.freedesktop.Secret.Service.SearchItems",
+        `{'service': '${ANTIGRAVITY_KEYCHAIN_SERVICE}', 'username': '${ANTIGRAVITY_KEYRING_USER}'}`,
+      ],
+      present: (stdout) => stdout.includes("objectpath"),
+    };
+  }
+  return null;
 }
 
-/** Forget the keychain answer so the next status read after a sign-in is fresh. */
+/** True when the OS keyring holds the CLI's sign-in item. Attributes only; cached. */
+export function antigravityKeyringItemExists(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+  if (keyringCache && Date.now() - keyringCache.at < keyringCache.ttlMs) return Promise.resolve(keyringCache.present === true);
+  if (keyringInFlight) return keyringInFlight;
+  const probe = keyringPresenceProbe(platform, env);
+  if (!probe) return Promise.resolve(false);
+  const generation = keyringGeneration;
+  const asked = new Promise<boolean>((resolve) => {
+    execFile(probe.command, probe.args, { timeout: 2_000, windowsHide: true, maxBuffer: 64 * 1024 }, (error, stdout) => {
+      const present = !error ? probe.present(String(stdout ?? ""))
+        : probe.notFoundExit !== undefined && error.code === probe.notFoundExit ? false
+          : null;
+      const ttlMs = error?.killed ? KEYRING_TIMEOUT_CACHE_MS : KEYRING_CACHE_MS;
+      if (generation === keyringGeneration) {
+        keyringCache = { at: Date.now(), ttlMs, present };
+        keyringInFlight = null;
+      }
+      resolve(present === true);
+    });
+  });
+  keyringInFlight = asked;
+  return asked;
+}
+
+/** The last keyring answer, without asking again: null before the first, and when the check failed. */
+export function peekAntigravityKeyringPresent(): boolean | null {
+  return keyringCache ? keyringCache.present : null;
+}
+
+/** The settings value of a key method, as agy or a user may have written it. */
+const KEY_METHOD_SETTING = /("auth"\s*:\s*\{[^{}]*?"type"\s*:\s*")(gemini-api-key|agent-platform|vertex-ai)(")/;
+
+/**
+ * After a Google-account sign-in: when agy's settings still name a key method
+ * from an earlier sign-in, agy ignores the new login and answers
+ * "Authentication required" (verified 1.5.6; `agy acp --login` leaves the
+ * setting as it was). The person's own Google sign-in is the one time ADE
+ * writes agy's settings, and it changes only that value to `oauth-personal`;
+ * every other byte of the file stays.
+ *
+ * - "unchanged": no settings file, or it names no key method.
+ * - "switched": the value now reads `oauth-personal`.
+ * - "failed": it names a key method ADE could not rewrite in place (an
+ *   unusual layout, or the file could not be written).
+ * - "model-provider": it sets `modelProvider: "gemini"`, which outranks any
+ *   sign-in. That is the person's choice of backend, not a leftover, so ADE
+ *   leaves it and says so.
+ */
+export function pointAntigravitySettingsAtGoogle(): "unchanged" | "switched" | "failed" | "model-provider" {
+  const file = path.join(antigravityCliDir(), "settings.json");
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch {
+    return "unchanged";
+  }
+  try {
+    if (settingsUseGeminiProvider(parseSettingsJson(raw))) return "model-provider";
+  } catch {
+    // agy ignores a file it cannot parse, and so does this check.
+  }
+  settingsCache = null;
+  const method = readAntigravitySettings().method;
+  if (method !== "gemini-api-key" && method !== "agent-platform") return "unchanged";
+  if (!KEY_METHOD_SETTING.test(raw)) return "failed";
+  const next = raw.replace(KEY_METHOD_SETTING, "$1oauth-personal$3");
+  const temp = `${file}.ade-${process.pid}.tmp`;
+  try {
+    const mode = fs.statSync(file).mode & 0o777;
+    fs.writeFileSync(temp, next, { mode });
+    fs.renameSync(temp, file);
+  } catch {
+    fs.rmSync(temp, { force: true });
+    return "failed";
+  }
+  settingsCache = null;
+  return "switched";
+}
+
+/** Forget the cached answers so the next status read after a sign-in is fresh. */
 export function invalidateAntigravityAuthCache(): void {
-  keychainCache.clear();
+  keyringCache = null;
+  keyringInFlight = null;
+  keyringGeneration += 1;
   settingsCache = null;
 }
 
 export type AntigravityCredentialState = {
   authenticated: boolean;
   verified: false;
-  /** The method the agent recorded, or null before any sign-in. */
+  /** The method the CLI recorded, or null when it records none. */
   method: AntigravityAuthMethod | null;
 };
 
 /**
- * Whether this machine has an Antigravity sign-in, from disk (and, on macOS,
- * the keychain's item list). Never starts the agent.
+ * Whether this machine has an Antigravity sign-in, from disk and the OS
+ * keyring's item list. Never starts the agent.
  */
 export async function inspectAntigravityCredentials(
   env: NodeJS.ProcessEnv = process.env,
@@ -330,17 +444,7 @@ export async function inspectAntigravityCredentials(
     const location = has("GOOGLE_CLOUD_LOCATION") || Boolean(saved.location) || Boolean(settings.gcpLocation);
     return result(Boolean(storedAntigravityAgentPlatformKey()) || has("GOOGLE_API_KEY") || (project && location));
   }
-  // A Google-account or Gemini Enterprise login. With no recorded method, a
-  // token left by an older client still counts as the Google account.
-  const tokenMethods: AntigravityAuthMethod[] = method ? [method] : ["oauth-personal", "oauth-business"];
-  for (const candidate of tokenMethods) {
-    const file = TOKEN_FILE[candidate];
-    if (file && fs.existsSync(path.join(antigravityAcpDir(env), file))) return result(true);
-  }
-  if (env.AGY_ACP_FORCE_FILE_STORAGE?.trim()) return result(false);
-  for (const candidate of tokenMethods) {
-    const account = ANTIGRAVITY_KEYCHAIN_ACCOUNT[candidate];
-    if (account && (await keychainItemExists(account))) return result(true);
-  }
-  return result(false);
+  // A Google-account or Gemini Enterprise sign-in: the CLI's file store, else its keyring item.
+  if (fs.existsSync(path.join(antigravityCliDir(), ANTIGRAVITY_TOKEN_FILE))) return result(true);
+  return result(await antigravityKeyringItemExists(env));
 }

@@ -1,15 +1,17 @@
 /**
- * "Allow on this Mac": copy Antigravity's sign-in from this Mac's Keychain.
- * macOS shows its prompt while the call waits (up to 2 min), so the read in
- * flight is kept outside any view: leaving the page and coming back, or the
- * ADE Cloud tile and This computer's page both open, never starts a second
- * one. The button says "Waiting for macOS…" until the call ends; no timer.
+ * "Allow on this computer": copy Antigravity's agy CLI sign-in from this
+ * computer's OS keyring (the Keychain, Credential Manager or the keyring).
+ * macOS, or a locked Linux keyring, shows its prompt while the call waits (up
+ * to 2 min), so the read in flight is kept outside any view: leaving the page
+ * and coming back, or the ADE Cloud tile and This computer's page both open,
+ * never starts a second one. The button says it is waiting until the call
+ * ends; no timer.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../../../shared/types";
 import type { RunWrite } from "./signInWrites";
 
-/** One call in flight for each slot (the Keychain allow, the GitHub CLI read), outside any view. */
+/** One call in flight for each slot (the keyring allow, the GitHub CLI read), outside any view. */
 const inFlight = new Map<string, Promise<unknown>>();
 
 /**
@@ -48,12 +50,12 @@ export function useAllowKeychain(
   return { allowing, allow };
 }
 
-/** "Allow on this Mac" for Antigravity: the write goes through `runWrite` with This computer's pin. */
+/** "Allow on this computer" for Antigravity: the write goes through `runWrite` with This computer's pin. */
 export function useAllowAntigravityKeychain(runWrite: RunWrite, accountPin: OpenProjectBinding | null): { allowing: boolean; allow: () => void } {
   const run = useCallback(() => runWrite(
     "allow:antigravity",
     () => window.ade?.providerLogins?.allowKeychain?.({ provider: "antigravity" }, accountPin),
-    "ADE couldn't copy the Antigravity sign-in from this Mac.",
+    "ADE couldn't copy the Antigravity sign-in from this computer.",
   ), [accountPin, runWrite]);
   return useAllowKeychain(run);
 }

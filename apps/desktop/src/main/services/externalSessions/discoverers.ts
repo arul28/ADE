@@ -1,4 +1,5 @@
 import type { ExternalSessionProvider } from "../../../shared/types";
+import { discoverAntigravitySessions } from "./discoverAntigravity";
 import { discoverClaudeSessions } from "./discoverClaude";
 import { discoverCodexSessions } from "./discoverCodex";
 import { discoverCopilotSessions } from "./discoverCopilot";
@@ -28,4 +29,5 @@ export const EXTERNAL_SESSION_DISCOVERERS: Record<
   kimi: discoverKimiSessions,
   grok: discoverGrokSessions,
   copilot: discoverCopilotSessions,
+  antigravity: discoverAntigravitySessions,
 };

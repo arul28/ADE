@@ -1,12 +1,14 @@
 /**
  * The person's two reads that the background never makes:
  *
- * - The Keychain read on a Mac (§3.7): Antigravity's sign-in, one `security`
- *   read that macOS asks the person about.
+ * - The OS keyring read (§3.7): Antigravity's sign-in, kept by the agy CLI
+ *   in this computer's Keychain (macOS), Credential Manager (Windows) or
+ *   keyring (Linux). One read on the person's Allow; macOS and a locked
+ *   Linux keyring ask the person first.
  * - Copilot's GitHub CLI login (G1): the person's switch on one computer,
  *   and the one `gh auth token` read it starts.
  *
- * Also the Keychain and GitHub CLI parts of the status.
+ * Also the keyring and GitHub CLI parts of the status.
  */
 
 import fs from "node:fs";
@@ -20,23 +22,26 @@ import type {
   ProviderLoginProviderStatus,
   ProviderLoginStatus,
 } from "../../../shared/types/providerLogins";
-import { isRecord } from "../shared/utils";
 import {
-  ANTIGRAVITY_SETTINGS_REL,
   GH_BUNDLE_ID,
   antigravityBundle,
+  antigravitySlotFromLogin,
   carryRow,
   copilotGhBundle,
   copilotGhHostsPath,
-  parseAntigravitySettings,
 } from "./providerLoginCarry";
 import { GH_READ_MESSAGES, readGhHostsGithubCom } from "./providerLoginGhCli";
 import { notifyProviderLoginsChanged } from "./providerLoginHooks";
 import {
+  KEYRING_STORE,
+  KEYRING_STORE_NAME,
   antigravityKeychainAccount,
   decodeKeychainSecret,
+  isKeyringPlatform,
   readKeychainSecret,
   type AntigravityKeychainSlot,
+  type KeychainReadFailure,
+  type KeyringPlatform,
 } from "./providerLoginKeychain";
 import {
   PROVIDER_LOGIN_VAULT_KIND,
@@ -54,62 +59,88 @@ import {
   type SyncShared,
   type VaultRow,
 } from "./providerLoginSyncShared";
+import { antigravityKeyringItemExists, invalidateAntigravityAuthCache, peekAntigravityKeyringPresent } from "../ai/antigravityAuth";
+
+/** The Allow line before the first read, per OS. */
+const KEYRING_ALLOW_HINT: Record<KeyringPlatform, string> = {
+  darwin: "The agy CLI keeps this sign-in in the Keychain. Allow ADE to copy it once; macOS asks you first.",
+  win32: "The agy CLI keeps this sign-in in Credential Manager. Allow ADE to copy it once.",
+  linux: "The agy CLI keeps this sign-in in the keyring. Allow ADE to copy it once; the keyring may ask you to unlock it.",
+};
+
+/** What the person reads when the keyring read did not give a sign-in. */
+function keyringReadMessage(platform: KeyringPlatform, reason: KeychainReadFailure): string {
+  switch (reason) {
+    case "not_found":
+      return platform === "darwin" ? "This computer's Keychain has no Antigravity sign-in. Sign in with the agy CLI first, then allow again."
+        : platform === "win32" ? "Credential Manager on this computer has no Antigravity sign-in. Sign in with the agy CLI first, then allow again."
+          : "This computer's keyring has no Antigravity sign-in. Sign in with the agy CLI first, then allow again.";
+    case "denied":
+      return "macOS did not let ADE read it. Allow again, and choose Allow when macOS asks.";
+    case "timeout":
+      return platform === "darwin" ? "macOS asked, but there was no answer in 2 minutes. Allow again."
+        : platform === "win32" ? "Credential Manager did not answer in time. Allow again."
+          : "The keyring did not answer in 2 minutes. If it asked to unlock, unlock it, then allow again.";
+    case "unavailable":
+      return platform === "darwin" ? "ADE couldn't open the Keychain on this computer."
+        : platform === "win32" ? "ADE couldn't open Credential Manager on this computer. Windows PowerShell may be blocked here."
+          : "ADE couldn't reach the keyring on this computer. Install secret-tool (libsecret-tools), unlock the keyring, then allow again.";
+    default:
+      return `ADE couldn't read ${KEYRING_STORE_NAME[platform]}. Try again.`;
+  }
+}
 
 export function createAllow(s: SyncShared) {
   const { deps, now, platform, ctx, bundleMemos, localStates, jobs } = s;
   const { cloudSetting, captureOffReason, loadState, saveState, liveSignInKeys } = s;
 
   /**
-   * Copy Antigravity's sign-in from this Mac's Keychain into the account:
-   * one `security` read, which macOS asks the person about. Behind the same
-   * gates as capture. Never runs in a pass or on a timer.
+   * Copy Antigravity's sign-in from this computer's OS keyring into the
+   * account: one read (`readKeychainSecret`), which macOS, or a locked Linux
+   * keyring, asks the person about. On a person's own desktop only (never on a
+   * cloud computer), behind the same gates as capture. Never runs in a pass or
+   * on a timer.
    */
   async function allowKeychain(args: { provider: ProviderLoginProvider; slot?: AntigravityKeychainSlot | null }): Promise<ProviderLoginStatus> {
-    if (args.provider !== "antigravity") throw new Error("Only Antigravity's sign-in is copied from the Keychain.");
-    if (platform !== "darwin" || deps.cloudComputer) throw new Error("ADE copies a sign-in from the Keychain only on a Mac.");
+    if (args.provider !== "antigravity") throw new Error("Only Antigravity's sign-in is copied from the OS keyring.");
+    if (deps.cloudComputer) throw new Error("A cloud computer does not copy a sign-in from a keyring. Allow it on your own computer.");
+    if (!isKeyringPlatform(platform)) throw new Error("ADE copies a sign-in from the OS keyring only on macOS, Windows and Linux.");
+    const keyringPlatform: KeyringPlatform = platform;
+    const store = KEYRING_STORE_NAME[keyringPlatform];
     const off = await captureOffReason();
     if (off) throw new Error(OFF_MESSAGES[off]);
-    // The method the agent saved says which of its two items is the sign-in (no prompt: a plain file).
-    let slot: AntigravityKeychainSlot = args.slot ?? "personal";
-    if (!args.slot) {
-      try {
-        const settings = parseAntigravitySettings(fs.readFileSync(antigravityBundle(ctx, "personal").files[1]!.abs, "utf8"));
-        if (isRecord(settings?.auth) && settings.auth.type === "oauth-business") slot = "business";
-      } catch {
-        // No settings: the Google-account sign-in.
-      }
-    }
-    const read = await readKeychainSecret({
-      account: antigravityKeychainAccount(slot),
-      ...(deps.keychainCommand ? { command: deps.keychainCommand } : {}),
-    });
-    deps.logger.info("provider_login.keychain_read", { provider: "antigravity", slot, result: read.ok ? "ok" : read.reason });
-    if (!read.ok) {
-      throw new Error(
-        read.reason === "not_found" ? "This Mac's Keychain has no Antigravity sign-in. Sign in to Antigravity first, then allow again."
-          : read.reason === "denied" ? "macOS did not let ADE read it. Allow again, and choose Allow when macOS asks."
-            : read.reason === "timeout" ? "macOS asked, but there was no answer in 2 minutes. Allow again."
-              : "ADE couldn't read the Keychain. Try again.",
-      );
-    }
+    // The read can wait minutes on a macOS or keyring prompt: the account and
+    // the sharing switch are checked again after it, before anything is sent.
+    const accountBeforeRead = deps.accountUserId();
+    // agy keeps one item for both Google methods; the login itself names the slot.
+    const requestedSlot: AntigravityKeychainSlot | null = args.slot ?? null;
+    const read = await readKeychainSecret({ account: antigravityKeychainAccount(requestedSlot ?? "personal"), platform: keyringPlatform, env: ctx.env });
+    deps.logger.info("provider_login.keychain_read", { provider: "antigravity", platform: keyringPlatform, result: read.ok ? "ok" : read.reason });
+    if (!read.ok) throw new Error(keyringReadMessage(keyringPlatform, read.reason));
     const token = decodeKeychainSecret(read.data);
-    if (!token) throw new Error("ADE found the Keychain item but could not read a sign-in from it.");
+    if (!token) throw new Error(`ADE found the Antigravity item in ${store} but could not read a sign-in from it.`);
     // Behind the pass in flight, so the marks file has one writer.
     while (s.inFlight) await s.inFlight.catch(() => undefined);
     const vault = deps.vault();
     const machine = deps.machine();
     const accountUserId = deps.accountUserId();
     if (!vault || !machine || !accountUserId) throw new Error(OFF_MESSAGES.vault_unavailable);
+    if (accountUserId !== accountBeforeRead) throw new Error("You switched ADE accounts while ADE was reading the sign-in. Allow again.");
+    const offAfterRead = await captureOffReason();
+    if (offAfterRead) throw new Error(OFF_MESSAGES[offAfterRead]);
+    let slot: AntigravityKeychainSlot = requestedSlot ?? "personal";
+    if (!requestedSlot) {
+      try {
+        slot = antigravitySlotFromLogin(JSON.parse(token.toString("utf8")) as Record<string, unknown>);
+      } catch {
+        // Not JSON: parse below refuses it.
+      }
+    }
     const bundle = antigravityBundle(ctx, slot);
     const contents = new Map<string, Buffer>([[bundle.files[0]!.rel, token]]);
-    try {
-      contents.set(ANTIGRAVITY_SETTINGS_REL, fs.readFileSync(bundle.files[1]!.abs));
-    } catch {
-      // No agent settings on this Mac: the slot says which method it is.
-    }
     const row = carryRow("antigravity");
     const parsed = row.parse!(bundle, contents, ctx);
-    if ("unreadable" in parsed || !parsed.logins.length) throw new Error("ADE found the Keychain item but could not read a sign-in from it.");
+    if ("unreadable" in parsed || !parsed.logins.length) throw new Error(`ADE found the Antigravity item in ${store} but could not read a sign-in from it.`);
     const origin12 = originId(machine.machineKey);
     const state = loadState(accountUserId);
     const rows = new Map<string, VaultRow>();
@@ -133,10 +164,13 @@ export function createAllow(s: SyncShared) {
       key = memo.key;
     }
     if (local === "removed_from_account") {
-      throw new Error("You removed this sign-in from your account. Sign in to Antigravity again on this Mac, then allow again.");
+      throw new Error("You removed this sign-in from your account. Sign in with the agy CLI again on this computer, then allow again.");
     }
     if (local !== "captured" || !key) throw new Error("ADE couldn't put the sign-in in your account. Try again in a moment.");
     state.keychain = { ...(state.keychain ?? {}), antigravity: { allowedAt: now(), slot, key } };
+    // The item was just read, so an older "no item" answer is wrong now; left
+    // in place, capture would count the copy as signed out and remove it.
+    invalidateAntigravityAuthCache();
     try {
       writeProviderLoginState(deps.adeDir, state);
     } catch (error) {
@@ -146,25 +180,31 @@ export function createAllow(s: SyncShared) {
     return await jobs.status("antigravity");
   }
 
-  /** The Keychain part of a provider's status, on a Mac only, and the key the last Allow wrote while it is in the account. */
+  /** The keyring part of a provider's status, on a person's own desktop only, and the key the last Allow wrote while it is in the account. */
   function keychainStatus(
     provider: ProviderLoginProvider,
     off: ProviderLoginCaptureOffReason | null,
     vault: ProviderLoginVault | null,
   ): { part: NonNullable<ProviderLoginProviderStatus["keychain"]>; key: string | null } | null {
-    if (provider !== "antigravity" || platform !== "darwin" || deps.cloudComputer || deps.staticOff) return null;
+    if (provider !== "antigravity" || !isKeyringPlatform(platform) || deps.cloudComputer || deps.staticOff) return null;
     const accountUserId = deps.accountUserId();
     const allowed = accountUserId ? loadState(accountUserId).keychain?.antigravity ?? null : null;
     const stillThere = Boolean(allowed && vault?.list(ACCOUNT_SCOPE_ALL).some((row) =>
       row.kind === PROVIDER_LOGIN_VAULT_KIND && row.key === allowed.key && !row.deleted));
     const allowedAt = allowed && stillThere ? new Date(allowed.allowedAt) : null;
+    // Whether the item is there, from the attribute-only check (no secret, no
+    // prompt). Unknown starts that check, so the next status read knows.
+    const present = peekAntigravityKeyringPresent();
+    if (present === null) void antigravityKeyringItemExists().catch(() => undefined);
     return {
       part: {
+        store: KEYRING_STORE[platform],
         canAllow: !off,
+        present,
         allowedAt: allowedAt ? allowedAt.toISOString() : null,
         message: allowedAt
-          ? `Copied from this Mac on ${allowedAt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}. Allow again to update.`
-          : "On a Mac this sign-in is in the Keychain. Allow ADE to copy it once; macOS asks you first.",
+          ? `Copied from this computer on ${allowedAt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}. Allow again to update.`
+          : KEYRING_ALLOW_HINT[platform],
       },
       key: allowedAt ? allowed!.key : null,
     };

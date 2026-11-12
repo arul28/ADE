@@ -293,14 +293,12 @@ struct SettingsAccountPage: View {
           .disabled(githubDisconnecting)
       }
     case .needsReauth:
-      ADESettingsRow(
+      githubConnectRow(
         title: "GitHub connection ended",
         hint: "Your GitHub connection ended. Connect GitHub again to keep working with pull requests.",
         symbol: "exclamationmark.triangle",
         tint: .amber
-      ) {
-        githubConnectButton
-      }
+      )
     case .unavailable(let retryAt):
       ADESettingsRow(
         "GitHub isn't answering",
@@ -310,14 +308,24 @@ struct SettingsAccountPage: View {
         tint: .slate
       )
     default:
-      ADESettingsRow(
+      githubConnectRow(
         title: "Not connected",
         hint: "Connect GitHub to see pull requests from this phone.",
         symbol: "link",
         tint: .slate
-      ) {
-        githubConnectButton
-      }
+      )
+    }
+  }
+
+  /// A GitHub state with Connect GitHub under its text. Beside the text, the
+  /// wide button cut the title and hint to "…" on a small phone.
+  private func githubConnectRow(title: String, hint: String, symbol: String, tint: ADESettingsTint) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      ADESettingsRow(title, hint: hint, symbol: symbol, tint: tint)
+      githubConnectButton
+        // Under the text, past the 28 pt icon tile and its 12 pt gap.
+        .padding(.leading, ADEKit.inset + 40)
+        .padding(.bottom, 12)
     }
   }
 

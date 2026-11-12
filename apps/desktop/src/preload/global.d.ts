@@ -4321,8 +4321,9 @@ declare global {
         status: (args?: { provider?: ProviderLoginProvider | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         captureNow: (args?: { provider?: ProviderLoginProvider | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         /**
-         * Copy Antigravity's sign-in from this Mac's Keychain, once (macOS asks first).
-         * Refused off macOS and for another computer's pin or binding ("Run this on that Mac").
+         * Copy Antigravity's agy CLI sign-in from this computer's OS keyring, once (macOS, or a
+         * locked Linux keyring, asks first). Refused on a cloud computer and for another
+         * computer's pin or binding ("Run this on that computer").
          */
         allowKeychain: (args: { provider: "antigravity"; slot?: "personal" | "business" | null }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         /**
