@@ -7,6 +7,7 @@ import React, {
   useMemo,
 } from "react";
 import type {
+  OpenProjectBinding,
   PrWithConflicts,
   PrCheck,
   PrComment,
@@ -24,6 +25,8 @@ import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import { useDebouncedLaneLifecycleRefresh } from "../../../hooks/useLaneListInvalidation";
 import { useGithubPollGovernor, type GithubPollGovernor } from "./useGithubPollGovernor";
 import { notePrChangeFiles, prChangeSplitKey, setPrChangeSplitStandDown } from "../shared/prChangeSplitStore";
+import { PrRuntimePinProvider } from "./prMachines";
+import { readerPin, usePrsReader, type PrsReader } from "./prsReader";
 
 type PrRefreshArgs = { prId?: string; prIds?: string[] };
 
@@ -110,6 +113,14 @@ type PrsState = {
 };
 
 type PrsContextValue = PrsState & {
+  /**
+   * The machine that holds this surface's PR rows and reads GitHub for it.
+   * Null when no machine is online: nothing is read, and the page shows its
+   * empty state.
+   */
+  pin: OpenProjectBinding | null;
+  /** Where the repository is read from (see `PrsReader`). */
+  reader: PrsReader;
   setSelectedPrId: (id: string | null) => void;
   setMergeMethod: (method: MergeMethod) => void;
   refresh: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
@@ -159,14 +170,16 @@ type PrsContextWarmCache = {
 
 const prsContextWarmCacheByProject = new Map<string, PrsContextWarmCache>();
 
-function prsContextCacheKey(projectRoot?: string | null): string {
+/** One warm cache per machine copy: the same root on two machines is two databases. */
+function prsContextCacheKey(projectRoot?: string | null, pinKey?: string | null): string {
+  if (pinKey) return `pin:${pinKey}`;
   const normalized = projectRoot?.trim();
   return normalized || PRS_CONTEXT_DEFAULT_CACHE_KEY;
 }
 
-function readPrsContextWarmCache(projectRoot?: string | null): PrsContextWarmCache | null {
-  if (PRS_CONTEXT_CACHE_DISABLED) return null;
-  return prsContextWarmCacheByProject.get(prsContextCacheKey(projectRoot)) ?? null;
+function readPrsContextWarmCache(projectRoot?: string | null, pinKey?: string | null): PrsContextWarmCache | null {
+  if (PRS_CONTEXT_CACHE_DISABLED || !pinKey) return null;
+  return prsContextWarmCacheByProject.get(prsContextCacheKey(projectRoot, pinKey)) ?? null;
 }
 
 function readInitialSelectedPrId(fallback?: PrsContextWarmCache | null): string | null {
@@ -218,10 +231,38 @@ function diffPrIds(prev: PrWithConflicts[], next: PrWithConflicts[]): string[] {
 /** PR ids per snapshot warm-up request (keeps each sync reply small). */
 const PR_SNAPSHOT_WARM_BATCH = 25;
 
-export function PrsProvider({ active = true, children }: { active?: boolean; children: React.ReactNode }) {
+export function PrsProvider({
+  active = true,
+  pin: pinOverride,
+  children,
+}: {
+  active?: boolean;
+  /**
+   * The machine whose PR rows this provider reads. Leave it out on the PRs
+   * tab: the repository reader answers. A surface about one lane (a chat's PR
+   * pane) passes that lane's machine.
+   */
+  pin?: OpenProjectBinding | null;
+  children: React.ReactNode;
+}) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
-  const cacheKey = prsContextCacheKey(projectRoot);
-  const warmCache = useMemo(() => readPrsContextWarmCache(projectRoot), [projectRoot]);
+  const repositoryReader = usePrsReader(active && pinOverride === undefined);
+  const reader: PrsReader = useMemo(
+    () => (pinOverride === undefined
+      ? repositoryReader
+      : pinOverride
+        ? { kind: "machine", pin: pinOverride, repo: repositoryReader.repo }
+        : { kind: "none", repo: repositoryReader.repo }),
+    // `pinOverride` is compared by key: a rebuilt pin with the same key is the same machine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pinOverride === undefined, pinOverride?.key, repositoryReader],
+  );
+  const pin = readerPin(reader);
+  const pinRef = React.useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
+  const cacheKey = prsContextCacheKey(projectRoot, pinKey);
+  const warmCache = useMemo(() => readPrsContextWarmCache(projectRoot, pinKey), [pinKey, projectRoot]);
   const warmCacheHydratedAtRef = React.useRef(warmCache?.dataLoadedAt ?? warmCache?.cachedAt ?? 0);
 
   // Read the route's PR exactly once per provider mount. The warm-cache
@@ -367,7 +408,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   );
   const prsSnapshotWarmKey = prsSnapshotWarmIds.join("|");
   React.useEffect(() => {
-    if (!active || prsSnapshotWarmIds.length === 0 || typeof window.ade.prs.listSnapshots !== "function") {
+    const warmPin = pinRef.current;
+    if (!active || !warmPin || prsSnapshotWarmIds.length === 0 || typeof window.ade.prs.listSnapshots !== "function") {
       return undefined;
     }
     let cancelled = false;
@@ -379,7 +421,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       for (const prIds of batches) {
         if (cancelled) return;
         try {
-          const snapshots = await window.ade.prs.listSnapshots({ prIds });
+          const snapshots = await window.ade.prs.listSnapshots({ prIds }, warmPin);
           if (cancelled) return;
           const linkedPrIds = new Set(prsRef.current.map((pr) => pr.id));
           mergeDetailSnapshots(snapshots.filter((snapshot) => linkedPrIds.has(snapshot.prId)));
@@ -392,7 +434,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the id list's content
-  }, [active, mergeDetailSnapshots, prsSnapshotWarmKey]);
+  }, [active, mergeDetailSnapshots, prsSnapshotWarmKey, pinKey]);
 
   // Track whether the initial data load has completed
   const initialLoadDone = React.useRef(Boolean(warmCache));
@@ -402,11 +444,14 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   // pending flag so that once the current flight completes it immediately
   // kicks off another refresh instead of silently dropping the request.
   const applyLocalPrState = useCallback(async () => {
-    if (!active) return;
+    const statePin = pinRef.current;
+    if (!active || !statePin) return;
     const [prList, laneList] = await Promise.all([
-      window.ade.prs.listWithConflicts(),
-      window.ade.lanes.list({ includeStatus: false }),
+      window.ade.prs.listWithConflicts(undefined, statePin),
+      window.ade.lanes.list({ includeStatus: false }, statePin),
     ]);
+    // The reader moved to another machine while this read ran: its answer is not this surface's.
+    if (pinRef.current?.key !== statePin.key) return;
 
     // Stable-reference updates: only replace state when data actually changed
     // to avoid unnecessary re-render cascades in child components.
@@ -422,10 +467,16 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
 
     const allowedPrIds = new Set(prList.map((pr) => pr.id));
     setDetailSnapshotsByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
-  }, [active]);
+  }, [active, pinKey]);
 
   const refreshCore = useCallback(async (options: RefreshCoreOptions = {}) => {
     if (!active) return;
+    if (!pinRef.current) {
+      // No machine is online: nothing to read, and nothing is loading.
+      setLoading(false);
+      initialLoadDone.current = true;
+      return;
+    }
     if (refreshInFlight.current) {
       refreshPending.current = mergeRefreshCoreOptions(refreshPending.current, options);
       return;
@@ -461,7 +512,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     setError(null);
     try {
       if (options.awaitGithubRefresh) {
-        await window.ade.prs.refresh(options.githubRefreshArgs).catch(() => {});
+        await window.ade.prs.refresh(options.githubRefreshArgs, pinRef.current).catch(() => {});
       }
       await applyLocalPrState();
       warmCacheHydratedAtRef.current = Date.now();
@@ -517,7 +568,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     noteGithubReadSuccess,
     githubPollPeriodFor,
     githubPollGeneration,
-  } = useGithubPollGovernor(active);
+  } = useGithubPollGovernor(active, pin);
   useEffect(() => setPrChangeSplitStandDown(isGithubPollStoodDown), [isGithubPollStoodDown]);
 
   // Silently refresh detail data for the given PR (no loading state).
@@ -530,13 +581,15 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     if (!prsRef.current.some((p) => p.id === prId)) return;
     // Skip while the shared governor is standing down.
     if (isGithubPollStoodDown()) return;
+    const detailPin = pinRef.current;
+    if (!detailPin) return;
 
     detailFetchInProgress.current = true;
     Promise.allSettled([
-      window.ade.prs.getStatus(prId),
-      window.ade.prs.getChecks(prId),
-      window.ade.prs.getReviews(prId),
-      window.ade.prs.getComments(prId),
+      window.ade.prs.getStatus(prId, detailPin),
+      window.ade.prs.getChecks(prId, detailPin),
+      window.ade.prs.getReviews(prId, detailPin),
+      window.ade.prs.getComments(prId, detailPin),
     ])
       .then(([statusResult, checksResult, reviewsResult, commentsResult]) => {
         // Only apply if this PR is still selected
@@ -601,14 +654,16 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   const refreshSelectedPrDetail = useCallback(async (prId: string) => {
     if (selectedPrIdRef.current !== prId) return;
     if (!prsRef.current.some((p) => p.id === prId)) return;
+    const detailPin = pinRef.current;
+    if (!detailPin) return;
 
     detailFetchInProgress.current = true;
     try {
       const [statusResult, checksResult, reviewsResult, commentsResult] = await Promise.allSettled([
-        window.ade.prs.getStatus(prId),
-        window.ade.prs.getChecks(prId),
-        window.ade.prs.getReviews(prId),
-        window.ade.prs.getComments(prId),
+        window.ade.prs.getStatus(prId, detailPin),
+        window.ade.prs.getChecks(prId, detailPin),
+        window.ade.prs.getReviews(prId, detailPin),
+        window.ade.prs.getComments(prId, detailPin),
       ]);
       if (selectedPrIdRef.current !== prId) return;
 
@@ -700,6 +755,9 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       return;
     }
 
+    // The PR rows came from this machine, so its id is only meaningful there.
+    const detailPin = pinRef.current;
+    if (!detailPin) return;
     let cancelled = false;
     let liveDetailApplied = false;
     let snapshotForRequest: PrSnapshotHydration | null = null;
@@ -771,7 +829,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         const steps: Array<[string, () => Promise<void>]> = [
           ["getDeployments", async () => {
             if (typeof api?.getDeployments !== "function") return;
-            const deployments = await api.getDeployments(prId);
+            const deployments = await api.getDeployments(prId, detailPin);
             if (!cancelled && selectedPrIdRef.current === prId) setDetailDeployments(deployments);
           }],
         ];
@@ -861,16 +919,16 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
           });
       };
 
-      loadPrimaryPiece("status", window.ade.prs.getStatus(prId), (value) => {
+      loadPrimaryPiece("status", window.ade.prs.getStatus(prId, detailPin), (value) => {
         setDetailStatus(value ?? null);
       });
-      loadPrimaryPiece("checks", window.ade.prs.getChecks(prId), (value) => {
+      loadPrimaryPiece("checks", window.ade.prs.getChecks(prId, detailPin), (value) => {
         setDetailChecks(value);
       });
-      loadPrimaryPiece("reviews", window.ade.prs.getReviews(prId), (value) => {
+      loadPrimaryPiece("reviews", window.ade.prs.getReviews(prId, detailPin), (value) => {
         setDetailReviews(value);
       });
-      loadPrimaryPiece("comments", window.ade.prs.getComments(prId), (value) => {
+      loadPrimaryPiece("comments", window.ade.prs.getComments(prId, detailPin), (value) => {
         setDetailComments(value);
       });
     };
@@ -907,7 +965,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     setDetailBusy(true);
     const listSnapshots = window.ade.prs.listSnapshots;
     const snapshotsPromise = typeof listSnapshots === "function"
-      ? listSnapshots({ prId })
+      ? listSnapshots({ prId }, detailPin)
       : Promise.resolve([]);
     void snapshotsPromise.then((snapshots) => {
       if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
@@ -927,11 +985,12 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       }
     });
     return startDetailPolling();
-  }, [active, noteGithubReadFailure, noteGithubReadSuccess, refreshDetailSilently, selectedPrId]);
+  }, [active, noteGithubReadFailure, noteGithubReadSuccess, pinKey, refreshDetailSilently, selectedPrId]);
 
   // Subscribe to PR events
   useEffect(() => {
-    if (!active) return;
+    const eventPin = pinRef.current;
+    if (!active || !eventPin) return;
     const unsub = window.ade.prs.onEvent((event: PrEventPayload) => {
       if (event.type === "prs-updated") {
         const previous = prsRef.current;
@@ -963,14 +1022,14 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
           refreshDetailSilently(activePrId);
         }
       }
-    });
+    }, eventPin);
     return () => {
       unsub();
     };
-  }, [active, refreshDetailSilently]);
+  }, [active, pinKey, refreshDetailSilently]);
 
   useEffect(() => {
-    if (PRS_CONTEXT_CACHE_DISABLED) return;
+    if (PRS_CONTEXT_CACHE_DISABLED || !pinKey) return;
     if (!initialLoadDone.current && prs.length === 0 && lanes.length === 0) return;
     const cachedAt = Date.now();
     prsContextWarmCacheByProject.set(cacheKey, {
@@ -1009,6 +1068,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
 
   const value = useMemo<PrsContextValue>(
     () => ({
+      pin,
+      reader,
       prs,
       lanes,
       selectedPrId,
@@ -1046,6 +1107,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     // which are guaranteed to be referentially stable across re-renders per the React
     // useState contract.
     [
+      pin,
+      reader,
       prs,
       lanes,
       markPrTerminalLocally,
@@ -1076,7 +1139,11 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     ],
   );
 
-  return <PrsContext.Provider value={value}>{children}</PrsContext.Provider>;
+  return (
+    <PrsContext.Provider value={value}>
+      <PrRuntimePinProvider value={pin}>{children}</PrRuntimePinProvider>
+    </PrsContext.Provider>
+  );
 }
 
 /** For controls that also render outside the PRs tab, where there is no provider. */
