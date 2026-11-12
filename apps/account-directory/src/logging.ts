@@ -312,3 +312,28 @@ export function logLaneShare(args: {
     ...(args.emailSent === undefined ? {} : { emailSent: args.emailSent }),
   }));
 }
+
+/**
+ * One line per change to the account's project list, or a refusal
+ * (src/accountProjects). Never a folder path, a repository name or a token:
+ * the project id is random and names nothing.
+ */
+export function logAccountProject(args: {
+  event:
+    | "account_project.added"
+    | "account_project.revived"
+    | "account_project.removed"
+    | "account_project.refused";
+  userId: string;
+  projectId?: string;
+  code?: string;
+}): void {
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: SERVICE,
+    event: args.event,
+    userId: args.userId,
+    ...(args.projectId ? { project: args.projectId } : {}),
+    ...(args.code ? { code: args.code } : {}),
+  }));
+}

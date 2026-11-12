@@ -33,6 +33,7 @@ import {
 import { cleanupJevBonusDays, handleJevBonusRequest, isJevBonusRequest, type JevBonusEnv } from "./jevBonus";
 import { handleSignupAnalyticsRequest, isSignupAnalyticsRequest, type SignupAnalyticsEnv } from "./signupAnalytics";
 import { cleanupLaneShares, handleLaneShareRequest, isLaneShareRequest, type LaneShareEnv } from "./laneShares/routes";
+import { handleAccountProjectRequest, isAccountProjectRequest, type AccountProjectEnv } from "./accountProjects/routes";
 import {
   cleanupUsageResearch,
   handleUsageResearchRequest,
@@ -41,7 +42,7 @@ import {
 } from "./usageResearch";
 
 type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv
-  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv & LaneShareEnv;
+  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv & CloudEnv & LaneShareEnv & AccountProjectEnv;
 
 const WORKER_NAME = "ade-account-directory";
 
@@ -93,6 +94,11 @@ function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promis
   // Lane sharing (src/laneShares): account bearer, the directory's exact-origin
   // CORS for the web client, none for the host read (machines only).
   if (isLaneShareRequest(url)) return handleLaneShareRequest(request, env);
+  // The account's project list (src/accountProjects): account bearer, the
+  // directory's exact-origin CORS for the web client, none for the copies
+  // route (machines only). Matched before the directory, which owns only
+  // `/account/machines`.
+  if (isAccountProjectRequest(url)) return handleAccountProjectRequest(request, env);
   return handleRequest(request, env);
 }
 

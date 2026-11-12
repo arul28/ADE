@@ -136,6 +136,7 @@ const MACHINE_PROJECT_CAPABILITIES = [
 // not worth a compatibility warning. The action itself names the update.
 const OPTIONAL_MACHINE_PROJECT_CAPABILITIES = [
   "setIcon",
+  "accountList",
 ] as const satisfies readonly RemoteRuntimeMachineProjectCapability[];
 
 type RemoteRuntimeInitializeInfo = {

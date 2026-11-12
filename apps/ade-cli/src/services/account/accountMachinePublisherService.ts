@@ -777,6 +777,28 @@ export function relayPublishStateSignature(
   });
 }
 
+/** What `onPublished` receives after an accepted heartbeat. */
+export type AccountMachinePublishedEvent = {
+  baseUrl: string;
+  /** The token the accepted request carried (the refreshed one after a 401). */
+  accessToken: string;
+  machineKey: string;
+  /** The signed-in account as the publisher saw it, or null when unreadable. */
+  accountOwnerId: string | null;
+  /** `accountProjectsCursor` from the answer, or null. */
+  accountProjectsCursor: number | null;
+};
+
+/** The account project list's cursor in a heartbeat answer; null when absent or malformed. */
+async function readAccountProjectsCursorBounded(response: Response): Promise<number | null> {
+  return boundedBodyRead(response, async (bounded) => {
+    const body: unknown = await bounded.clone().json();
+    if (!body || typeof body !== "object") return null;
+    const raw = (body as Record<string, unknown>).accountProjectsCursor;
+    return typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 0 ? raw : null;
+  });
+}
+
 export function createAccountMachinePublisherService(options: {
   /**
    * `null` means there is no usable token (`token_unreadable`). A throw that
@@ -805,6 +827,15 @@ export function createAccountMachinePublisherService(options: {
    * and test publishers stay unaffected; absent means "do not reconcile".
    */
   confirmSupersededMachineKeys?: (keys: readonly unknown[]) => string[];
+  /**
+   * Called after each heartbeat the directory accepted, with the token that
+   * request carried and the account project list's cursor from the answer
+   * (null from a directory that predates it). Fire and forget: it must not
+   * throw into the heartbeat, and the heartbeat does not wait for it. The
+   * account project sync (`accountProjectSync.ts`) reads the list only when
+   * that cursor changed, so it needs no timer of its own.
+   */
+  onPublished?: (input: AccountMachinePublishedEvent) => void;
   /**
    * The per-account hardware anchor for the signed-in owner, or null when this
    * host has none. Called with the account id because the value is salted with
@@ -1593,6 +1624,7 @@ export function createAccountMachinePublisherService(options: {
 
     try {
       let response = await sendRegistration(accessToken, registration, baseUrl);
+      let sentToken = accessToken;
       let firstUnauthorizedReason: string | null = null;
       if (response.status === 401) {
         firstUnauthorizedReason = await readHttpReasonBounded(response);
@@ -1624,6 +1656,7 @@ export function createAccountMachinePublisherService(options: {
         if (disposed) return;
         if (refreshedToken) {
           response = await sendRegistration(refreshedToken, registration, baseUrl);
+          sentToken = refreshedToken;
         }
       }
       if (!response.ok) {
@@ -1694,6 +1727,19 @@ export function createAccountMachinePublisherService(options: {
         } catch {
           // An older directory sends no body at all; never fail a good publish
           // over bookkeeping.
+        }
+      }
+      if (options.onPublished) {
+        let accountProjectsCursor: number | null = null;
+        try {
+          accountProjectsCursor = await readAccountProjectsCursorBounded(response);
+        } catch {
+          accountProjectsCursor = null;
+        }
+        try {
+          options.onPublished({ baseUrl, accessToken: sentToken, machineKey, accountOwnerId, accountProjectsCursor });
+        } catch {
+          // The account project sync is decoration on the heartbeat.
         }
       }
       await response.body?.cancel().catch(() => {});
@@ -2111,6 +2157,8 @@ export function createBrainAccountMachinePublisherService(options: {
   captureAnalytics?: (input: ProductAnalyticsCapture) => void;
   /** See the same option on `createAccountMachinePublisherService`. */
   onSustainedFailure?: (input: { code: SyncAccountDirectoryHealth["state"] }) => void;
+  /** See the same option on `createAccountMachinePublisherService`. */
+  onPublished?: (input: AccountMachinePublishedEvent) => void;
   /** Best-effort provider/preset counts for the 60-second directory beat. */
   getInventorySummary?: () => Promise<MachineInventorySummary | null>;
   /** See the same option on `createAccountMachinePublisherService`. */
@@ -2171,6 +2219,7 @@ export function createBrainAccountMachinePublisherService(options: {
     // device sign-in earned in this brain reaches the publish that needs it.
     consumePairingGrant: () => accountAuthService.consumePairingGrant(),
     confirmSupersededMachineKeys: options.confirmSupersededMachineKeys,
+    ...(options.onPublished ? { onPublished: options.onPublished } : {}),
     // The only identity input that does not come out of `secretsDir`, which is
     // the entire point: everything else in this composition is destroyed by the
     // `~/.ade` wipe this anchor exists to survive. Cached for the process, so

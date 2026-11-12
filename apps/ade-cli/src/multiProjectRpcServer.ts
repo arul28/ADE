@@ -58,6 +58,7 @@ import {
 import { createConnectionFrameDemand } from "./connectionFrameDemand";
 import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFrameDemand";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { readAccountProjectListForRpc } from "./services/projects/accountProjectSync";
 import { peekSharedUsageTrackingService } from "../../desktop/src/main/services/usage/sharedUsageTracking";
 import { readProjectFolderPresence, readProjectFolderStates } from "./services/projects/projectFolderPresence";
 import { createProjectCopyRemoval } from "./services/projects/projectCopyRemoval";
@@ -639,6 +640,7 @@ const RUNTIME_METHODS = new Set([
   "machine.updateAndRestart",
   "machine.reportPowerTransition",
   "projects.list",
+  "projects.accountList",
   "projects.add",
   "projects.setCatalogVisibility",
   "projects.remove",
@@ -2645,6 +2647,8 @@ export function createMultiProjectRpcRequestHandler(
             setIcon: true,
             // `projects.inspectRemoval` + `projects.removeCopy`.
             removeCopy: true,
+            // `projects.accountList`, and `accountProjectId` / `githubRepoId` on `projects.list` rows.
+            accountList: true,
           },
           ...sdkCapabilities(),
           account: true,
@@ -3704,12 +3708,30 @@ export function createMultiProjectRpcRequestHandler(
         decorateProjectListWithIcons(records, undefined, undefined, projectRecords),
         readProjectFolderPresence(records),
       ]);
-      // Additive: older callers ignore `exists`, and an unknown answer is left out.
+      // The account project link is shown only to the account it was made
+      // for; the account id itself never leaves this machine.
+      const accountUserId = records.some((record) => record.accountProjectId)
+        ? getMachineAccountStores(machineProjectLogger).accountUserId()
+        : null;
+      // Additive: older callers ignore `exists`, `accountProjectId` and
+      // `githubRepoId`, and an unknown answer is left out.
       return decorated.map((record, index) => {
+        const { accountProjectUserId, accountProjectId, ...rest } = record;
+        const linked = accountProjectId && accountUserId && accountProjectUserId === accountUserId
+          ? { ...rest, accountProjectId }
+          : rest;
         const sharedName = projectRecords?.name(record) ?? null;
-        const named = sharedName ? { ...record, displayName: sharedName } : record;
+        const named = sharedName ? { ...linked, displayName: sharedName } : linked;
         return presence[index] === undefined ? named : { ...named, exists: presence[index] };
       });
+    }
+
+    if (method === "projects.accountList") {
+      // The account's projects as this machine last read them (after a
+      // heartbeat that saw a change). Only the signed-in account's list; an
+      // account switch answers `not_loaded` until the new list is read.
+      const accountUserId = getMachineAccountStores(machineProjectLogger).accountUserId();
+      return readAccountProjectListForRpc(path.dirname(projectRegistry.path), accountUserId);
     }
 
     if (method === "projects.add") {
