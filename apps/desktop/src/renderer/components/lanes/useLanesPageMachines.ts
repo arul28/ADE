@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
+import { useRootAppStore, type CrossMachineMachineLanes } from "../../state/appStore";
 import {
+  type AllMachineLanes,
   createLaneMachineRouter,
   machineBlockedReason,
   machineChipFor,
@@ -37,13 +39,48 @@ export function setForeignLaneSelection(projectStateKey: string | null, key: str
 
 const machineFilterByProject = new Map<string, string>();
 
+/** The union machines whose computer is gone from the account, as one string (a stable store selection). */
+function goneComputerIdsKey(machines: Readonly<Record<string, CrossMachineMachineLanes>> | undefined): string {
+  if (!machines) return "";
+  const ids: string[] = [];
+  for (const entry of Object.values(machines)) {
+    if (entry.computerGone === true) ids.push(entry.machineId);
+  }
+  return ids.sort().join("\n");
+}
+
+/**
+ * The lanes of every machine, without the machines whose computer is gone
+ * from the account. Such a machine is kept in the union only for its saved
+ * chats (Work reads them); it holds no copy of the repository, so the Lanes
+ * tab lists neither it nor its lanes. Returns `all` itself when nothing is
+ * gone. Pure.
+ */
+export function withoutGoneComputers(all: AllMachineLanes, goneIds: ReadonlySet<string>): AllMachineLanes {
+  if (goneIds.size === 0 || !all.machines.some((machine) => goneIds.has(machine.machineId))) return all;
+  const keep = <T extends { machineId: string }>(rows: readonly T[]) => rows.filter((row) => !goneIds.has(row.machineId));
+  const keepMap = <T>(map: ReadonlyMap<string, T>) => new Map([...map].filter(([machineId]) => !goneIds.has(machineId)));
+  const machines = keep(all.machines);
+  const lanes = keep(all.lanes);
+  return {
+    ...all,
+    machines,
+    machinesById: new Map(machines.map((machine) => [machine.machineId, machine] as const)),
+    lanes,
+    lanesByKey: new Map(lanes.map((row) => [row.key, row] as const)),
+    lanesByMachineId: keepMap(all.lanesByMachineId),
+    prsByMachineId: keepMap(all.prsByMachineId),
+    sessionsByMachineId: keepMap(all.sessionsByMachineId),
+  };
+}
+
 /** Where one row's lane lives: its real id on its machine, and the pin to use. */
 export type LaneTarget =
   /**
    * `pin` addresses the lane's copy, the tab's own included. `machineId` is
    * null for the tab's own machine: only another machine's rows carry one.
    */
-  | { ok: true; laneId: string; pin: OpenProjectBinding | null; machineId: string | null; name: string }
+  | { ok: true; laneId: string; pin: OpenProjectBinding; machineId: string | null; name: string }
   | { ok: false; reason: string };
 
 export type ForeignLaneModel = {
@@ -83,7 +120,12 @@ export function useLanesPageMachines({
 }) {
   // Mounting this while the tab is visible keeps the shared cross-machine union
   // refreshing (ref-counted, no new loop).
-  const allMachineLanes = useAllMachineLanes(active);
+  const unionLanes = useAllMachineLanes(active);
+  const goneKey = useRootAppStore((state) => goneComputerIdsKey(state.crossMachineLanesByMachineId));
+  const allMachineLanes = useMemo(
+    () => withoutGoneComputers(unionLanes, new Set(goneKey ? goneKey.split("\n") : [])),
+    [goneKey, unionLanes],
+  );
   const allMachineLanesRef = useRef(allMachineLanes);
   allMachineLanesRef.current = allMachineLanes;
 
@@ -108,6 +150,12 @@ export function useLanesPageMachines({
   foreignRowByKeyRef.current = foreignRowByKey;
   const activeMachine = allMachineLanes.machines[0] ?? null;
   const activeMachineId = activeMachine?.machineId ?? null;
+  /**
+   * The pin of the tab's own lanes (the rows from the tab's copy): that
+   * machine's address from the router. Null while the copy is offline or no
+   * project is open; then nothing is sent for those rows.
+   */
+  const tabLanePin = activeMachine?.routable && activeMachine.online ? activeMachine.pin : null;
 
   // The shared router over the same union the list renders. Every action on a
   // row resolves through it, so a lane on another machine is only ever sent
@@ -239,6 +287,7 @@ export function useLanesPageMachines({
 
   return {
     allMachineLanes,
+    tabLanePin,
     foreignLanes,
     foreignRowByKey,
     foreignRowByKeyRef,

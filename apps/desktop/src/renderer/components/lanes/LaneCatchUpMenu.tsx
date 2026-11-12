@@ -33,8 +33,13 @@ import type { LaneTarget } from "./useLanesPageMachines";
  * when it is not the tab's (null keeps the tab's route); `machineId` names it
  * for refreshing its lane list afterwards.
  */
+/**
+ * Where the catch-up runs. A null `pin` comes from a surface that has not
+ * named the lane's machine yet (the Work git pane on the tab's own copy);
+ * the Lanes page always names it.
+ */
 export type LaneCatchUpTarget =
-  | Omit<Extract<LaneTarget, { ok: true }>, "name">
+  | (Omit<Extract<LaneTarget, { ok: true }>, "name" | "pin"> & { pin: OpenProjectBinding | null })
   | Extract<LaneTarget, { ok: false }>;
 
 export type LaneCatchUpTriggerState = {

@@ -1,6 +1,7 @@
 import type { LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { resolveOpenInTarget } from "../../../../shared/editorTargets";
 import { useAppStore } from "../../../state/appStore";
+import { usePinTargetsTab } from "../../../state/crossMachineLanes";
 import { LaneMenuGroups } from "../LaneContextMenu";
 import { buildLaneMenuGroups, type LaneMenuArgs } from "../laneContextMenuItems";
 import { PointMenu } from "./PointMenu";
@@ -23,7 +24,7 @@ export function LaneSidebarContextMenu({
   onAppearanceChanged,
   onStartChatInLane,
   onOpenHistory,
-  runtimePin = null,
+  runtimePin,
 }: {
   menu: { laneId: string; x: number; y: number };
   lanesById: Map<string, LaneSummary>;
@@ -34,15 +35,17 @@ export function LaneSidebarContextMenu({
   onStartChatInLane: (laneId: string) => void;
   onOpenHistory?: (laneId: string) => void;
   /**
-   * The lane's machine when it is not the tab's. `menu.laneId` and `lanesById`
-   * are then that machine's own ids, and every write the menu makes is pinned
-   * there. Reveal is not offered: it resolves the lane on the tab's machine.
+   * The lane's machine, the tab's own included. `menu.laneId` and `lanesById`
+   * are that machine's own ids, and every write the menu makes is pinned
+   * there. For a lane on another machine, reveal is not offered: it resolves
+   * the lane on the tab's machine.
    */
-  runtimePin?: OpenProjectBinding | null;
+  runtimePin: OpenProjectBinding | null;
 }) {
   const boundIsRemote = useAppStore((s) => s.projectBinding?.kind === "remote");
   const projectBinding = useAppStore((s) => s.projectBinding);
-  const isRemoteProject = runtimePin ? true : boundIsRemote;
+  const pinTargetsTab = usePinTargetsTab(runtimePin);
+  const isRemoteProject = pinTargetsTab ? boundIsRemote : true;
   const lane = lanesById.get(menu.laneId) ?? null;
   const openIn = resolveOpenInTarget({ worktreePath: lane?.worktreePath, binding: runtimePin ?? projectBinding });
   // Sharing is asked of the lane's own machine (the pin), like every write here.

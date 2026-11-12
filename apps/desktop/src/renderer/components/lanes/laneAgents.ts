@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
+  OpenProjectBinding,
   TerminalSessionSummary,
   TerminalToolType,
 } from "../../../shared/types";
@@ -17,6 +18,7 @@ import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/te
 import { listSessionsCached } from "../../lib/sessionListCache";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { cacheScopePin } from "../../lib/tabBindingKey";
 
 /**
  * Unified live state for an agent row, glanceable at a list level.
@@ -260,9 +262,15 @@ function sameLaneAgents(a: readonly LaneAgent[] | undefined, b: readonly LaneAge
  * up to 500 chats on the brain, and it ran about three times a second while any
  * chat streamed. Events of chats the page does not list are ignored, and with
  * no lanes (the page parked) nothing is read or subscribed.
+ *
+ * `pin` is the machine of the listed lanes. Null (the machine is offline):
+ * nothing is read or subscribed.
  */
-export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
+export function useLaneAgents(laneIds: string[], pin: OpenProjectBinding | null): Map<string, LaneAgent[]> {
   const [byLane, setByLane] = useState<Map<string, LaneAgent[]>>(EMPTY_LANE_AGENTS);
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const laneKey = useMemo(() => [...laneIds].sort().join(","), [laneIds]);
   const refreshTimerRef = useRef<number | null>(null);
@@ -304,7 +312,8 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
         refreshQueuedRef.current = false;
 
         const ids = laneKey ? laneKey.split(",") : [];
-        if (!ids.length) {
+        const listPin = pinRef.current;
+        if (!ids.length || !listPin) {
           chatsByIdRef.current = new Map();
           if (byLaneRef.current.size > 0) {
             byLaneRef.current = EMPTY_LANE_AGENTS;
@@ -318,8 +327,12 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
         fullRefreshDueRef.current = false;
         staleChatIdsRef.current = new Set();
         const [chat, cli] = await Promise.all([
-          window.ade.agentChat.list(full ? {} : { sessionIds: staleIds }).catch(() => null),
-          listSessionsCached({ limit: 500 }).catch(() => []),
+          window.ade.agentChat.list(full ? {} : { sessionIds: staleIds }, listPin).catch(() => null),
+          // The session cache is keyed for the tab's machine only.
+          (cacheScopePin(listPin)
+            ? window.ade.sessions.list({ limit: 500 }, listPin)
+            : listSessionsCached({ limit: 500 })
+          ).catch(() => []),
         ]);
         if (full) {
           const chatsById = new Map<string, AgentChatSessionSummary>();
@@ -363,7 +376,9 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
     } finally {
       refreshInFlightRef.current = false;
     }
-  }, [commit, laneKey]);
+    // `pinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commit, laneKey, pinKey]);
 
   useEffect(() => {
     // Re-run when the active project changes; listSessionsCached keys by active project.
@@ -373,7 +388,8 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
   }, [projectRoot, refresh]);
 
   useEffect(() => {
-    if (!laneKey) return;
+    const subscribedPin = pinRef.current;
+    if (!laneKey || !subscribedPin) return;
     const scheduleRefresh = () => {
       if (refreshTimerRef.current != null) return;
       refreshTimerRef.current = window.setTimeout(() => {
@@ -395,8 +411,8 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
       fullRefreshDueRef.current = true;
       scheduleRefresh();
     };
-    const offChat = window.ade.agentChat.onEvent(onChatEvent);
-    const offSession = window.ade.sessions.onChanged(onSessionsChanged);
+    const offChat = window.ade.agentChat.onEvent(onChatEvent, subscribedPin);
+    const offSession = window.ade.sessions.onChanged(onSessionsChanged, subscribedPin);
     return () => {
       if (refreshTimerRef.current != null) {
         window.clearTimeout(refreshTimerRef.current);
@@ -405,6 +421,7 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
       offChat?.();
       offSession?.();
     };
+    // `refresh` changes with `pinKey`, which carries the pin's identity.
   }, [laneKey, refresh]);
 
   return byLane;
