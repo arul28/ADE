@@ -512,8 +512,10 @@ lines only, to the project's `ade-cli.jsonl`. None carries a value:
 
 None is a PostHog event: the clean-up has no user action behind it, and the
 account move runs on its own when the account syncs. The person's answer to
-a notice ("Use this computer's value" or "Keep") is a settings write that the
-existing settings path already records.
+a notice ("Use this computer's value" or "Keep") is not one either: it comes
+at most once per setting per computer, during the one-time move, so it says
+nothing about how ADE is used afterwards. The local
+`projectConfig.account_move_notice_resolved` line records it.
 
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 

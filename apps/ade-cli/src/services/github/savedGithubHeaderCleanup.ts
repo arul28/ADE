@@ -12,13 +12,15 @@ import { runGit as runGitProcess } from "../../../../desktop/src/main/services/g
  * the token stayed in the file, readable by anything that reads the
  * repository. ADE now passes the header per command (gitTransportAuth.ts).
  *
- * Only ADE's own header is removed: an `AUTHORIZATION: basic` value on an
- * `http.*extraheader` key whose credential is `x-access-token:<token>` (the
- * GitHub form ADE wrote). A header a person set (another host's token, a
- * different user) stays. Logs never carry a value.
+ * Only ADE's own header is removed: an `AUTHORIZATION: basic` value on the
+ * `http.https://github.com/.extraheader` key (the only key ADE wrote) whose
+ * credential is `x-access-token:<token>`. A header a person set (another
+ * host's token, a different user) stays. Logs never carry a value.
  */
 
 const AUTH_BASIC = /^\s*authorization:\s*basic\s+(\S+)\s*$/i;
+/** The key `git clone -c` saved, as a POSIX ERE for `git config --get-regexp`. */
+const SAVED_KEY_REGEX = "^http\\.https://github\\.com/\\.extraheader$";
 const ADE_CREDENTIAL_PREFIX = "x-access-token:";
 
 type GitAnswer = { code: number; stdout: string };
@@ -102,7 +104,7 @@ export async function removeSavedGithubHeaders(
     try {
       if (!mayHoldSavedHeader(root)) continue;
       // Exit 1 is "no such key": nothing saved there.
-      const listed = await runGit(root, ["config", "--local", "--get-regexp", "^http\\..*extraheader$"]);
+      const listed = await runGit(root, ["config", "--local", "--get-regexp", SAVED_KEY_REGEX]);
       if (listed.code !== 0) continue;
       const saved: Array<{ key: string; value: string }> = [];
       for (const line of listed.stdout.split(/\r?\n/)) {
