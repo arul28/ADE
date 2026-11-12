@@ -378,6 +378,24 @@ export function AutomationsWorkspace({
   }, []);
   loadRef.current = refresh;
 
+  // The relay and the webhook gateway report their state on every poll, so
+  // "ingress-updated" comes several times a minute. It changes only the
+  // ingress status: read that alone, and keep the old object when nothing in
+  // it changed, so the page does not reload its rules on each poll.
+  const refreshIngress = useCallback(async () => {
+    const pin = tabPinRef.current;
+    if (!pin) return;
+    try {
+      const next = await window.ade.automations.getIngressStatus(pin);
+      if (tabPinRef.current?.key !== pin.key) return;
+      setIngressStatus((current) => (current && JSON.stringify(current) === JSON.stringify(next) ? current : next));
+    } catch {
+      // The next full refresh reads it again.
+    }
+  }, []);
+  const refreshIngressRef = useRef(refreshIngress);
+  refreshIngressRef.current = refreshIngress;
+
   // A selected rule on another machine falls back only once that machine has
   // answered without it, or has left.
   useEffect(() => {
@@ -393,7 +411,10 @@ export function AutomationsWorkspace({
     void refresh();
     const pin = tabPinRef.current;
     if (!pin) return;
-    const unsubscribe = window.ade.automations.onEvent(() => void loadRef.current?.(), pin);
+    const unsubscribe = window.ade.automations.onEvent((event) => {
+      if (event.type === "ingress-updated") void refreshIngressRef.current();
+      else void loadRef.current?.();
+    }, pin);
     return () => {
       try {
         unsubscribe();
