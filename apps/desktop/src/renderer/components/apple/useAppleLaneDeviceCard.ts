@@ -79,12 +79,13 @@ export function useAppleLaneDeviceCard(args: {
     let cancelled = false;
     const read = async () => {
       const api = window.ade?.iosSimulator;
-      if (!api?.deviceList) {
+      const pin = pinRef.current;
+      if (!api?.deviceList || !pin) {
         if (!cancelled) setCard(null);
         return;
       }
       const listed = await api
-        .deviceList({ laneId, installed: true }, pinRef.current ?? undefined)
+        .deviceList({ laneId, installed: true }, pin)
         .catch(() => null);
       if (cancelled) return;
       const lane = listed?.lane ?? null;

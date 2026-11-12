@@ -3,6 +3,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import type { AndroidLaneDeviceStatus } from "../../../shared/types/androidEmulator";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { androidLaneDeviceName } from "./androidDeviceState";
+import { useDeviceMachinePin } from "../apple/useDeviceMachinePin";
 
 /**
  * The tools grid card's one fact about the Android tool: which emulator this
@@ -51,7 +52,7 @@ type CardEntry = {
 type MachineEntry = {
   key: string;
   /** The pin of the reader that opened the machine. A pin with the same key goes to the same machine. */
-  pin: OpenProjectBinding | null;
+  pin: OpenProjectBinding;
   lanes: Map<string, CardEntry>;
   unsubscribe: (() => void) | null;
 };
@@ -98,7 +99,7 @@ function scheduleRead(entry: CardEntry): void {
   }, EVENT_READ_DELAY_MS);
 }
 
-function openMachine(key: string, pin: OpenProjectBinding | null): MachineEntry {
+function openMachine(key: string, pin: OpenProjectBinding): MachineEntry {
   const existing = machines.get(key);
   if (existing) return existing;
   const machine: MachineEntry = { key, pin, lanes: new Map(), unsubscribe: null };
@@ -123,7 +124,7 @@ function openMachine(key: string, pin: OpenProjectBinding | null): MachineEntry 
 }
 
 /** Joins a lane's reading on a machine. The first reader starts the read. */
-function joinCard(machineKey: string, laneId: string, pin: OpenProjectBinding | null, reader: () => void): () => void {
+function joinCard(machineKey: string, laneId: string, pin: OpenProjectBinding, reader: () => void): () => void {
   const machine = openMachine(machineKey, pin);
   let entry = machine.lanes.get(laneId);
   if (!entry) {
@@ -164,15 +165,20 @@ export function useAndroidLaneDeviceCard(args: {
   /** Bump to read again now: the card menu's refresh after it acts (the web client may get no event). */
   refreshKey?: unknown;
 }): AndroidLaneDeviceCard | null {
-  const { laneId, runtimePin, enabled, refreshKey } = args;
+  const { laneId, enabled, refreshKey } = args;
+  // The lane's machine, the tab's copy included. No machine: no card, no read.
+  const runtimePin = useDeviceMachinePin(args.runtimePin);
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
-  // Keyed on the machine, not the pin object. The empty key is the tab's own machine.
+  // Keyed on the machine, not the pin object.
   const machineKey = runtimePin?.key ?? "";
-  const lane = enabled && laneId && typeof window.ade?.androidEmulator?.getStatus === "function" ? laneId : null;
+  const lane = enabled && laneId && runtimePin && typeof window.ade?.androidEmulator?.getStatus === "function" ? laneId : null;
 
   const subscribe = useCallback(
-    (reader: () => void) => (lane ? joinCard(machineKey, lane, pinRef.current, reader) : () => {}),
+    (reader: () => void) => {
+      const pin = pinRef.current;
+      return lane && pin ? joinCard(machineKey, lane, pin, reader) : () => {};
+    },
     [lane, machineKey],
   );
   const getSnapshot = useCallback(() => (lane ? peekCard(machineKey, lane) : null), [lane, machineKey]);
