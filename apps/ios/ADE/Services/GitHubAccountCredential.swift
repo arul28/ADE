@@ -510,9 +510,11 @@ final class GitHubAccountConnection: ObservableObject {
         dropToken()
         GitHubDirectClient.shared.clear()
         githubAccountLog.info("github_account.connected")
+        ProductAnalytics.shared.captureFeature(.githubConnect, outcome: .completed)
         await refreshStatus(force: true)
       case "failed":
         problem = read?.resultCode == "denied" ? nil : "GitHub did not finish the sign-in. Try again."
+        ProductAnalytics.shared.captureFeature(.githubConnect, outcome: read?.resultCode == "denied" ? .cancelled : .failed)
       case "expired":
         problem = "The GitHub sign-in ran out of time. Try again."
       default:

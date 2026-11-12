@@ -1631,7 +1631,10 @@ A project is one GitHub repository. Each computer can hold copies of it.
 - "Use for new lanes" on the Location page sends `projects.setMainCheckout`
   (runtime scope, controller only) to the computer that holds the folder.
   Only the brain that publishes that computer's projects answers it; it
-  publishes the new main copy at once. A brain without the action shows
+  publishes the new main copy at once. When that upload does not reach the
+  account, the brain answers `published: false` (the choice stays saved on
+  the computer and goes out on the retry) and the phone says so instead of
+  showing the folder as used. A brain without the action shows
   "Update ADE on <computer> to change this from your phone." and no button.
 - Create can publish the new project to GitHub ("Publish to GitHub", on by
   default). The phone sends the computer's `github.publishCurrentProject`
@@ -1647,8 +1650,10 @@ computer on.
 - `GitHubAccountConnection` (`Services/GitHubAccountCredential.swift`) reads
   `/github/app/status`, starts the sign-in in a web sheet
   (`/github/app/sign-in`, back on `ade://github/connected`), and asks
-  `/github/app/token` for a token. It keeps the token in the keychain for one
-  account only, until `useForSec` runs out. After a 401 it asks once more
+  `/github/app/token` for a token. It keeps the token in the keychain
+  (this device only, not in backups) for one account only, until
+  `useForSec` runs out. An account switch, a disconnect or a new sign-in
+  drops the token and any token answer still on its way. After a 401 it asks once more
   with the rejected token's hash; a second 401 shows "GitHub connection
   ended".
 - `GitHubDirectClient` (`Services/GitHubDirectClient.swift`) reads
@@ -2350,6 +2355,18 @@ yet arrived in the catchup batch.
   aliases.
 - Uses iOS Keychain Services API (`SecItemAdd` / `SecItemCopyMatching`
   / `SecItemUpdate` / `SecItemDelete`).
+- Reads tell "not there" (`errSecItemNotFound`) from "could not read" (any
+  other error, such as a launch before the first unlock), and a failed read
+  never writes: a legacy token moves only when the new slot is absent, the
+  ownership epoch is never written lower or after a failed read, and the
+  DPoP key is created only when none exists.
+- The device id (`syncResolveDeviceId`): the keychain copy wins and is
+  mirrored to `ade.sync.deviceId`. After a failed read the phone uses the
+  saved copy and writes nothing. With no saved copy either, the id is
+  provisional: it is stored nowhere, the phone does not pair with it, and an
+  "unknown device" answer does not drop a pairing. The phone reads the
+  keychain again when protected data becomes available or the app becomes
+  active (no timer).
 
 ### PIN pairing flow
 

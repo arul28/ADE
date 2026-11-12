@@ -114,7 +114,9 @@ describe("account project sync", () => {
       resolveMovedProjectId: () => null,
     } as unknown as Pick<ProjectRegistry, "list" | "setAccountLinks" | "resolveMovedProjectId" | "path">;
     const published: Array<Record<string, boolean>> = [];
+    let directoryDown = false;
     const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+      if (directoryDown) return new Response("{}", { status: 503 });
       if (init?.method === "PUT") {
         const body = JSON.parse(String(init.body)) as { copies: Array<{ checkoutId: string; isMain: boolean }> };
         published.push(Object.fromEntries(body.copies.map((copy) => [copy.checkoutId, copy.isMain])));
@@ -147,11 +149,21 @@ describe("account project sync", () => {
 
     await beat();
     expect(published.at(-1)).toEqual({ "project-1": true, "project-2": false });
+    expect(sync.publishPending()).toBe(false);
 
     await expect(sync.setMainCheckout("project-3")).resolves.toMatchObject({ ok: false, code: "not_a_copy" });
     await expect(sync.setMainCheckout("project-2")).resolves.toEqual({ ok: true, checkoutId: "project-2", changed: true });
+    // The upload fails: the pick is saved here, and the phone is told the
+    // account does not have it yet (`published: false`).
+    directoryDown = true;
+    await beat();
+    expect(published.at(-1)).toEqual({ "project-1": true, "project-2": false });
+    expect(sync.publishPending()).toBe(true);
+    expect(readAccountProjectState(adeDir).mainCheckouts).toEqual(["project-2"]);
+    directoryDown = false;
     await beat();
     expect(published.at(-1)).toEqual({ "project-1": false, "project-2": true });
+    expect(sync.publishPending()).toBe(false);
 
     // Opening the other folder later does not take the pick back.
     records[0] = folder("project-1", 3);

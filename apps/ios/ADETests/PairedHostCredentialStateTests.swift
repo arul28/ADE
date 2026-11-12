@@ -74,23 +74,26 @@ final class PairedHostCredentialStateTests: XCTestCase {
 
   /// The device id every computer knows this phone by. A keychain read that
   /// fails must never write a new id over the real one: that made every
-  /// computer answer "unknown device" and asked for a PIN again.
+  /// computer answer "unknown device", and the phone then dropped its
+  /// pairings. An id made after a failed read is provisional: the phone
+  /// neither stores it nor pairs or drops a pairing with it.
   func testDeviceIdSurvivesAFailedKeychainRead() {
-    typealias Case = (keychain: KeychainService.StoredRead, saved: String?, id: String, writeKeychain: Bool, writeSaved: Bool)
+    typealias Case = (keychain: KeychainService.StoredRead, saved: String?, id: String, writeKeychain: Bool, writeSaved: Bool, provisional: Bool)
     let cases: [Case] = [
-      (.value("kept"), "kept", "kept", false, false),
-      (.value("kept"), nil, "kept", false, true),            // after a reinstall: the saved copy comes back
-      (.failed(errSecInteractionNotAllowed), "saved", "saved", false, false),            // the keychain may still hold the real id
-      (.failed(errSecInteractionNotAllowed), nil, "fresh", false, false),                // this launch only; the next one reads again
-      (.absent, "saved", "saved", true, false),
-      (.absent, nil, "fresh", true, true),
-      (.value("  "), "saved", "saved", true, false),
+      (.value("kept"), "kept", "kept", false, false, false),
+      (.value("kept"), nil, "kept", false, true, false),            // after a reinstall: the saved copy comes back
+      (.failed(errSecInteractionNotAllowed), "saved", "saved", false, false, false),  // the keychain may still hold the real id
+      (.failed(errSecInteractionNotAllowed), nil, "fresh", false, false, true),       // before the first unlock: read again later
+      (.absent, "saved", "saved", true, false, false),
+      (.absent, nil, "fresh", true, true, false),
+      (.value("  "), "saved", "saved", true, false, false),
     ]
     for (index, item) in cases.enumerated() {
       let result = syncResolveDeviceId(keychain: item.keychain, saved: item.saved, makeFresh: { "fresh" })
       XCTAssertEqual(result.id, item.id, "case \(index)")
       XCTAssertEqual(result.writeKeychain, item.writeKeychain, "case \(index)")
       XCTAssertEqual(result.writeSaved, item.writeSaved, "case \(index)")
+      XCTAssertEqual(result.provisional, item.provisional, "case \(index)")
     }
   }
 }
