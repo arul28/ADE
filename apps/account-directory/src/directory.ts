@@ -22,6 +22,7 @@ import { scrubString } from "./sentryScrub";
 import { trustedHttpsOrigin } from "./trustedOrigin";
 import { ACCOUNT_PROJECTS_CURSOR_FIELD } from "./accountProjects/contract";
 import { deleteMachineCopies, readAccountProjectsCursor } from "./accountProjects/store";
+import { reportCloudFailure } from "./cloud/store";
 
 export type { ActivityRelayOptions } from "./activityRelay";
 
@@ -1052,26 +1053,22 @@ async function handleRegister(
     refuse,
   });
 
-  const row = await env.DB.prepare(`
-    select ${MACHINE_ROW_COLUMNS}
-      from machines
-     where user_id = ? and machine_key = ?
-  `).bind(userId, input.machineKey).first<MachineRow>();
-  if (!row) return json({ error: "machine was not stored" }, { status: 500 });
   // A replaced key's folders are not on the account any more; this machine
   // publishes them again under its new key. Before the cursor read, so the
   // answer already counts the change.
   if (supersededMachineKeys.length > 0) await dropAccountProjectCopies(userId, supersededMachineKeys, env);
   // The account project list's change counter rides the heartbeat, so a
   // machine reads the list only when it changed and asks nothing new on a
-  // timer. One indexed read. A failure leaves the field out (the machine then
-  // does nothing this beat) and never fails the heartbeat itself.
-  let accountProjectsCursor: number | null = null;
-  try {
-    accountProjectsCursor = await readAccountProjectsCursor(env.DB, userId);
-  } catch {
-    accountProjectsCursor = null;
-  }
+  // timer. One indexed read, beside the row read so it adds no round trip.
+  const [row, accountProjectsCursor] = await Promise.all([
+    env.DB.prepare(`
+      select ${MACHINE_ROW_COLUMNS}
+        from machines
+       where user_id = ? and machine_key = ?
+    `).bind(userId, input.machineKey).first<MachineRow>(),
+    readHeartbeatProjectsCursor(userId, env),
+  ]);
+  if (!row) return json({ error: "machine was not stored" }, { status: 500 });
   // `supersededMachineKeys` is additive and omitted when empty; the cursor is
   // additive too. Deployed clients ignore fields they do not read.
   return json({
@@ -1111,32 +1108,49 @@ async function handleList(
 }
 
 /**
+ * Remove the account project copies of machines that left the account.
+ * Best effort: the machine change already happened, and a copy left behind
+ * names a folder only to its own account; the next publish from a live
+ * machine does not bring it back, so the failure goes to Sentry for a retry
+ * by hand.
+ */
+async function dropAccountProjectCopies(userId: string, machineKeys: string[], env: Env): Promise<void> {
+  try {
+    await deleteMachineCopies(env.DB, userId, machineKeys, Date.now());
+  } catch (error) {
+    reportCloudFailure("account_project.machine_copies_delete_failed", {
+      userId,
+      machines: machineKeys.length,
+      message: scrubString(error instanceof Error ? error.message : String(error)),
+    }, "account_projects");
+  }
+}
+
+/**
+ * The account project list's cursor for the heartbeat answer, or null. A
+ * failure (D1 trouble, or a deploy that ran before migration 0028) leaves
+ * the field out and never fails the heartbeat; it goes to Sentry, at most
+ * once an hour per isolate.
+ */
+async function readHeartbeatProjectsCursor(userId: string, env: Env): Promise<number | null> {
+  try {
+    return await readAccountProjectsCursor(env.DB, userId);
+  } catch (error) {
+    reportCloudFailure("account_project.heartbeat_cursor_failed", {
+      userId,
+      message: scrubString(error instanceof Error ? error.message : String(error)),
+    }, "account_projects");
+    return null;
+  }
+}
+
+/**
  * Removing a machine is three things, not one: drop it from the roster, stop it
  * publishing again, and take its Activity with it. The feed lives in the push
  * relay (a different worker over a different D1) and its rows carry no expiry,
  * so a delete that stops at this table leaves a de-authorized machine's agents
  * on every surface of the account forever.
  */
-/**
- * Remove the account project copies of machines that left the account.
- * Best effort: the machine change already happened, and a copy left behind
- * names a folder only to its own account; the next publish from a live
- * machine does not bring it back, so it is logged for a retry by hand.
- */
-async function dropAccountProjectCopies(userId: string, machineKeys: string[], env: Env): Promise<void> {
-  try {
-    await deleteMachineCopies(env.DB, userId, machineKeys, Date.now());
-  } catch (error) {
-    console.warn(JSON.stringify({
-      svc: "ade-account-directory",
-      event: "account_project.machine_copies_delete_failed",
-      userId,
-      machines: machineKeys.length,
-      message: scrubString(error instanceof Error ? error.message : String(error)),
-    }));
-  }
-}
-
 async function handleDelete(
   request: Request,
   env: Env,

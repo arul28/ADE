@@ -31600,6 +31600,10 @@ async function runServe(
         // acquisition rebuilds it above.
         accountMachinePublisher?.dispose();
         accountMachinePublisher = null;
+        // The account project sync it fed stops with it (nothing more sent or
+        // written from here); the next lease builds a new one on first use.
+        accountProjectSync?.stop();
+        accountProjectSync = null;
       }, SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS);
       accountPublisherReleaseTimer.unref?.();
     });

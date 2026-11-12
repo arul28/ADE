@@ -1,4 +1,5 @@
 import { isPresetSourceAvailableLocally } from "../../../../desktop/src/main/services/chat/harnessRouteCatalog";
+import { ACCOUNT_PROJECTS_CURSOR_FIELD } from "../../../../account-directory/src/accountProjects/contract";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -442,15 +443,22 @@ function readHttpReasonBounded(response: Response): Promise<string | null> {
  * where the owner cannot tell a retired key from a live one, which is how a
  * working MacBook came to be deleted by hand.
  */
-async function readSupersededMachineKeysBounded(response: Response): Promise<string[]> {
-  const keys = await boundedBodyRead(response, async (bounded) => {
+function supersededMachineKeysOf(answer: Record<string, unknown> | null): string[] {
+  const raw = answer?.supersededMachineKeys;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
+}
+
+/**
+ * The accepted heartbeat's JSON answer, read once from a clone (the caller
+ * still drains the original). Null for an empty or unreadable body: an older
+ * directory sends none.
+ */
+async function readRegisterAnswerBounded(response: Response): Promise<Record<string, unknown> | null> {
+  return boundedBodyRead(response, async (bounded) => {
     const body: unknown = await bounded.clone().json();
-    if (!body || typeof body !== "object") return null;
-    const raw = (body as Record<string, unknown>).supersededMachineKeys;
-    if (!Array.isArray(raw)) return null;
-    return raw.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
+    return body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : null;
   });
-  return keys ?? [];
 }
 
 function failureLegForState(
@@ -790,13 +798,9 @@ export type AccountMachinePublishedEvent = {
 };
 
 /** The account project list's cursor in a heartbeat answer; null when absent or malformed. */
-async function readAccountProjectsCursorBounded(response: Response): Promise<number | null> {
-  return boundedBodyRead(response, async (bounded) => {
-    const body: unknown = await bounded.clone().json();
-    if (!body || typeof body !== "object") return null;
-    const raw = (body as Record<string, unknown>).accountProjectsCursor;
-    return typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 0 ? raw : null;
-  });
+function accountProjectsCursorOf(answer: Record<string, unknown> | null): number | null {
+  const raw = answer?.[ACCOUNT_PROJECTS_CURSOR_FIELD];
+  return typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 0 ? raw : null;
 }
 
 export function createAccountMachinePublisherService(options: {
@@ -1709,12 +1713,16 @@ export function createAccountMachinePublisherService(options: {
         warnOnce("http_error", "http", legDurations, { status: response.status });
         return;
       }
-      // Read before draining. A directory that reports retired keys is telling
-      // this machine its rotation landed cleanly; nothing has to act on it, but
-      // an unexplained rotation is exactly what nobody could explain last time.
+      // Read before draining, once for every reader below.
+      const answer = options.confirmSupersededMachineKeys || options.onPublished
+        ? await readRegisterAnswerBounded(response)
+        : null;
+      // A directory that reports retired keys is telling this machine its
+      // rotation landed cleanly; nothing has to act on it, but an unexplained
+      // rotation is exactly what nobody could explain last time.
       if (options.confirmSupersededMachineKeys) {
         try {
-          const superseded = await readSupersededMachineKeysBounded(response);
+          const superseded = supersededMachineKeysOf(answer);
           const confirmed = superseded.length > 0
             ? options.confirmSupersededMachineKeys(superseded)
             : [];
@@ -1725,21 +1733,23 @@ export function createAccountMachinePublisherService(options: {
             });
           }
         } catch {
-          // An older directory sends no body at all; never fail a good publish
-          // over bookkeeping.
+          // Never fail a good publish over bookkeeping.
         }
       }
       if (options.onPublished) {
-        let accountProjectsCursor: number | null = null;
         try {
-          accountProjectsCursor = await readAccountProjectsCursorBounded(response);
-        } catch {
-          accountProjectsCursor = null;
-        }
-        try {
-          options.onPublished({ baseUrl, accessToken: sentToken, machineKey, accountOwnerId, accountProjectsCursor });
-        } catch {
+          options.onPublished({
+            baseUrl,
+            accessToken: sentToken,
+            machineKey,
+            accountOwnerId,
+            accountProjectsCursor: accountProjectsCursorOf(answer),
+          });
+        } catch (error) {
           // The account project sync is decoration on the heartbeat.
+          options.logger?.warn("account.on_published_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
       await response.body?.cancel().catch(() => {});

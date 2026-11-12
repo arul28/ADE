@@ -86,7 +86,11 @@ export type ProjectAccountLink = {
 };
 
 /** The account fields of a stored record, kept only when they have the right shape. */
-function accountLinkFields(record: Record<string, unknown>): Pick<ProjectRecord, "githubRepoId" | "accountProjectId" | "accountProjectUserId"> {
+function accountLinkFields(record: {
+  githubRepoId?: unknown;
+  accountProjectId?: unknown;
+  accountProjectUserId?: unknown;
+}): Pick<ProjectRecord, "githubRepoId" | "accountProjectId" | "accountProjectUserId"> {
   const fields: Pick<ProjectRecord, "githubRepoId" | "accountProjectId" | "accountProjectUserId"> = {};
   if (typeof record.githubRepoId === "number" && Number.isSafeInteger(record.githubRepoId) && record.githubRepoId > 0) {
     fields.githubRepoId = record.githubRepoId;
@@ -103,7 +107,7 @@ function accountLinkFields(record: Record<string, unknown>): Pick<ProjectRecord,
 
 /** The account fields of `existing`, carried onto a record that is built again. */
 function carriedAccountLinks(existing: ProjectRecord | null | undefined): Pick<ProjectRecord, "githubRepoId" | "accountProjectId" | "accountProjectUserId"> {
-  return existing ? accountLinkFields(existing as unknown as Record<string, unknown>) : {};
+  return existing ? accountLinkFields(existing) : {};
 }
 
 /** A database file's device and inode, as decimal strings. A move keeps both. */
@@ -421,10 +425,10 @@ export class ProjectRegistry {
   setAccountLinks(links: ProjectAccountLink[]): number {
     if (links.length === 0) return 0;
     const current = new Map(this.read().projects.map((record) => [record.projectId, record]));
-    const differs = (record: ProjectRecord | undefined, link: ProjectAccountLink) => Boolean(record) && (
-      (link.githubRepoId !== undefined && (record!.githubRepoId ?? null) !== link.githubRepoId)
-      || (link.accountProjectId !== undefined && (record!.accountProjectId ?? null) !== link.accountProjectId)
-      || (link.accountProjectUserId !== undefined && (record!.accountProjectUserId ?? null) !== link.accountProjectUserId)
+    const differs = (record: ProjectRecord | undefined, link: ProjectAccountLink) => record !== undefined && (
+      (link.githubRepoId !== undefined && (record.githubRepoId ?? null) !== link.githubRepoId)
+      || (link.accountProjectId !== undefined && (record.accountProjectId ?? null) !== link.accountProjectId)
+      || (link.accountProjectUserId !== undefined && (record.accountProjectUserId ?? null) !== link.accountProjectUserId)
     );
     if (!links.some((link) => differs(current.get(link.projectId), link))) return 0;
     return this.mutate("set_account_links", { count: links.length }, (file) => {
@@ -446,7 +450,7 @@ export class ProjectRegistry {
           if (link.accountProjectUserId === null) delete next.accountProjectUserId;
           else next.accountProjectUserId = link.accountProjectUserId;
         }
-        file.projects[index] = { ...next, ...accountLinkFields(next as unknown as Record<string, unknown>) };
+        file.projects[index] = { ...next, ...accountLinkFields(next) };
         changed += 1;
       }
       return { file: changed > 0 ? file : null, result: changed };

@@ -64,6 +64,8 @@ const LOOKUPS_PER_FIRST_FILL = 25;
 const LOOKUP_CONCURRENCY = 3;
 const PUBLISH_BACKOFF_BASE_MS = 60 * 1000;
 const PUBLISH_BACKOFF_MAX_MS = 6 * 60 * 60 * 1000;
+const PULL_BACKOFF_BASE_MS = 60 * 1000;
+const PULL_BACKOFF_MAX_MS = 30 * 60 * 1000;
 /** Even with no visible change, look at the folders again this often (a deleted folder). */
 const FULL_RECHECK_MS = 30 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -89,6 +91,8 @@ export type AccountProjectSyncState = {
   cursor: number | null;
   projects: Record<string, AccountProjectView>;
   firstFill: { at: number; machineKey: string } | null;
+  /** Each account's first fill on this machine, kept across account switches so a fill never runs twice for one account. */
+  fills: Record<string, { at: number; machineKey: string }>;
   published: { digest: string; machineKey: string; at: number } | null;
   publishFailures: { count: number; nextAt: number } | null;
   /** Checkout ids chosen as the main copy; kept until the folder goes, so the main does not flip. */
@@ -128,6 +132,11 @@ export type AccountProjectSync = {
   afterHeartbeat: (event: AccountProjectHeartbeat) => void;
   /** Resolves when the current run (and a queued one) finished. For shutdown and checks. */
   idle: () => Promise<void>;
+  /**
+   * For a brain that stops publishing (it lost the sync-host lease, or it
+   * shuts down): drop a queued run, send nothing more, write nothing more.
+   */
+  stop: () => void;
 };
 
 // ---------------------------------------------------------------------------
@@ -140,6 +149,7 @@ function emptyState(): AccountProjectSyncState {
     cursor: null,
     projects: {},
     firstFill: null,
+    fills: {},
     published: null,
     publishFailures: null,
     mainCheckouts: [],
@@ -161,6 +171,7 @@ export function readAccountProjectState(adeDir: string): AccountProjectSyncState
       projects: parsed.projects && typeof parsed.projects === "object" ? parsed.projects : {},
       mainCheckouts: Array.isArray(parsed.mainCheckouts) ? parsed.mainCheckouts.filter((id) => typeof id === "string") : [],
       repoLookups: parsed.repoLookups && typeof parsed.repoLookups === "object" ? parsed.repoLookups : {},
+      fills: parsed.fills && typeof parsed.fills === "object" ? parsed.fills : {},
     };
   } catch {
     return emptyState();
@@ -172,10 +183,11 @@ function writeState(adeDir: string, state: AccountProjectSyncState): void {
   writeFileAtomic(accountProjectStatePath(adeDir), `${JSON.stringify(state)}\n`, { mode: 0o600 });
 }
 
-/** The state for `userId`: the same, or a fresh one that keeps only the GitHub facts. */
+/** The state for `userId`: the same, or a fresh one that keeps only the GitHub facts and the fill marks. */
 function stateForAccount(state: AccountProjectSyncState, userId: string): AccountProjectSyncState {
   if (state.userId === userId) return state;
-  return { ...emptyState(), userId, repoLookups: state.repoLookups };
+  const fills = { ...state.fills, ...(state.userId && state.firstFill ? { [state.userId]: state.firstFill } : {}) };
+  return { ...emptyState(), userId, repoLookups: state.repoLookups, fills, firstFill: fills[userId] ?? null };
 }
 
 // ---------------------------------------------------------------------------
@@ -356,8 +368,34 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
   const logger = options.logger ?? {};
   let running: Promise<void> | null = null;
   let queued: AccountProjectHeartbeat | null = null;
-  /** What the last full run saw; an equal heartbeat with nothing due skips the folder checks. */
-  let lastInputs: { key: string; at: number } | null = null;
+  let stopped = false;
+  /** List reads that failed in a row; the next one waits a backoff, not 30 minutes. */
+  let pullFailures = 0;
+  /**
+   * What the last full run left behind. This brain is the only writer of the
+   * state file, so an equal heartbeat with nothing due skips the run without
+   * reading it: one `stat` of `projects.json` and a string compare.
+   */
+  let lastGate: {
+    userId: string;
+    key: string;
+    at: number;
+    stateCursor: number | null;
+    firstFillAt: number | null;
+    publishNextAt: number | null;
+    /** When something falls due with no new input: a held GitHub answer, or a retry of a failed list read. */
+    dueAt: number;
+  } | null = null;
+  const gateKey = (args: {
+    userId: string;
+    machineKey: string;
+    eventCursor: number | null;
+    stateCursor: number | null;
+    firstFillAt: number | null;
+    publishBlocked: boolean;
+  }): string => JSON.stringify([
+    args.userId, args.machineKey, args.eventCursor, args.stateCursor, registryStamp(), args.firstFillAt, args.publishBlocked,
+  ]);
 
   const request = async <T>(
     event: AccountProjectHeartbeat,
@@ -401,9 +439,11 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
     const since = state.cursor === null ? "" : `?since=${state.cursor}`;
     const result = await request<AccountProjectListResponse>(event, "GET", `${ACCOUNT_PROJECT_PATHS.root}${since}`);
     if (!result.ok || !Array.isArray(result.value?.projects) || typeof result.value.cursor !== "number") {
-      logger.warn?.("account_projects.pull_failed", { status: result.ok ? "bad_body" : result.status });
+      pullFailures += 1;
+      logger.warn?.("account_projects.pull_failed", { status: result.ok ? "bad_body" : result.status, failures: pullFailures });
       return false;
     }
+    pullFailures = 0;
     const page = result.value;
     const projects = page.reset ? {} : { ...state.projects };
     for (const project of page.projects) projects[project.id] = project;
@@ -506,18 +546,26 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
     if (!userId || options.getAccountUserId() !== userId) return;
     if (event.accountOwnerId && event.accountOwnerId !== userId) return;
 
+    const at = now();
+    // A new folder shows as a registry change (the stamp in the key), so only
+    // lookups already held can fall due without one.
+    if (lastGate?.userId === userId) {
+      const key = gateKey({
+        userId,
+        machineKey: event.machineKey,
+        eventCursor: event.accountProjectsCursor,
+        stateCursor: lastGate.stateCursor,
+        firstFillAt: lastGate.firstFillAt,
+        publishBlocked: lastGate.publishNextAt !== null && lastGate.publishNextAt > at,
+      });
+      if (key === lastGate.key && at < lastGate.dueAt && at - lastGate.at < FULL_RECHECK_MS) return;
+    }
+
     const loaded = readAccountProjectState(options.adeDir);
     const state = stateForAccount(loaded, userId);
     const switched = state !== loaded;
     if (switched) logger.info?.("account_projects.account_changed", { hadAccount: loaded.userId !== null });
-    const at = now();
-
-    // A new folder shows as a registry change (the stamp below), so only
-    // lookups already held can fall due without one.
-    const anyLookupDue = Object.values(state.repoLookups).some((entry) => entry.nextAt <= at);
     const publishBlocked = state.publishFailures !== null && state.publishFailures.nextAt > at;
-    const inputsKey = JSON.stringify([userId, event.machineKey, event.accountProjectsCursor, state.cursor, registryStamp(), state.firstFill?.at ?? null, publishBlocked]);
-    if (!switched && !anyLookupDue && lastInputs?.key === inputsKey && at - lastInputs.at < FULL_RECHECK_MS) return;
 
     let dirty = switched;
     if (state.cursor !== event.accountProjectsCursor) {
@@ -530,6 +578,9 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
     const lookupsBefore = JSON.stringify(state.repoLookups);
     await runLookups(candidates, state, state.firstFill ? LOOKUPS_PER_RUN : LOOKUPS_PER_FIRST_FILL);
     if (JSON.stringify(state.repoLookups) !== lookupsBefore) dirty = true;
+    // The folder checks and GitHub took time: publish nothing for an account
+    // that is not the one signed in any more, or from a brain that stopped.
+    if (stopped || options.getAccountUserId() !== userId) return;
 
     const autoAdd = state.firstFill === null && !options.isDevTestMachine();
     const { copies, mainCheckouts } = buildCopies({
@@ -549,7 +600,7 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
     if (needsPublish && !publishBlocked) {
       const body: AccountProjectCopiesRequest = { machineKey: event.machineKey, copies };
       const result = await request<AccountProjectCopiesResponse>(event, "PUT", ACCOUNT_PROJECT_PATHS.copies, body);
-      if (options.getAccountUserId() !== userId) return;
+      if (stopped || options.getAccountUserId() !== userId) return;
       if (result.ok && Array.isArray(result.value?.copies)) {
         const linked = new Map<string, string>();
         const statuses: Record<string, number> = {};
@@ -558,13 +609,24 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
           if (copy.status === "linked" && copy.projectId) linked.set(copy.checkoutId, copy.projectId);
         }
         const wasFill = state.firstFill === null;
-        if (wasFill) state.firstFill = { at, machineKey: event.machineKey };
+        if (wasFill) {
+          state.firstFill = { at, machineKey: event.machineKey };
+          state.fills = { ...state.fills, [userId]: state.firstFill };
+        }
         state.publishFailures = null;
+        // A copy the account had no room for leaves the digest empty, so the
+        // next full recheck (30 minutes) sends it again: another machine may
+        // have freed room, and nothing else here would resend it.
+        const limited = statuses.limit ?? 0;
         if (typeof result.value.cursor === "number" && result.value.cursor !== state.cursor) await pull(event, state);
-        if (options.getAccountUserId() !== userId) return;
+        if (stopped || options.getAccountUserId() !== userId) return;
         // Stored from the list as it is after this publish, so the next
         // heartbeat finds nothing to send.
-        state.published = { digest: publishDigest(event.machineKey, copies, state), machineKey: event.machineKey, at };
+        state.published = {
+          digest: limited > 0 ? "" : publishDigest(event.machineKey, copies, state),
+          machineKey: event.machineKey,
+          at,
+        };
         writeLinks(userId, copies, linked, state);
         logger.info?.("account_projects.published", { copies: copies.length, firstFill: wasFill, autoAdd: wasFill && autoAdd, ...statuses });
       } else {
@@ -586,22 +648,49 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
       writeLinks(userId, copies, linked, state);
     }
 
+    if (stopped) return;
+    let persisted = true;
     if (dirty) {
       try {
         writeState(options.adeDir, state);
       } catch (error) {
+        persisted = false;
         logger.warn?.("account_projects.state_write_failed", { error: error instanceof Error ? error.message : String(error) });
       }
     }
-    lastInputs = {
-      key: JSON.stringify([userId, event.machineKey, event.accountProjectsCursor, state.cursor, registryStamp(), state.firstFill?.at ?? null, state.publishFailures !== null && state.publishFailures.nextAt > now()]),
-      at,
-    };
+    // After the registry write, so the stamp in the key is the one it left.
+    // A state that did not reach the file is read again next time.
+    const publishNextAt = state.publishFailures?.nextAt ?? null;
+    lastGate = persisted
+      ? {
+        userId,
+        key: gateKey({
+          userId,
+          machineKey: event.machineKey,
+          eventCursor: event.accountProjectsCursor,
+          stateCursor: state.cursor,
+          firstFillAt: state.firstFill?.at ?? null,
+          publishBlocked: publishNextAt !== null && publishNextAt > now(),
+        }),
+        at,
+        stateCursor: state.cursor,
+        firstFillAt: state.firstFill?.at ?? null,
+        publishNextAt,
+        dueAt: Math.min(
+          Infinity,
+          ...Object.values(state.repoLookups).map((entry) => entry.nextAt),
+          // The list read failed and the cursor still lags: try again after a backoff.
+          ...(pullFailures > 0 && state.cursor !== event.accountProjectsCursor
+            ? [at + backoff(PULL_BACKOFF_BASE_MS, PULL_BACKOFF_MAX_MS, pullFailures)]
+            : []),
+        ),
+      }
+      : null;
   };
 
   const drain = async (event: AccountProjectHeartbeat): Promise<void> => {
     let next: AccountProjectHeartbeat | null = event;
-    while (next) {
+    while (next && !stopped) {
       const current: AccountProjectHeartbeat = next;
       queued = null;
       try {
@@ -615,6 +704,7 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
 
   return {
     afterHeartbeat(event) {
+      if (stopped) return;
       if (running) {
         queued = event;
         return;
@@ -625,6 +715,10 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
     },
     async idle() {
       while (running) await running;
+    },
+    stop() {
+      stopped = true;
+      queued = null;
     },
   };
 }

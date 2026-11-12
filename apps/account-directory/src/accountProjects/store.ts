@@ -15,13 +15,15 @@ import {
  * D1 has no interactive transaction, only `batch`, which runs its statements
  * in one transaction. So every write here is planned against a snapshot of
  * the account's rows read first, and then sent as ONE batch. Two requests at
- * once can plan against the same snapshot; the unique keys (one live row per
- * repository id, one project per address) make the slower batch fail as a
- * whole, and it is planned again from a fresh snapshot (`withRetry`). The
- * merge statements are idempotent, so two machines merging the same two rows
- * at once end in the same state. Each batch ends with fix-ups that move
- * copies and addresses off a row that a concurrent batch merged away, drop
- * copies of removed projects, and keep one main copy per machine and project.
+ * once can plan against the same snapshot. The batch's first statement checks
+ * that the account's counter still has the snapshot's value and fails the
+ * batch on a primary key when it does not (as do the unique keys: one live
+ * row per repository id, one project per address), and the slower write is
+ * planned again from a fresh snapshot (`withRetry`). Each batch ends with
+ * fix-ups for what one plan can do to itself: a later copy merging an earlier
+ * copy's project moves copies and addresses off the merged row, a merge into
+ * a removed project leaves it no copies, and a merge that moves another
+ * machine's copies keeps one main copy per machine and project.
  */
 
 export type ProjectRow = {
@@ -81,6 +83,33 @@ export function newAccountProjectId(): string {
   return `ap_${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
+/** The account's change counter inside a statement (bind the user id once more). */
+const ACCOUNT_SEQ = "(select seq from account_project_state where user_id = ?)";
+
+/**
+ * Copies count and show only for a machine still on the account. Removing a
+ * machine deletes its copies, best effort; when that delete fails, this keeps
+ * its folders out of every answer and out of the limit.
+ */
+const ON_ACCOUNT_MACHINE = "join machines m on m.user_id = c.user_id and m.machine_key = c.machine_key";
+
+/** The first statement of every write batch: the account's counter goes up by one. */
+function bumpAccountSeq(db: D1Database, userId: string, now: number): D1PreparedStatement {
+  return db.prepare(`
+    insert into account_project_state (user_id, seq, floor_seq, updated_at) values (?, 1, 0, ?)
+    on conflict(user_id) do update set seq = seq + 1, updated_at = excluded.updated_at
+  `).bind(userId, now);
+}
+
+/** The addresses one request names, each once. */
+function identityKeys(input: Pick<IdentityInput, "repoKey" | "canonicalRepoKey">): string[] {
+  return [...new Set([input.repoKey, input.canonicalRepoKey].filter((key): key is string => Boolean(key)))];
+}
+
+/** SQLite's own text order (binary), so the plan and the batch's fix-ups pick the same row. */
+const byCheckoutId = (left: { checkoutId: string }, right: { checkoutId: string }): number =>
+  left.checkoutId < right.checkoutId ? -1 : left.checkoutId > right.checkoutId ? 1 : 0;
+
 // ---------------------------------------------------------------------------
 // Snapshot
 
@@ -134,10 +163,6 @@ class Plan {
     readonly now: number,
   ) {}
 
-  private seq(): string {
-    return "(select seq from account_project_state where user_id = ?)";
-  }
-
   /** The live project a row was merged into, following at most a few hops. */
   follow(project: ProjectRow | undefined): ProjectRow | null {
     let current = project ?? null;
@@ -179,11 +204,12 @@ class Plan {
       this.db.prepare("delete from account_projects where user_id = ? and id = ?").bind(this.userId, victim.id),
       // A client whose cursor is older than this purge cannot learn about it
       // from a delta, so it gets the whole list.
-      this.db.prepare(`update account_project_state set floor_seq = ${this.seq()} where user_id = ?`)
+      this.db.prepare(`update account_project_state set floor_seq = ${ACCOUNT_SEQ} where user_id = ?`)
         .bind(this.userId, this.userId),
     );
   }
 
+  /** A new project with every address the request names. */
   create(input: IdentityInput, explicit: boolean): ProjectRow {
     if (this.liveCount() >= ACCOUNT_PROJECT_MAX_LIVE) throw new AccountProjectLimitError("live_projects");
     this.makeRoomForRow();
@@ -208,25 +234,35 @@ class Plan {
     this.statements.push(this.db.prepare(`
       insert into account_projects (id, user_id, host, repo_id, repo_key, owner, name, default_branch,
         added_at, last_explicit_add_at, removed_at, merged_into, change_seq, updated_at)
-      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, ${this.seq()}, ?)
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, ${ACCOUNT_SEQ}, ?)
     `).bind(
       row.id, this.userId, row.host, row.repo_id, row.repo_key, row.owner, row.name, row.default_branch,
       row.added_at, row.last_explicit_add_at, this.userId, row.updated_at,
     ));
+    for (const key of identityKeys(input)) this.setAlias(key, row);
     return row;
   }
 
-  /** Point one address at a project (insert it, or move it from the project it named). */
+  /**
+   * Point one address at a project. An address the snapshot did not have is
+   * a plain insert: when another request added it after our read (two
+   * address-only adds at once), the primary key fails this batch and it plans
+   * again from what the other one wrote, instead of leaving a second project
+   * with no address. A known address moves with an upsert.
+   */
   setAlias(repoKey: string, project: ProjectRow): void {
     const existing = this.snapshot.aliases.get(repoKey);
     if (existing?.project_id === project.id) return;
     if (existing) this.touched.add(existing.project_id);
     this.snapshot.aliases.set(repoKey, { repo_key: repoKey, project_id: project.id, created_at: this.now });
     this.touched.add(project.id);
-    this.statements.push(this.db.prepare(`
-      insert into account_project_aliases (user_id, repo_key, project_id, created_at) values (?, ?, ?, ?)
-      on conflict(user_id, repo_key) do update set project_id = excluded.project_id, created_at = excluded.created_at
-    `).bind(this.userId, repoKey, project.id, this.now));
+    this.statements.push(existing
+      ? this.db.prepare(`
+        insert into account_project_aliases (user_id, repo_key, project_id, created_at) values (?, ?, ?, ?)
+        on conflict(user_id, repo_key) do update set project_id = excluded.project_id, created_at = excluded.created_at
+      `).bind(this.userId, repoKey, project.id, this.now)
+      : this.db.prepare("insert into account_project_aliases (user_id, repo_key, project_id, created_at) values (?, ?, ?, ?)")
+        .bind(this.userId, repoKey, project.id, this.now));
     this.trimAliases(project);
   }
 
@@ -382,15 +418,22 @@ class Plan {
       .bind(this.userId, machineKey, checkoutId));
   }
 
-  /** The batch: the account's counter first, the changes, the touched projects' `change_seq`, then the fix-ups. */
+  /**
+   * The batch: a guard, the account's counter, the changes, the touched
+   * projects' `change_seq`, then the fix-ups. The guard fails the whole batch
+   * on the state row's primary key when another write moved the counter
+   * after our snapshot, so a plan never commits against rows it did not see
+   * (a removal, a merge, the live count); `withRetry` plans it again.
+   */
   async commit(): Promise<boolean> {
     if (this.statements.length === 0) return false;
-    const bump = this.db.prepare(`
-      insert into account_project_state (user_id, seq, floor_seq, updated_at) values (?, 1, 0, ?)
-      on conflict(user_id) do update set seq = seq + 1, updated_at = excluded.updated_at
-    `).bind(this.userId, this.now);
+    const guard = this.db.prepare(`
+      insert into account_project_state (user_id, seq, floor_seq, updated_at)
+      select ?, 0, 0, 0 where coalesce(${ACCOUNT_SEQ}, 0) <> ?
+    `).bind(this.userId, this.userId, this.snapshot.seq);
+    const bump = bumpAccountSeq(this.db, this.userId, this.now);
     const touched = [...this.touched].filter((id) => this.snapshot.projects.has(id));
-    const stamps = touched.map((id) => this.db.prepare(`update account_projects set change_seq = ${this.seq()} where user_id = ? and id = ?`)
+    const stamps = touched.map((id) => this.db.prepare(`update account_projects set change_seq = ${ACCOUNT_SEQ} where user_id = ? and id = ?`)
       .bind(this.userId, this.userId, id));
     const fixups = [
       // A batch that ran between our read and this one merged a row we wrote to.
@@ -420,18 +463,24 @@ class Plan {
               and d.is_main = 1 and d.checkout_id < account_project_copies.checkout_id)
       `).bind(this.userId),
     ];
-    await this.db.batch([bump, ...this.statements, ...stamps, ...fixups]);
+    await this.db.batch([guard, bump, ...this.statements, ...stamps, ...fixups]);
     return true;
   }
 }
+
+/** Plans per write: each lost race costs one, and one write of the account wins each round. */
+const WRITE_ATTEMPTS = 8;
 
 async function withRetry<T>(run: () => Promise<T>): Promise<T> {
   for (let attempt = 1; ; attempt += 1) {
     try {
       return await run();
     } catch (error) {
-      // Another request wrote the same address or repository id first: plan again from what it wrote.
-      if (!isUniqueViolation(error) || attempt >= 4) throw error;
+      // Another write of the account committed after our snapshot (the
+      // guard), or wrote the same address or repository id first: plan again
+      // from what it wrote, after a short random wait so racers spread out.
+      if (!isUniqueViolation(error) || attempt >= WRITE_ATTEMPTS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.random() * 20 * attempt));
     }
   }
 }
@@ -451,7 +500,7 @@ type Resolution =
  */
 function resolveIdentity(plan: Plan, input: IdentityInput): Resolution {
   const { snapshot } = plan;
-  const keys = [...new Set([input.repoKey, input.canonicalRepoKey].filter((key): key is string => Boolean(key)))];
+  const keys = identityKeys(input);
   const byKey = keys
     .map((key) => ({ key, project: plan.follow(snapshot.projects.get(snapshot.aliases.get(key)?.project_id ?? "")) }))
     .filter((entry): entry is { key: string; project: ProjectRow } => entry.project !== null);
@@ -505,7 +554,6 @@ export async function addProject(
       }
     } else {
       project = plan.create(input, true);
-      for (const key of new Set([input.repoKey, input.canonicalRepoKey].filter(Boolean) as string[])) plan.setAlias(key, project);
       created = true;
     }
     await plan.commit();
@@ -552,15 +600,13 @@ export async function replaceMachineCopies(
   return withRetry(async () => {
     const plan = new Plan(db, userId, await loadSnapshot(db, userId, machineKey), now);
     const results: AccountProjectCopyResult[] = [];
-    const recorded: Array<{ checkoutId: string; projectId: string; rootPath: string; isMain: boolean }> = [];
+    const planned: Array<{ checkoutId: string; projectId: string; rootPath: string; isMain: boolean }> = [];
     let room = ACCOUNT_PROJECT_MAX_COPIES - plan.snapshot.otherCopyCount;
     for (const copy of copies) {
       let resolution = resolveIdentity(plan, copy);
       if (resolution.kind === "missing" && copy.add === "auto") {
         try {
-          const project = plan.create(copy, false);
-          for (const key of new Set([copy.repoKey, copy.canonicalRepoKey].filter(Boolean) as string[])) plan.setAlias(key, project);
-          resolution = { kind: "found", project };
+          resolution = { kind: "found", project: plan.create(copy, false) };
         } catch (error) {
           if (!(error instanceof AccountProjectLimitError)) throw error;
           results.push({ checkoutId: copy.checkoutId, status: "limit", projectId: null, isMain: false });
@@ -580,15 +626,27 @@ export async function replaceMachineCopies(
         continue;
       }
       room -= 1;
-      recorded.push({ checkoutId: copy.checkoutId, projectId: resolution.project.id, rootPath: copy.rootPath, isMain: copy.isMain });
+      planned.push({ checkoutId: copy.checkoutId, projectId: resolution.project.id, rootPath: copy.rootPath, isMain: copy.isMain });
+    }
+    // A later copy can merge an earlier copy's project into another one (a
+    // removed one, too): record each copy under the project it ends on.
+    const recorded: typeof planned = [];
+    for (const copy of planned) {
+      const project = plan.follow(plan.snapshot.projects.get(copy.projectId));
+      if (project?.removed_at != null) {
+        results.push({ checkoutId: copy.checkoutId, status: "removed", projectId: project.id, isMain: false });
+        continue;
+      }
+      recorded.push({ ...copy, projectId: project?.id ?? copy.projectId });
     }
     // Exactly one main copy per project on this machine: the first one the
     // machine flagged (by checkout id), or the first copy when none is.
     const mainByProject = new Map<string, string>();
-    for (const copy of [...recorded].sort((left, right) => left.checkoutId.localeCompare(right.checkoutId))) {
+    const byId = [...recorded].sort(byCheckoutId);
+    for (const copy of byId) {
       if (copy.isMain && !mainByProject.has(copy.projectId)) mainByProject.set(copy.projectId, copy.checkoutId);
     }
-    for (const copy of [...recorded].sort((left, right) => left.checkoutId.localeCompare(right.checkoutId))) {
+    for (const copy of byId) {
       if (!mainByProject.has(copy.projectId)) mainByProject.set(copy.projectId, copy.checkoutId);
     }
     const kept = new Set<string>();
@@ -641,8 +699,8 @@ function projectView(row: ProjectRow, aliases: string[], copies: AccountProjectC
 
 /**
  * Projects that changed after `since`, read in one batch (one transaction, so
- * the cursor and the rows agree). `since` null, older than the floor, or
- * newer than the account's counter gives the whole list.
+ * the cursor and the rows agree). `since` null, older than the floor (as the
+ * batch sees it), or newer than the account's counter gives the whole list.
  */
 export async function listProjects(
   db: D1Database,
@@ -666,10 +724,15 @@ export async function listProjects(
     db.prepare(`
       select c.machine_key, c.checkout_id, c.project_id, c.root_path, c.is_main, c.last_seen_at
         from account_project_copies c join account_projects p on p.id = c.project_id
+        ${ON_ACCOUNT_MACHINE}
        where c.user_id = ? and p.user_id = ? and p.change_seq > ?
     `).bind(userId, userId, after),
-    db.prepare("select seq from account_project_state where user_id = ?").bind(userId),
+    db.prepare("select seq, floor_seq from account_project_state where user_id = ?").bind(userId),
   ]);
+  const currentState = (current?.results?.[0] ?? null) as { seq: number; floor_seq: number } | null;
+  // A purge between the first read and this batch raised the floor past
+  // `since`: a delta would miss the purged rows, so answer the whole list.
+  if (!reset && after < Number(currentState?.floor_seq ?? 0)) return listProjects(db, userId, null);
   const aliasesByProject = new Map<string, string[]>();
   for (const alias of (aliases?.results ?? []) as AliasRow[]) {
     aliasesByProject.set(alias.project_id, [...(aliasesByProject.get(alias.project_id) ?? []), alias.repo_key]);
@@ -678,7 +741,7 @@ export async function listProjects(
   for (const copy of (copies?.results ?? []) as CopyRow[]) {
     copiesByProject.set(copy.project_id, [...(copiesByProject.get(copy.project_id) ?? []), copyView(copy)]);
   }
-  const cursor = Number((current?.results?.[0] as { seq?: number } | undefined)?.seq ?? seq);
+  const cursor = Number(currentState?.seq ?? seq);
   return {
     cursor,
     reset,
@@ -693,8 +756,9 @@ export async function readProject(db: D1Database, userId: string, projectId: str
     db.prepare("select repo_key, project_id, created_at from account_project_aliases where user_id = ? and project_id = ?")
       .bind(userId, projectId),
     db.prepare(`
-      select machine_key, checkout_id, project_id, root_path, is_main, last_seen_at
-        from account_project_copies where user_id = ? and project_id = ?
+      select c.machine_key, c.checkout_id, c.project_id, c.root_path, c.is_main, c.last_seen_at
+        from account_project_copies c ${ON_ACCOUNT_MACHINE}
+       where c.user_id = ? and c.project_id = ?
     `).bind(userId, projectId),
   ]);
   const row = (project?.results?.[0] ?? null) as ProjectRow | null;
@@ -726,12 +790,9 @@ export async function deleteMachineCopies(db: D1Database, userId: string, machin
   const count = Number(held?.count ?? 0);
   if (count === 0) return 0;
   await db.batch([
+    bumpAccountSeq(db, userId, now),
     db.prepare(`
-      insert into account_project_state (user_id, seq, floor_seq, updated_at) values (?, 1, 0, ?)
-      on conflict(user_id) do update set seq = seq + 1, updated_at = excluded.updated_at
-    `).bind(userId, now),
-    db.prepare(`
-      update account_projects set change_seq = (select seq from account_project_state where user_id = ?)
+      update account_projects set change_seq = ${ACCOUNT_SEQ}
        where user_id = ? and id in (
          select project_id from account_project_copies where user_id = ? and machine_key in (${marks}))
     `).bind(userId, userId, userId, ...keys),
