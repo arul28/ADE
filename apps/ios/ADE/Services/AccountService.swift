@@ -892,6 +892,7 @@ final class AccountService: ObservableObject {
   private let accountPreferencesQueue =
     LatestAccountRegistrationQueue<AccountAttentionDevicePreferencesRequest>()
   private let deviceKeychain = KeychainService()
+  private var keychainRetryObserver: NSObjectProtocol?
 
   var isConfigured: Bool { phase != .unconfigured }
   var isSignedIn: Bool { phase == .signedIn }
@@ -1030,6 +1031,8 @@ final class AccountService: ObservableObject {
       identity = nextIdentity
       // The account's saved project list shows at once, before any read.
       AccountProjectStore.shared.activate(userId: nextIdentity.userId)
+      // The account's GitHub sign-in: another account's cached token is dropped.
+      GitHubAccountConnection.shared.activate(userId: nextIdentity.userId)
       ProductAnalytics.shared.identifyAccount(nextIdentity.userId)
       SessionReplay.syncIdentity()
       if phase != .signedIn {
@@ -1104,6 +1107,7 @@ final class AccountService: ObservableObject {
     machinesState = .idle
     // An owner signing out takes the saved project list with them.
     AccountProjectStore.shared.deactivate(deletingCacheOf: previousOwnerId)
+    GitHubAccountConnection.shared.deactivate()
     phase = .signedOut
     clearAttentionSnapshot()
     LiveActivityService.shared.prepareForAccountSignOut()
@@ -1343,13 +1347,20 @@ final class AccountService: ObservableObject {
     token: String
   ) async {
     guard let baseURL = AccountConfig.attentionRelayBaseURL else { return }
+    // A key that could not be read keeps the marker: the next sign-in retries.
+    let deviceKey: String?
+    switch deviceKeychain.readAccountDeviceKey(deviceId: pending.deviceId) {
+    case .value(let key): deviceKey = key
+    case .absent: deviceKey = nil
+    case .failed: return
+    }
     do {
       try await attentionRelay.unregisterDevice(
         baseURL: baseURL,
         token: token,
         deviceId: pending.deviceId,
         ownershipEpoch: pending.ownershipEpoch,
-        deviceKey: deviceKeychain.loadAccountDeviceKey(deviceId: pending.deviceId),
+        deviceKey: deviceKey,
         timeoutInterval: 2
       )
       deviceRevocationStore.clear(ifMatching: pending)
@@ -1973,6 +1984,24 @@ final class AccountService: ObservableObject {
     }
   }
 
+  /// A registration that stopped on a failed keychain read runs again when
+  /// the phone is unlocked. No timer.
+  private func retryRegistrationWhenKeychainAnswers() {
+    guard keychainRetryObserver == nil else { return }
+    keychainRetryObserver = NotificationCenter.default.addObserver(
+      forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated {
+        guard let self, let observer = self.keychainRetryObserver else { return }
+        NotificationCenter.default.removeObserver(observer)
+        self.keychainRetryObserver = nil
+        Task { await PushNotificationService.shared.resumeAccountRegistrationIfAuthorized() }
+      }
+    }
+  }
+
   private func performAttentionDeviceRegistration(
     _ request: AccountAttentionDeviceRegistrationRequest
   ) async -> Bool {
@@ -1985,6 +2014,21 @@ final class AccountService: ObservableObject {
             ownershipEpoch: request.ownershipEpoch,
             state: deviceOwnershipStore.state
           ) else {
+      return false
+    }
+    // A device key or epoch that could not be read is not "none": Relay
+    // would issue a new key over the stored one, and a too-low epoch would
+    // clear a pending revocation. Register once the keychain answers.
+    let storedDeviceKey: String?
+    switch deviceKeychain.readAccountDeviceKey(deviceId: request.deviceId) {
+    case .value(let key): storedDeviceKey = key
+    case .absent: storedDeviceKey = nil
+    case .failed:
+      retryRegistrationWhenKeychainAnswers()
+      return false
+    }
+    if case .failed = deviceKeychain.readAccountDeviceOwnershipEpoch(deviceId: request.deviceId) {
+      retryRegistrationWhenKeychainAnswers()
       return false
     }
     do {
@@ -2041,9 +2085,7 @@ final class AccountService: ObservableObject {
         }
         return issuedDeviceKey
       }
-      let issuedDeviceKey = try await register(
-        deviceKeychain.loadAccountDeviceKey(deviceId: request.deviceId)
-      )
+      let issuedDeviceKey = try await register(storedDeviceKey)
       guard isPairingCommitAuthorized(request.authorization),
             accountDeviceMutationMatchesCurrentOwnership(
               ownerId: request.authorization.ownerId,
