@@ -350,7 +350,12 @@ struct PRsTabView: View, Equatable {
     }
     // A computer came online (or the repository changed): the PR read from
     // GitHub gives way to the machine's list.
-    .onChange(of: directRepo?.fullName) { _, _ in directOpened = nil }
+    .onChange(of: directRepo?.fullName) { _, repo in
+      directOpened = nil
+      // The machine's PR beside the list cannot update any more, and it
+      // would hide a PR picked from the GitHub list.
+      if repo != nil { duoSelectedPrId = nil }
+    }
     .onChange(of: remotePrs.machines) { _, _ in recomputeGitHubDerived() }
     .onChange(of: githubCategoryRawValue) { _, _ in
       guard selectedGitHubCategory.wrappedValue != .open else { return }
@@ -507,7 +512,12 @@ struct PRsTabView: View, Equatable {
           model: directPrs,
           searchText: searchText,
           selectedNumber: duoLayout.isWide ? directOpened?.number : nil
-        ) { directOpened = $0 }
+        ) { pull in
+          // The detail column shows a machine PR first; a PR picked here
+          // replaces it.
+          duoSelectedPrId = nil
+          directOpened = pull
+        }
       } else {
         noticeRows
         if isLoadingSkeleton {
