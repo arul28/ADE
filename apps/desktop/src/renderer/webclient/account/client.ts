@@ -1,9 +1,6 @@
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
-import {
-  ACCOUNT_PROJECT_PATHS,
-  coerceAccountProjectListResult,
-  type AccountProjectListResult,
-} from "../../../shared/accountProject";
+// Loaded on the first read, so the signed-out page does not pay for it.
+import type { AccountProjectListResult } from "../../../shared/accountProject";
 import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
@@ -922,6 +919,8 @@ export class BrowserAccountClient {
     } catch {
       return { state: "signed_out", projects: [] };
     }
+    const { ACCOUNT_PROJECT_PATHS, coerceAccountProjectListResult } = await import("../../../shared/accountProject");
+    const cached = () => this.cachedAccountProjects(userId, coerceAccountProjectListResult);
     const cache = this.accountProjects?.userId === userId ? this.accountProjects : null;
     const path = `${ACCOUNT_PROJECT_PATHS.root}${cache ? `?since=${cache.cursor}` : ""}`;
     const send = async (accessToken: string): Promise<Response> => {
@@ -954,15 +953,15 @@ export class BrowserAccountClient {
       }
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
-        return response.status === 401 ? { state: "signed_out", projects: [] } : this.cachedAccountProjects(userId);
+        return response.status === 401 ? { state: "signed_out", projects: [] } : cached();
       }
       body = await readBoundedAccountDirectoryJson(response);
     } catch {
-      return this.cachedAccountProjects(userId);
+      return cached();
     }
     if (this.snapshot.userId !== userId) return { state: "not_loaded", projects: [] };
     const answer = body && typeof body === "object" ? body as Record<string, unknown> : null;
-    if (!answer || typeof answer.cursor !== "number" || !Array.isArray(answer.projects)) return this.cachedAccountProjects(userId);
+    if (!answer || typeof answer.cursor !== "number" || !Array.isArray(answer.projects)) return cached();
     const rows = answer.reset === true || !cache ? new Map<string, Record<string, unknown>>() : new Map(cache.rows);
     for (const row of answer.projects) {
       if (row && typeof row === "object" && typeof (row as Record<string, unknown>).id === "string") {
@@ -970,13 +969,16 @@ export class BrowserAccountClient {
       }
     }
     this.accountProjects = { userId, cursor: answer.cursor, rows };
-    return this.cachedAccountProjects(userId);
+    return cached();
   }
 
   private accountProjects: { userId: string; cursor: number; rows: Map<string, Record<string, unknown>> } | null = null;
 
   /** The merged list as the last read left it; `not_loaded` before the first read. */
-  private cachedAccountProjects(userId: string): AccountProjectListResult {
+  private cachedAccountProjects(
+    userId: string,
+    coerce: (value: unknown) => AccountProjectListResult,
+  ): AccountProjectListResult {
     const cache = this.accountProjects?.userId === userId ? this.accountProjects : null;
     if (!cache) return { state: "not_loaded", projects: [] };
     const all = [...cache.rows.values()];
@@ -989,7 +991,7 @@ export class BrowserAccountClient {
         mergedInto: typeof row.mergedInto === "string" ? row.mergedInto : null,
         removedAt: typeof row.removedAt === "number" ? row.removedAt : null,
       }));
-    return coerceAccountProjectListResult({ state: "ready", cursor: cache.cursor, projects: live, retired });
+    return coerce({ state: "ready", cursor: cache.cursor, projects: live, retired });
   }
 
   async removeMachine(machineKeyValue: string): Promise<AdeAccountMachineRemovalResult> {
