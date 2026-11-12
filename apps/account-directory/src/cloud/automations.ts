@@ -23,20 +23,7 @@ import {
 import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
 import { githubOriginOf, startServerLaunch, type LaunchRouteDeps } from "./launches";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
-import {
-  CHECK_COMMAND,
-  CHECK_TIMEOUT_MS,
-  PREPARE_COMMAND,
-  PREPARE_TIMEOUT_MS,
-  PUSH_COMMAND,
-  PUSH_TIMEOUT_MS,
-  leftLanes,
-  prepareConfirmed,
-  putBackToRest,
-  readTally,
-  wakeForPush,
-  type WakeRecord,
-} from "./planCleanup";
+import { pushAllWork, putBackToRest, type WakeRecord } from "./planCleanup";
 import { cloudSizeForTier } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { deleteComputer, logCloud, ownedComputer, reportCloudFailure } from "./store";
@@ -888,16 +875,10 @@ async function finishRun(env: RelayEnv, provider: CloudProvider, run: RunRow, no
     return end("kept", `Its computer stays: ${why}`);
   };
   try {
-    const metadata = await wakeForPush(env, provider, computer, now, wake, "automation_run");
-    const prepared = await provider.exec(computer.instance_id, PREPARE_COMMAND, PREPARE_TIMEOUT_MS);
-    if (!prepareConfirmed(prepared.exitCode, prepared.stdout)) return keep("ADE on it couldn't stop its agents and save its chats.");
-    const pushed = readTally((await provider.exec(computer.instance_id, PUSH_COMMAND, PUSH_TIMEOUT_MS)).stdout);
-    if (!pushed) return keep("ADE on it didn't answer the push.");
-    const left = leftLanes(pushed);
-    if (left) return keep(left);
-    const checked = readTally((await provider.exec(computer.instance_id, CHECK_COMMAND, CHECK_TIMEOUT_MS)).stdout);
-    const stillLeft = checked ? leftLanes(checked) : "ADE couldn't confirm all work is on GitHub.";
-    if (stillLeft) return keep(stillLeft);
+    // The plan cleanup's push: stop the agents and save the chats, push every lane, check again.
+    const outcome = await pushAllWork(env, provider, computer, now, wake, "automation_run");
+    if (!outcome.ok) return keep(outcome.reason);
+    const { metadata, pushed } = outcome;
     const lane = mergeLaneFacts(laneFactsOfRow(computer), laneFactsOf(metadata));
     const own = pushed.lanes?.find((entry) => entry.laneId === lane.laneId) ?? null;
     if (own?.branchRef) lane.branch = own.branchRef;

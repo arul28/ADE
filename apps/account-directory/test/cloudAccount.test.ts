@@ -1438,6 +1438,7 @@ describe("ADE Cloud automations", () => {
     seedAccount(harness, OWNER);
     harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
     harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
+    harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
     // The vault answers (a GitHub sign-in, no stored agent limits: the default): limits never read refuse spending.
     Object.assign(harness.env, {
       PUSH_RELAY_URL: "https://relay.test",
