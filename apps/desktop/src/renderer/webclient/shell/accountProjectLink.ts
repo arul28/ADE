@@ -38,7 +38,13 @@ export function accountProjectLinkStep(
       return {
         kind: "stop",
         noCopy: null,
-        failure: { kind: "project-removed", title: `${resolved.name} was removed from ADE.`, retryable: false, offerComputers: false },
+        failure: {
+          kind: "project-removed",
+          title: `${resolved.name} was removed from ADE.`,
+          detail: "Add it again in ADE on a computer that has it, then open the link again.",
+          retryable: false,
+          offerComputers: false,
+        },
       };
     case "unknown":
       return owner
@@ -46,7 +52,13 @@ export function accountProjectLinkStep(
         : {
           kind: "stop",
           noCopy: null,
-          failure: { kind: "project-unknown", title: "This project isn't in your ADE account.", retryable: false, offerComputers: false },
+          failure: {
+            kind: "project-unknown",
+            title: "This project isn't in your ADE account.",
+            detail: "The link may be from another ADE account.",
+            retryable: false,
+            offerComputers: false,
+          },
         };
     case "noCopy":
       return {
