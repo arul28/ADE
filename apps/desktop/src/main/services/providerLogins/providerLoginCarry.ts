@@ -624,7 +624,8 @@ const ROWS: CarryRow[] = [
       const slot = bundle.id.endsWith("/business") ? "business"
         : bundle.id.endsWith("/personal") ? "personal"
           : antigravitySlotFromLogin(data);
-      const email = str(data, "id_token_email");
+      // agy on Windows records the address; on macOS (1.4.7) only the ID token carries it.
+      const email = str(data, "id_token_email") ?? str(jwtClaims(str(data, "id_token")), "email");
       return {
         logins: [{
           slot,

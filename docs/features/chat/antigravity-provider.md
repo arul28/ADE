@@ -193,6 +193,9 @@ outside a workspace) lists only when the import is not scoped to a project.
 Left out: subagents (their log opens with the parent's message), and
 conversations an ADE chat opened (their system prompt is ADE's `## ADE`
 guidance; a live ADE chat is also matched by its `acpSessionId`).
+Each log's metadata, message window and record are kept while the log's
+mtime and size hold, and a cold list gives the event loop a turn every ten
+reads (macOS numbers in `docs/perf/macos-baseline.md`).
 
 - CLI continue runs `agy --conversation <id>` in the conversation's folder.
   agy has no fork, so there is no CLI copy.
@@ -241,8 +244,8 @@ and the process.
 | Method | What ADE does |
 |---|---|
 | Google account (`oauth-personal`, default) | Runs `agy acp --login`. The CLI prints a Google link whose `redirect_uri` is `https://antigravity.google/oauth-callback`, a page that shows a code once the person approves, and reads the code (or that page's full address) from stdin. Nothing listens on the machine, so the same paste works from any computer, the phone, the web client and ADE Cloud. ADE checks the link (Google's auth endpoint, that redirect, one `state`, `response_type=code`) and the pasted value (a bare code, or a landing address with the same `state` and one `code`) before writing it to the CLI's stdin. |
-| Gemini Enterprise (`oauth-business`) | The ACP `authenticate` request. The CLI opens the OS browser itself (it ignores `BROWSER`) and waits on a `localhost` listener without printing the link, so this finishes only in a browser on the machine that runs the agent. |
-| Gemini API key (`gemini-api-key`) | `GEMINI_API_KEY` from ADE's key store (the key sheet on the Antigravity page, slot `antigravity-gemini`), passed only for this method. |
+| Gemini Enterprise (`oauth-business`) | The ACP `authenticate` request. The CLI opens the OS browser itself (it ignores `BROWSER`) and waits on a `localhost` listener without printing the link, so this finishes only in a browser on the machine that runs the agent (`agy acp --login` is Google-account only). Google's docs: the account needs a GE-Standard or GE-Plus license seat, and the project needs the Gemini Enterprise API (`aiplatform.googleapis.com`). When agy cannot find the license by itself it asks for `"gcp": { "project", "location" }` in its `settings.json`, with a multi-region location (`global`, `us` or `eu`). ADE does not write that block; it turns agy's licence errors into what to set (`enterpriseFailureSentence`). Not yet run against a real Enterprise account. The documented headless route is Application Default Credentials (`AGY_ADC_AUTH=true`), which ADE passes only to Agent Platform. |
+| Gemini API key (`gemini-api-key`) | `GEMINI_API_KEY` from ADE's key store (the key sheet on the Antigravity page, slot `antigravity-gemini`), passed only for this method. In agy's TUI the key mode is `modelProvider: "gemini"` in `settings.json`; it outranks `auth.type` (verified 1.5.6), so ADE reads it as this method, and a Google sign-in then says to remove it rather than editing it. |
 | Agent Platform (`agent-platform`) | `GOOGLE_API_KEY` from ADE's key store (slot `antigravity-agent-platform`), or the machine's ADC variables plus a project and location ADE keeps in `<ADE home>/providers/antigravity.json`. |
 
 The link, `state`, code and tokens are never logged.
@@ -252,9 +255,9 @@ The link, `state`, code and tokens are never logged.
 The CLI keeps its state in `~/.gemini/antigravity-cli/` (GEMINI_HOME does not
 move it), and a sign-in writes no `settings.json`. The stored sign-in is one
 JSON value, `{ token: { access_token, refresh_token, expiry, … }, auth_method,
-id_token_email }` (`auth_method` is `consumer` for a Google account). It is in the OS keyring (go-keyring service `gemini`,
+id_token_email }` (`auth_method` is `consumer` for a Google account; agy 1.4.7 on macOS keeps `id_token` instead of `id_token_email`, and the carry takes the address from its claims). It is in the OS keyring (go-keyring service `gemini`,
 user `antigravity`: the Keychain on macOS, the generic credential
-`gemini:antigravity` in Windows Credential Manager, Secret Service on Linux).
+`gemini:antigravity` in Windows Credential Manager, Secret Service on Linux). On macOS the value is stored as `go-keyring-base64:<base64>`. Verified 2026-11-12 on a MacBook (macOS 27, agy 1.4.7) with ADE's own reader: the presence check took 27 ms (a missing item exits 44), the Allow read took 36 ms with no Keychain prompt, and the carry parser produced one personal login with its account address.
 Where no keyring works, a slow one times out, or the CLI runs in a container or
 WSL, it uses the file `~/.gemini/antigravity-cli/antigravity-oauth-token`
 instead (verified on Linux 1.5.6). ADE Cloud computers are containers, so a

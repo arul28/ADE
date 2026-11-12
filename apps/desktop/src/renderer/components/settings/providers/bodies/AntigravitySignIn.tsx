@@ -34,7 +34,8 @@ const METHODS: ReadonlyArray<{ id: AntigravityAuthMethod; label: string; hint: s
   {
     id: "oauth-business",
     label: "Gemini Enterprise",
-    hint: "Sign in with your work account. Antigravity opens the browser itself, so this finishes only on the machine that runs it.",
+    hint: "Sign in with your work account. Antigravity opens the browser itself, so this finishes only on the machine that runs it. "
+      + "If it finds no license, set gcp.project and gcp.location (global, us or eu) in its settings.json.",
   },
   { id: "gemini-api-key", label: "Gemini API key", hint: "Uses the Gemini API key saved under API keys on this page." },
   {

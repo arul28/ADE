@@ -56,6 +56,8 @@ export const ANTIGRAVITY_CREDENTIAL_ENV_KEYS = [
   "AGY_ACP_CCPA_PROJECT",
   "AGY_ACP_ENABLE_OAUTH",
   "AGY_LLM_GATEWAY_URL",
+  // Turns on Application Default Credentials (documented for the CLI).
+  "AGY_ADC_AUTH",
 ] as const;
 
 /** Variables an Agent Platform login may take from the machine (ADC users set these). */
@@ -65,6 +67,7 @@ const AGENT_PLATFORM_AMBIENT_KEYS = [
   "GOOGLE_CLOUD_PROJECT",
   "GOOGLE_CLOUD_LOCATION",
   "GOOGLE_CLOUD_QUOTA_PROJECT",
+  "AGY_ADC_AUTH",
 ] as const;
 
 /** ADE key-store slots. The Gemini key is the one the provider page's key sheet saves. */

@@ -241,14 +241,39 @@ function failureSentence(method: AntigravityAuthMethod, error: unknown): string 
   if (/SUBSCRIPTION_REQUIRED/i.test(text)) return "Google requires an eligible Antigravity subscription for this account.";
   if (/access_denied|denied access|cancelled|canceled/i.test(text)) return "Google sign-in was not approved. Start sign-in again.";
   if (/invalid_grant|code.*(invalid|expired)/i.test(text)) return "Google did not accept that code. Start sign-in again and paste the new code.";
-  if (/license/i.test(text) && method === "oauth-business") {
-    return "Gemini Enterprise could not find a license for this account. Check the account, or ask your Google Cloud administrator.";
+  if (method === "oauth-business") {
+    const enterprise = enterpriseFailureSentence(text);
+    if (enterprise) return enterprise;
   }
   if (method === "gemini-api-key") return "Antigravity did not accept the Gemini API key. Check the key saved on this page.";
   if (method === "agent-platform") {
     return "Antigravity could not use Agent Platform. Set an API key, or a project and location with Application Default Credentials on this machine.";
   }
   return "Google sign-in failed. Start sign-in again.";
+}
+
+/**
+ * agy's Gemini Enterprise failures (1.5.6 wording), as what the person does
+ * next. The project and location live in agy's settings.json, which ADE
+ * does not write.
+ */
+function enterpriseFailureSentence(text: string): string | null {
+  if (/configure gcp.project and gcp.location/i.test(text)) {
+    return "Antigravity found no Gemini Enterprise license on its own. In ~/.gemini/antigravity-cli/settings.json, add "
+      + "\"gcp\": { \"project\": \"<your project id>\", \"location\": \"global\" } (or \"us\" or \"eu\"), then sign in again.";
+  }
+  if (/multi-region location|SelfAssignLicense/i.test(text)) {
+    return "Gemini Enterprise takes the location \"global\", \"us\" or \"eu\", not a single region. Change gcp.location in Antigravity's settings.json, then sign in again.";
+  }
+  if (/auto-assign disabled|no license available for this project/i.test(text)) {
+    return "This Google Cloud project has no Gemini Enterprise license seat for you. Ask your administrator to assign one, "
+      + "and check that the Gemini Enterprise API (aiplatform.googleapis.com) is on for the project.";
+  }
+  if (/couldn't load the saved credentials/i.test(text)) return "Antigravity could not load the saved Gemini Enterprise sign-in. Sign in again.";
+  if (/license/i.test(text)) {
+    return "Gemini Enterprise could not find a license for this account. Check the account, or ask your Google Cloud administrator.";
+  }
+  return null;
 }
 
 async function pinnedExecutable(): Promise<AcpExecutableResolution> {

@@ -3,8 +3,11 @@ import {
   antigravityConversationsDir,
   readAntigravityConversationMeta,
   readAntigravityMessageWindow,
+  type AntigravityConversationMeta,
+  type AntigravityMessageWindow,
 } from "../chat/acpHost/acpDialects/antigravitySessionLog";
 import {
+  EXTERNAL_SESSION_READ_BUDGET_MULTIPLIER,
   cwdIsInScope,
   normalizeExternalSessionLimit,
   normalizeProviderCwd,
@@ -68,18 +71,68 @@ function listAntigravityCandidates(args: ExternalSessionDiscoveryArgs, lookupId:
   return candidates;
 }
 
+/**
+ * What a log said, kept while its file (and WAL) keeps its mtime and size.
+ * Every list open used to open each log twice: 200 logs cost 250 ms warm on
+ * an M3 Pro, all on the event loop. The window is read only for a log that
+ * gets that far, then kept too.
+ */
+type CachedLog = {
+  mtimeMs: number;
+  size: number;
+  meta: AntigravityConversationMeta | undefined;
+  window?: AntigravityMessageWindow | undefined;
+  /** The last record built from this log, for the scope it was built for. */
+  record?: { scope: string; value: ExternalSessionDiscoveryRecord | null };
+};
+const logCache = new Map<string, CachedLog>();
+const LOG_CACHE_MAX = 4_000;
+
+function cachedLog(candidate: AntigravityCandidate): CachedLog {
+  const hit = logCache.get(candidate.file);
+  if (hit && hit.mtimeMs === candidate.mtimeMs && hit.size === candidate.size) return hit;
+  const entry: CachedLog = { mtimeMs: candidate.mtimeMs, size: candidate.size, meta: readAntigravityConversationMeta(candidate.file) };
+  logCache.delete(candidate.file);
+  logCache.set(candidate.file, entry);
+  if (logCache.size > LOG_CACHE_MAX) logCache.delete(logCache.keys().next().value!);
+  return entry;
+}
+
+function isCached(candidate: AntigravityCandidate): boolean {
+  const hit = logCache.get(candidate.file);
+  return Boolean(hit && hit.mtimeMs === candidate.mtimeMs && hit.size === candidate.size);
+}
+
+/** Reads not yet cached before the event loop gets a turn. */
+const READS_PER_YIELD = 10;
+
 function antigravityRecordFromCandidate(
   candidate: AntigravityCandidate,
   scopeRoots: readonly string[] | null | undefined,
   includeAdeOwned: boolean,
 ): ExternalSessionDiscoveryRecord | null {
-  const meta = readAntigravityConversationMeta(candidate.file);
+  const log = cachedLog(candidate);
+  const scope = `${includeAdeOwned ? 1 : 0}\u0000${(scopeRoots ?? []).join("\u0000")}`;
+  if (log.record?.scope === scope) return log.record.value;
+  const value = buildAntigravityRecord(candidate, log, scopeRoots, includeAdeOwned);
+  log.record = { scope, value };
+  return value;
+}
+
+function buildAntigravityRecord(
+  candidate: AntigravityCandidate,
+  log: CachedLog,
+  scopeRoots: readonly string[] | null | undefined,
+  includeAdeOwned: boolean,
+): ExternalSessionDiscoveryRecord | null {
+  const meta = log.meta;
   if (!meta || meta.isSubagent) return null;
   if (!includeAdeOwned && startsWithAdeGuidance(meta.systemPrompt)) return null;
   const cwd = normalizeProviderCwd(meta.workspace);
   if (!cwdIsInScope(cwd, scopeRoots)) return null;
 
-  const window = readAntigravityMessageWindow(candidate.file);
+  if (!("window" in log)) log.window = readAntigravityMessageWindow(candidate.file);
+  const window = log.window;
   if (!window) return null;
   const toNeutral = (steps: typeof window.head) => compact(steps.map((step) => (step.kind === "user"
     ? neutralRecord("user", step.text, null)
@@ -117,10 +170,20 @@ export async function discoverAntigravitySessions(
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const lookupId = safeLookupId(args.sessionId);
   if (lookupId === false) return [];
-  return collectNewestSessions({
-    candidates: listAntigravityCandidates(args, lookupId),
-    limit: normalizeExternalSessionLimit(args.limit),
-    lookupId,
-    read: (candidate) => antigravityRecordFromCandidate(candidate, args.scopeRoots, args.includeAdeOwned === true),
-  });
+  const candidates = listAntigravityCandidates(args, lookupId);
+  const limit = normalizeExternalSessionLimit(args.limit);
+  const read = (candidate: AntigravityCandidate) => antigravityRecordFromCandidate(candidate, args.scopeRoots, args.includeAdeOwned === true);
+  if (!lookupId) {
+    // Fill the cache newest first, the way the collection below reads, and
+    // give the event loop a turn between batches of real reads.
+    const ordered = candidates.slice().sort((left, right) => right.mtimeMs - left.mtimeMs);
+    const readCap = Math.max(limit * EXTERNAL_SESSION_READ_BUDGET_MULTIPLIER, 200);
+    let found = 0;
+    let reads = 0;
+    for (const candidate of ordered.slice(0, readCap)) {
+      if (!isCached(candidate) && ++reads % READS_PER_YIELD === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+      if (read(candidate) && ++found >= limit) break;
+    }
+  }
+  return collectNewestSessions({ candidates, limit, lookupId, read });
 }
