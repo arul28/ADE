@@ -84,3 +84,9 @@ lane's live checks are done. `slow-drive-test` is not this lane's; never touched
 - Every new call carries the pin of its machine; no preload method defaults to the tab machine.
 - No new repeated server calls from each machine; ADE's own polling and exec must not keep a cloud computer awake.
 - One clean state for each thing, plain words, no raw ids, no duplicated errors.
+
+## Owner decisions (2026-11-12)
+
+- Yes: one trial template on Agent 37 (`ade-c6-test`, never the live `ade`).
+- G5: build from the owner's beta.14 notes, review with screenshots (no mockup round).
+- Yes: rename the Stripe SANDBOX products and prices for checkout (sandbox only; live money stays out of scope).
