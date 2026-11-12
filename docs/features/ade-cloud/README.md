@@ -396,6 +396,23 @@ The relay caps one such value at 16,000 characters. The account setting
 are off, and the Claude smart balance switch. Each computer keeps marks only,
 never a token, in `<ADE home>/provider-logins/state.json` and `applied.json`,
 and the use of each pass in `claude-pass-use.json`.
+Sign-ins also come down to the person's own computers (`providerLoginApplyPass.ts`,
+B14-9): an own computer with no sign-in of its own for a provider takes the one
+the account uses (another computer's copy, never its own back), on the same
+vault ticks. It never replaces a local sign-in (`provider_login.down_kept_local`,
+logged once), never writes a saved key or an env variable, and stays off a place
+the person signed out of there (`declined` in `applied.json`, or capture's
+`signedOut` mark) until they sign in there again. Claude never comes down
+(Claude's normal sign-in stays on each computer; ADE Cloud uses a pass), nor
+does Copilot's GitHub CLI login. The account's cards show one card per account
+(email) for copies from several computers ("From 3 computers"), and the pick of
+one copy uses the freshest usable copy of the same account (`cloudPlacePicks`).
+Before a lane's computer is made, `cloudGitCredential.ts` (`accountGitCredential`,
+`cloudGitPreflight`) checks the account for a GitHub sign-in git can use
+(`integration/github`, a pasted token; `integration/github-cli`, a `gh` login
+copied to the account); a private repository with none is refused with the way
+out, a public one goes on. The clone passes its auth header through Git's config
+environment, so no token is left in the clone's `.git/config`.
 Machine metadata keys are `ade_*` (`ade_machine_key`, `ade_request_id`,
 `ade_made_by_chat`, `ade_disk_full` and `ade_disk_full_reason`; a copy drops the old ready-machine keys `ade_ready*`,
 and the lane keys `ade_lane_id`, `ade_lane_name`, `ade_project_origin` in
