@@ -136,6 +136,7 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
           const wake = await deps.wake(key);
           if (wake.state === "refused") return failure(key, "unreachable", wake.message);
           woken = wake.state === "woken";
+          deps.logger?.info?.("machines.connect_wake", { state: wake.state });
         } catch (error) {
           return failure(key, "unreachable", `ADE couldn't wake ${name}: ${reasonText(error)}.`);
         }
@@ -178,7 +179,12 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
       const flightKey = `${key.toLowerCase()}\u0000${wantConnected ? "connect" : "save"}`;
       const existing = inFlight.get(flightKey);
       if (existing) return existing;
-      const flight = run(key, wantConnected).finally(() => inFlight.delete(flightKey));
+      const flight = run(key, wantConnected)
+        .then((result) => {
+          if (!result.ok) deps.logger?.warn?.("machines.connect_refused", { reason: result.reason, wantConnected });
+          return result;
+        })
+        .finally(() => inFlight.delete(flightKey));
       inFlight.set(flightKey, flight);
       return flight;
     },

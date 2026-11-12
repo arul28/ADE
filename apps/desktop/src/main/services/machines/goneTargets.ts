@@ -16,6 +16,7 @@
  */
 
 import fs from "node:fs";
+import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
 import { safeJsonParse, writeTextAtomic } from "../shared/utils";
 
 const MAX_ENTRIES = 200;
@@ -25,6 +26,7 @@ type Entry = { targetId: string; machineKey: string; atMs: number };
 let filePath: string | null = null;
 let entries: Entry[] | null = null;
 let reach: ((machineKey: string) => Promise<string | null>) | null = null;
+let log: ((event: string, meta?: Record<string, unknown>) => void) | null = null;
 
 function load(): Entry[] {
   if (entries) return entries;
@@ -57,8 +59,9 @@ function save(): void {
 }
 
 /** Where the memory is kept; set once at startup. */
-export function configureGoneTargets(options: { filePath: string }): void {
+export function configureGoneTargets(options: { filePath: string; log?: (event: string, meta?: Record<string, unknown>) => void }): void {
   filePath = options.filePath;
+  log = options.log ?? null;
   entries = null;
 }
 
@@ -92,10 +95,16 @@ export function redirectGoneTargets(fromMachineKey: string | null | undefined, t
   if (changed) save();
 }
 
-/** The machine a gone connection reached, or null. */
+/**
+ * The machine a gone connection reached, or null. A saved chat's stand-in pin
+ * (`cloud-saved:<machine key>`, a window with no connection to that computer)
+ * names its machine itself.
+ */
 export function goneTargetMachineKey(targetId: string | null | undefined): string | null {
   if (!targetId) return null;
-  return load().find((entry) => entry.targetId === targetId)?.machineKey ?? null;
+  return savedChatsMachineKey(targetId)
+    ?? load().find((entry) => entry.targetId === targetId)?.machineKey
+    ?? null;
 }
 
 /**
@@ -103,8 +112,9 @@ export function goneTargetMachineKey(targetId: string | null | undefined): strin
  * again, which wakes a sleeping cloud computer). The new connection id, or
  * null when it can't.
  */
-export async function reachGoneTarget(targetId: string): Promise<string | null> {
+export async function reachGoneTarget(targetId: string, why?: { domain: string; action: string }): Promise<string | null> {
   const key = goneTargetMachineKey(targetId);
   if (!key || !reach) return null;
+  log?.("machines.gone_target_reach", { domain: why?.domain ?? null, action: why?.action ?? null });
   return await reach(key).catch(() => null);
 }

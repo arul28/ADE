@@ -96,6 +96,7 @@ import { parseRemoteRuntimePairingInput } from "../remoteRuntime/pairingInput";
 import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
 import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
 import { shouldSendAppControlFrameToWebContents } from "../appControl/appControlFrameSubscriptions";
+import { adeActionAccess, isBackgroundAdeWrite } from "../../../shared/adeActionAccess";
 import { goneTargetMachineKey, noteGoneTarget, reachGoneTarget } from "../machines/goneTargets";
 import { appControlFrameEventLaneId } from "../../../shared/appControlFrameDemand";
 import { forgetRemoteTunnelOrigins, recordRemoteTunnelOrigin } from "../builtInBrowser/remoteTunnelOrigins";
@@ -1658,10 +1659,19 @@ export function registerRuntimeBridge({
           ? arg.request
           : null;
       // A pin to a gone connection whose machine has no connection saved here
-      // now: reach it through the account first (contract C2).
-      if (id && !remoteConnectionService.getTarget(id)) {
+      // now: a write reaches it through the account first (contract C2), which
+      // wakes a sleeping cloud computer, as a write through a saved connection
+      // does. A read or a background write (window focus, a view) never wakes
+      // one, the same rule as `remoteConnectionService.callAction`; the window
+      // reads the chat's saved copy instead.
+      if (
+        id
+        && !remoteConnectionService.getTarget(id)
+        && adeActionAccess(request?.domain ?? "", request?.action ?? "") === "write"
+        && !isBackgroundAdeWrite(request?.domain ?? "", request?.action ?? "")
+      ) {
         const goneKey = goneTargetMachineKey(id);
-        if (goneKey && !targetForMachineKey(goneKey)) await reachGoneTarget(id);
+        if (goneKey && !targetForMachineKey(goneKey)) await reachGoneTarget(id, { domain: request?.domain ?? "", action: request?.action ?? "" });
       }
       const target = requireRemoteTarget(id);
       const domain =

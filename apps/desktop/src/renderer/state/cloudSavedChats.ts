@@ -9,14 +9,14 @@
 
 import { parseAgentChatTranscript } from "../../shared/chatTranscript";
 import type { AgentChatEventEnvelope, AgentChatEventHistoryPage, AgentChatEventHistorySnapshot, AgentChatSessionSummary } from "../../shared/types/chat";
-import type { CloudSavedChatPage, CloudSavedChatRow } from "../../shared/cloudSavedChats";
+import { SAVED_CHATS_MACHINE_PREFIX, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import type { LaneSummary } from "../../shared/types/lanes";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import type { TerminalSessionSummary } from "../../shared/types/sessions";
 import type { AgentChatApi } from "../components/chat/agentChatApi";
 
-/** A machine id for a saved computer that no longer has a connection target (deleted). */
-export const SAVED_CHATS_MACHINE_PREFIX = "cloud-saved:";
+/** A machine id for a saved chat's computer this window has no connection to. */
+export { SAVED_CHATS_MACHINE_PREFIX };
 
 export function isSavedChatsMachineId(machineId: string): boolean {
   return machineId.startsWith(SAVED_CHATS_MACHINE_PREFIX);
@@ -54,6 +54,24 @@ export function savedChatLocation(
   const location = locations.get(locationKey(pin.key, sessionId));
   if (!location) return null;
   return location.computerGone || !machineOnline(location.machineId) ? location : null;
+}
+
+/**
+ * The saved copy of a chat by its id alone, whatever pin asked. For a read
+ * whose pin names a connection this window no longer has ("Remote target was
+ * not found"): the chat is the same on any machine that saved it.
+ */
+export function savedChatLocationForSession(sessionId: string): SavedChatLocation | null {
+  for (const location of locations.values()) {
+    if (location.chatId === sessionId) return location;
+  }
+  return null;
+}
+
+const GONE_CONNECTION_MESSAGE = "Remote target was not found";
+
+function goneConnection(error: unknown): boolean {
+  return error instanceof Error ? error.message.includes(GONE_CONNECTION_MESSAGE) : String(error).includes(GONE_CONNECTION_MESSAGE);
 }
 
 /** Whether the chat's computer was deleted (its chats live on as saved copies). */
@@ -190,24 +208,40 @@ export function withSavedChatReads(
 ): AgentChatApi {
   if (!bridge) return api;
   const locate = (sessionId: string, pin?: OpenProjectBinding | null) => savedChatLocation(pin, sessionId, machineOnline);
+  /** A read through `live`, answered from the saved copy when its connection is gone. */
+  const readOr = async <T>(sessionId: string, live: () => Promise<T>, saved: (location: SavedChatLocation) => Promise<T>): Promise<T> => {
+    try {
+      return await live();
+    } catch (error) {
+      const location = goneConnection(error) ? savedChatLocationForSession(sessionId) : null;
+      if (!location) throw error;
+      return saved(location);
+    }
+  };
   const savedReads: Pick<AgentChatApi, "getEventHistory" | "getEventHistoryPage" | "getSummary" | "send" | "delete"> = {
     getEventHistory: async (args, pin) => {
+      const saved = async (location: SavedChatLocation) => {
+        const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId }).catch(logSavedChatReadFailure);
+        if (!page) return { sessionId: args.sessionId, events: [], truncated: false, sessionFound: true, hasOlderHistory: false, unavailable: true } satisfies AgentChatEventHistorySnapshot;
+        return savedChatSnapshot(page, args.sessionId);
+      };
       const location = locate(args.sessionId, pin);
-      if (!location) return api.getEventHistory(args, pin);
-      const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId }).catch(logSavedChatReadFailure);
-      if (!page) return { sessionId: args.sessionId, events: [], truncated: false, sessionFound: true, hasOlderHistory: false, unavailable: true } satisfies AgentChatEventHistorySnapshot;
-      return savedChatSnapshot(page, args.sessionId);
+      return location ? saved(location) : readOr(args.sessionId, () => api.getEventHistory(args, pin), saved);
     },
     getEventHistoryPage: async (args, pin) => {
+      const saved = async (location: SavedChatLocation) => {
+        const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId, before: args.beforeOffset }).catch(logSavedChatReadFailure);
+        if (!page) return { sessionId: args.sessionId, events: [], startOffset: args.beforeOffset, hasMore: false, sessionFound: true, unavailable: true } satisfies AgentChatEventHistoryPage;
+        return savedChatHistoryPage(page, args.sessionId);
+      };
       const location = locate(args.sessionId, pin);
-      if (!location) return api.getEventHistoryPage(args, pin);
-      const page = await bridge.read({ machineKey: location.machineKey, chatId: location.chatId, before: args.beforeOffset }).catch(logSavedChatReadFailure);
-      if (!page) return { sessionId: args.sessionId, events: [], startOffset: args.beforeOffset, hasMore: false, sessionFound: true, unavailable: true } satisfies AgentChatEventHistoryPage;
-      return savedChatHistoryPage(page, args.sessionId);
+      return location ? saved(location) : readOr(args.sessionId, () => api.getEventHistoryPage(args, pin), saved);
     },
     getSummary: async (args, pin) => {
       const location = locate(args.sessionId, pin);
-      return location ? savedChatSummary(location) : api.getSummary(args, pin);
+      return location
+        ? savedChatSummary(location)
+        : readOr(args.sessionId, () => api.getSummary(args, pin), async (gone) => savedChatSummary(gone));
     },
     send: async (args, pin) => {
       const location = locate(args.sessionId, pin);

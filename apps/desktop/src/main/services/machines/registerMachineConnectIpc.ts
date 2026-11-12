@@ -14,7 +14,10 @@ import { createMachineConnector, type MachineConnector, type MachineConnectorDep
  */
 export function registerMachineConnectIpc(args: Omit<MachineConnectorDeps, "logger"> & { logger: Logger }): MachineConnector {
   const { logger } = args;
-  configureGoneTargets({ filePath: path.join(app.getPath("userData"), "gone-machine-connections.json") });
+  configureGoneTargets({
+    filePath: path.join(app.getPath("userData"), "gone-machine-connections.json"),
+    log: (event, meta) => logger.info(event, meta),
+  });
   const connector = createMachineConnector({
     ...args,
     logger: { info: (event, meta) => logger.info(event, meta), warn: (event, meta) => logger.warn(event, meta) },

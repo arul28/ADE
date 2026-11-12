@@ -631,7 +631,8 @@ export function registerCloudIpc(args: {
   // The ADE Cloud lane launch makes its computer with these same pieces.
   /** Contract C2's wake before a pairing: a sleeping cloud computer of this account, by machine key. */
   const wakeForPair = async (machineKey: string): Promise<{ state: "not_cloud" | "awake" | "woken" } | { state: "refused"; message: string }> => {
-    if (!(await machines.knowsBox(machineKey))) return { state: "not_cloud" };
+    // Not `knowsBox`: it answers no until this app has read ADE Cloud access,
+    // and a pairing is rare and started by a person. One bounded list read.
     const client = await savedClient().catch(() => null);
     if (!client) return { state: "not_cloud" };
     const result = await wakeCloudMachineForUse(client, { machineKey }, { logger });
