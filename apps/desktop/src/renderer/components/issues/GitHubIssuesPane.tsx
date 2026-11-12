@@ -18,6 +18,7 @@ import {
 import { buildGitHubLaunchIssue } from "../../lib/linearBatchLaunch";
 import { useIssueLaunchSelection } from "./useIssueLaunchSelection";
 import { IssueNoMachineNotice } from "./issueViewerParts";
+import { DirectIssuesList } from "../prs/DirectPrsList";
 
 /**
  * The GitHub Issues pane body: the project's issues on the left, the issue
@@ -141,6 +142,15 @@ export function GitHubIssuesPane({
   });
 
   const selectedIssue = visible.find((issue) => issue.number === selected) ?? visible[0] ?? null;
+
+  // No machine, but the account can read GitHub itself: a read-only list.
+  if (noMachine && window.ade?.githubDirect) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <DirectIssuesList repo={repo} />
+      </div>
+    );
+  }
 
   return (
     <div className="grid h-full min-h-0 grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">

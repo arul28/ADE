@@ -24,6 +24,7 @@ import {
 } from "./prsRouteState";
 import type { PrSummary } from "../../../shared/types";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { DirectPrsList } from "./DirectPrsList";
 
 type PrRefreshArgs = { prId?: string; prIds?: string[] };
 
@@ -96,7 +97,9 @@ function PRsPageInner({ active }: { active: boolean }) {
     refresh,
     reader,
   } = usePrs();
-  const noMachine = reader.kind === "none";
+  // No machine: `direct` shows the account's read-only list, `none` an empty state.
+  const direct = reader.kind === "direct";
+  const noMachine = reader.kind !== "machine";
 
   const [createPrOpen, setCreatePrOpen] = React.useState(false);
   const [createPrInitialValues, setCreatePrInitialValues] = React.useState<CreatePrModalInitialValues | null>(null);
@@ -316,7 +319,10 @@ function PRsPageInner({ active }: { active: boolean }) {
 
   // No computer that has this project is online, so nothing can read its pull
   // requests. Nothing is called in this state (PrsProvider reads nothing).
-  const noMachineContent = noMachine ? (
+  const noMachineContent = direct ? (
+    // A hidden page passes no repository, so the read has no subscriber and does not poll.
+    <DirectPrsList repo={active ? reader.repo : null} />
+  ) : noMachine ? (
     <EmptyState
       title="No computer is online"
       description="Pull requests are read through a computer that has this project. Open ADE on one, or connect it."
