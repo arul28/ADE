@@ -3026,6 +3026,27 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(fakes.permissionPrompt).not.toHaveBeenCalled();
   });
 
+  it("closes exactly the tabs asked for when closes run at the same time", async () => {
+    // The cleanup sweep and a chat group's "Close tabs" start several closes
+    // at once. Each one awaits before it removes its tab, so a close that
+    // remembered a position from before the await removed whichever tab had
+    // shifted into it: a tab nobody asked to close.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://a.example.test", activate: true });
+    await service.createTab({ url: "https://b.example.test", activate: true });
+    await service.createTab({ url: "https://c.example.test", activate: true });
+    const byHost = (host: string) => service.getStatus().tabs.find((tab) => tab.url?.includes(host))?.id ?? "";
+    const [a, b, c] = [byHost("a.example"), byHost("b.example"), byHost("c.example")];
+    expect([a, b, c].every(Boolean), "three tabs open").toBe(true);
+
+    await Promise.all([service.closeTab({ tabId: a }), service.closeTab({ tabId: b })]);
+
+    const left = service.getStatus().tabs.map((tab) => tab.id);
+    expect(left).toContain(c);
+    expect(left).not.toContain(a);
+    expect(left).not.toContain(b);
+  });
+
   it("intercepts popup requests as real ADE browser tabs", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await service.createTab({

@@ -673,7 +673,7 @@ function normalizeRemoteInputEvent(value: unknown): BuiltInBrowserRemoteInputEve
   return null;
 }
 
-function createBrowserNetworkRouter() {
+function createBrowserNetworkRouter(getLogger?: () => Logger) {
   const configuredSessions = new WeakSet<Electron.Session>();
   const observers = new Set<BrowserNetworkObserver>();
 
@@ -692,8 +692,12 @@ function createBrowserNetworkRouter() {
         };
         const current = sessionWithUa.getUserAgent?.();
         if (current) sessionWithUa.setUserAgent?.(chromeUserAgent(current));
-      } catch {
-        // An older Electron without per-session UA still gets the header pass.
+      } catch (error) {
+        // The header pass still rewrites requests; pages would see the
+        // Electron UA from script, which is what this warns about.
+        getLogger?.().warn("built_in_browser.chrome_identity_failed", {
+          err: error instanceof Error ? error.message : String(error),
+        });
       }
       const webRequest = browserSession.webRequest as unknown as {
         onBeforeSendHeaders?: (
@@ -1025,7 +1029,7 @@ export function createBuiltInBrowserService(args: {
     onChange: args.onAgentAccessChange ?? undefined,
     initialMode: args.agentAccessInitialMode,
   });
-  const networkRouter = createBrowserNetworkRouter();
+  const networkRouter = createBrowserNetworkRouter(args.getLogger);
   const profileMigrationPromise = userDataPath
     ? migrateLegacyBuiltInBrowserProfiles({
         userDataPath,
@@ -5616,21 +5620,28 @@ function createBuiltInBrowserWindowService(args: {
     if (!tab) return { ok: false };
     const wc = tab.webContents;
     const event = input.event;
-    const point = async (at: { x: number; y: number }): Promise<{ x: number; y: number }> => {
+    // Null when the page cannot say its size (mid-navigation, crashed): the
+    // input is refused rather than landing in the top-left corner.
+    const point = async (at: { x: number; y: number }): Promise<{ x: number; y: number } | null> => {
       const size = await wc.executeJavaScript("[window.innerWidth, window.innerHeight]", true)
-        .catch(() => [0, 0]) as [number, number];
+        .catch(() => null) as [number, number] | null;
+      if (!size || !(size[0] > 0) || !(size[1] > 0)) return null;
       const zoom = wc.getZoomFactor?.() ?? 1;
       const fx = Math.min(1, Math.max(0, Number(at.x) || 0));
       const fy = Math.min(1, Math.max(0, Number(at.y) || 0));
       return { x: Math.round(fx * size[0] * zoom), y: Math.round(fy * size[1] * zoom) };
     };
     if (event.type === "click") {
-      const { x, y } = await point(event);
+      const at = await point(event);
+      if (!at) return { ok: false };
+      const { x, y } = at;
       wc.sendInputEvent({ type: "mouseMove", x, y });
       wc.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
       wc.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
     } else if (event.type === "scroll") {
-      const { x, y } = await point(event);
+      const at = await point(event);
+      if (!at) return { ok: false };
+      const { x, y } = at;
       const deltaY = Math.max(-2_000, Math.min(2_000, Number(event.deltaY) || 0));
       wc.sendInputEvent({ type: "mouseWheel", x, y, deltaX: 0, deltaY: -deltaY, canScroll: true } as Electron.MouseWheelInputEvent);
     } else if (event.type === "key") {

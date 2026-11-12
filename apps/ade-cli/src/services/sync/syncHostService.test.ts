@@ -8703,6 +8703,8 @@ describe("CTO-gated Linear sync commands", () => {
         "macDesktop.input",
         // Closing a browser tab changes the desktop: the owner's phone only.
         "workTools.closeBrowserTab",
+        // Clicking and typing into a desktop's tab is driving it, not viewing.
+        "workTools.sendBrowserTabInput",
         // Lane resolution can import a lane and pull mutates worktrees —
         // both are host state mutations refused to read-only viewers.
         "ai.cursorCloudResolveLane",

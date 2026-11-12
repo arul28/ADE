@@ -117,6 +117,7 @@ import { orderBrowserTabsByLane } from "./browser/browserTabGroups";
 import { browserTabVisibleInLane } from "./browser/browserTabOwnership";
 import { BrowserToolbarRow } from "./browser/BrowserToolbarRow";
 import { RemoteBrowserTabRow, RemoteBrowserTabViewer, useRemoteBrowserTabs } from "./browser/RemoteBrowserTabs";
+import { captureBrowserFact } from "./browser/browserAnalytics";
 import { BrowserCertificateBanner } from "./browser/BrowserCertificateBanner";
 import { useBrowserSettings } from "./browser/browserSettings";
 import { resolveBrowserSearchTemplate } from "../../../shared/types/builtInBrowser";
@@ -1527,6 +1528,7 @@ export function ChatBuiltInBrowserPanel({
     });
   }, [contextLaneId, onAttachTab, sessionId, withBrowserScope]);
   const handleKeepTab = useCallback((tabId: string) => {
+    captureBrowserFact("tab_kept");
     void getBrowserApi()?.keepTab?.(withBrowserScope({ tabId })).catch((error: unknown) => {
       setMessage({ tone: "error", text: errorMessage(error) });
     });
@@ -3057,7 +3059,11 @@ export function ChatBuiltInBrowserPanel({
             tabs={remoteTabs.tabs}
             presence={remoteTabs.presence}
             selectedTabId={remoteViewTabId}
-            onSelect={setRemoteViewTabId}
+            onSelect={(tabId) => {
+              // A person picking a tab to watch; the agent's own auto-show is not counted.
+              if (tabId) captureBrowserFact("remote_tab_watched");
+              setRemoteViewTabId(tabId);
+            }}
           />
         ) : null}
 

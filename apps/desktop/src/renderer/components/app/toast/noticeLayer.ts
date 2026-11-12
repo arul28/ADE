@@ -14,6 +14,7 @@
  * because opening a window is the expensive part.
  */
 import { NOTICE_LAYER_FRAME_NAME } from "../../../../shared/noticeLayer";
+import { captureError } from "../../../../shared/sentry/capture";
 
 export type NoticeLayer = {
   window: Window;
@@ -25,6 +26,23 @@ const MIRRORED_ATTR = "data-ade-notice-layer-mirror";
 const HOST_ID = "ade-notice-layer-host";
 
 let current: (NoticeLayer & { dispose: () => void }) | null = null;
+/** One report per renderer: a layer that cannot open fails the same way every time. */
+let reportedFailure = false;
+
+/**
+ * No layer means the corner cards fall back to freezing the page behind them,
+ * the bug the layer exists to fix, so a failure to open one is reported.
+ */
+function reportLayerFailure(kind: "refused" | "threw" | "unwritable", error: unknown): void {
+  if (reportedFailure) return;
+  reportedFailure = true;
+  captureError(error instanceof Error ? error : new Error(`notice layer ${kind}`), {
+    fingerprint: ["notice-layer", kind],
+    tags: { kind },
+    level: "warning",
+    handled: true,
+  });
+}
 
 function mirrorAttributes(source: Element, target: Element): void {
   for (const attr of Array.from(target.attributes)) {
@@ -113,14 +131,19 @@ export function openNoticeLayer(): NoticeLayer | null {
     // An empty address never navigates a layer that is already open (a dev
     // hot reload of this module); the main process lets this one name through.
     child = window.open("", NOTICE_LAYER_FRAME_NAME);
-  } catch {
+  } catch (error) {
+    reportLayerFailure("threw", error);
     return null;
   }
-  if (!child) return null;
+  if (!child) {
+    reportLayerFailure("refused", null);
+    return null;
+  }
   try {
     current = buildLayer(child);
-  } catch {
+  } catch (error) {
     // A layer we cannot write into is no layer at all.
+    reportLayerFailure("unwritable", error);
     try {
       child.close();
     } catch {

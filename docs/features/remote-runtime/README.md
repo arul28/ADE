@@ -917,8 +917,8 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     chat that used the browser through this brain starts a turn, finishes one,
     or ends, so its agent tabs close on every desktop that holds them.
     Watching another machine's tab is not a broadcast: a desktop or phone polls
-    `work_tools.readBrowserTabFrame` on that machine's runtime (user clients
-    only), which renews a short preview-stream watch on the desktop there, and
+    `work_tools.readBrowserTabFrame` on that machine's runtime (person-only:
+    the desktop app over RPC, the phone over its sync command), which renews a short preview-stream watch on the desktop there, and
     `work_tools.sendBrowserTabInput` carries a person's clicks and typing
     (Take control). A tab list waits for the desktops that answered the last ones,
     or 1.2 s when none has; after a list nobody answered, lists are skipped

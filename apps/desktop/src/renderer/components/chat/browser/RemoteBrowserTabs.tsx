@@ -23,6 +23,7 @@ import type { BuiltInBrowserRemoteInputEvent, BuiltInBrowserRemoteTabFrame } fro
 import type { WorkToolsAgentBrowserPresence, WorkToolsBrowserTab } from "../../../../shared/types/workTools";
 import { cn } from "../../ui/cn";
 import { TOOLBAR_FOCUS } from "./browserChrome";
+import { captureBrowserFact } from "./browserAnalytics";
 
 type RemotePin = Extract<OpenProjectBinding, { kind: "remote" }>;
 
@@ -319,7 +320,10 @@ export function RemoteBrowserTabViewer({
         <span className="flex-1" />
         <button
           type="button"
-          onClick={() => setControlling((value) => !value)}
+          onClick={() => {
+            if (!controlling) captureBrowserFact("remote_tab_controlled");
+            setControlling((value) => !value);
+          }}
           disabled={!canControl}
           aria-pressed={controlling}
           className={cn(
