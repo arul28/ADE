@@ -5557,6 +5557,8 @@ export function createPtyService({
   // --- Tracked agent CLI turns (cliTurnSignals.ts) ---------------------------
 
   const cliTurnStartedListeners = new Set<(event: TrackedCliTurnStartedEvent) => void>();
+  /** A stopped CLI's process id until it has exited, for `stopAndWaitForExit` retries. */
+  const pendingAgentCliExitPids = new Map<string, number>();
   const cliTurnEndedListeners = new Set<(event: TrackedCliTurnEndedEvent) => void>();
 
   const announceCliTurnTransition = (entry: PtyEntry, transition: CliTurnTransition, now: number): void => {
@@ -5580,7 +5582,7 @@ export function createPtyService({
       sessionId: entry.sessionId,
       turnStartedAt: transition.turnStartedAt != null ? new Date(transition.turnStartedAt).toISOString() : null,
       endedAt: at,
-      outcome: transition.to === "needs-input" ? "needs-input" : "done",
+      outcome: transition.to === "needs-input" ? "needs-input" : transition.endReason === "failure" ? "failed" : "done",
       source: transition.source,
     };
     for (const listener of cliTurnEndedListeners) {
@@ -10367,6 +10369,36 @@ export function createPtyService({
       const signal = claudeHookTurnSignal(args.payload);
       if (signal) applyCliTurnSignal(entry, signal, "claude-hooks");
       return true;
+    },
+
+    /**
+     * Stops a tracked CLI and resolves once its process has exited (or after
+     * `timeoutMs`), so its conversation files are no longer being written. A
+     * terminal is gone from the live map as soon as `dispose` starts, before
+     * the process is; this waits on the process itself. True when it exited.
+     */
+    async stopAndWaitForExit(sessionId: string, timeoutMs: number): Promise<boolean> {
+      const live = liveEntryBySessionId(sessionId);
+      // A retry after a timed-out wait finds no terminal: the process it
+      // stopped may still be exiting, so wait on that one again.
+      let pid = pendingAgentCliExitPids.get(sessionId) ?? null;
+      if (live) {
+        const [ptyId, entry] = live;
+        pid = entry.pty.pid ?? pid;
+        if (pid != null) pendingAgentCliExitPids.set(sessionId, pid);
+        service.dispose({ ptyId, sessionId });
+      }
+      if (pid == null) return true;
+      await waitForProcessExit(pid, timeoutMs);
+      let exited: boolean;
+      try {
+        process.kill(pid, 0);
+        exited = false;
+      } catch (error) {
+        exited = (error as NodeJS.ErrnoException)?.code !== "EPERM";
+      }
+      if (exited) pendingAgentCliExitPids.delete(sessionId);
+      return exited;
     },
 
     /** The live turn phase of a tracked agent CLI here, and where it came from; null when there is none. */

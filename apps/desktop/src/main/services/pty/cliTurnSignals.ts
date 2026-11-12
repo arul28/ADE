@@ -89,6 +89,8 @@ export type CliTurnTransition = {
   turnStartedAt: number | null;
   /** Announce it to turn listeners: a real turn, not startup chatter. */
   announce: boolean;
+  /** For a move to idle: why the turn ended (`failure` is a turn that failed). */
+  endReason?: "stop" | "failure" | "interrupted" | "quiet";
 };
 
 /**
@@ -112,7 +114,8 @@ export type TrackedCliTurnEndedEvent = {
   sessionId: string;
   turnStartedAt: string | null;
   endedAt: string;
-  outcome: "done" | "needs-input";
+  /** `failed`: the CLI said the turn ended on an error (Claude's StopFailure). */
+  outcome: "done" | "needs-input" | "failed";
   source: CliTurnSource;
 };
 
@@ -230,7 +233,7 @@ export function reduceCliTurn(
     state.submittedSinceEnd = false;
     state.submittedWhileWorking = false;
     state.turnAnnounced = false;
-    const result = transition("idle", announce);
+    const result = { ...transition("idle", announce), endReason: signal.reason };
     state.turnStartedAt = null;
     return result;
   }

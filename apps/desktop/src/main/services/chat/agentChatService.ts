@@ -51485,8 +51485,13 @@ export function createAgentChatService(args: {
       }
     },
     configHome: trackedCliConfigHome,
-    readMark: (key) => db?.getJson<{ at?: string }>(key)?.at ?? null,
-    writeMark: (key, at) => db?.setJson(key, { at }),
+    readMark: (key) => {
+      const stored = db?.getJson<{ at?: string; offset?: number }>(key);
+      return stored
+        ? { at: stored.at ?? null, offset: typeof stored.offset === "number" ? stored.offset : null }
+        : null;
+    },
+    writeMark: (key, mark) => db?.setJson(key, mark),
     buildUpsert: buildClaudeScheduleUpsert,
     isLoopPrompt: isClaudeLoopPrompt,
   });
@@ -52766,6 +52771,14 @@ export function createAgentChatService(args: {
         title: sourceTitle,
         ...(context.model ? { sourceModel: context.model } : {}),
       });
+      // The import creates the chat with the project's defaults. An agent may
+      // not start a chat with more access than its own, so cap it before
+      // anything (the handoff note) runs in it, as chat creation does.
+      const ceiling = resolvePermissionCeiling({ actor: args.runtimeActor ?? null });
+      if (ceiling) {
+        const clamp = permissionCeilingClamp(ensureManagedSession(imported.chatSessionId).session, ceiling);
+        if (clamp) await updateSession({ sessionId: imported.chatSessionId, ...clamp.patch });
+      }
       if (handoffNote) {
         await sendMessage({ sessionId: imported.chatSessionId, text: handoffNote, displayText: handoffNote }, { awaitDispatch: true });
       }
@@ -75204,7 +75217,7 @@ export function createAgentChatService(args: {
   // Callers waiting for a tracked CLI's turn to end (`waitForCliTurn`): an
   // automation step that started a CLI, which used to count as done the moment
   // the terminal opened.
-  type CliTurnWaitReason = "turn_ended" | "needs_input" | "exited" | "closed" | "timeout";
+  type CliTurnWaitReason = "turn_ended" | "turn_failed" | "needs_input" | "exited" | "closed" | "timeout";
   const cliTurnWaiters = new Map<string, Set<(reason: CliTurnWaitReason) => void>>();
   const settleCliTurnWaiters = (sessionId: string, reason: CliTurnWaitReason): void => {
     const waiters = cliTurnWaiters.get(sessionId);
@@ -75287,7 +75300,9 @@ export function createAgentChatService(args: {
         output: body ? `${lead}\n${body}` : lead,
       };
     }
-    const endStatus = reason === "exited" ? cliChildResultStatus(row) ?? "completed" : "completed";
+    const endStatus = reason === "exited"
+      ? cliChildResultStatus(row) ?? "completed"
+      : reason === "turn_failed" ? "failed" : "completed";
     const status = endStatus === "stopped" && providerMessage ? "completed" : endStatus;
     return {
       sessionId,
@@ -75325,8 +75340,9 @@ export function createAgentChatService(args: {
     });
     // A turn that stops on a prompt is not over: the person may answer it, and
     // the same turn then ends again with `done`. The waiter keeps waiting.
-    if (!event.outcome || event.outcome === "done") {
-      settleCliTurnWaiters(event.sessionId, "turn_ended");
+    const turnOver = !event.outcome || event.outcome === "done" || event.outcome === "failed";
+    if (turnOver) {
+      settleCliTurnWaiters(event.sessionId, event.outcome === "failed" ? "turn_failed" : "turn_ended");
       // A move queued for this CLI's turn end (`--when-turn-ends`, a batch) runs now.
       crossMachineHandoff?.onTurnSettled(event.sessionId);
     }
@@ -75335,7 +75351,7 @@ export function createAgentChatService(args: {
     // inside this callback, which runs while the pty is still handling the
     // output chunk that ended the turn: stopping here would save the terminal
     // without its last reply.
-    if (!event.outcome || event.outcome === "done") {
+    if (turnOver) {
       const sessionId = event.sessionId;
       setTimeout(() => cliLifecycle.stopArchivedAfterTurn(sessionId), ARCHIVED_CLI_STOP_DELAY_MS).unref?.();
     }

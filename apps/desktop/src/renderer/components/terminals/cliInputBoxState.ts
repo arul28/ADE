@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE } from "../../../shared/types/remoteRuntime";
+import { useAppStore } from "../../state/appStore";
 
 /**
  * State behind the Work input box for a running agent CLI: the person's
@@ -340,6 +341,12 @@ export type CliInputRoute = {
   pin: OpenProjectBinding | null;
   /** The CLI's machine is known to be disconnected. */
   offline: boolean;
+  /**
+   * With no pin: the key of the project tab the CLI belongs to. An unpinned
+   * call goes to whichever project is active, so a send waits while another
+   * project is.
+   */
+  projectKey?: string | null;
 };
 
 type Runner = {
@@ -449,6 +456,13 @@ async function step(sessionId: string): Promise<void> {
     schedule(sessionId, runner, OFFLINE_RETRY_MS);
     return;
   }
+  const appState = useAppStore.getState();
+  if (!runner.route.pin && runner.route.projectKey
+    && (appState.projectTransition != null || appState.projectBinding?.key !== runner.route.projectKey)) {
+    // Another project is active: an unpinned send would reach that one.
+    schedule(sessionId, runner, OFFLINE_RETRY_MS);
+    return;
+  }
   const api = typeof window !== "undefined" ? window.ade?.agentChat?.typeIntoCli : undefined;
   if (typeof api !== "function") {
     updateItem(sessionId, head.id, { state: "failed", error: "This ADE cannot type into a CLI session." });
@@ -494,6 +508,12 @@ async function step(sessionId: string): Promise<void> {
         claimedBy: null,
         claimedAt: null,
       });
+    } else if (/Project is switching/i.test(error instanceof Error ? error.message : String(error))) {
+      // The window was mid project switch: nothing was typed. Back in line.
+      updateItem(sessionId, head.id, { state: "queued", error: null, claimedBy: null, claimedAt: null });
+      runner.inFlight = false;
+      schedule(sessionId, runner, OFFLINE_RETRY_MS);
+      return;
     } else if (runner.route.offline || isUnreachableError(error)) {
       updateItem(sessionId, head.id, { state: "offline", error: null, claimedBy: null, claimedAt: null });
       runner.inFlight = false;

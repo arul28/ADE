@@ -188,7 +188,8 @@ export function createCliChildReports(deps: {
    */
   const reportCliChildTurnEnded = async (event: TrackedCliTurnEndedEvent): Promise<void> => {
     if (deps.isClosed()) return;
-    if (event.outcome && event.outcome !== "done") return;
+    if (event.outcome === "needs-input") return;
+    const resultStatus = event.outcome === "failed" ? "failed" as const : "completed" as const;
     const tracked = deps.readTrackedCliRow(event.sessionId);
     const lineage = tracked?.lineage;
     if (!tracked || !lineage) return;
@@ -201,7 +202,7 @@ export function createCliChildReports(deps: {
     const providerMessage = await deps.readProviderMessage(latestRow, lineage.provider);
     const terminalTail = await deps.readTerminalTail(row.id);
     if (deps.isClosed()) return;
-    const summary = composeCliChildReport({ status: "completed", exitCode: null, providerMessage, terminalTail });
+    const summary = composeCliChildReport({ status: resultStatus, exitCode: null, providerMessage, terminalTail });
     const childTitle = deps.childLabel(row, lineage.provider);
     // No turn-start signal reopened the card a previous report closed (an
     // older pty surface): reopen it now so this report closes a live card.
@@ -222,7 +223,7 @@ export function createCliChildReports(deps: {
       childTitle,
       spawnKind: lineage.spawnKind,
       childTurnId: `cli-turn:${turnKey}`,
-      status: "completed",
+      status: resultStatus,
       summary,
     };
     cliChildTurnReports.set(row.id, { providerMessage, at: Date.now() });
@@ -233,13 +234,13 @@ export function createCliChildReports(deps: {
       childTitle,
       childProvider: lineage.provider,
       spawnKind: lineage.spawnKind,
-      resultStatus: "completed",
+      resultStatus,
       summary,
       spawnCompletion,
       ctoPrNumber: readChildPullRequestNumber(null, summary),
       emitCtoSubagentResult: true,
       routeQuietly: selfReported,
-      wakeText: `Your ${lineage.spawnKind} CLI session "${childTitle}" finished a turn — ${summary}\n`
+      wakeText: `Your ${lineage.spawnKind} CLI session "${childTitle}" ${resultStatus === "failed" ? "ended a turn on an error" : "finished a turn"} — ${summary}\n`
         + `(It is still open at its prompt. Full terminal output: \`ade terminal read ${row.id}\`.)`,
       onParentGone: (reason) => {
         deps.logger.info("agent_chat.cli_child_turn_report_parent_gone", {

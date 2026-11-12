@@ -141,35 +141,83 @@ export function extractClaudeCliScheduleEvents(
 }
 
 const SESSION_TAIL_BYTES = 512 * 1024;
+/** The most one read takes after a known position; a longer gap is read from its tail. */
+const SESSION_READ_MAX_BYTES = 32 * 1024 * 1024;
 
-/** The last part of a Claude Code session JSONL, whole lines only; [] when unreadable. */
+/**
+ * Whole lines of a Claude Code session JSONL from `fromOffset` (where the last
+ * read stopped) to the end, and the offset to start from next time. With no
+ * offset, or one past the end (a different file), the last part of the file
+ * is read. `endOffset` stops after the last newline, so a line still being
+ * written is read whole next time. Empty and null when unreadable.
+ */
 export async function readClaudeCliSessionTail(args: {
   targetId: string | null | undefined;
   cwd: string | null | undefined;
   /** The account's `CLAUDE_CONFIG_DIR` the CLI ran under; null for the default. */
   configDir?: string | null;
-}): Promise<string[]> {
+  fromOffset?: number | null;
+}): Promise<{ lines: string[]; endOffset: number | null }> {
   const configDir = args.configDir?.trim() || null;
   const targetId = args.targetId?.trim();
   const cwd = args.cwd?.trim();
-  if (!targetId || !cwd) return [];
+  if (!targetId || !cwd) return { lines: [], endOffset: null };
   let handle: fs.promises.FileHandle | null = null;
   try {
     handle = await fs.promises.open(claudeSessionPath({ sessionId: targetId, cwd, ...(configDir ? { configDir } : {}) }), "r");
-    const stat = await handle.stat();
-    const length = Math.min(stat.size, SESSION_TAIL_BYTES);
-    if (length <= 0) return [];
-    const offset = stat.size - length;
+    const size = (await handle.stat()).size;
+    const known = typeof args.fromOffset === "number" && args.fromOffset >= 0 && args.fromOffset <= size
+      ? args.fromOffset
+      : null;
+    const start = known != null && size - known <= SESSION_READ_MAX_BYTES
+      ? known
+      : Math.max(0, size - (known != null ? SESSION_READ_MAX_BYTES : SESSION_TAIL_BYTES));
+    const length = size - start;
+    if (length <= 0) return { lines: [], endOffset: size };
     const buffer = Buffer.allocUnsafe(length);
-    const { bytesRead } = await handle.read(buffer, 0, length, offset);
-    const lines = buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/u);
-    if (offset > 0) lines.shift();
-    return lines.filter((line) => line.trim().length > 0);
+    const { bytesRead } = await handle.read(buffer, 0, length, start);
+    const read = buffer.subarray(0, bytesRead);
+    const lastNewline = read.lastIndexOf(0x0a);
+    if (lastNewline < 0) return { lines: [], endOffset: start };
+    const lines = read.subarray(0, lastNewline).toString("utf8").split(/\r?\n/u);
+    // A read that did not start at a line boundary begins mid-line.
+    if (start > 0 && start !== known) lines.shift();
+    return { lines: lines.filter((line) => line.trim().length > 0), endOffset: start + lastNewline + 1 };
   } catch {
-    return [];
+    return { lines: [], endOffset: null };
   } finally {
     await handle?.close().catch(() => {});
   }
+}
+
+/**
+ * Whether these lines hold a scheduling call (ScheduleWakeup, CronCreate,
+ * CronDelete) whose result is not in them yet: Claude may still be waiting on
+ * an approval for it. A mirror must not move its read position past it.
+ */
+export function hasPendingClaudeCliScheduleCall(lines: readonly string[]): boolean {
+  const open = new Set<string>();
+  for (const line of lines) {
+    if (!line.includes("ScheduleWakeup") && !line.includes("Cron") && !line.includes("tool_result")) continue;
+    let record: Record<string, unknown> | null;
+    try {
+      record = asRecord(JSON.parse(line));
+    } catch {
+      continue;
+    }
+    const content = asRecord(record?.message)?.content;
+    for (const raw of Array.isArray(content) ? content : []) {
+      const block = asRecord(raw);
+      if (!block) continue;
+      if (block.type === "tool_use" && typeof block.id === "string" && typeof block.name === "string") {
+        const name = baseToolName(block.name);
+        if (name === "ScheduleWakeup" || name === "CronCreate" || name === "CronDelete") open.add(block.id);
+      } else if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
+        open.delete(block.tool_use_id);
+      }
+    }
+  }
+  return open.size > 0;
 }
 
 /** The newest record time in a Claude Code session JSONL tail, epoch ms; null when none has one. */
@@ -209,8 +257,9 @@ export function createClaudeCliScheduleMirror(deps: {
   laneWorktreePath: (laneId: string) => string | null;
   /** The account config home the CLI runs under, where its JSONL lives. */
   configHome: (row: TerminalSessionSummary) => string | null;
-  readMark: (key: string) => string | null;
-  writeMark: (key: string, at: string) => void;
+  /** Where the last mirror stopped: the newest record time it took, and the file offset it read to. */
+  readMark: (key: string) => { at: string | null; offset: number | null } | null;
+  writeMark: (key: string, mark: { at: string | null; offset: number | null }) => void;
   buildUpsert: (input: {
     id: string;
     sessionId: string;
@@ -246,17 +295,33 @@ export function createClaudeCliScheduleMirror(deps: {
     const cwd = deps.laneWorktreePath(row.laneId);
     // A CLI started under an ADE account writes its JSONL in that account's
     // config home, not ~/.claude.
-    const lines = await readClaudeCliSessionTail({
+    const markKey = claudeCliScheduleMarkKey(sessionId);
+    const saved = deps.readMark(markKey);
+    // Read on from where the last mirror stopped, so a long turn's output
+    // cannot push a scheduling call out of a fixed-size tail.
+    const { lines, endOffset } = await readClaudeCliSessionTail({
       targetId: row.resumeMetadata?.targetId ?? null,
       cwd,
       configDir: deps.configHome(row),
+      fromOffset: saved?.offset ?? null,
     });
-    if (!lines.length) return;
+    const mark = saved?.at ?? null;
+    // A call still waiting on its result keeps the position here, so the
+    // next read sees the call and its result together (`mark` dedups the rest).
+    const nextOffset = hasPendingClaudeCliScheduleCall(lines) ? saved?.offset ?? null : endOffset;
+    const keepOffset = () => {
+      if (nextOffset != null && nextOffset !== saved?.offset) deps.writeMark(markKey, { at: mark, offset: nextOffset });
+    };
+    if (!lines.length) {
+      keepOffset();
+      return;
+    }
     await deps.whenReady();
-    const markKey = claudeCliScheduleMarkKey(sessionId);
-    const mark = deps.readMark(markKey);
     const events = extractClaudeCliScheduleEvents(lines, mark);
-    if (!events.length) return;
+    if (!events.length) {
+      keepOffset();
+      return;
+    }
     const ptyId = row.ptyId?.trim() || "none";
     // The CLI wrote to its log after a wakeup's fire time, so it was still
     // running then and its own scheduler fired it. Only a first read (or one
@@ -307,7 +372,7 @@ export function createClaudeCliScheduleMirror(deps: {
           .map((schedule) => scheduler.cancel(schedule.id)));
       }
     }
-    if (newestAt) deps.writeMark(markKey, newestAt);
+    deps.writeMark(markKey, { at: newestAt || mark, offset: nextOffset ?? saved?.offset ?? null });
     deps.logger.info("agent_chat.claude_cli_scheduled_work_mirrored", { sessionId, events: events.length });
   };
 

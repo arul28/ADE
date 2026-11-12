@@ -13,6 +13,7 @@ import {
   type TerminalToolType,
 } from "../../../shared/types/sessions";
 import { readAgentChatPermissionMode } from "../../../shared/types/chat";
+import { clampGenericPermissionMode, sessionPermissionLevel } from "../../../shared/permissionLadder";
 import { LAUNCH_PROFILE_TITLE } from "../../../shared/cliLaunch";
 import { providerFromTool } from "../../utils/terminalSessionSignals";
 import { lastMeaningfulTerminalLines } from "./cliChildSessions";
@@ -65,6 +66,7 @@ type PtyServiceLike = {
   waitForResumeTargetBackfill?: (sessionId: string) => Promise<void>;
   ensureResumeTargets?: (sessionIds: string[]) => Promise<void>;
   hasLivePty?: (sessionId: string) => boolean;
+  stopAndWaitForExit?: (sessionId: string, timeoutMs: number) => Promise<boolean>;
 };
 
 export type CliSessionLifecycleDeps = {
@@ -308,7 +310,17 @@ export function createCliSessionLifecycle(deps: CliSessionLifecycleDeps) {
     if (!provider) throw new Error("ADE doesn't know which agent this CLI ran, so it can't start it again.");
     const metadata = args.snapshot.resumeMetadata;
     const launch = metadata?.launch ?? {};
-    const permissionMode = readAgentChatPermissionMode(launch.permissionMode) ?? readAgentChatPermissionMode(metadata?.permissionMode) ?? "default";
+    const savedMode = readAgentChatPermissionMode(launch.permissionMode) ?? readAgentChatPermissionMode(metadata?.permissionMode) ?? "default";
+    // A fresh launch takes only the generic word, but the CLI may have been
+    // restricted through its own settings since (Codex's sandbox and approval
+    // policy, Claude's mode). Start it no higher than what those grant.
+    // A Codex CLI on its own config.toml grants what that file says, which ADE
+    // cannot read as a level: it relaunches on the same file, unchanged.
+    const deferredToConfig = savedMode === "config-toml" || launch.codexConfigSource === "config-toml";
+    const effectiveLevel = sessionPermissionLevel({ provider: metadata?.provider ?? provider, ...launch }, "ask");
+    const permissionMode = deferredToConfig
+      ? savedMode
+      : (clampGenericPermissionMode(savedMode, effectiveLevel) ?? savedMode) as AgentChatPermissionMode;
     const instanceId = text(metadata?.instanceId) ?? text(launch.instanceId);
     const presetId = text(metadata?.presetId) ?? text(launch.presetId);
     const credentialId = text(metadata?.credentialId) ?? text(launch.credentialId);
@@ -492,6 +504,15 @@ export function createCliSessionLifecycle(deps: CliSessionLifecycleDeps) {
    */
   const stopForMove = async (row: TerminalSessionSummary): Promise<{ row: TerminalSessionSummary; stopped: boolean }> => {
     const wasLive = Boolean(livePtyId(row));
+    if (wasLive && deps.ptyService?.stopAndWaitForExit && !peerOwned(row)) {
+      // The process itself must be gone, not only its terminal: it may still
+      // be flushing its conversation file.
+      if (!(await deps.ptyService.stopAndWaitForExit(row.id, MOVE_EXIT_WAIT_MS))) {
+        throw new Error("The CLI didn't stop within 5 seconds, so its conversation can't be moved safely. Stop it, then move it again.");
+      }
+      const settled = (await settleResumeTarget(row.id)) ?? row;
+      return { row: settled, stopped: true };
+    }
     stopProcess(row, "move");
     if (wasLive) {
       const deadline = Date.now() + MOVE_EXIT_WAIT_MS;

@@ -256,9 +256,12 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
 
   // Route this session's queue to its machine, and tell it when that machine
   // comes back. Keyed on the pin's key: a rebuilt pin is the same machine.
+  const projectKey = useAppStore((s) => s.projectBinding?.key ?? null);
   useEffect(() => {
-    setCliInputRoute(sessionId, { pin: pinRef.current, offline });
-  }, [offline, pinKey, sessionId]);
+    // The box shows only while this CLI's project is the active tab, so this
+    // is its project; queued sends keep it after the box unmounts.
+    setCliInputRoute(sessionId, { pin: pinRef.current, offline, ...(pinRef.current ? {} : { projectKey }) });
+  }, [offline, pinKey, projectKey, sessionId]);
 
   // A CLI that changes state (a turn ended) may have a free prompt now.
   useEffect(() => {
