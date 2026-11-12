@@ -5636,6 +5636,7 @@ export function AgentChatPane({
     // cloud computer no longer exists (no connection, or gone from the list).
     chatNotice != null && selectedSessionId != null
       && savedChatComputerGone(chatRuntimePin, selectedSessionId),
+    laneLabel?.trim() || null,
   );
   // A project chat on another machine, shown here: this desktop runs its
   // agent's browser commands in the browser the user can see, wherever the
@@ -17819,7 +17820,9 @@ export function AgentChatPane({
   const cloudLaneStatusBinding = selectedSessionId ? activeComposerRuntimeBinding : null;
   const composerAboveSlot = useMemo(() => {
     const cloudTray = adeCloudNotice ? <AdeCloudTray notice={adeCloudNotice} onAction={openAdeCloudSettings} /> : null;
-    const laneStatus = cloudLaneStatusBinding?.kind === "remote" ? <CloudLaneChatStatus binding={cloudLaneStatusBinding} /> : null;
+    const laneStatus = cloudLaneStatusBinding?.kind === "remote"
+      ? <CloudLaneChatStatus binding={cloudLaneStatusBinding} laneId={selectedSession?.laneId ?? null} />
+      : null;
     if (!cloudTray && !laneStatus) return providerSignInSlot;
     return (
       <>
@@ -17828,7 +17831,7 @@ export function AgentChatPane({
         {laneStatus}
       </>
     );
-  }, [adeCloudNotice, cloudLaneStatusBinding, openAdeCloudSettings, providerSignInSlot]);
+  }, [adeCloudNotice, cloudLaneStatusBinding, openAdeCloudSettings, providerSignInSlot, selectedSession?.laneId]);
   // Layout effect, not effect: this publishes the machine the model memos above
   // read from, so running it after paint would show one frame of the previous
   // machine's model list when the composer switches machines. Setting the same

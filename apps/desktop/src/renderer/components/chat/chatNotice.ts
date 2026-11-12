@@ -40,7 +40,10 @@ export function chatNoticeReducer(current: ChatNotice | null, action: ChatNotice
 const MACHINE_CONNECTION_DROPPED = /remote (?:runtime|ADE service) connection (?:(?:was )?interrupted|closed|failed)/i;
 
 /** The paired transport's words for a machine it cannot reach: "Can't reach <name> — it may be asleep…". */
-const MACHINE_UNREACHABLE = /^Can't reach .+ it may be asleep/i;
+const MACHINE_UNREACHABLE = /^Can't reach (.+?)\s*[—-]+\s*it may be asleep/i;
+
+/** An ADE Cloud computer's raw instance id ("ccgojg7vw5"), as a machine name the person never chose. */
+const CLOUD_INSTANCE_ID = /^[a-z0-9]{8,12}$/;
 
 const CHAT_MACHINE_CONNECTION_DROPPED_NOTICE =
   "The connection to this chat's machine dropped for a moment. The chat keeps running there, and ADE reconnects by itself. If something you just did is missing, do it again.";
@@ -56,8 +59,14 @@ export function shownChatNotice(
   chatOnAnotherMachine: boolean,
   /** The chat's cloud computer was deleted (its saved copy says so): no reconnect is coming. */
   computerGone = false,
+  /** The chat's lane name: an ADE Cloud computer is called by it, never by its raw id. */
+  laneName: string | null = null,
 ): ChatNotice | null {
   if (!notice || !chatOnAnotherMachine || notice.kind !== "failure") return notice;
+  const unreachable = MACHINE_UNREACHABLE.exec(notice.message);
+  if (unreachable && laneName?.trim() && !computerGone && CLOUD_INSTANCE_ID.test(unreachable[1] ?? "")) {
+    return { ...notice, message: notice.message.replace(unreachable[1]!, laneName.trim()) };
+  }
   // A call to a deleted computer fails as a dropped or unreachable link; the
   // truth is one sentence, not "ADE reconnects by itself".
   if (computerGone && (MACHINE_CONNECTION_DROPPED.test(notice.message) || MACHINE_UNREACHABLE.test(notice.message))) {
