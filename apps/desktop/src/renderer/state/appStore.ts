@@ -3,6 +3,7 @@ import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { shallow } from "zustand/shallow";
 import { reuseStructurallyEqualArray } from "../lib/stableIdentity";
+import { setTabBindingKey } from "../lib/tabBindingKey";
 import type { StateCreator } from "zustand";
 import {
   DEFAULT_CODEX_VOICE_PREFERENCES,
@@ -4226,6 +4227,11 @@ export const useAppStore = Object.assign(
  * which project-scoped store the composer's own `useAppStore` resolves to.
  */
 export const rootAppStoreApi: AppStoreApi = rootAppStore;
+
+// Renderer caches key a pin that names the tab's own copy as no pin (see
+// `lib/tabBindingKey`). Only the key is compared, so this costs a read per update.
+setTabBindingKey(rootAppStore.getState().projectBinding?.key ?? null);
+rootAppStore.subscribe((state) => setTabBindingKey(state.projectBinding?.key ?? null));
 
 /**
  * Reactively read from the ROOT store, bypassing any `AppStoreProvider` context.

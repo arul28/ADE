@@ -112,17 +112,20 @@ there.
 So every action that can be done for something on another machine (a chat, a
 session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
 
-1. **Pass the scope.** Renderer calls take an optional `pin` (an
-   `OpenProjectBinding`). Leave it out and the call silently goes to the
-   machine the project tab is bound to. That works in local testing and fails
-   whenever the chat's machine is a different one, with errors like
-   "Chat session '…' was not found". In a chat subtree,
-   read `useChatRuntimeScope().pin`; on the Work page, the row's
-   `foreignRow.binding` or `useWorkSessions().resolveSessionRuntimePin`; in Settings,
-   `useSettingsMachineScope().pin`. These are null when the target is the
-   tab's own machine, which keeps the unpinned route; do not substitute the
-   tab binding. Keep the pin for the whole flow: a start, its stop, and its
-   status reads go to the same machine.
+1. **Pass the scope.** A pin addresses one copy on one machine. Pass the
+   lane's, session's or copy's address; never null for the tab. `null` exists
+   only for this computer's machine-global calls in Settings. A call with no
+   pin silently goes to the machine the project tab is bound to; that works in
+   local testing and fails whenever the chat's machine is a different one,
+   with errors like "Chat session '…' was not found". In a chat subtree, read
+   `useChatRuntimeScope().pin` (and `.isActiveBinding` for "is this the tab's
+   copy"); on the Work page, the row's `foreignRow.binding` or
+   `useWorkSessions().resolveSessionRuntimePin`; on Lanes, the lane router's
+   `LaneMachine.pin`; in Settings, `useSettingsMachineScope().pin`. A pin that
+   names the tab's own copy costs what no pin cost (preload `isBoundCopyPin`).
+   UI that means "another machine" reads `isActiveBinding` or
+   `usePinTargetsTab`, never a null pin. Keep the pin for the whole flow: a
+   start, its stop, and its status reads go to the same machine.
 2. **Make the contract carry it.** A new IPC/preload method that acts on a
    chat, session, lane or terminal takes `pin?: OpenProjectBinding | null` and
    routes a pin through `callPinnedRuntimeAction` (or

@@ -583,7 +583,8 @@ export function useWorkToolStatuses(args: {
   const prListProjectRoot = useActiveProjectRoot();
   const prListBindingKey = useAppStore((s) => s.projectBinding?.key ?? null);
   // The store's status is this tab's machine's; a pinned lane carries its own.
-  const laneStatusStale = useAppStore((s) => s.laneStatusStale) && runtimePin == null;
+  const tabBindingKey = useAppStore((s) => s.projectBinding?.key ?? null);
+  const laneStatusStale = useAppStore((s) => s.laneStatusStale && (runtimePinKey == null || runtimePinKey === tabBindingKey));
   const runtimePinRef = useRef(runtimePin);
   runtimePinRef.current = runtimePin;
 
@@ -715,7 +716,10 @@ export function useWorkToolStatuses(args: {
   );
 
   // Keyed on the name, not the pin object: a pin can be rebuilt with the same key.
-  const remoteChatMachineName = runtimePin?.kind === "remote" ? machineNameForBinding(runtimePin) : null;
+  // The tab's own copy is not a "remote chat", even when the tab is bound to a remote machine.
+  const remoteChatMachineName = runtimePin?.kind === "remote" && runtimePinKey !== tabBindingKey
+    ? machineNameForBinding(runtimePin)
+    : null;
   const statuses = useMemo<WorkToolStatusMap>(() => {
     const browserLine = offline
       ? IDLE

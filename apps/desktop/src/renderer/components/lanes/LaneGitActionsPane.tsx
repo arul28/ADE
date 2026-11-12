@@ -9,7 +9,7 @@ import {
 } from "../../state/appStore";
 import { trackPendingLaneCreate } from "../../lib/pendingLaneCreates";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
-import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
+import { selectOtherMachineBranchStates, useLanesForPin, usePinTargetsTab } from "../../state/crossMachineLanes";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { plainLaneStartBranch } from "../../../shared/laneStart";
 import { laneCompareBase, laneRebaseLine, type LaneRebaseLine } from "./laneRebaseNeeds";
@@ -328,6 +328,7 @@ export function LaneGitActionsPane({
   // machine, so falling back there can match a different machine's lane and
   // drive git on the wrong checkout.
   const pinnedMachineLanes = useLanesForPin(pin);
+  const pinTargetsTab = usePinTargetsTab(pin);
   const pinnedLanes: LaneSummary[] = pinnedMachineLanes ?? lanes;
 
   const lane = useMemo(() => pinnedLanes.find((entry) => entry.id === laneId) ?? null, [pinnedLanes, laneId]);
@@ -530,10 +531,10 @@ export function LaneGitActionsPane({
       refreshChanges(targetLaneId),
       // The global lane store belongs to the tab's bound machine. Refreshing it
       // after a foreign lane's git action would be work for the wrong machine.
-      pin ? Promise.resolve() : refreshLanes({ includeStatus: true, includeSnapshots: false }),
+      pinTargetsTab ? refreshLanes({ includeStatus: true, includeSnapshots: false }) : Promise.resolve(),
       refreshGitMeta(targetLaneId),
     ]);
-  }, [pin, refreshChanges, refreshGitMeta, refreshLanes]);
+  }, [pinTargetsTab, refreshChanges, refreshGitMeta, refreshLanes]);
 
   const refreshAll = async (options?: { fetchRemote?: boolean }, targetLaneId: string | null = laneId) => {
     if (targetLaneId && options?.fetchRemote) {

@@ -3,17 +3,20 @@ import type { CursorCloudLaunchGit } from "../../../lib/cursorCloudUtils";
 
 /**
  * Where a Cursor or Devin Cloud launch runs: the chat's machine, through its
- * own (shared) sign-in. `pin` is null when that machine is the tab's own, which
- * keeps the unpinned route; every git, lane and launch call of the launch
- * takes it, so the whole flow stays on one machine.
+ * own (shared) sign-in. `pin` names that machine's copy, the tab's own
+ * included; `isActiveBinding` says whether it is the tab's. Every git, lane
+ * and launch call of the launch takes the pin, so the whole flow stays on one
+ * machine.
  */
 export function cloudLaunchScope(
   launchBinding: OpenProjectBinding | null,
   projectBinding: OpenProjectBinding | null,
-): { pin: OpenProjectBinding | null; git: CursorCloudLaunchGit } {
-  const pin = !launchBinding || launchBinding.key === projectBinding?.key ? null : launchBinding;
+): { pin: OpenProjectBinding | null; isActiveBinding: boolean; git: CursorCloudLaunchGit } {
+  const pin = launchBinding ?? projectBinding ?? null;
+  const isActiveBinding = !pin || pin.key === projectBinding?.key;
   return {
     pin,
+    isActiveBinding,
     git: {
       getSyncStatus: (args) => window.ade.git.getSyncStatus(args, pin),
       push: (args) => window.ade.git.push(args, pin),
@@ -27,9 +30,9 @@ export function cloudLaunchScope(
  */
 export function laneOnLaunchMachine(
   laneId: string,
-  pin: OpenProjectBinding | null,
+  isActiveBinding: boolean,
   machineLanes: readonly LaneSummary[] | null | undefined,
   tabLanes: readonly LaneSummary[],
 ): LaneSummary | null {
-  return (pin ? machineLanes ?? [] : tabLanes).find((lane) => lane.id === laneId) ?? null;
+  return (isActiveBinding ? tabLanes : machineLanes ?? []).find((lane) => lane.id === laneId) ?? null;
 }

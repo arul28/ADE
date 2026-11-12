@@ -4,6 +4,7 @@ import type {
   AiSettingsStatus,
   OpenProjectBinding,
 } from "../../shared/types";
+import { cacheScopePin } from "./tabBindingKey";
 
 type StatusCacheEntry = {
   value: AiSettingsStatus | null;
@@ -55,7 +56,8 @@ function normalizeProjectRoot(projectRoot: string | null | undefined): string {
   return projectRoot?.trim() || "<no-project>";
 }
 
-function bindingCacheSuffix(pin: OpenProjectBinding | null | undefined): string {
+function bindingCacheSuffix(rawPin: OpenProjectBinding | null | undefined): string {
+  const pin = cacheScopePin(rawPin);
   return pin?.key ? `::pin:${pin.key}` : "";
 }
 

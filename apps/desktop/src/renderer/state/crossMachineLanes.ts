@@ -551,6 +551,16 @@ export function useForeignSessionLaneId(
 }
 
 /**
+ * Whether a call with this pin goes to the copy the tab is bound to: no pin, or
+ * a pin that names the tab's copy. UI branches that mean "the tab's machine"
+ * read this, never a null pin.
+ */
+export function usePinTargetsTab(pin: { key: string } | null | undefined): boolean {
+  const key = pin?.key ?? null;
+  return useAppStore((state) => key == null || key === state.projectBinding?.key);
+}
+
+/**
  * The ONLY lane list a pinned lane id may be resolved against: the pinned
  * machine's own, from the live union, the retained Work slices during a
  * same-repo refill, or its warm cache.
@@ -573,11 +583,14 @@ export function useLanesForPin(
   pin: OpenProjectBinding | null | undefined,
 ): LaneSummary[] | null {
   const entry = useMachineEntryForBinding(pin);
+  // A pin that names the tab's own copy reads the tab's live lane list.
+  const tabLanes = useAppStore((state) =>
+    (pin && pin.key === state.projectBinding?.key ? state.lanes : null));
   const cached = useAppStore((state) =>
     (pin ? state.laneCacheByProject[laneCacheKeyForPin(pin)] ?? null : null));
   return useMemo(
-    () => (!pin ? null : entry?.lanes ?? cached?.lanes ?? EMPTY_LANES),
-    [cached, entry, pin],
+    () => (!pin ? null : tabLanes ?? entry?.lanes ?? cached?.lanes ?? EMPTY_LANES),
+    [cached, entry, pin, tabLanes],
   );
 }
 

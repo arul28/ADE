@@ -29,7 +29,10 @@ type WorkRuntimePinLookup = {
 };
 
 export type WorkMachineRouter = ChatMachineRouter & {
-  /** Resolve session-slice ownership, lane ownership, then the remembered launch fallback. */
+  /**
+   * Resolve session-slice ownership, lane ownership, then the remembered launch
+   * fallback. The tab's own copy is a pin like any other; null means unknown.
+   */
   pinForSession: (session: WorkRuntimePinLookup) => OpenProjectBinding | null;
   /** Keep the launch-pin registry behind the Work routing authority. */
   rememberSessionPin: (
@@ -45,9 +48,10 @@ export type WorkMachineRouter = ChatMachineRouter & {
  *
  * Same model as the chat pane's router (see `lib/chatMachineRouting`): a lane
  * owns its machine, a session inherits its machine from its lane, and the pin
- * resolves to `null` whenever that machine is the one the project tab is
- * already bound to — so every local session keeps taking the existing unpinned
- * path with no extra work.
+ * names that machine's copy, the tab's own included. A pin that names the
+ * tab's copy costs what no pin cost (preload `isBoundCopyPin`), so a local
+ * session does no extra work. "Is this the tab's machine" is
+ * `isActiveBindingPin`, never a null pin.
  *
  * This exists so a CLI/shell session is routed exactly like a chat. The Work
  * sidebar is a union across machines, and clicking a row must reach ITS machine
@@ -120,17 +124,18 @@ export function useWorkMachineRouter(
         const slicePin = sessionId ? sessionBindingsById?.get(sessionId) : undefined;
         if (slicePin) {
           // The retained cross-machine map can include the active remote
-          // binding's slice. Its session identity is authoritative too, but it
-          // still takes the existing unpinned path.
-          return slicePin.key === projectBinding?.key ? null : slicePin;
+          // binding's slice. Its session identity is authoritative too; the
+          // tab's own binding object stands for it.
+          return slicePin.key === projectBinding?.key ? projectBinding : slicePin;
         }
         const lanePin = router.pinForLane(session.laneId);
         if (lanePin) return lanePin;
         const rememberedPin = workPtyLaunchPinFor(session);
+        if (!rememberedPin) return null;
         // A remembered pin can become the active binding after the tab is
-        // rebound. Keep that case on the unpinned fast path; the pinned path has
-        // no local IPC fallback and would create a redundant event pump.
-        if (!rememberedPin || rememberedPin.key === projectBinding?.key) return null;
+        // rebound: the tab's binding object stands for it, and preload gives it
+        // the bound path's caches and event stream.
+        if (rememberedPin.key === projectBinding?.key) return projectBinding;
         // Do not liveness-gate the remembered foreign pin here. The
         // cross-machine lane scope is replaced wholesale while it reloads, so
         // an otherwise healthy binding briefly disappears from `openBindings`.
@@ -146,10 +151,11 @@ export function useWorkMachineRouter(
         const existing = workPtyLaunchPinFor(session);
         const effective = effectiveRuntimeBinding(pin, projectBinding);
         if (!effective) return;
-        // A null pin means "the bound path", not "forget this machine". After
-        // the tab dropdown moves, callers still pass null for a session that
-        // was on the old bound machine; replacing the sticky foreign pin with
-        // the new tab would silently retarget Git/Terminal/Browser.
+        // A null pin means "no known address" (the bound path), not "forget
+        // this machine". After the tab dropdown moves, a caller can still pass
+        // null for a session that was on the old bound machine; replacing the
+        // sticky foreign pin with the new tab would silently retarget
+        // Git/Terminal/Browser.
         if (existing && !pin && existing.key !== effective.key) return;
         rememberWorkPtyLaunchPin(session, effective);
       },

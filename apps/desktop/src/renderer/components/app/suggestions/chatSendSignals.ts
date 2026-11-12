@@ -4,6 +4,7 @@ import { parseChatMentions } from "../../../../shared/chatMentions";
 import { looksLikeSecret } from "../../../../shared/secretText";
 import { findSmartLinks } from "../../../../shared/smartLinks";
 import { markSuggestionDone } from "../../../onboarding/situationalSuggestions";
+import { cacheScopePin } from "../../../lib/tabBindingKey";
 
 /**
  * What a sent chat message says about which suggestion would help, read once
@@ -116,7 +117,8 @@ export function noteChatSendForSuggestions(
   if (looksLikeSecret(text.length > SECRET_SCAN_MAX_CHARS ? text.slice(0, SECRET_SCAN_MAX_CHARS) : text)) {
     patch.secretSeq = signals.secretSeq + 1;
   }
-  const trackers = scope.pin ? [] : issueTrackersIn(text);
+  // Only a chat on the tab's own copy: another machine's trackers are not the ones Settings connects.
+  const trackers = cacheScopePin(scope.pin) ? [] : issueTrackersIn(text);
   if (trackers.length) {
     patch.issueTrackers = trackers;
     patch.issueSeq = signals.issueSeq + 1;

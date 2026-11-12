@@ -19,7 +19,7 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
-import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
+import { useMachineEntryForBinding, usePinTargetsTab } from "../../state/crossMachineLanes";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { WorkToolContext } from "./workTools";
@@ -139,6 +139,7 @@ export function NativeToolFeedsProvider({
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectBinding = useAppStore((state) => state.projectBinding);
   const pinnedMachine = useMachineEntryForBinding(runtimePin);
+  const runsOnTab = usePinTargetsTab(runtimePin);
   // Optimistic true until the bound runtime answers: a Windows desktop pinned
   // to a Mac must not flash "not a Mac" while `getStatus` is in flight, and a
   // false default would never ask because the session feed used to gate on it.
@@ -173,7 +174,8 @@ export function NativeToolFeedsProvider({
     effectiveRuntimeBinding(runtimePin, projectBinding)?.rootPath ?? projectRoot;
   // Pinned calls have no local fallback, so a machine that is not answering is
   // never read from — by either consumer, because there is only one value.
-  const offline = Boolean(runtimePin) && pinnedMachine?.online === false;
+  // The tab's own copy is never "offline" here: it answers or the tab is gone.
+  const offline = Boolean(runtimePin) && !runsOnTab && pinnedMachine?.online === false;
 
   const subscribersRef = useRef<Set<{ readonly current: NativeToolFeedHandlers }>>(new Set());
   const registry = useMemo<HandlerRegistry>(() => ({
