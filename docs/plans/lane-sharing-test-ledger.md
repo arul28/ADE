@@ -143,6 +143,33 @@ stays on that computer; seeing and stopping does not.
   lane's computer unreachable, listed the active share (lane, access level,
   state); Edit rights was off with the reason; Revoke answered "Share
   stopped". The web guest then read "This share has ended".
-- Not run: the 30 s drop of a guest connected at the time of a directory
-  revoke (the test host was taken by another lane's run). The host's grant
-  refresh is unchanged main code.
+- Directory revoke with a guest connected: the guest dropped about 16 s
+  later ("This share has ended"), inside the host's 30 s grant refresh.
+- Revoke while the lane's computer was off, then start it: the guest's retry
+  read "This share has ended"; the host lists the share as revoked.
+
+## Part 2 (rights above Watch), run by the agent on test accounts
+
+Owner's go on 2026-11-12 ("why not do it now"). The branch's test machine as
+host, a scratch desktop of the test owner connected to it as a person, the
+web guest (production web) as `+adetest`.
+
+| Check | Result |
+|-------|--------|
+| Collaborate + Type into CLI sessions | Risk reads High; "Confirm high risk share" lists the reasons; Share stays off until "I trust …" is ticked. |
+| Model picker in the share window | "Add a model" lists the lane machine's models; Claude Haiku 5.5 added. |
+| Locked model, Hide my models | The guest's new chat offers only Haiku. |
+| 2 messages a day | Two sent and answered; the box becomes "No messages left today. They start again Fri 12:00 AM (the owner's clock)." |
+| Raise the limit on a live share | "Saved. They apply to the guest's open connection now."; the guest read "3 of 5 left today" at once. |
+| Remove access during a guest turn | The guest closed within 1 s; the turn finished on the host. |
+| History rule on a new share | The guest's own earlier chat showed "No messages yet." under the new grant. |
+| Suggest | Comment and "Send as draft to the owner", no Send; the comment shows; the draft lands in the owner's drafts unsent. |
+
+New findings (to fix):
+
+| ID | Severity | What |
+|----|----------|------|
+| D15 | Low | Remove access during a guest turn shows no "A guest turn is still running" notice to the owner (the host returned no running turn). |
+| D16 | Medium | After the lane's computer restarts, the owner's open app keeps the old share list: a share revoked while it was off still shows "Here now" and blocks a new invite ("already has access") until the window reloads. |
+| D17 | Low | The share window's usage line ("0 of 2 today") did not move while the guest sent messages; it updated after a save. |
+| D18 | Low | A person row says "Collaborate" while the access control shows "Custom" for the same rights. |
