@@ -673,11 +673,12 @@ struct PrDirectDetailScreen: View {
         } label: {
           Image(systemName: "arrow.up.right")
             .font(.system(size: 11, weight: .semibold))
-            // A finger-sized target that keeps the row's height.
-            .frame(width: 44, height: 36)
+            // A wider target that keeps the row's height. It is as tall as
+            // one row plus the gap, so it never covers the next check's.
+            .frame(width: 44, height: 28)
             .contentShape(Rectangle())
         }
-        .padding(.vertical, -9)
+        .padding(.vertical, -5)
         .padding(.trailing, -14)
         .buttonStyle(.plain)
         .foregroundStyle(ADEColor.textMuted)
