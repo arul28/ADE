@@ -2408,10 +2408,6 @@ function isBoundCopyPin(pin: OpenProjectBinding | null | undefined): pin is Open
 }
 
 /**
- * The fetch of a cached read made through a pin that names the bound copy:
- * the read shares the bound cache entry, and the request goes by its pin.
- */
-/**
  * A lane call that main answers on this computer: a local pin adds its
  * project's root, so main looks the lane up in that project and not in the
  * window's. Main accepts only a project root it knows.
@@ -2423,6 +2419,10 @@ function withLocalPinRoot<T extends object>(
   return pin?.kind === "local" && pin.rootPath ? { ...args, rootPath: pin.rootPath } : args;
 }
 
+/**
+ * The fetch of a cached read made through a pin that names the bound copy:
+ * the read shares the bound cache entry, and the request goes by its pin.
+ */
 function boundCopyCacheLoad<T>(
   pin: OpenProjectBinding | null | undefined,
   domain: string,
@@ -2539,15 +2539,25 @@ async function callPinnedRuntimeSync<T>(
   })) as T;
 }
 
-/** `callProjectRuntimeSyncOr` for a member that takes a pin. */
-function callPinnedOrBoundRuntimeSyncOr<T>(
+/**
+ * `callProjectRuntimeSyncOr` for a member that takes a pin. A pin on this
+ * computer keeps the unpinned call's repair fallback: an isolated brain with
+ * no sync service sends the call to main, which reaches this computer's sync
+ * service. A pin on another machine has no such fallback.
+ */
+async function callPinnedOrBoundRuntimeSyncOr<T>(
   pin: OpenProjectBinding | null | undefined,
   method: string,
   params: Record<string, unknown>,
   local: () => Promise<T>,
 ): Promise<T> {
-  if (pin) return callPinnedRuntimeSync<T>(pin, method, params);
-  return callProjectRuntimeSyncOr<T>(method, params, local);
+  if (!pin) return callProjectRuntimeSyncOr<T>(method, params, local);
+  try {
+    return await callPinnedRuntimeSync<T>(pin, method, params);
+  } catch (error) {
+    if (pin.kind === "remote" || !isSyncServiceUnavailableError(error)) throw error;
+    return await local();
+  }
 }
 
 /**

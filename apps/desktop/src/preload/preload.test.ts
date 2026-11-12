@@ -7140,6 +7140,16 @@ describe("preload remote project binding", () => {
       params: {},
     });
     expect(invoke).toHaveBeenCalledWith(IPC.syncGetStatus, undefined);
+
+    // A pin on this computer keeps the same fallback.
+    invoke.mockClear();
+    await expect(bridge.sync.getStatus(undefined, binding)).resolves.toBe(status);
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallSync, {
+      rootPath: "/repo",
+      method: "sync.getStatus",
+      params: {},
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.syncGetStatus, undefined);
   });
 
   it("blocks mutating sync calls while a remote project switch is in flight", async () => {
