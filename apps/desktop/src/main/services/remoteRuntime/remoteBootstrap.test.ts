@@ -365,8 +365,8 @@ describe("buildRemoteRuntimeEnvironmentPrefix", () => {
 });
 
 describe("validateRemoteRuntimeInitializeResult", () => {
-  it("accepts a multi-project runtime with the expected version", () => {
-    expect(() => validateRemoteRuntimeInitializeResult({
+  it("accepts a multi-project runtime with the expected version and keeps the removeCopy capability", () => {
+    const info = validateRemoteRuntimeInitializeResult({
       expectedVersion: "1.0.0",
       result: {
         runtimeInfo: { version: "1.0.0", multiProject: true },
@@ -380,10 +380,13 @@ describe("validateRemoteRuntimeInitializeResult", () => {
             create: true,
             clone: true,
             listMyGitHubRepos: true,
+            removeCopy: true,
           },
         },
       },
-    })).not.toThrow();
+    });
+    // An optional capability the brain reports must reach the desktop, or a remote folder delete is refused.
+    expect(info.capabilities.machineProjects.removeCopy).toBe(true);
   });
 
   it("rejects a stale single-project runtime", () => {

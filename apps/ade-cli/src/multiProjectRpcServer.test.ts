@@ -234,6 +234,38 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
+  it.each<[string, string, (projectId: string) => Record<string, string>]>([
+    ["projects.list", "projects.list", () => ({})],
+    ["projects.touch", "projects.touch", (projectId) => ({ projectId })],
+  ])("answers %s without another account's project link when no account is signed in here", async (_label, method, paramsFor) => {
+    const { registry, projectRoot } = createRegistry();
+    const project = registry.add(projectRoot);
+    registry.setAccountLinks([{
+      projectId: project.projectId,
+      githubRepoId: null,
+      accountProjectId: "ap_0123456789abcdef0123456789abcdef",
+      accountProjectUserId: "account-a",
+    }]);
+    const scopeRegistry = {
+      getActiveSyncHostProjectId: vi.fn(() => null),
+      getMostRecentFailingSyncHostProjectId: vi.fn(() => null),
+      getIfReady: vi.fn(() => null),
+      resolveActiveSyncHost: vi.fn(async () => null),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({ serverVersion: "test", projectRegistry: registry, scopeRegistry });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    const answer = await handler({ jsonrpc: "2.0", id: 2, method, params: paramsFor(project.projectId) });
+    const text = JSON.stringify(answer);
+
+    expect(text).toContain(project.projectId);
+    expect(text).not.toContain("ap_0123456789abcdef0123456789abcdef");
+    expect(text).not.toContain("account-a");
+    handler.dispose();
+  });
+
   it("keeps healthy sync status on the active-host resolver", async () => {
     const { registry, projectRoot } = createRegistry();
     const record = registry.add(projectRoot);
