@@ -496,8 +496,15 @@ lines only, to the project's `ade-cli.jsonl`. None carries a value:
   `projectConfig.account_setting_write_refused` (warn, the row key),
   `projectConfig.account_move_notice_resolved` (info, the row key and the
   choice), `projectConfig.account_move_failed` (warn, the row key and the
-  error name), and `projectConfig.account_move_state_read_failed`,
+  error name), `projectConfig.account_mirror_failed` (warn, the error name),
+  `projectConfig.account_store_read_failed` (warn once per process and kind
+  of read, the error name; the file is used instead), and
+  `projectConfig.account_move_state_read_failed`,
   `projectConfig.account_move_state_write_failed` (warn, the error code).
+- `lanes.new_lane_settings.adopt_failed` (warn, the error name): the old
+  per-computer new-lane choices could not be written to the account.
+- `project_scope.open_hook_failed` (warn, the error name): a project-open
+  hook (the clean-up above) threw; the project still opens.
   They tell where a project setting came from after it moved to the ADE
   account (`projectConfigAccountLayer.ts`). A value held on this computer
   (a credential-shaped key, a folder path, too large) is named by its row

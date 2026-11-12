@@ -644,8 +644,11 @@ export class ProjectScopeRegistry {
         this.options.openStrikes?.clear(projectId, "opened");
         try {
           this.options.onProjectOpened?.(record.rootPath);
-        } catch {
+        } catch (hookError) {
           // A hook never fails an open.
+          this.options.logger?.warn("project_scope.open_hook_failed", {
+            error: hookError instanceof Error ? hookError.name : "unknown",
+          });
         }
       }
       return scope;

@@ -91,6 +91,15 @@ export function createProjectConfigAccountLayer(args: {
   const rules = memoizedRules(args.rules);
   const staticKeys = buildStaticKeys(rules);
 
+  // A store read that throws falls back to the file. It runs on every
+  // snapshot read, so it warns once per kind for this process.
+  const warned = new Set<string>();
+  const readFailed = (read: "origin" | "deleted" | "list" | "get", error: unknown): void => {
+    if (warned.has(read)) return;
+    warned.add(read);
+    args.logger.warn("projectConfig.account_store_read_failed", { read, error: error instanceof Error ? error.name : "unknown" });
+  };
+
   const active = (): Target | null => {
     const backend = args.backend();
     const account = backend ? args.accountUserId() : null;
@@ -98,7 +107,8 @@ export function createProjectConfigAccountLayer(args: {
     let origin: string | null = null;
     try {
       origin = args.readOriginUrl();
-    } catch {
+    } catch (error) {
+      readFailed("origin", error);
       return null;
     }
     const scope = origin ? accountRepoScopeKey(origin) : null;
@@ -106,8 +116,9 @@ export function createProjectConfigAccountLayer(args: {
     let deleted = new Set<string>();
     try {
       deleted = new Set(backend.deletedKeys(scope).map((entry) => entry.key));
-    } catch {
+    } catch (error) {
       // Without the list, nothing counts as deleted: values move as before.
+      readFailed("deleted", error);
     }
     return { backend, scope, account, deleted };
   };
@@ -117,8 +128,9 @@ export function createProjectConfigAccountLayer(args: {
     let rows: string[] = [...target.deleted];
     try {
       rows = rows.concat(target.backend.list(target.scope).map((entry) => entry.key));
-    } catch {
+    } catch (error) {
       // A collection then shows the file's items only.
+      readFailed("list", error);
     }
     rows = rows.filter((row) => PROJECT_CONFIG_ACCOUNT_COLLECTION_PREFIXES.some((prefix) => row.startsWith(prefix)));
     return [...staticKeys, ...buildCollectionKeys(rules, files, rows)];
@@ -136,7 +148,8 @@ export function createProjectConfigAccountLayer(args: {
   const accountValue = (target: Target, key: MovedKey): unknown => {
     try {
       return key.coerce(target.backend.get(target.scope, key.row));
-    } catch {
+    } catch (error) {
+      readFailed("get", error);
       return undefined;
     }
   };

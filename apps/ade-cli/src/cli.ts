@@ -30504,11 +30504,11 @@ async function runServe(
     logger: headlessProjectLogger,
     terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),
-    // A project removed during a repair's teardown: that teardown already
-    // handed its emulators off, and nothing will re-adopt them.
     // Older clones saved the GitHub sign-in header in .git/config: take it out
     // once per project, off the open path (one file read when there is none).
     onProjectOpened: createSavedGithubHeaderSweep({ logger: headlessProjectLogger }),
+    // A project removed during a repair's teardown: that teardown already
+    // handed its emulators off, and nothing will re-adopt them.
     onUnregisterAfterHandOff: async (projectRoot) => {
       const { stopHandedOffAndroidEmulators } = await import("../../desktop/src/main/services/android/androidEmulatorService");
       await stopHandedOffAndroidEmulators({ projectRoot, logger: headlessProjectLogger });

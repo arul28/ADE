@@ -2574,7 +2574,7 @@ export type ProjectConfigSnapshot = {
     sharedPath: string;
     localPath: string;
   };
-  /** Settings that moved to the account with a different value here. Absent from older brains. */
+  /** Settings that follow the account and need the person (a different value here, or a value kept here). Absent from older brains. */
   accountNotices?: ProjectConfigAccountNotice[];
 };
 

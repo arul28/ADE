@@ -69,7 +69,7 @@ export const isRecord = (value: unknown): value is Record<string, unknown> =>
  */
 const MAX_ACCOUNT_VALUE_CHARS = 16_000;
 
-export function getIn(value: unknown, path: readonly string[]): unknown {
+function getIn(value: unknown, path: readonly string[]): unknown {
   let current = value;
   for (const part of path) {
     if (!isRecord(current)) return undefined;
@@ -78,7 +78,7 @@ export function getIn(value: unknown, path: readonly string[]): unknown {
   return current;
 }
 
-export function setIn<T>(value: T, path: readonly string[], next: unknown): T {
+function setIn<T>(value: T, path: readonly string[], next: unknown): T {
   if (path.length === 0) return next as T;
   const [head, ...rest] = path;
   const record: Record<string, unknown> = isRecord(value) ? value : {};
@@ -171,9 +171,6 @@ const COLLECTIONS: readonly CollectionSpec[] = [
 
 const MOVED_KEY_SPECS: readonly MovedKeySpec[] = [...PR_AND_TRACKER_KEYS, ...AI_KEYS, ...RECIPE_KEYS];
 
-/** The account rows the layer keeps (prefixes end with a dot), for docs. */
-export const PROJECT_CONFIG_ACCOUNT_ROWS = [...MOVED_KEY_SPECS.map((key) => key.row), ...COLLECTIONS.map((c) => c.rowPrefix)];
-
 /** Keys whose value is a path; an absolute one names a folder on this computer. */
 const PATH_KEYS = new Set(["cwd", "source", "dest", "composePath"]);
 
@@ -191,11 +188,10 @@ function itemId(item: unknown): string | null {
 }
 
 /**
- * The keys over the service's own coercion, so a value from the account has
- * exactly the shape a value from the file has (a newer ADE's unknown field
- * is dropped, a bad value is ignored).
+ * The config service's own rules, so a value from the account has exactly the
+ * shape a value from the file has (a newer ADE's unknown field is dropped, a
+ * bad value is ignored), and the layer never keeps a second copy of them.
  */
-/** The config service's own rules, so the layer never invents a second copy of them. */
 export type ProjectConfigRules = {
   /** Coerce a whole file, as reading `.ade/local.yaml` does. */
   coerceFile: (raw: unknown) => ProjectConfigFile;
