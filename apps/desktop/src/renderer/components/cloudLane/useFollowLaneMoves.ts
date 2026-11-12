@@ -4,6 +4,7 @@ import { followSessionToMachine } from "../../lib/otherMachineNavigation";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import { sameMachineKey } from "../../../shared/machineAddress";
+import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
 
 /**
  * Contract C3 for an open chat: when its cloud lane's computer changes (a
@@ -13,7 +14,8 @@ import { sameMachineKey } from "../../../shared/machineAddress";
  * Two ways it notices:
  * - the move event (`window.ade.cloud.onLaneMoved`), live;
  * - the lane index, for a move made while this window was closed or on
- *   another desktop: the pin names a computer that the lane is no longer on.
+ *   another desktop: the pin names a computer that the lane is no longer on,
+ *   or a connection this desktop has since forgotten.
  *
  * It reads nothing of its own: the index is filled by reads ADE already makes.
  */
@@ -29,12 +31,19 @@ export function useFollowLaneMoves(args: {
   const current = laneId ? computers.find((computer) => computer.laneId === laneId) ?? null : null;
   // Only a chat on a cloud lane listens for moves.
   const isCloudLane = current != null;
-  const { snapshot } = useRemoteConnectionSnapshot(Boolean(current && pinTarget));
+  // A saved chat's stand-in pin (`cloud-saved:<machine key>`) names its machine itself.
+  const standInKey = savedChatsMachineKey(pinTarget);
+  const { snapshot, loaded } = useRemoteConnectionSnapshot(Boolean(current && pinTarget && !standInKey));
   // The machine the chat's pin reaches, by its saved connection.
-  const pinMachineKey = pinTarget
-    ? snapshot?.connections.find((connection) => connection.target.id === pinTarget)?.target.pairedMachine?.machineKey ?? null
+  const pinConnection = pinTarget && !standInKey
+    ? snapshot?.connections.find((connection) => connection.target.id === pinTarget) ?? null
     : null;
-  const movedTo = current?.machineKey && pinMachineKey && !sameMachineKey(current.machineKey, pinMachineKey)
+  const pinMachineKey = standInKey ?? pinConnection?.target.pairedMachine?.machineKey ?? null;
+  // The snapshot lists every saved connection: a pin to one it no longer has
+  // (forgotten when the lane moved, before this pane mounted) reaches nothing,
+  // so the lane's computer now is where the chat goes.
+  const pinGone = Boolean(pinTarget && !standInKey && loaded && snapshot && !pinConnection);
+  const movedTo = current?.machineKey && (pinGone || (pinMachineKey && !sameMachineKey(current.machineKey, pinMachineKey)))
     ? current.machineKey
     : null;
 

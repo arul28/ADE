@@ -16,7 +16,7 @@
  */
 
 import fs from "node:fs";
-import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
+import { SAVED_CHATS_MACHINE_PREFIX, savedChatsMachineKey } from "../../../shared/cloudSavedChats";
 import { sameMachineKey } from "../../../shared/machineAddress";
 import { safeJsonParse, writeTextAtomic } from "../shared/utils";
 
@@ -89,26 +89,31 @@ export function noteGoneTarget(targetId: string, machineKey: string | null | und
 export function redirectGoneTargets(fromMachineKey: string | null | undefined, toMachineKey: string | null | undefined): void {
   const to = toMachineKey?.trim();
   if (!fromMachineKey?.trim() || !to) return;
-  let changed = false;
+  const from = fromMachineKey.trim();
   for (const entry of load()) {
-    if (sameMachineKey(entry.machineKey, fromMachineKey)) {
-      entry.machineKey = to;
-      changed = true;
-    }
+    if (sameMachineKey(entry.machineKey, from)) entry.machineKey = to;
   }
-  if (changed) save();
+  // A saved chat's stand-in pin names the old machine itself; remember where it went too.
+  const standIn = `${SAVED_CHATS_MACHINE_PREFIX}${from}`;
+  const list = load().filter((entry) => !sameMachineKey(savedChatsMachineKey(entry.targetId), from));
+  list.push({ targetId: standIn, machineKey: to, atMs: Date.now() });
+  entries = list.slice(-MAX_ENTRIES);
+  save();
 }
 
 /**
  * The machine a gone connection reached, or null. A saved chat's stand-in pin
  * (`cloud-saved:<machine key>`, a window with no connection to that computer)
- * names its machine itself.
+ * names its machine itself, unless that machine's lane moved since.
  */
 export function goneTargetMachineKey(targetId: string | null | undefined): string | null {
   if (!targetId) return null;
-  return savedChatsMachineKey(targetId)
-    ?? load().find((entry) => entry.targetId === targetId)?.machineKey
-    ?? null;
+  const stored = load().find((entry) => entry.targetId === targetId)?.machineKey;
+  if (stored) return stored;
+  const savedKey = savedChatsMachineKey(targetId);
+  if (!savedKey) return null;
+  // The stand-in of a lane that moved reaches its new computer.
+  return load().find((entry) => sameMachineKey(savedChatsMachineKey(entry.targetId), savedKey))?.machineKey ?? savedKey;
 }
 
 /**
