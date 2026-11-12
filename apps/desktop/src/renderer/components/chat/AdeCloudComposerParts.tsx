@@ -117,9 +117,8 @@ export function CloudSizeButton({
                 >
                   <span className="inline-flex h-[16px] w-[16px] shrink-0 items-center justify-center"><CloudSizeIcon tier={tier.id} size={15} /></span>
                   <span className="shrink-0 text-[11.5px] font-medium">{tier.label}</span>
-                  <span className="min-w-0 flex-1 truncate text-[10.5px] tabular-nums text-muted-fg/60">
-                    {shape}{tier.id === defaultTier ? " · Default" : ""}
-                  </span>
+                  {tier.id === defaultTier ? <span className="shrink-0 text-[9.5px] text-muted-fg/55">Default</span> : null}
+                  <span className="min-w-0 flex-1 truncate text-[10.5px] tabular-nums text-muted-fg/60">{shape}</span>
                   <span className="shrink-0 text-[11px] font-medium tabular-nums text-fg/80">{facts.rate}×</span>
                   {hoursLeftMilli != null ? (
                     <span className="w-[52px] shrink-0 text-right text-[10px] tabular-nums text-muted-fg/60">{cloudTierHoursLeftLabel(tier, hoursLeftMilli)}</span>
