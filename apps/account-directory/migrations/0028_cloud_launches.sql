@@ -30,6 +30,9 @@ create table if not exists cloud_launches (
   join_hash text,
   join_expires_at integer,
   join_used_at integer,
+  -- How often a spent code joined again (a brain whose earlier sign-in didn't
+  -- finish); capped, and reset when a new computer is made for the launch.
+  join_rejoins integer not null default 0,
   -- The device sign-in user code the computer joined with (not a secret: it
   -- only names a sign-in a signed-in person still has to approve).
   join_user_code text,

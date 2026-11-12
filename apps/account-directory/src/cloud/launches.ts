@@ -1,5 +1,5 @@
 import { mintDeviceApprovalLink } from "../deviceAppApproval";
-import { normalizeUserCode, resolveDeviceRequestOptions } from "../deviceAuthorization";
+import { findByUserCode, normalizeUserCode, resolveDeviceRequestOptions } from "../deviceAuthorization";
 import { sha256Hex } from "../sinkUtils";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import {
@@ -27,7 +27,7 @@ import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, fail, json, readJson } from "
 import { WAKE_PORT, cloudSizeForTier } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import { deleteComputer, logCloud, ownedComputer, reportCloudFailure, type CloudEnv } from "./store";
-import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome } from "./routes";
+import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome } from "./createOutcome";
 
 /**
  * The server launcher (docs/plans/cloud-6/c6-c8-launcher-spec.md, C6): a lane
@@ -40,15 +40,17 @@ import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome }
  * launch's facts, checks a one-time join code, mints the sign-in link and
  * records progress.
  *
- * The join code is the only secret: in the computer's env only, 30 minutes,
- * bound to the launch's computer (`x-ade-instance` plus the provider's own
- * metadata) and minting a link only for the launch's account. It is
+ * The join code is the only secret and the only proof: in the computer's env
+ * only, 30 minutes, and minting a link only for the launch's account. The
+ * `x-ade-instance` header and the provider's metadata name the launch's
+ * computer; they prove nothing about who calls. The code is
  * HMAC(`CLOUD_LAUNCH_JOIN_KEY`, launch id and a random salt), so a start
  * retried after a lost create answer puts the same code in the same
  * computer's env; the server keeps the salt and the code's SHA-256, never
- * the code. The first join spends it. While the launch is still joining, the
- * same computer may join again with it (a brain that restarted mid-sign-in,
- * or a join whose answer was lost): each join names a fresh device sign-in.
+ * the code. The first join spends it. While the launch is still joining and
+ * the sign-in it named was not approved, the code may join again (a brain
+ * that restarted mid-sign-in, or a join whose answer was lost), at most
+ * `MAX_REJOINS` times: each join names a fresh device sign-in.
  */
 
 type LaunchRow = {
@@ -66,6 +68,7 @@ type LaunchRow = {
   join_hash: string | null;
   join_expires_at: number | null;
   join_used_at: number | null;
+  join_rejoins: number;
   join_user_code: string | null;
   approval_url: string | null;
   stages_json: string | null;
@@ -97,6 +100,10 @@ const badRequest = (message: string) => fail("bad_request", message, 400);
 const JOIN_REFUSED = "This computer can't join with that code.";
 /** What a launch that never signed its computer in shows once its join window closed. */
 const JOIN_NEVER_FINISHED = "The new computer couldn't sign in.";
+/** How often a spent join code may join again: a brain whose earlier sign-in didn't finish, never a link mint without end. */
+const MAX_REJOINS = 5;
+/** The computer joined before its launch's create finished: it asks again in a moment. */
+const joinNotReady = () => fail("join_not_ready", "The computer is still being set up.", 409);
 /** The stages before which a cancel still deletes the computer: nothing of the agent ran yet. */
 const AGENT_STAGE = "agent";
 
@@ -349,13 +356,13 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
     // Not ours to make: another start holds it (or it's a retry of one that never got a computer).
     if (!(row.state === "making" && !row.instance_id)) return json(recordOf(row, now), 200);
     // A retry: the salt the first attempt kept, so the computer it may have made has this code.
-    if (row.join_salt) {
-      salt = row.join_salt;
-      joinCode = (await joinCodeOf(env, launchId, salt))!;
-    } else {
-      await env.DB.prepare("update cloud_launches set join_salt = ?, join_hash = ? where launch_id = ? and join_salt is null")
-        .bind(salt, await sha256Hex(joinCode), launchId).run();
+    // Every claim writes the salt, so a `making` row always has one.
+    if (!row.join_salt) {
+      reportCloudFailure("cloud.launch_join_salt_missing", { launchId });
+      return fail("unavailable", "ADE Cloud can't start a lane here right now. Try again soon.", 500);
     }
+    salt = row.join_salt;
+    joinCode = (await joinCodeOf(env, launchId, salt))!;
   }
 
   const size = cloudSizeForTier(parsed.sizeId)!;
@@ -370,6 +377,7 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
     ade_request_id: launchId,
   };
   const joinExpiresAt = now + CLOUD_LAUNCH_JOIN_TTL_MS;
+  const joinHash = await sha256Hex(joinCode);
   const outcome = await deps.createComputer(userId, deps.provider, {
     body: {
       name: computerNameOf(parsed.lane.name),
@@ -380,13 +388,16 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
       channel: parsed.channel ?? "stable",
     },
     serverEnv: { [CLOUD_LAUNCH_ENV.launchId]: launchId, [CLOUD_LAUNCH_ENV.join]: joinCode },
-    // A computer this call made: its join window opens with the adoption, in one batch.
+    // A computer this call made: its join window opens with the adoption, in
+    // one batch. It holds exactly this call's code, so the hash is rewritten to
+    // match it (a start retried across a key rotation works the code out under
+    // the new key); a replay keeps the hash the first attempt wrote.
     onMade: (instance) => [
       env.DB.prepare(`
-        update cloud_launches set instance_id = ?, join_expires_at = ?, join_used_at = null, join_user_code = null,
+        update cloud_launches set instance_id = ?, join_hash = ?, join_expires_at = ?, join_used_at = null, join_rejoins = 0, join_user_code = null,
           state = case when state = 'making' then 'joining' else state end, updated_at = ?
         where launch_id = ?
-      `).bind(instance.id, joinExpiresAt, now, launchId),
+      `).bind(instance.id, joinHash, joinExpiresAt, now, launchId),
     ],
   });
   if (outcome.kind === "replayed") {
@@ -610,16 +621,29 @@ const MINT_FAILED: Record<string, string> = {
 const MINT_UNAVAILABLE = "ADE's account service can't approve sign-ins right now. Try again in a moment.";
 
 /**
+ * Whether the device sign-in a launch's join named was approved: the computer
+ * holds (or can still collect) its session, so it never needs to join again.
+ */
+async function signInApproved(env: CloudEnv, userCode: string | null): Promise<boolean> {
+  if (!userCode) return false;
+  const signIn = await findByUserCode(env, userCode);
+  return signIn?.status === "approved" || signIn?.status === "consumed";
+}
+
+/**
  * `POST /cloud/launches/:launch/join`. The code is checked before anything
- * else is read for the caller: its hash, its time, and the computer that
- * presents it (the header, against the launch's computer and the provider's
- * metadata on it). Claimed atomically while the launch is still joining, then
- * the link is minted for the launch's own account; a link that couldn't be
- * minted puts the claim back, so the computer can ask again with a fresh
- * sign-in. A code already spent may join again from the same computer while
- * the launch is `joining` or `needs_approval` (a brain that restarted
- * mid-sign-in, a lost answer): that join names a fresh device sign-in, and
- * an approval page shown for the old one is withdrawn.
+ * else is read for the caller: its hash, then its time. The code is the only
+ * proof; the header and the provider's metadata only name the computer, and
+ * must name the launch's. A computer whose launch's create hasn't finished
+ * (`making`, no computer recorded yet) is told to ask again
+ * (`join_not_ready`). Claimed atomically while the launch is still joining,
+ * then the link is minted for the launch's own account; a link that couldn't
+ * be minted puts the claim back, so the computer can ask again with a fresh
+ * sign-in. A code already spent may join again while the launch is
+ * `joining` or `needs_approval` and the sign-in it named was not approved (a
+ * brain that restarted mid-sign-in, a lost answer), at most `MAX_REJOINS`
+ * times: that join names a fresh device sign-in, and an approval page shown
+ * for the old one is withdrawn.
  */
 export async function handleLaunchJoin(request: Request, env: CloudEnv, path: string, deps: { provider: CloudProvider | null; now: number }): Promise<Response> {
   const route = launchRouteOf(path);
@@ -632,6 +656,8 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
   const row = await readLaunch(env, launchId);
   if (!row?.join_hash || !sameDigest(await sha256Hex(nonce), row.join_hash)) return fail("join_refused", JOIN_REFUSED, 403);
   const { now } = deps;
+  // The create's answer was lost and no retried start adopted the computer yet: its code is right, its window not open.
+  if (row.state === "making" && !row.instance_id) return joinNotReady();
   if (row.join_expires_at == null || row.join_expires_at <= now) return fail("join_expired", "This computer's join code expired. Cancel the launch and start it again.", 410);
   const joinExpiresAt = row.join_expires_at;
   const instanceId = request.headers.get(CLOUD_INSTANCE_HEADER)?.trim() ?? "";
@@ -648,6 +674,10 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
     // A sign-in the person didn't approve in its 10 minutes is replaced by a
     // fresh one from the same computer; the person still approves it themselves.
     const freshCode = typeof body.userCode === "string" ? normalizeUserCode(body.userCode) : null;
+    // A sign-in already approved is never swapped for another: the computer has its session.
+    if (freshCode && freshCode !== row.join_user_code && await signInApproved(env, row.join_user_code)) {
+      return fail("join_used", "This computer's join code was already used.", 409);
+    }
     const userCode = freshCode ?? row.join_user_code;
     await env.DB.prepare(`
       update cloud_launches set state = 'needs_approval', join_user_code = ?, approval_url = ?, updated_at = ? where launch_id = ? and state in ('joining', 'needs_approval')
@@ -657,7 +687,12 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
   }
 
   const rejoin = row.join_used_at != null;
-  if (rejoin && row.state !== "joining" && row.state !== "needs_approval") return fail("join_used", "This computer's join code was already used.", 409);
+  const joinUsed = () => fail("join_used", "This computer's join code was already used.", 409);
+  if (rejoin && row.state !== "joining" && row.state !== "needs_approval") return joinUsed();
+  if (rejoin && (row.join_rejoins >= MAX_REJOINS || await signInApproved(env, row.join_user_code))) {
+    logCloud("cloud.launch_rejoin_refused", { launchId, rejoins: row.join_rejoins });
+    return joinUsed();
+  }
   const userCode = typeof body.userCode === "string" ? normalizeUserCode(body.userCode) : null;
   if (!userCode) return badRequest("The join needs the computer's sign-in code.");
   if (!deps.provider) return fail("unavailable", "ADE Cloud can't check this computer right now. Try again soon.", 503);
@@ -668,25 +703,28 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
     return fail("join_refused", JOIN_REFUSED, 403);
   }
   // The claim holds only if nothing moved since the read: the same spend (none,
-  // or the one a rejoin saw), the code, its time, the computer, and a launch
-  // still joining (a cancel during the provider check above wins).
+  // or the one a rejoin saw), the same rejoin count, the code, its time, the
+  // computer, and a launch still joining (a cancel during the provider check
+  // above wins). A rejoin counts against `MAX_REJOINS`.
+  const rejoinCount = rejoin ? 1 : 0;
   const claimed = await env.DB.prepare(`
-    update cloud_launches set join_used_at = ?, join_user_code = ?, approval_url = null,
+    update cloud_launches set join_used_at = ?, join_user_code = ?, approval_url = null, join_rejoins = join_rejoins + ?,
       state = case when state = 'needs_approval' then 'joining' else state end, updated_at = ?
-    where launch_id = ? and coalesce(join_used_at, 0) = ? and join_hash = ? and join_expires_at > ? and instance_id = ?
+    where launch_id = ? and coalesce(join_used_at, 0) = ? and join_rejoins = ? and join_hash = ? and join_expires_at > ? and instance_id = ?
       and state in ('joining', 'needs_approval')
-  `).bind(now, userCode, now, launchId, row.join_used_at ?? 0, row.join_hash, now, instanceId).run();
+  `).bind(now, userCode, rejoinCount, now, launchId, row.join_used_at ?? 0, row.join_rejoins, row.join_hash, now, instanceId).run();
   if ((claimed.meta?.changes ?? 0) !== 1) {
     const latest = await readLaunch(env, launchId);
     return latest && latest.state !== "joining" && latest.state !== "needs_approval"
       ? fail("launch_closed", "This launch isn't running.", 409)
-      : fail("join_used", "This computer's join code was already used.", 409);
+      : joinUsed();
   }
   const link = await mintDeviceApprovalLink(env, { userId: row.user_id, userCode, origin: new URL(request.url).origin }, resolveDeviceRequestOptions({}));
   if (!link.ok) {
-    // Back to what the claim found: an unspent code stays unspent.
-    await env.DB.prepare("update cloud_launches set join_used_at = ?, join_user_code = ? where launch_id = ? and join_used_at = ?")
-      .bind(row.join_used_at, row.join_user_code, launchId, now).run();
+    // Back to what the claim found: an unspent code stays unspent, and a rejoin that minted nothing isn't counted.
+    logCloud("cloud.launch_join_mint_failed", { launchId, error: link.error, rejoin });
+    await env.DB.prepare("update cloud_launches set join_used_at = ?, join_user_code = ?, join_rejoins = join_rejoins - ? where launch_id = ? and join_used_at = ?")
+      .bind(row.join_used_at, row.join_user_code, rejoinCount, launchId, now).run();
     return fail(link.error, MINT_FAILED[link.error] ?? MINT_UNAVAILABLE, link.status);
   }
   logCloud("cloud.launch_joined", { launchId, userId: row.user_id, rejoin });

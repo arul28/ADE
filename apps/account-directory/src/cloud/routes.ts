@@ -8,6 +8,7 @@ import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { routeReferrals } from "./referrals";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { handleLaunchJoin, isLaunchJoinRequest, routeLaunches } from "./launches";
+import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
 import { routeProjectComputersDelete } from "./projectComputers";
 import { routeSignIns } from "./signIns";
 import {
@@ -118,7 +119,6 @@ const noProviderKey = () => fail("unavailable", cloudErrorMessage("no_provider_k
 const diskChanged = () => fail("disk_limit", "Your computers' disk changed while this ran. Try again.", 409);
 
 const CANT_MAKE_COMPUTER_MESSAGE = "ADE Cloud can't make a computer right now. Try again soon.";
-const createInProgress = () => fail("create_in_progress", "ADE Cloud is still making this computer. Try again in a moment.", 409);
 /** The owner's cost limit is reached: nothing new, no disk growth. Never names why. */
 const cantMakeComputer = () => fail("unavailable", CANT_MAKE_COMPUTER_MESSAGE, 503);
 const cantGrowDisk = () => fail("disk_limit", "ADE Cloud can't grow this disk right now. Try again later.", 403, { reason: "unavailable" satisfies CloudDiskRefusalReason });
@@ -340,28 +340,6 @@ async function releasePending(env: CloudEnv, pendingId: string): Promise<void> {
   await env.DB.prepare("delete from cloud_computers where instance_id = ?").bind(pendingId).run();
 }
 
-/** A repeated request id: the computer that request made, or a create still in flight. */
-type ReplayOutcome = { kind: "replayed"; instance: CloudInstance } | { kind: "in_progress" };
-
-/**
- * How a create ended, for a caller inside the server (the launcher) that acts
- * on it without decoding HTTP: `made` by this call (`answer` is the route's
- * 201 body), `replayed` (an earlier request with the same id made it), a
- * create still `in_progress`, or `refused` with the route's own answer.
- */
-export type CreateComputerOutcome =
-  | { kind: "made"; instance: CloudInstance; answer: unknown }
-  | ReplayOutcome
-  | { kind: "refused"; response: Response };
-
-/** The route's answer for a create's outcome: 201, 200 for a replay, 409 while one is in flight, or the refusal. */
-export function createAnswerOf(outcome: CreateComputerOutcome): Response {
-  if (outcome.kind === "made") return json(outcome.answer, 201);
-  if (outcome.kind === "replayed") return json(outcome.instance, 200);
-  if (outcome.kind === "in_progress") return createInProgress();
-  return outcome.response;
-}
-
 /**
  * A create or copy that names a request id this account already used gets the
  * computer that request made, so a retried request (a lost answer, a client
@@ -436,17 +414,6 @@ async function handleCreate(request: Request, env: CloudEnv, userId: string, pro
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   return createAnswerOf(await createComputer(env, userId, provider, { body }, ctx));
 }
-
-/**
- * What the server itself adds to a create made for one of its own flows (the
- * server launcher): env the client could not set, and statements that land in
- * the adoption's batch, so they hold exactly when the computer was made.
- */
-export type CreateComputerExtras = {
-  body: Record<string, unknown>;
-  serverEnv?: Record<string, string>;
-  onMade?: (instance: CloudInstance) => D1PreparedStatement[];
-};
 
 /**
  * The one way a computer is made (`POST /cloud/instances` and the server

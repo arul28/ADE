@@ -706,13 +706,15 @@ export type CloudChatTranscriptPage = {
 
 /**
  * What the new computer's env carries for a server launch, and nothing else:
- * the launch id, and its join code (30 minutes, bound to that computer and
- * the account; spent by the first join, and only that computer may join again
- * with it while the launch is still joining). The server keeps only the
- * code's salt and SHA-256.
+ * the launch id, and its join code (30 minutes, for the launch's account
+ * only; spent by the first join, and good for at most 5 joins again while the
+ * launch is still joining and the sign-in it named wasn't approved). The code
+ * is the only proof: the instance header and the provider's metadata name the
+ * computer, they don't prove who calls. The server keeps only the code's salt
+ * and SHA-256.
  */
 export const CLOUD_LAUNCH_ENV = { launchId: "ADE_LAUNCH_ID", join: "ADE_LAUNCH_JOIN" } as const;
-/** The computer names itself on the join (its `ADE_CLOUD_INSTANCE_ID`); the server checks it against the launch and the provider's own record. */
+/** The computer names itself on the join (its `ADE_CLOUD_INSTANCE_ID`); the server checks that it names the launch's computer in the provider's own record. A name, not a proof. */
 export const CLOUD_INSTANCE_HEADER = "x-ade-instance";
 /** The computer's metadata names the launch that made it. */
 export const CLOUD_LAUNCH_METADATA = { launchId: "ade_launch_id" } as const;
@@ -806,10 +808,13 @@ export type CloudLaunchRecord = {
  * was spent, from the same computer, before it expires) moves the launch to
  * `needs_approval` when its headless browser stopped on a confirm page; a
  * `userCode` with it replaces a sign-in the person let expire. While the
- * launch is still joining, the same computer may join again with a spent
- * code (a restart mid-sign-in): that names a fresh sign-in. Both answers carry
- * `joinExpiresAt` (epoch ms): the computer waits for a sign-in no longer, and
- * the server shows the launch failed once it passed unjoined.
+ * launch is still joining and the sign-in it named wasn't approved, a spent
+ * code may join again (a restart mid-sign-in), at most 5 times: that names a
+ * fresh sign-in. Both answers carry `joinExpiresAt` (epoch ms): the computer
+ * waits for a sign-in no longer, and the server shows the launch failed once
+ * it passed unjoined. A join that arrives while the server is still making
+ * the computer (its create answer was lost) gets a retryable 409
+ * `join_not_ready`; the computer asks again for up to 10 minutes.
  */
 export type CloudLaunchJoinRequest = { nonce: string; userCode?: string; needsApproval?: boolean };
 export type CloudLaunchJoinResult =
@@ -902,10 +907,12 @@ export type CloudProjectComputersPreview = { computers: CloudProjectComputer[]; 
 
 /**
  * The delete's answer. It acts only on the named computers that still belong
- * to the origin and aren't already in another delete job; `truncated` when
- * more than 50 were named (the rest are left alone).
+ * to the origin and aren't already in another delete job: `accepted` are the
+ * ones this job took, `skipped` the other named ones (no longer the
+ * project's, gone, or in another job). `truncated` when more than 50 were
+ * named (the rest are left alone, in neither list).
  */
-export type CloudProjectComputersDeleteStarted = { jobId: string; truncated: boolean };
+export type CloudProjectComputersDeleteStarted = { jobId: string; accepted: string[]; skipped: string[]; truncated: boolean };
 
 /**
  * One computer's place in a delete job: `pending` until the server takes it,

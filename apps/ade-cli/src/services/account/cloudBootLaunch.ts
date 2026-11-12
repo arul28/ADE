@@ -11,14 +11,17 @@
  *      the page stops on something a person must confirm, it reports
  *      `needs_approval` and the caller shows one "Approve" tap. The whole
  *      wait stays inside the server's join window (`joinExpiresAt`); a brain
- *      that restarts inside it joins again with the same code;
+ *      that restarts inside it joins again with the same code. A join that
+ *      lands while the server is still making this computer is asked again
+ *      with a backoff (`join_not_ready`, up to 10 minutes);
  *   3. once signed in, reads the launch's facts, sets the repository up, and
  *      runs the launch through this brain's own launch pipeline
  *      (`chat.startLaunch`, parsed by `parseChatLaunchArgs` like every other
  *      entry) with the same launch id and lane id, so the lane is the same as
  *      one a desktop handed off;
  *   4. posts stage changes, one at a time and in order (a handful of writes
- *      per launch).
+ *      per launch). The last one is retried with a backoff, and a later boot
+ *      sends it when it still couldn't land.
  *
  * Never a password and never a provider sign-in: the person's own account
  * approves the computer, and their providers come from the account vault.
@@ -97,6 +100,16 @@ const APPROVAL_ROUNDS = 6;
 const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** The join's refusals a fresh device sign-in can get past (the code was given back, or the server was busy). */
 const JOIN_RETRY_CODES: ReadonlySet<string> = new Set(["expired", "not_found", "already_used", "unavailable", "network", "timeout"]);
+/** The server is still making this computer (its create answer was lost): asked again with a backoff, this long at most. */
+const JOIN_NOT_READY_CODE = "join_not_ready";
+const JOIN_NOT_READY_MAX_MS = 10 * 60_000;
+const JOIN_NOT_READY_FIRST_DELAY_MS = 5_000;
+const JOIN_NOT_READY_MAX_DELAY_MS = 60_000;
+/** A device sign-in with less time left than this is replaced before it is named in a join. */
+const LOGIN_MIN_LEFT_MS = 2 * 60_000;
+/** The last stage report (`done` or `failed`) is sent this many times before a later boot is left to send it. */
+const TERMINAL_REPORT_ATTEMPTS = 4;
+const TERMINAL_REPORT_FIRST_DELAY_MS = 2_000;
 /** The needs-approval report's refusals that end the wait: the join window closed, or the launch did. */
 const JOIN_OVER_CODES: ReadonlySet<string> = new Set(["join_expired", "launch_closed", "join_refused"]);
 const TERMINAL: ReadonlySet<ChatLaunchPhase> = new Set(["completed", "failed", "cancelled"]);
@@ -108,6 +121,11 @@ const REPORTED_STATE: Partial<Record<ChatLaunchPhase, NonNullable<CloudLaunchSta
   cancelled: "failed",
 };
 const STOPPED_ON_COMPUTER = "The launch was stopped on the computer.";
+/** The 4xx answers a stage report is sent again after (a token on its way, a timeout, a busy server). */
+const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([401, 408, 429]);
+
+/** Sends one stage report; true once it is settled (stored, or refused for good), false when it couldn't reach the server. */
+type ReportStages = (update: CloudLaunchStagesUpdate) => Promise<boolean>;
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -167,6 +185,7 @@ const safeFileName = (name: string): string => name.replace(/[/\\\u0000-\u001f]/
  */
 function launchPayloadOf(
   launchId: string,
+  record: Pick<CloudLaunchRecord, "createdAt">,
   request: CloudServerLaunchRequest,
   attachments: Array<{ path: string; type: "image" | "file" }>,
   priorStages: CloudLaunchStage[],
@@ -177,6 +196,8 @@ function launchPayloadOf(
     kind: request.kind,
     mode: "background",
     launchId,
+    // The server's launch start: the card's total counts making the computer, the join and the clone too.
+    ...(Number.isFinite(record.createdAt) ? { setupStartedAt: new Date(record.createdAt).toISOString() } : {}),
     laneId: request.lane.id,
     laneName: request.lane.name,
     prompt: chat?.prompt ?? "",
@@ -208,12 +229,20 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
   if (known?.phase === "ended") return;
   const hold = deps.hold ?? (<T>(run: () => Promise<T>) => run());
 
-  const report = async (update: CloudLaunchStagesUpdate): Promise<CloudLaunchRecord | null> => {
+  const report: ReportStages = async (update) => {
+    const api = deps.api();
+    if (!api) {
+      logger.warn("cloud_boot_launch.report_failed", { launchId, error: "no account server" });
+      return false;
+    }
     try {
-      return await deps.api()?.reportLaunchStages(launchId, update) ?? null;
+      await api.reportLaunchStages(launchId, update);
+      return true;
     } catch (error) {
-      logger.warn("cloud_boot_launch.report_failed", { launchId, error: errorText(error) });
-      return null;
+      // The server's own no (a closed or finished launch) is final: sending it again changes nothing.
+      const final = error instanceof CloudApiError && error.status >= 400 && error.status < 500 && !RETRYABLE_STATUSES.has(error.status);
+      logger.warn("cloud_boot_launch.report_failed", { launchId, final, error: errorText(error) });
+      return final;
     }
   };
 
@@ -258,7 +287,9 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
         ? "The new computer can't read this repository. Check that ADE Cloud can sign in to GitHub for it, then start again."
         : "ADE couldn't clone the repository on the new computer.";
       logger.warn("cloud_boot_launch.clone_failed", { launchId, error: raw });
-      await report({ state: "failed", stages: [computerStage, joinStage, { id: "clone", status: "failed", error: sentence }], error: sentence });
+      if (!await reportFinal(report, { state: "failed", stages: [computerStage, joinStage, { id: "clone", status: "failed", error: sentence }], error: sentence }, sleep)) {
+        logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: "clone_failed" });
+      }
       writeState(deps.stateFile, { launchId, phase: "ended" });
       return;
     }
@@ -275,7 +306,7 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
         fs.writeFileSync(target, Buffer.from(await api.readLaunchFile(launchId, file.fileId)));
         attachments.push({ path: target, type: file.contentType.startsWith("image/") ? "image" : "file" });
       }
-      const args = parseChatLaunchArgs(launchPayloadOf(launchId, request, attachments, [computerStage, joinStage, cloneStage]));
+      const args = parseChatLaunchArgs(launchPayloadOf(launchId, record, request, attachments, [computerStage, joinStage, cloneStage]));
       const launches = await deps.launches(project.projectId);
       await launches.start(args);
     } catch (error) {
@@ -283,7 +314,9 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
       logger.warn("cloud_boot_launch.start_failed", { launchId, error: raw });
       // No `agent` row: nothing of the agent ran, so a cancel still deletes the computer.
       const sentence = `ADE couldn't start the lane on the new computer: ${raw}`.slice(0, 400);
-      await report({ state: "failed", stages: [computerStage, joinStage, cloneStage], error: sentence });
+      if (!await reportFinal(report, { state: "failed", stages: [computerStage, joinStage, cloneStage], error: sentence }, sleep)) {
+        logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: "start_failed" });
+      }
       writeState(deps.stateFile, { launchId, phase: "ended", projectId: project.projectId });
       return;
     }
@@ -311,18 +344,38 @@ async function join(deps: CloudBootLaunchDeps, sleep: (ms: number) => Promise<vo
   // The server's join window; unknown until its first answer.
   let joinEnds = Number.POSITIVE_INFINITY;
   const windowOpen = () => Date.now() < joinEnds;
+  // Kept across a `join_not_ready` wait while it has time left, so the wait doesn't start a sign-in per ask.
+  let pending: Awaited<ReturnType<CloudBootLaunchDeps["account"]["startDeviceLogin"]>> | null = null;
+  let notReadySince: number | null = null;
+  let notReadyDelay = JOIN_NOT_READY_FIRST_DELAY_MS;
   for (let attempt = 1; attempt <= JOIN_ATTEMPTS && windowOpen(); attempt += 1) {
     let login: Awaited<ReturnType<CloudBootLaunchDeps["account"]["startDeviceLogin"]>>;
     let url: string;
     try {
-      login = await deps.account.startDeviceLogin();
+      login = pending && Date.parse(pending.expiresAt) - Date.now() > LOGIN_MIN_LEFT_MS ? pending : await deps.account.startDeviceLogin();
+      pending = login;
       const answer = await api.joinLaunch(launchId, instanceId, { nonce: joinCode, userCode: login.userCode });
       if (typeof answer.joinExpiresAt === "number") joinEnds = answer.joinExpiresAt;
       if (!("url" in answer)) throw new Error("The account server answered the join without a link.");
       url = answer.url;
     } catch (error) {
       const code = error instanceof CloudApiError ? error.code : "unknown";
+      if (code === JOIN_NOT_READY_CODE) {
+        // The server is still making this computer: not a failed attempt, asked again with a backoff, for a bounded time.
+        notReadySince ??= Date.now();
+        if (Date.now() - notReadySince < JOIN_NOT_READY_MAX_MS) {
+          logger.info("cloud_boot_launch.join_not_ready", { launchId, waitMs: notReadyDelay });
+          await sleep(notReadyDelay);
+          notReadyDelay = Math.min(notReadyDelay * 2, JOIN_NOT_READY_MAX_DELAY_MS);
+          attempt -= 1;
+          continue;
+        }
+        logger.warn("cloud_boot_launch.join_never_ready", { launchId, waitedMs: Date.now() - notReadySince });
+        return false;
+      }
       logger.warn("cloud_boot_launch.join_refused", { launchId, attempt, code, error: errorText(error) });
+      // A refused join gets a fresh device sign-in next time (its code may have been given back or spent).
+      pending = null;
       // A network still coming up (`unknown`: the device sign-in itself), or a link that couldn't be minted.
       if (code === "unknown" || JOIN_RETRY_CODES.has(code)) {
         await sleep(3_000);
@@ -330,6 +383,7 @@ async function join(deps: CloudBootLaunchDeps, sleep: (ms: number) => Promise<vo
       }
       return false;
     }
+    pending = null;
     const controller = new AbortController();
     const opened: HeadlessApprovalResult = deps.approveHeadless
       ? await deps.approveHeadless(url, controller.signal).catch((error: unknown) => {
@@ -392,6 +446,22 @@ async function waitSignedIn(
 }
 
 /**
+ * A launch's last report (`done` or `failed`): nothing else writes the launch
+ * after it, so a blip is retried with a backoff. True once it settled.
+ */
+async function reportFinal(report: ReportStages, update: CloudLaunchStagesUpdate, sleep: (ms: number) => Promise<void>): Promise<boolean> {
+  let delay = TERMINAL_REPORT_FIRST_DELAY_MS;
+  for (let attempt = 1; attempt <= TERMINAL_REPORT_ATTEMPTS; attempt += 1) {
+    if (await report(update)) return true;
+    if (attempt < TERMINAL_REPORT_ATTEMPTS) {
+      await sleep(delay);
+      delay *= 2;
+    }
+  }
+  return false;
+}
+
+/**
  * Reports the brain's own launch until it ends: a write when a stage's status
  * changes or the launch ends, never on a timer, one after another so a later
  * write never lands before an earlier one.
@@ -399,9 +469,10 @@ async function waitSignedIn(
 async function follow(
   deps: CloudBootLaunchDeps,
   projectId: string,
-  report: (update: CloudLaunchStagesUpdate) => Promise<CloudLaunchRecord | null>,
+  report: ReportStages,
 ): Promise<void> {
   const { launchId, logger } = deps;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const launches = await deps.launches(projectId);
   let last = "";
   const send = async (snapshot: ChatLaunchSnapshot): Promise<boolean> => {
@@ -411,14 +482,26 @@ async function follow(
     if (shape === last) return terminal;
     last = shape;
     const error = snapshot.phase === "cancelled" ? STOPPED_ON_COMPUTER : snapshot.phase === "failed" ? snapshot.error : null;
-    await report({
+    const update: CloudLaunchStagesUpdate = {
       state: REPORTED_STATE[snapshot.phase] ?? "running",
       stages,
       sessionId: snapshot.sessionId,
       ...(error ? { error } : {}),
-    });
-    if (terminal) writeState(deps.stateFile, { launchId, phase: "ended", projectId });
-    return terminal;
+    };
+    if (!terminal) {
+      await report(update);
+      return false;
+    }
+    if (await reportFinal(report, update, sleep)) {
+      writeState(deps.stateFile, { launchId, phase: "ended", projectId });
+      return true;
+    }
+    // Still unsent: the state stays `handed_off`, so the next boot follows the
+    // launch again and sends it (and a later change here sends it too).
+    last = "";
+    logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: snapshot.phase });
+    writeState(deps.stateFile, { launchId, phase: "handed_off", projectId });
+    return true;
   };
   await new Promise<void>((resolve) => {
     let ended = false;

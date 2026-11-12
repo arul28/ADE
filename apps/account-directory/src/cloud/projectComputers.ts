@@ -28,8 +28,10 @@ import { deleteComputer, listComputers, logCloud, ownedComputer, reportCloudFail
  * (`instanceIds`) and acts only on those that still belong to the origin, so
  * a computer made after the preview (a server launch still joining) is left
  * alone. A computer already in another job's `pending` or `working` row is
- * skipped, so two jobs never push one computer at once. At most 50 a job;
- * `truncated` says when there were more.
+ * skipped, checked inside each row's own insert, so two jobs never push one
+ * computer at once even when they start together. At most 50 a job;
+ * `truncated` says when there were more, and `accepted`/`skipped` say which
+ * named computers this job took.
  *
  * Bounded: the route only writes the job's rows and answers `{ jobId }`; the
  * minute cron moves each row on, a few computers a tick, so no request waits
@@ -86,21 +88,27 @@ export async function routeProjectComputersDelete(request: Request, path: string
     }
     const named = Array.isArray(body.instanceIds) ? body.instanceIds.filter((id): id is string => typeof id === "string") : null;
     if (!named) return fail("bad_request", "Name the computers from the preview to delete.", 400);
-    const wanted = new Set(named.slice(0, MAX_COMPUTERS_PER_JOB));
-    // Already in another job's hands: that job pushes and deletes it.
-    const busy = new Set(((await env.DB.prepare("select instance_id from cloud_project_deletes where user_id = ? and state in ('pending', 'working')")
-      .bind(userId).all<{ instance_id: string }>()).results ?? []).map((row) => row.instance_id));
-    const stillMatching = all.filter((computer) => wanted.has(computer.instance_id));
-    const computers = stillMatching.filter((computer) => !busy.has(computer.instance_id));
+    const wanted = [...new Set(named.slice(0, MAX_COMPUTERS_PER_JOB))];
+    const wantedSet = new Set(wanted);
+    const computers = all.filter((computer) => wantedSet.has(computer.instance_id));
     const jobId = crypto.randomUUID();
-    if (computers.length) {
-      await env.DB.batch(computers.map((computer) => env.DB.prepare(`
-        insert into cloud_project_deletes (job_id, instance_id, user_id, project_origin, name, state, created_at, updated_at)
-        values (?, ?, ?, ?, ?, 'pending', ?, ?)
-      `).bind(jobId, computer.instance_id, userId, origin, computer.lane_name ?? computer.name, now, now)));
-    }
-    logCloud("cloud.project_delete_started", { userId, computers: computers.length, named: named.length, skippedBusy: stillMatching.length - computers.length });
-    const started: CloudProjectComputersDeleteStarted = { jobId, truncated: named.length > MAX_COMPUTERS_PER_JOB };
+    // Each row is written only when no other job holds that computer
+    // (`pending` or `working`): the check and the write are one statement, so
+    // two deletes started together can't both take it.
+    const results = computers.length
+      ? await env.DB.batch(computers.map((computer) => env.DB.prepare(`
+          insert into cloud_project_deletes (job_id, instance_id, user_id, project_origin, name, state, created_at, updated_at)
+          select ?, ?, ?, ?, ?, 'pending', ?, ?
+          where not exists (select 1 from cloud_project_deletes where user_id = ? and instance_id = ? and state in ('pending', 'working'))
+        `).bind(jobId, computer.instance_id, userId, origin, computer.lane_name ?? computer.name, now, now, userId, computer.instance_id)))
+      : [];
+    const accepted = computers.filter((_, index) => (results[index]?.meta?.changes ?? 0) === 1).map((computer) => computer.instance_id);
+    const acceptedSet = new Set(accepted);
+    const skipped = wanted.filter((id) => !acceptedSet.has(id));
+    logCloud("cloud.project_delete_started", {
+      userId, computers: accepted.length, named: named.length, skippedBusy: computers.length - accepted.length, skippedGone: wanted.length - computers.length,
+    });
+    const started: CloudProjectComputersDeleteStarted = { jobId, accepted, skipped, truncated: named.length > MAX_COMPUTERS_PER_JOB };
     return json(started, 201);
   }
   const jobId = path.slice(CLOUD_PATHS.projectComputersDelete.length + 1);

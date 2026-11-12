@@ -649,10 +649,15 @@ ADE's server, and the new computer runs its own launch
   (`apps/ade-cli/src/services/account/cloudBootLaunch.ts`) the brain drops
   both from its env, starts ADE's device sign-in and calls
   `POST /cloud/launches/:id/join` with no account token. The code is valid
-  30 minutes and only from the launch's computer (`x-ade-instance` plus the
-  provider's metadata). The first join spends it; while the launch is still
-  `joining` or `needs_approval`, that computer may join again with it (a
-  brain that restarted mid-sign-in), each time with a fresh device sign-in.
+  30 minutes and is the only proof: `x-ade-instance` and the provider's
+  metadata must name the launch's computer, but they name it, they don't
+  prove the caller is it. The first join spends the code; while the launch
+  is still `joining` or `needs_approval` and the device sign-in it named was
+  not approved, it may join again (a brain that restarted mid-sign-in), at
+  most 5 times, each with a fresh device sign-in. A join that lands while the
+  server still makes the computer (a lost create answer, before a retried
+  start adopts it) gets a retryable `409 join_not_ready`, and the brain asks
+  again with a backoff for up to 10 minutes.
   The answer is a sign-in link for the launch's account only, opened in the
   computer's headless Chromium (`cloudHeadlessApproval.ts`, now in
   `apps/ade-cli`). When the page stops on a confirm step, the launch shows
@@ -665,8 +670,9 @@ ADE's server, and the new computer runs its own launch
 - **Run.** Signed in, the computer reads the facts (`GET /cloud/launches/:id`),
   sets the repository up with its own Git sign-in, and runs `chat.startLaunch`
   in its own brain with the same launch and lane ids. It posts a stage
-  update only when a stage changes (`PUT .../stages`), one after another; a
-  `done` launch takes no other state. A launch stopped in the computer's own
+  update only when a stage changes (`PUT .../stages`), one after another; the
+  last one is retried with a backoff, and the next boot sends it when it still
+  couldn't land. A `done` launch takes no other state. A launch stopped in the computer's own
   ADE reads as `failed` ("The launch was stopped on the computer."). The
   caller reads the record while it watches. A cancel before the agent starts
   deletes the computer the row holds after the cancel lands, and a cancel
@@ -690,8 +696,9 @@ reason. `POST /cloud/projects/computers/delete { origin, dryRun: true }`
 lists the project's computers (at most 50, `truncated` when there are more);
 `{ origin, instanceIds }` from that list starts a job the minute cron runs on
 the named computers that still belong to the project and aren't already in
-another job: wake, push every lane's work, delete; a computer whose push
-failed is kept with why. The plan cleanup and this job share one push run
+another job (checked in the same write, so two jobs never take one
+computer; the answer's `accepted` and `skipped` say which it took): wake,
+push every lane's work, delete; a computer whose push failed is kept with why. The plan cleanup and this job share one push run
 (`pushAllWork` in `planCleanup.ts`). The typed client for all of these is
 `apps/desktop/src/shared/cloudApiClient.ts` (fetch only). Every `/cloud/*`
 route answers a browser only on `WEB_CLIENT_ORIGIN`.
