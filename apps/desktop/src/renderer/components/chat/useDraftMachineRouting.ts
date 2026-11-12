@@ -371,7 +371,15 @@ export function useDraftMachineRouting({
    * the lane prop lands a render after the machine, so remapping there read the
    * PREVIOUS lane and replaced the requested one with the new machine's Primary.
    */
-  const pendingLaneRemapRef = useRef<{ machineId: string; laneId: string | null } | null>(null);
+  const pendingLaneRemapRef = useRef<{ machineId: string; laneId: string | null } | null>(
+    // "Start on" moved a new draft off the tab's machine. It names no lane, and
+    // the pane's lane is the tab machine's, so re-derive it on the new machine.
+    !initialDraftMachineId?.trim() && desiredMachineId !== boundMachineId
+      ? { machineId: boundMachineId, laneId }
+      : null,
+  );
+  const laneIdRef = useRef(laneId);
+  laneIdRef.current = laneId;
   // Reconciliation tracks whether the latest project/persisted input was
   // applied. A user's machine choice inside that scope must remain ready even
   // before the parent echoes the persisted value back through props.
@@ -394,13 +402,18 @@ export function useDraftMachineRouting({
 
   useEffect(() => {
     // An outside machine change (not the echo of `chooseMachine`) brings its
-    // own lane, so it supersedes any remap still waiting on a catalog.
-    if (desiredMachineId !== machineIdRef.current) pendingLaneRemapRef.current = null;
+    // own lane, so it supersedes any remap still waiting on a catalog. A move
+    // by "Start on" (no machine handed in) brings no lane: remap from here.
+    if (desiredMachineId !== machineIdRef.current) {
+      pendingLaneRemapRef.current = initialDraftMachineId?.trim()
+        ? null
+        : pendingLaneRemapRef.current ?? { machineId: machineIdRef.current, laneId: laneIdRef.current };
+    }
     setMachineId((currentMachineId) =>
       currentMachineId === desiredMachineId ? currentMachineId : desiredMachineId,
     );
     setReconciledRoutingInputKey(routingInputKey);
-  }, [desiredMachineId, routingInputKey]);
+  }, [desiredMachineId, initialDraftMachineId, routingInputKey]);
 
   useEffect(() => {
     // A disabled draft has no catalog at all (`machineOptions` is empty by

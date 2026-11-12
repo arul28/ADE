@@ -13854,6 +13854,14 @@ export function AgentChatPane({
     });
     void copyPromptForLaunch(snapshot.text);
 
+    // Read now: the draft machine is the one this launch runs on. A started
+    // chat or CLI session makes it "Start on"'s last-used machine.
+    const startedOn = draftStartedOnRef.current;
+    const recordStartedOn = (started: StartedDraftLaunch): StartedDraftLaunch => {
+      recordStartOnLastMachine(startedOn.tabId, startedOn.machineKey);
+      return started;
+    };
+
     // The renderer-owned chain: used for launches into an existing lane, and
     // as the fallback for a new-lane launch on a runtime that predates
     // `chat.startLaunch`.
@@ -13876,8 +13884,8 @@ export function AgentChatPane({
       ),
       prepare: prepareDraftLaunch,
       resolveLane: resolveDraftLaunchLane,
-      startChat: startDraftChatLaunch,
-      startCli: startDraftCliLaunch,
+      startChat: (...args) => startDraftChatLaunch(...args).then(recordStartedOn),
+      startCli: (...args) => startDraftCliLaunch(...args).then(recordStartedOn),
       clearPromptSuggestion: () => clearPromptSuggestionForSession(selectedSessionId),
       setError,
       setDraftLaunchJobs,
