@@ -9259,7 +9259,7 @@ export function createPtyService({
 
       const flight = (async (): Promise<ChatTerminalReattachResult> => {
         // For chat-CLI sessions the chat session id and terminal session id are the same.
-        const session = sessionService.get(chatSessionId);
+        let session = sessionService.get(chatSessionId);
         if (!session) {
           throw new Error(`Chat CLI session '${chatSessionId}' was not found.`);
         }
@@ -9268,6 +9268,22 @@ export function createPtyService({
         }
         if (!isPersistedChatToolType(session.toolType)) {
           throw new Error(`Session '${chatSessionId}' is not a chat CLI session.`);
+        }
+        // agy's `--continue` opens the newest conversation in the folder, which
+        // may be another chat's: Antigravity reattaches only by its own id.
+        if (providerFromTool(session.toolType) === "antigravity" && !resumeTargetIdForProvider(session, "antigravity")) {
+          const backfilled = await tryBackfillResumeTarget(
+            chatSessionId,
+            session.toolType,
+            "resume-launch",
+            resolveSessionRunCwd(session),
+          );
+          session = (backfilled ? sessionService.get(chatSessionId) : null) ?? session;
+          if (!resumeTargetIdForProvider(session, "antigravity")) {
+            throw markExpected(new Error(
+              "Antigravity exited before ADE could capture its conversation. Start a new Antigravity chat.",
+            ), "user");
+          }
         }
 
         const parsedResumeCommand = parseTrackedCliResumeCommand(

@@ -354,7 +354,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
    * until its result or failure arrives. `answered`: from the result until
    * `prompt()` exits. `idle` otherwise, including after a failed prompt.
    */
-  let turnPhase: "idle" | "prompting" | "answered" = "idle";
+  let turnPhase: "idle" | "preparing" | "prompting" | "answered" = "idle";
   const unsubscribers: Array<() => void> = [];
 
   const publish = (events: AgentChatEvent[]): void => {
@@ -634,22 +634,29 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
         publishSupervision(supervision.drainQueued(turnId));
         let response: AcpPromptResponse | null = null;
         let interrupted = false;
+        // A Stop while the dialect prepares its outcome check is kept, and
+        // the prompt is then never sent.
+        turnPhase = "preparing";
         const outcomeCheck = dialect.turnOutcome
           ? await dialect.turnOutcome({ sessionId }).catch(() => null)
           : null;
-        turnPhase = "prompting";
+        turnPhase = cancelRequested ? "idle" : "prompting";
         try {
-          response = await connection.request<AcpPromptResponse>(
-            ACP_METHOD.sessionPrompt,
-            { sessionId, prompt: blocks },
-            { timeoutMs: ACP_PROMPT_NO_TIMEOUT },
-          );
-          turnPhase = "answered";
-          // The verdict, taken once, the moment the agent answered. Client-side
-          // accounting: an agent can report `end_turn` for a turn ADE cancelled,
-          // so the agent's word is not the deciding one. A Stop pressed during
-          // the telemetry reads below found a finished turn and changes nothing.
-          interrupted = cancelRequested || response?.stopReason === "cancelled" || isInterrupted?.() === true;
+          if (cancelRequested) {
+            interrupted = true;
+          } else {
+            response = await connection.request<AcpPromptResponse>(
+              ACP_METHOD.sessionPrompt,
+              { sessionId, prompt: blocks },
+              { timeoutMs: ACP_PROMPT_NO_TIMEOUT },
+            );
+            turnPhase = "answered";
+            // The verdict, taken once, the moment the agent answered. Client-side
+            // accounting: an agent can report `end_turn` for a turn ADE cancelled,
+            // so the agent's word is not the deciding one. A Stop pressed during
+            // the telemetry reads below found a finished turn and changes nothing.
+            interrupted = cancelRequested || response?.stopReason === "cancelled" || isInterrupted?.() === true;
+          }
         } finally {
           if (turnPhase === "prompting") turnPhase = "idle";
           // Every open permission request belongs to the turn that just ended.
@@ -692,7 +699,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
       } finally {
         // On every exit, a failed prompt included: nothing that arrives
         // between turns may carry this turn's id.
-        if (turnPhase === "answered") turnPhase = "idle";
+        if (turnPhase === "answered" || turnPhase === "preparing") turnPhase = "idle";
         translator.endTurn();
         telemetry.endTurn();
       }
@@ -704,6 +711,10 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
       permissionBridge.cancelAll(reason);
       // An agent that already answered the prompt is idle. The turn's verdict
       // is taken, and a cancel would reach an agent with nothing to stop.
+      if (turnPhase === "preparing") {
+        cancelRequested = true;
+        return;
+      }
       if (turnPhase !== "prompting") return;
       cancelRequested = true;
       if (dialect.cancelStyle === "notification") {

@@ -44,7 +44,9 @@ import { antigravityCliDir } from "../../../ai/antigravityAuth";
 const CONVERSATION_ID = /^[\w-]+$/;
 /** One step's payload is read up to this many bytes. */
 const MAX_PAYLOAD_BYTES = 256 * 1024;
-const TEXT_LIMIT = 32_000;
+/** The longest text read from one field; a longer one is cut here. */
+export const ANTIGRAVITY_TEXT_LIMIT = 32_000;
+const TEXT_LIMIT = ANTIGRAVITY_TEXT_LIMIT;
 
 export type AntigravityToolCall = { id: string; name: string; args: string };
 
@@ -284,12 +286,12 @@ export function readAntigravityStepsBefore(
   beforeIdx: number | null,
   limit: number,
   payloadBytes = MAX_PAYLOAD_BYTES,
-): Array<{ step: AntigravityStep; bytes: number }> | undefined {
+): Array<{ step: AntigravityStep; bytes: number; clipped: boolean }> | undefined {
   return withLog(file, (db) => db
     .prepare(
-      "SELECT idx, step_type AS type, status, substr(step_payload, 1, ?) AS payload FROM steps WHERE idx < ? ORDER BY idx DESC LIMIT ?",
+      "SELECT idx, step_type AS type, status, substr(step_payload, 1, ?) AS payload, length(step_payload) AS full FROM steps WHERE idx < ? ORDER BY idx DESC LIMIT ?",
     )
-    .all<StepRow>(
+    .all<StepRow & { full?: unknown }>(
       Math.min(payloadBytes, MAX_PAYLOAD_BYTES),
       beforeIdx ?? Number.MAX_SAFE_INTEGER,
       limit,
@@ -297,7 +299,10 @@ export function readAntigravityStepsBefore(
     .flatMap((row) => {
       if (typeof row.idx !== "number" || typeof row.type !== "number") return [];
       const payload = row.payload instanceof Uint8Array ? row.payload : null;
-      return [{ step: parseAntigravityStep(row.idx, row.type, payload, row.status), bytes: payload?.byteLength ?? 0 }];
+      const bytes = payload?.byteLength ?? 0;
+      // `clipped`: the payload was longer than what was read, so its text may be cut.
+      const clipped = typeof row.full === "number" && row.full > bytes;
+      return [{ step: parseAntigravityStep(row.idx, row.type, payload, row.status), bytes, clipped }];
     }));
 }
 

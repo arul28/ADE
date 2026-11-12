@@ -417,8 +417,10 @@ export type AcpBackgroundWork = {
   turnStarting(): void;
   /** The prompt answered: report the turn's launches, then watch them. */
   turnEnded(): void;
-  /** True while something it watches is still running. */
+  /** True while something it watches is still running, or a held tool still waits. */
   hasOpenWork(): boolean;
+  /** Work still running in the background: open subagents and tools (a held tool is not running). */
+  runningCount(): number;
   /** The runtime is going away. Open work is reported stopped. */
   dispose(): void;
 };
@@ -562,8 +564,12 @@ export type AcpDialectBase = {
   /** Map ADE's requested mode to the posture the supervision guard should enforce. */
   readonly supervisionPermissionMode?: (mode: string | null | undefined) => string | null | undefined;
 
-  /** Whether failure to apply the native mode must abort runtime setup. */
-  readonly modeSetupRequired?: boolean;
+  /**
+   * Whether failure to apply the native mode must abort runtime setup: always,
+   * or only for the native modes this names (a mode whose fallback would be
+   * broader than the one picked).
+   */
+  readonly modeSetupRequired?: boolean | ((nativeModeValue: string) => boolean);
 
   /**
    * True when the agent has no full-access mode of its own: ADE's Full access

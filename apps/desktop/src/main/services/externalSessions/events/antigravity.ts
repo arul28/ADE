@@ -11,6 +11,8 @@ import { cutPage, type EventsCursor, type PageCut } from "./paging";
 const STEP_BATCH = 200;
 /** A tool result longer than this is clipped in the copy. */
 const TOOL_RESULT_CHARS = 16_000;
+/** Steps one page scans at most: bookkeeping steps show nothing and must not be read forever. */
+const MAX_SCANNED_STEPS = 2_000;
 
 function parsedArgs(args: string): unknown {
   try {
@@ -34,6 +36,8 @@ function stepToEvents(step: AntigravityStep, sink: EnvelopeSink, timestamp: stri
       });
       return;
     case "tool": {
+      // A tool still running or waiting for approval has no outcome yet.
+      if (step.status === "running" || step.status === "waiting") return;
       const text = step.text.length > TOOL_RESULT_CHARS ? `${step.text.slice(0, TOOL_RESULT_CHARS)}…` : step.text;
       // Denied, failed and cancelled calls keep their failed status.
       const failed = step.status === "failed" || step.status === "cancelled";
@@ -69,6 +73,9 @@ export function loadAntigravityStorePage(args: {
   let count = 0;
   let bytes = 0;
   let bytesTruncated = false;
+  let scanned = 0;
+  let scanLimited = false;
+  let readFailed = false;
   let first = true;
   // Read newest first: a user's message (no time of its own) takes the time
   // of the reply that followed it.
@@ -77,15 +84,24 @@ export function loadAntigravityStorePage(args: {
     const batch = readAntigravityStepsBefore(args.file, before, STEP_BATCH);
     if (!batch) {
       if (first) return null;
+      // The log stopped answering mid-page: what is older is unknown, not absent.
+      readFailed = true;
       break;
     }
     first = false;
     if (!batch.length) break;
-    for (const { step, bytes: size } of batch) {
-      if (bytes + size > args.maxBytes && bytes > 0) {
+    for (const { step, bytes: size, clipped } of batch) {
+      // The byte budget ends a page only once it shows something, so a run of
+      // bookkeeping steps cannot leave the first page empty.
+      if (bytes + size > args.maxBytes && count > 0) {
         bytesTruncated = true;
         break outer;
       }
+      if (scanned >= MAX_SCANNED_STEPS) {
+        scanLimited = true;
+        break outer;
+      }
+      scanned += 1;
       bytes += size;
       lowest = step.idx;
       highest ??= step.idx;
@@ -93,22 +109,36 @@ export function loadAntigravityStorePage(args: {
       const at = ("atMs" in step && step.atMs) || laterAt;
       laterAt = at;
       // `+ idx` keeps steps that share a second in order.
-      stepToEvents(step, sink, new Date(at + step.idx).toISOString());
+      const timestamp = new Date(at + step.idx).toISOString();
+      stepToEvents(step, sink, timestamp);
+      if (clipped && sink.out.length && (step.kind === "user" || step.kind === "reply" || step.kind === "message")) {
+        // Say so: a silently shortened message reads as the whole message.
+        sink.push({
+          type: "system_notice",
+          noticeKind: "info",
+          severity: "info",
+          message: "This message was longer than ADE reads from Antigravity's log; the copy shows its start.",
+        }, timestamp, `agy:${step.idx}:clipped`);
+      }
       chunks.push(sink.out);
       count += sink.out.length;
     }
     before = batch[batch.length - 1]!.step.idx;
     if (batch.length < STEP_BATCH) break;
   }
+  // Older steps were left unread: by the byte or event budget, the scan bound,
+  // or a read that failed part way.
+  const leftOlder = lowest !== null && lowest > 0 && (bytesTruncated || scanLimited || readFailed || count >= args.maxEvents);
   const cut = cutPage(chunks.reverse().flat(), {
     maxEvents: args.maxEvents,
     index: args.cursor?.index ?? null,
     // Step indexes stand in for file offsets: older pages read before `lowest`.
-    windowStart: lowest !== null && lowest > 0 && (bytesTruncated || count >= args.maxEvents) ? lowest : null,
+    windowStart: leftOlder ? lowest : null,
     // A conversation still running grows past the first page; later pages
     // stay anchored to what this one read.
     windowEnd: end ?? (highest !== null ? highest + 1 : null),
     windowBytes: null,
   });
-  return { ...cut, bytesTruncated };
+  // An import reports any of them, as a JSONL window that starts past 0 does.
+  return { ...cut, bytesTruncated: leftOlder || readFailed };
 }

@@ -317,7 +317,11 @@ export async function loadExternalSessionEvents(
   }
 
   // Nothing convertible: the sampled messages, on the first page only.
-  if (!raw || (!cursor && raw.page.length === 0 && raw.earlier.length === 0)) {
+  // A preview whose first page found only bookkeeping keeps its older cursor,
+  // so the person can still page back to the conversation.
+  const emptyFirstPage = Boolean(raw) && !cursor && raw!.page.length === 0 && raw!.earlier.length === 0
+    && (isImport || raw!.olderCursor === null);
+  if (!raw || emptyFirstPage) {
     if (cursor) return { events: [], hasOlder: false, olderCursor: null, truncated: false };
     const sampled = sampledContentEvents(record, options);
     return {

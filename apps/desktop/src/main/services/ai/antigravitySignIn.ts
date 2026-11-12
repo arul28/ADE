@@ -237,7 +237,7 @@ function failureSentence(method: AntigravityAuthMethod, error: unknown): string 
   const text = error instanceof AcpRpcError
     ? `${error.message} ${typeof error.data === "string" ? error.data : JSON.stringify(error.data ?? "")}`
     : getErrorMessage(error);
-  if (text === GOOGLE_SETTING_BLOCKED) return text;
+  if (text === GOOGLE_SETTING_BLOCKED || text === GOOGLE_PROVIDER_BLOCKED) return text;
   if (/SUBSCRIPTION_REQUIRED/i.test(text)) return "Google requires an eligible Antigravity subscription for this account.";
   if (/access_denied|denied access|cancelled|canceled/i.test(text)) return "Google sign-in was not approved. Start sign-in again.";
   if (/invalid_grant|code.*(invalid|expired)/i.test(text)) return "Google did not accept that code. Start sign-in again and paste the new code.";
@@ -324,7 +324,10 @@ function runTerminalLogin(flow: Flow, executable: AcpExecutableResolution): Prom
       if (flow.done) return;
       tail = `${tail}${chunk.toString("utf8")}`.slice(-MAX_URL_LENGTH * 2);
       if (flow.authorizationUrl) return;
-      for (const token of tail.split(/\s+/)) {
+      // The last word may still be arriving: a link counts once whitespace ends it.
+      const words = tail.split(/\s+/);
+      if (!/\s$/.test(tail)) words.pop();
+      for (const token of words) {
         if (!token.startsWith("https://accounts.google.com/")) continue;
         const parsed = parseAntigravityLoginUrl(token);
         if (!parsed) continue;
@@ -355,6 +358,8 @@ function runTerminalLogin(flow: Flow, executable: AcpExecutableResolution): Prom
 /** agy's settings name a key method ADE could not switch: the person can. */
 const GOOGLE_SETTING_BLOCKED = "Antigravity is set to sign in with an API key, so it would ignore your Google login. "
   + "In ~/.gemini/antigravity-cli/settings.json, set auth.type to \"oauth-personal\", then sign in again.";
+const GOOGLE_PROVIDER_BLOCKED = "Antigravity is set to run on a Gemini API key, so it would ignore your Google login. "
+  + "Remove \"modelProvider\" from ~/.gemini/antigravity-cli/settings.json, then sign in again.";
 
 async function runFlow(flow: Flow): Promise<void> {
   try {
@@ -368,6 +373,7 @@ async function runFlow(flow: Flow): Promise<void> {
       // A key method left in agy's settings would hide the new login.
       const settings = pointAntigravitySettingsAtGoogle();
       if (settings === "failed") throw new Error(GOOGLE_SETTING_BLOCKED);
+      if (settings === "model-provider") throw new Error(GOOGLE_PROVIDER_BLOCKED);
       if (settings === "switched") logger?.info("antigravity.sign_in_settings_switched", { to: "oauth-personal" });
     } else if (flow.method === "oauth-business") {
       flow.message = "Finish the Gemini Enterprise sign-in in the browser Antigravity opened on this computer.";

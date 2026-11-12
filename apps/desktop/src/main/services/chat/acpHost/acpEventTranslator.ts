@@ -274,13 +274,11 @@ export function buildUnifiedDiff(path: string, oldText: string, newText: string)
 
   const removed = oldLines.slice(prefix, oldLines.length - suffix);
   const added = newLines.slice(prefix, newLines.length - suffix);
-  // Only a final newline changed: no line did.
-  if (!removed.length && !added.length) return "";
   const header = [`--- a/${path}`, `+++ b/${path}`];
   const hunk = `@@ -${prefix + 1},${removed.length} +${prefix + 1},${added.length} @@`;
   const body = [
-    ...removed.map((line) => `-${line}`),
-    ...added.map((line) => `+${line}`),
+    ...removed.flatMap((line) => diffBodyLine("-", line)),
+    ...added.flatMap((line) => diffBodyLine("+", line)),
   ];
   return [...header, hunk, ...body].join("\n");
 }
@@ -296,12 +294,26 @@ function commandExitCode(rawOutput: unknown): number | null {
   return null;
 }
 
-/** A file's lines. A final newline ends the last line; it is not one more, empty line. */
+/** Marks a last line with no newline after it, so it differs from the same line with one. */
+const NO_FINAL_NEWLINE = "\u0000no-eol";
+
+/**
+ * A file's lines. A final newline ends the last line; it is not one more,
+ * empty line. A last line without one carries `NO_FINAL_NEWLINE`.
+ */
 function diffLines(text: string): string[] {
   if (!text.length) return [];
   const lines = text.split("\n");
   if (lines[lines.length - 1] === "") lines.pop();
+  else lines[lines.length - 1] += NO_FINAL_NEWLINE;
   return lines;
+}
+
+/** One patch line, followed by git's marker when it has no final newline. */
+function diffBodyLine(sign: "-" | "+", line: string): string[] {
+  return line.endsWith(NO_FINAL_NEWLINE)
+    ? [`${sign}${line.slice(0, -NO_FINAL_NEWLINE.length)}`, "\\ No newline at end of file"]
+    : [`${sign}${line}`];
 }
 
 function diffKind(oldText: string | null | undefined, newText: string): "create" | "modify" | "delete" {

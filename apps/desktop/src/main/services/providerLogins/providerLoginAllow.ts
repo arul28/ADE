@@ -108,6 +108,9 @@ export function createAllow(s: SyncShared) {
     const store = KEYRING_STORE_NAME[keyringPlatform];
     const off = await captureOffReason();
     if (off) throw new Error(OFF_MESSAGES[off]);
+    // The read can wait minutes on a macOS or keyring prompt: the account and
+    // the sharing switch are checked again after it, before anything is sent.
+    const accountBeforeRead = deps.accountUserId();
     // agy keeps one item for both Google methods; the login itself names the slot.
     const requestedSlot: AntigravityKeychainSlot | null = args.slot ?? null;
     const read = await readKeychainSecret({ account: antigravityKeychainAccount(requestedSlot ?? "personal"), platform: keyringPlatform, env: ctx.env });
@@ -121,6 +124,9 @@ export function createAllow(s: SyncShared) {
     const machine = deps.machine();
     const accountUserId = deps.accountUserId();
     if (!vault || !machine || !accountUserId) throw new Error(OFF_MESSAGES.vault_unavailable);
+    if (accountUserId !== accountBeforeRead) throw new Error("You switched ADE accounts while ADE was reading the sign-in. Allow again.");
+    const offAfterRead = await captureOffReason();
+    if (offAfterRead) throw new Error(OFF_MESSAGES[offAfterRead]);
     let slot: AntigravityKeychainSlot = requestedSlot ?? "personal";
     if (!requestedSlot) {
       try {

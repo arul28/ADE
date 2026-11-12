@@ -568,7 +568,10 @@ export async function createAcpRuntime<TSteer>(
       const error = fallback && !fallback.applied
         ? fallback.unsupported ? new AcpModeUnsupportedError(args.dialect.displayName, caught) : fallback.error
         : caught;
-      if (!applied && args.dialect.modeSetupRequired) {
+      const required = typeof args.dialect.modeSetupRequired === "function"
+        ? args.dialect.modeSetupRequired(nativeModeValue)
+        : args.dialect.modeSetupRequired === true;
+      if (!applied && required) {
         // A failed mode setup must never fall through to onReady: the agent may
         // now be running with a broader posture than the user selected.
         try {

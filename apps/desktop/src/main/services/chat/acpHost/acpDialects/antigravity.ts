@@ -231,6 +231,9 @@ export const antigravityDialect = defineAcpDialect({
   // every request (`hostAnswersFullAccess`). A mode the account does not
   // offer (`auto` on Gemini Enterprise) is refused and the chat stays in
   // `default`, which asks: never a broader posture than the user picked.
+  // Plan is the exception: `default` lets edits through once approved, so a
+  // refused Plan stops the chat instead of falling back.
+  modeSetupRequired: (nativeMode) => nativeMode === "plan",
   nativeModeValue: (mode) => {
     switch (mode) {
       case "plan":

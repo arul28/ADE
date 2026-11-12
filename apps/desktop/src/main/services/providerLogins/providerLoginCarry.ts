@@ -618,6 +618,8 @@ const ROWS: CarryRow[] = [
       const data = json(contents, tokenSpec.rel);
       if (!raw || !data) return { unreadable: true };
       const token = isRecord(data.token) ? data.token : null;
+      // A damaged item (no token agy could use) must not replace a working copy.
+      if (!str(token, "refresh_token") && !str(token, "access_token")) return { unreadable: true };
       // The Allow names its slot in the bundle id; otherwise the login says.
       const slot = bundle.id.endsWith("/business") ? "business"
         : bundle.id.endsWith("/personal") ? "personal"

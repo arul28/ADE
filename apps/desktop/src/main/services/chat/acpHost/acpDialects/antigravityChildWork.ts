@@ -309,16 +309,20 @@ export function createAntigravityBackgroundWork(args: {
       inTurn = false;
       // The turn's own replies were streamed; only launches and results count.
       const events: AcpBackgroundEvent[] = [];
+      const settledBefore = lastSettledAt;
       readParent(false, events);
       parentSignature = logSignature(parentFile);
       if (events.length) args.emit(events);
-      if (children.size) startTimer();
+      // A child that already reported still gets agy's reply to it, which can
+      // come after the turn.
+      if (children.size || lastSettledAt !== settledBefore) startTimer();
     },
     hasOpenWork: () => !disposed && (
       children.size > 0
       || runningTools.size > 0
       || (waitingSince !== null && now() - waitingSince < SILENCE_MS)
     ),
+    runningCount: () => (disposed ? 0 : children.size + runningTools.size),
     dispose() {
       if (disposed) return;
       // agy's process is going away, and its subagents with it.

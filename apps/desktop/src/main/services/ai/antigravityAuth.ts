@@ -100,6 +100,12 @@ export const ANTIGRAVITY_TOKEN_FILE = "antigravity-oauth-token";
  * it ignore the whole file, auth method included (verified 1.5.6). ADE reads it
  * the same way, so a file agy ignores names no method here either.
  */
+/** Whether agy's settings set `modelProvider: "gemini"`, which outranks any sign-in. */
+function settingsUseGeminiProvider(parsed: unknown): boolean {
+  const value = (parsed as { modelProvider?: unknown } | null)?.modelProvider;
+  return typeof value === "string" && value.trim() === "gemini";
+}
+
 function parseSettingsJson(raw: string): unknown {
   return JSON.parse(raw);
 }
@@ -128,11 +134,14 @@ export function readAntigravitySettings(_env: NodeJS.ProcessEnv = process.env): 
   try {
     const parsed = parseSettingsJson(fs.readFileSync(file, "utf8")) as {
       auth?: { type?: unknown };
+      modelProvider?: unknown;
       gcp?: { project?: unknown; location?: unknown };
     };
     const rawType = typeof parsed?.auth?.type === "string" ? parsed.auth.type.trim() : "";
-    // The agent still accepts the legacy `vertex-ai` spelling.
-    const method = rawType === "vertex-ai" ? "agent-platform" : rawType;
+    // `modelProvider: "gemini"` runs agy on a Gemini API key whatever
+    // `auth.type` says (verified 1.5.6). The agent still accepts the legacy
+    // `vertex-ai` spelling of Agent Platform.
+    const method = settingsUseGeminiProvider(parsed) ? "gemini-api-key" : rawType === "vertex-ai" ? "agent-platform" : rawType;
     value = {
       method: isAntigravityAuthMethod(method) ? method : null,
       gcpProject: typeof parsed?.gcp?.project === "string" && parsed.gcp.project.trim() ? parsed.gcp.project.trim() : null,
@@ -262,10 +271,18 @@ const KEYRING_CACHE_MS = 30_000;
  * every 30 s only queues more dialogs, so that answer is kept for longer.
  */
 const KEYRING_TIMEOUT_CACHE_MS = 10 * 60_000;
-let keyringCache: { at: number; ttlMs: number; present: boolean } | null = null;
+/** `present: null`: the check itself failed (timeout, missing command), so nobody knows. */
+let keyringCache: { at: number; ttlMs: number; present: boolean | null } | null = null;
 let keyringInFlight: Promise<boolean> | null = null;
+/** Bumped when the cache is dropped: a check started before then must not refill it. */
+let keyringGeneration = 0;
 
-type PresenceProbe = { command: string; args: string[]; present: (stdout: string) => boolean };
+/**
+ * `notFoundExit`: the exit code that means "no such item" (macOS `security`
+ * exits 44, errSecItemNotFound). Any other failure is unknown, never absent:
+ * an absent answer can let ADE drop a copied login from the account.
+ */
+type PresenceProbe = { command: string; args: string[]; present: (stdout: string) => boolean; notFoundExit?: number };
 
 /** How to ask this OS whether the item exists, without reading its secret. */
 function keyringPresenceProbe(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): PresenceProbe | null {
@@ -275,6 +292,7 @@ function keyringPresenceProbe(platform: NodeJS.Platform, env: NodeJS.ProcessEnv)
       command: "/usr/bin/security",
       args: ["find-generic-password", "-s", ANTIGRAVITY_KEYCHAIN_SERVICE, "-a", ANTIGRAVITY_KEYRING_USER],
       present: () => true,
+      notFoundExit: 44,
     };
   }
   if (platform === "win32") {
@@ -310,24 +328,29 @@ export function antigravityKeyringItemExists(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): Promise<boolean> {
-  if (keyringCache && Date.now() - keyringCache.at < keyringCache.ttlMs) return Promise.resolve(keyringCache.present);
+  if (keyringCache && Date.now() - keyringCache.at < keyringCache.ttlMs) return Promise.resolve(keyringCache.present === true);
   if (keyringInFlight) return keyringInFlight;
   const probe = keyringPresenceProbe(platform, env);
   if (!probe) return Promise.resolve(false);
+  const generation = keyringGeneration;
   const asked = new Promise<boolean>((resolve) => {
     execFile(probe.command, probe.args, { timeout: 2_000, windowsHide: true, maxBuffer: 64 * 1024 }, (error, stdout) => {
-      const present = !error && probe.present(String(stdout ?? ""));
+      const present = !error ? probe.present(String(stdout ?? ""))
+        : probe.notFoundExit !== undefined && error.code === probe.notFoundExit ? false
+          : null;
       const ttlMs = error?.killed ? KEYRING_TIMEOUT_CACHE_MS : KEYRING_CACHE_MS;
-      keyringCache = { at: Date.now(), ttlMs, present };
-      keyringInFlight = null;
-      resolve(present);
+      if (generation === keyringGeneration) {
+        keyringCache = { at: Date.now(), ttlMs, present };
+        keyringInFlight = null;
+      }
+      resolve(present === true);
     });
   });
   keyringInFlight = asked;
   return asked;
 }
 
-/** The last keyring answer, without asking again (null before the first). */
+/** The last keyring answer, without asking again: null before the first, and when the check failed. */
 export function peekAntigravityKeyringPresent(): boolean | null {
   return keyringCache ? keyringCache.present : null;
 }
@@ -347,14 +370,22 @@ const KEY_METHOD_SETTING = /("auth"\s*:\s*\{[^{}]*?"type"\s*:\s*")(gemini-api-ke
  * - "switched": the value now reads `oauth-personal`.
  * - "failed": it names a key method ADE could not rewrite in place (an
  *   unusual layout, or the file could not be written).
+ * - "model-provider": it sets `modelProvider: "gemini"`, which outranks any
+ *   sign-in. That is the person's choice of backend, not a leftover, so ADE
+ *   leaves it and says so.
  */
-export function pointAntigravitySettingsAtGoogle(): "unchanged" | "switched" | "failed" {
+export function pointAntigravitySettingsAtGoogle(): "unchanged" | "switched" | "failed" | "model-provider" {
   const file = path.join(antigravityCliDir(), "settings.json");
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf8");
   } catch {
     return "unchanged";
+  }
+  try {
+    if (settingsUseGeminiProvider(parseSettingsJson(raw))) return "model-provider";
+  } catch {
+    // agy ignores a file it cannot parse, and so does this check.
   }
   settingsCache = null;
   const method = readAntigravitySettings().method;
@@ -377,6 +408,8 @@ export function pointAntigravitySettingsAtGoogle(): "unchanged" | "switched" | "
 /** Forget the cached answers so the next status read after a sign-in is fresh. */
 export function invalidateAntigravityAuthCache(): void {
   keyringCache = null;
+  keyringInFlight = null;
+  keyringGeneration += 1;
   settingsCache = null;
 }
 

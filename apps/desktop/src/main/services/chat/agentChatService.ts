@@ -4646,13 +4646,16 @@ function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWo
       return runtime.runningBackgroundItems.size
         ? summarizeBackgroundWork([...runtime.runningBackgroundItems.values()])
         : NO_BACKGROUND_WORK;
+    case "acp": {
+      // Antigravity's subagents and the tools agy runs after one reports
+      // outlive the turn (its dialect's `backgroundWork`). Other ACP dialects
+      // have no such work and report none.
+      const running = runtime.backgroundWork?.runningCount() ?? 0;
+      return running ? summarizeBackgroundWork(new Array(running).fill(null)) : NO_BACKGROUND_WORK;
+    }
     case "droid":
     case "pi":
     case "copilot":
-    // ACP: a session is bounded by its prompt. No dialect exposes a background
-    // task, a scheduled run, or anything else that outlives a turn, and none is
-    // in `SUBAGENT_CAPABILITIES`. Zero here is a verified fact, not a default.
-    case "acp":
       return NO_BACKGROUND_WORK;
     default: {
       // A new harness must state whether it owns work that outlives a turn.
@@ -37511,7 +37514,8 @@ export function createAgentChatService(args: {
     for (const event of events) {
       if (event.kind === "agent_activity") {
         if (managed.runtime !== runtime) continue;
-        const activeTurnId = runtime.busy ? acpBackgroundTurnIds.get(runtime) ?? runtime.activeTurnId : null;
+        // The running turn first: the saved id can still name the turn before it.
+        const activeTurnId = runtime.busy ? runtime.activeTurnId ?? acpBackgroundTurnIds.get(runtime) : null;
         if (!activeTurnId && runtime.busy) continue;
         const turnId = activeTurnId ?? randomUUID();
         const batch = `${turnId}:bg-${randomUUID().slice(0, 8)}`;
@@ -37831,6 +37835,8 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
 
     let acpLaneGuidance: string | null = null;
+    /** Whether the background watcher was told this turn began; only then may it hear the end. */
+    let backgroundTurnStarted = false;
     try {
       const slashRoute = await resolveAcpSlashRoute(managed, runtime, args);
       let prompt = slashRoute.body;
@@ -37873,6 +37879,7 @@ export function createAgentChatService(args: {
       });
       acpBackgroundTurnIds.set(runtime, turnId);
       runtime.backgroundWork?.turnStarting();
+      backgroundTurnStarted = true;
       const outcome = await runtime.session.prompt({
         turnId,
         blocks,
@@ -37933,7 +37940,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
-      runtime.backgroundWork?.turnEnded();
+      if (backgroundTurnStarted) runtime.backgroundWork?.turnEnded();
       const message = error instanceof Error ? error.message : String(error);
       void emitTurnDiffSummaryIfChanged(managed, turnId);
       if (runtime.interrupted && !runtime.processFailed) {
