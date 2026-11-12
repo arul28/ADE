@@ -1,5 +1,6 @@
 import { accountRepoScopeKey } from "./accountSettingsScope";
 import type {
+  AccountProjectAddRequest,
   AccountProjectCopyView,
   AccountProjectView,
 } from "../../../account-directory/src/accountProjects/contract";
@@ -188,4 +189,22 @@ export function coerceAccountProjectListResult(value: unknown): AccountProjectLi
     .filter((project): project is AccountProjectView => project !== null);
   const cursor = typeof answer.cursor === "number" && Number.isFinite(answer.cursor) ? answer.cursor : 0;
   return { state: "ready", cursor, projects };
+}
+
+/**
+ * What adding a project to the account, or removing it, answers to the
+ * renderer (`project.accountAdd` / `project.accountRemove`, S13). The account
+ * token stays in main; the renderer gets the project row or a coded failure.
+ * `signed_out`: no account on this computer; `unavailable`: the directory
+ * could not be reached; any other code is the directory's own.
+ */
+export type AccountProjectChangeResult =
+  | { ok: true; project: AccountProjectView; created: boolean; revived: boolean }
+  | { ok: false; code: string; message: string };
+
+/** The add request for a GitHub repository URL or origin, or null when it names no GitHub repository. */
+export function accountProjectAddRequestForOrigin(origin: string | null | undefined): AccountProjectAddRequest | null {
+  const identity = githubRepoIdentityFromOrigin(origin);
+  if (!identity) return null;
+  return { host: identity.host, owner: identity.owner, name: identity.name, repoKey: identity.repoKey };
 }
