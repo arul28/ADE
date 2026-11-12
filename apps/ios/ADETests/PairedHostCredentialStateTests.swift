@@ -1,3 +1,4 @@
+import Security
 import XCTest
 @testable import ADE
 
@@ -69,5 +70,27 @@ final class PairedHostCredentialStateTests: XCTestCase {
   func testAccountAuthKindIsNotTreatedAsAPairing() {
     let state = syncPairedHostCredentialState(profile: pairedProfile(authKind: "account")) { _ in nil }
     XCTAssertEqual(state, .notPaired, "only a paired profile can have an unreadable pairing credential")
+  }
+
+  /// The device id every computer knows this phone by. A keychain read that
+  /// fails must never write a new id over the real one: that made every
+  /// computer answer "unknown device" and asked for a PIN again.
+  func testDeviceIdSurvivesAFailedKeychainRead() {
+    typealias Case = (keychain: KeychainService.StoredRead, saved: String?, id: String, writeKeychain: Bool, writeSaved: Bool)
+    let cases: [Case] = [
+      (.value("kept"), "kept", "kept", false, false),
+      (.value("kept"), nil, "kept", false, true),            // after a reinstall: the saved copy comes back
+      (.failed(errSecInteractionNotAllowed), "saved", "saved", false, false),            // the keychain may still hold the real id
+      (.failed(errSecInteractionNotAllowed), nil, "fresh", false, false),                // this launch only; the next one reads again
+      (.absent, "saved", "saved", true, false),
+      (.absent, nil, "fresh", true, true),
+      (.value("  "), "saved", "saved", true, false),
+    ]
+    for (index, item) in cases.enumerated() {
+      let result = syncResolveDeviceId(keychain: item.keychain, saved: item.saved, makeFresh: { "fresh" })
+      XCTAssertEqual(result.id, item.id, "case \(index)")
+      XCTAssertEqual(result.writeKeychain, item.writeKeychain, "case \(index)")
+      XCTAssertEqual(result.writeSaved, item.writeSaved, "case \(index)")
+    }
   }
 }

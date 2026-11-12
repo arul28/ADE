@@ -1628,6 +1628,42 @@ A project is one GitHub repository. Each computer can hold copies of it.
 - The brain sends `accountProjectId` only to its signed-in owner, and never
   sends the account user id. The new fields are optional on both sides, so an
   old phone and an old brain still work together.
+- "Use for new lanes" on the Location page sends `projects.setMainCheckout`
+  (runtime scope, controller only) to the computer that holds the folder.
+  Only the brain that publishes that computer's projects answers it; it
+  publishes the new main copy at once. A brain without the action shows
+  "Update ADE on <computer> to change this from your phone." and no button.
+- Create can publish the new project to GitHub ("Publish to GitHub", on by
+  default). The phone sends the computer's `github.publishCurrentProject`
+  (project scope, the new folder) with the computer's own GitHub sign-in. A
+  computer without that action shows the switch off with a reason.
+
+### GitHub on the phone
+
+The account can hold one GitHub sign-in (the ADE GitHub App). The phone uses
+it to read pull requests and repositories straight from GitHub, with no
+computer on.
+
+- `GitHubAccountConnection` (`Services/GitHubAccountCredential.swift`) reads
+  `/github/app/status`, starts the sign-in in a web sheet
+  (`/github/app/sign-in`, back on `ade://github/connected`), and asks
+  `/github/app/token` for a token. It keeps the token in the keychain for one
+  account only, until `useForSec` runs out. After a 401 it asks once more
+  with the rejected token's hash; a second 401 shows "GitHub connection
+  ended".
+- `GitHubDirectClient` (`Services/GitHubDirectClient.swift`) reads
+  api.github.com with `If-None-Match` (an ETag cache of 200 pages), so an
+  unchanged page costs a 304. It follows `Link: rel="next"` only on
+  api.github.com (5 pages for a list), pauses background reads below 10% of
+  the rate limit, and waits for the reset after a rate limit.
+- The PRs tab reads GitHub directly when the project's computer is not
+  connected. It reads once when it shows, then once a minute while it is in
+  front and the app is active, and never while hidden. The project home has
+  the same list under "Pull requests".
+- Settings → Account has Connect and Disconnect. Disconnect deletes the grant
+  and offers "Revoke on GitHub".
+- Add project → From GitHub lists the account's repositories directly when
+  GitHub is connected, or when no computer is online.
 
 ## Architectural pattern
 
