@@ -272,6 +272,8 @@ export class ProjectScopeRegistry {
       /** The brain's phone input ledger, shared with each project's sync host. */
       terminalInputDedupeLedger?: TerminalInputDedupeLedger;
       onDisposeProject?: (projectId: ProjectId) => void;
+      /** A project's scope opened (its first open, or a re-open after a dispose). Never awaited; must not throw. */
+      onProjectOpened?: (projectRoot: string) => void;
       /**
        * Stops the devices a removed project's earlier teardown handed off:
        * one that a removal joined while it ran, or a brain exit's, when the
@@ -640,6 +642,11 @@ export class ProjectScopeRegistry {
         this.failedScopes.delete(projectId);
         // It opened, so whatever froze it before is not freezing it now.
         this.options.openStrikes?.clear(projectId, "opened");
+        try {
+          this.options.onProjectOpened?.(record.rootPath);
+        } catch {
+          // A hook never fails an open.
+        }
       }
       return scope;
     } catch (error) {
