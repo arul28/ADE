@@ -12,7 +12,7 @@
  * answer while the tab has one, so a page that moves to these hooks still
  * reaches the machine it reached before.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { accountRepoScopeKey } from "../../shared/accountSettingsScope";
 import {
   repositoryTabFromAccountProject,
@@ -23,6 +23,11 @@ import {
 } from "../../shared/repositoryTab";
 import type { OpenProjectBinding } from "../../shared/types";
 import { useAppStore } from "./appStore";
+import {
+  originUrlForBinding,
+  projectOriginMemoryVersion,
+  subscribeProjectOriginMemory,
+} from "../components/lanes/laneMachines";
 import { useStableBinding } from "./laneMachineRouting";
 import { useRemoteTargetState, withMachineTimeout } from "./projectMachines";
 import {
@@ -40,14 +45,16 @@ import {
  * The repository tab of a project binding: the account project when the list
  * knows the origin, else an account tab keyed by the origin's address, else
  * (no GitHub origin) a this-computer-only tab for the folder. Null with no
- * binding. Pure, so the web client and tests can use it.
+ * binding. A local binding carries no origin, so `originUrl` gives the one the
+ * recents know for its folder (`originUrlForBinding`).
  */
 export function repositoryTabForBinding(
   binding: OpenProjectBinding | null,
   list: AccountProjectListState,
+  originUrl: string | null = binding?.gitOriginUrl ?? null,
 ): RepositoryTab | null {
   if (!binding) return null;
-  const repoKey = accountRepoScopeKey(binding.gitOriginUrl ?? null);
+  const repoKey = accountRepoScopeKey(originUrl);
   const iconDataUrl = binding.kind === "remote" ? binding.iconDataUrl ?? null : null;
   if (repoKey) {
     if (list.state === "ready") {
@@ -80,7 +87,15 @@ function tabIdentity(tab: RepositoryTab | null): string {
 export function useActiveRepositoryTab(): RepositoryTab | null {
   const binding = useAppStore((state) => state.projectBinding);
   const list = useAccountProjectList();
-  const tab = useMemo(() => repositoryTabForBinding(binding, list), [binding, list]);
+  // The origin memory fills from the recents after the tab opens; a local
+  // binding has no origin of its own, so the tab follows the memory.
+  const originVersion = useSyncExternalStore(subscribeProjectOriginMemory, projectOriginMemoryVersion, projectOriginMemoryVersion);
+  const tab = useMemo(
+    () => repositoryTabForBinding(binding, list, originUrlForBinding(binding)),
+    // originVersion: the memory changed, so read the origin again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [binding, list, originVersion],
+  );
   const held = useRef(tab);
   if (tabIdentity(held.current) !== tabIdentity(tab)) held.current = tab;
   return held.current;

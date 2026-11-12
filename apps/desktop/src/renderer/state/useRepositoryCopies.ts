@@ -32,6 +32,7 @@ import {
   type StartOnChoice,
 } from "../../shared/repositoryTab";
 import type { RecentProjectSummary } from "../../shared/types";
+import { rememberProjectOriginSummaries } from "../components/lanes/laneMachines";
 import { isWebClientMode } from "../lib/webClientMode";
 import { adeCloudLaneComputerForMachine, useAdeCloudLaneComputers } from "./adeCloudLaneIndex";
 import { useAdeCloudEnabled } from "./cloudAccess";
@@ -112,7 +113,11 @@ function useThisComputer(active: boolean): ThisComputer | null {
       });
       if (typeof listRecent !== "function") return;
       void listRecent().then(
-        (rows) => { if (!cancelled) setLocalProjects(rows); },
+        (rows) => {
+          // A local tab's binding has no origin; the tab finds it here.
+          rememberProjectOriginSummaries(rows, { replace: true });
+          if (!cancelled) setLocalProjects(rows);
+        },
         () => undefined,
       );
     };

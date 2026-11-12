@@ -187,6 +187,19 @@ export function resetGitRemoteIdentityCache(): void {
 
 const originByLocalRoot = new Map<string, string>();
 const originByRemoteKey = new Map<string, string>();
+let originMemoryVersion = 0;
+const originMemoryListeners = new Set<() => void>();
+
+/** Calls `listener` after the origin memory changes. Returns the unsubscribe. */
+export function subscribeProjectOriginMemory(listener: () => void): () => void {
+  originMemoryListeners.add(listener);
+  return () => originMemoryListeners.delete(listener);
+}
+
+/** A number that moves each time the origin memory changes (a `useSyncExternalStore` snapshot). */
+export function projectOriginMemoryVersion(): number {
+  return originMemoryVersion;
+}
 
 /**
  * Recents and connection snapshots are the union's origin source. Local tab
@@ -202,10 +215,29 @@ export function rememberProjectOriginSummaries(
   projects: readonly Pick<RecentProjectSummary, "rootPath" | "kind" | "remote" | "gitOriginUrl">[],
   options?: { replace?: boolean },
 ): void {
+  const before = originMemorySignature();
   if (options?.replace) {
     originByLocalRoot.clear();
     originByRemoteKey.clear();
   }
+  try {
+    rememberOrigins(projects, options);
+  } finally {
+    if (originMemorySignature() !== before) {
+      originMemoryVersion += 1;
+      for (const listener of originMemoryListeners) listener();
+    }
+  }
+}
+
+function originMemorySignature(): string {
+  return JSON.stringify([[...originByLocalRoot], [...originByRemoteKey]]);
+}
+
+function rememberOrigins(
+  projects: readonly Pick<RecentProjectSummary, "rootPath" | "kind" | "remote" | "gitOriginUrl">[],
+  options?: { replace?: boolean },
+): void {
   for (const project of projects) {
     const origin = (project.gitOriginUrl ?? project.remote?.gitOriginUrl ?? "").trim();
     const remote = project.kind === "remote" ? project.remote : undefined;
