@@ -92,13 +92,19 @@ function tokenDigest(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
+/** The error code only: a message can carry a path or a token, so it is never logged. */
+function errorCode(error: unknown): string {
+  return (error as NodeJS.ErrnoException | null)?.code ?? "unknown";
+}
+
 /** Size and mtime of `gh`'s hosts.yml, which `gh auth login`, `refresh` and `logout` rewrite. */
 async function defaultGhHostsSignature(): Promise<string> {
   try {
     const stat = await fs.promises.stat(path.join(ghConfigDir(), "hosts.yml"));
     return `${stat.size}:${stat.mtimeMs}`;
-  } catch {
-    return "missing";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return "missing";
+    throw error;
   }
 }
 
@@ -121,7 +127,9 @@ async function defaultGhLoginHost(): Promise<"github.com" | "other" | "unknown">
     const raw = await fs.promises.readFile(path.join(ghConfigDir(), "hosts.yml"), "utf8");
     return raw.split(/\r?\n/).some((line) => /^github\.com\s*:/.test(line)) ? "github.com" : "other";
   } catch (error) {
-    return (error as NodeJS.ErrnoException | null)?.code === "ENOENT" ? "other" : "unknown";
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return "other";
+    // A read error is reported by the caller as `unknown`.
+    throw error;
   }
 }
 
@@ -168,8 +176,36 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
   };
   const resolveVault = (): AccountVaultBridge | null =>
     safeVault(args.getAccountVault, (error) => logFailure("resolve_vault", error));
-  const readSignature = args.readGhHostsSignature ?? defaultGhHostsSignature;
-  const readLoginHost = args.readGhLoginHost ?? defaultGhLoginHost;
+  // A read that fails on every tick warns once, and its repeats log at info
+  // until a different cause shows up (docs/logging.md, Sentry Logs budget).
+  let lastReadFailure: string | null = null;
+  const logReadFailure = (operation: string, error: unknown): void => {
+    const code = errorCode(error);
+    const key = `${operation}:${code}`;
+    const repeat = key === lastReadFailure;
+    lastReadFailure = key;
+    const meta = { operation, error: code };
+    if (repeat) args.logger?.info?.("github.gh_account_read_failed", meta);
+    else args.logger?.warn?.("github.gh_account_read_failed", meta);
+  };
+  // A read that fails is logged and answers "unknown", so the sync takes no
+  // action on it: a failed read is never read as a sign-out.
+  const readSignature = async (): Promise<string> => {
+    try {
+      return await (args.readGhHostsSignature ?? defaultGhHostsSignature)();
+    } catch (error) {
+      logReadFailure("hosts_signature", error);
+      return "unreadable";
+    }
+  };
+  const readLoginHost = async (): Promise<"github.com" | "other" | "unknown"> => {
+    try {
+      return await (args.readGhLoginHost ?? defaultGhLoginHost)();
+    } catch (error) {
+      logReadFailure("login_host", error);
+      return "unknown";
+    }
+  };
   const readEnvironmentTokens = args.readEnvironmentTokens ?? defaultEnvironmentTokens;
   const vaultRef = { scope: ACCOUNT_SCOPE_ALL, kind: GITHUB_GH_VAULT_KIND, key: GITHUB_GH_VAULT_KEY };
 
@@ -188,7 +224,8 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
   const safeGet = (key: string): string | null => {
     try {
       return store?.getSync(key)?.trim() || null;
-    } catch {
+    } catch (error) {
+      logReadFailure("credential_store", error);
       return null;
     }
   };
@@ -298,7 +335,11 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
     if (!read || accountUserId() !== userId) return;
     const deleted = read.item?.deleted === true;
     // A value this version cannot read is a newer format: leave it and the copy alone.
-    if (read.item && !deleted && read.raw !== null && !read.value) return;
+    if (read.item && !deleted && read.raw !== null && !read.value) {
+      // A newer format (or a value this version cannot decode) is expected; the copy stays as it is.
+      args.logger?.info?.("github.gh_account_unknown_format", {});
+      return;
+    }
     const remote = deleted ? null : read.value;
     const local = await readShareableLocal();
     if (accountUserId() !== userId) return;
@@ -459,7 +500,6 @@ export function createGithubGhAccountSync(args: GithubGhAccountSyncArgs) {
         .then((signature) => {
           observedSignature = signature;
         })
-        .catch(() => {})
         .then(() => hydrate());
     },
 
