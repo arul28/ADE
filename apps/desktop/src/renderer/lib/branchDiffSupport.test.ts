@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { hostSupportsBranchDiff, isBranchDiffUnsupported } from "./branchDiffSupport";
+import type { OpenProjectBinding } from "../../shared/types";
+
+/** The machine the lanes live on. */
+const PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
 
 describe("isBranchDiffUnsupported", () => {
   it.each([
@@ -28,14 +32,17 @@ describe("hostSupportsBranchDiff", () => {
     });
     vi.stubGlobal("window", { ade: { diff: { getBranchChanges } } });
 
-    await expect(hostSupportsBranchDiff("lane-ok")).resolves.toBe(true);
-    await expect(hostSupportsBranchDiff("no-base")).resolves.toBe(true);
-    await expect(hostSupportsBranchDiff("old-host")).resolves.toBe(false);
-    await expect(hostSupportsBranchDiff("web-stub")).resolves.toBe(false);
+    await expect(hostSupportsBranchDiff("lane-ok", PIN)).resolves.toBe(true);
+    await expect(hostSupportsBranchDiff("no-base", PIN)).resolves.toBe(true);
+    await expect(hostSupportsBranchDiff("old-host", PIN)).resolves.toBe(false);
+    await expect(hostSupportsBranchDiff("web-stub", PIN)).resolves.toBe(false);
     // A definite answer is asked once per lane; a null or a failure is asked
     // again, since a reconnect or a fixed base can change it.
-    for (const laneId of ["lane-ok", "old-host", "web-stub", "no-base"]) await hostSupportsBranchDiff(laneId);
+    for (const laneId of ["lane-ok", "old-host", "web-stub", "no-base"]) await hostSupportsBranchDiff(laneId, PIN);
     const calls = (laneId: string) => getBranchChanges.mock.calls.filter(([args]) => args.laneId === laneId).length;
     expect([calls("lane-ok"), calls("old-host"), calls("web-stub"), calls("no-base")]).toEqual([1, 1, 2, 2]);
+    // No machine with the lane online: Branch is not offered and nothing is asked.
+    await expect(hostSupportsBranchDiff("lane-new", null)).resolves.toBe(false);
+    expect(calls("lane-new")).toBe(0);
   });
 });
