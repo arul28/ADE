@@ -1837,12 +1837,12 @@ export function TopBar({
         }
         const lines: string[] = [];
         if (stayingTabs.length > 0) {
-          const plural = stayingTabs.length === 1 ? "" : "s";
+          const one = stayingTabs.length === 1;
           lines.push(
-            `${stayingTabs.length} open project tab${plural} also exist${stayingTabs.length === 1 ? "s" : ""} elsewhere:`,
+            `${stayingTabs.length} open project tab${one ? " has a copy" : "s have copies"} on another computer:`,
             stayingTabs.map((plan) => `- ${plan.tab.displayName}`).join("\n"),
             "",
-            `${stayingTabs.length === 1 ? "It stays" : "They stay"} open. ${action === "remove" ? "Removing" : "Disconnecting"} ${targetName} only removes its work from inside ${stayingTabs.length === 1 ? "it" : "them"}.`,
+            `${one ? "It stays open and switches to that copy" : "They stay open and switch to those copies"}.`,
           );
         }
         if (waitingTabs.length > 0) {
@@ -2856,7 +2856,8 @@ export function TopBar({
                           if (isProjectBusy) return;
                           handleRemoveTab(rp.rootPath);
                         }}
-                        title="Remove project"
+                        // Closes the tab; "Remove project…" in the copies menu removes it.
+                        title="Close project"
                       >
                         <X size={13} weight="regular" />
                       </button>
@@ -3002,11 +3003,10 @@ export function TopBar({
           data-variant="ghost"
           onClick={handleOpenNew}
           disabled={isProjectBusy}
+          // The tooltip names the action; the glow and the count say other computers are online.
           title={
-            webMode
-              ? "Open another project"
-              : remoteStatusCount > 0
-              ? `${remoteStatusCount} remote device${remoteStatusCount === 1 ? "" : "s"} available`
+            !webMode && remoteStatusCount > 0
+              ? `Open another project (${remoteStatusCount} other computer${remoteStatusCount === 1 ? "" : "s"} online)`
               : "Open another project"
           }
           style={

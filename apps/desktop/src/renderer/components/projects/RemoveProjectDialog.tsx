@@ -494,7 +494,8 @@ function rowStyle(first: boolean, muted: boolean): CSSProperties {
 
 function MachineName({ name, icon = "computer" }: { name: string; icon?: "computer" | "account" }) {
   return (
-    <span style={{ width: 132, flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 500 }}>
+    // The machine keeps up to 45% of the row; the path gives way first.
+    <span title={name} style={{ minWidth: 132, maxWidth: "45%", flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 500 }}>
       {icon === "account" ? null : <Desktop size={12} weight="regular" aria-hidden style={{ flexShrink: 0, opacity: 0.7 }} />}
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
     </span>
@@ -551,7 +552,7 @@ function CopyRow({
     lines.push({
       text: scope === "account"
         ? `${machine.name} is offline. It keeps its folder.`
-        : `${machine.name} is offline. It keeps its copy and its entry.`,
+        : `${machine.name} is offline. Nothing changes there.`,
     });
   } else if (result) {
     if (result.kind === "running") {
@@ -579,18 +580,18 @@ function CopyRow({
     glyph = <CircleNotch size={13} weight="bold" className="animate-spin" aria-hidden />;
     if (deleteFolders) lines.push({ text: "Checking the copy…" });
   } else if (report.kind === "unsupported") {
-    lines.push({ text: `Update ADE on ${machine.name} to delete its folder from here. Its entry can still be removed.`, tone: "muted" });
+    lines.push({ text: `Update ADE on ${machine.name} to delete its folder from here. ADE can still take it off the list.`, tone: "muted" });
   } else if (report.kind === "failed") {
     lines.push({ text: `Couldn't check the copy: ${report.message}`, tone: "warning" });
   } else if (ready) {
     const running = summarizeLiveSessions(ready.state);
     const work = summarizeCopyWork(ready.state);
     if (ready.state.folder === "missing") {
-      lines.push({ text: "The folder isn't there (moved, deleted, or on a disk that isn't connected). Only the entry is removed." });
+      lines.push({ text: "The folder isn't there (moved, deleted, or on a disk that isn't connected). ADE only takes it off the list." });
     } else if (running) {
       glyph = <Warning size={14} weight="fill" color={COLORS.warning} aria-hidden />;
       lines.push({
-        text: deleteFolders ? running : `${running.replace(/ Stop (it|them) first\.$/, "")} Removing the entry stops ${liveSessionCount(ready.state) === 1 ? "it" : "them"}.`,
+        text: deleteFolders ? running : `${running.replace(/ Stop (it|them) first\.$/, "")} Removing it stops ${liveSessionCount(ready.state) === 1 ? "it" : "them"}.`,
         tone: "warning",
       });
     } else if (deleteFolders) {

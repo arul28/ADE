@@ -282,6 +282,8 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
   letter-spacing: 0.06em;
   background: color-mix(in srgb, var(--color-fg) 7%, transparent);
   color: var(--kit-text-2);
+  /* One short label at a fixed height: a wrapped line would spill out of it. */
+  white-space: nowrap;
 }
 .kit-tag[data-tone="ok"] { background: color-mix(in srgb, var(--kit-ok) 14%, transparent); color: var(--kit-ok); }
 .kit-tag[data-tone="warn"] { background: color-mix(in srgb, var(--kit-warn) 14%, transparent); color: var(--kit-warn); }

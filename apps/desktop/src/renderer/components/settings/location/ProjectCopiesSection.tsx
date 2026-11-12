@@ -111,14 +111,14 @@ function ProjectCopiesList() {
               key={`${copy.machineId}\n${copy.rootPath}`}
               leading={<CopyStateDot online={copy.online} />}
               title={(
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={copy.machineName}>
                     {copy.isThisMachine && !/^this computer$/i.test(copy.machineName.trim())
                       ? `${copy.machineName} (this computer)`
                       : copy.machineName}
                   </span>
                   {copy.isMain ? <span className="kit-tag" data-tone="accent">Main</span> : null}
-                  {key && key === inUseKey ? <span className="kit-tag">Open here</span> : null}
+                  {key && key === inUseKey ? <span className="kit-tag">In use</span> : null}
                 </span>
               )}
               hint={(
@@ -168,7 +168,7 @@ function ProjectCopiesList() {
                     ? "Adding a copy in its default folder…"
                     : job?.status === "ready"
                       ? "Copy added."
-                      : "No copy on this computer."}
+                      : "No copy yet."}
                 control={job?.status === "cloning" ? (
                   <CircleNotch size={14} weight="bold" className="animate-spin" aria-label="Adding a copy" />
                 ) : job?.status === "ready" ? (

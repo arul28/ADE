@@ -222,7 +222,7 @@ function CopyRow({
   const name = (
     // The machine is what the person picks: its name keeps up to 45% of the
     // row, and the path gives way first.
-    <span className="inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1.5" title={machine.name}>
+    <span className="inline-flex min-w-[104px] max-w-[45%] shrink-0 items-center gap-1.5" title={machine.name}>
       <Desktop size={12} weight="regular" aria-hidden className="shrink-0 opacity-70" />
       <span className="truncate">{machine.name}</span>
     </span>
