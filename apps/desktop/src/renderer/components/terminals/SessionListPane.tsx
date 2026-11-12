@@ -2801,7 +2801,9 @@ export const SessionListPane = React.memo(function SessionListPane({
         lanePrForeign={Boolean(foreignRow)}
         gridBadge={foreignRow ? null : gridBadgeFor(session.id)}
         focusMark={focusMarks?.get(session.id) ?? null}
-        runtimePin={foreignRow?.binding}
+        // The row's machine, the tab's own copy included: its snooze, delta
+        // and dev-server stop go there. Null only when the machine is unknown.
+        runtimePin={foreignRow?.binding ?? resolveSessionRuntimePin(session)}
         machineMarker={options?.machineMarker ?? (showLaneIdentity ? markersByLaneId.get(foreignRow ? foreignLaneKey(foreignRow.machineId, session.laneId) : session.laneId) : null) ?? null}
         laneAppleDevice={options?.laneAppleDevice ?? (showLaneIdentity && !foreignRow ? laneAppleDevices.get(session.laneId) : null) ?? null}
         laneAndroidDevice={options?.laneAndroidDevice ?? (showLaneIdentity && !foreignRow ? laneAndroidDevices.get(session.laneId) : null) ?? null}
