@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { createGithubIssueOps } from "./githubIssueOps";
 import { createRepeatedFailureGate } from "../logging/repeatedFailure";
-import { appGrantAllowsCapability, gateAppCandidates } from "./githubAppGrant";
+import { appGrantAllowsCapability, gateAppCandidates } from "../../../shared/github/githubAppGrant";
 import { createGithubAccountAppCredential } from "./githubAccountAppCredential";
 import { createGithubSessionEnv, readOwnEnvironmentGithubToken } from "./githubSessionEnv";
 import type { GitHubIssueLike, GitHubIssuePatch } from "../../../shared/laneGitHubIssue";

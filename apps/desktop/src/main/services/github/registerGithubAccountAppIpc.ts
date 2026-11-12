@@ -6,7 +6,7 @@ import type {
   GitHubAccountAppSignInStartResult,
   GitHubAccountAppSignOutResult,
 } from "../../../shared/types";
-import { createAccountAppTokenClient } from "../../../shared/github/accountAppTokenClient";
+import { createAccountAppTokenClient, type AccountAppTokenClient } from "../../../shared/github/accountAppTokenClient";
 import { resolveTrustedAccountDirectoryBaseUrl } from "../../../shared/accountDirectory";
 import { GITHUB_ACCOUNT_APP_TOKEN_KEY } from "../../../shared/github/accountAppTokenClient";
 import { updateCredentialKeySync, type UpdatableCredentialStore } from "../../../../../ade-cli/src/services/credentials/updateCredentialKey";
@@ -37,7 +37,7 @@ export function registerGithubAccountAppIpc(args: {
     info(message: string, meta?: Record<string, unknown>): void;
     warn(message: string, meta?: Record<string, unknown>): void;
   };
-}): void {
+}): AccountAppTokenClient {
   const client = createAccountAppTokenClient({
     getAccountAccessToken: args.getAccountAccessToken,
     getAccountUserId: args.getAccountUserId,
@@ -133,4 +133,7 @@ export function registerGithubAccountAppIpc(args: {
     args.logger.info("github.account_app_signed_out", { deletedAtGitHub: answer.result.deletedAtGitHub });
     return { ok: true, deletedAtGitHub: answer.result.deletedAtGitHub, revokeAtGitHubUrl: answer.result.revokeAtGitHubUrl };
   });
+
+  // The direct GitHub reads (githubDirectIpc.ts) use the same client and cache.
+  return client;
 }

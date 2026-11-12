@@ -370,6 +370,11 @@ export class BrowserAccountClient {
     return [...this.snapshot.relayBaseUrls];
   }
 
+  /** The account directory this browser signs in to, or null when none is configured. */
+  getDirectoryBaseUrl(): string | null {
+    return this.config?.directoryBaseUrl ?? null;
+  }
+
   captureSessionLease(): BrowserAccountSessionLease | null {
     const userId = this.session?.userId?.trim() ?? "";
     if (
@@ -813,8 +818,9 @@ export class BrowserAccountClient {
   /**
    * One call for the ADE account's GitHub App sign-in, with this browser's
    * own account token: start a sign-in, read how it ended, the status, and
-   * disconnect. Only those paths: the token routes (`/token`, `/adopt`,
-   * `/retire`) belong to machines, and a browser never holds a GitHub token.
+   * disconnect. Only those paths. The token route is not here: the direct
+   * GitHub reads get their token through `webclient/github/accountCredential.ts`,
+   * which keeps it in memory only, and `/adopt` and `/retire` belong to machines.
    */
   async githubAppRequest(request: {
     method: "GET" | "POST" | "DELETE";

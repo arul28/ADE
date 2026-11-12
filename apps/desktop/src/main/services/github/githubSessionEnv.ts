@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ghConfigDir } from "../../../../../ade-cli/src/services/credentials/ghConfigDir";
-import type { AppGrantReader } from "./githubAppGrant";
+import type { AppGrantReader } from "../../../shared/github/githubAppGrant";
 
 /**
  * `GH_TOKEN` for the `gh` CLI in agent shells, CLI sessions and chats, from

@@ -35,6 +35,7 @@ import { createSessionsPtyNamespaces } from "./sessionsPty";
 import { createWebCloudNamespace } from "./cloud";
 import { createWebProviderLoginsNamespace } from "./providerLogins";
 import { createGithubAccountAppWebMethods } from "./githubStub";
+import { createWebGithubDirectNamespace } from "../github/directAdapter";
 import type { AdapterEvents, AdapterInfra } from "./types";
 
 export type AdeWebAdapter = {
@@ -134,6 +135,7 @@ export function createAdeWebAdapter(
   const misc = createMiscNamespaces(infra);
   const accountClient = providedAccountClient ?? new BrowserAccountClient();
   const analytics = createAnalyticsNamespace(infra);
+  const githubDirect = createWebGithubDirectNamespace(accountClient);
 
   const surface = {
     app: createAppNamespace(infra),
@@ -175,8 +177,14 @@ export function createAdeWebAdapter(
     // browser's own account session; no machine and no GitHub token.
     github: {
       ...misc.github,
-      ...createGithubAccountAppWebMethods((request) => accountClient.githubAppRequest(request)),
+      ...createGithubAccountAppWebMethods(
+        (request) => accountClient.githubAppRequest(request),
+        githubDirect.onGrantChanged,
+      ),
     } as typeof misc.github,
+    // Direct GitHub reads with the account's GitHub App sign-in, from this
+    // browser to api.github.com; the token stays in memory (C10).
+    githubDirect: githubDirect.namespace,
     jira: createJiraNamespace(infra),
     rebase: misc.rebase,
     history: misc.history,

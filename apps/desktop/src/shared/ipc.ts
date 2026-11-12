@@ -1108,6 +1108,10 @@ export const IPC = {
   githubStartAccountAppSignIn: "ade.github.startAccountAppSignIn",
   githubReadAccountAppSignIn: "ade.github.readAccountAppSignIn",
   githubSignOutAccountApp: "ade.github.signOutAccountApp",
+  // Direct GitHub reads with the account's GitHub App sign-in. Account-scoped:
+  // no machine pin (githubDirectIpc.ts).
+  githubDirectRequest: "ade.githubDirect.request",
+  githubDirectGetState: "ade.githubDirect.getState",
   githubGetAppInstallationStatus: "ade.github.getAppInstallationStatus",
   githubListRepoAutolinks: "ade.github.listRepoAutolinks",
   githubCreateRepoAutolink: "ade.github.createRepoAutolink",

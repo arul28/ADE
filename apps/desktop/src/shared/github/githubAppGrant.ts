@@ -2,7 +2,7 @@ import type {
   GitHubAppIssuePermission,
   GitHubCredentialSource,
   GitHubIssueWriteAccess,
-} from "../../../shared/types";
+} from "../types";
 
 /**
  * What the ADE GitHub App may do on a repository owner, read from the App

@@ -677,6 +677,12 @@ import type {
   GitHubAccountAppSignInReadResult,
   GitHubAccountAppSignInStartResult,
   GitHubAccountAppSignOutResult,
+  GithubDirectClientState,
+  GithubDirectData,
+  GithubDirectOp,
+  GithubDirectRequest,
+  GithubDirectRequestOptions,
+  GithubDirectResult,
   GitHubAutolink,
   GitHubRemoteStatus,
   GitHubRepoStarState,
@@ -4654,6 +4660,18 @@ declare global {
           args: UndoConflictProposalArgs,
         ) => Promise<ConflictProposal>;
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
+      };
+      /**
+       * Direct GitHub reads with the ADE account's GitHub App sign-in
+       * (`shared/github/directClient.ts`). Account-scoped: no machine, so no
+       * pin. Optional: an older ADE does not have it.
+       */
+      githubDirect?: {
+        request: <O extends GithubDirectOp>(
+          request: Extract<GithubDirectRequest, { op: O }>,
+          options?: GithubDirectRequestOptions,
+        ) => Promise<GithubDirectResult<GithubDirectData[O]>>;
+        getState: () => Promise<GithubDirectClientState>;
       };
       github: {
         getStatus: (opts?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<GitHubStatus>;
