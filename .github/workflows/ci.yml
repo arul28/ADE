@@ -1079,7 +1079,7 @@ jobs:
       # stayed at ~420 CPU-seconds with a 2 GB store restored; with the flag on
       # and the store populated it fell to 8.5).
       - name: Cap the compilation cache
-        if: needs.ios-gate.outputs.run == 'true'
+        if: always() && needs.ios-gate.outputs.run == 'true' && env.ADE_IOS_CAS != ''
         run: |
           set -euo pipefail
           size_kb=$(du -sk "$ADE_IOS_CAS" 2>/dev/null | cut -f1 || echo 0)
@@ -1119,6 +1119,12 @@ jobs:
           path: ${{ runner.temp }}/ios-dd/Logs/Test/*.xcresult
           if-no-files-found: ignore
           retention-days: 7
+
+      # A hosted runner is discarded with the job; a self-hosted one keeps the
+      # simulator it booted, and its memory, until something shuts it down.
+      - name: Shut down the simulator
+        if: always() && needs.ios-gate.outputs.run == 'true' && env.IOS_SIM_ID != ''
+        run: xcrun simctl shutdown "$IOS_SIM_ID" 2>/dev/null || true
 
   # Pure source and workflow parsing with node: built-ins only, so it needs
   # no node_modules and starts without waiting for the install job.

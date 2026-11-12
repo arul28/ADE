@@ -47,6 +47,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const DEFAULTS = {
   repo: "arul28/ADE",
@@ -259,7 +260,7 @@ function runOnce(options) {
 }
 
 function install(options) {
-  const source = path.resolve(new URL(import.meta.url).pathname);
+  const source = fileURLToPath(import.meta.url);
   // Run a stable copy rather than the checkout this was invoked from: a lane
   // worktree can be archived, and the agent must keep working after that.
   // Re-run --install after changing this script.
