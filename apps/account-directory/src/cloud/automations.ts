@@ -517,11 +517,20 @@ async function handleRegister(request: Request, env: RelayEnv, userId: string, r
   // Read on every registration (each version a brain sends, and each brain start), so a change of the
   // agent limits or the GitHub sign-in reaches rules that didn't change.
   const vault = await vaultColumns(await readVaultFacts(env, request.headers.get("authorization")), spec.project.origin, existing);
-  const digest = await sha256Hex(JSON.stringify({ enabled: registration.enabled, startsAt: registration.startsAt ?? 0, spec }));
+  // The update track is not part of what the rule is: a track change alone is never an edit
+  // (that would reschedule it), and it is stored on its own below.
+  const { channel: _channel, ...specWithoutTrack } = spec;
+  const digest = await sha256Hex(JSON.stringify({ enabled: registration.enabled, startsAt: registration.startsAt ?? 0, spec: specWithoutTrack }));
   // Only a real save (a newer version) turns a storm-paused rule back on; a brain's restart sends the same one.
   const newer = !existing || registration.ruleVersion > existing.rule_version;
   const unpausing = Boolean(existing?.paused_reason) && registration.enabled && newer;
   if (existing && existing.spec_digest === digest && !unpausing) {
+    // A Beta brain sending a rule a Stable brain registered moves it to the Beta image; never back.
+    if (spec.channel === "beta" && specOf(existing)?.channel !== "beta") {
+      await env.DB.prepare("update cloud_automations set spec_json = json_set(spec_json, '$.channel', 'beta'), updated_at = ? where user_id = ? and rule_id = ?")
+        .bind(now, userId, ruleId).run();
+      logCloud("cloud.automation_track_beta", { userId, ruleId });
+    }
     // Nothing of the rule changed. A newer version is still recorded, so the same version sent again
     // later (a brain's restart) never reads as a save that lifts a storm pause.
     if (newer || vault.git_ok !== existing.git_ok || vault.limits_json !== existing.limits_json || vault.repo_visibility !== existing.repo_visibility) {
