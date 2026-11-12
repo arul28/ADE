@@ -529,12 +529,13 @@ final class ADETests: XCTestCase {
       "kimi": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
       "grok": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
       "copilot": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .none),
+      "antigravity": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
     ]
     XCTAssertEqual(Set(workProviderImportRules.keys), Set(expected.keys))
     for (provider, rules) in expected {
       XCTAssertEqual(workProviderImportRules[provider], rules, provider)
     }
-    XCTAssertEqual(workImportSessionProviders, ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot"])
+    XCTAssertEqual(workImportSessionProviders, ["claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot", "antigravity"])
   }
 
   func testImportPlanContinuesNativeChatProvidersAtLaneRootOnly() {
