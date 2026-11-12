@@ -5285,6 +5285,15 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<ProjectConfigSnapshot>;
         diffAgainstDisk: () => Promise<ProjectConfigDiff>;
+        /**
+         * Answer the notice of a setting that moved to the account with a
+         * different value on that computer. Pass the pin of the computer
+         * whose notice it is.
+         */
+        resolveAccountSettingNotice: (
+          args: { key: string; choice: "use_local" | "keep" },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ProjectConfigSnapshot>;
       };
       zoom: {
         getLevel: () => number;

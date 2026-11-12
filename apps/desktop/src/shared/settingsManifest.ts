@@ -1573,7 +1573,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["pull request", "transcript", "attach", "review"],
     tab: "project-agents",
     anchor: "pr-chat-transcripts",
-    scope: "machine-repo",
+    // Follows the account per repository (`projectConfigAccountLayer.ts`).
+    scope: "account-repo",
     web: "machine",
     group: "Pull requests",
   },

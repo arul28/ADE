@@ -92,6 +92,7 @@ import { normalizeAutomationAgentLimits } from "../../../shared/automationLimits
 import { normalizeWebhookTriggerConfig } from "../../../shared/automationWebhooks";
 import type { AutomationRuleAccountStore } from "../automations/automationRuleAccountStore";
 import { createAutomationRuleAccountSync, type AutomationRuleAccountSync, type CloudHomesView } from "../automations/automationRuleAccountSync";
+import { createProjectConfigAccountLayer, type ProjectConfigAccountBackend, type ProjectConfigAccountLayer } from "./projectConfigAccountLayer";
 
 const VERSION = 1;
 const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
@@ -3150,11 +3151,11 @@ function validateEffectiveConfig(
   };
 }
 
-function readLocalHashFromDisk(filePath: string): string {
+function readLocalTextFromDisk(filePath: string): string {
   try {
-    return hashContent(fs.readFileSync(filePath, "utf8"));
+    return fs.readFileSync(filePath, "utf8");
   } catch (err: any) {
-    if (err?.code === "ENOENT") return hashContent("");
+    if (err?.code === "ENOENT") return "";
     throw err;
   }
 }
@@ -3426,6 +3427,21 @@ export function createProjectConfigService({
     }
   };
 
+  // Settings that follow the account (`projectConfigAccountLayer.ts`). Null
+  // until the brain attaches its account store, and on hosts without one.
+  let accountLayer: ProjectConfigAccountLayer | null = null;
+
+  /**
+   * The snapshot's `localHash`: the file, plus the account's values of the
+   * settings that follow it. A save from a snapshot read before another
+   * computer changed one of them is refused as changed (Settings reads again
+   * and re-applies its edit), so it never writes the old value back.
+   */
+  const localHashOf = (raw: string): string => {
+    const account = accountLayer?.fingerprint() ?? null;
+    return account === null ? hashContent(raw) : hashContent(`${raw}\n# account settings: ${account}`);
+  };
+
   const readSnapshotFromDisk = (): ProjectConfigSnapshot => {
     // Keyed by the identity seen before the read: a write racing the read
     // changes the files again, so the next call misses and reads afresh.
@@ -3436,14 +3452,17 @@ export function createProjectConfigService({
       const localFile = readConfigFile(localPath);
       cachedLocalFile = { key, config: localFile.config, raw: localFile.raw };
     }
+    const fileConfig = structuredClone(cachedLocalFile.config);
     const snapshot = buildSnapshotFromFiles(
       emptySharedConfig(),
-      withAccountRules(structuredClone(cachedLocalFile.config)),
-      { sharedHash: hashContent(""), localHash: hashContent(cachedLocalFile.raw) },
+      withAccountRules(accountLayer ? accountLayer.overlay(fileConfig) : fileConfig),
+      { sharedHash: hashContent(""), localHash: localHashOf(cachedLocalFile.raw) },
       { persistSnapshots: persistedKey !== key },
     );
     if (snapshot.validation.ok) persistedKey = key;
     stampRunsHere(snapshot);
+    const notices = accountLayer?.notices() ?? [];
+    if (notices.length > 0) snapshot.accountNotices = notices;
     return snapshot;
   };
 
@@ -3568,16 +3587,19 @@ export function createProjectConfigService({
     // Read the file itself, not the cached parse: the cache is keyed on stat
     // identity, which a same-size edit inside the clock's resolution keeps.
     const baseLocalHash = typeof candidate.baseLocalHash === "string" ? candidate.baseLocalHash : null;
-    if (baseLocalHash && readLocalHashFromDisk(localPath) !== baseLocalHash) {
+    if (baseLocalHash && localHashOf(readLocalTextFromDisk(localPath)) !== baseLocalHash) {
       cachedLocalFile = null;
       logger.info("projectConfig.save.changedOnDisk", { localPath });
       throw changedOnDiskError();
     }
 
+    // A changed setting that follows the account goes there; the file keeps
+    // the account's values for older ADE processes on this computer.
+    const routed = accountLayer ? accountLayer.routeSave(candidateLocal, readLocalFileConfig()) : candidateLocal;
     // Account rules never land in the file; a new one is filed in the account.
     const diverted = options.divert === false || !automationRuleSync
-      ? candidateLocal
-      : { ...candidateLocal, automations: automationRuleSync.divert(candidateLocal.automations ?? []) };
+      ? routed
+      : { ...routed, automations: automationRuleSync.divert(routed.automations ?? []) };
     const local = withoutNewPlaintextKeys(diverted);
 
     const localYaml = toCanonicalYaml(local);
@@ -3598,7 +3620,60 @@ export function createProjectConfigService({
     return snapshot;
   };
 
+  /** Write the account's values into the file for older ADE processes; never throws. */
+  const mirrorAccountSettings = (): void => {
+    try {
+      const mirrored = accountLayer?.mirror(readLocalFileConfig());
+      if (mirrored) writeLocalFile(mirrored);
+    } catch (error) {
+      logger.warn("projectConfig.account_mirror_failed", { error: error instanceof Error ? error.name : "unknown" });
+    }
+  };
+
   return {
+    /**
+     * Attach the account settings store (the brain does). Until then, and on
+     * hosts without one, every setting lives in `.ade/local.yaml` as before.
+     */
+    setAccountSettingsStore(args: {
+      backend: () => ProjectConfigAccountBackend | null;
+      accountUserId: () => string | null;
+      readOriginUrl: () => string | null;
+      statePath: string;
+    } | null): void {
+      accountLayer = args ? createProjectConfigAccountLayer({ ...args, logger }) : null;
+    },
+
+    /**
+     * Move the settings that follow the account out of `.ade/local.yaml`
+     * (write-if-absent), then mirror the account's values into the file. Call
+     * after the account store has synced.
+     */
+    moveSettingsToAccount(): { moved: string[]; joined: string[]; conflicts: string[] } {
+      const empty = { moved: [], joined: [], conflicts: [] };
+      if (!accountLayer) return empty;
+      try {
+        const result = accountLayer.move(readLocalFileConfig());
+        mirrorAccountSettings();
+        return result;
+      } catch (error) {
+        logger.warn("projectConfig.account_move_failed", { error: error instanceof Error ? error.name : "unknown" });
+        return empty;
+      }
+    },
+
+    /**
+     * The person's answer to a moved setting's notice: `use_local` puts this
+     * computer's old value in the account, `keep` keeps the account's.
+     */
+    resolveAccountSettingNotice(args: { key: string; choice: "use_local" | "keep" }): ProjectConfigSnapshot {
+      const choice = args?.choice === "use_local" ? "use_local" : "keep";
+      if (accountLayer && typeof args?.key === "string" && accountLayer.resolve(args.key, choice)) {
+        mirrorAccountSettings();
+      }
+      return readSnapshotFromDisk();
+    },
+
     /**
      * Attach the account's rule store (the brain does, when it has the
      * account settings store). Until then, and on hosts without one, rules

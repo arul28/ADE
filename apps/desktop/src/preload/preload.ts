@@ -14538,6 +14538,25 @@ const adeBridge = {
         ? runtime.result
         : ipcRenderer.invoke(IPC.projectConfigDiffAgainstDisk);
     },
+    resolveAccountSettingNotice: async (
+      args: { key: string; choice: "use_local" | "keep" },
+      pin?: OpenProjectBinding | null,
+    ): Promise<ProjectConfigSnapshot> => {
+      projectConfigSnapshotCache.clear();
+      try {
+        // Only a brain keeps these notices; without one there is nothing to
+        // answer, so the snapshot comes back as it is.
+        return await callPinnedOrBoundRuntimeActionOr<ProjectConfigSnapshot>(
+          pin,
+          "project_config",
+          "resolveAccountSettingNotice",
+          { args },
+          () => projectConfigSnapshotCache.get(),
+        );
+      } finally {
+        projectConfigSnapshotCache.clear();
+      }
+    },
   },
   zoom: {
     getLevel: (): number => webFrame.getZoomLevel(),

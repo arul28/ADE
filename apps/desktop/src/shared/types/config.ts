@@ -2537,6 +2537,19 @@ export type ProjectConfigTrust = {
   localHash: string;
 };
 
+/**
+ * A setting that now follows the ADE account, where this computer had a
+ * different value when it moved (account project plan, slice Y2). The
+ * account's value is in use; the person can apply this computer's instead.
+ */
+export type ProjectConfigAccountNotice = {
+  kind: "account_setting";
+  /** The account row, such as `prs.pollIntervalSeconds`. */
+  key: string;
+  /** The setting's name in Settings. */
+  label: string;
+};
+
 export type ProjectConfigSnapshot = {
   shared: ProjectConfigFile;
   local: ProjectConfigFile;
@@ -2547,6 +2560,8 @@ export type ProjectConfigSnapshot = {
     sharedPath: string;
     localPath: string;
   };
+  /** Settings that moved to the account with a different value here. Absent from older brains. */
+  accountNotices?: ProjectConfigAccountNotice[];
 };
 
 export type ProjectConfigDiff = {

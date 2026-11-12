@@ -39,6 +39,7 @@ import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchT
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { showToast } from "./toast/toastStore";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
+import { AccountSettingNotices } from "../settings/AccountSettingNotices";
 
 type PerIssueState = BatchLaunchIssueConfig & {
   /** When false the issue is excluded from the launch (skipped via the conflict guard). */
@@ -88,6 +89,9 @@ function safeSaveDefaultPrompt(projectRoot: string | null | undefined, prompt: s
     // Best effort only; failing to persist a prompt should never block launch.
   }
 }
+
+/** The account row behind the saved default prompt (`projectConfigAccountLayer.ts`). */
+const LINEAR_PROMPT_ACCOUNT_KEYS = ["linear.batchLaunchPrompt"] as const;
 
 async function loadProjectDefaultPrompt(projectRoot: string | null | undefined): Promise<string | null> {
   const localFallback = safeLoadDefaultPrompt(projectRoot);
@@ -557,6 +561,17 @@ export function BatchLaunchModal({
             />
           </div>
         </section>
+      ) : null}
+
+      {allLinear ? (
+        // Same machine as the prompt's own read and save (the tab's).
+        <div className="mt-3">
+          <AccountSettingNotices
+            pin={null}
+            keys={LINEAR_PROMPT_ACCOUNT_KEYS}
+            onResolved={() => { void loadProjectDefaultPrompt(projectRoot).then(setProjectDefaultPrompt); }}
+          />
+        </div>
       ) : null}
 
       <div className="mt-3 max-h-[58vh] space-y-2 overflow-y-auto pr-0.5">
