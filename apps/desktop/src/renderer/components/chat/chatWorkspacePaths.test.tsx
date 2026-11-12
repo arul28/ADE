@@ -249,6 +249,9 @@ describe("looksLikeWorkspacePath", () => {
 });
 
 describe("probeWorkspacePath", () => {
+  /** The chat's machine: the file index is read there. */
+  const CHAT_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
   // `vi.stubGlobal` so the shared window is restored afterwards — assigning to it
   // directly leaked `window.ade` into every test that ran later in the file, and
   // only passed because this block happens to run last.
@@ -268,7 +271,7 @@ describe("probeWorkspacePath", () => {
     // filenames constantly, so this was most of the dead clicks.
     mockQuickOpen(["apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx"]);
     await expect(
-      probeWorkspacePath({ workspaceId: "ws", path: "FilesWorkbench.tsx", pin: null }),
+      probeWorkspacePath({ workspaceId: "ws", path: "FilesWorkbench.tsx", pin: CHAT_PIN }),
     ).resolves.toEqual({
       kind: "file",
       path: "apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx",
@@ -278,7 +281,7 @@ describe("probeWorkspacePath", () => {
   it("reports ambiguity instead of guessing when several files share a name", async () => {
     mockQuickOpen(["apps/a/index.ts", "apps/b/index.ts"]);
     await expect(
-      probeWorkspacePath({ workspaceId: "ws", path: "index.ts", pin: null }),
+      probeWorkspacePath({ workspaceId: "ws", path: "index.ts", pin: CHAT_PIN }),
     ).resolves.toEqual({ kind: "ambiguous", query: "index.ts" });
   });
 
@@ -286,14 +289,14 @@ describe("probeWorkspacePath", () => {
     // A folder name is clickable too, and opening it as a file only errored.
     mockQuickOpen(["docs/features/files-and-editor/README.md"]);
     await expect(
-      probeWorkspacePath({ workspaceId: "ws", path: "docs/features/files-and-editor", pin: null }),
+      probeWorkspacePath({ workspaceId: "ws", path: "docs/features/files-and-editor", pin: CHAT_PIN }),
     ).resolves.toEqual({ kind: "directory", path: "docs/features/files-and-editor" });
   });
 
   it("reports a miss so the caller can say so instead of failing silently", async () => {
     mockQuickOpen([]);
     await expect(
-      probeWorkspacePath({ workspaceId: "ws", path: "apps/nope.ts", pin: null }),
+      probeWorkspacePath({ workspaceId: "ws", path: "apps/nope.ts", pin: CHAT_PIN }),
     ).resolves.toEqual({ kind: "missing" });
   });
 
@@ -304,7 +307,7 @@ describe("probeWorkspacePath", () => {
     const quickOpen = vi.fn().mockRejectedValue(new Error("index unavailable"));
     vi.stubGlobal("window", { ...globalThis.window, ade: { files: { quickOpen } } });
     await expect(
-      probeWorkspacePath({ workspaceId: "ws", path: "apps/new-file.ts", pin: null }),
+      probeWorkspacePath({ workspaceId: "ws", path: "apps/new-file.ts", pin: CHAT_PIN }),
     ).resolves.toEqual({ kind: "file", path: "apps/new-file.ts" });
   });
 
