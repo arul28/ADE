@@ -15,9 +15,12 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
  *   file with a rename before it reads it: only one runtime gets a list, and a
  *   list is never acted on twice.
  * - A crash, force quit, kill or power loss writes nothing at exit. The next
- *   start derives the list from the session rows instead (still `running`, or
- *   `detached` by the stale-row sweep, owned by a process that is gone), and
- *   this module keeps what that needs in `.ade/cache/cli-reopen/`:
+ *   start derives the list from the session rows instead
+ *   (`findCliSessionsCutOffByCrash`): still `running`, or `detached` by the
+ *   stale-row sweep, owned by a process of THIS computer (its local process
+ *   registry knows it) that is gone. The session table syncs between
+ *   machines, so a row another machine owns is never one. This module keeps
+ *   what the reopen needs in `.ade/cache/cli-reopen/`:
  *   - `turns.<pid>.json`: the CLIs whose turn is running, by their own exact
  *     signal (Claude Code hooks, Codex OSC), kept current by the live runtime.
  *     It says which reopened CLIs are told to continue. A runtime that stops on
@@ -207,7 +210,7 @@ function writeJsonAtomic(filePath: string, value: unknown): void {
  * nothing and works the same on macOS, Linux and Windows; EPERM means it runs
  * under another user.
  */
-export function isProcessRunning(pid: number): boolean {
+function isProcessRunning(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -281,6 +284,9 @@ export function createCliTurnRecorder(
       onWriteFailed?.(error);
     } finally {
       writing = false;
+      // close() ran while a rename was on its way: that rename may land after
+      // close() deleted the file.
+      if (closed) await fs.promises.rm(filePath, { force: true }).catch(onWriteFailed);
     }
   };
   return {
@@ -296,9 +302,10 @@ export function createCliTurnRecorder(
       running.clear();
       try {
         fs.rmSync(filePath, { force: true });
-      } catch {
-        // A file left behind belongs to a pid that is gone: the next start
-        // reads it only for that pid's sessions, then deletes it.
+      } catch (error) {
+        // A file left behind belongs to a pid that is gone, and no row of a
+        // planned stop is a crash candidate; the next start deletes it.
+        onWriteFailed?.(error);
       }
     },
   };
@@ -309,45 +316,45 @@ export function createCliTurnRecorder(
  * empty set. The file must belong to the same process (pid and start time),
  * so a reused pid never makes an idle CLI continue.
  */
-export function readCliTurnsRunning(
+function readCliTurnsRunning(
   projectRoot: string,
   ownerPid: number,
   ownerStartedAt: string | null | undefined,
 ): Set<string> {
+  let raw: string;
   try {
-    const filePath = path.join(crashStateDir(projectRoot), `${TURNS_PREFIX}${ownerPid}${TURNS_SUFFIX}`);
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<CliTurnsFile>;
-    if (parsed?.version !== 1 || parsed.pid !== ownerPid) return new Set();
-    if ((parsed.ownerStartedAt ?? null) !== (ownerStartedAt ?? null)) return new Set();
-    if (!Array.isArray(parsed.sessions)) return new Set();
-    return new Set(parsed.sessions.filter((id): id is string => typeof id === "string" && id.length > 0));
-  } catch {
-    return new Set();
+    raw = fs.readFileSync(path.join(crashStateDir(projectRoot), `${TURNS_PREFIX}${ownerPid}${TURNS_SUFFIX}`), "utf8");
+  } catch (error) {
+    // No file: no turn of that runtime was running.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return new Set();
+    throw error;
   }
+  const parsed = JSON.parse(raw) as Partial<CliTurnsFile>;
+  if (parsed?.version !== 1 || parsed.pid !== ownerPid) return new Set();
+  if ((parsed.ownerStartedAt ?? null) !== (ownerStartedAt ?? null)) return new Set();
+  if (!Array.isArray(parsed.sessions)) return new Set();
+  return new Set(parsed.sessions.filter((id): id is string => typeof id === "string" && id.length > 0));
 }
 
 /**
  * Claim the reopen of a session that a dead owner left. True for exactly one
  * caller per session and owner, on this computer: the claim file is created
- * exclusively (`wx`), which is atomic on every platform. A claim that cannot
- * be written for another reason claims nothing, so nothing reopens.
+ * exclusively (`wx`), which is atomic on every platform; false when it exists.
+ * Any other error throws, and the caller then does not reopen.
  */
-export function claimCliCrashReopen(
-  projectRoot: string,
-  sessionId: string,
-  owner: { pid: number; startedAt: string | null | undefined },
-): boolean {
+function claimCliCrashReopen(projectRoot: string, entry: CliCutOffByCrash): boolean {
   const dir = crashStateDir(projectRoot);
+  fs.mkdirSync(dir, { recursive: true });
   try {
-    fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
-      path.join(dir, `${safeName(sessionId)}.${ownerKey(owner.pid, owner.startedAt)}${CLAIM_SUFFIX}`),
+      path.join(dir, `${safeName(entry.sessionId)}.${ownerKey(entry.ownerPid, entry.ownerStartedAt)}${CLAIM_SUFFIX}`),
       "",
       { flag: "wx" },
     );
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
   }
 }
 
@@ -357,7 +364,7 @@ export function claimCliCrashReopen(
  * without a crash. Written before the reopen starts. Throws when it cannot be
  * written; the caller then does not reopen.
  */
-export function countCliCrashReopen(
+function countCliCrashReopen(
   projectRoot: string,
   sessionId: string,
   maxAgeMs: number,
@@ -382,27 +389,28 @@ export function countCliCrashReopen(
   return streak;
 }
 
-/** A stop on purpose breaks the row: those sessions count from zero again. */
+/**
+ * A stop on purpose, or a resume by hand, breaks the row: those sessions count
+ * from zero again. Throws when a count cannot be deleted; a count left behind
+ * only keeps that session capped until it expires.
+ */
 export function resetCliCrashReopenCount(projectRoot: string, sessionIds: Iterable<string>): void {
   const dir = crashStateDir(projectRoot);
   for (const sessionId of sessionIds) {
-    try {
-      fs.rmSync(path.join(dir, `${safeName(sessionId)}.json`), { force: true });
-    } catch {
-      // A count left behind expires with its age.
-    }
+    fs.rmSync(path.join(dir, `${safeName(sessionId)}.json`), { force: true });
   }
 }
 
 /**
  * Delete the turn files of runtimes that are gone, and claims and counts older
  * than `keepMs`. Runs once per start; the folder holds a few small files.
- * Never throws.
+ * Never throws; returns how many files it could not handle (the next start
+ * tries again).
  */
 export function pruneCliCrashReopenState(
   projectRoot: string,
   options: { keepMs: number; isPidRunning?: (pid: number) => boolean; now?: () => Date },
-): void {
+): number {
   const dir = crashStateDir(projectRoot);
   const isRunning = options.isPidRunning ?? isProcessRunning;
   const nowMs = (options.now ?? (() => new Date()))().getTime();
@@ -410,8 +418,10 @@ export function pruneCliCrashReopenState(
   try {
     names = fs.readdirSync(dir);
   } catch {
-    return;
+    // No folder yet: nothing to prune.
+    return 0;
   }
+  let failed = 0;
   for (const name of names) {
     const filePath = path.join(dir, name);
     try {
@@ -422,7 +432,142 @@ export function pruneCliCrashReopenState(
       }
       if (nowMs - fs.statSync(filePath).mtimeMs > options.keepMs) fs.rmSync(filePath, { force: true });
     } catch {
-      // The next start tries again.
+      failed += 1;
     }
   }
+  return failed;
+}
+
+export type CliCutOffByCrash = {
+  sessionId: string;
+  ownerPid: number;
+  ownerStartedAt: string | null;
+};
+
+/** The fields of a tracked agent CLI row that say whether a crash cut it off. */
+export type CliCrashCandidateRow = {
+  id: string;
+  status: string;
+  archivedAt?: string | null;
+  ownerPid?: number | null;
+  ownerProcessStartedAt?: string | null;
+};
+
+/** A process from this computer's local registry (`runtime_processes`). */
+export type CliKnownOwner = { pid: number; startedAt: string; lastSeen: string };
+
+/**
+ * The agent CLIs a runtime of this computer left open when it stopped without
+ * an orderly stop. A row qualifies when it is `running` or `detached`, not
+ * archived, not in `exclude` (a planned list has it), and its owner:
+ *
+ * - is in this computer's process registry. The session table syncs between
+ *   machines and the registry does not, so this is the boundary that keeps a
+ *   row another machine owns from being reopened here (the stale-row sweep
+ *   uses it the same way);
+ * - is not this process, and does not run (a live peer, or a reused pid: the
+ *   safe side);
+ * - was last seen within `maxAgeMs`: its last heartbeat is close to when it
+ *   stopped. Older ones only count as `stale`.
+ */
+export function findCliSessionsCutOffByCrash(args: {
+  rows: readonly CliCrashCandidateRow[];
+  knownOwners: readonly CliKnownOwner[];
+  ownPid: number;
+  exclude?: ReadonlySet<string>;
+  maxAgeMs: number;
+  isPidRunning?: (pid: number) => boolean;
+  now?: () => Date;
+}): { cutOff: CliCutOffByCrash[]; stale: number } {
+  const isRunning = args.isPidRunning ?? isProcessRunning;
+  const nowMs = (args.now ?? (() => new Date()))().getTime();
+  const lastSeenByIdentity = new Map<string, number>();
+  const lastSeenByPid = new Map<number, number>();
+  for (const owner of args.knownOwners) {
+    const seenMs = Date.parse(owner.lastSeen);
+    if (!Number.isFinite(seenMs)) continue;
+    lastSeenByIdentity.set(ownerKey(owner.pid, owner.startedAt), seenMs);
+    lastSeenByPid.set(owner.pid, Math.max(seenMs, lastSeenByPid.get(owner.pid) ?? 0));
+  }
+  const cutOff: CliCutOffByCrash[] = [];
+  const seen = new Set<string>();
+  let stale = 0;
+  for (const row of args.rows) {
+    if (seen.has(row.id) || args.exclude?.has(row.id)) continue;
+    seen.add(row.id);
+    if ((row.status !== "running" && row.status !== "detached") || row.archivedAt) continue;
+    const ownerPid = row.ownerPid;
+    if (ownerPid == null || ownerPid === args.ownPid) continue;
+    const ownerStartedAt = row.ownerProcessStartedAt?.trim() || null;
+    const lastSeenMs = ownerStartedAt
+      ? lastSeenByIdentity.get(ownerKey(ownerPid, ownerStartedAt))
+      : lastSeenByPid.get(ownerPid);
+    if (lastSeenMs === undefined || isRunning(ownerPid)) continue;
+    if (nowMs - lastSeenMs > args.maxAgeMs) {
+      stale += 1;
+      continue;
+    }
+    cutOff.push({ sessionId: row.id, ownerPid, ownerStartedAt });
+  }
+  return { cutOff, stale };
+}
+
+/**
+ * Claim each cut-off session for this start and say which ones reopen, and
+ * whether each is told to continue (its turn was running by its own exact
+ * signal). A session another caller claimed, or one past `maxInARow` unclean
+ * stops in a row, does not reopen. With `hold`, every one is claimed and none
+ * reopens: the setting is off, or the runtime is in a restart loop, and a later
+ * start must not reopen what this one held back. Never throws. A claim or count
+ * that fails means that session does not reopen (`failed`); a turn file that
+ * cannot be read means it reopens at its prompt, the safe side. The first
+ * error of either kind comes back for the log.
+ */
+export function claimCliSessionsCutOffByCrash(
+  projectRoot: string,
+  cutOff: readonly CliCutOffByCrash[],
+  options: { maxAgeMs: number; maxInARow: number; hold?: boolean; now?: () => Date },
+): {
+  reopen: CliReopenEntry[];
+  claimedElsewhere: number;
+  capped: number;
+  failed: number;
+  firstError: string | null;
+} {
+  const result = { reopen: [] as CliReopenEntry[], claimedElsewhere: 0, capped: 0, failed: 0, firstError: null as string | null };
+  const noteError = (error: unknown) => {
+    result.firstError ??= error instanceof Error ? error.message : String(error);
+  };
+  const turnsByOwner = new Map<string, Set<string>>();
+  for (const entry of cutOff) {
+    try {
+      if (!claimCliCrashReopen(projectRoot, entry)) {
+        result.claimedElsewhere += 1;
+        continue;
+      }
+      if (options.hold) continue;
+      // Counted before the reopen starts: a reopen that stops the runtime counts too.
+      if (countCliCrashReopen(projectRoot, entry.sessionId, options.maxAgeMs, options.now) > options.maxInARow) {
+        result.capped += 1;
+        continue;
+      }
+    } catch (error) {
+      result.failed += 1;
+      noteError(error);
+      continue;
+    }
+    const key = ownerKey(entry.ownerPid, entry.ownerStartedAt);
+    let turns = turnsByOwner.get(key);
+    if (!turns) {
+      try {
+        turns = readCliTurnsRunning(projectRoot, entry.ownerPid, entry.ownerStartedAt);
+      } catch (error) {
+        noteError(error);
+        turns = new Set();
+      }
+      turnsByOwner.set(key, turns);
+    }
+    result.reopen.push({ sessionId: entry.sessionId, midTurn: turns.has(entry.sessionId) });
+  }
+  return result;
 }

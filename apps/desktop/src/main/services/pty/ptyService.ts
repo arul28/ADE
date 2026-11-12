@@ -8864,7 +8864,18 @@ export function createPtyService({
     ): Promise<PtyResumeSessionResult> {
       const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
       if (!sessionId) throw new Error("Session id is required.");
-      if (!options?.reopenAfterRestart) resetCliCrashReopenCount(projectRoot, [sessionId]);
+      if (!options?.reopenAfterRestart) {
+        try {
+          resetCliCrashReopenCount(projectRoot, [sessionId]);
+        } catch (error) {
+          // The count left behind only keeps this session from reopening after
+          // more crashes until it expires; the resume goes on.
+          logger.warn("pty.cli_reopen_count_reset_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
 
       const session = sessionService.get(sessionId);
       assertAgentCliSessionAction(sessionId, session, "resumed");
