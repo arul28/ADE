@@ -814,13 +814,15 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Speed & spend",
   },
   {
+    // This entry and the Jev entries below follow the account per repository
+    // (`ai.chat.*` rows, `projectConfigAccountLayer.ts`).
     id: "chat.prompt-suggestions",
     label: "Next prompt suggestions",
     keywords: ["suggest", "suggestion", "next prompt", "autocomplete", "tab", "follow up", "placeholder", "composer", "codex"],
     tab: "chat",
     anchor: "prompt-suggestions-codex",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    scope: "account-repo",
     // The setting is the host's project configuration, which the hosted client cannot write.
     web: "hidden",
     group: "Composer",
@@ -864,7 +866,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "chat",
     anchor: "smart-decisions",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -875,7 +877,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "chat",
     anchor: "smart-chat-status",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -886,7 +888,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "chat",
     anchor: "smart-plain-terminals",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -897,7 +899,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "chat",
     anchor: "smart-settle-nudge",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -908,7 +910,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "chat",
     anchor: "model-hint",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -919,7 +921,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "chat",
     anchor: "smart-palette",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -930,7 +932,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "chat",
     anchor: "smart-lane-emoji",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -941,7 +943,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "chat",
     anchor: "jev-zen-credit",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    scope: "account-repo",
     web: "hidden",
     group: "Agent behavior",
   },
@@ -952,7 +954,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "chat",
     anchor: "claude-mods",
     // `.ade/local.yaml` of the project on the machine that runs its chats.
-    scope: "machine-repo",
+    scope: "account-repo",
     // The setting is the host's project configuration, which the hosted client cannot write.
     web: "hidden",
     group: "Agent behavior",

@@ -3641,7 +3641,7 @@ export function createProjectConfigService({
       readOriginUrl: () => string | null;
       statePath: string;
     } | null): void {
-      accountLayer = args ? createProjectConfigAccountLayer({ ...args, logger }) : null;
+      accountLayer = args ? createProjectConfigAccountLayer({ ...args, coerceFile: coerceConfigFile, logger }) : null;
     },
 
     /**

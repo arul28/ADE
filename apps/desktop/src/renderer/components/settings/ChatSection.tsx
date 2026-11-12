@@ -33,6 +33,8 @@ import { FastModeSection } from "./FastModeSection";
 import { ClaudeModsSection } from "./ClaudeModsSection";
 import { PromptSuggestionsSection } from "./PromptSuggestionsSection";
 import { SmartDecisionsSection } from "./SmartDecisionsSection";
+import { AccountSettingNotices } from "./AccountSettingNotices";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { ContinueAfterRestartSection } from "./ContinueAfterRestartSection";
 import { ProjectSettingsNotice } from "./ProjectSettingsNotice";
 import { isStandaloneSettings } from "./settingsManifest";
@@ -53,6 +55,7 @@ import "./ChatSection.css";
  * anchor is unchanged, so deep links, ⌘K, and the manifest test keep landing.
  */
 export function ChatSection() {
+  const { pin: settingsPin } = useSettingsMachineScope();
   // With no project open, the cards saved in a project have nothing to load.
   const noProject = isStandaloneSettings();
   const theme = useAppStore((s) => s.theme);
@@ -187,6 +190,10 @@ export function ChatSection() {
               />
             ) : (
               <>
+                {/* The project's AI preferences follow the account; a
+                    different value this computer had when they moved shows here. */}
+                <AccountSettingNotices pin={settingsPin} keys={["ai."]} />
+
                 <PromptSuggestionsSection />
 
                 {/* Jev's calls about chats, and its model hint in the composer. */}

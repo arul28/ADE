@@ -6,7 +6,7 @@ import type { ProjectConfigAccountNotice, ProjectConfigFile } from "../../../sha
 
 /**
  * Settings in `.ade/local.yaml` that follow the ADE account (account project
- * plan, slice Y2). Each is one account row under the project's repository
+ * plan, slices Y2 and Y3). Each is one account row under the project's repository
  * (`repo:<origin>`), so every computer that opens the repository uses the same
  * value.
  *
@@ -20,7 +20,7 @@ import type { ProjectConfigAccountNotice, ProjectConfigFile } from "../../../sha
  *   apply. A set-like list is joined instead. Then the file gets the
  *   account's values (`mirror`), so from here on a file value is always a
  *   value the account once had.
- * - Signed out, no account store, or a project with no GitHub remote: none of
+ * - Signed out, no account store, or a project with no remote: none of
  *   this; the file is the setting, as before.
  *
  * Logs carry key names only, never values.
@@ -35,80 +35,170 @@ export type ProjectConfigAccountBackend = {
   remove(scope: string, key: string): unknown;
 };
 
-type MovedKey = {
+/** One setting that follows the account: where it sits in the file, and its row. */
+type MovedKeySpec = {
   /** The account row's key, under the repository scope. */
   row: string;
   /** What Settings calls it, for the notice. */
   label: string;
+  /** Where the value sits in `ProjectConfigFile`. */
+  path: readonly string[];
+  /** A set-like list: the move joins both sides instead of picking one. */
+  union?: true;
+  /**
+   * Parts of the value that belong to this computer (paths inside the
+   * value, such as writable folders). They never go to the account and stay
+   * in this computer's file.
+   */
+  localParts?: ReadonlyArray<readonly string[]>;
+};
+
+type MovedKey = MovedKeySpec & {
   /** The file's value, or undefined when the file does not set it. */
   read(local: ProjectConfigFile): unknown;
   /** The file with `value` in this key's place. */
   write(local: ProjectConfigFile, value: unknown): ProjectConfigFile;
-  /** A stored row's value, or undefined when it is not a valid value for this key. */
+  /** The value as the account keeps it (coerced, local parts dropped), or undefined when it cannot go there. */
   coerce(value: unknown): unknown;
-  /** A set-like list: the move joins both sides instead of picking one. */
-  union?: true;
+  /** The account's value with this computer's local parts from `here` put back. */
+  combine(accountValue: unknown, here: unknown): unknown;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
-const MAX_PROMPT_CHARS = 8_000;
-/** The form `coerceJiraProjectKeys` keeps. */
-const JIRA_KEY = /^[A-Z][A-Z0-9_]{0,9}$/;
+/**
+ * The relay's cap on one setting's JSON (`MAX_SETTING_VALUE_BYTES`). A larger
+ * value stays in this computer's file.
+ */
+const MAX_ACCOUNT_VALUE_CHARS = 16_000;
 
-const MOVED_KEYS: readonly MovedKey[] = [
-  {
-    row: "prs.pollIntervalSeconds",
-    label: "How often ADE checks pull requests",
-    read: (local) => local.github?.prPollingIntervalSeconds,
-    write: (local, value) => ({ ...local, github: { ...(local.github ?? {}), prPollingIntervalSeconds: value as number } }),
-    coerce: (value) => (typeof value === "number" && Number.isFinite(value) && value >= 5 && value <= 300 ? value : undefined),
-  },
-  {
-    row: "prs.transcriptGists",
-    label: "PR chat transcripts",
-    read: (local) => local.github?.prTranscriptGists?.enabled,
-    write: (local, value) => ({ ...local, github: { ...(local.github ?? {}), prTranscriptGists: { enabled: value as boolean } } }),
-    coerce: (value) => (typeof value === "boolean" ? value : undefined),
-  },
-  {
-    row: "prs.autoMapByBranch",
-    label: "Link pull requests to lanes by branch",
-    read: (local) => local.github?.autoMapByBranch,
-    write: (local, value) => ({ ...local, github: { ...(local.github ?? {}), autoMapByBranch: value as boolean } }),
-    coerce: (value) => (typeof value === "boolean" ? value : undefined),
-  },
-  {
-    row: "jira.projectKeys",
-    label: "Jira projects",
-    read: (local) => {
-      const keys = local.issueTrackers?.jira?.projectKeys;
-      return Array.isArray(keys) && keys.length > 0 ? keys : undefined;
-    },
-    write: (local, value) => ({
-      ...local,
-      issueTrackers: { ...(local.issueTrackers ?? {}), jira: { ...(local.issueTrackers?.jira ?? {}), projectKeys: value as string[] } },
-    }),
-    coerce: (value) => (Array.isArray(value) && value.length > 0 && value.every((entry) => typeof entry === "string" && JIRA_KEY.test(entry))
-      ? value
-      : undefined),
-    union: true,
-  },
-  {
-    row: "linear.batchLaunchPrompt",
-    label: "Default prompt for Linear batch launches",
-    read: (local) => {
-      const prompt = local.ui?.linearBatchLaunchDefaultPrompt;
-      return typeof prompt === "string" && prompt.trim() ? prompt : undefined;
-    },
-    write: (local, value) => ({ ...local, ui: { ...(local.ui ?? {}), linearBatchLaunchDefaultPrompt: value as string } }),
-    coerce: (value) => (typeof value === "string" && value.trim() && value.length <= MAX_PROMPT_CHARS ? value : undefined),
-  },
+function getIn(value: unknown, path: readonly string[]): unknown {
+  let current = value;
+  for (const part of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function setIn<T>(value: T, path: readonly string[], next: unknown): T {
+  if (path.length === 0) return next as T;
+  const [head, ...rest] = path;
+  const record: Record<string, unknown> = isRecord(value) ? value : {};
+  const child = setIn(record[head!], rest, next);
+  const out: Record<string, unknown> = { ...record };
+  if (child === undefined) delete out[head!];
+  else out[head!] = child;
+  return out as T;
+}
+
+const PR_AND_TRACKER_KEYS: readonly MovedKeySpec[] = [
+  { row: "prs.pollIntervalSeconds", label: "How often ADE checks pull requests", path: ["github", "prPollingIntervalSeconds"] },
+  { row: "prs.transcriptGists", label: "PR chat transcripts", path: ["github", "prTranscriptGists", "enabled"] },
+  { row: "prs.autoMapByBranch", label: "Link pull requests to lanes by branch", path: ["github", "autoMapByBranch"] },
+  { row: "jira.projectKeys", label: "Jira projects", path: ["issueTrackers", "jira", "projectKeys"], union: true },
+  { row: "linear.batchLaunchPrompt", label: "Default prompt for Linear batch launches", path: ["ui", "linearBatchLaunchDefaultPrompt"] },
 ];
 
-/** The keys Y2 moves, for tests and docs. */
-export const PROJECT_CONFIG_ACCOUNT_ROWS = MOVED_KEYS.map((key) => key.row);
+/**
+ * AI preferences (slice Y3). Not here, by design: `apiKeys` (the key store),
+ * `localProviders` (servers on this computer), `customProviders` (one row
+ * per provider, its own slice), and the chat's `scheduledWorkPaused` and
+ * `continueAfterRestart`, which act on this computer's chats.
+ */
+const AI_KEYS: readonly MovedKeySpec[] = [
+  { row: "ai.mode", label: "AI mode", path: ["ai", "mode"] },
+  { row: "ai.defaultProvider", label: "Default AI provider", path: ["ai", "defaultProvider"] },
+  { row: "ai.taskRouting", label: "Models for ADE's own tasks", path: ["ai", "taskRouting"] },
+  { row: "ai.features", label: "AI features", path: ["ai", "features"] },
+  { row: "ai.budgets", label: "AI budgets", path: ["ai", "budgets"] },
+  {
+    row: "ai.permissions",
+    label: "Agent permissions",
+    path: ["ai", "permissions"],
+    // Folders on this computer.
+    localParts: [["cli", "writablePaths"], ["providers", "writablePaths"]],
+  },
+  { row: "ai.conflictResolution", label: "Conflict resolution", path: ["ai", "conflictResolution"] },
+  { row: "ai.compaction", label: "Context compaction", path: ["ai", "compaction"] },
+  { row: "ai.customModelSlugs", label: "Extra models", path: ["ai", "customModelSlugs"], union: true },
+  { row: "ai.disabledProviders", label: "Turned-off providers", path: ["ai", "disabledProviders"] },
+  { row: "ai.workerSafety", label: "Worker safety", path: ["ai", "workerSafety"] },
+  { row: "ai.featureModelOverrides", label: "Model per AI feature", path: ["ai", "featureModelOverrides"] },
+  { row: "ai.featureReasoningOverrides", label: "Reasoning per AI feature", path: ["ai", "featureReasoningOverrides"] },
+  { row: "ai.sessionIntelligence", label: "Chat titles and summaries", path: ["ai", "sessionIntelligence"] },
+  ...([
+    ["defaultProvider", "Default chat provider"],
+    ["defaultApprovalPolicy", "Default approval policy"],
+    ["sendOnEnter", "Send on Enter"],
+    ["autoTitleReasoningEffort", "Reasoning for chat titles"],
+    ["codexSandbox", "Codex sandbox"],
+    ["claudePermissionMode", "Claude permission mode"],
+    ["sessionBudgetUsd", "Chat budget"],
+    ["opencodePermissionMode", "OpenCode permission mode"],
+    ["autoAllowAskUser", "Answer agent questions automatically"],
+    ["piExtensionsEnabled", "Pi extensions"],
+    ["claudePluginUiEnabled", "Claude plugin UI"],
+    ["promptSuggestionsEnabled", "Prompt suggestions"],
+    ["codexPromptSuggestionsEnabled", "Codex prompt suggestions"],
+    ["smartDecisionsEnabled", "Smart decisions"],
+    ["jevZenCreditEnabled", "Jev Zen credit"],
+    ["smartChatStatusEnabled", "Smart chat status"],
+    ["smartSettleNudgeEnabled", "Settle nudges"],
+    ["smartPaletteEnabled", "Smart palette"],
+    ["smartLaneEmojiEnabled", "Lane emoji"],
+    ["smartPlainTerminalsEnabled", "Plain terminals"],
+    ["modelHintMode", "Model hint"],
+  ] as const).map(([field, label]): MovedKeySpec => ({ row: `ai.chat.${field}`, label, path: ["ai", "chat", field] })),
+];
+
+const MOVED_KEY_SPECS: readonly MovedKeySpec[] = [...PR_AND_TRACKER_KEYS, ...AI_KEYS];
+
+/** The account rows the layer keeps, for Settings and docs. */
+export const PROJECT_CONFIG_ACCOUNT_ROWS = MOVED_KEY_SPECS.map((key) => key.row);
+/** The rows of the AI preferences, for the notice on the AI settings page. */
+export const PROJECT_CONFIG_ACCOUNT_AI_ROWS = AI_KEYS.map((key) => key.row);
+
+/**
+ * Build the keys over the service's own coercion, so a value from the
+ * account has exactly the shape a value from the file has (a newer ADE's
+ * unknown field is dropped, a bad value is ignored).
+ */
+function buildMovedKeys(coerceFile: (raw: unknown) => ProjectConfigFile): MovedKey[] {
+  return MOVED_KEY_SPECS.map((spec) => {
+    const dropLocal = (value: unknown): unknown => {
+      let next = value;
+      for (const part of spec.localParts ?? []) next = setIn(next, part, undefined);
+      return next;
+    };
+    return {
+      ...spec,
+      read: (local) => getIn(local, spec.path),
+      write: (local, value) => setIn(local, spec.path, value),
+      coerce: (value) => {
+        if (value === undefined) return undefined;
+        let coerced: unknown;
+        try {
+          coerced = getIn(coerceFile(setIn({}, spec.path, dropLocal(value))), spec.path);
+        } catch {
+          return undefined;
+        }
+        if (coerced === undefined || (Array.isArray(coerced) && coerced.length === 0)) return undefined;
+        if (isRecord(coerced) && Object.keys(coerced).length === 0) return undefined;
+        return JSON.stringify(coerced).length <= MAX_ACCOUNT_VALUE_CHARS ? coerced : undefined;
+      },
+      combine: (accountValue, here) => {
+        let next = accountValue;
+        for (const part of spec.localParts ?? []) {
+          const mine = getIn(here, part);
+          if (mine !== undefined) next = setIn(next, part, mine);
+        }
+        return next;
+      },
+    };
+  });
+}
 
 type PendingConflict = { row: string; localValue: unknown };
 type LayerState = { conflicts: PendingConflict[] };
@@ -127,6 +217,8 @@ export function createProjectConfigAccountLayer(args: {
   readOriginUrl: () => string | null;
   /** Per-project, per-computer state: the notices waiting for the person. */
   statePath: string;
+  /** The service's own coercion of a whole file; values from the account pass through it. */
+  coerceFile: (raw: unknown) => ProjectConfigFile;
   logger: Logger;
 }) {
   const scope = (): string | null => {
@@ -144,6 +236,17 @@ export function createProjectConfigAccountLayer(args: {
     const backend = args.backend();
     const repoScope = backend ? scope() : null;
     return backend && repoScope ? { backend, scope: repoScope } : null;
+  };
+
+  const movedKeys = buildMovedKeys(args.coerceFile);
+
+  /** A store write; false when it was refused or threw. */
+  const attempt = (write: () => unknown): boolean => {
+    try {
+      return write() !== false;
+    } catch {
+      return false;
+    }
   };
 
   const accountValue = (target: { backend: ProjectConfigAccountBackend; scope: string }, key: MovedKey): unknown => {
@@ -198,9 +301,9 @@ export function createProjectConfigAccountLayer(args: {
       const target = active();
       if (!target) return local;
       let next = local;
-      for (const key of MOVED_KEYS) {
+      for (const key of movedKeys) {
         const value = accountValue(target, key);
-        if (value !== undefined) next = key.write(next, value);
+        if (value !== undefined) next = key.write(next, key.combine(value, key.read(local)));
       }
       return next;
     },
@@ -210,48 +313,36 @@ export function createProjectConfigAccountLayer(args: {
      * file holds now. A moved key goes to the account only when the person
      * changed it: it differs from the file AND from the account's current
      * value. A save from a snapshot read before another computer's change
-     * is refused earlier, by the base hash (`fingerprint` is part of it). Returns the config to write to the file, which carries the
-     * account's value for every moved key (the one-release mirror).
+     * is refused earlier, by the base hash (`fingerprint` is part of it).
+     * Returns the config to write to the file, which carries the account's
+     * value for every moved key (the one-release mirror).
      */
     routeSave(candidate: ProjectConfigFile, file: ProjectConfigFile): ProjectConfigFile {
       const target = active();
       if (!target) return candidate;
       let toFile = candidate;
       const written: string[] = [];
-      for (const key of MOVED_KEYS) {
-        const wanted = key.read(candidate);
+      for (const key of movedKeys) {
+        const raw = key.read(candidate);
+        const wanted = key.coerce(raw);
         const current = accountValue(target, key);
+        const before = key.coerce(key.read(file));
         // The person cleared it: the file (a mirror of the account) had it,
         // the save does not.
-        if (wanted === undefined && current !== undefined && key.read(file) !== undefined) {
-          let removed = false;
-          try {
-            removed = target.backend.remove(target.scope, key.row) !== false;
-          } catch {
-            removed = false;
-          }
-          if (removed) written.push(key.row);
+        if (raw === undefined && current !== undefined && before !== undefined) {
+          if (attempt(() => target.backend.remove(target.scope, key.row))) written.push(key.row);
           else {
             args.logger.warn("projectConfig.account_setting_write_refused", { key: key.row });
-            toFile = key.write(toFile, current);
+            toFile = key.write(toFile, key.combine(current, raw));
           }
           continue;
         }
-        const changed = wanted !== undefined
-          && !isDeepStrictEqual(wanted, key.read(file))
-          && !isDeepStrictEqual(wanted, current);
-        if (changed && key.coerce(wanted) !== undefined) {
-          let saved = false;
-          try {
-            saved = target.backend.set(target.scope, key.row, wanted) !== false;
-          } catch {
-            saved = false;
-          }
-          if (saved) written.push(key.row);
+        if (wanted !== undefined && !isDeepStrictEqual(wanted, before) && !isDeepStrictEqual(wanted, current)) {
+          if (attempt(() => target.backend.set(target.scope, key.row, wanted))) written.push(key.row);
           else args.logger.warn("projectConfig.account_setting_write_refused", { key: key.row });
           continue;
         }
-        if (current !== undefined) toFile = key.write(toFile, current);
+        if (current !== undefined) toFile = key.write(toFile, key.combine(current, raw));
       }
       if (written.length > 0) {
         args.logger.info("projectConfig.account_settings_saved", { keys: written });
@@ -273,19 +364,20 @@ export function createProjectConfigAccountLayer(args: {
       const target = active();
       if (!target) return result;
       const pending = readState();
-      for (const key of MOVED_KEYS) {
+      for (const key of movedKeys) {
         try {
-          const local = key.read(file);
-          if (local === undefined || key.coerce(local) === undefined) continue;
+          const local = key.coerce(key.read(file));
+          if (local === undefined) continue;
           const current = accountValue(target, key);
           if (current === undefined) {
-            if (target.backend.set(target.scope, key.row, local) !== false) result.moved.push(key.row);
+            if (attempt(() => target.backend.set(target.scope, key.row, local))) result.moved.push(key.row);
             continue;
           }
           if (isDeepStrictEqual(current, local)) continue;
-          if (key.union) {
-            const joined = [...new Set([...(current as string[]), ...(local as string[])])];
-            if (joined.length !== (current as string[]).length && target.backend.set(target.scope, key.row, joined) !== false) {
+          if (key.union && Array.isArray(current) && Array.isArray(local)) {
+            const joined = key.coerce([...new Set([...current, ...local])]);
+            if (Array.isArray(joined) && joined.length !== current.length
+              && attempt(() => target.backend.set(target.scope, key.row, joined))) {
               result.joined.push(key.row);
             }
             continue;
@@ -312,7 +404,7 @@ export function createProjectConfigAccountLayer(args: {
     fingerprint(): string | null {
       const target = active();
       if (!target) return null;
-      return JSON.stringify(MOVED_KEYS.map((key) => accountValue(target, key) ?? null));
+      return JSON.stringify(movedKeys.map((key) => accountValue(target, key) ?? null));
     },
 
     /**
@@ -324,10 +416,13 @@ export function createProjectConfigAccountLayer(args: {
       if (!target) return null;
       let next = file;
       let changed = false;
-      for (const key of MOVED_KEYS) {
+      for (const key of movedKeys) {
         const value = accountValue(target, key);
-        if (value === undefined || isDeepStrictEqual(value, key.read(file))) continue;
-        next = key.write(next, value);
+        if (value === undefined) continue;
+        const here = key.read(file);
+        const combined = key.combine(value, here);
+        if (isDeepStrictEqual(combined, here)) continue;
+        next = key.write(next, combined);
         changed = true;
       }
       return changed ? next : null;
@@ -338,7 +433,7 @@ export function createProjectConfigAccountLayer(args: {
       const target = active();
       if (!target) return [];
       return readState().conflicts.flatMap((entry) => {
-        const key = MOVED_KEYS.find((candidate) => candidate.row === entry.row);
+        const key = movedKeys.find((candidate) => candidate.row === entry.row);
         if (!key) return [];
         // Settled meanwhile: the account now holds this computer's value.
         if (isDeepStrictEqual(accountValue(target, key), entry.localValue)) return [];
@@ -356,9 +451,10 @@ export function createProjectConfigAccountLayer(args: {
       if (!entry) return false;
       if (choice === "use_local") {
         const target = active();
-        const key = MOVED_KEYS.find((candidate) => candidate.row === row);
-        if (!target || !key || key.coerce(entry.localValue) === undefined) return false;
-        if (target.backend.set(target.scope, key.row, entry.localValue) === false) return false;
+        const key = movedKeys.find((candidate) => candidate.row === row);
+        const value = key?.coerce(entry.localValue);
+        if (!target || !key || value === undefined) return false;
+        if (!attempt(() => target.backend.set(target.scope, key.row, value))) return false;
       }
       writeState({ conflicts: pending.conflicts.filter((candidate) => candidate.row !== row) });
       args.logger.info("projectConfig.account_move_notice_resolved", { key: row, choice });

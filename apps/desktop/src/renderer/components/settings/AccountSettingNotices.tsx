@@ -16,7 +16,7 @@ export function AccountSettingNotices({
 }: {
   /** The computer whose settings these are; null for this tab's own machine. */
   pin: OpenProjectBinding | null;
-  /** The account rows this surface edits. */
+  /** The account rows this surface edits: exact keys, or `ai.` for every row under it. */
   keys: readonly string[];
   /** Called after an answer changed the value in use. */
   onResolved?: () => void;
@@ -26,6 +26,8 @@ export function AccountSettingNotices({
   const [error, setError] = useState<string | null>(null);
   const pinKey = pin?.key ?? null;
   const keyList = keys.join("|");
+  const shows = (notice: ProjectConfigAccountNotice) =>
+    keys.some((key) => (key.endsWith(".") ? notice.key.startsWith(key) : notice.key === key));
 
   useEffect(() => {
     let cancelled = false;
@@ -33,7 +35,7 @@ export function AccountSettingNotices({
     window.ade.projectConfig
       .get(pin)
       .then((snapshot) => {
-        if (!cancelled) setNotices((snapshot.accountNotices ?? []).filter((notice) => keys.includes(notice.key)));
+        if (!cancelled) setNotices((snapshot.accountNotices ?? []).filter(shows));
       })
       .catch(() => {
         // The host section shows its own load failure; a notice is extra.
@@ -50,7 +52,7 @@ export function AccountSettingNotices({
     setError(null);
     try {
       const snapshot = await window.ade.projectConfig.resolveAccountSettingNotice({ key, choice }, pin);
-      setNotices((snapshot.accountNotices ?? []).filter((notice) => keys.includes(notice.key)));
+      setNotices((snapshot.accountNotices ?? []).filter(shows));
       if (choice === "use_local") onResolved?.();
     } catch (cause) {
       captureError(cause, {
