@@ -12203,7 +12203,17 @@ export function registerIpc({
 
   handle(IPC.githubSetGhAccountSharing, async (_event, arg: { enabled?: boolean }): Promise<GitHubStatus> => {
     const ctx = getCtx();
-    await ctx.githubService.setGhAccountSharing({ enabled: arg?.enabled === true });
+    const enabled = arg?.enabled === true;
+    await ctx.githubService.setGhAccountSharing({ enabled });
+    // Reached only after the vault accepted the change; a refusal throws above.
+    productAnalyticsService?.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "connections", action: enabled ? "github_cli_shared" : "github_cli_removed", outcome: "completed" },
+      projectId: null,
+      dedupeKey: `github_cli_${enabled ? "shared" : "removed"}:completed`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    });
     const status = await ctx.githubService.getStatus();
     broadcastGithubStatus(status);
     return status;
