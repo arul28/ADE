@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ghConfigDir } from "../../../../../ade-cli/src/services/credentials/ghConfigDir";
 import type { AppGrantReader } from "../../../shared/github/githubAppGrant";
+import { githubShellShimEnv, setGithubShellTokenAnswer } from "./githubShellShim";
 
 /**
  * `GH_TOKEN` for the `gh` CLI in agent shells, CLI sessions and chats, from
@@ -16,12 +17,19 @@ import type { AppGrantReader } from "../../../shared/github/githubAppGrant";
  *   that the user can reach. Read rights are enough: on a write the
  *   installation refuses, `gh` prints GitHub's own message.
  *
- * The value is the token current when the process starts. A process that
- * outlives the server's renewal (about 8 hours at most) keeps a dead token
- * and `gh` answers "Bad credentials"; a new shell or chat gets the new one.
+ * How the token reaches `gh` and `git`:
+ * - Normally through the per-call shim (githubShellShim.ts): a `gh` first on
+ *   PATH and a git credential helper, which ask this process for the CURRENT
+ *   token on every run. A shell that runs for days keeps working across the
+ *   server's renewals. No token is in the session's environment.
+ * - Where the shim is off (the process did not turn it on, its folder is not
+ *   private, or the Windows launcher is missing), `GH_TOKEN` is the token
+ *   current when the process starts. It dies at the server's renewal (8
+ *   hours at most); a new shell or chat gets the new one.
  *
- * `ADE_GH_TOKEN_SOURCE=account_app` marks the value, so an ADE process
- * started from such a shell does not take it as an "environment" token.
+ * `ADE_GH_TOKEN_SOURCE=account_app` marks a `GH_TOKEN` ADE set (the fallback,
+ * or the shim for its child), so an ADE process started from such a shell
+ * does not take it as an "environment" token.
  */
 
 export const GH_TOKEN_SOURCE_ENV = "ADE_GH_TOKEN_SOURCE";
@@ -84,10 +92,35 @@ export function createGithubSessionEnv(deps: {
   let lastOwner: string | null = null;
   let warming: Promise<unknown> | null = null;
 
-  const envFor = (token: string): GithubSessionEnv => ({
-    GH_TOKEN: token,
-    [GH_TOKEN_SOURCE_ENV]: GH_TOKEN_SOURCE_ACCOUNT_APP,
-  });
+  const envFor = (token: string, env: NodeJS.ProcessEnv, owner: string): GithubSessionEnv => {
+    const shim = githubShellShimEnv(env, owner);
+    if (!shim) return { GH_TOKEN: token, [GH_TOKEN_SOURCE_ENV]: GH_TOKEN_SOURCE_ACCOUNT_APP };
+    // A frozen token an older ADE parent left would outlive its renewal: empty it.
+    if (env[GH_TOKEN_SOURCE_ENV] === GH_TOKEN_SOURCE_ACCOUNT_APP) {
+      return { ...shim, GH_TOKEN: "", [GH_TOKEN_SOURCE_ENV]: "" };
+    }
+    return shim;
+  };
+
+  /**
+   * The shim's question, on every `gh` or `git` run: the current account App
+   * token when the owner's installation is reachable, else null (the shim
+   * steps aside). Cached answers mostly: the token client and the grant
+   * reader keep theirs, so a run costs no request.
+   */
+  const tokenForOwner = async (requestedOwner: string | null): Promise<string | null> => {
+    try {
+      const owner = requestedOwner ?? lastOwner;
+      if (!owner) return null;
+      const token = await deps.readAccountAppToken();
+      if (!token) return null;
+      const grant = await deps.readGrant(owner, token, { identity: "account_app" });
+      return grant?.installed ? token : null;
+    } catch {
+      return null;
+    }
+  };
+  setGithubShellTokenAnswer(tokenForOwner);
 
   const needsToken = (env: NodeJS.ProcessEnv): boolean => !envHasOwnGithubToken(env) && !hasOwnGhLogin(env);
 
@@ -101,7 +134,7 @@ export function createGithubSessionEnv(deps: {
       const token = await deps.readAccountAppToken();
       if (!token) return null;
       const grant = await deps.readGrant(owner, token, { identity: "account_app" });
-      return grant?.installed ? envFor(token) : null;
+      return grant?.installed ? envFor(token, env, owner) : null;
     } catch {
       return null;
     }
@@ -129,13 +162,13 @@ export function createGithubSessionEnv(deps: {
         return null;
       }
       if (cached.stale) warm(env);
-      return cached.grant?.installed ? envFor(token) : null;
+      return cached.grant?.installed ? envFor(token, env, owner) : null;
     } catch {
       return null;
     }
   };
 
-  return { forSession, peekForSession };
+  return { forSession, peekForSession, tokenForOwner };
 }
 
 export type GithubSessionEnvProvider = ReturnType<typeof createGithubSessionEnv>;

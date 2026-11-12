@@ -29290,6 +29290,12 @@ async function runServe(
   // A launchd brain gets no --socket and no socket env, only ADE_HOME. Record
   // the socket it serves so the `ade` shim it hands its agents names it.
   publishServedRuntimeSocket(socketPath);
+  // `gh` and `git` in this brain's agent shells and chats ask for the current
+  // account token on every run (githubShellShim.ts); off, they get a frozen one.
+  {
+    const { configureGithubShellShim } = await import("../../desktop/src/main/services/github/githubShellShim");
+    configureGithubShellShim({ env: process.env, logger: headlessProjectLogger });
+  }
   // Only the machine brain publishes the machine heartbeat; see the helper.
   const servesMachineEndpoint = servesMachineRuntimeEndpoint(rawSocketPath, machineRuntimeNames);
   if (servesMachineEndpoint) {
