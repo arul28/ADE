@@ -1,6 +1,6 @@
 import { accountRepoScopeKey } from "./accountSettingsScope";
 import type { AccountProjectCopy, AccountProjectId, AccountProjectView } from "./accountProject";
-import { pickLiveCheckout } from "./crossMachineHandoff";
+import { normalizeGitRemoteIdentity, pickLiveCheckout } from "./crossMachineHandoff";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "./machineIdentity";
 import { remoteProjectBindingKey } from "./projectIdentity";
 import type { OpenProjectBinding, RecentProjectSummary } from "./types/core";
@@ -142,6 +142,14 @@ type AddressableCopy = Pick<
   "projectId" | "isThisMachine" | "rootPath" | "displayName" | "checkoutId" | "gitOriginUrl"
 >;
 
+/** A row at the copy's folder whose origin does not name another repository. */
+function isSameRepositoryAtPath(project: RemoteRuntimeProjectRecord, copy: AddressableCopy): boolean {
+  if (project.rootPath !== copy.rootPath) return false;
+  const rowOrigin = normalizeGitRemoteIdentity(project.gitOriginUrl);
+  const copyOrigin = normalizeGitRemoteIdentity(copy.gitOriginUrl);
+  return !rowOrigin || !copyOrigin || rowOrigin === copyOrigin;
+}
+
 /**
  * The address of one copy. A copy on this computer gets a local binding. A
  * copy on another machine gets a remote binding only while that machine is
@@ -169,7 +177,7 @@ export function copyAddress(
       project.accountProjectId != null
       && project.accountProjectId === copy.projectId
       && project.rootPath === copy.rootPath))
-    ?? pickLiveCheckout(projects.filter((project) => project.rootPath === copy.rootPath));
+    ?? pickLiveCheckout(projects.filter((project) => isSameRepositoryAtPath(project, copy)));
   // A folder the machine reports as gone has nothing to work in.
   if (!row || row.exists === false) return null;
   const target = connection.target;

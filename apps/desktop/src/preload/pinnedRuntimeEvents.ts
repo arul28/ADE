@@ -532,6 +532,17 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
     releasePinnedPtyEventStateIfUnused(state);
   };
 
+  /** Changes the filter of a pump that is already open; never opens one. */
+  const updateOpenPinnedPtyDataSubscriptions = (
+    pin: OpenProjectBinding,
+    ptyIds: Set<string>,
+  ): void => {
+    const state = pinnedPtyEventStates.get(pin.key);
+    if (!state || state.cancelled) return;
+    state.dataSubscriptionsConfigured = true;
+    state.subscribedPtyDataIds = new Set(ptyIds);
+  };
+
   const resetPinnedPtyEventDedup = (state: PinnedPtyEventState): void => {
     state.seenEventIds.clear();
   };
@@ -806,6 +817,7 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
     handlePinnedRuntimeEventNotification,
     collectPinnedPtyDataSubscriptionIds,
     setPinnedPtyDataSubscriptions,
+    updateOpenPinnedPtyDataSubscriptions,
     subscribePinnedPtyDataEvents,
     subscribePinnedPtyExitEvents,
     handlePinnedPtyRuntimeEventNotification,

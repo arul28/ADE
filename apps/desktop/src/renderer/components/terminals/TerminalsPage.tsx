@@ -1225,6 +1225,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, [activeWorkSession?.laneId, selectedLaneId, sortedLanes, work.draftLaneId]);
   // A chat on another machine is keyed by its machine, as its lane's delete was (see SessionListPane).
   const activeLaneDeleteKey = activeLaneId && activeWorkSessionRuntimePin
+    && activeWorkSessionRuntimePin.key !== projectBinding?.key
     ? foreignLaneKey(machineIdForBinding(activeWorkSessionRuntimePin), activeLaneId)
     : activeLaneId;
   const activeLaneDeleteProgress = useAppStore((state) => (

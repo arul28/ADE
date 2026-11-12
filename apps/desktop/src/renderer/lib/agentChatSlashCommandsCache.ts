@@ -3,7 +3,7 @@ import type {
   AgentChatSlashCommandsArgs,
   OpenProjectBinding,
 } from "../../shared/types";
-import { cacheScopePin } from "./tabBindingKey";
+import { cacheScopeKey } from "./tabBindingKey";
 
 type CacheEntry = {
   value?: AgentChatSlashCommand[];
@@ -25,7 +25,7 @@ function cacheScope(args: AgentChatSlashCommandsArgs): string {
 }
 
 function cacheKey(args: AgentChatSlashCommandsArgs, pin?: OpenProjectBinding | null): string {
-  return `binding:${cacheScopePin(pin)?.key ?? "__active_binding__"}:${cacheScope(args)}`;
+  return `binding:${cacheScopeKey(pin) ?? "__active_binding__"}:${cacheScope(args)}`;
 }
 
 export async function getAgentChatSlashCommandsCached(

@@ -3667,8 +3667,11 @@ async function setPtyDataSubscriptions(
     return;
   }
   ptyDataSubscriptionsConfigured = true;
-  if (pin) boundCopyPinPtyDataIds = { key: pin.key, ids: ptyIds };
-  else subscribedPtyDataIds = ptyIds;
+  if (pin) {
+    boundCopyPinPtyDataIds = { key: pin.key, ids: ptyIds };
+    // A listener that started while this copy was another machine keeps its pump.
+    pinnedRuntimeEvents.updateOpenPinnedPtyDataSubscriptions(pin, ptyIds);
+  } else subscribedPtyDataIds = ptyIds;
   ensureRemoteRuntimeEventPump();
   await syncPtyDataSubscriptions();
 }
@@ -4841,6 +4844,7 @@ function clearProjectScopedReadCaches(): void {
   githubRemoteStatusCache.clear();
   githubAppInstallationStatusCache.clear();
   projectConfigSnapshotCache.clear();
+  aiStatusCache.clear();
   agentChatSummaryCache.clear();
   computerUseOwnerSnapshotCache.clear();
   imageDataUrlCache.clear();
