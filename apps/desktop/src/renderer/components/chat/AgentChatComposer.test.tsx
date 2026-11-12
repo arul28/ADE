@@ -28,6 +28,7 @@ import {
 import { useAppStore } from "../../state/appStore";
 import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import { AgentChatApiProvider } from "./agentChatApi";
+import { PERSONAL_CHAT_ADAPTER_PIN } from "./chatMachinePin";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 
 vi.mock("@tanstack/react-virtual", () => ({
@@ -3112,7 +3113,21 @@ describe("AgentChatComposer", () => {
     expect(screen.getAllByText("ADE-124").length).toBeGreaterThan(0);
   });
 
-  it("attaches a native clipboard image when macOS Cmd+V does not expose paste files", async () => {
+  const STUDIO_BINDING: OpenProjectBinding = {
+    kind: "remote",
+    key: "remote:studio:ade",
+    targetId: "studio",
+    runtimeName: "Mac Studio",
+    projectId: "ade",
+    rootPath: "/Users/admin/Projects/ADE",
+    displayName: "ADE",
+  };
+  it.each([
+    // A project chat stages on its machine.
+    { name: "a project chat, on its machine", personal: false, binding: STUDIO_BINDING, expectedPin: STUDIO_BINDING },
+    // A personal chat's adapter knows its computer, even with no project open.
+    { name: "a personal chat with no project open", personal: true, binding: null, expectedPin: PERSONAL_CHAT_ADAPTER_PIN },
+  ])("attaches a native clipboard image when macOS Cmd+V does not expose paste files: $name", async ({ personal, binding, expectedPin }) => {
     const originalPlatform = navigator.platform;
     Object.defineProperty(navigator, "platform", {
       configurable: true,
@@ -3126,24 +3141,24 @@ describe("AgentChatComposer", () => {
     const saveTempAttachment = vi.fn().mockResolvedValue({ path: "/tmp/ade-clipboard.png" });
     (window as any).ade = {
       app: { readClipboardImage },
-      agentChat: { saveTempAttachment },
+      agentChat: personal ? {} : { saveTempAttachment },
     };
 
-    const composerMachineBinding: OpenProjectBinding = {
-      kind: "remote",
-      key: "remote:studio:ade",
-      targetId: "studio",
-      runtimeName: "Mac Studio",
-      projectId: "ade",
-      rootPath: "/Users/admin/Projects/ADE",
-      displayName: "ADE",
-    };
     try {
-      const props = renderComposer({
+      const props = buildComposerProps({
         turnActive: false,
         draft: "",
-        composerMachineBinding,
+        composerMachineBinding: binding,
       });
+      if (personal) {
+        render(
+          <AgentChatApiProvider scope={{ kind: "personal", agentChat: { saveTempAttachment } as never, modelCatalogScopeKey: "personal" }}>
+            <AgentChatComposer {...props} />
+          </AgentChatApiProvider>,
+        );
+      } else {
+        render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
+      }
 
       fireEvent.keyDown(screen.getByPlaceholderText("Type to vibecode..."), {
         key: "v",
@@ -3151,14 +3166,14 @@ describe("AgentChatComposer", () => {
       });
 
       await waitFor(() => expect(readClipboardImage).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(props.onAddAttachment).toHaveBeenCalledWith({
+        path: "/tmp/ade-clipboard.png",
+        type: "image",
+      }));
       expect(saveTempAttachment).toHaveBeenCalledWith({
         data: "abc123",
         filename: "clipboard.png",
-      }, composerMachineBinding);
-      expect(props.onAddAttachment).toHaveBeenCalledWith({
-        path: "/tmp/ade-clipboard.png",
-        type: "image",
-      });
+      }, expectedPin);
     } finally {
       Object.defineProperty(navigator, "platform", {
         configurable: true,

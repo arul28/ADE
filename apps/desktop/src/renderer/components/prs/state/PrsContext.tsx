@@ -257,6 +257,28 @@ export function PrsProvider({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [pinOverride === undefined, pinOverride?.key, repositoryReader],
   );
+  // PR ids, the selection and the detail caches belong to the machine that
+  // read them. When another machine becomes the reader, start over with that
+  // machine's state, so no old id goes to the new machine.
+  const readerKey = `${reader.kind}:${readerPin(reader)?.key ?? ""}`;
+  return (
+    <PrsReaderProvider key={readerKey} active={active} reader={reader} projectRoot={projectRoot}>
+      {children}
+    </PrsReaderProvider>
+  );
+}
+
+function PrsReaderProvider({
+  active,
+  reader,
+  projectRoot,
+  children,
+}: {
+  active: boolean;
+  reader: PrsReader;
+  projectRoot: string | null;
+  children: React.ReactNode;
+}) {
   const pin = readerPin(reader);
   const pinRef = React.useRef(pin);
   pinRef.current = pin;

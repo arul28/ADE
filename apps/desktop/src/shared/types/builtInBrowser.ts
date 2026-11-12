@@ -194,7 +194,18 @@ export type BuiltInBrowserTab = {
    * A person navigated this tab by hand or handed it to a chat, so it is
    * theirs even if an agent opened it. Absent on an older desktop.
    */
-  keptByPerson?: boolean;
+keptByPerson?: boolean;
+  /**
+   * When ADE will close this agent tab on its own (its chat went idle or
+   * ended, and nobody kept it). Null or absent otherwise.
+   */
+  autoCloseAt?: string | null;
+  /**
+   * The tab is asleep: its page was dropped to save memory after a while
+   * unused (as Chrome discards a tab). It loads again, history included, the
+   * moment it is shown or an agent uses it. Absent on an older desktop.
+   */
+  sleeping?: boolean;
   /** When the tab was created. */
   createdAt: string;
   zoomFactor: number;
@@ -1992,6 +2003,30 @@ export type BuiltInBrowserStartPreviewStreamArgs = BuiltInBrowserProjectScopeArg
 export type BuiltInBrowserStopPreviewStreamArgs = BuiltInBrowserProjectScopeArgs & {
   tabId?: string | null;
 };
+
+/**
+ * One browser tab as a viewer on another machine sees it: what it shows and
+ * the newest frame. Served by the desktop that hosts the tab, through the
+ * brain's `work_tools.readBrowserTabFrame`; `frame` is null until the first
+ * capture lands (the first poll starts the capture loop).
+ */
+export type BuiltInBrowserRemoteTabFrame = {
+  tabId: string;
+  url: string | null;
+  title: string | null;
+  isLoading: boolean;
+  frame: { dataUrl: string; width: number; height: number; capturedAt: string } | null;
+};
+
+/**
+ * A person's input from another machine (Take control). `x`/`y` are fractions
+ * (0–1) of the frame the viewer saw, so its picture size never matters.
+ */
+export type BuiltInBrowserRemoteInputEvent =
+  | { type: "click"; x: number; y: number }
+  | { type: "scroll"; x: number; y: number; deltaY: number }
+  | { type: "key"; key: string }
+  | { type: "text"; text: string };
 
 export type BuiltInBrowserPreviewStreamResult = {
   tabId: string;

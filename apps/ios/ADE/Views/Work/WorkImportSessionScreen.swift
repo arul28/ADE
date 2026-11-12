@@ -1350,6 +1350,7 @@ private func workImportToolType(provider: String) -> String {
   case "kimi": return "kimi"
   case "grok": return "grok"
   case "copilot": return "copilot"
+  case "antigravity": return "antigravity"
   default: return provider
   }
 }

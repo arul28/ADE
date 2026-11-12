@@ -53,7 +53,7 @@ opened for. Do not use alpha, beta, preview or nightly tags.
 | Kimi | `kimi` | `tools:pin` | `chat/acpHost/acpDialects/kimi.ts` |
 | Grok | `grok` | `tools:pin` | `chat/acpHost/acpDialects/grok.ts` |
 | Devin | `devin` | `tools:pin` | `chat/acpHost/acpDialects/devin.ts`, `devinCloud.ts` |
-| Antigravity | `antigravity` | `tools:pin` (computes the sha256; Google publishes none) | `chat/acpHost/acpDialects/antigravity.ts`, `ai/antigravityAuth.ts`, `ai/antigravitySignIn.ts` |
+| Antigravity | `antigravity` | `tools:pin` (GitHub releases of `google-antigravity/antigravity-cli`, checked against GitHub's asset digests) | `chat/acpHost/acpDialects/antigravity.ts`, `ai/antigravityAuth.ts`, `ai/antigravitySignIn.ts` |
 | Node runtime | `node` | `tools:pin -- node` (newest Node 24 LTS) | `pty/pinnedProviderCli.ts` (Pi terminal) |
 
 Paths are under `apps/desktop/src/main/services/` unless shown. Shared for

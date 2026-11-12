@@ -79,15 +79,17 @@ export function AntigravitySignInSheetView({
     stage,
     url: state?.authorizationUrl ?? null,
     deviceCode: null,
-    codeHint: machine.isThisMachine
-      ? "Google sends the browser back to Antigravity by itself."
-      : `Google sends the browser back to an address on ${machine.machineName}, so the last page will not load here. Paste its address below.`,
+    // A Google-account sign-in ends on Google's page that shows a code, on
+    // every machine. Gemini Enterprise returns to the agent's own listener.
+    codeHint: state?.acceptsCallbackUrl
+      ? "Google shows a code once you approve. Paste it below."
+      : machine.isThisMachine
+        ? "Google sends the browser back to Antigravity by itself."
+        : `Finish in a browser on ${machine.machineName}: Google sends it back to an address there.`,
     paste: state?.acceptsCallbackUrl && isAntigravitySignInRunning(state)
       ? {
-          label: machine.isThisMachine
-            ? "Signed in with a browser on another computer? Paste the address its last page shows."
-            : "The address the browser ended on (it starts with http://127.0.0.1)",
-          placeholder: "http://127.0.0.1:…/?state=…&code=…",
+          label: "Paste the code Google shows",
+          placeholder: "Paste the code here",
           value: address,
           onChange: setAddress,
           onSubmit: () => {

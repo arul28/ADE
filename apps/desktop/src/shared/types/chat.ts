@@ -4645,7 +4645,8 @@ export type AgentChatCliLaunchProvider =
   | "kimi"
   | "grok"
   | "copilot"
-  | "devin";
+  | "devin"
+  | "antigravity";
 
 /**
  * Launch a tracked CLI/terminal agent (not the in-process chat SDK) with one or

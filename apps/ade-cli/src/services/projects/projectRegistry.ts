@@ -52,6 +52,19 @@ export const SYSTEM_PROJECT_REGISTRATION: ProjectRegistrationIntent = {
   registrationSource: "runtime-auto",
 };
 
+/**
+ * The source a registration leaves on a record. An automatic registration
+ * (an `ade` command run in the folder) keeps how a project the person opened
+ * got its place, as the visibility stays "recent": the account project sync
+ * reads it to tell an opened project from a found one. A test mark always
+ * wins.
+ */
+function keptRegistrationSource(existing: ProjectRecord | null, registration: ProjectRegistrationIntent): ProjectRegistrationSource {
+  if (registration.registrationSource === "test") return "test";
+  if (existing?.catalogVisibility === "recent" && registration.catalogVisibility !== "recent") return existing.registrationSource;
+  return registration.registrationSource;
+}
+
 export type ProjectRecord = {
   projectId: ProjectId;
   rootPath: string;
@@ -396,7 +409,7 @@ export class ProjectRegistry {
           registration.catalogVisibility === "recent"
             ? "recent"
             : "system",
-        registrationSource: registration.registrationSource,
+        registrationSource: keptRegistrationSource(existing, registration),
         ...carriedAccountLinks(existing),
       };
       if (existingIndex >= 0) {

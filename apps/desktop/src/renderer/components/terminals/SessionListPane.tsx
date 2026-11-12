@@ -3023,7 +3023,9 @@ export const SessionListPane = React.memo(function SessionListPane({
       // to translate; Waiting is refused by the guard because it is derived.
       if (!isWorkBoardMoveTarget(column)) return;
       const foreignRow = boardUnion.sessionRow.get(session.id);
-      const binding = foreignRow?.binding ?? null;
+      // The row's machine, the tab's own copy included. Null only when the
+      // machine is unknown; the move then says so.
+      const binding = foreignRow?.binding ?? resolveSessionRuntimePin(session);
       // One narration for a move, shared with the row menu's Change status.
       moveSessionOnBoard({
         session,
@@ -3047,7 +3049,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         },
       });
     },
-    [boardUnion.sessionRow],
+    [boardUnion.sessionRow, resolveSessionRuntimePin],
   );
 
   const renderHandoffCards = (jobs: HandoffLaunchJob[]) => (

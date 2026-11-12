@@ -116,7 +116,7 @@ export async function collectAcpProviderDiagnostics(
     const pinnedVersion = status?.runningVersion ?? status?.version ?? null;
     return {
       ...base,
-      version: pinnedVersion ? `agy_acp_server ${pinnedVersion} (ADE's pinned copy)` : null,
+      version: pinnedVersion ? `agy ${pinnedVersion} (ADE's pinned copy)` : null,
       versionError: pinnedVersion ? null : "ADE could not read its Antigravity version.",
     };
   }

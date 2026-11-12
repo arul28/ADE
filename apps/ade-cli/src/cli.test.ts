@@ -4079,15 +4079,11 @@ describe("ADE CLI", () => {
   });
 
   it.each([
-    { surface: "chat create", args: ["chat", "create", "--lane", "lane-1", "--provider", "antigravity", "--print-config"], accepts: true },
-    { surface: "chat launch", args: ["chat", "launch", "prompt", "--provider", "antigravity", "--print-config"], accepts: true },
-    { surface: "terminal launch", args: ["shell", "create", "--lane", "lane-1", "--provider", "antigravity", "--print-config"], accepts: false },
-  ])("validates Antigravity as a chat-only provider on $surface", ({ args, accepts }) => {
-    if (accepts) {
-      expect(() => buildCliPlan(args)).not.toThrow();
-    } else {
-      expect(() => buildCliPlan(args)).toThrow(/provider must be one of/);
-    }
+    { surface: "chat create", args: ["chat", "create", "--lane", "lane-1", "--provider", "antigravity", "--print-config"] },
+    { surface: "chat launch", args: ["chat", "launch", "prompt", "--provider", "antigravity", "--print-config"] },
+    { surface: "terminal launch", args: ["shell", "create", "--lane", "lane-1", "--provider", "antigravity", "--print-config"] },
+  ])("accepts Antigravity as a provider on $surface", ({ args }) => {
+    expect(() => buildCliPlan(args)).not.toThrow();
   });
 
   it("accepts a mis-cased provider when starting a CLI session", () => {

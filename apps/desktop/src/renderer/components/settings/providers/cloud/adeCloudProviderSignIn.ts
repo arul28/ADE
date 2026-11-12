@@ -53,7 +53,7 @@ export function adeCloudProviderSignIn(
     account: parts.account,
     cloud: parts.cloud ?? { state: "no_computer" },
     saved: parts.saved,
-    keychainIsThisMac: false,
+    keyringIsThisComputer: false,
     now: parts.now ?? Date.now(),
   });
   const line = tile.facts[0]?.text ?? tile.chipLabel;

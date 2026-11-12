@@ -1231,7 +1231,6 @@ const staleSnapshot: GitHubPrSnapshot = {
 function TargetHistoryHarness({
   loadSnapshot,
   snapshot,
-  PRS_READER_PIN,
 }: {
   loadSnapshot: (options?: {
     force?: boolean;

@@ -361,6 +361,16 @@ function installAdeMock(options: {
  */
 /** The machine the lane lives on: the pane's tools read and act there. */
 const LANE_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+/** Another computer: the remote sessions below run there. */
+const STUDIO_PIN: OpenProjectBinding = {
+  kind: "remote",
+  key: "remote:target-1:project-1",
+  targetId: "target-1",
+  runtimeName: "Mac Studio",
+  projectId: "project-1",
+  rootPath: "/repo",
+  displayName: "Repo",
+};
 
 function withFeeds(runtimePin: OpenProjectBinding | null, children: ReactNode) {
   return (
@@ -748,45 +758,27 @@ describe("WorkSidebar context targets", () => {
 
   it("stays on the Apple panel for a remote session instead of falling back to the picker", async () => {
     const onTabChange = vi.fn();
-    useAppStore.setState({
-      projectBinding: {
-        kind: "remote",
-        key: "remote:target-1:project-1",
-        targetId: "target-1",
-        runtimeName: "Mac Studio",
-        projectId: "project-1",
-        rootPath: "/repo",
-        displayName: "Repo",
-      },
-    } as any);
+    useAppStore.setState({ projectBinding: STUDIO_PIN } as any);
 
     renderSidebar({
       tab: "ios",
       contextTarget: { kind: "chat", sessionId: "chat-1" },
+      runtimePin: STUDIO_PIN,
       onTabChange,
     });
 
     expect(onTabChange).not.toHaveBeenCalled();
     expect(screen.getByTestId("ios-panel")).toBeTruthy();
-    await waitFor(() => expect(window.ade.iosSimulator.getStatus).toHaveBeenCalled());
+    await waitFor(() => expect(window.ade.iosSimulator.getStatus).toHaveBeenCalledWith(STUDIO_PIN));
   });
 
   it("offers Apple and App Control on a remote session's tool picker", () => {
-    useAppStore.setState({
-      projectBinding: {
-        kind: "remote",
-        key: "remote:target-1:project-1",
-        targetId: "target-1",
-        runtimeName: "Mac Studio",
-        projectId: "project-1",
-        rootPath: "/repo",
-        displayName: "Repo",
-      },
-    } as any);
+    useAppStore.setState({ projectBinding: STUDIO_PIN } as any);
 
     renderSidebar({
       tab: null,
       contextTarget: { kind: "chat", sessionId: "chat-1" },
+      runtimePin: STUDIO_PIN,
     });
 
     // Work tools follow the session's machine, so nothing here is gated on the
@@ -803,26 +795,17 @@ describe("WorkSidebar context targets", () => {
 
   it("opens the browser on a remote project rather than falling back to the picker", async () => {
     const onTabChange = vi.fn();
-    useAppStore.setState({
-      projectBinding: {
-        kind: "remote",
-        key: "remote:target-1:project-1",
-        targetId: "target-1",
-        runtimeName: "Mac Studio",
-        projectId: "project-1",
-        rootPath: "/repo",
-        displayName: "Repo",
-      },
-    } as any);
+    useAppStore.setState({ projectBinding: STUDIO_PIN } as any);
 
     renderSidebar({
       tab: "browser",
       contextTarget: { kind: "chat", sessionId: "chat-1" },
+      runtimePin: STUDIO_PIN,
       onTabChange,
     });
 
     expect(screen.getByTestId("browser-panel")).toBeTruthy();
-    await waitFor(() => expect(window.ade.builtInBrowser.getStatus).toHaveBeenCalled());
+    await waitFor(() => expect(window.ade.builtInBrowser.getStatus).toHaveBeenCalledWith(expect.anything(), STUDIO_PIN));
     expect(onTabChange).not.toHaveBeenCalledWith(null);
   });
 

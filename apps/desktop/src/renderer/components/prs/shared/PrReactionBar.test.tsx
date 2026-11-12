@@ -5,6 +5,10 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { PrReactionBar } from "./PrReactionBar";
+import { PrRuntimePinProvider } from "../state/prMachines";
+
+/** The machine that owns the PR: reactions are sent from there. */
+const PR_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
 
 let reactToComment: ReturnType<typeof vi.fn>;
 
@@ -34,12 +38,14 @@ describe("PrReactionBar", () => {
       }));
 
     render(
-      <PrReactionBar
-        prId="pr-1"
-        subjectId="IC_1"
-        viewerLogin="octocat"
-        reactions={[]}
-      />,
+      <PrRuntimePinProvider value={PR_PIN}>
+        <PrReactionBar
+          prId="pr-1"
+          subjectId="IC_1"
+          viewerLogin="octocat"
+          reactions={[]}
+        />
+      </PrRuntimePinProvider>,
     );
 
     await user.click(screen.getByRole("button", { name: /add reaction/i }));

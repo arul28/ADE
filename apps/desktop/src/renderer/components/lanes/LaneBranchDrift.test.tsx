@@ -16,8 +16,12 @@ const lanesApi = {
 };
 let emitLifecycle: (event: LaneLifecycleEvent) => void = () => undefined;
 
+/** The tab's copy: its lanes' branches are read and switched there. */
+const TAB_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 function seedLane(overrides: Partial<LaneSummary>) {
   useAppStore.setState({
+    projectBinding: TAB_PIN,
     lanes: [{ id: "lane-1", name: "cu md", branchRef: "ade/lane", branchDrift: null, ...overrides } as LaneSummary],
     refreshLanes: vi.fn(async () => undefined),
   } as Partial<ReturnType<typeof useAppStore.getState>>);
@@ -66,7 +70,7 @@ describe("LaneBranchComposerChip", () => {
       laneId: "lane-1",
       branchName: "ade/lane",
       mode: "existing",
-    }));
+    }, TAB_PIN));
     await waitFor(() => expect(screen.queryByTestId("lane-branch-adopted-chip")).toBeNull());
   });
 
@@ -87,6 +91,6 @@ describe("LaneBranchComposerChip", () => {
       laneId: "lane-1",
       resolution: "keep-head",
       expectedHeadBranchRef: "ade/elsewhere",
-    }));
+    }, TAB_PIN));
   });
 });

@@ -43,6 +43,8 @@ The owner column says what you may do with a tab:
 - `this chat`: yours. Reuse it, and close it when the task is done.
 - `free — ade browser claim --tab <id>`: no chat holds it (or its chat went
   idle for 10 minutes). Claim it with that command to drive it.
+  In the user's tab strip your tabs sit in a group named after this chat,
+  like a Chrome tab group, so the user can tell your work from theirs.
 - `free (the user's tab; ask first) — …`: the user opened it, or used an
   agent's tab by hand. Ask before you claim, drive or close it. `--lane` comes
   from `ADE_LANE_ID`; pass it when working from another shell. A personal
@@ -59,9 +61,25 @@ Any agent may close any tab, a held one included. Check the owner first:
 close this chat's tabs and free ones; close a held tab only when the task
 needs it; never close a tab the user opened or kept (`opened by the user`, or
 `the user's tab`) without asking them. `close`
-prints whose tab it closed. A deleted or archived lane frees its tabs and
-leaves them open. An agent's tab is not brought back after ADE restarts; a tab
-the user opened or used keeps its id across a restart.
+prints whose tab it closed. An agent's tab is not brought back after ADE
+restarts; a tab the user opened or used keeps its id across a restart.
+
+Your tabs clean themselves up, so do not keep one open "just in case":
+- ADE closes this chat's tabs 15 minutes after the chat goes idle, and at once
+  when the chat ends or its lane is archived or deleted. A new turn, or any
+  browser command from this chat, stops the countdown.
+- A tab the user clicked or typed in, navigated, attached to a chat, or
+  pressed Keep on is theirs: ADE never closes it, and you should not either.
+- A tab on screen, recording, being watched or being signed in on waits until
+  it is not, then closes.
+- An agent tab nobody touched for 2 hours closes even without word from its
+  chat.
+Still close your tab yourself when the task is done; the cleanup is the
+backstop, not the plan.
+
+A background tab nobody used for 30 minutes may be asleep (`sleeping` in
+status): its page was dropped to save memory. Any command on it wakes it with
+its history first, so just use it.
 
 Treat a tab as a workspace, not a log: reuse your own tab for follow-up work
 instead of opening a second one, and close it with

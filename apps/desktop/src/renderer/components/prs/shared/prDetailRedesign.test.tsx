@@ -5,6 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import type { PrDetail, PrReview, PrReviewThread, PrStatus, PrTimelineEvent, PrWithConflicts } from "../../../../shared/types/prs";
 import { usePrActionsMenu, type PrActionsTarget } from "./PrActionsMenu";
+import { PrRuntimePinProvider } from "../state/prMachines";
+
+/** The machine that reads this PR: its actions go there. */
+const PR_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+function InPrScope({ children }: { children: React.ReactNode }) {
+  return <PrRuntimePinProvider value={PR_PIN}>{children}</PrRuntimePinProvider>;
+}
 import { PrMarkdown } from "./PrMarkdown";
 import { PrMarkdownEnvContext, resolveInlineFile } from "./prMarkdownContext";
 import { buildDigestTimelineModel } from "./prDigestTimelineModel";
@@ -88,7 +95,7 @@ describe("usePrActionsMenu", () => {
         ]),
       },
     };
-    const hook = renderHook(() => usePrActionsMenu({ pr: { ...target, chatSessionIds: ["a", "b"] } }));
+    const hook = renderHook(() => usePrActionsMenu({ pr: { ...target, chatSessionIds: ["a", "b"] } }), { wrapper: InPrScope });
     hook.result.current.ensureChats();
     await waitFor(() => {
       const ask = hook.result.current.sections[0]!.items.find((item) => item.id === "ask");
@@ -132,20 +139,20 @@ describe("usePrActionsMenu", () => {
     const find = (hook: { result: { current: ReturnType<typeof usePrActionsMenu> } }, id: string) =>
       hook.result.current.sections.flatMap((section) => section.items).find((entry) => entry.id === id);
 
-    const open = renderHook(() => usePrActionsMenu({ pr: target }));
+    const open = renderHook(() => usePrActionsMenu({ pr: target }), { wrapper: InPrScope });
     find(open, "close")?.onSelect?.();
     // Close asks first; the list must not change until the user confirms.
     const confirm = await screen.findByRole("button", { name: "Close pull request" });
     expect(close).not.toHaveBeenCalled();
     fireEvent.click(confirm);
     await waitFor(() => expect(prsMock.markPrTerminalLocally).toHaveBeenCalledWith(target, "closed"));
-    expect(close).toHaveBeenCalledWith({ prId: "pr-1" });
+    expect(close).toHaveBeenCalledWith({ prId: "pr-1" }, PR_PIN);
 
     const closedTarget = { ...target, state: "closed" as const };
-    const closed = renderHook(() => usePrActionsMenu({ pr: closedTarget }));
+    const closed = renderHook(() => usePrActionsMenu({ pr: closedTarget }), { wrapper: InPrScope });
     find(closed, "reopen")?.onSelect?.();
     await waitFor(() => expect(prsMock.clearPrTerminalLocally).toHaveBeenCalledWith(closedTarget));
-    expect(reopen).toHaveBeenCalledWith({ prId: "pr-1" });
+    expect(reopen).toHaveBeenCalledWith({ prId: "pr-1" }, PR_PIN);
   });
 
   it("enables auto-merge with the merge method the user picked last", async () => {
@@ -156,9 +163,9 @@ describe("usePrActionsMenu", () => {
       const hook = renderHook(() => usePrActionsMenu({ pr: target, status: {
         prId: "pr-1", state: "open", checksStatus: "pending", reviewStatus: "none", isMergeable: false,
         mergeConflicts: false, behindBaseBy: 0, autoMergeAllowed: true,
-      } }));
+      } }), { wrapper: InPrScope });
       hook.result.current.sections.flatMap((section) => section.items).find((entry) => entry.id === "auto-merge-on")?.onSelect?.();
-      await waitFor(() => expect(setAutoMerge).toHaveBeenCalledWith({ prId: "pr-1", enabled: true, method: "rebase" }));
+      await waitFor(() => expect(setAutoMerge).toHaveBeenCalledWith({ prId: "pr-1", enabled: true, method: "rebase" }, PR_PIN));
     } finally {
       window.localStorage.removeItem("ade:prs:lastMergeMethod");
     }

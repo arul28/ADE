@@ -198,6 +198,10 @@ describe("ProjectRegistry", () => {
       catalogVisibility: "recent",
       registrationSource: "desktop",
     });
+    // An automatic registration (an `ade` command in the folder) keeps how
+    // an opened project got its place; the account project sync reads it.
+    expect(registry.add(projectRoot, { catalogVisibility: "system", registrationSource: "runtime-auto" }))
+      .toMatchObject({ catalogVisibility: "recent", registrationSource: "desktop" });
     registry.setCatalogVisibilityByRootPath(projectRoot, "system", "desktop");
 
     const automatic = registry.add(projectRoot, {

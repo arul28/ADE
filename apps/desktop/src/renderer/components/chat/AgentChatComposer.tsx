@@ -4040,13 +4040,15 @@ function AgentChatComposerImpl({
     let chipPlacement: AttachmentChipPlacement = options.chipPlacement ?? { kind: "end" };
     const attachmentOwnerBinding = attachmentMachineBinding;
     const attachmentApi = agentChatApiRef.current;
+    // A personal pane's adapter knows its computer; it has no binding when no project is open.
+    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, chatPaneScope?.kind === "personal");
     try {
       let addedInBatch = 0;
       const initialSlotCount = attachmentSlotsUsed;
       // One probe per batch, not per file: the answer is a property of the
       // machine, and asking again mid-batch would only widen the window in
       // which half the files were staged under a different contract.
-      const stagingMode = await readAttachmentStagingMode(attachmentOwnerBinding, attachmentApi);
+      const stagingMode = await readAttachmentStagingMode(attachmentApiPin, attachmentApi);
       for (const file of Array.from(files)) {
         if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
           setAttachError("Files were not attached because the selected project or machine changed. Attach them again.");
@@ -4086,7 +4088,7 @@ function AgentChatComposerImpl({
           // is written once below. Duplicating it is how the two branches drift.
           let staged: StagedAttachment;
           if (plan.transport === "path") {
-            const { path: stagedPath } = await withChatPin(attachmentOwnerBinding, (chatPin) => attachmentApi.stageFileAttachment(
+            const { path: stagedPath } = await withChatPin(attachmentApiPin, (chatPin) => attachmentApi.stageFileAttachment(
               {
                 sourcePath: plan.sourcePath,
                 filename: normalizeImageAttachmentFilename(sourceAttachmentName, file.type),
@@ -4107,7 +4109,7 @@ function AgentChatComposerImpl({
               file,
               filename: sourceAttachmentName,
               requiresHeicConversion: isHeicUpload,
-              pin: attachmentOwnerBinding,
+              pin: attachmentApiPin,
             });
           }
 
@@ -4188,6 +4190,7 @@ function AgentChatComposerImpl({
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
     const attachmentOwnerBinding = attachmentMachineBinding;
     const attachmentApi = agentChatApiRef.current;
+    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, chatPaneScope?.kind === "personal");
     let clipboardWasEmpty = false;
     try {
       const image = await window.ade.app.readClipboardImage();
@@ -4201,7 +4204,7 @@ function AgentChatComposerImpl({
         setAttachError("Clipboard image was not attached because the selected project or machine changed. Paste it again.");
         return;
       }
-      const { path: tempPath } = await withChatPin(attachmentOwnerBinding, (chatPin) => attachmentApi.saveTempAttachment({
+      const { path: tempPath } = await withChatPin(attachmentApiPin, (chatPin) => attachmentApi.saveTempAttachment({
         data: image.data,
         filename: image.filename || "clipboard.png",
       }, chatPin));

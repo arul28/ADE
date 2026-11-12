@@ -718,6 +718,7 @@ import {
 } from "./services/runtime/brainLoopWatchdog";
 import { recordHostStall } from "./services/runtime/hostStallRecord";
 import { installSyncFsCallTracker, isStallCapablePath } from "./services/runtime/syncFsCallTracker";
+import { expectedErrorKind } from "../../desktop/src/shared/expectedError";
 import { StorageNotAnsweringError } from "../../desktop/src/main/services/state/unansweringRoots";
 import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import {
@@ -2474,7 +2475,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --type <subagent|peer>  From an agent the new session is a subagent that
                            reports back (the default). peer: no report.
     --provider <name>      Chat: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
-                           CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin; CLI mode also accepts shell.
+                           CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity; CLI mode also accepts shell.
     --model <id>           Runtime model id.
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
@@ -4203,9 +4204,12 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   prefer this chat's tabs and free ones, close a held tab only when the task
   needs it, and never close a tab the user opened or kept without asking them.
   "close" prints whose tab it closed. When the browser is full, the error lists
-  only your tabs and free agent tabs; ask the user about the rest. A deleted or
-  archived lane frees its tabs (they stay open). An agent's tab is not brought
-  back after ADE restarts; a tab the user opened or kept keeps its id.
+  only your tabs and free agent tabs; ask the user about the rest. Agent tabs
+  clean themselves up: a chat's tabs close 15 minutes after it goes idle, and
+  at once when it ends or its lane is archived or deleted; a tab the user
+  clicked, typed in, navigated or kept is never closed by ADE. An agent's tab
+  is not brought back after ADE restarts; a tab the user opened or kept keeps
+  its id.
 
   Which machine. "status" prints the route: the browser "open" uses (the
   computer the user sends this chat's messages from, else this machine) and
@@ -25717,6 +25721,19 @@ function describeDiagnosticError(error: unknown): string {
     : `[thrown ${label}]`;
 }
 
+/**
+ * A fast failure that stands in for a wait on a drive that is not answering,
+ * as itself or carried by a wrapper (`carryExpected` keeps its mark, and ADE's
+ * own code travels with it).
+ */
+function isStorageWaitError(error: unknown): boolean {
+  if (error instanceof StorageNotAnsweringError) return true;
+  return (
+    (error as { code?: unknown } | null)?.code === "storage_read_failed" &&
+    expectedErrorKind(error) === "environment"
+  );
+}
+
 function installRuntimeProcessErrorBoundary(label: string): () => void {
   const rejectionWindowMs = 60_000;
   const rejectionLogLimit = 5;
@@ -25761,7 +25778,9 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
     // restarted brain would walk back into the wait, and the loop is what the
     // fast failure exists to stop. The throw happened before the call did
     // anything, so carrying on is as safe as a caught error.
-    if (error instanceof StorageNotAnsweringError) {
+    // A wrapper that adds context (the SQL of a statement, say) keeps the
+    // code and the expected mark but not the class, so both are read here.
+    if (isStorageWaitError(error)) {
       write("storage wait", error);
       return;
     }

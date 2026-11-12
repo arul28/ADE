@@ -172,13 +172,8 @@ const VENDOR_PINNED_TOOLS = [
   },
   {
     name: "antigravity",
-    description: "Google Antigravity ACP server; its local harness must sit beside it.",
-    entry: {
-      kind: "binary",
-      path: "agy_acp_server.par",
-      windowsPath: "agy_acp_server.exe",
-      files: { harness: { path: "localharness_external", windowsPath: "localharness_external.exe", executable: true } },
-    },
+    description: "Google Antigravity CLI (`agy`): `agy acp` runs chats, the TUI runs terminals.",
+    entry: { kind: "binary", path: "antigravity", windowsPath: "antigravity.exe" },
   },
   {
     name: "pi",

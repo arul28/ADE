@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_ATTENTION_PREFERENCES,
   type AttentionItem,
-  type OpenProjectBinding,
   type ProjectInfo,
 } from "../../../../shared/types";
 import type {
@@ -27,6 +26,20 @@ import { stableCacheKey } from "../infra/cacheKey";
 import { createCoalescingReadCache } from "../infra/coalescingReadCache";
 import { createProjectState } from "../infra/projectState";
 import { isAdeAvailable, isAdeUnavailableError } from "../../../lib/adeAvailability";
+
+/** The bound project on the paired machine: the one place this adapter can route a call. */
+const TEST_PIN = {
+  kind: "remote",
+  key: "remote:env-1:project-1",
+  targetId: "env-1",
+  runtimeName: "Mac Studio",
+  projectId: "project-1",
+  rootPath: "/repo",
+  displayName: "repo",
+} as const;
+/** The same machine's second project, after a project handoff. */
+const TEST_PIN_2 = { ...TEST_PIN, key: "remote:env-1:project-2", projectId: "project-2" } as const;
+
 import { FILE_DELETE_TIMEOUT_MS } from "../../../../shared/removeTreeTimeouts";
 import { connectSentry, type SentryApi } from "../../../../shared/sentry/capture";
 
@@ -34,27 +47,6 @@ const project: ProjectInfo = {
   rootPath: "/repo",
   displayName: "Repo",
   baseRef: "main",
-};
-
-/** The pin of the fake connection's own machine (`env-1`) and the bound project. */
-const TEST_PIN: OpenProjectBinding = {
-  kind: "remote",
-  key: "remote:env-1:project-1",
-  targetId: "env-1",
-  runtimeName: "Machine",
-  transport: "paired",
-  projectId: "project-1",
-  rootPath: "/repo",
-  displayName: "Repo",
-};
-
-/** The same machine, after a test binds `project-2`. */
-const PROJECT_TWO_PIN: OpenProjectBinding = {
-  ...TEST_PIN,
-  key: "remote:env-1:project-2",
-  projectId: "project-2",
-  rootPath: "/repo-2",
-  displayName: "Repo Two",
 };
 
 function chatEvent(sessionId: string, seq: number, marker: string): SyncChatEventPayload {
@@ -1759,10 +1751,10 @@ describe("createAdeWebAdapter", () => {
       "chat-project-one-7",
     ]));
 
-    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-project-two-visible" }, PROJECT_TWO_PIN);
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-project-two-visible" }, TEST_PIN_2);
     for (let index = 1; index <= 8; index += 1) {
       fake.commandResults.set("chat.getSummary", { sessionId: `chat-project-two-${index}` });
-      await adapter.ade.agentChat.getSummary({ sessionId: `chat-project-two-${index}` }, PROJECT_TWO_PIN);
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-project-two-${index}` }, TEST_PIN_2);
     }
 
     expect(fake.chatUnsubscribeCalls).toContain("chat-project-two-1");
@@ -2621,10 +2613,10 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
     adapter.bindProject(boundProject, "project-2");
 
-    await expect(adapter.ade.files.listWorkspaces(undefined, PROJECT_TWO_PIN)).resolves.toEqual(workspaces);
+    await expect(adapter.ade.files.listWorkspaces(undefined, TEST_PIN_2)).resolves.toEqual(workspaces);
     await expect(Promise.all([
-      adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never, PROJECT_TWO_PIN),
-      adapter.ade.files.listTree({ depth: 1, workspaceId: "primary" } as never, PROJECT_TWO_PIN),
+      adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never, TEST_PIN_2),
+      adapter.ade.files.listTree({ depth: 1, workspaceId: "primary" } as never, TEST_PIN_2),
     ])).resolves.toEqual([tree, tree]);
 
     expect(fake.fileCalls).toEqual([
@@ -2633,17 +2625,17 @@ describe("createAdeWebAdapter", () => {
     ]);
 
     const fileEvents: Array<{ workspaceId: string }> = [];
-    adapter.ade.files.onChange((event) => fileEvents.push(event), PROJECT_TWO_PIN);
+    adapter.ade.files.onChange((event) => fileEvents.push(event), TEST_PIN_2);
     fake.emitTables(["files"]);
     await vi.advanceTimersByTimeAsync(260);
     expect(fileEvents).toEqual([expect.objectContaining({ workspaceId: "primary" })]);
-    await adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never, PROJECT_TWO_PIN);
+    await adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never, TEST_PIN_2);
     expect(fake.fileCalls.filter((call) => call.action === "listTree")).toHaveLength(2);
 
     fake.fileErrors.set("listWorkspaces", new Error("wrong project scope"));
     fake.emitTables(["files"]);
     await vi.advanceTimersByTimeAsync(260);
-    await expect(adapter.ade.files.listWorkspaces(undefined, PROJECT_TWO_PIN)).rejects.toThrow("wrong project scope");
+    await expect(adapter.ade.files.listWorkspaces(undefined, TEST_PIN_2)).rejects.toThrow("wrong project scope");
 
     adapter.dispose();
   });
@@ -2692,7 +2684,7 @@ describe("createAdeWebAdapter", () => {
     fake.commandResults.set("lanes.list", [{ id: "lane-new" }]);
     adapter.replaceProject(projectTwo, "project-2");
     await expect(adapter.ade.app.getProject()).resolves.toEqual(projectTwo);
-    await expect(adapter.ade.lanes.list(undefined, PROJECT_TWO_PIN)).resolves.toEqual([{ id: "lane-new" }]);
+    await expect(adapter.ade.lanes.list(undefined, TEST_PIN_2)).resolves.toEqual([{ id: "lane-new" }]);
 
     expect(projects).toEqual([projectTwo]);
     expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toEqual([

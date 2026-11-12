@@ -103,7 +103,8 @@ function automationRunOf(rule: Pick<AutomationRule, "id" | "execution">, run: Cl
     spendUsd: 0,
     confidence: null,
     triggerMetadata: { runsOn: "ade-cloud" },
-    summary: "Started on ADE Cloud.",
+    // A run the server refused or skipped at once never started.
+    summary: run.state === "failed" || run.state === "skipped" ? null : "Started on ADE Cloud.",
     billingCode: null,
   };
 }

@@ -187,6 +187,10 @@ const REGISTRY_ONLY_MCP_SUPPORT: Readonly<Record<string, { unsupportedTransports
   // Copilot: the SDK session's `mcpServers` (stdio, HTTP and SSE). The servers
   // in Copilot's own `mcp-config.json` and the workspace `.mcp.json` also load.
   copilot: { unsupportedTransports: [] },
+  // Antigravity: ACP `session/new` `mcpServers`. `agy acp` advertises no
+  // `mcpCapabilities`, so it takes stdio servers only. The servers in its own
+  // `mcp_config.json` also load.
+  antigravity: { unsupportedTransports: ["http", "sse"] },
 };
 
 /** Every provider the registry can reach: the caller-MCP table plus the registry-only rows. */

@@ -63,7 +63,8 @@ export type CliProvider =
   | "kimi"
   | "grok"
   | "copilot"
-  | "devin";
+  | "devin"
+  | "antigravity";
 export type LaunchProfile = CliProvider | "shell";
 export type TrackedCliLaunchCommand = {
   command?: string;
@@ -301,6 +302,7 @@ export const LAUNCH_PROFILES = [
   "grok",
   "copilot",
   "devin",
+  "antigravity",
   "shell",
 ] as const satisfies readonly LaunchProfile[];
 export const TRACKED_CLI_PERMISSION_MODES = AGENT_CHAT_PERMISSION_MODE_VALUES;
@@ -328,6 +330,7 @@ export const LAUNCH_PROFILE_TOOL_TYPE: Record<LaunchProfile, TerminalToolType> =
   grok: "grok",
   copilot: "copilot",
   devin: "devin",
+  antigravity: "antigravity",
   shell: "shell",
 };
 
@@ -345,6 +348,7 @@ export const LAUNCH_PROFILE_TITLE: Record<LaunchProfile, string> = {
   grok: "Grok CLI",
   copilot: "GitHub Copilot CLI",
   devin: "Devin CLI",
+  antigravity: "Antigravity CLI",
   shell: "Shell",
 };
 
@@ -508,6 +512,7 @@ const LAUNCH_PROFILE_TOOL_TYPES: Record<LaunchProfile, readonly TerminalToolType
   grok: ["grok", "grok-chat"],
   copilot: ["copilot", "copilot-chat"],
   devin: ["devin", "devin-chat"],
+  antigravity: ["antigravity", "antigravity-chat"],
   shell: ["shell"],
 };
 
@@ -575,6 +580,15 @@ export function validateLaunchProfilePermissionMode(
     // passthrough: normal / accept-edits / smart / plan / bypass all map.
     if (mode === "config-toml") {
       throw new Error(`permissionMode ${mode} is not supported for Devin CLI sessions.`);
+    }
+    return;
+  }
+  if (profile === "antigravity") {
+    // `agy --mode` takes accept-edits / auto / plan, no flag is its ask-first
+    // default, and `--dangerously-skip-permissions` is full access. There is
+    // no raw-config passthrough.
+    if (mode === "config-toml") {
+      throw new Error(`permissionMode ${mode} is not supported for Antigravity CLI sessions.`);
     }
     return;
   }
@@ -1046,6 +1060,7 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   if (provider === "grok") return "grok --no-alt-screen";
   if (provider === "copilot") return "copilot";
   if (provider === "devin") return "devin";
+  if (provider === "antigravity") return ANTIGRAVITY_CLI_COMMAND;
   return "claude";
 }
 
@@ -1668,6 +1683,39 @@ export function buildTrackedCliLaunchCommand(args: {
     };
   }
 
+  if (args.provider === "antigravity") {
+    const commandArgs: string[] = [
+      ...antigravityModelFlags(modelForLaunch, passthroughModelId),
+      ...antigravityEffortFlags(args.reasoningEffort),
+      ...permissionModeToAntigravityFlags(permissionMode),
+    ];
+    // Devin's shape: `agy` is a native binary on every platform (no `.cmd`
+    // shim), so argv carries the first message safely on Windows too. It has
+    // no flag for system text, so ADE's guidance rides in front of the first
+    // message (`-i` starts the TUI on it and keeps the session open). An
+    // empty launch stays idle. Antigravity cannot be handed a conversation id
+    // at launch, so no `assignedSessionId` is returned.
+    const antigravityFirstMessage = initialPrompt
+      ? workTabCliPrompt(initialPrompt, sessionGuidance, activityGuidance)
+      : null;
+    if (antigravityFirstMessage) {
+      commandArgs.push("-i", antigravityFirstMessage);
+    }
+    return {
+      command: ANTIGRAVITY_CLI_COMMAND,
+      args: commandArgs,
+      // As for Devin: the typed fallback line carries the user's prompt only.
+      startupCommand: commandArrayToLine(
+        [
+          ANTIGRAVITY_CLI_COMMAND,
+          ...commandArgs.map((arg) => (arg === antigravityFirstMessage && initialPrompt ? initialPrompt : arg)),
+        ],
+        { platform: "linux" },
+      ),
+      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
+    };
+  }
+
   // Only the user's own text rides `--prompt`: OpenCode submits it as a real
   // user message. ADE's contract reaches the session as an instruction entry
   // when the PTY host attaches the TUI to ADE's server.
@@ -2194,6 +2242,31 @@ function devinModelFlags(model: string | null | undefined): string[] {
   return resolved ? ["--model", resolved] : [];
 }
 
+/** The command word of an Antigravity terminal; the PTY host swaps in ADE's pinned `antigravity` binary. */
+export const ANTIGRAVITY_CLI_COMMAND = "agy";
+
+/** ADE's Antigravity rows are `antigravity/<id>`; `agy --model` takes the bare id. */
+export function resolveAntigravityCliModelForLaunch(model: string | null | undefined): string | null {
+  return stripRegistryPrefix(model, "antigravity");
+}
+
+/** A preset with `passthroughModelId` hands its model to `agy` exactly as written. */
+function antigravityModelFlags(model: string | null | undefined, passthrough = false): string[] {
+  const resolved = passthrough ? normalizeCliFlagValue(model) : resolveAntigravityCliModelForLaunch(model);
+  return resolved ? ["--model", resolved] : [];
+}
+
+/** `agy --effort` values (1.5.6). */
+const ANTIGRAVITY_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+/** ADE's effort as an `agy --effort` value; a level past Antigravity's lands on `max`, an unknown one is dropped. */
+export function antigravityEffortFlags(reasoningEffort: string | null | undefined): string[] {
+  const effort = normalizeCliFlagValue(reasoningEffort)?.toLowerCase();
+  if (!effort) return [];
+  const mapped = effort === "ultracode" || effort === "ultra" ? "max" : effort;
+  return (ANTIGRAVITY_REASONING_EFFORTS as readonly string[]).includes(mapped) ? ["--effort", mapped] : [];
+}
+
 const GROK_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 
 /**
@@ -2300,6 +2373,22 @@ export function permissionModeToDevinFlags(
   if (permissionMode === "edit") return ["--permission-mode", "accept-edits"];
   if (permissionMode === "plan") return ["--permission-mode", "plan"];
   return ["--permission-mode", "normal"];
+}
+
+/**
+ * `agy --mode` takes accept-edits, auto and plan; leaving it off is the CLI's
+ * ask-first default. Full access is its own switch, not a mode.
+ * `config-toml` is already rejected upstream: Antigravity has no raw-config
+ * passthrough.
+ */
+export function permissionModeToAntigravityFlags(
+  permissionMode: AgentChatPermissionMode | null | undefined,
+): string[] {
+  if (permissionMode === "full-auto") return ["--dangerously-skip-permissions"];
+  if (permissionMode === "auto") return ["--mode", "auto"];
+  if (permissionMode === "edit") return ["--mode", "accept-edits"];
+  if (permissionMode === "plan") return ["--mode", "plan"];
+  return [];
 }
 
 function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
@@ -2957,6 +3046,25 @@ function buildProviderResumeLaunchCommand(
     if (targetId) parts.push("--resume", targetId);
     else parts.push("--continue");
     if (prompt) parts.push("--", prompt);
+    return {
+      command: parts[0]!,
+      args: parts.slice(1),
+      startupCommand: commandArrayToLine(parts, { platform: "linux" }),
+    };
+  }
+
+  if (metadata.provider === "antigravity") {
+    const parts = [
+      ANTIGRAVITY_CLI_COMMAND,
+      ...antigravityModelFlags(modelForLaunch, passthroughModelId),
+      ...antigravityEffortFlags(reasoningEffort),
+      ...permissionModeToAntigravityFlags(permissionMode),
+    ];
+    // `--conversation <id>` reopens one conversation; `--continue` the most
+    // recent one. The same `-i` argv prompt as a fresh launch.
+    if (targetId) parts.push("--conversation", targetId);
+    else parts.push("--continue");
+    if (prompt) parts.push("-i", prompt);
     return {
       command: parts[0]!,
       args: parts.slice(1),

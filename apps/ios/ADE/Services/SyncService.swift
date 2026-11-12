@@ -17179,6 +17179,73 @@ final class SyncService: ObservableObject {
     )
   }
 
+  // MARK: - Work tools: live browser tab
+
+  /// Whether the lane's machine serves live frames of one desktop browser tab.
+  /// Optional on the host, so an older desktop keeps the last-observation card.
+  func supportsWorkToolsBrowserTabFrame(laneId: String) -> Bool {
+    laneCommandDescriptor("workTools.readBrowserTabFrame", laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  /// One fresh frame of `tabId`, on the lane's own machine. Each call renews the
+  /// desktop's short watch on the tab, so the caller polls while it is looking
+  /// and simply stops when it is not. `frame` is nil for the first poll or two
+  /// while the desktop starts capturing. Never queued: a stale frame is useless.
+  func readWorkToolsBrowserTabFrame(
+    tabId: String,
+    laneId: String,
+    maxWidth: Int? = nil
+  ) async throws -> WorkToolsBrowserTabFrame? {
+    let lane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let tab = tabId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard supportsWorkToolsBrowserTabFrame(laneId: lane) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Live browser frames are not available on this machine version.", "ADEErrorCode": "unsupported_action"])
+    }
+    guard !lane.isEmpty, !tab.isEmpty else { return nil }
+    var args: [String: Any] = ["tabId": tab, "laneId": lane]
+    if let maxWidth, maxWidth > 0 { args["maxWidth"] = maxWidth }
+    let result = try await sendCommand(
+      action: "workTools.readBrowserTabFrame",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+    guard result is [String: Any] else { return nil }
+    return try? decode(result, as: WorkToolsBrowserTabFrame.self)
+  }
+
+  /// Whether this phone may click, scroll and type into a desktop browser tab.
+  /// Controller only on the host, so a read-only viewer never sees the control.
+  func supportsWorkToolsBrowserTabInput(laneId: String) -> Bool {
+    laneCommandDescriptor("workTools.sendBrowserTabInput", laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  /// Sends one person's tap, scroll or keystroke to `tabId` on the lane's
+  /// machine. Never queued: input replayed later would land on a page the
+  /// person is no longer looking at. Returns the host's `ok`.
+  @discardableResult
+  func sendWorkToolsBrowserTabInput(
+    tabId: String,
+    laneId: String,
+    event: WorkToolsBrowserTabInputEvent
+  ) async throws -> Bool {
+    let lane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let tab = tabId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard supportsWorkToolsBrowserTabInput(laneId: lane) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Controlling the browser from the phone needs a newer ADE on this lane's machine.", "ADEErrorCode": "unsupported_action"])
+    }
+    guard !lane.isEmpty, !tab.isEmpty else { return false }
+    let result = try await sendCommand(
+      action: "workTools.sendBrowserTabInput",
+      args: ["tabId": tab, "laneId": lane, "event": event.payload],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+    return (result as? [String: Any])?["ok"] as? Bool ?? false
+  }
+
   // MARK: - Mac Desktop live stream and takeover
 
   /// Whether this host can stream a lane's Mac Desktop to the phone.

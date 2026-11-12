@@ -454,6 +454,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // Whether an installation opens find, on which surface, and whether the
   // palette's words get used. Never the query, the chat, the diff, or a match.
   "find_opened",
+  // The built-in browser (feature "browser"): a person kept an agent's tab so
+  // ADE will not close it, watched a tab live from another machine, or took
+  // control of one. Once a day each. Never the URL, title, tab, chat, lane or
+  // machine.
+  "tab_kept", "remote_tab_watched", "remote_tab_controlled",
   // A shell code block in a chat reply was run after its confirm, and its
   // output was sent back to the agent. Never the command, its output, the
   // chat, the lane, the machine, or the exit code.
@@ -664,6 +669,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "home",
     // Find (⌘F) in a chat or a diff, and the ⌘K hand-off into a chat's find bar.
     "find",
+    // The built-in browser: keeping an agent's tab, and watching or driving a
+    // tab on another machine.
+    "browser",
     // Settings › Integrations › MCP servers: a browser sign-in to a registry server.
     "mcp_servers",
     // ADE MCP: this computer as an MCP server for outside AI apps.

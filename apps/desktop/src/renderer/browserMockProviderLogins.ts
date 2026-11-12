@@ -403,9 +403,12 @@ function providerRows(state: MockState, own = true): ProviderLoginProviderStatus
     ...(provider === "antigravity"
       ? {
         keychain: {
+          store: "keychain",
           canAllow: true,
           allowedAt: state.antigravityAllowedAt,
-          message: state.antigravityAllowedAt ? "Copied from this Mac. Allow again to update." : "On this Mac it is in the Keychain.",
+          message: state.antigravityAllowedAt
+            ? "Copied from this computer. Allow again to update."
+            : "The agy CLI keeps this sign-in in the Keychain. Allow ADE to copy it once; macOS asks you first.",
         },
       }
       : {}),
