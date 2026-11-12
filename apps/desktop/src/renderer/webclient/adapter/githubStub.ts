@@ -131,11 +131,27 @@ function sendErrorCode(cause: unknown): string {
 /**
  * The ADE account's GitHub App sign-in on the web client. Account-scoped like
  * the desktop's: this browser's own account session asks the account
- * directory, and no GitHub token ever reaches the browser. A sign-in leaves
+ * directory. These methods never see a GitHub token; the direct reads hold
+ * one in memory (`webclient/github/accountCredential.ts`). A sign-in leaves
  * this page for GitHub and comes back to it (`returnTo`); the server checks
  * that the address is a page of the ADE web app.
+ *
+ * `onGrantChanged` lets the direct reads drop what is no longer true:
+ * `"disconnected"` (a disconnect, a finished sign-in with a new grant, or a
+ * status read that is not active) drops the token and every answer;
+ * `"connected"` (an active status read) drops only a negative answer.
  */
-export function createGithubAccountAppWebMethods(send: GithubAppDirectorySend) {
+export function createGithubAccountAppWebMethods(
+  send: GithubAppDirectorySend,
+  onGrantChanged?: (change: "connected" | "disconnected") => void,
+) {
+  const grantChanged = (change: "connected" | "disconnected"): void => {
+    try {
+      onGrantChanged?.(change);
+    } catch {
+      // The sign-in answer does not depend on the direct reads.
+    }
+  };
   const record = (value: unknown): Record<string, unknown> =>
     value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
@@ -159,6 +175,7 @@ export function createGithubAccountAppWebMethods(send: GithubAppDirectorySend) {
           return { ...empty, error: answer.status === 404 || code === "github_app_not_configured" ? "unsupported" : "unavailable" };
         }
         const body = record(answer.body);
+        grantChanged(body.connected === true && body.state === "active" ? "connected" : "disconnected");
         return {
           available: true,
           error: null,
@@ -212,6 +229,7 @@ export function createGithubAccountAppWebMethods(send: GithubAppDirectorySend) {
         const status = body.status === "pending" || body.status === "done" || body.status === "failed" || body.status === "expired" ? body.status : null;
         if (answer.status !== 200 || !status) return { ok: false, error: errorCode(answer.body, answer.status) };
         const resultCode = body.resultCode === "ok" || body.resultCode === "denied" || body.resultCode === "error" ? body.resultCode : null;
+        if (status === "done") grantChanged("disconnected");
         return { ok: true, status, resultCode, githubLogin: text(body.githubLogin) };
       } catch (cause) {
         return { ok: false, error: sendErrorCode(cause) };
@@ -222,6 +240,7 @@ export function createGithubAccountAppWebMethods(send: GithubAppDirectorySend) {
         const answer = await send({ method: "DELETE", path: "/github/app/grant" });
         const body = record(answer.body);
         if (answer.status !== 200) return { ok: false, error: errorCode(answer.body, answer.status) };
+        grantChanged("disconnected");
         return {
           ok: true,
           deletedAtGitHub: body.deletedAtGitHub === true,

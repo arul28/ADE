@@ -12,7 +12,7 @@ import {
   appGrantAllowsCapability,
   appGrantMissingPermissions,
   type AppGrantReader,
-} from "./githubAppGrant";
+} from "../../../shared/github/githubAppGrant";
 import { createGithubAppAccountAdoption } from "./githubAppAccountAdoption";
 import type { AppUserAuthHandOverOutcome } from "./githubAppUserAuthService";
 import type { GitHubAppUserTokenRecord } from "./githubAppUserAuth";

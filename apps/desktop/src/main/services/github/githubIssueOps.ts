@@ -20,7 +20,7 @@ import {
   type GitHubIssueListState,
 } from "../../../shared/githubIssueList";
 import type { GitHubIssue, GitHubIssueComment, GitHubIssueUpdate, GitHubMilestone } from "./githubService";
-import { createAppInstallationGrantReader, describeIssueWriteAccess } from "./githubAppGrant";
+import { createAppInstallationGrantReader, describeIssueWriteAccess } from "../../../shared/github/githubAppGrant";
 import {
   parseGitHubIssueTemplate,
   parseGitHubIssueTemplateConfig,

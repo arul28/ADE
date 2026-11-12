@@ -96,6 +96,7 @@ import type { StartupRecovery } from "./services/startupRecovery/startupRecovery
 import { isStartupRecoveryWindow } from "./services/startupRecovery/startupRecoveryWindow";
 import { registerMusicIpc } from "./services/music/registerMusicIpc";
 import { registerGithubAccountAppIpc } from "./services/github/registerGithubAccountAppIpc";
+import { registerGithubDirectIpc } from "./services/github/githubDirectIpc";
 import { createMusicTokenStore } from "./services/music/musicTokenStore";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
@@ -10610,12 +10611,18 @@ app.whenReady().then(async () => {
 
   // Settings' controls for the ADE account's GitHub App sign-in. Account-scoped:
   // no machine pin (see registerGithubAccountAppIpc).
-  registerGithubAccountAppIpc({
+  const accountGithubAppClient = registerGithubAccountAppIpc({
     credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
     getDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ secretsDir: machineAdeLayout.secretsDir }) || null,
     getAccountAccessToken: (options) => getSignedInAccountAccessToken(getSharedAccountAuthService({
       secretsDir: machineAdeLayout.secretsDir,
     }), options),
+    getAccountUserId: () => getSharedAccountAuthService({ secretsDir: machineAdeLayout.secretsDir }).getStatus().userId,
+    logger: getMachineMainLogger(),
+  });
+  // Direct GitHub reads with that sign-in (no machine). Account-scoped: no pin.
+  registerGithubDirectIpc({
+    tokenClient: accountGithubAppClient,
     getAccountUserId: () => getSharedAccountAuthService({ secretsDir: machineAdeLayout.secretsDir }).getStatus().userId,
     logger: getMachineMainLogger(),
   });

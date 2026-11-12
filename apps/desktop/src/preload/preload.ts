@@ -580,6 +580,12 @@ import type {
   GitHubAccountAppSignInReadResult,
   GitHubAccountAppSignInStartResult,
   GitHubAccountAppSignOutResult,
+  GithubDirectClientState,
+  GithubDirectData,
+  GithubDirectOp,
+  GithubDirectRequest,
+  GithubDirectRequestOptions,
+  GithubDirectResult,
   GitHubAutolink,
   GitHubRemoteStatus,
   GitHubRepoStarState,
@@ -12966,6 +12972,17 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.conflictsUndoProposal, args),
       ),
     onEvent: subscribeConflictEvents,
+  },
+  // Direct GitHub reads with the ADE account's GitHub App sign-in. Account-
+  // scoped: no machine is involved, so no pin; this window's main process
+  // reads api.github.com and keeps the token (githubDirectIpc.ts).
+  githubDirect: {
+    request: async <O extends GithubDirectOp>(
+      request: Extract<GithubDirectRequest, { op: O }>,
+      options?: GithubDirectRequestOptions,
+    ): Promise<GithubDirectResult<GithubDirectData[O]>> =>
+      ipcRenderer.invoke(IPC.githubDirectRequest, request, options ?? {}),
+    getState: async (): Promise<GithubDirectClientState> => ipcRenderer.invoke(IPC.githubDirectGetState),
   },
   github: {
     getStatus: async (opts?: {

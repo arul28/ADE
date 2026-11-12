@@ -5,7 +5,7 @@ import { createRepeatedFailureGate } from "../../desktop/src/main/services/loggi
 import { resolveGithubRepoRef } from "../../desktop/src/main/services/github/githubSshAlias";
 import { gitPushError } from "../../desktop/src/main/services/git/gitPushFailure";
 import { githubRepoRefFromRemoteUrl } from "../../desktop/src/shared/githubRemote";
-import { appGrantAllowsCapability, gateAppCandidates } from "../../desktop/src/main/services/github/githubAppGrant";
+import { appGrantAllowsCapability, gateAppCandidates } from "../../desktop/src/shared/github/githubAppGrant";
 import { createGithubAccountAppCredential } from "../../desktop/src/main/services/github/githubAccountAppCredential";
 import { createGithubSessionEnv, readOwnEnvironmentGithubToken } from "../../desktop/src/main/services/github/githubSessionEnv";
 import { spawnSync } from "node:child_process";
