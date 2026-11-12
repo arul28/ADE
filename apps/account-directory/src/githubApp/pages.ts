@@ -170,10 +170,16 @@ export function installedPage(): Response {
   return page(document, 200);
 }
 
-/** `a…@example.com`: enough to recognise the account, not enough to collect it. */
+/**
+ * `ali…@example.com`: the full domain and the first characters of the local
+ * part, enough to recognise the account. It shows 1 character of a local part
+ * up to 3 long, 2 up to 6, and 3 after that, so at least half stays hidden.
+ */
 export function maskEmail(address: string | undefined): string | null {
   if (!address) return null;
   const at = address.lastIndexOf("@");
   if (at < 1) return null;
-  return `${address[0]}…${address.slice(at)}`;
+  const local = Array.from(address.slice(0, at));
+  const shown = local.length <= 3 ? 1 : local.length <= 6 ? 2 : 3;
+  return `${local.slice(0, shown).join("")}…${address.slice(at)}`;
 }

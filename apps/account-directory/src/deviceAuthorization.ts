@@ -193,7 +193,7 @@ function page(args: { title: string; body: string; status?: number; head?: strin
 function approvalForm(userCode = ""): Response {
   return page({
     title: "Sign in to ADE",
-    body: `<p class="sub">Enter the code that <code>ade login</code> shows in your terminal.</p>
+    body: `<p class="sub">Enter the code shown by <code>ade login</code> in your terminal.</p>
       <form method="post" action="/device">
         <label class="field-label" for="user_code">Device code</label>
         <input id="user_code" name="user_code" value="${escapeHtml(userCode)}" autocomplete="one-time-code" maxlength="9" required autofocus>

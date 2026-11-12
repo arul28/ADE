@@ -242,6 +242,7 @@ form { margin: 22px 0 0; }
   transition: transform 160ms ease, box-shadow 200ms ease;
 }
 form .primary { margin-top: 0; }
+form input + .primary { margin-top: 14px; }
 .primary:hover { transform: translateY(-1px); box-shadow: inset 0 1px 0 color-mix(in srgb, white 30%, transparent), 0 18px 36px -14px var(--link-glow); }
 .quiet {
   height: 40px;
