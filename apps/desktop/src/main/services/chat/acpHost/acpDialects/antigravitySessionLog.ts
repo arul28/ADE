@@ -15,6 +15,9 @@
  * | 101 | a message from another conversation (a subagent's result) | 114.2.1 title, 114.2.10.1 content, 114.4.3 sender id |
  * | any other | a tool's step | 5.4 tool call (1 id, 2 name, 3 args JSON), 140.2.1 result text |
  *
+ * A step's `status` column (1.5.6): 3 done, 6 cancelled, 7 failed or denied,
+ * 9 waiting for the user's approval; anything else is still running.
+ *
  * A reply's or tool's step has its time at 5.6 (1 seconds). A tool's result
  * text opens with a "Created At: …" and a "Completed At: …" line, which are
  * dropped.
@@ -49,9 +52,22 @@ export type AntigravityStep =
   | { kind: "user"; idx: number; text: string }
   | { kind: "reply"; idx: number; text: string; thinking: string; toolCalls: AntigravityToolCall[]; atMs: number | null }
   | { kind: "message"; idx: number; senderId: string | null; title: string; content: string }
-  | { kind: "tool"; idx: number; toolCall: AntigravityToolCall; text: string; atMs: number | null }
+  | { kind: "tool"; idx: number; toolCall: AntigravityToolCall; text: string; atMs: number | null; status: AntigravityStepStatus }
   | { kind: "error"; idx: number; text: string }
   | { kind: "other"; idx: number; type: number };
+
+/** A tool step's state, from the `steps.status` column (values seen on 1.5.6). */
+export type AntigravityStepStatus = "done" | "cancelled" | "failed" | "waiting" | "running";
+
+function stepStatus(value: unknown): AntigravityStepStatus {
+  switch (value) {
+    case 3: return "done";
+    case 6: return "cancelled";
+    case 7: return "failed";
+    case 9: return "waiting";
+    default: return "running";
+  }
+}
 
 export function antigravityConversationsDir(cliDir = antigravityCliDir()): string {
   return path.join(cliDir, "conversations");
@@ -152,7 +168,12 @@ function stepTime(payload: Uint8Array): number | null {
   return seconds && seconds > 0 ? seconds * 1000 : null;
 }
 
-export function parseAntigravityStep(idx: number, type: number, payload: Uint8Array | null): AntigravityStep {
+export function parseAntigravityStep(
+  idx: number,
+  type: number,
+  payload: Uint8Array | null,
+  status: unknown = 3,
+): AntigravityStep {
   if (!payload) return { kind: "other", idx, type };
   if (type === 14) {
     const body = text(payload, 19, 2);
@@ -180,12 +201,19 @@ export function parseAntigravityStep(idx: number, type: number, payload: Uint8Ar
   if (call) {
     // A denied or unanswered call has no result.
     const resultText = text(payload, 140, 2, 1).replace(RESULT_HEADER, "");
-    return { kind: "tool", idx, toolCall: call, text: resultText, atMs: stepTime(payload) };
+    return { kind: "tool", idx, toolCall: call, text: resultText, atMs: stepTime(payload), status: stepStatus(status) };
   }
   return { kind: "other", idx, type };
 }
 
 // ── reading ────────────────────────────────────────────────────────────────
+
+type StepRow = { idx?: unknown; type?: unknown; status?: unknown; payload?: unknown };
+
+function stepFromRow(row: StepRow): AntigravityStep[] {
+  if (typeof row.idx !== "number" || typeof row.type !== "number") return [];
+  return [parseAntigravityStep(row.idx, row.type, row.payload instanceof Uint8Array ? row.payload : null, row.status)];
+}
 
 function withLog<T>(file: string, read: (db: DatabaseSyncType) => T): T | undefined {
   let stat: fs.Stats;
@@ -223,12 +251,22 @@ export function antigravityLastStepIndex(file: string): number | undefined {
 export function readAntigravitySteps(file: string, afterIdx: number, limit = 200): AntigravityStep[] | undefined {
   return withLog(file, (db) => db
     .prepare(
-      "SELECT idx, step_type AS type, substr(step_payload, 1, ?) AS payload FROM steps WHERE idx > ? ORDER BY idx LIMIT ?",
+      "SELECT idx, step_type AS type, status, substr(step_payload, 1, ?) AS payload FROM steps WHERE idx > ? ORDER BY idx LIMIT ?",
     )
-    .all<{ idx?: unknown; type?: unknown; payload?: unknown }>(MAX_PAYLOAD_BYTES, afterIdx, limit)
-    .flatMap((row) => typeof row.idx === "number" && typeof row.type === "number"
-      ? [parseAntigravityStep(row.idx, row.type, row.payload instanceof Uint8Array ? row.payload : null)]
-      : []));
+    .all<StepRow>(MAX_PAYLOAD_BYTES, afterIdx, limit)
+    .flatMap(stepFromRow));
+}
+
+/** The given steps as they are now: a running tool's later state. */
+export function readAntigravityStepsAt(file: string, indexes: readonly number[]): AntigravityStep[] | undefined {
+  const wanted = indexes.filter((index) => Number.isSafeInteger(index)).slice(0, 200);
+  if (!wanted.length) return [];
+  return withLog(file, (db) => db
+    .prepare(
+      `SELECT idx, step_type AS type, status, substr(step_payload, 1, ?) AS payload FROM steps WHERE idx IN (${wanted.map(() => "?").join(", ")}) ORDER BY idx`,
+    )
+    .all<StepRow>(MAX_PAYLOAD_BYTES, ...wanted)
+    .flatMap(stepFromRow));
 }
 
 /**
@@ -244,9 +282,9 @@ export function readAntigravityStepsBefore(
 ): Array<{ step: AntigravityStep; bytes: number }> | undefined {
   return withLog(file, (db) => db
     .prepare(
-      "SELECT idx, step_type AS type, substr(step_payload, 1, ?) AS payload FROM steps WHERE idx < ? ORDER BY idx DESC LIMIT ?",
+      "SELECT idx, step_type AS type, status, substr(step_payload, 1, ?) AS payload FROM steps WHERE idx < ? ORDER BY idx DESC LIMIT ?",
     )
-    .all<{ idx?: unknown; type?: unknown; payload?: unknown }>(
+    .all<StepRow>(
       Math.min(payloadBytes, MAX_PAYLOAD_BYTES),
       beforeIdx ?? Number.MAX_SAFE_INTEGER,
       limit,
@@ -254,7 +292,7 @@ export function readAntigravityStepsBefore(
     .flatMap((row) => {
       if (typeof row.idx !== "number" || typeof row.type !== "number") return [];
       const payload = row.payload instanceof Uint8Array ? row.payload : null;
-      return [{ step: parseAntigravityStep(row.idx, row.type, payload), bytes: payload?.byteLength ?? 0 }];
+      return [{ step: parseAntigravityStep(row.idx, row.type, payload, row.status), bytes: payload?.byteLength ?? 0 }];
     }));
 }
 

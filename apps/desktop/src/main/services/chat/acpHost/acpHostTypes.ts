@@ -395,7 +395,22 @@ export type AcpBackgroundEvent =
   }
   | { kind: "subagent_progress"; taskId: string; summary: string; lastToolName: string | null }
   | { kind: "subagent_result"; taskId: string; status: "completed" | "stopped"; summary: string }
-  | { kind: "agent_reply"; text: string; thinking: string };
+  /** What the agent did outside any turn, oldest first. */
+  | { kind: "agent_activity"; items: AcpBackgroundItem[] };
+
+export type AcpBackgroundItem =
+  | { kind: "thinking"; text: string }
+  | { kind: "text"; text: string }
+  | {
+    kind: "tool";
+    toolCallId: string;
+    name: string;
+    input: unknown;
+    status: "completed" | "failed" | "interrupted";
+    output: string;
+  }
+  /** A tool call held for the user's approval, which the agent asks for at the next prompt. */
+  | { kind: "waiting"; toolCallId: string; name: string; title: string };
 
 export type AcpBackgroundWork = {
   /** A prompt is about to start: report what was written while idle. */

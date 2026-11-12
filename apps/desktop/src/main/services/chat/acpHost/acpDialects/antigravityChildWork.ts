@@ -1,10 +1,13 @@
 /**
- * Antigravity's background subagents, read from agy's own session logs.
+ * What Antigravity does outside a turn, read from agy's own session logs.
  *
  * `invoke_subagent` returns at once and the turn ends; the subagent runs on
  * in agy's process with its own conversation log. When it finishes it sends
- * the parent a message (a `101` step), the parent writes a reply, and none of
- * that comes over ACP (verified 1.5.6). So:
+ * the parent a message (a `101` step), and the parent carries on: it thinks,
+ * replies, and calls tools. None of that comes over ACP (verified 1.5.6). A
+ * tool that needs approval is held (status "waiting") until the next prompt,
+ * which then opens with that tool call and its `session/request_permission`.
+ * So:
  *
  * - When a turn ends, ADE reads the steps the turn added: each launch (a
  *   tool step named `invoke_subagent`, whose result names the child's
@@ -12,32 +15,39 @@
  *   finished settles its card.
  * - While a child is open, a poll (every 2 s, only then, skipped when neither
  *   log changed) reads the child's log for progress and the parent's for the
- *   result message and the parent's reply, which ADE shows as a turn of its
- *   own. A prompt about to start reads once more first; during a turn the
- *   agent streams over ACP and nothing is reported twice.
- * - A child that sends nothing for 30 minutes is reported stopped.
+ *   result message and what the parent did next: thinking, text and finished
+ *   tool calls, shown as a turn of their own, and a held tool call, shown as
+ *   a note that it waits for the next message. A tool still running is read
+ *   again until it finishes. A prompt about to start reads once more first;
+ *   during a turn the agent streams over ACP and nothing is reported twice.
+ * - While a tool is held, the chat counts as busy, so ADE does not close
+ *   agy's process (which would cancel the tool) before the user answers. That
+ *   lasts at most 30 minutes, as does a child that writes nothing.
  *
  * Every read is read-only and bounded (`antigravitySessionLog.ts`).
  */
 
 import fs from "node:fs";
 
-import type { AcpBackgroundEvent, AcpBackgroundWork } from "../acpHostTypes";
+import type { AcpBackgroundEvent, AcpBackgroundItem, AcpBackgroundWork } from "../acpHostTypes";
 import {
   antigravityConversationFile,
   antigravityLastStepIndex,
   antigravityLaunchedConversationIds,
   readAntigravitySteps,
+  readAntigravityStepsAt,
   type AntigravityStep,
 } from "./antigravitySessionLog";
 
 const POLL_MS = 2_000;
 /** After the last child settles and the parent's log goes quiet, how long to keep watching. */
 const REPLY_GRACE_MS = 90_000;
-/** A child with no new step for this long is reported stopped. */
-const CHILD_SILENCE_MS = 30 * 60_000;
+/** A child with no new step, or a tool held for approval, this long is let go. */
+const SILENCE_MS = 30 * 60_000;
 const DESCRIPTION_LIMIT = 400;
 const SUMMARY_LIMIT = 8_000;
+const TOOL_OUTPUT_LIMIT = 16_000;
+const TITLE_LIMIT = 200;
 
 type Launch = { role: string; prompt: string; typeName: string | null };
 
@@ -50,18 +60,46 @@ type Child = {
   signature: string;
 };
 
-function parseLaunch(args: string): Launch {
+type ToolStep = Extract<AntigravityStep, { kind: "tool" }>;
+
+function parseArgs(args: string): Record<string, unknown> {
   try {
-    const value = JSON.parse(args) as Record<string, unknown>;
-    const str = (key: string) => (typeof value[key] === "string" ? (value[key] as string).trim() : "");
-    return { role: str("Role") || "Subagent", prompt: str("Prompt"), typeName: str("TypeName") || null };
+    const value = JSON.parse(args) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
   } catch {
-    return { role: "Subagent", prompt: "", typeName: null };
+    return {};
   }
+}
+
+function parseLaunch(args: string): Launch {
+  const value = parseArgs(args);
+  const str = (key: string) => (typeof value[key] === "string" ? (value[key] as string).trim() : "");
+  return { role: str("Role") || "Subagent", prompt: str("Prompt"), typeName: str("TypeName") || null };
 }
 
 function bounded(text: string, limit: number): string {
   return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
+/** What a held tool would do, in the words of its own arguments. */
+function toolTitle(step: ToolStep): string {
+  const args = parseArgs(step.toolCall.args);
+  for (const key of ["CommandLine", "Path", "TargetFile", "AbsolutePath", "Url"]) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) return bounded(value.trim(), TITLE_LIMIT);
+  }
+  return step.toolCall.name;
+}
+
+function finishedItem(step: ToolStep): AcpBackgroundItem {
+  return {
+    kind: "tool",
+    toolCallId: step.toolCall.id || `agy-step-${step.idx}`,
+    name: step.toolCall.name,
+    input: parseArgs(step.toolCall.args),
+    status: step.status === "done" ? "completed" : step.status === "failed" ? "failed" : "interrupted",
+    output: bounded(step.text, TOOL_OUTPUT_LIMIT),
+  };
 }
 
 /** Size and mtime of a log and its WAL: a cheap "did anything change" key. */
@@ -91,6 +129,10 @@ export function createAntigravityBackgroundWork(args: {
   let parentSignature = logSignature(parentFile);
   const launches = new Map<string, Launch>();
   const children = new Map<string, Child>();
+  /** Background tool steps not finished yet, by step index: read again each tick. */
+  const runningTools = new Set<number>();
+  /** When a background tool started waiting for approval; null when none waits. */
+  let waitingSince: number | null = null;
   let inTurn = false;
   /** The last time a child settled or the parent's log changed outside a turn. */
   let lastSettledAt = 0;
@@ -116,49 +158,83 @@ export function createAntigravityBackgroundWork(args: {
     events.push({ kind: "subagent_result", taskId: child.taskId, status, summary: bounded(summary, SUMMARY_LIMIT) });
   };
 
-  const readParent = (reportReplies: boolean, events: AcpBackgroundEvent[]) => {
+  /** A background tool's step, as an item once it has an outcome. */
+  const toolOutcome = (step: ToolStep, items: AcpBackgroundItem[]) => {
+    if (step.status === "running") {
+      runningTools.add(step.idx);
+      return;
+    }
+    runningTools.delete(step.idx);
+    if (step.status === "waiting") {
+      waitingSince ??= now();
+      items.push({ kind: "waiting", toolCallId: step.toolCall.id, name: step.toolCall.name, title: toolTitle(step) });
+      return;
+    }
+    items.push(finishedItem(step));
+  };
+
+  const launch = (step: ToolStep, events: AcpBackgroundEvent[]) => {
+    const info = launches.get(step.toolCall.id) ?? parseLaunch(step.toolCall.args);
+    const ids = antigravityLaunchedConversationIds(step.text);
+    ids.forEach((childId, index) => {
+      if (children.has(childId)) return;
+      children.set(childId, {
+        taskId: childId,
+        file: antigravityConversationFile(childId, args.cliDir),
+        cursor: -1,
+        lastTool: null,
+        lastActivityAt: now(),
+        signature: "",
+      });
+      events.push({
+        kind: "subagent_started",
+        taskId: childId,
+        label: ids.length > 1 ? `${info.role} ${index + 1}` : info.role,
+        description: bounded(info.prompt || info.role, DESCRIPTION_LIMIT),
+        agentType: info.typeName,
+        parentToolUseId: step.toolCall.id || null,
+      });
+    });
+  };
+
+  /**
+   * New parent steps. `outsideTurn`: they were written while no prompt ran,
+   * so ADE reports what the agent did; otherwise the turn already streamed it.
+   */
+  const readParent = (outsideTurn: boolean, events: AcpBackgroundEvent[]) => {
     if (!parentFile) return;
     const steps: AntigravityStep[] = readAntigravitySteps(parentFile, cursor) ?? [];
+    const items: AcpBackgroundItem[] = [];
     for (const step of steps) {
       cursor = Math.max(cursor, step.idx);
       if (step.kind === "reply") {
         for (const call of step.toolCalls) {
           if (call.name === "invoke_subagent" && call.id) launches.set(call.id, parseLaunch(call.args));
         }
-        if (reportReplies && (step.text.trim() || step.thinking.trim())) {
-          events.push({ kind: "agent_reply", text: step.text, thinking: step.thinking });
-        }
+        if (outsideTurn && step.thinking.trim()) items.push({ kind: "thinking", text: step.thinking });
+        if (outsideTurn && step.text.trim()) items.push({ kind: "text", text: step.text });
         continue;
       }
-      if (step.kind === "tool" && step.toolCall.name === "invoke_subagent") {
-        const launch = launches.get(step.toolCall.id) ?? parseLaunch(step.toolCall.args);
-        const ids = antigravityLaunchedConversationIds(step.text);
-        ids.forEach((childId, index) => {
-          if (children.has(childId)) return;
-          const file = antigravityConversationFile(childId, args.cliDir);
-          children.set(childId, {
-            taskId: childId,
-            file,
-            cursor: -1,
-            lastTool: null,
-            lastActivityAt: now(),
-            signature: "",
-          });
-          events.push({
-            kind: "subagent_started",
-            taskId: childId,
-            label: ids.length > 1 ? `${launch.role} ${index + 1}` : launch.role,
-            description: bounded(launch.prompt || launch.role, DESCRIPTION_LIMIT),
-            agentType: launch.typeName,
-            parentToolUseId: step.toolCall.id || null,
-          });
-        });
+      if (step.kind === "tool") {
+        if (step.toolCall.name === "invoke_subagent") launch(step, events);
+        else if (outsideTurn) toolOutcome(step, items);
         continue;
       }
       if (step.kind === "message" && step.senderId && children.has(step.senderId)) {
         settle(step.senderId, "completed", step.content || step.title, events);
       }
     }
+    if (items.length) events.push({ kind: "agent_activity", items });
+  };
+
+  /** Background tools that were still running: report the ones that finished. */
+  const readRunningTools = (events: AcpBackgroundEvent[]) => {
+    if (!parentFile || !runningTools.size) return;
+    const items: AcpBackgroundItem[] = [];
+    for (const step of readAntigravityStepsAt(parentFile, [...runningTools]) ?? []) {
+      if (step.kind === "tool") toolOutcome(step, items);
+    }
+    if (items.length) events.push({ kind: "agent_activity", items });
   };
 
   const readChildren = (events: AcpBackgroundEvent[]) => {
@@ -181,7 +257,7 @@ export function createAntigravityBackgroundWork(args: {
           events.push({ kind: "subagent_progress", taskId: child.taskId, summary: `Running ${lastTool}`, lastToolName: lastTool });
         }
       }
-      if (now() - child.lastActivityAt > CHILD_SILENCE_MS) {
+      if (now() - child.lastActivityAt > SILENCE_MS) {
         settle(childId, "stopped", "No result came back from the subagent.", events);
       }
     }
@@ -197,11 +273,12 @@ export function createAntigravityBackgroundWork(args: {
         parentSignature = signature;
         // The parent is still working on a result: keep watching.
         lastSettledAt = now();
+        readRunningTools(events);
         readParent(true, events);
       }
     }
     if (events.length) args.emit(events);
-    if (!children.size && now() - lastSettledAt > REPLY_GRACE_MS) stopTimer();
+    if (!children.size && !runningTools.size && now() - lastSettledAt > REPLY_GRACE_MS) stopTimer();
   }
 
   return {
@@ -209,8 +286,12 @@ export function createAntigravityBackgroundWork(args: {
       if (disposed) return;
       // Anything written while idle is reported before the turn's own stream.
       const events: AcpBackgroundEvent[] = [];
+      readRunningTools(events);
       readParent(true, events);
       if (events.length) args.emit(events);
+      // The prompt resumes a held or running tool over ACP; it is the turn's now.
+      runningTools.clear();
+      waitingSince = null;
       inTurn = true;
     },
     turnEnded() {
@@ -223,7 +304,11 @@ export function createAntigravityBackgroundWork(args: {
       if (events.length) args.emit(events);
       if (children.size) startTimer();
     },
-    hasOpenWork: () => !disposed && children.size > 0,
+    hasOpenWork: () => !disposed && (
+      children.size > 0
+      || runningTools.size > 0
+      || (waitingSince !== null && now() - waitingSince < SILENCE_MS)
+    ),
     dispose() {
       if (disposed) return;
       // agy's process is going away, and its subagents with it.

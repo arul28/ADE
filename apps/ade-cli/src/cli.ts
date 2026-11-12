@@ -2440,7 +2440,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --type <subagent|peer>  From an agent the new session is a subagent that
                            reports back (the default). peer: no report.
     --provider <name>      Chat: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
-                           CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin; CLI mode also accepts shell.
+                           CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity; CLI mode also accepts shell.
     --model <id>           Runtime model id.
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.

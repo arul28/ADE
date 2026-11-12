@@ -1061,6 +1061,7 @@ import {
   replaceDynamicMuseModelDescriptors,
   type MuseModelCatalogRow,
   mergeDynamicAcpModelDescriptors,
+  resolveAcpModelDescriptor,
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
   pickDefaultCursorDescriptorFromCliList,
@@ -36908,6 +36909,18 @@ export function createAgentChatService(args: {
         }),
       );
     }
+
+    // A chat started without a model (`ade new chat` with no `--model`) runs
+    // on the agent's own default. The chat names that model, so its picker
+    // shows what answers instead of "Loading model…" for good.
+    if (!managed.session.modelId && !managed.session.model?.trim() && next.currentModelId) {
+      const descriptor = resolveAcpModelDescriptor(runtime.provider, next.currentModelId);
+      if (descriptor) {
+        managed.session.model = descriptor.id;
+        managed.session.modelId = descriptor.id;
+        persistChatState(managed);
+      }
+    }
   };
 
   /** ACP tool kinds a side chat refuses outright: anything that writes or leaves plan mode. */
@@ -37375,9 +37388,9 @@ export function createAgentChatService(args: {
 
   /**
    * Publish what an ACP dialect's background work saw (Antigravity's
-   * subagents). A reply the agent wrote outside any turn becomes a short turn
-   * of its own; one that lands while a turn runs is dropped, because the
-   * agent streams that turn itself.
+   * subagents, and what the agent did after one reported back). Activity
+   * outside any turn becomes a short turn of its own; activity read as the
+   * next prompt starts leads that turn.
    */
   const applyAcpBackgroundEvents = (
     managed: ManagedChatSession,
@@ -37387,31 +37400,51 @@ export function createAgentChatService(args: {
     if (managed.closed) return;
     let changed = false;
     for (const event of events) {
-      if (event.kind === "agent_reply") {
+      if (event.kind === "agent_activity") {
         if (managed.runtime !== runtime) continue;
         const activeTurnId = runtime.busy ? acpBackgroundTurnIds.get(runtime) ?? runtime.activeTurnId : null;
-        if (activeTurnId) {
-          // Read as the next prompt starts: it leads that turn.
-          if (event.thinking.trim()) {
-            emitChatEvent(managed, { type: "reasoning", text: event.thinking, turnId: activeTurnId, itemId: `${activeTurnId}:late-thinking` });
+        if (!activeTurnId && runtime.busy) continue;
+        const turnId = activeTurnId ?? randomUUID();
+        const batch = `${turnId}:bg-${randomUUID().slice(0, 8)}`;
+        const providerLabel = providerDisplayLabel(managed.session.provider, String(managed.session.provider));
+        if (!activeTurnId) emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+        event.items.forEach((item, index) => {
+          const itemId = `${batch}:${index}`;
+          switch (item.kind) {
+            case "thinking":
+              emitChatEvent(managed, { type: "reasoning", text: item.text, turnId, itemId });
+              return;
+            case "text":
+              emitChatEvent(managed, { type: "text", text: item.text, turnId, itemId, messageId: itemId });
+              return;
+            case "tool": {
+              const toolItemId = item.toolCallId || itemId;
+              emitChatEvent(managed, { type: "tool_call", tool: item.name, args: item.input, itemId: toolItemId, turnId });
+              emitChatEvent(managed, {
+                type: "tool_result",
+                tool: item.name,
+                result: item.output,
+                itemId: toolItemId,
+                status: item.status,
+                turnId,
+              });
+              return;
+            }
+            case "waiting":
+              emitChatEvent(managed, {
+                type: "system_notice",
+                noticeKind: "info",
+                severity: "info",
+                message: `${providerLabel} is waiting to run "${item.title}". It asks for your approval when you send your next message.`,
+                turnId,
+              });
+              return;
           }
-          if (event.text.trim()) {
-            emitChatEvent(managed, { type: "text", text: event.text, turnId: activeTurnId, itemId: `${activeTurnId}:late-text`, messageId: `${activeTurnId}:late-text` });
-          }
-          changed = true;
-          continue;
+        });
+        if (!activeTurnId) {
+          emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
+          emitChatEvent(managed, { type: "done", turnId, status: "completed" });
         }
-        if (runtime.busy) continue;
-        const turnId = randomUUID();
-        emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
-        if (event.thinking.trim()) {
-          emitChatEvent(managed, { type: "reasoning", text: event.thinking, turnId, itemId: `${turnId}:thinking` });
-        }
-        if (event.text.trim()) {
-          emitChatEvent(managed, { type: "text", text: event.text, turnId, itemId: `${turnId}:text`, messageId: `${turnId}:text` });
-        }
-        emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
-        emitChatEvent(managed, { type: "done", turnId, status: "completed" });
         changed = true;
         continue;
       }

@@ -146,13 +146,26 @@ reply, but none of that comes over ACP. ADE reads it from the logs instead
 - When a turn ends, each launch in the steps it added becomes a subagent card.
   The child's conversation id is in the launch's result.
 - While a child is open, a 2-second poll reads the child's log for progress
-  and the parent's for the result and agy's reply. It runs only then, and
-  skips a log whose size and time have not changed. The reply shows as a turn
-  of its own, or in the running turn when the user has already sent another
-  message.
-- A chat with an open subagent is not closed for idling. A child that writes
+  and the parent's for the result and what agy did next. It runs only then,
+  and skips a log whose size and time have not changed. agy's thinking, text
+  and finished tool calls (with their output) show as a turn of their own, or
+  in the running turn when the user has already sent another message. A tool
+  still running is read again until it finishes.
+- A tool that needs approval is held, not asked for: agy sends nothing until
+  the next `session/prompt`, which opens with that tool call and its
+  `session/request_permission`. ADE shows a note ("Antigravity is waiting to
+  run …") and the approval card comes with the user's next message.
+- A chat with an open subagent, a running background tool, or a held tool is
+  not closed for idling. Closing agy's process cancels a held tool (verified).
+  A held tool keeps the chat open for at most 30 minutes. A child that writes
   nothing for 30 minutes is reported stopped, and so is every open child when
   the chat's agy process exits.
+
+A step's status is in the `steps.status` column: 3 done, 6 cancelled, 7 failed
+or denied, 9 waiting for approval, anything else running.
+
+A chat started without a model (from the CLI, say) takes agy's current model
+from `session/new`'s config options, so the composer shows the real model.
 
 ### Session log
 

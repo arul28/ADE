@@ -35,7 +35,9 @@ function stepToEvents(step: AntigravityStep, sink: EnvelopeSink, timestamp: stri
       return;
     case "tool": {
       const text = step.text.length > TOOL_RESULT_CHARS ? `${step.text.slice(0, TOOL_RESULT_CHARS)}…` : step.text;
-      sink.toolResult(step.toolCall.name, text, timestamp, `agy-tool:${step.toolCall.id || step.idx}`, false);
+      // Denied, failed and cancelled calls keep their failed status.
+      const failed = step.status === "failed" || step.status === "cancelled";
+      sink.toolResult(step.toolCall.name, text, timestamp, `agy-tool:${step.toolCall.id || step.idx}`, failed);
       return;
     }
     case "message":
