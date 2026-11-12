@@ -287,7 +287,8 @@ final class GitHubAccountConnection: ObservableObject {
     }
     statusTask = task
     await task.value
-    statusTask = nil
+    // An account switch may have started the next account's read meanwhile.
+    if statusTask == task { statusTask = nil }
   }
 
   private func performStatusRead() async {
@@ -425,8 +426,11 @@ final class GitHubAccountConnection: ObservableObject {
     problem = nil
     defer { connecting = false }
     let requestedUserId = userId
-    let start: GitHubAppSignInStartAnswer
+    let authorizeURL: URL
+    let startSignInId: String
     switch await call("POST", path: "github/app/sign-in", body: ["client": "ios"]) {
+    case .failure(.accountChanged):
+      return
     case .failure(let failure):
       problem = failure == .unsupported
         ? "Your ADE account can't connect GitHub yet."
@@ -444,14 +448,15 @@ final class GitHubAccountConnection: ObservableObject {
             : "ADE could not start the GitHub sign-in. Try again."
         return
       }
-      start = decoded
+      authorizeURL = url
+      startSignInId = decoded.signInId
     }
-    let callback = await presentWebSheet(url: URL(string: start.authorizeUrl)!)
+    let callback = await presentWebSheet(url: authorizeURL)
     guard userId == requestedUserId else { return }
     let parsed = callback.flatMap(GitHubConnectCallback.init(url:))
     // The sheet closed. Read the sign-in once: the person may have finished
     // even when the callback did not arrive (a closed sheet after approval).
-    await finishSignIn(id: parsed?.signInId ?? start.signInId, callbackStatus: parsed?.status)
+    await finishSignIn(id: parsed?.signInId ?? startSignInId, callbackStatus: parsed?.status)
   }
 
   /// `ade://github/connected?signIn=…&status=…` reached the app outside the
@@ -547,7 +552,8 @@ final class GitHubAccountConnection: ObservableObject {
       }
       return .success(answer)
     } catch {
-      return .failure(.unavailable(nil))
+      // A switch cancels the call: that is the old account's answer, not "GitHub is down".
+      return .failure(userId == requestedUserId ? .unavailable(nil) : .accountChanged)
     }
   }
 

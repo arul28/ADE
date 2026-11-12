@@ -43,9 +43,14 @@ final class KeychainService {
     return "\(tokenAccount).\(trimmed)"
   }
 
-  /// Returns whether the Keychain stored the value.
+  /// Returns whether the Keychain stored the value. `accessible` applies when
+  /// the item is new.
   @discardableResult
-  private func saveString(_ value: String, account: String) -> Bool {
+  private func saveString(
+    _ value: String,
+    account: String,
+    accessible: CFString = kSecAttrAccessibleAfterFirstUnlock
+  ) -> Bool {
     let cacheKey = self.cacheKey(account)
     // After the write, so a read racing it cannot cache the old value.
     defer { Self.invalidate(cacheKey) }
@@ -59,7 +64,7 @@ final class KeychainService {
     let updateStatus = SecItemUpdate(query as CFDictionary, updateFields as CFDictionary)
     if updateStatus == errSecItemNotFound {
       var addQuery = query
-      addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+      addQuery[kSecAttrAccessible as String] = accessible
       addQuery[kSecValueData as String] = data
       return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
     }
@@ -109,33 +114,11 @@ final class KeychainService {
     return value.map(StoredRead.value) ?? .absent
   }
 
+  /// The value, or nil when it is not there or could not be read. A caller
+  /// that writes after a nil uses `readString` instead.
   private func loadString(account: String) -> String? {
-    let cacheKey = self.cacheKey(account)
-    let (cached, generation) = Self.cache.withLock { ($0.values[cacheKey], $0.generation) }
-    if let cached {
-      return cached
-    }
-    let query: [String: Any] = [
-      kSecClass as String: kSecClassGenericPassword,
-      kSecAttrService as String: service,
-      kSecAttrAccount as String: account,
-      kSecMatchLimit as String: kSecMatchLimitOne,
-      kSecReturnData as String: true,
-    ]
-    var item: CFTypeRef?
-    let status = SecItemCopyMatching(query as CFDictionary, &item)
-    let value: String?
-    if status == errSecSuccess, let data = item as? Data {
-      value = String(data: data, encoding: .utf8)
-    } else if status == errSecItemNotFound {
-      value = nil
-    } else {
-      return nil
-    }
-    Self.cache.withLock { state in
-      if state.generation == generation { state.values[cacheKey] = .some(value) }
-    }
-    return value
+    if case .value(let value) = readString(account: account) { return value }
+    return nil
   }
 
   private func clearString(account: String) {
@@ -162,17 +145,23 @@ final class KeychainService {
   }
 
   func loadToken(hostKey: String?) -> String? {
+    if case .value(let token) = readToken(hostKey: hostKey) { return token }
+    return nil
+  }
+
+  /// The pairing secret of one computer. A legacy item moves to the new name
+  /// only when the new one is not there: a failed read never writes.
+  func readToken(hostKey: String?) -> StoredRead {
     let newAccount = tokenAccount(for: hostKey)
-    if let token = loadString(account: newAccount) {
-      return token
-    }
+    let current = readString(account: newAccount)
+    guard case .absent = current else { return current }
     if let legacyAccount = legacyTokenAccount(for: hostKey),
-       let migrated = loadString(account: legacyAccount) {
+       case .value(let migrated) = readString(account: legacyAccount) {
       saveString(migrated, account: newAccount)
       clearString(account: legacyAccount)
-      return migrated
+      return .value(migrated)
     }
-    return nil
+    return .absent
   }
 
   func clearToken() {
@@ -195,8 +184,9 @@ final class KeychainService {
   /// JSON). One record; it names the account it belongs to.
   private let githubAccountTokenAccount = "github-account-app.v1"
 
+  /// This device only: a backup restored on another phone does not carry it.
   func saveGitHubAccountToken(_ json: String) {
-    saveString(json, account: githubAccountTokenAccount)
+    saveString(json, account: githubAccountTokenAccount, accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
   }
 
   func loadGitHubAccountToken() -> String? {
@@ -216,6 +206,13 @@ final class KeychainService {
     guard epoch > 0,
           let account = accountDeviceOwnershipEpochAccount(deviceId: deviceId) else {
       return
+    }
+    // The epoch only moves up. After a failed read the stored one may be
+    // higher than the caller knows: write nothing.
+    switch readString(account: account) {
+    case .failed: return
+    case .value(let raw): if let stored = Int(raw), stored >= epoch { return }
+    case .absent: break
     }
     saveString(String(epoch), account: account)
   }

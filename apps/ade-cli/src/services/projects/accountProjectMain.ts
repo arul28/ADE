@@ -2,11 +2,13 @@ import type { AccountProjectMainResult } from "./accountProjectSync";
 
 /**
  * "Use for new lanes": the folder of a project that new lanes on this
- * computer start from. Two callers reach it from another device:
+ * computer start from. Two doors lead here from another device:
  *
- * - the phone, as the sync command `projects.setMainCheckout`;
- * - another computer's window or the CLI, as the runtime method
- *   `projects.setMainCheckout`.
+ * - the sync command `projects.setMainCheckout` (the phone's Location
+ *   screen and Start on picker use it);
+ * - the runtime method `projects.setMainCheckout`, advertised as the
+ *   `projects.setMainCheckout` capability for another computer's window. No
+ *   desktop or CLI caller uses it yet.
  *
  * Only the brain that publishes this computer's projects to the account (the
  * one that holds the sync-host lease) can change it, because the choice lives

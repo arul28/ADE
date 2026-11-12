@@ -4905,6 +4905,11 @@ final class SyncService: ObservableObject {
   private var lastRoamAttemptUptime: TimeInterval?
   private var connectionEstablishedUptime: TimeInterval?
   private(set) var deviceId: String
+  /// True while `deviceId` is a stand-in: the keychain refused the read at
+  /// launch and there was no saved copy. The phone neither pairs nor drops a
+  /// pairing with it (`syncResolveDeviceId`).
+  private var deviceIdIsProvisional = false
+  private var deviceIdRecheckObservers: [NSObjectProtocol] = []
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
   /// The last hello_ok carried a non-empty project catalog, so the post-hello
   /// catalog request would only repeat it.
@@ -6860,25 +6865,26 @@ final class SyncService: ObservableObject {
       UserDefaults.standard.set(true, forKey: pausedFlagMigrationKey)
     }
     self.autoReconnectPausedByUser = UserDefaults.standard.bool(forKey: autoReconnectPausedKey)
-    // The keychain can refuse a read for a moment at launch. Ask again a few
-    // times, and never write a new id over one the keychain may still hold:
-    // every computer binds its pairing to this id.
-    var storedDeviceId = keychain.readDeviceId()
-    for _ in 0..<3 {
-      guard case .failed = storedDeviceId else { break }
-      usleep(50_000)
-      storedDeviceId = keychain.readDeviceId()
-    }
+    // The keychain can refuse a read at launch (a launch before the first
+    // unlock). Never write a new id over one the keychain may still hold:
+    // every computer binds its pairing to this id. A provisional id is read
+    // again when protected data becomes available (`recheckProvisionalDeviceId`).
+    let storedDeviceId = keychain.readDeviceId()
     let deviceIdChoice = syncResolveDeviceId(
       keychain: storedDeviceId,
       saved: UserDefaults.standard.string(forKey: legacyDeviceIdKey),
       makeFresh: { UUID().uuidString.lowercased() }
     )
     deviceId = deviceIdChoice.id
+    deviceIdIsProvisional = deviceIdChoice.provisional
     if deviceIdChoice.writeSaved { UserDefaults.standard.set(deviceIdChoice.id, forKey: legacyDeviceIdKey) }
     if deviceIdChoice.writeKeychain { keychain.saveDeviceId(deviceIdChoice.id) }
     if case .failed(let status) = storedDeviceId {
-      syncServiceDeviceIdLog.error("device_id.keychain_read_failed status=\(status, privacy: .public)")
+      syncServiceDeviceIdLog.error("device_id.keychain_read_failed status=\(status, privacy: .public) provisional=\(deviceIdChoice.provisional, privacy: .public)")
+      CrashReporting.capture(
+        NSError(domain: NSOSStatusErrorDomain, code: Int(status)),
+        context: ["area": "device_id", "step": "keychain_read", "provisional": String(deviceIdChoice.provisional)]
+      )
     }
     MobileTrustResetPolicy.applyIfNeeded(keychain: keychain)
     // Read the route marker before anything below can rewrite it:
@@ -7018,7 +7024,40 @@ final class SyncService: ObservableObject {
       self?.chatLaunchRevision &+= 1
     }
 
+    if deviceIdIsProvisional {
+      // No timer: the keychain answers once the phone is unlocked, and the
+      // app becoming active covers a read that failed for another reason.
+      for name in [UIApplication.protectedDataDidBecomeAvailableNotification, UIApplication.didBecomeActiveNotification] {
+        deviceIdRecheckObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+          MainActor.assumeIsolated { _ = self?.recheckProvisionalDeviceId() }
+        })
+      }
+    }
+
     refreshActiveSessionsAndSnapshot()
+  }
+
+  /// Reads the device id again after a launch that could not read it, and
+  /// keeps the stored one. Answers whether the id is durable now.
+  @discardableResult
+  func recheckProvisionalDeviceId() -> Bool {
+    guard deviceIdIsProvisional else { return true }
+    let stored = keychain.readDeviceId()
+    let provisionalId = deviceId
+    let choice = syncResolveDeviceId(
+      keychain: stored,
+      saved: UserDefaults.standard.string(forKey: legacyDeviceIdKey),
+      makeFresh: { provisionalId }
+    )
+    guard !choice.provisional else { return false }
+    deviceId = choice.id
+    deviceIdIsProvisional = false
+    if choice.writeSaved { UserDefaults.standard.set(choice.id, forKey: legacyDeviceIdKey) }
+    if choice.writeKeychain { keychain.saveDeviceId(choice.id) }
+    for observer in deviceIdRecheckObservers { NotificationCenter.default.removeObserver(observer) }
+    deviceIdRecheckObservers = []
+    syncServiceDeviceIdLog.notice("device_id.recovered kept_provisional=\(choice.id == provisionalId, privacy: .public)")
+    return true
   }
 
   deinit {
@@ -7487,8 +7526,11 @@ final class SyncService: ObservableObject {
   }
 
   private func migrateTokenIfNeeded(for profile: HostConnectionProfile) {
+    // Only a token that is not there is filled in. A read that failed may
+    // hide this computer's own secret: copying another one over it would
+    // make the computer refuse the phone.
     guard let key = profileStorageKey(profile),
-          keychain.loadToken(hostKey: key) == nil else {
+          case .absent = keychain.readToken(hostKey: key) else {
       return
     }
     for legacyKey in legacyProfileStorageKeys(profile) {
@@ -8680,6 +8722,12 @@ final class SyncService: ObservableObject {
     _ machine: AccountMachine,
     authorization: AccountPairingAuthorization
   ) async -> Bool {
+    // A pairing binds to the device id: never make one with a provisional id.
+    guard recheckProvisionalDeviceId() else {
+      lastError = syncProvisionalDeviceIdMessage
+      connectionState = .error
+      return false
+    }
     prepareForUserConnectionChange()
     setConnectAttemptTarget(
       machineName: machine.displayName,
@@ -10115,6 +10163,12 @@ final class SyncService: ObservableObject {
     tailscaleAddress: String? = nil,
     relayCandidates: [String] = []
   ) async {
+    // A pairing binds to the device id: never make one with a provisional id.
+    guard recheckProvisionalDeviceId() else {
+      lastError = syncProvisionalDeviceIdMessage
+      connectionState = .error
+      return
+    }
     prepareForUserConnectionChange()
     setConnectAttemptTarget(machineName: hostName, machineIdentity: hostIdentity)
     lastPairingErrorCode = nil
@@ -20273,6 +20327,13 @@ final class SyncService: ObservableObject {
   }
 
   private func shouldInvalidateSavedPairing(for error: Error) -> Bool {
+    // A provisional device id is not the id the computer paired with, so its
+    // "unknown device" answer says nothing about the pairing. Read the id
+    // again for the next attempt, and keep the pairing.
+    if deviceIdIsProvisional {
+      recheckProvisionalDeviceId()
+      return false
+    }
     let nsError = error as NSError
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
       return false
@@ -28157,6 +28218,8 @@ extension SyncService {
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
       return .failure(SyncPairAlongsideFailure(message: message))
     }
+    // A pairing binds to the device id: never make one with a provisional id.
+    guard recheckProvisionalDeviceId() else { return fail(syncProvisionalDeviceIdMessage) }
     let owner = authorization.ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !owner.isEmpty,
           AccountService.shared.isPairingCommitAuthorized(authorization),

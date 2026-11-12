@@ -324,8 +324,6 @@ final class GitHubDirectClient {
 
   private struct Rejected: Error { let token: String }
 
-  /// The requests the client sent, for the counts in a log line.
-  private(set) var counts = (requests: 0, notModified: 0, retriesAfter401: 0)
   private var pages: [String: CachedPage] = [:]
   private var pageOrder: [String] = []
   private var inFlight: [String: Task<Result<Page, GitHubDirectError>, Never>] = [:]
@@ -350,6 +348,8 @@ final class GitHubDirectClient {
     pageOrder = []
     diagnoses = [:]
     blockedUntil = nil
+    // The rate limit belongs to the GitHub user of the sign-in that ends here.
+    rateLimit = nil
   }
 
   /// The person changed the App's installations on GitHub.
@@ -484,7 +484,6 @@ final class GitHubDirectClient {
             replacement != rejected.token else {
         return .failure(GitHubDirectError(kind: .signInExpired))
       }
-      counts.retriesAfter401 += 1
       do {
         let result = try await attempt(replacement)
         return connection.accountUserId == scope ? result : .failure(changed)
@@ -596,10 +595,8 @@ final class GitHubDirectClient {
     case .failure(let error): throw error
     case .success(let value): page = value
     }
-    counts.requests += 1
     noteRateLimit(page.headers)
     if page.notModified {
-      counts.notModified += 1
       if let cached = pages[key] { remember(key, cached) }
       return page
     }
