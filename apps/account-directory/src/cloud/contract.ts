@@ -53,6 +53,12 @@
  *   GET    /cloud/instances/:id/sign-ins/:job           CloudRemoteSignInStatus
   *   POST   /cloud/projects/computers/delete             CloudProjectComputersPreview | CloudProjectComputersDeleteStarted   ({ origin, dryRun: true } | { origin, instanceIds })
  *   GET    /cloud/projects/computers/delete/:job        CloudProjectComputersJob
+ *   GET    /cloud/automations?origin=                   { automations: CloudAutomationSummary[] }
+ *   PUT    /cloud/automations/:rule                     CloudAutomationRegistered   (CloudAutomationRegistration)
+ *   DELETE /cloud/automations/:rule                     { deleted: boolean }
+ *   POST   /cloud/automations/:rule/run                 CloudAutomationRun   (Run now)
+ *   GET    /cloud/automations/:rule/runs                { runs: CloudAutomationRun[] }
+ *   POST   /cloud/automations/:rule/deliveries          { runId, state }   NO account token: the webhook relay's forward, signed (CLOUD_AUTOMATION_HOOK_HEADERS)
  *
  * CORS: every `/cloud/*` route answers a browser on `WEB_CLIENT_ORIGIN` only
  * (`GET, POST, PUT, DELETE`, headers `authorization, content-type`); any other
@@ -134,6 +140,8 @@ export const CLOUD_PATHS = {
   launches: "/cloud/launches",
   /** Delete the cloud computers of one project (`projectComputers.ts`). */
   projectComputersDelete: "/cloud/projects/computers/delete",
+  /** Automations whose home is ADE Cloud (`automations.ts`, C9). */
+  automations: "/cloud/automations",
 } as const;
 
 /**
@@ -926,4 +934,104 @@ export type CloudProjectComputersJob = {
   origin: string;
   computers: Array<{ instanceId: string; name: string | null; state: CloudProjectComputerDeleteState; reason: string | null }>;
   done: boolean;
+};
+
+/* ---- Automations whose home is ADE Cloud (C9) ---- */
+
+/** The storm stop's default: most runs a rule starts in an hour. */
+export const CLOUD_AUTOMATION_DEFAULT_RUNS_PER_HOUR = 6;
+/** The headers of the webhook relay's forward. The signature is HMAC-SHA256 of `<timestamp>.<body>`, hex. */
+export const CLOUD_AUTOMATION_HOOK_HEADERS = {
+  hookId: "x-ade-hook-id",
+  timestamp: "x-ade-hook-timestamp",
+  signature: "x-ade-hook-signature",
+} as const;
+/** The stage the computer posts when an automation run's chat ends (`done` or `failed`). */
+export const CLOUD_AUTOMATION_RUN_STAGE = "run";
+
+/** What the server watches. A cloud home takes nothing else (`automationCloudHomeProblem`). */
+export type CloudAutomationTrigger =
+  | { kind: "schedule"; cron: string; timezone: string }
+  | { kind: "webhook"; hookId: string; maxAgeMinutes?: number | null }
+  | { kind: "manual" };
+
+/**
+ * A rule compiled for the server: everything a run needs, nothing that lives
+ * on one computer (no secret, no bound chat, no step that works in a local
+ * lane). `chat.prompt` may name `{{trigger.type}}`, `{{trigger.summary}}`,
+ * `{{trigger.body}}` and `{{trigger.firedAt}}`; without any, the trigger is
+ * added below it.
+ */
+export type CloudAutomationSpec = {
+  name: string;
+  project: { origin: string };
+  triggers: CloudAutomationTrigger[];
+  sizeId: CloudTierId;
+  chat: { provider: string; modelId: string; effort?: string | null; permissions: string; fast?: boolean; prompt: string };
+  /** A new lane each run, from this branch's pushed copy (the default branch when null). */
+  lane?: { from?: string | null } | null;
+  /** The storm stop (default 6) and whether a run's computer stays after it (default: freed, the lane kept). */
+  limits?: { maxRunsPerHour?: number | null; keepComputer?: boolean | null } | null;
+};
+
+/** `PUT /cloud/automations/:ruleId`, from the brain that saved the cloud home (or saw it drift). */
+export type CloudAutomationRegistration = {
+  /** The account rows' own time for the rule and its home; one older than the server's is ignored. */
+  ruleVersion: string;
+  enabled: boolean;
+  /** No triggered run before this (UTC ms): the old home's lease, when the rule moved here from a computer. */
+  startsAt?: number | null;
+  spec: CloudAutomationSpec;
+};
+
+export type CloudAutomationRegistered = {
+  ruleId: string;
+  /** False when the server already had this version (nothing was written). */
+  changed: boolean;
+  /** False when the server holds a newer version (this one was ignored). */
+  current: boolean;
+  nextFireAt: number | null;
+  /**
+   * For a webhook rule: where the webhook relay forwards its deliveries, and
+   * the key it signs them with. The registering brain hands both to the
+   * relay (`POST /hooks/forward`) and keeps neither.
+   */
+  forward: { hookId: string; url: string; secret: string } | null;
+};
+
+/**
+ * - `queued`: waiting for the rule's run before it (one waits at most).
+ * - `starting`: its computer is being made.
+ * - `running`: its chat runs on its computer.
+ * - `finishing`: the chat ended; the server pushes its work and frees the computer.
+ * - `done`, `failed`: ended; `reason` says why it failed.
+ * - `skipped`: never started (another run was waiting, the storm stop, a missed schedule).
+ */
+export type CloudAutomationRunState = "queued" | "starting" | "running" | "finishing" | "done" | "failed" | "skipped";
+
+export type CloudAutomationRun = {
+  runId: string;
+  ruleId: string;
+  trigger: { kind: CloudAutomationTrigger["kind"]; summary: string | null };
+  state: CloudAutomationRunState;
+  reason: string | null;
+  laneId: string | null;
+  instanceId: string | null;
+  /** The run's computer after it: `freed` (its lane kept), `kept` (why in `reason`), or null. */
+  computer: "freed" | "kept" | null;
+  startedAt: number | null;
+  endedAt: number | null;
+  createdAt: number;
+};
+
+export type CloudAutomationSummary = {
+  ruleId: string;
+  name: string;
+  projectOrigin: string;
+  enabled: boolean;
+  /** `storm`: paused after too many runs in an hour; saving the rule again turns it back on. */
+  pausedReason: "storm" | null;
+  ruleVersion: string;
+  nextFireAt: number | null;
+  runs: CloudAutomationRun[];
 };

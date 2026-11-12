@@ -1,5 +1,6 @@
 import { runCloudWakes } from "./cloudWake";
-import { handleCloudRequest, isCloudRequest } from "./cloud/routes";
+import { createComputer, handleCloudRequest, isCloudRequest } from "./cloud/routes";
+import { runCloudAutomations } from "./cloud/automations";
 import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
 import { expireCloudLaunches } from "./cloud/launches";
@@ -185,6 +186,17 @@ export default Sentry.withSentry(sentryOptions, {
         // The server launcher's records past their week (and a draft's day),
         // with their files. One indexed read when none is due.
         settle("cloud_launches", () => expireCloudLaunches(env)),
+        // Automations whose home is ADE Cloud: due schedules and runs that need
+        // the server, in one indexed read; nothing more when none is due.
+        settle("cloud_automations", async () => {
+          const key = env.AGENT37_API_KEY?.trim();
+          const provider = key ? createCloudProvider(key) : null;
+          const waitUntil = (promise: Promise<unknown>) => ctx.waitUntil(promise);
+          await runCloudAutomations(env, {
+            provider,
+            createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, { now: Date.now(), waitUntil }),
+          });
+        }),
         // "Delete the project's cloud computers" jobs: a few computers a tick.
         // One indexed read when no job waits.
         settle("cloud_project_deletes", async () => {

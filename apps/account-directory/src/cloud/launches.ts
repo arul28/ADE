@@ -83,6 +83,14 @@ export type LaunchRouteDeps = {
   provider: CloudProvider | null;
   now: number;
   createComputer: (userId: string, provider: CloudProvider, extras: CreateComputerExtras) => Promise<CreateComputerOutcome>;
+  /**
+   * C4 on the server: refuses a start for a repository a new computer couldn't
+   * clone (`serverGitCheck`). Left out, nothing is checked (an automation's run
+   * checked what it could when its rule was registered).
+   */
+  gitCheck?: (origin: string) => Promise<{ ok: true } | { ok: false; message: string }>;
+  /** Told after the computer wrote progress or the launch was cancelled (an automation's run follows its launch). */
+  onProgress?: (record: CloudLaunchRecord) => Promise<void>;
 };
 
 const UUID = UUID_PATTERN;
@@ -307,6 +315,16 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const parsed = parseLaunchRequest(body);
   if (typeof parsed === "string") return badRequest(parsed);
+  return await startServerLaunch(env, userId, parsed, deps);
+}
+
+/**
+ * Starts one launch, as `POST /cloud/launches` does: for the route, and for
+ * an automation's run (C9) with no request. The same checks, the same one
+ * create path; 201 for a computer this call made, 200 for a launch that was
+ * already started, or the refusal.
+ */
+export async function startServerLaunch(env: CloudEnv, userId: string, parsed: CloudServerLaunchRequest, deps: LaunchRouteDeps): Promise<Response> {
   const { now } = deps;
   const launchId = parsed.launchId;
 
@@ -323,6 +341,15 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
   if (!env.CLOUD_LAUNCH_JOIN_KEY?.trim()) {
     reportCloudFailure("cloud.launch_join_key_missing");
     return fail("unavailable", "ADE Cloud can't start a lane here right now. Try again soon.", 503);
+  }
+
+  // A private repository with no git credential that follows the account: refused before anything is made.
+  if (deps.gitCheck) {
+    const git = await deps.gitCheck(parsed.project.origin);
+    if (!git.ok) {
+      logCloud("cloud.launch_refused_git", { userId, launchId });
+      return fail("git_credential_missing", git.message, 403);
+    }
   }
 
   // Files first: each one named must already be here, at the size it says.
@@ -585,11 +612,23 @@ export async function routeLaunches(request: Request, path: string, env: CloudEn
   if (!row) return notFound();
   if (action === undefined) {
     if (request.method === "GET") return json(recordOf(row, deps.now));
-    if (request.method === "DELETE") return handleCancel(env, row, deps);
+    if (request.method === "DELETE") return await followedBy(await handleCancel(env, row, deps), env, launchId, deps);
     return notFound();
   }
-  if (action === "stages" && request.method === "PUT") return handleStages(request, env, row, deps.now);
+  if (action === "stages" && request.method === "PUT") return await followedBy(await handleStages(request, env, row, deps.now), env, launchId, deps);
   return notFound();
+}
+
+/** A write that changed the launch tells `onProgress` (an automation's run). Its failure never fails the write. */
+async function followedBy(response: Response, env: CloudEnv, launchId: string, deps: LaunchRouteDeps): Promise<Response> {
+  if (!deps.onProgress || !response.ok) return response;
+  const row = await readLaunch(env, launchId);
+  if (row) {
+    await deps.onProgress(recordOf(row, deps.now)).catch((error: unknown) => {
+      reportCloudFailure("cloud.launch_progress_follow_failed", { launchId, error: error instanceof Error ? error.message : "unknown" });
+    });
+  }
+  return response;
 }
 
 /* ---- The join: the computer, with no account token ---- */

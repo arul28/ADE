@@ -9,6 +9,8 @@ import { routeReferrals } from "./referrals";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { handleLaunchJoin, isLaunchJoinRequest, routeLaunches } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
+import { serverGitCheck } from "./accountVault";
+import { handleAutomationDelivery, isAutomationDeliveryRequest, noteAutomationLaunchProgress, routeAutomations } from "./automations";
 import { routeProjectComputersDelete } from "./projectComputers";
 import { routeSignIns } from "./signIns";
 import {
@@ -1173,6 +1175,16 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (isLaunchJoinRequest(path, request.method)) {
     return providerCall(() => handleLaunchJoin(request, env, path, { provider: providerFor(env), now: Date.now() }));
   }
+  // The webhook relay's forward of a cloud automation's delivery: the hook's own signature is the proof.
+  if (isAutomationDeliveryRequest(path, request.method)) {
+    const now = Date.now();
+    const provider = providerFor(env);
+    return providerCall(() => handleAutomationDelivery(request, env, path, {
+      provider,
+      now,
+      createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, { now, waitUntil }),
+    }));
+  }
   const caller = await authenticate(request, env);
   if (!caller.ok) {
     return caller.reason === "authentication unavailable"
@@ -1221,7 +1233,18 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   }
   // The server launcher: a launch's record reads with no provider; only the start and a cancel need it.
   if (path === CLOUD_PATHS.launches || path.startsWith(`${CLOUD_PATHS.launches}/`)) {
+    const authorization = request.headers.get("authorization");
     return providerCall(() => routeLaunches(request, path, env, caller.userId, {
+      provider,
+      now,
+      createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, ctx),
+      gitCheck: (origin) => serverGitCheck(env, authorization, origin),
+      onProgress: (record) => noteAutomationLaunchProgress(env, record, { now }),
+    }));
+  }
+  // Automations on ADE Cloud: rows only, except a run's start (Run now), which makes a computer.
+  if (path === CLOUD_PATHS.automations || path.startsWith(`${CLOUD_PATHS.automations}/`)) {
+    return providerCall(() => routeAutomations(request, url, path, env, caller.userId, {
       provider,
       now,
       createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, ctx),
