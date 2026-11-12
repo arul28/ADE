@@ -12810,6 +12810,8 @@ export function registerIpc({
     pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
     remote: runtimeBridge.remoteForMain,
     analytics: productAnalyticsService ?? null,
+    // C4: the account's GitHub sign-in, checked before a computer is made.
+    vaultBridge: createAccountVaultBridge({ ...vaultBridgeOptions, machineFallback: true }),
     logger: getMachineMainLogger(),
   });
 

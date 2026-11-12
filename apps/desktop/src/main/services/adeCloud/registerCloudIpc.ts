@@ -20,6 +20,7 @@ import {
   type CloudInviteRedeemOutcome,
 } from "../../../shared/adeCloud";
 import { type CloudSignInStatus } from "../../../shared/cloudSignIns";
+import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
 import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
 import type { CloudSignInEnd } from "../../../shared/cloudSignIns";
@@ -44,6 +45,7 @@ import {
   watchCloudAccessForSkills,
   type CloudAccessDeps,
 } from "./cloudAccess";
+import { cloudGitPreflight } from "./cloudGitCredential";
 import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { openCloudApprovalWindow } from "./cloudApprovalWindow";
 import { createCloudMachines } from "./cloudMachines";
@@ -203,6 +205,12 @@ export function registerCloudIpc(args: {
     [IPC.cloudSignInSaveKey, "cloud_sign_in_save_key", (arg) => ({ id: arg?.id, key: arg?.key })],
     [IPC.cloudSignInRemove, "cloud_sign_in_remove", (arg) => ({ id: arg?.id })],
   ];
+  // C4 before Send: the account's GitHub sign-in (no pin), else one unauthenticated visibility read.
+  ipcMain.handle(IPC.cloudGitPreflight, async (event, arg?: { originUrl?: unknown }): Promise<CloudGitPreflight | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGitPreflight)) return null;
+    const originUrl = typeof arg?.originUrl === "string" && arg.originUrl.length <= 2_048 ? arg.originUrl : null;
+    return await cloudGitPreflight({ vault: (key) => (credentials.signedIn() ? cloudVaultFromBridge(args.vaultBridge, key) : null) }, originUrl);
+  });
   for (const [channel, action, toArgs] of cloudSignInHandlers) {
     ipcMain.handle(channel, async (event, arg?: Record<string, unknown>): Promise<CloudSignInStatus | null> => {
       if (!isTrustedAdeRendererSenderOrWarn(event, logger, channel)) return null;

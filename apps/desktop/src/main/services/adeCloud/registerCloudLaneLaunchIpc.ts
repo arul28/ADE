@@ -19,6 +19,8 @@ import { sendToAllWindows } from "./broadcast";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { createCloudLaneLaunchService, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
 import { cloudLaneLaunchOutcomes, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
+import { cloudVaultFromBridge } from "./cloudAccess";
+import { cloudGitPreflight } from "./cloudGitCredential";
 
 /** The launch id of an id-based call, or null when the args carry none. */
 function launchIdOf(args: unknown): string | null {
@@ -39,6 +41,12 @@ export function registerCloudLaneLaunchIpc(args: {
   remote: RuntimeBridgeRegistration["remoteForMain"];
   /** How each launch ends, one coarse outcome (cloudLaneAnalytics.ts). */
   analytics?: CloudLaneAnalyticsCapture;
+  /**
+   * The account vault (this computer's brain), for C4: a Send for a private
+   * repository with no GitHub sign-in in the account is refused before any
+   * computer is made. Unset: no check.
+   */
+  vaultBridge?: Parameters<typeof cloudVaultFromBridge>[0];
   logger: Logger;
 }): CloudLaneLaunchService {
   const { remote, logger } = args;
@@ -68,6 +76,7 @@ export function registerCloudLaneLaunchIpc(args: {
     listProjects: (targetId) => remote.projects(targetId),
     defaultParentDir: (targetId) => remote.defaultParentDir(targetId),
     cloneProject: (targetId, input) => remote.cloneProject(targetId, input),
+    ...(args.vaultBridge ? { gitPreflight: (originUrl: string) => cloudGitPreflight({ vault: (key) => cloudVaultFromBridge(args.vaultBridge!, key) }, originUrl) } : {}),
     resolveBinding: (targetId, projectId, rootPath) => remote.resolveBinding(targetId, projectId, rootPath),
     callChatAction: (binding, action, request) => remote.callAction(binding, { domain: "chat", action, ...request }),
     subscribeChatLaunchEvents: (binding, onEvent, onEnded) => remote.subscribeEvents(

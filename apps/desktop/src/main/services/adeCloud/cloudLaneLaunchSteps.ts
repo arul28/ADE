@@ -1,5 +1,6 @@
 import type { CloudAgentMaker } from "../../../shared/adeCloud";
 import { githubRepoOf } from "../../../shared/cloudLaneLaunch";
+import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { DEFAULT_LANE_START } from "../../../shared/laneStart";
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import type {
@@ -65,6 +66,13 @@ export type CloudLaneLaunchDeps = {
   defaultParentDir: (targetId: string) => Promise<string>;
   /** Clones with the computer's own Git sign-in: no credential from this computer goes with it. */
   cloneProject: (targetId: string, input: CloneProjectInput) => Promise<RemoteRuntimeProjectRecord>;
+  /**
+   * Contract C4, at the start, before anything is made: can a new cloud
+   * computer clone this repository (`cloudGitPreflight` in
+   * `cloudGitCredential.ts`)? A refusal ends the start with its words.
+   * Unset: no check.
+   */
+  gitPreflight?: (originUrl: string) => Promise<CloudGitPreflight>;
   resolveBinding: (targetId: string, projectId: string, rootPath: string) => Promise<RemoteBinding>;
   /** One `chat` action on the computer's brain, through its pin. */
   callChatAction: (binding: RemoteBinding, action: string, args: Record<string, unknown>) => Promise<unknown>;

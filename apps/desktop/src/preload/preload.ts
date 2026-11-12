@@ -113,6 +113,7 @@ import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMetho
 import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -13489,6 +13490,8 @@ const adeBridge = {
       read: (args: CloudSavedChatReadArgs): Promise<CloudSavedChatPage | null> => ipcRenderer.invoke(IPC.cloudSavedChatsRead, args),
       delete: (args: CloudSavedChatDeleteArgs): Promise<void> => ipcRenderer.invoke(IPC.cloudSavedChatsDelete, args),
     },
+    /** C4: account-level (the account's GitHub sign-in), so no pin. */
+    gitPreflight: (args: { originUrl: string }): Promise<CloudGitPreflight | null> => ipcRenderer.invoke(IPC.cloudGitPreflight, args),
     cloudSignInStatus: (): Promise<CloudSignInStatus | null> => ipcRenderer.invoke(IPC.cloudSignInStatus),
     cloudSignInClaudeStart: (args?: CloudSignInClaudeStartArgs): Promise<CloudSignInStatus | null> =>
       ipcRenderer.invoke(IPC.cloudSignInClaudeStart, {

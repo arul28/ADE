@@ -27,6 +27,7 @@ import type {
   ChatLaunchStageStatus,
   AgentChatFileRef,
 } from "../../../shared/types";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { getErrorMessage } from "../shared/utils";
 import { CloudCreateCancelled, normalizeCloudMachineName } from "./cloudMachineCreator";
 import { createCloudLaneComputerStages } from "./cloudLaneComputerStages";
@@ -692,6 +693,19 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     const project = githubClone(input.originUrl);
     const cloud = args.cloud;
     if (!project || !cloud) throw new Error("ADE Cloud can't start this launch.");
+    // C4: a private repository needs a GitHub sign-in that follows the
+    // account, checked before any computer is made (and hours spent).
+    if (deps.gitPreflight && input.originUrl) {
+      const git = await deps.gitPreflight(input.originUrl);
+      if (!git.ok) {
+        logger.info("cloud_lane_launch.git_refused", { launchId, reason: git.reason });
+        throw new AdeExpectedError(git.message, "user");
+      }
+      if (git.via === "unknown") logger.warn("cloud_lane_launch.git_check_unknown", { launchId });
+      // A second start of the same launch while GitHub answered: the first one owns it.
+      const raced = records.get(launchId);
+      if (raced) return served(raced);
+    }
     // A chat, a tracked CLI session the launching window starts after the
     // hand-off (as on this computer), or the lane alone.
     const kind = chatLaunchKindOf(args.kind);

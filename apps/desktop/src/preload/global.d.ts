@@ -9,6 +9,7 @@ import type {
 } from "../shared/projectRemoval";
 import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
+import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type {
@@ -4834,6 +4835,12 @@ declare global {
         /** Sleep, wake, resize, back up or delete one box, on the provider. No pin, as above. */
         machineAction?: (args: CloudMachineActionArgs) => Promise<CloudMachineActionResult | null>;
         onStatusChanged?: (cb: () => void) => () => void;
+        /**
+         * C4, before Send: can a new cloud computer clone this repository?
+         * The account's GitHub sign-in, else the repository is public.
+         * Account-level, so no pin. Null from an untrusted sender.
+         */
+        gitPreflight?: (args: { originUrl: string }) => Promise<CloudGitPreflight | null>;
         /**
          * Sign-ins for cloud machines: the provider sign-ins every new cloud
          * machine starts with. Kept in the account vault and run on this

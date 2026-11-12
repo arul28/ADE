@@ -1192,6 +1192,8 @@ export const IPC = {
   cloudCopyMachine: "ade.cloud.copyMachine",
   cloudMoveMachine: "ade.cloud.moveMachine",
   cloudReconnectMachine: "ade.cloud.reconnectMachine",
+  /** C4 before Send: can a new cloud computer clone this repository with the account's GitHub sign-in? Account-level, no pin. */
+  cloudGitPreflight: "ade.cloud.gitPreflight",
   /** Sign-ins for cloud machines: the person's provider sign-ins, given to every new cloud machine. */
   cloudSignInStatus: "ade.cloud.cloudSignInStatus",
   cloudSignInClaudeStart: "ade.cloud.cloudSignInClaudeStart",
