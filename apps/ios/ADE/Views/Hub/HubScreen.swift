@@ -31,6 +31,8 @@ struct HubScreen: View {
   @State private var composerExpanded = false
   @State private var composerSwitchingMachine = false
   @State private var projectOpenFailureToast: ADEToastMessage?
+  /// The account project the Delete sheet is open for.
+  @State private var deleteProjectTarget: AccountProject?
   /// The Hub notice waiting for a covering pane to close.
   @State private var heldHubNoticeId: UUID?
   // Set when a hub chat row is tapped — drives the chat cover (wired in
@@ -107,8 +109,15 @@ struct HubScreen: View {
     .sheet(item: $accountHomeTarget) { target in
       AccountProjectHomeScreen(
         projectId: target.id,
-        onConnectComputer: { syncService.settingsPresented = true }
+        onConnectComputer: { syncService.settingsPresented = true },
+        onRemoved: { text in projectOpenFailureToast = ADEToastMessage(text: text) }
       )
+      .presentationDetents([.medium, .large])
+    }
+    .sheet(item: $deleteProjectTarget) { project in
+      DeleteProjectSheet(project: project) { text in
+        projectOpenFailureToast = ADEToastMessage(text: text)
+      }
       .presentationDetents([.medium, .large])
     }
     .hubChatCover(target: $openChatTarget)
@@ -492,6 +501,8 @@ struct HubScreen: View {
           canChangeIcon: accountOnly == nil && hubCanChangeIcon(for: project),
           canMoveToTop: projectOrder.first != orderKey,
           canForget: accountJoin.accountIdByCardId[project.id] == nil && accountOnly == nil,
+          canRemoveFromADE: accountProjects.governsHub
+            && (accountJoin.accountIdByCardId[project.id] ?? accountOnly?.id) != nil,
           onOpenProject: {
             if let accountOnly {
               accountHomeTarget = HubAccountHomeTarget(id: accountOnly.id)
@@ -505,6 +516,10 @@ struct HubScreen: View {
             // A project that lives only on another machine is forgotten there.
             guard fleetMerge.projectOwners[project.id] == nil else { return }
             syncService.forgetProject(project)
+          },
+          onRemoveFromADE: {
+            guard let id = accountJoin.accountIdByCardId[project.id] ?? accountOnly?.id else { return }
+            deleteProjectTarget = accountProjects.liveProjects.first { $0.id == id }
           }
         )
         .equatable()

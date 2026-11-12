@@ -625,6 +625,8 @@ struct HubCopyRow<Trailing: View>: View {
     .padding(.horizontal, ADEKit.inset)
     .padding(.vertical, 10)
     .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+    // The whole row takes a tap when it is a button's label.
+    .contentShape(Rectangle())
     .accessibilityElement(children: .combine)
   }
 
@@ -802,10 +804,13 @@ enum HubCopyChipHints {
 struct AccountProjectHomeScreen: View {
   let projectId: String
   var onConnectComputer: () -> Void = {}
+  /// The project left the account from this screen; the text is the toast.
+  var onRemoved: (String) -> Void = { _ in }
 
   @ObservedObject private var store = AccountProjectStore.shared
   @ObservedObject private var account = AccountService.shared
   @Environment(\.dismiss) private var dismiss
+  @State private var deletePresented = false
 
   private var project: AccountProject? {
     store.liveProjects.first { $0.id == projectId }
@@ -833,6 +838,15 @@ struct AccountProjectHomeScreen: View {
       .toolbar {
         ToolbarItem(placement: .confirmationAction) {
           Button("Done") { dismiss() }
+        }
+      }
+      .sheet(isPresented: $deletePresented) {
+        if let project {
+          DeleteProjectSheet(project: project) { text in
+            dismiss()
+            onRemoved(text)
+          }
+          .presentationDetents([.medium, .large])
         }
       }
     }
@@ -885,6 +899,16 @@ struct AccountProjectHomeScreen: View {
           }
         }
       }
+
+      Button(role: .destructive) {
+        deletePresented = true
+      } label: {
+        Label("Remove from ADE…", systemImage: "trash")
+          .font(.system(size: 14, weight: .medium))
+          .foregroundStyle(ADEColor.danger)
+      }
+      .buttonStyle(.plain)
+      .padding(.top, 6)
     }
   }
 

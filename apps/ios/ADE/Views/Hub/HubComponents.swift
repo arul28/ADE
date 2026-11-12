@@ -1121,11 +1121,14 @@ struct HubProjectTile: View, Equatable {
   /// project is not hidden that way (removing it from the account is the
   /// Delete flow), so its card has no such item.
   var canForget = true
+  /// An account project: "Remove from ADE…" opens the Delete sheet.
+  var canRemoveFromADE = false
   let onOpenProject: () -> Void
   /// A picked image, already a small PNG, for every machine the project is on.
   let onChangeIcon: (Data) -> Void
   let onMoveToTop: () -> Void
   let onForget: () -> Void
+  var onRemoveFromADE: () -> Void = {}
 
   @State private var iconPickerShown = false
   @State private var pickedIcon: PhotosPickerItem?
@@ -1249,6 +1252,12 @@ struct HubProjectTile: View, Equatable {
           Label("Remove from list", systemImage: "trash")
         }
       }
+      if canRemoveFromADE {
+        Divider()
+        Button(role: .destructive, action: onRemoveFromADE) {
+          Label("Remove from ADE…", systemImage: "trash")
+        }
+      }
     }
     .photosPicker(isPresented: $iconPickerShown, selection: $pickedIcon, matching: .images)
     .onChange(of: pickedIcon) { _, item in
@@ -1279,6 +1288,7 @@ struct HubProjectTile: View, Equatable {
       && lhs.canChangeIcon == rhs.canChangeIcon
       && lhs.canMoveToTop == rhs.canMoveToTop
       && lhs.canForget == rhs.canForget
+      && lhs.canRemoveFromADE == rhs.canRemoveFromADE
   }
 }
 

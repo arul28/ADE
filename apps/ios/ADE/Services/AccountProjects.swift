@@ -57,6 +57,55 @@ struct AccountProjectListResponse: Decodable, Equatable {
   let projects: [AccountProject]
 }
 
+/// One GitHub repository as `POST /account/projects` names it.
+struct AccountProjectIdentity: Encodable, Equatable {
+  let host: String
+  let owner: String
+  let name: String
+  /// `repo:<host>/<owner>/<name>`, lower case (the brain's `githubRepoKey`).
+  let repoKey: String
+  var repoId: Int? = nil
+  var defaultBranch: String? = nil
+
+  init(host: String = "github.com", owner: String, name: String, repoId: Int? = nil, defaultBranch: String? = nil) {
+    self.host = host.lowercased()
+    self.owner = owner
+    self.name = name
+    self.repoKey = "repo:\(host)/\(owner)/\(name)".lowercased()
+    self.repoId = repoId
+    self.defaultBranch = defaultBranch
+  }
+
+  /// The repository of a machine folder, when it has a GitHub remote the
+  /// machine could read. Nil for a folder with no remote or another host.
+  init?(folder: MobileProjectSummary) {
+    guard let owner = folder.repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines), !owner.isEmpty,
+          let name = folder.repoName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty
+    else { return nil }
+    self.init(owner: owner, name: name, repoId: folder.githubRepoId, defaultBranch: folder.defaultBaseRef)
+  }
+}
+
+/// An error answer: `{error: {code, message}}`.
+struct AccountProjectChangeFailure: Decodable {
+  struct Body: Decodable { let message: String? }
+  let error: Body?
+}
+
+/// The answer of an add: the project, and whether it is new to the account,
+/// came back from a removal, or was already there (the folder is a copy).
+struct AccountProjectAddResponse: Decodable, Equatable {
+  let project: AccountProject
+  let created: Bool
+  let revived: Bool
+  let cursor: Int
+}
+
+struct AccountProjectRemoveResponse: Decodable, Equatable {
+  let project: AccountProject
+  let cursor: Int
+}
+
 /// What the Hub remembers about a project from the last machine that showed
 /// it: the account row has no display name or icon.
 struct AccountProjectDisplay: Codable, Equatable {
@@ -187,6 +236,84 @@ struct AccountProjectsClient {
       throw ListError.unsupported
     default:
       throw ListError.server(http.statusCode)
+    }
+  }
+
+  /// A change the account refused or could not make, with the server's own
+  /// sentence when it sent one.
+  struct ChangeError: Error, Equatable {
+    let status: Int?
+    let message: String
+  }
+
+  func add(baseURL: URL, token: String, identity: AccountProjectIdentity,
+           refreshToken: (() async -> String?)? = nil) async throws -> AccountProjectAddResponse {
+    try await change(
+      url: baseURL.appendingPathComponent("account/projects"),
+      body: try JSONEncoder().encode(identity),
+      token: token,
+      refreshToken: refreshToken
+    )
+  }
+
+  func remove(baseURL: URL, token: String, projectId: String,
+              refreshToken: (() async -> String?)? = nil) async throws -> AccountProjectRemoveResponse {
+    try await change(
+      url: baseURL.appendingPathComponent("account/projects").appendingPathComponent(projectId).appendingPathComponent("remove"),
+      body: Data("{}".utf8),
+      token: token,
+      refreshToken: refreshToken
+    )
+  }
+
+  private func change<Response: Decodable>(
+    url: URL,
+    body: Data,
+    token: String,
+    refreshToken: (() async -> String?)?
+  ) async throws -> Response {
+    let correlationID = UUID().uuidString.lowercased()
+    func send(_ accessToken: String) async throws -> (Data, HTTPURLResponse) {
+      var request = URLRequest(url: url)
+      request.httpMethod = "POST"
+      request.httpBody = body
+      request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      request.setValue("application/json", forHTTPHeaderField: "Accept")
+      request.setValue(correlationID, forHTTPHeaderField: "X-ADE-Correlation-ID")
+      request.timeoutInterval = 12
+      do {
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+          throw ChangeError(status: nil, message: "ADE can't reach your account right now. Try again.")
+        }
+        return (data, http)
+      } catch let error as ChangeError {
+        throw error
+      } catch {
+        throw ChangeError(status: nil, message: "ADE can't reach your account right now. Try again.")
+      }
+    }
+    var (data, http) = try await send(token)
+    if http.statusCode == 401,
+       let refreshToken,
+       let refreshed = await refreshToken()?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !refreshed.isEmpty {
+      (data, http) = try await send(refreshed)
+    }
+    guard (200..<300).contains(http.statusCode) else {
+      let message = (try? JSONDecoder().decode(AccountProjectChangeFailure.self, from: data))?.error?.message
+      switch http.statusCode {
+      case 401, 403:
+        throw ChangeError(status: http.statusCode, message: "Sign in to ADE again, then try again.")
+      default:
+        throw ChangeError(status: http.statusCode, message: message ?? "Your ADE account could not make that change. Try again.")
+      }
+    }
+    do {
+      return try JSONDecoder().decode(Response.self, from: data)
+    } catch {
+      throw ChangeError(status: http.statusCode, message: "Your ADE account sent an answer ADE can't read.")
     }
   }
 }
@@ -422,6 +549,64 @@ final class AccountProjectStore: ObservableObject {
       guard userId == requestedUserId else { return }
       recordFailure()
     }
+  }
+
+  /// Adds a repository to the account (or finds it there) and shows the
+  /// answer at once, before the next read; then reads the changes since the
+  /// cursor, so the rest of the list catches up. The cursor itself moves only
+  /// with a read, so no other change is skipped.
+  func add(_ identity: AccountProjectIdentity) async throws -> AccountProjectAddResponse {
+    let response = try await performChange { client, baseURL, token, refresh in
+      try await client.add(baseURL: baseURL, token: token, identity: identity, refreshToken: refresh)
+    }
+    applyChanged(response.project)
+    accountProjectsLog.info("account_projects.added created=\(response.created, privacy: .public) revived=\(response.revived, privacy: .public)")
+    Task { await refresh() }
+    return response
+  }
+
+  /// Removes a project from the account. The Hub hides it at once; the
+  /// folders on the computers stay.
+  func remove(projectId: String) async throws {
+    let response = try await performChange { client, baseURL, token, refresh in
+      try await client.remove(baseURL: baseURL, token: token, projectId: projectId, refreshToken: refresh)
+    }
+    applyChanged(response.project)
+    accountProjectsLog.info("account_projects.removed")
+    Task { await refresh() }
+  }
+
+  private func performChange<Response>(
+    _ call: (AccountProjectsClient, URL, String, @escaping () async -> String?) async throws -> Response
+  ) async throws -> Response {
+    guard let requestedUserId = userId, let baseURL = AccountConfig.directoryBaseURL else {
+      throw AccountProjectsClient.ChangeError(status: nil, message: "Sign in to ADE to change your projects.")
+    }
+    let account = AccountService.shared
+    guard let session = await account.pairingSession(),
+          session.authorization.ownerId == requestedUserId,
+          userId == requestedUserId else {
+      throw AccountProjectsClient.ChangeError(status: nil, message: "Sign in to ADE again, then try again.")
+    }
+    let response = try await call(client, baseURL, session.token) {
+      guard account.isPairingCommitAuthorized(session.authorization) else { return nil }
+      return try? await account.freshRelaySession(expectedAuthorization: session.authorization).token
+    }
+    // An account switch while the call ran: the answer is the old account's.
+    guard userId == requestedUserId, account.isPairingCommitAuthorized(session.authorization) else {
+      throw AccountProjectsClient.ChangeError(status: nil, message: "You switched accounts. Try again.")
+    }
+    return response
+  }
+
+  private func applyChanged(_ project: AccountProject) {
+    var next = state
+    next.rows[project.id] = project
+    publish(state: next, display: display, lastSuccessAt: lastSuccessAt, phase: phase == .loading ? .ready : phase)
+#if DEBUG
+    if isPreviewSeeded { return }
+#endif
+    writeCache()
   }
 
   private func recordFailure() {

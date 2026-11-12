@@ -124,7 +124,7 @@ func startOnCandidateList(
     }
     candidates.append(candidate)
   }
-  for machine in machines where !withCopy.contains(machine.machineKey) {
+  for machine in machines where !withCopy.contains(machine.machineKey) && isAccountComputer(machine) {
     let key = phoneKey(machine)
     let live = key.map(isLive) ?? false
     guard live || awake(machine) else { continue }
@@ -281,6 +281,95 @@ extension SyncService {
       parentDir: parent,
       onMachine: machineKey
     )
+  }
+}
+
+// MARK: - Add project targets
+
+/// A computer Add project can work on: one the phone has a live link to, or
+/// an online account computer that a pick connects first.
+struct ProjectAddTarget: Identifiable, Equatable {
+  /// The phone key when known, else the account machine key.
+  let id: String
+  /// The phone's key for the computer (primary or fleet). Nil until paired.
+  let phoneKey: String?
+  let accountMachineKey: String?
+  let name: String
+  let symbol: String
+  var isLive: Bool
+}
+
+/// Phones and tablets on the account are not computers a project lives on.
+func isAccountComputer(_ machine: AccountMachine) -> Bool {
+  let symbol = machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform)
+  return symbol != "iphone" && symbol != "ipad"
+}
+
+extension SyncService {
+  /// The computers Add project offers: the primary, the other live computers,
+  /// then the online account computers that are not connected.
+  func projectAddTargets() -> [ProjectAddTarget] {
+    let account = AccountService.shared
+    var rows: [ProjectAddTarget] = []
+    var seenAccountKeys = Set<String>()
+    func add(phoneKey: String, name: String) {
+      let accountMachine = account.machine(forFleetKey: phoneKey)
+      if let key = accountMachine?.machineKey { seenAccountKeys.insert(key) }
+      rows.append(ProjectAddTarget(
+        id: phoneKey,
+        phoneKey: phoneKey,
+        accountMachineKey: accountMachine?.machineKey,
+        name: accountMachine?.displayName ?? name,
+        symbol: accountMachine.map { machineDeviceSymbol(deviceType: $0.deviceType, platform: $0.platform) } ?? "desktopcomputer",
+        isLive: true
+      ))
+    }
+    if let focused = focusedMachineKey, connectionState == .connected {
+      add(phoneKey: focused, name: focusedMachineDisplayName)
+    }
+    for machine in machineFleet?.machines ?? [] where machine.state == .live && machine.machineKey != focusedMachineKey {
+      add(phoneKey: machine.machineKey, name: machine.name)
+    }
+    for machine in account.machines where machine.online && isAccountComputer(machine) && !seenAccountKeys.contains(machine.machineKey) {
+      let phoneKey = startOnPhoneKey(for: machine)
+      rows.append(ProjectAddTarget(
+        id: phoneKey ?? machine.machineKey,
+        phoneKey: phoneKey,
+        accountMachineKey: machine.machineKey,
+        name: machine.displayName,
+        symbol: machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform),
+        isLive: false
+      ))
+    }
+    return rows
+  }
+
+  /// The projects a computer the phone has a live link to reports now. Nil
+  /// for a computer with no live link (its last roster is old).
+  func liveRoster(forPhoneKey phoneKey: String) -> [RemoteRosterProject]? {
+    if phoneKey == focusedMachineKey {
+      return connectionState == .connected ? rosterProjects : nil
+    }
+    guard let fleet = machineFleet?.machines.first(where: { $0.machineKey == phoneKey }), fleet.state == .live else { return nil }
+    return fleet.projects
+  }
+
+  /// A live computer already has a folder of this project, though the
+  /// account does not list the copy yet (a project added back after a
+  /// removal lists only the copy that added it).
+  func liveRosterHasFolder(of project: AccountProject, phoneKey: String) -> Bool {
+    guard let roster = liveRoster(forPhoneKey: phoneKey) else { return false }
+    let identity = project.host == "github.com" ? "\(project.owner)/\(project.name)".lowercased() : nil
+    return roster.contains { folder in
+      folder.accountProjectId == project.id
+        || (identity != nil && hubGitHubRepoIdentity(originUrl: folder.repoOriginUrl) == identity)
+    }
+  }
+
+  /// The `onMachine` value for a phone key: nil for the primary.
+  func machineCallKey(_ phoneKey: String?) -> String? {
+    guard let phoneKey, phoneKey != focusedMachineKey else { return nil }
+    return phoneKey
   }
 }
 
