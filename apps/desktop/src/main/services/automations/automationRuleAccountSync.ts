@@ -527,9 +527,10 @@ export function createAutomationRuleAccountSync(args: {
       const staysOnCloud = !options.home && isAdeCloudHome(existing?.rule.home);
       let rule = saved;
       if (toCloud || staysOnCloud) {
-        if (isChatScopedAutomationRule(saved) || !store.scope()) {
-          throw new Error("Only a rule in a repository with a GitHub remote can run on ADE Cloud.");
+        if (isChatScopedAutomationRule(saved)) {
+          throw new Error("This rule belongs to one chat, which lives on its computer, so it can't run on ADE Cloud.");
         }
+        if (!store.scope()) throw new Error("Only a rule in a repository with a GitHub remote can run on ADE Cloud.");
         rule = forCloudHome(saved);
         const problem = automationCloudHomeProblem(rule);
         if (problem) throw new Error(problem);
