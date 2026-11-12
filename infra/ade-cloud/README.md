@@ -34,6 +34,22 @@ the ADE brain.
   platform-tools, emulator, cmdline-tools, the API 34 x86_64 image). The
   entrypoint sets `ANDROID_HOME`, and the root step gives `/dev/kvm` to group
   `node`. A box has no `/dev/kvm` and never uses it.
+- The agents the baked ADE pins, read-only in `/opt/ade-tools` (the tools
+  cache's own layout), installed by that ADE's `ade tools ensure`: by default
+  `codex claude-code opencode` (build arg `ADE_BAKED_TOOLS`, or the
+  `ADE_BAKED_TOOLS` env of `build-template.sh`). Each installs alone first; one
+  that would take the image's files past `ADE_IMAGE_MAX_BYTES` (7.5 GB, under
+  the 8 GB image cap) or fails to download is left out with a line in the
+  build log, and downloads on first use instead. The brain uses a baked copy
+  only while its version is the pin (`ADE_TOOLS_BAKED_ROOTS`).
+- `/var/cache/ade` (owned by `node`) on the system layer for what ADE can
+  rebuild: agents downloaded later (`ADE_SYSTEM_CACHE_ROOT`, about 7 GB
+  budget `ADE_SYSTEM_CACHE_BUDGET_BYTES`, least recently used out first,
+  overflow to `/home/node/.ade/tools`) and the npm, pip and yarn caches
+  (`npm_config_cache`, `PIP_CACHE_DIR`, `YARN_CACHE_FOLDER`).
+  `ADE_TOOLS_PREFETCH=used` keeps the brain's startup fetch to agents this
+  computer ran. An image update resets the folder to empty, and each agent
+  downloads again on its first use, so there is no `post-image-update.sh`.
 - A move to another machine pauses the brain while its home is copied: the
   entrypoint's loop waits while `$ADE_HOME/brain.paused` exists.
 - The entrypoint's loop is the brain's supervisor (the box has no systemd).

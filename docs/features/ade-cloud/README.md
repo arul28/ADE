@@ -663,6 +663,22 @@ this computer" moves one computer to it (`updateInstance`).
 On first boot a new machine installs the ADE version of the app that made it,
 when the image's ADE is older.
 
+Agent programs stay off the person's disk. `/home/node` is the billed disk;
+everything else is the provider's unbilled system layer, which an image update
+resets. The image bakes the agents its own ADE pins (by default Codex, Claude
+Code and OpenCode) read-only into `/opt/ade-tools`, so a lane's first turn on
+them downloads nothing. Any other agent, or a newer pin after `ade brain
+update`, downloads on its first use into `/var/cache/ade/tools` on the system
+layer, within about 7 GB for that folder (package caches for npm, pip and yarn
+live there too), least recently used out first; only what cannot fit goes to
+`/home/node/.ade/tools`. The brain reads all of this from the image's
+environment (`ADE_TOOLS_BAKED_ROOTS`, `ADE_SYSTEM_CACHE_ROOT`,
+`ADE_SYSTEM_CACHE_BUDGET_BYTES`), and with `ADE_TOOLS_PREFETCH=used` it fetches
+at startup only agents this computer ran, never every agent whose sign-in was
+copied over. A status read, a model list or a sign-in check never downloads an
+agent on any machine: only a turn (or the person's Download) does. See
+[Agent tools cache](../onboarding-and-settings/agent-tools-cache.md#cache-layout-on-disk).
+
 ## Updates
 
 Cloud computers update themselves: image and ADE together, onto their

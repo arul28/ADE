@@ -76,13 +76,67 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && { rm -rf /var/lib/apt/lists/* /root/.android "$sdk/.temp" || true; } \
  && chmod -R a+rX "$sdk"
 
+# The agents this ADE release pins, baked in read-only under /opt/ade-tools
+# (the tools cache's own layout), so a lane's first turn on Codex, Claude or
+# OpenCode downloads nothing. They are exactly the versions the ADE above pins:
+# `ade tools ensure` installs its own manifest. ADE uses a baked copy only
+# while its version is the pin, so an `ade brain update` past this image
+# downloads the new pin instead (onto the system layer, below).
+#
+# Last of the big steps, so the size check sees the whole image: a tool that
+# would take the image's files past ADE_IMAGE_MAX_BYTES (under the 8 GB image
+# cap) is left out, and a tool whose download fails is left out too; either
+# way the lane downloads it on first use. Each tool installs alone first, so
+# its size is known before it joins the image.
+ARG ADE_BAKED_TOOLS="codex claude-code opencode"
+ARG ADE_IMAGE_MAX_BYTES=7500000000
+RUN set -eu; baked=/opt/ade-tools; scratch=/tmp/ade-bake; mkdir -p "$baked"; \
+    for tool in $ADE_BAKED_TOOLS; do \
+      root="$scratch/$tool"; \
+      if ! HOME="$scratch/home" ADE_HOME="$scratch/home/.ade" ADE_TOOLS_ROOT="$root" \
+           ade tools ensure "$tool" > "$scratch.log" 2>&1 \
+         || [ -z "$(find "$root" -name .install-complete 2>/dev/null | head -n 1)" ]; then \
+        echo "bake: $tool did not install; it downloads on first use" >&2; cat "$scratch.log" >&2 || true; \
+        rm -rf "$root"; continue; \
+      fi; \
+      rm -rf "$root/.staging" "$root/.locks" "$root"/.*.json; \
+      tool_kb=$(du -sk "$root" | cut -f1); \
+      image_kb=$(du -sxk --exclude="$scratch" / 2>/dev/null | cut -f1); \
+      if [ $(( (image_kb + tool_kb) * 1024 )) -gt "$ADE_IMAGE_MAX_BYTES" ]; then \
+        echo "bake: $tool ($tool_kb KB) would take the image past $ADE_IMAGE_MAX_BYTES bytes; left out" >&2; \
+        rm -rf "$root"; continue; \
+      fi; \
+      cp -a "$root/." "$baked/"; rm -rf "$root"; \
+      echo "bake: $tool baked ($tool_kb KB; image now about $(( (image_kb + tool_kb) / 1024 )) MB)"; \
+    done; \
+    rm -rf "$scratch" "$scratch.log"; chmod -R a+rX "$baked"; \
+    # The system layer's cache folder (see ADE_SYSTEM_CACHE_ROOT below).
+    mkdir -p /var/cache/ade/tools && chown -R node:node /var/cache/ade
+
 COPY ade-entrypoint.sh /usr/local/bin/ade-entrypoint.sh
 RUN chmod 755 /usr/local/bin/ade-entrypoint.sh
 
 USER node
 WORKDIR /home/node
+# Where ADE keeps what it can rebuild, read by the brain (tools/paths.ts) and
+# the package managers the lane runs. /home/node is the person's billed disk;
+# everything outside it is the provider's unbilled system layer, which an
+# image update resets. So: the baked agents first; agents downloaded later and
+# package caches on the system layer within ~7 GB of its 10 GB (least recently
+# used out first), falling back to /home/node only when that cannot fit. After
+# an image update the folder starts empty and each agent downloads again on
+# its first use, so nothing needs restoring (no post-image-update hook).
+# ADE_TOOLS_PREFETCH=used: the brain fetches at startup only the agents this
+# computer ran, never every agent whose sign-in was copied here.
 ENV ADE_HOME=/home/node/.ade \
     ADE_RUNTIME_ROOT=/opt/ade/runtime/linux-x64 \
     ADE_RUNTIME_NODE_MODULES=/opt/ade/runtime/linux-x64/node_modules \
-    NODE_PATH=/opt/ade/runtime/linux-x64/node_modules
+    NODE_PATH=/opt/ade/runtime/linux-x64/node_modules \
+    ADE_TOOLS_BAKED_ROOTS=/opt/ade-tools \
+    ADE_SYSTEM_CACHE_ROOT=/var/cache/ade \
+    ADE_SYSTEM_CACHE_BUDGET_BYTES=7000000000 \
+    ADE_TOOLS_PREFETCH=used \
+    npm_config_cache=/var/cache/ade/npm \
+    PIP_CACHE_DIR=/var/cache/ade/pip \
+    YARN_CACHE_FOLDER=/var/cache/ade/yarn
 ENTRYPOINT ["tini", "--", "/usr/local/bin/ade-entrypoint.sh"]
