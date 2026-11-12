@@ -2810,6 +2810,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         laneAppControl={options?.laneAppControl ?? (showLaneIdentity && !foreignRow && laneToolUse.appControl.has(session.laneId))}
         laneBrowserTabs={options?.laneBrowserTabs ?? (showLaneIdentity && !foreignRow ? laneToolUse.browserTabs.get(session.laneId) : 0) ?? 0}
         suppressMachineChip={options?.suppressMachineChip}
+        machineNamed={listShowsSeveralComputers}
         suppressStatusLabel={options?.suppressStatusLabel}
         subagentMark={options?.subagentMark ?? null}
         deltaEnabled={!foreignRow}

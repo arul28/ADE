@@ -528,6 +528,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   laneAppControl = false,
   laneBrowserTabs = 0,
   suppressMachineChip = false,
+  machineNamed = false,
   suppressStatusLabel = false,
   subagentMark = null,
   subagentBusy = false,
@@ -632,6 +633,12 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
    * whose header renders a machine marker.
    */
   suppressMachineChip?: boolean;
+  /**
+   * Lanes from several computers are on screen: this card stands in for its
+   * lane header, so it names an online machine as the header would
+   * (`LaneMachineMarker` with `named`).
+   */
+  machineNamed?: boolean;
   /**
    * Drop the status WORD from the row face, keeping the slot's hover actions.
    *
@@ -928,7 +935,21 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
      so badging every other machine's row was noise, and relative to the tab's
      binding it even badged this computer's own sessions. The glyph survives
      only where it explains something: rows that went quiet and can't act. */
-  const machineGlyph = machineMarker && isMachineMarkerShown(machineMarker) && !suppressMachineChip ? (
+  const machineNameChip = machineMarker && !isMachineMarkerShown(machineMarker) && machineNamed && !suppressMachineChip ? (
+    <span
+      data-session-machine={machineMarker.machineName}
+      data-machine-id={machineMarker.machineId}
+      data-machine-online="true"
+      data-machine-marker-mode="name"
+      role="img"
+      aria-label={`On ${machineMarker.machineName}`}
+      className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-fg/[0.10] bg-fg/[0.04] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/75"
+    >
+      <DesktopTower size={10} weight="duotone" className="shrink-0 text-muted-fg/60" aria-hidden />
+      <span className="max-w-28 truncate">{machineMarker.machineName}</span>
+    </span>
+  ) : null;
+  const machineGlyph = machineNameChip ?? (machineMarker && isMachineMarkerShown(machineMarker) && !suppressMachineChip ? (
     <span
       data-session-machine={machineMarker.machineName}
       data-machine-id={machineMarker.machineId}
@@ -943,7 +964,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     >
       <DesktopTower size={10} weight="duotone" className="shrink-0 text-muted-fg/45" aria-hidden />
     </span>
-  ) : null;
+  ) : null);
 
   const cloudName = laneCloud === "devin" ? "Devin Cloud" : laneCloud === "cursor" ? "Cursor Cloud" : null;
   const cloudGlyph = cloudName ? (

@@ -102,11 +102,13 @@ export function ProjectCopiesMenu({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose, open, ref]);
 
-  // Keyboard users land on the first choice once the menu is placed.
+  // Keyboard users land on the first choice once the menu is placed. Never on
+  // "Remove project…": an Enter right after opening must not start a remove.
+  // With no other choice nothing takes focus, and the arrows still reach it.
   useEffect(() => {
     if (!open || !position || focusedOnOpenRef.current) return;
     focusedOnOpenRef.current = true;
-    ref.current?.querySelector<HTMLButtonElement>("button[role=menuitem]:not([disabled])")?.focus();
+    ref.current?.querySelector<HTMLButtonElement>("button[role=menuitem]:not([disabled]):not([data-destructive])")?.focus();
   }, [open, position, ref]);
 
   if (!menu) return null;
@@ -187,6 +189,7 @@ export function ProjectCopiesMenu({
           <button
             type="button"
             role="menuitem"
+            data-destructive="true"
             className={ROW_CLASS}
             onClick={() => {
               onClose();
@@ -217,7 +220,9 @@ function CopyRow({
 }) {
   const { machine, copy, inUse } = row;
   const name = (
-    <span className="inline-flex w-[104px] shrink-0 items-center gap-1.5 truncate">
+    // The machine is what the person picks: its name keeps up to 45% of the
+    // row, and the path gives way first.
+    <span className="inline-flex min-w-0 max-w-[45%] shrink-0 items-center gap-1.5" title={machine.name}>
       <Desktop size={12} weight="regular" aria-hidden className="shrink-0 opacity-70" />
       <span className="truncate">{machine.name}</span>
     </span>
@@ -256,9 +261,9 @@ function CopyRow({
         title={job.failure?.detail}
         onClick={() => retryCopyJob(job.key)}
       >
-        <XCircle size={12} weight="fill" aria-hidden className="shrink-0 text-red-300" />
+        <XCircle size={12} weight="fill" aria-hidden className="shrink-0 text-[color:var(--kit-crit)]" />
         {name}
-        <span className="min-w-0 flex-1 truncate text-red-300/90">{job.failure?.reason ?? "Couldn't add the copy"}</span>
+        <span className="min-w-0 flex-1 truncate text-[color:var(--kit-crit)]">{job.failure?.reason ?? "Couldn't add the copy"}</span>
         {trailing("Retry")}
       </button>
     );
