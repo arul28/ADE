@@ -29,7 +29,12 @@ type IndexState = {
   computers: readonly AdeCloudLaneComputer[];
   /** True once a read (or the saved copy) filled it. */
   known: boolean;
+  /** When a read in this window last filled it (the saved copy doesn't count), or null. */
+  readAtMs: number | null;
 };
+
+/** How long a read of the account's computers is fresh enough to call a computer missing from it deleted. */
+const FRESH_LANE_INDEX_MS = 10 * 60_000;
 
 let state: IndexState = readSaved();
 const listeners = new Set<() => void>();
@@ -37,10 +42,10 @@ const listeners = new Set<() => void>();
 function readSaved(): IndexState {
   try {
     const raw = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
-    if (!raw) return { computers: [], known: false };
-    return { computers: parseSavedLaneComputers(JSON.parse(raw) as unknown), known: true };
+    if (!raw) return { computers: [], known: false, readAtMs: null };
+    return { computers: parseSavedLaneComputers(JSON.parse(raw) as unknown), known: true, readAtMs: null };
   } catch {
-    return { computers: [], known: false };
+    return { computers: [], known: false, readAtMs: null };
   }
 }
 
@@ -60,8 +65,13 @@ export function noteCloudLaneMachines(machines: readonly CloudMachine[]): void {
 }
 
 function noteCloudLaneComputers(computers: readonly AdeCloudLaneComputer[]): void {
-  if (state.known && signature(computers) === signature(state.computers)) return;
-  state = { computers, known: true };
+  const readAtMs = Date.now();
+  if (state.known && signature(computers) === signature(state.computers)) {
+    // Same list: fresher, but nothing for a listener to redraw.
+    state = { ...state, readAtMs };
+    return;
+  }
+  state = { computers, known: true, readAtMs };
   try {
     window.localStorage.setItem(STORAGE_KEY, savedLaneComputerRows(computers));
   } catch {
@@ -92,9 +102,13 @@ export function adeCloudLaneComputersNow(): readonly AdeCloudLaneComputer[] {
   return state.computers;
 }
 
-/** Whether any read (or the saved copy) filled the list: only then does a missing lane computer mean anything. */
-export function cloudLaneIndexKnown(): boolean {
-  return state.known;
+/**
+ * Whether this window read the account's computers in the last few minutes:
+ * only then may a computer missing from the index be called deleted. The saved
+ * copy from an earlier run, or an old read, can miss a computer made since.
+ */
+export function cloudLaneIndexFresh(nowMs: number = Date.now()): boolean {
+  return state.readAtMs != null && nowMs - state.readAtMs < FRESH_LANE_INDEX_MS;
 }
 
 /** The lane computers as last read, and whether any read filled the list yet. */

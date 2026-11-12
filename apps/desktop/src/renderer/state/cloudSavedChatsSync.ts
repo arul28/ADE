@@ -13,7 +13,7 @@ import { isRuntimeTransportTimeoutError } from "../../shared/runtimeErrors";
 import { sessionTurnLive } from "../../shared/sessionStatusPresentation";
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../shared/wokenMachine";
 import { rootAppStoreApi } from "./appStore";
-import { adeCloudLaneComputerForMachine, adeCloudLaneComputersNow, cloudLaneIndexKnown } from "./adeCloudLaneIndex";
+import { adeCloudLaneComputerForMachine, adeCloudLaneComputersNow, cloudLaneIndexFresh } from "./adeCloudLaneIndex";
 import { sameMachineKey } from "../../shared/machineAddress";
 import { projectPinOnMachine } from "../lib/machineConnect";
 import { MachineConnectError } from "../../shared/machineAddress";
@@ -175,13 +175,14 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     const machineFacts = new Map<string, { connection: RemoteRuntimeConnectionStatus | null; gone: boolean; name: string | null }>();
     for (const [machineKey, rows] of byMachine) {
       const connection = connectionFor(context.connections, machineKey, rows[0]!.instanceId);
-      // Gone only when the account says so: the computer list doesn't have it,
-      // or a reach found it off the account. No connection on THIS desktop is
-      // not gone: another desktop made it, and a send reaches it by its key.
+      // Gone only when the account says so: the computer list doesn't have it
+      // (the live list, or a read of it in the last few minutes), or a reach
+      // found it off the account. No connection on THIS desktop is not gone:
+      // another desktop made it, and a send reaches it by its key.
       const box = cloudBoxes ? cloudBoxForMachine(cloudBoxes, { machineKey, hostname: rows[0]!.instanceId }) : null;
       const laneComputer = adeCloudLaneComputerForMachine({ machineKey, hostname: rows[0]!.instanceId });
       const gone = goneMachineKeys.has(machineKey.toLowerCase())
-        || (cloudBoxes != null ? !box : !connection && cloudLaneIndexKnown() && !laneComputer);
+        || (cloudBoxes != null ? !box : !connection && cloudLaneIndexFresh() && !laneComputer);
       machineFacts.set(machineKey, { connection, gone, name: box?.name ?? laneComputer?.laneName ?? null });
     }
     // One computer shows each chat. After a move, the new computer saves the
