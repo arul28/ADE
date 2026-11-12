@@ -259,9 +259,11 @@ export function createFederatedWebAdapter({
     };
   };
 
+  // A member that hands back an unsubscribe. `lanes.rebaseSubscribe` ends in
+  // the word; a Promise from it would become an effect's cleanup and crash.
   const isSubscriptionMember = (path: PropertyKey[]): boolean => {
     const member = String(path[path.length - 1] ?? "");
-    return /^on[A-Z]/.test(member) || /^subscribe/.test(member);
+    return /^on[A-Z]/.test(member) || /^subscribe/.test(member) || /Subscribe$/.test(member);
   };
 
   const setCurrentAdapter = (adapter: AdeWebAdapter) => {
