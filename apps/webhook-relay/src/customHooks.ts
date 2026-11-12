@@ -87,7 +87,7 @@ const HOOK_FORWARD_DIRECTORIES: Record<string, "ACCOUNT_DIRECTORY" | "ACCOUNT_DI
   "https://ade-account-directory.arulsharma1028.workers.dev": "ACCOUNT_DIRECTORY",
 };
 const HOOK_FORWARD_ORIGINS = Object.keys(HOOK_FORWARD_DIRECTORIES);
-const HOOK_FORWARD_PATH = /^\/cloud\/automations\/[A-Za-z0-9][A-Za-z0-9._-]{0,150}\/deliveries$/;
+const HOOK_FORWARD_PATH = /^\/cloud\/automations\/[A-Za-z0-9][A-Za-z0-9._-]{0,150}\/deliveries\/[A-Za-z0-9_-]{1,200}$/;
 const HOOK_FORWARD_TIMEOUT_MS = 25_000;
 /** Held deliveries one pass forwards for one hook, oldest first. */
 const HOOK_FORWARDS_PER_PASS = 10;
@@ -135,11 +135,12 @@ async function refusalCode(response: Response): Promise<string | null> {
 /**
  * One delivery to the directory: `sent` (and deleted here), `gone` (the rule
  * left ADE Cloud), `dropped` (the directory will never take this one: it is
- * too large, unreadable, or signed with a key it no longer derives; deleted
- * here so the deliveries behind it go on), or `later` (5xx, 429, a stale
- * signature, the network).
+ * too large or unreadable; deleted here so the deliveries behind it go on),
+ * `skipped` (signed with a key the directory no longer derives: kept until the
+ * brain points the hook again or the hold ends, and the next one goes on), or
+ * `later` (5xx, 429, a stale signature, the network).
  */
-async function forwardOne(env: RelayEnv, hook: Required<Pick<CustomHookRow, "hook_id" | "forward_url" | "forward_secret">>, row: CustomHookEventRow): Promise<"sent" | "gone" | "dropped" | "later"> {
+async function forwardOne(env: RelayEnv, hook: Required<Pick<CustomHookRow, "hook_id" | "forward_url" | "forward_secret">>, row: CustomHookEventRow): Promise<"sent" | "gone" | "dropped" | "skipped" | "later"> {
   const body = JSON.stringify(hookRowToEvent(row));
   const timestamp = String(Date.now());
   try {
@@ -163,7 +164,14 @@ async function forwardOne(env: RelayEnv, hook: Required<Pick<CustomHookRow, "hoo
       return "sent";
     }
     if (response.status === 410) return "gone";
-    if (response.status === 400 || response.status === 413 || (response.status === 401 && code === "signature_refused")) {
+    if (response.status === 401 && code === "signature_refused") {
+      // This relay's key for the hook is out of date (the directory's key was
+      // rotated, or the rule was registered again): kept, so it lands once the
+      // brain points the hook again, until the hold ends. Later ones go on.
+      console.warn(JSON.stringify({ kind: "hook_forward_key_refused", status: response.status }));
+      return "skipped";
+    }
+    if (response.status === 400 || response.status === 413) {
       // Final for this delivery: sending it again gets the same answer, and it would hold every later one behind it.
       await env.DB.prepare("delete from custom_hook_events where event_id = ? and hook_id = ?").bind(row.event_id, hook.hook_id).run();
       const fields = { kind: "hook_forward_dropped", status: response.status, code };

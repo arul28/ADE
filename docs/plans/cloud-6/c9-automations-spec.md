@@ -32,7 +32,7 @@ each run through the C6 server launcher.
   account was out of hours): one catch-up run when the miss is under an hour old, else skipped and
   recorded.
 - **Custom webhooks.** For a cloud-homed rule, the hook is registered with the webhook relay with a
-  forward target: on each delivery the relay calls `POST /cloud/automations/:ruleId/deliveries` on
+  forward target: on each delivery the relay calls `POST /cloud/automations/:ruleId/deliveries/:userId` on
   the account directory, signed with a per-hook HMAC key. The directory derives that key from its
   own `CLOUD_CHAT_MASTER_KEY` and a random salt (its D1 holds only the salt; the relay keeps the
   derived key to sign with), so there is no new Cloudflare secret. The relay reaches the directory

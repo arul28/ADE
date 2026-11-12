@@ -238,23 +238,7 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
     return;
   }
   const hold = deps.hold ?? (<T>(run: () => Promise<T>) => run());
-
-  const report: ReportStages = async (update) => {
-    const api = deps.api();
-    if (!api) {
-      logger.warn("cloud_boot_launch.report_failed", { launchId, error: "no account server" });
-      return false;
-    }
-    try {
-      await api.reportLaunchStages(launchId, update);
-      return true;
-    } catch (error) {
-      // The server's own no (a closed or finished launch) is final: sending it again changes nothing.
-      const final = error instanceof CloudApiError && error.status >= 400 && error.status < 500 && !RETRYABLE_STATUSES.has(error.status);
-      logger.warn("cloud_boot_launch.report_failed", { launchId, final, error: errorText(error) });
-      return final;
-    }
-  };
+  const report = stageReporter(deps);
 
   if (known?.phase === "handed_off" && known.projectId) {
     await follow(deps, known.projectId, report);
@@ -348,11 +332,36 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
  * ADE Cloud knows to save its chats, push its work and free the computer.
  * Any other launch, or a run already reported, writes nothing.
  */
+/** Sends one stage update; true when it landed, or the server refused it for good. */
+function stageReporter(deps: CloudBootLaunchDeps): ReportStages {
+  const { launchId, logger } = deps;
+  return async (update) => {
+    const api = deps.api();
+    if (!api) {
+      logger.warn("cloud_boot_launch.report_failed", { launchId, error: "no account server" });
+      return false;
+    }
+    try {
+      await api.reportLaunchStages(launchId, update);
+      return true;
+    } catch (error) {
+      // The server's own no (a closed or finished launch) is final: sending it again changes nothing.
+      const final = error instanceof CloudApiError && error.status >= 400 && error.status < 500 && !RETRYABLE_STATUSES.has(error.status);
+      logger.warn("cloud_boot_launch.report_failed", { launchId, final, error: errorText(error) });
+      return final;
+    }
+  };
+}
+
 async function reportAutomationRunEnd(deps: CloudBootLaunchDeps, projectId: string): Promise<void> {
   const { launchId, logger } = deps;
   const api = deps.api();
   if (!api || !deps.waitForChatEnd) return;
-  const record = await api.launchStatus(launchId).catch(() => null);
+  const record = await api.launchStatus(launchId).catch((error: unknown) => {
+    // Unread, the run would hold its computer until the server's stop limit: say why.
+    logger.warn("cloud_boot_launch.automation_run_status_failed", { launchId, error: errorText(error) });
+    return null;
+  });
   if (!record || record.request?.madeBy?.kind !== "automation" || record.state !== "done" || !record.sessionId) return;
   if (record.stages.some((stage) => stage.id === CLOUD_AUTOMATION_RUN_STAGE && (stage.status === "done" || stage.status === "failed"))) return;
   const end = await deps.waitForChatEnd(projectId, record.sessionId).catch((error: unknown) => ({
@@ -361,12 +370,11 @@ async function reportAutomationRunEnd(deps: CloudBootLaunchDeps, projectId: stri
   }));
   const runStage: CloudLaunchStage = { id: CLOUD_AUTOMATION_RUN_STAGE, status: end.ok ? "done" : "failed", error: end.ok ? null : end.error ?? "The run's chat stopped with an error." };
   const stages = [...record.stages.filter((stage) => stage.id !== CLOUD_AUTOMATION_RUN_STAGE).slice(-(CLOUD_LAUNCH_MAX_STAGES - 1)), runStage];
-  try {
-    await api.reportLaunchStages(launchId, { stages, ...(end.ok ? {} : { error: runStage.error }) });
-    logger.info("cloud_boot_launch.automation_run_ended", { launchId, ok: end.ok });
-  } catch (error) {
-    logger.warn("cloud_boot_launch.automation_run_end_report_failed", { launchId, error: error instanceof Error ? error.message : String(error) });
-  }
+  // The launch is `done`, and a `done` launch takes only `done` again (launches.ts `handleStages`).
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const landed = await reportFinal(stageReporter(deps), { state: "done", stages, ...(end.ok ? {} : { error: runStage.error }) }, sleep);
+  if (landed) logger.info("cloud_boot_launch.automation_run_ended", { launchId, ok: end.ok });
+  else logger.warn("cloud_boot_launch.automation_run_end_report_failed", { launchId });
 }
 
 /**

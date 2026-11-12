@@ -475,7 +475,9 @@ async function forwardOf(env: RelayEnv, row: RuleRow, origin: string): Promise<C
   if (!key || !row.hook_id) return null;
   return {
     hookId: row.hook_id,
-    url: `${origin}${CLOUD_PATHS.automations}/${encodeURIComponent(row.rule_id)}/deliveries`,
+    // The owner is in the path, so a delivery finds its one row by the primary key
+    // (the signature, keyed with the owner's id, still proves it).
+    url: `${origin}${CLOUD_PATHS.automations}/${encodeURIComponent(row.rule_id)}/deliveries/${encodeURIComponent(row.user_id)}`,
     secret: toHex(key.buffer),
   };
 }
@@ -628,7 +630,10 @@ async function recordSkipped(env: RelayEnv, rule: RuleRow, trigger: TriggerFacts
   await env.DB.prepare(`
     insert or ignore into cloud_automation_runs (run_id, user_id, rule_id, trigger_kind, trigger_summary, trigger_json, delivery_id, state, reason, ended_at, created_at, updated_at)
     values (?, ?, ?, ?, ?, ?, ?, 'skipped', ?, ?, ?, ?)
-  `).bind(runId, rule.user_id, rule.rule_id, trigger.kind, trigger.summary, triggerJsonOf(trigger), trigger.deliveryId ?? null, reason, now, now, now).run();
+  `).bind(runId, rule.user_id, rule.rule_id, trigger.kind, trigger.summary, null, trigger.deliveryId ?? null, reason, now, now, now).run();
+  // No body or fields kept: a skipped trigger never starts. And pruned here too:
+  // a rule that is off or paused still takes deliveries, and only these come in then.
+  await pruneRuns(env, rule.user_id, rule.rule_id, now);
   const row = (await readRun(env, runId)) ?? (trigger.deliveryId ? await readDelivery(env, rule, trigger.deliveryId) : null);
   if (!row) throw new Error("A skipped trigger's row was not written.");
   return row;
@@ -670,7 +675,7 @@ const TRIGGER_WORDS: Record<CloudAutomationTrigger["kind"], string> = { schedule
 async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: AutomationDeps): Promise<void> {
   const { now } = deps;
   const spec = specOf(rule);
-  if (!spec) return failRun(env, { rule }, run.run_id, "ADE Cloud can't read this rule. Save it again on one of your computers.", now);
+  if (!spec) return failRun(env, { rule }, run.run_id, "ADE Cloud can't read this rule. Change it and save it on one of your computers.", now);
   const limits = limitsOf(rule);
   if (!limits) {
     return failRun(env, { rule }, run.run_id, "ADE Cloud couldn't read your agent limits, so it didn't start an unattended run. It reads them again the next time ADE opens this project on one of your computers.", now, { email: true });
@@ -787,7 +792,7 @@ async function triggerRun(env: RelayEnv, rule: RuleRow, trigger: TriggerFacts, d
       .bind(now, now, rule.user_id, rule.rule_id).run();
     if ((paused.meta?.changes ?? 0) === 1) {
       logCloud("cloud.automation_storm_paused", { userId: rule.user_id, ruleId: rule.rule_id });
-      await tell(env, rule, `"${rule.name}" is paused`, `It started ${rule.max_runs_per_hour} runs in an hour on ADE Cloud, so ADE paused it. Save the rule again to turn it back on.`, now, true);
+      await tell(env, rule, `"${rule.name}" is paused`, `It started ${rule.max_runs_per_hour} runs in an hour on ADE Cloud, so ADE paused it. Turn the rule off and on again to start it again.`, now, true);
     }
     return await recordSkipped(env, rule, trigger, `Paused: it started ${rule.max_runs_per_hour} runs in an hour.`, now);
   }
@@ -996,11 +1001,11 @@ async function moveRunOn(env: RelayEnv, row: CronRow, deps: AutomationDeps): Pro
 
 /* ---- The relay's forward: no account token, the hook's signature ---- */
 
-/** `POST /cloud/automations/:ruleId/deliveries`: answered before the account check, like a launch's join. */
+/** `POST /cloud/automations/:ruleId/deliveries/:userId`: answered before the account check, like a launch's join. */
 export function isAutomationDeliveryRequest(path: string, method: string): boolean {
   if (method !== "POST" || !path.startsWith(`${CLOUD_PATHS.automations}/`)) return false;
-  const [ruleId, action, ...rest] = path.slice(CLOUD_PATHS.automations.length + 1).split("/");
-  return Boolean(ruleId) && action === "deliveries" && rest.length === 0;
+  const [ruleId, action, userId, ...rest] = path.slice(CLOUD_PATHS.automations.length + 1).split("/");
+  return Boolean(ruleId) && action === "deliveries" && Boolean(userId) && rest.length === 0;
 }
 
 /**
@@ -1012,26 +1017,22 @@ export function isAutomationDeliveryRequest(path: string, method: string): boole
  */
 export async function handleAutomationDelivery(request: Request, env: RelayEnv, path: string, deps: AutomationDeps): Promise<Response> {
   const refused = () => fail("signature_refused", "This delivery isn't signed for this automation.", 401);
-  const ruleId = decodedSegment(path.slice(CLOUD_PATHS.automations.length + 1).split("/")[0] ?? "");
+  const segments = path.slice(CLOUD_PATHS.automations.length + 1).split("/");
+  const ruleId = decodedSegment(segments[0] ?? "");
+  const userId = decodedSegment(segments[2] ?? "");
   const hookId = request.headers.get(CLOUD_AUTOMATION_HOOK_HEADERS.hookId)?.trim() ?? "";
   const timestamp = Number(request.headers.get(CLOUD_AUTOMATION_HOOK_HEADERS.timestamp) ?? NaN);
   const signature = request.headers.get(CLOUD_AUTOMATION_HOOK_HEADERS.signature)?.trim().toLowerCase() ?? "";
-  if (!ruleId || !RULE_ID.test(ruleId) || !HOOK_ID.test(hookId) || !/^[0-9a-f]{64}$/.test(signature) || !Number.isFinite(timestamp)) return refused();
+  if (!ruleId || !RULE_ID.test(ruleId) || !userId || userId.length > 200 || !HOOK_ID.test(hookId) || !/^[0-9a-f]{64}$/.test(signature) || !Number.isFinite(timestamp)) return refused();
   const text = await request.text();
   if (text.length > 2_000_000) return fail("payload_too_large", "That delivery is too large.", 413);
-  // A hook id is unique per account only, so more than one account may name it: the signature,
-  // whose key is derived with the account's own id, says which row this delivery is for.
-  const candidates = (await env.DB.prepare("select * from cloud_automations where hook_id = ? and rule_id = ? limit 8").bind(hookId, ruleId).all<RuleRow>()).results ?? [];
-  if (candidates.length === 0) return fail("gone", "This webhook doesn't run on ADE Cloud any more.", 410);
-  let rule: RuleRow | null = null;
-  for (const candidate of candidates) {
-    const key = await hookKey(env, candidate);
-    if (!key) return fail("unavailable", "ADE Cloud can't check deliveries right now.", 503);
-    if (sameText(await hmacHex(key, `${timestamp}.${text}`), signature)) {
-      rule = candidate;
-      break;
-    }
-  }
+  // The owner's one row (the path names the owner), for this hook. The signature,
+  // whose key is derived with the owner's id, proves the delivery is for it.
+  const row = await env.DB.prepare("select * from cloud_automations where user_id = ? and rule_id = ?").bind(userId, ruleId).first<RuleRow>();
+  if (!row || row.hook_id !== hookId) return fail("gone", "This webhook doesn't run on ADE Cloud any more.", 410);
+  const key = await hookKey(env, row);
+  if (!key) return fail("unavailable", "ADE Cloud can't check deliveries right now.", 503);
+  const rule: RuleRow | null = sameText(await hmacHex(key, `${timestamp}.${text}`), signature) ? row : null;
   if (!rule) {
     logCloud("cloud.automation_delivery_refused", { ruleId });
     return refused();

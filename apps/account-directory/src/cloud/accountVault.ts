@@ -88,6 +88,7 @@ export async function readVaultFacts(env: RelayEnv, authorization: string | null
   if (!relay || !authorization) return UNKNOWN;
   let git = false;
   let limits: CloudAgentLimits | null = null;
+  let limitsStored = false;
   let since: string | null = null;
   try {
     for (let page = 0; page < VAULT_PAGES; page += 1) {
@@ -106,7 +107,12 @@ export async function readVaultFacts(env: RelayEnv, authorization: string | null
       for (const item of body.items ?? []) {
         if (item.kind !== "integration" || item.deleted === true) continue;
         if (GIT_CREDENTIAL_KEYS.includes(item.key as typeof GIT_CREDENTIAL_KEYS[number]) && tokenOf(item.value)) git = true;
-        if (item.key === AGENT_LIMITS_KEY) limits = limitsOf(item.value) ?? limits;
+        if (item.key === AGENT_LIMITS_KEY) {
+          limitsStored = true;
+          const parsed = limitsOf(item.value);
+          if (parsed) limits = parsed;
+          else logCloud("cloud.vault_limits_unreadable", {});
+        }
       }
       if (body.truncated !== true || typeof body.cursor !== "string") break;
       since = body.cursor;
@@ -115,7 +121,9 @@ export async function readVaultFacts(env: RelayEnv, authorization: string | null
     logCloud("cloud.vault_read_failed", { error: error instanceof Error ? error.name : "unknown" });
     return UNKNOWN;
   }
-  return { git: git ? "ok" : "none", limits: limits ?? DEFAULT_AGENT_LIMITS };
+  // Limits stored but unreadable (a newer ADE's format, a broken value) are unknown,
+  // and unknown never spends; the defaults apply only when none are stored.
+  return { git: git ? "ok" : "none", limits: limits ?? (limitsStored ? null : DEFAULT_AGENT_LIMITS) };
 }
 
 export type RepoVisibility = "public" | "private" | "unknown";

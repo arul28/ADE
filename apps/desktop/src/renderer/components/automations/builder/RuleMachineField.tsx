@@ -54,7 +54,7 @@ function CloudHomeRuns({ state }: { state: AutomationCloudHomeState }) {
     <div className="space-y-0.5" data-testid="automation-cloud-runs">
       {!state.registered ? <p>ADE Cloud doesn't have this rule yet. It gets it once a computer with ADE open syncs.</p> : null}
       {state.pausedReason === "storm" ? (
-        <Banner layout="inline" model={{ id: "automation-cloud-paused", tone: "warning", title: "Paused after too many runs in an hour. Save it again to turn it back on." }} />
+        <Banner layout="inline" model={{ id: "automation-cloud-paused", tone: "warning", title: "Paused after too many runs in an hour. Turn the rule off and on again to start it again." }} />
       ) : null}
       {state.registered && state.nextFireAt ? <p>Next run: {when(state.nextFireAt)}</p> : null}
       {state.runs.slice(0, 5).map((run) => (

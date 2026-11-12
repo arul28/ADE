@@ -721,7 +721,7 @@ ADE Cloud"). The server keeps the rule (`cloud_automations`, migration 0030,
   day; a time they pass twice fires once. A run missed by an hour or more is
   recorded as skipped, not run late.
 - **Webhooks.** The webhook relay forwards a cloud rule's deliveries to
-  `POST /cloud/automations/:ruleId/deliveries` (no account token), signed
+  `POST /cloud/automations/:ruleId/deliveries/:userId` (no account token), signed
   with HMAC-SHA256 over `<timestamp>.<body>` with the hook's key. The key is
   derived from the directory's own `CLOUD_CHAT_MASTER_KEY` and a per-hook salt,
   so the directory's D1 holds no key (the relay keeps the derived key to sign
