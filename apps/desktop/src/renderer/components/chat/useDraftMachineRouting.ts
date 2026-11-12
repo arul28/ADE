@@ -109,6 +109,12 @@ type UseDraftMachineRoutingInput = {
   availableLanes?: readonly DraftLaneInput[];
   laneId: string | null;
   initialDraftMachineId: string | null;
+  /**
+   * "Start on" default for new work in this tab (`useActiveStartOn`): the
+   * machine of its first available copy. A draft with no pick of its own
+   * starts there. Null: the tab's machine.
+   */
+  startOnMachineId?: string | null;
   draftLaunchTargetIsAutoCreate: boolean;
   onDraftMachineChange?: (machineId: string | null) => void;
   onLaneChange?: (laneId: string) => void;
@@ -133,6 +139,7 @@ export function useDraftMachineRouting({
   availableLanes,
   laneId,
   initialDraftMachineId,
+  startOnMachineId = null,
   draftLaunchTargetIsAutoCreate,
   onDraftMachineChange,
   onLaneChange,
@@ -314,7 +321,9 @@ export function useDraftMachineRouting({
   const boundMachineId = projectBinding?.kind === "remote"
     ? projectBinding.targetId
     : "this-mac";
-  const desiredMachineId = initialDraftMachineId?.trim() || boundMachineId;
+  // A draft with no pick of its own starts where "Start on" says.
+  const defaultMachineId = startOnMachineId?.trim() || boundMachineId;
+  const desiredMachineId = initialDraftMachineId?.trim() || defaultMachineId;
   const routingInputKey = JSON.stringify([projectBinding?.key ?? null, desiredMachineId]);
   /**
    * Whether the BOUND machine's lane list has actually been read. That list is
@@ -379,8 +388,9 @@ export function useDraftMachineRouting({
       pendingLaneRemapRef.current ??= { machineId, laneId };
     }
     setMachineId(nextMachineId);
-    onDraftMachineChange?.(nextMachineId === boundMachineId ? null : nextMachineId);
-  }, [boundMachineId, laneId, machineId, onDraftMachineChange]);
+    // The default is not saved as a pick, so the draft keeps following it.
+    onDraftMachineChange?.(nextMachineId === defaultMachineId ? null : nextMachineId);
+  }, [defaultMachineId, laneId, machineId, onDraftMachineChange]);
 
   useEffect(() => {
     // An outside machine change (not the echo of `chooseMachine`) brings its
@@ -402,9 +412,13 @@ export function useDraftMachineRouting({
     // is still loading. Once the catalog resolves (including a failed probe),
     // the local/bound machine is the safe fallback instead of leaving the
     // composer pinned to a machine that no longer exists in the options.
-    if (!connectionCatalogResolvedRef.current && initialDraftMachineId?.trim() === machineId) return;
+    if (
+      !connectionCatalogResolvedRef.current
+      && (initialDraftMachineId?.trim() === machineId || defaultMachineId === machineId)
+    ) return;
     chooseMachine(
-      machineOptions.find((option) => option.isBound)?.id
+      machineOptions.find((option) => option.id === defaultMachineId)?.id
+        ?? machineOptions.find((option) => option.isBound)?.id
         ?? machineOptions[0]?.id
         ?? boundMachineId,
     );
@@ -412,6 +426,7 @@ export function useDraftMachineRouting({
     boundMachineId,
     chooseMachine,
     connectionCatalogResolved,
+    defaultMachineId,
     enabled,
     initialDraftMachineId,
     machineId,

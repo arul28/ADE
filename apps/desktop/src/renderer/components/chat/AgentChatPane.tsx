@@ -603,6 +603,9 @@ import {
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 import { registerTranscriptGauge } from "../../lib/rendererMemorySnapshot";
+import { useActiveRepositoryTab, useActiveStartOn } from "../../state/repositoryScope";
+import type { StartOnChoice } from "../../../shared/repositoryTab";
+import { recordStartOnLastMachine } from "./startOnLastMachine";
 
 /**
  * The pin a draft's new-lane defaults are read with: the machine the draft
@@ -5622,6 +5625,7 @@ export function AgentChatPane({
   // not returned by the hook, so `react-hooks/exhaustive-deps` still sees it
   // as a `useRef` result and stops demanding it as a dependency.
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
+  const draftStartedOnRef = useRef<{ tabId: string | null; machineKey: string | null }>({ tabId: null, machineKey: null });
   chatRuntimePinRef.current = chatRuntimePin;
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
   // The chat's pin when it names another copy than the tab's own; null for the
@@ -13535,8 +13539,11 @@ export function AgentChatPane({
     // launch then drops its card/row and runs the renderer-owned chain, which
     // consumes this recipe so it still builds the lane the user configured.
     pendingRendererRef.current = configuredLane;
+    // Read now: the draft machine is the one this launch runs on.
+    const startedOn = draftStartedOnRef.current;
     void startChatLaunch(launchId, { onUnsupported }).then((outcome) => {
       if (outcome !== "unsupported") pendingRendererRef.current = null;
+      if (outcome === "started") recordStartOnLastMachine(startedOn.tabId, startedOn.machineKey);
     });
     return true;
   }, [
@@ -16815,6 +16822,11 @@ export function AgentChatPane({
     && !lockSessionId
     && !initialSessionId
     && (workDraftKind === "chat" || isWorkCliLaunchDraft);
+  // "Start on" for the open repository: a new chat starts on the machine of
+  // its first available copy unless the person picks another.
+  const { choices: draftStartOnChoices, defaultChoice: draftStartOnChoice } = useActiveStartOn(showDraftLaunchControls);
+  const draftStartOnMachineId = draftStartOnChoice?.kind === "copy" ? draftStartOnChoice.copy.machineId : null;
+  const draftRepositoryTabId = useActiveRepositoryTab()?.id ?? null;
   const {
     machineOptions: routedLaneMachineOptions,
     cloneMachineOptions: routedCloneMachineOptions,
@@ -16837,6 +16849,7 @@ export function AgentChatPane({
     handleLaneSelectionChange: handleDraftLaneSelectionChange,
   } = useDraftMachineRouting({
     enabled: showDraftLaunchControls,
+    startOnMachineId: draftStartOnMachineId,
     projectBinding,
     openProjectTabRoots,
     crossMachineLanesByMachineId,
@@ -16852,6 +16865,15 @@ export function AgentChatPane({
     setError,
   });
   refreshDraftMachineProjectsRef.current = refreshDraftMachineProjects;
+  // The copy the draft starts on, for "Start on"'s last-used machine.
+  const draftStartedOnCopy = draftStartOnChoices.find(
+    (choice): choice is Extract<StartOnChoice, { kind: "copy" }> =>
+      choice.kind === "copy" && choice.copy.machineId === selectedDraftMachineId,
+  );
+  draftStartedOnRef.current = {
+    tabId: draftRepositoryTabId,
+    machineKey: draftStartedOnCopy?.copy.machineKey ?? null,
+  };
   // ADE Cloud: one Run on entry for every lane there, read from memory.
   const adeCloud = useAdeCloudDraft({
     enabled: showDraftLaunchControls,
@@ -19337,6 +19359,15 @@ export function AgentChatPane({
           || Boolean(resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey))
         );
     if (!modelAllowed) {
+      // Say why, so a pick never fails without a word.
+      showToast({
+        id: "composer-model-refused",
+        tone: "warning",
+        title: "This model is not available here",
+        message: composerAvailableModelIds.length === 0
+          ? "The models for this chat are still loading. Try again in a moment."
+          : "Pick a model from the list for this chat's computer.",
+      });
       return false;
     }
     if (isPersistentIdentitySurface && sessionMutationKind) {
@@ -20702,6 +20733,7 @@ export function AgentChatPane({
                                 onPointerClose={returnFocusToComposer}
                                 side="bottom"
                                 menuLabel="Run on"
+                                showWhenSingle
                               />
                               <LaneCombobox
                                 lanes={adeCloudMode ? adeCloudShelfLanes : draftShelfLanes}

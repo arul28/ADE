@@ -154,7 +154,13 @@ export type ModelPickerSelection = {
 };
 
 export type ModelPickerContentProps = {
+  /** The selected model; empty when the caller has none. Only this row is checked. */
   value: string;
+  /**
+   * Where the list opens when `value` is empty: a recent or first model. It
+   * moves the tab and the scroll only; it is never shown as selected.
+   */
+  openAtValue?: string;
   models: readonly ModelDescriptor[];
   isAvailable: (modelId: string) => boolean;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
@@ -249,6 +255,7 @@ export type ModelPickerContentProps = {
 
 export const ModelPickerContent = memo(function ModelPickerContent({
   value,
+  openAtValue,
   models,
   isAvailable,
   providerAuthStatus,
@@ -422,7 +429,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     if (recents.length > 0) {
       initialSelectionRef.current = "recents";
     } else {
-      const activeModel = expandedModels.find((m) => m.id === value);
+      const activeModel = expandedModels.find((m) => m.id === (value || openAtValue));
       initialSelectionRef.current = activeModel
         ? `provider:${pickerFamilyForModel(activeModel)}`
         : providersPresent[0]
@@ -592,14 +599,14 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     }
     setActiveProviderTabKey((current) => {
       if (current && providerTabs.some((tab) => tab.key === current)) return current;
-      const activeModel = expandedModels.find((model) => model.id === value);
+      const activeModel = expandedModels.find((model) => model.id === (value || openAtValue));
       const activeKey = activeModel && activeProviderFamily === pickerFamilyForModel(activeModel)
         ? subProviderKey(activeModel)
         : null;
       if (activeKey && providerTabs.some((tab) => tab.key === activeKey)) return activeKey;
       return providerTabs.find((tab) => tab.hasAvailable)?.key ?? providerTabs[0]?.key ?? null;
     });
-  }, [activeProviderFamily, expandedModels, providerTabs, value]);
+  }, [activeProviderFamily, expandedModels, openAtValue, providerTabs, value]);
 
   const visibleModels = useMemo<ModelDescriptor[]>(() => {
     if (providerTabs.length <= 1 || !activeProviderTabKey) return candidateModels;
@@ -959,9 +966,10 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     }
   }, []);
 
+  // The row the list scrolls to: the selection, else where the list opens.
   const activeModel = useMemo(
-    () => expandedModels.find((m) => m.id === value) ?? null,
-    [expandedModels, value],
+    () => expandedModels.find((m) => m.id === (value || openAtValue)) ?? null,
+    [expandedModels, openAtValue, value],
   );
 
   const isEmpty = visibleModels.length === 0;
