@@ -114,6 +114,12 @@ export type RosterAgentChatService = {
 
 export type RosterPtyService = {
   hasLivePty(sessionId: string): boolean;
+  /**
+   * The live turn of a tracked agent CLI. With an exact source (the CLI's own
+   * hooks or OSC reports) its phase is the row's status; a heuristic one is
+   * not trusted over "a live terminal is running".
+   */
+  getTrackedCliTurn?(sessionId: string): { phase: "working" | "idle" | "needs-input"; source: string } | null;
 };
 
 export type RosterBootedScope = {
@@ -865,10 +871,16 @@ async function buildRosterProject(
     // CLI (terminal) sessions never appear in agentChatService; on a booted
     // scope their liveness comes from the PTY table instead.
     const hasLivePty = livePtyService?.hasLivePty(row.id) === true;
+    const cliTurn = !live && hasLivePty ? livePtyService?.getTrackedCliTurn?.(row.id) ?? null : null;
+    const exactCliPhase = cliTurn && cliTurn.source !== "heuristic" ? cliTurn.phase : null;
     const liveStatus = live
       ? liveChatStatus(live)
       : hasLivePty
-        ? "running" as const
+        ? exactCliPhase === "idle"
+          ? "idle" as const
+          : exactCliPhase === "needs-input"
+            ? "awaiting" as const
+            : "running" as const
         : null;
     /**
      * A live FOREGROUND turn, not merely a row that reports `running`.
@@ -879,7 +891,7 @@ async function buildRosterProject(
      */
     const liveTurnRunning = live
       ? live.status === "active" && live.awaitingInput !== true
-      : hasLivePty;
+      : hasLivePty && (exactCliPhase == null || exactCliPhase === "working");
     const status: SyncRosterChatStatus = row.attention_requested_at
       ? "awaiting"
       // Settled is checked against a RUNNING row first, exactly as before:
@@ -908,8 +920,11 @@ async function buildRosterProject(
     // chat rows (and their attached shells) count: a standalone CLI session
     // that exited non-zero months ago must not pin its project to the top
     // forever — mobile has no way to clear it (CLI rows can't be archived).
+    // A tracked agent CLI that is live and waiting on the person counts like a
+    // chat: that hand is current, unlike an old exit code.
     const countsTowardAttention = isRosterTopLevelToolType(row.tool_type)
-      || normalizedParentSessionId(row) != null;
+      || normalizedParentSessionId(row) != null
+      || (status === "awaiting" && hasLivePty && isTrackedAgentCliToolType(row.tool_type as TerminalToolType | null));
     if ((status === "awaiting" || status === "failed") && countsTowardAttention) attentionCount += 1;
     const activityStatus = normalizeSessionActivityReport(row.activity_status_json);
     const activityStatusChangedAt = row.activity_status_changed_at ?? activityStatus?.updatedAt ?? null;

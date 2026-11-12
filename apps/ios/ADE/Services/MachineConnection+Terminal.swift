@@ -174,6 +174,24 @@ extension MachineConnection: TerminalStreamTransport {
     return result
   }
 
+  /// A message for a running agent CLI on this machine (`chat.typeIntoCli`).
+  /// Never queued: a command for another machine must not replay later.
+  func typeIntoCli(sessionId: String, text: String) async throws -> WorkCliTypeOutcome {
+    guard supportsAction("chat.typeIntoCli") else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: "Update ADE on that computer to send messages to its CLI sessions.",
+      ])
+    }
+    let scope = try terminalScopeOrThrow(sessionId)
+    let raw = try await sendCommand(
+      action: "chat.typeIntoCli",
+      args: ["sessionId": sessionId, "text": text, "holdUntilFree": true],
+      projectId: scope.projectId,
+      projectRootPath: scope.rootPath.isEmpty ? nil : scope.rootPath
+    )
+    return try workCliTypeOutcome(from: raw)
+  }
+
   func fetchTerminalHistory(sessionId: String, beforeOffset: Int, maxBytes: Int) async throws -> TerminalHistorySlice {
     let scope = try terminalScopeOrThrow(sessionId)
     guard terminalStream.subscribed.contains(sessionId) else {

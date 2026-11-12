@@ -977,6 +977,35 @@ function StickyGroupHeader({
  * (`useLanePrsByLaneId` moved to ./useLanePrs so the Work session hook can
  * answer the "Has PR" chip filter from the same PR data that badge renders.)
  */
+
+/** The selected rows that live on one machine, and how to reach it. */
+type SettleMachineGroup = {
+  /** Null for the tab's own machine, which keeps the unpinned route. */
+  pin: OpenProjectBinding | null;
+  machineName: string;
+  ids: string[];
+};
+
+/** One error toast naming every machine a bulk settle (or its undo) did not reach. */
+function reportSettleFailures(
+  action: string,
+  groups: SettleMachineGroup[],
+  results: PromiseSettledResult<unknown>[],
+): void {
+  const failed = groups.filter((_, index) => results[index]?.status === "rejected");
+  if (!failed.length) return;
+  const firstError = (results.find((result) => result.status === "rejected") as PromiseRejectedResult).reason;
+  console.error(`[SessionListPane] ${action} failed`, {
+    machines: failed.map((group) => group.machineName),
+    error: firstError,
+  });
+  showToast({
+    title: `${action} failed on ${failed.map((group) => group.machineName).join(", ")}`,
+    message: firstError instanceof Error ? firstError.message : String(firstError),
+    tone: "error",
+  });
+}
+
 export const SessionListPane = React.memo(function SessionListPane({
   lanes: lanesProp,
   runningFiltered,
@@ -1335,7 +1364,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     },
     [effectiveFilingBucketsProp, foreignFilingNowMs],
   );
-  const [settleUndo, setSettleUndo] = useState<{ ids: string[]; count: number } | null>(null);
+  const [settleUndo, setSettleUndo] = useState<{ groups: SettleMachineGroup[]; count: number } | null>(null);
   const {
     trigger: triggerLaneContextMenu,
     triggerForeign: triggerForeignLaneContextMenu,
@@ -1609,17 +1638,25 @@ export const SessionListPane = React.memo(function SessionListPane({
   const selectedDeletableCount = selectedSessions.filter(canBulkDeleteSession).length;
   // Bulk settle targets at-rest rows only — actively working sessions are not
   // "done" merely because they lack a settled marker.
+  // Which machine each selected row lives on, for the bulk settle: the tab's
+  // own roster takes the unpinned route (pin null); another machine's row goes
+  // to that machine through its `foreignRow.binding`. A foreign row with no
+  // binding cannot be reached at all, so it is left out of the settle.
+  const foreignRowBySessionId = useMemo(() => {
+    const map = new Map<string, CrossMachineLaneRow>();
+    for (const row of foreignRows) {
+      for (const session of row.sessions) map.set(session.id, row);
+    }
+    return map;
+  }, [foreignRows]);
   const selectedSettleableSessions = useMemo(() => {
-    // Bulk settle still goes through the unpinned `sessions.settleMany`, which
-    // only reaches the bound machine — so it stays scoped to the active
-    // roster's rows. Delete is the action that now carries per-row pins.
     const localIds = new Set(allSessions.map((session) => session.id));
     return selectedSessions.filter((session) =>
-      localIds.has(session.id)
+      (localIds.has(session.id) || foreignRowBySessionId.get(session.id)?.binding != null)
       && !session.settledAt
       && sessionStatusBucket(canonicalInputFromSummary(session)) !== "running"
       && !sessionNeedsYou(canonicalInputFromSummary(session)));
-  }, [allSessions, selectedSessions]);
+  }, [allSessions, foreignRowBySessionId, selectedSessions]);
   const quietlyAwaitingSessions = useMemo(
     () => awaitingInputFiltered.filter(
       (session) => !sessionNeedsYou(canonicalInputFromSummary(session)),
@@ -1627,25 +1664,50 @@ export const SessionListPane = React.memo(function SessionListPane({
     [awaitingInputFiltered],
   );
   const selectedSettleCount = selectedSettleableSessions.length;
+  // One `settleMany` per machine, all at once: a machine that fails must not
+  // stop the others, and the toast names the machines that did not take it.
+  const groupSessionsByMachine = useCallback((sessionIds: string[]): SettleMachineGroup[] => {
+    const localIds = new Set(allSessions.map((session) => session.id));
+    const groups = new Map<string, SettleMachineGroup>();
+    for (const id of sessionIds) {
+      const foreign = localIds.has(id) ? undefined : foreignRowBySessionId.get(id);
+      const pin = foreign?.binding ?? null;
+      if (foreign && !pin) continue;
+      const key = pin?.key ?? "";
+      const group = groups.get(key)
+        ?? { pin, machineName: foreign?.machineName ?? "this tab's computer", ids: [] };
+      group.ids.push(id);
+      groups.set(key, group);
+    }
+    return [...groups.values()];
+  }, [allSessions, foreignRowBySessionId]);
   const settleSessions = useCallback(async (sessionIds: string[]) => {
-    try {
-      const newlySettled = await window.ade.sessions.settleMany(sessionIds);
-      if (newlySettled.length > 0) {
-        setSettleUndo({ ids: newlySettled, count: newlySettled.length });
+    const groups = groupSessionsByMachine(sessionIds);
+    const results = await Promise.allSettled(groups.map((group) => (
+      group.pin
+        ? window.ade.sessions.settleMany(group.ids, group.pin)
+        : window.ade.sessions.settleMany(group.ids)
+    )));
+    const settledGroups: SettleMachineGroup[] = [];
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled" && result.value.length > 0) {
+        settledGroups.push({ ...groups[index]!, ids: result.value });
       }
-    } catch (error) {
-      console.error("[SessionListPane] bulk settle failed", { sessionIds, error });
-    }
-  }, []);
+    });
+    const count = settledGroups.reduce((total, group) => total + group.ids.length, 0);
+    if (count > 0) setSettleUndo({ groups: settledGroups, count });
+    reportSettleFailures("Settle", groups, results);
+  }, [groupSessionsByMachine]);
   const undoSettle = useCallback(async () => {
-    const ids = settleUndo?.ids ?? [];
-    if (!ids.length) return;
+    const groups = settleUndo?.groups ?? [];
+    if (!groups.length) return;
     setSettleUndo(null);
-    try {
-      await window.ade.sessions.unsettleMany(ids);
-    } catch (error) {
-      console.error("[SessionListPane] undo settle failed", { sessionIds: ids, error });
-    }
+    const results = await Promise.allSettled(groups.map((group) => (
+      group.pin
+        ? window.ade.sessions.unsettleMany(group.ids, group.pin)
+        : window.ade.sessions.unsettleMany(group.ids)
+    )));
+    reportSettleFailures("Undo settle", groups, results);
   }, [settleUndo]);
   useEffect(() => {
     if (!settleUndo) return;

@@ -70,6 +70,8 @@ const MEANINGFUL_ACTIONS = new Set([
   "chat.launch",
   "chat.send",
   "chat.steer",
+  // The Work input box (and a phone or the web) sending text to a running CLI.
+  "chat.typeIntoCli",
   "chat.approve",
   "chat.respondToInput",
   "chat.restart",

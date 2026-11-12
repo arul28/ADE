@@ -2785,6 +2785,19 @@ screen through the same `TerminalStreamTransport` contract as `SyncService`:
   error and Retry. It does not show a frozen terminal as live.
 - Resume (`work.resumeCliSession`) goes to the session's machine as a routed
   command with the same project scope.
+- The message bar's sends (`chat.typeIntoCli`) go to the session's machine
+  the same way, and are never queued for a machine that is not linked.
+
+**Message bar for an agent CLI.** A tracked agent CLI's terminal screen has a
+text-bubble button in its top bar that swaps the key bar for a message bar
+(one choice for every CLI, `@AppStorage("ade.work.cliMessageBar")`, off by
+default). A whole message, multi-line included, goes to the session's computer
+as `chat.typeIntoCli`, which types it at the CLI's prompt only when that prompt
+is free. The bar then says what happened: typed, queued until the CLI's turn
+ends (held on the host), queued until the phone reconnects (the offline queue
+replays it), or the CLI has ended (the text stays, Resume continues it). A
+screen whose focused connection now serves another computer refuses the send
+instead of typing into the wrong one.
 
 When the link is down, the host is older, or the project is not open there,
 the tap falls back to the earlier flow: it focuses that machine, opens the
@@ -2942,8 +2955,9 @@ The chat is created in place and does **not** auto-open — a "Created in
 drag-reorderable (persisted per machine, mobile-only, never touching desktop
 ordering). Attention bubbles are driven by the roster's `attentionCount`
 (awaiting-input + failed sessions), which — like the phone-side
-`RemoteRosterChat.needsAttention` mirror for the active project — counts only
-chat rows and shells attached to a chat: a standalone CLI session that exited
+`RemoteRosterChat.needsAttention` mirror for the active project — counts chat
+rows, shells attached to a chat, and running agent CLI sessions that wait on the
+person (`awaiting`, no exit code yet). A standalone CLI session that exited
 non-zero never contributes, because attention feeds the attention-first
 project sort and CLI rows have no mobile archive/clear affordance to make a
 stale failure go away. Roster `runningCount` (and the Hub overlay of it) counts

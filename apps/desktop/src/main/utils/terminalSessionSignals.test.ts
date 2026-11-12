@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentCliStateFromChunk,
   buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
   extractResumeCommandFromOutput,
@@ -507,4 +508,26 @@ describe("terminalSessionSignals", () => {
       expect(parseTrackedCliResumeCommand(command, toolType)).toEqual({ provider, targetId });
     },
   );
+});
+
+describe("agentCliStateFromChunk", () => {
+  const report = (state: string) => `\x1b]7501;state=${state}:app=codex\x07`;
+
+  it("returns every state report in order, and reads one split across chunks", () => {
+    // A fast turn can fit in one chunk; reading only the last report would
+    // lose the turn that `working` started.
+    const whole = agentCliStateFromChunk("", `out ${report("working")} more ${report("done")} tail`);
+    expect(whole.states).toEqual(["working", "done"]);
+    expect(whole.state).toBe("done");
+    expect(whole.carry).toBe("");
+
+    // A report cut in two is carried and read once whole, not twice.
+    const cut = report("idle");
+    const first = agentCliStateFromChunk("", `text ${cut.slice(0, 12)}`);
+    expect(first.states).toEqual([]);
+    expect(first.carry).toBe(cut.slice(0, 12));
+    const second = agentCliStateFromChunk(first.carry, `${cut.slice(12)} after`);
+    expect(second.states).toEqual(["idle"]);
+    expect(second.carry).toBe("");
+  });
 });
