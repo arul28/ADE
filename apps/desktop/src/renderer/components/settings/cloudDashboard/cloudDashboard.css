@@ -585,6 +585,8 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 /* Two cards side by side: sign-ins and what agents may do. */
 .adecd-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 @container adecd (max-width: 760px) { .adecd-pair { grid-template-columns: 1fr; } }
+.adecd-sizes-note { margin: 10px 2px 0; font-size: 11.5px; color: var(--kit-text-3); }
+.adecd-stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 
 /* Sign-ins. */
 .adecd-signins { display: flex; flex-direction: column; gap: 10px; }

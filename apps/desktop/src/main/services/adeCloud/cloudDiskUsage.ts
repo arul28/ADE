@@ -86,9 +86,23 @@ function exists(folder: string): boolean {
   }
 }
 
-/** Kilobytes under each folder, from one `du -sk` call; a folder that isn't there is left out. */
-async function duKb(run: Run, folders: string[], extra: string[] = []): Promise<Map<string, number>> {
-  const present = folders.filter(exists);
+/** The file system a folder is on, or null when it isn't there. */
+function deviceOf(folder: string): number | null {
+  try {
+    return fs.statSync(folder).dev;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Kilobytes under each folder, from one `du -sk` call; a folder that isn't
+ * there is left out, and so is one on another disk than `onDiskOf` (the
+ * image's own layer: an SDK there uses none of the computer's billed disk).
+ */
+async function duKb(run: Run, folders: string[], extra: string[] = [], onDiskOf?: string): Promise<Map<string, number>> {
+  const disk = onDiskOf ? deviceOf(onDiskOf) : null;
+  const present = folders.filter(exists).filter((folder) => disk == null || deviceOf(folder) === disk);
   const sizes = new Map<string, number>();
   if (!present.length) return sizes;
   const out = await run("du", ["-sk", ...extra, ...present]).catch(leftOut("du"));
@@ -154,11 +168,15 @@ async function measureCloudDisk(input: { home?: string; projectRoots: string[]; 
   if (totalGb == null) return null;
   const roots = [...new Set(input.projectRoots.map((root) => path.resolve(root)))];
   const modules = await nodeModulesFolders(run, roots);
-  const [repoKb, modulesKb, androidKb, cachesKb, docker] = await Promise.all([
-    duKb(run, roots, ["--exclude=node_modules"]),
-    duKb(run, modules),
-    duKb(run, androidFolders(home)),
-    duKb(run, CLOUD_CLEARABLE_CACHES.map((folder) => path.join(home, folder))),
+  // Every part is on the measured disk only (`totalGb` is the home disk's).
+  const adeHome = process.env.ADE_HOME?.trim() || path.join(home, ".ade");
+  const [repoKb, modulesKb, androidKb, cachesKb, toolsKb, adeKb, docker] = await Promise.all([
+    duKb(run, roots, ["--exclude=node_modules"], home),
+    duKb(run, modules, [], home),
+    duKb(run, androidFolders(home), [], home),
+    duKb(run, CLOUD_CLEARABLE_CACHES.map((folder) => path.join(home, folder)), [], home),
+    duKb(run, [path.join(adeHome, "tools")], [], home),
+    duKb(run, [adeHome], ["--exclude=tools"], home),
     dockerParts(run),
   ]);
   const sum = (sizes: Map<string, number>) => gbFromKb([...sizes.values()].reduce((total, kb) => total + kb, 0));
@@ -169,6 +187,9 @@ async function measureCloudDisk(input: { home?: string; projectRoots: string[]; 
     { kind: "docker", label: "Docker build cache", gb: docker.buildCacheGb, clearable: true },
     { kind: "android", label: "Android SDK and emulators", gb: sum(androidKb), clearable: false },
     { kind: "caches", label: "Caches", gb: sum(cachesKb), clearable: true },
+    // The server knows six kinds; these two go as `other` with their own names, so older servers keep them.
+    { kind: "other", label: "Agent programs", gb: sum(toolsKb), clearable: false },
+    { kind: "other", label: "ADE data (chats and lanes)", gb: sum(adeKb), clearable: false },
   ] satisfies CloudDiskUsageItem[] as CloudDiskUsageItem[]).filter((part) => part.gb >= MIN_PART_GB);
   const known = parts.reduce((total, part) => total + part.gb, 0);
   const other = Math.round(Math.max(0, totalGb - known) * 1000) / 1000;

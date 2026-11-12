@@ -160,6 +160,8 @@ export function cloudTierFacts(tier: CloudTier): CloudTierFacts {
       `${tier.cpu} CPU`,
       `${tier.memoryGb} GB memory`,
       ...(tier.diskMaxGb != null ? [`Up to ${tier.diskMaxGb} GB disk`] : []),
+      // Every size: the template ships the lane screen's packages for each kind.
+      "A desktop screen the agent can use",
     ],
     runs: TIER_RUNS[tier.id],
     full: tier.type === "vm",
@@ -167,6 +169,16 @@ export function cloudTierFacts(tier: CloudTier): CloudTierFacts {
     rate,
   };
 }
+
+/** "41 h of agent time": how long the hours left last at this size, whole hours from 10 up. */
+export function cloudTierAgentTimeLabel(tier: Pick<CloudTier, "multiplierMilli">, leftMilli: number): string {
+  const hours = Math.max(0, leftMilli) / tier.multiplierMilli;
+  const shown = hours >= 10 ? Math.floor(hours) : Math.floor(hours * 10) / 10;
+  return `${shown} h of agent time`;
+}
+
+/** The one line under the sizes: what an hour is. Hours count while awake, and a computer sleeps soon after its agent stops. */
+export const CLOUD_AWAKE_TIME_LINE = "Hours count only while a computer is awake. It falls asleep a few minutes after its agent stops.";
 
 /** How long `leftMilli` hours last at this size, rounded down to a tenth: "57.4 h". */
 export function cloudTierHoursLeftLabel(tier: Pick<CloudTier, "multiplierMilli">, leftMilli: number): string {

@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Check, Cpu } from "@phosphor-icons/react";
 import { cloudCatalogOf, cloudHoursLeftMilli, type CloudAccountState } from "../../../../shared/adeCloud";
-import { cloudTierFacts, cloudTierHoursLeftLabel, cloudTiers } from "../../../../shared/cloudTiers";
+import { CLOUD_AWAKE_TIME_LINE, cloudTierAgentTimeLabel, cloudTierFacts, cloudTiers } from "../../../../shared/cloudTiers";
 import { pickCloudDefaultTier } from "../../../lib/cloudDefaultTier";
 import { useRootAppStore } from "../../../state/appStore";
 import { CloudSizeIcon } from "../../remoteTargets/cloudBrand";
@@ -56,13 +56,14 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
                   <span>{facts.rateLine}</span>
                 </span>
                 <span className="adecd-sizecard-left">
-                  Your hours last <b className="kit-num" data-face="ui">{cloudTierHoursLeftLabel(tier, leftMilli)}</b> here
+                  <b className="kit-num" data-face="ui">{cloudTierAgentTimeLabel(tier, leftMilli)}</b> left
                   {extraCents != null ? <>, then <span className="kit-num" data-face="ui">{Math.round(extraCents * facts.rate * 100) / 100}¢</span> an hour</> : null}
                 </span>
               </button>
             );
           })}
         </div>
+        <p className="adecd-sizes-note">{CLOUD_AWAKE_TIME_LINE}</p>
       </div>
     </section>
   );

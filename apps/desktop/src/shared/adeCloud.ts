@@ -1038,9 +1038,21 @@ export type CloudMachineActionResult = {
   diskRefusal?: { reason: string };
 };
 
-/** "Small · 2 CPU · 4 GB", with "Full computer" in front for a VM. */
-export function describeCloudMachineSize(machine: Pick<CloudMachine, "type" | "resources" | "shapeId">): string {
-  const shape = machine.shapeId ? cloudShapeById(machine.shapeId) : null;
+/**
+ * "Full computer · Large · 4 CPU · 8 GB · 4 GB disk". The size's name is the
+ * catalog's for that kind and shape, the same name the size list and the
+ * pickers use (a full 4 CPU / 8 GB computer is Large, not Medium), never the
+ * bare shape's.
+ */
+export function describeCloudMachineSize(
+  machine: Pick<CloudMachine, "type" | "resources" | "shapeId">,
+  catalog: Pick<CloudCatalog, "sizes"> = CLOUD_CATALOG_FALLBACK,
+): string {
+  const kind = machine.type === "vm" ? "vm" : "default";
+  const sized = machine.resources
+    ? catalog.sizes.find((entry) => entry.type === kind && entry.cpu === machine.resources!.cpu && entry.memoryGb === machine.resources!.memoryGb)
+    : undefined;
+  const shape = sized ? { label: sized.label } : machine.shapeId ? cloudShapeById(machine.shapeId) : null;
   const size = machine.resources
     ? `${machine.resources.cpu} CPU · ${machine.resources.memoryGb} GB`
     : null;

@@ -292,11 +292,15 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 
       <CloudPlans account={account} onChanged={refresh} />
       <CloudSizes account={account} />
-      <CloudInviteCard account={account} onChanged={refresh} />
 
+      {/* Sign-ins on the left; the shorter agent limits and the invite card
+          stack on the right, so the two columns end near one height (B14-2). */}
       <div className="adecd-pair">
         <CloudSignIns />
-        <CloudAgentLimitsCard />
+        <div className="adecd-stack">
+          <CloudAgentLimitsCard />
+          <CloudInviteCard account={account} onChanged={refresh} />
+        </div>
       </div>
 
       {freeing ? (
