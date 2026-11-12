@@ -1,4 +1,5 @@
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
+import type { AccountProjectListResult } from "../shared/accountProject";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type {
   ProjectRemovalOutcome,
@@ -1475,6 +1476,8 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<ClearLocalAdeDataResult>;
         listRecent: () => Promise<RecentProjectSummary[]>;
+        /** The account's project list as this computer (or the pinned machine) last read it. Optional: the hosted web client has none yet. */
+        accountList?: (pin?: OpenProjectBinding | null) => Promise<AccountProjectListResult>;
         findForRepo: (args: {
           repoOwner: string;
           repoName: string;

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { AccountProjectListResult } from "../shared/accountProject";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type {
   LaneShareAcceptResult,
@@ -5531,6 +5532,11 @@ const adeBridge = {
       ),
     listRecent: async (): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectListRecent),
+    // The account's project list as this computer's brain last read it, or
+    // as a connected machine read it (a remote pin). A file read on that
+    // machine: no server call.
+    accountList: async (pin?: OpenProjectBinding | null): Promise<AccountProjectListResult> =>
+      ipcRenderer.invoke(IPC.projectAccountList, pin?.kind === "remote" ? { targetId: pin.targetId } : {}),
     findForRepo: async (args: {
       repoOwner: string;
       repoName: string;

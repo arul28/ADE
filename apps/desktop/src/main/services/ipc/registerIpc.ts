@@ -994,6 +994,7 @@ import {
   FAST_MODE_SETTING_SCOPE,
 } from "../../../shared/fastModePolicy";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import { coerceAccountProjectListResult, type AccountProjectListResult } from "../../../shared/accountProject";
 import { PROVIDER_LOGINS_CLOUD_SETTING } from "../../../shared/providerLoginsCloudSetting";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
@@ -4668,6 +4669,22 @@ export function registerIpc({
   handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> =>
     listRecentProjectSummaries()
   );
+
+  // The account's project list as a machine last read it: this computer's
+  // brain, or a connected machine (`targetId`) for a client with no brain of
+  // its own. A read of a JSON file on that machine; no server call.
+  handle(IPC.projectAccountList, async (_event, arg?: { targetId?: unknown }): Promise<AccountProjectListResult> => {
+    const targetId = typeof arg?.targetId === "string" ? arg.targetId.trim() : "";
+    if (targetId) {
+      return coerceAccountProjectListResult(
+        await runtimeBridge.callMachineMethod<unknown>(targetId, "projects.accountList", {}, { timeoutMs: 10_000 }),
+      );
+    }
+    if (!localRuntimeConnectionPool) return { state: "not_loaded", projects: [] };
+    return coerceAccountProjectListResult(
+      await localRuntimeConnectionPool.callSync<unknown>("projects.accountList", {}, { timeoutMs: 10_000 }),
+    );
+  });
 
   // First-run setup on this computer. All four run here and only here: setup
   // is the first open of ADE on a machine, and it reads that machine's own

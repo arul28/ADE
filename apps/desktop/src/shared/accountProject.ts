@@ -119,3 +119,73 @@ export function projectOriginKind(origin: string | null | undefined): ProjectOri
 export function githubRepoKey(host: string, owner: string, name: string): string {
   return accountRepoScopeKey(`https://${host}/${owner}/${name}`) ?? `repo:${host}/${owner}/${name}`.toLowerCase();
 }
+
+/**
+ * What `projects.accountList` answers: the account's live projects as one
+ * machine last read them. `not_loaded` means signed in, but that machine has
+ * not read the list yet.
+ */
+export type AccountProjectListResult =
+  | { state: "signed_out"; projects: [] }
+  | { state: "not_loaded"; projects: [] }
+  | { state: "ready"; cursor: number; projects: AccountProjectView[] };
+
+function coerceCopy(value: unknown): AccountProjectCopyView | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.projectId !== "string" || typeof row.machineKey !== "string") return null;
+  if (typeof row.checkoutId !== "string" || typeof row.rootPath !== "string") return null;
+  return {
+    projectId: row.projectId,
+    machineKey: row.machineKey,
+    checkoutId: row.checkoutId,
+    rootPath: row.rootPath,
+    isMain: row.isMain === true,
+    lastSeenAt: typeof row.lastSeenAt === "number" && Number.isFinite(row.lastSeenAt) ? row.lastSeenAt : 0,
+  };
+}
+
+/** One project row from another process, or null when its shape is wrong. Removed and merged rows are null. */
+export function coerceAccountProjectView(value: unknown): AccountProjectView | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  const text = (field: unknown) => (typeof field === "string" ? field : null);
+  const id = text(row.id);
+  const host = text(row.host);
+  const repoKey = text(row.repoKey);
+  const owner = text(row.owner);
+  const name = text(row.name);
+  if (!id || !host || !repoKey || !owner || !name) return null;
+  if (row.removedAt != null || row.mergedInto != null) return null;
+  const aliases = Array.isArray(row.aliases) ? row.aliases.filter((alias): alias is string => typeof alias === "string") : [];
+  const copies = Array.isArray(row.copies)
+    ? row.copies.map(coerceCopy).filter((copy): copy is AccountProjectCopyView => copy !== null && copy.projectId === id)
+    : [];
+  return {
+    id,
+    host,
+    repoId: typeof row.repoId === "number" && Number.isFinite(row.repoId) ? row.repoId : null,
+    repoKey,
+    owner,
+    name,
+    defaultBranch: text(row.defaultBranch),
+    addedAt: typeof row.addedAt === "number" ? row.addedAt : 0,
+    removedAt: null,
+    mergedInto: null,
+    aliases: aliases.includes(repoKey) ? aliases : [repoKey, ...aliases],
+    copies,
+  };
+}
+
+/** A `projects.accountList` answer from another process. An answer of an unknown shape reads as `not_loaded`. */
+export function coerceAccountProjectListResult(value: unknown): AccountProjectListResult {
+  if (!value || typeof value !== "object") return { state: "not_loaded", projects: [] };
+  const answer = value as Record<string, unknown>;
+  if (answer.state === "signed_out") return { state: "signed_out", projects: [] };
+  if (answer.state !== "ready" || !Array.isArray(answer.projects)) return { state: "not_loaded", projects: [] };
+  const projects = answer.projects
+    .map(coerceAccountProjectView)
+    .filter((project): project is AccountProjectView => project !== null);
+  const cursor = typeof answer.cursor === "number" && Number.isFinite(answer.cursor) ? answer.cursor : 0;
+  return { state: "ready", cursor, projects };
+}
