@@ -265,6 +265,7 @@ ade projects clone <url> --path '~/work' --machine "Mac Studio"   # on another c
 ade projects prune --dry-run       # registry entries whose folder is gone (never folders)
 ade projects remove project_abc123…
 ade projects touch project_abc123…
+ade projects retry project_abc123…   # or a path: open again a project refused as too slow (project_folder_too_slow)
 ade init                           # adds the cwd as a project
 ade init /path/to/project          # adds an explicit path
 ```
@@ -292,7 +293,10 @@ projects.list   { } -> ProjectRecord[]   # each record also carries a host-resol
 projects.add    { rootPath } -> ProjectRecord
 projects.remove { projectId } -> { removed }
 projects.touch  { projectId } -> ProjectRecord
+projects.retryOpen { projectId | rootPath } -> { projectId, displayName, rootPath, wasBlocked, strikesCleared }
 ```
+
+A project whose open froze the brain until the freeze guard killed it (a folder on a drive too slow for its database) gets a strike in `$ADE_HOME/runtime/project-open-strikes.json`; the guard's breadcrumb names every project that was opening (`openingProjects`). Two strikes inside 15 minutes and every open of that project, from any caller, fails at once with `project_folder_too_slow` instead of freezing the brain again, so the rest of the machine keeps working. A successful open clears its strikes; the refusal lifts on its own after the window, and `ade projects retry` (`projects.retryOpen`) clears it on request. The brain log has `project.open_freeze_killed` (the strike), `project.open_blocked` (the refusal) and `brain.project_open_stalled` (written during a freeze, naming the step).
 
 `projects.list` stamps each returned record with an `icon: { dataUrl, sourcePath, mimeType }` resolved on the host (`resolveRemoteProjectIcon` in `src/services/projects/projectIconResolver.ts`) — a best-effort, electron-free icon lookup (`.ade/local.yaml` override, conventional icon/logo files, `index.html` `<link rel="icon">`, capped at 2 MB) so a desktop connected over the remote runtime can show the real project logo in its tab instead of a blank folder. A per-project resolution failure degrades to a null icon and never breaks the list. A failed icon lookup is remembered as "no icon" for 60 s, so later lists answer at once instead of waiting out the 750 ms icon budget again.
 
@@ -311,6 +315,7 @@ runtime.activitySummary            runtime.updateImpact
 account.call     attention.call
 projects.list    projects.add      projects.remove   projects.touch
 projects.inspectRemoval            projects.removeCopy
+projects.retryOpen
 projects.browseDirectories         projects.getDetail
 projects.getWorkSummary            projects.getDefaultParentDir
 projects.getHandoffStoragePreflight

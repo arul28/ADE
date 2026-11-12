@@ -5,6 +5,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { markActiveHostProjectOpen } from "./projectCatalog";
 import { ProjectRegistry } from "./projectRegistry";
 import { FAILED_SCOPE_BACKOFF_MAX_MS, ProjectScopeRegistry, SyncHostRoleBlockedError } from "./projectScope";
+import { PROJECT_OPEN_STRIKES_FILE, PROJECT_OPEN_STRIKE_WINDOW_MS, ProjectOpenStrikes } from "./projectOpenStrikes";
+import {
+  BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE,
+  recoverBrainLoopWatchdogBreadcrumb,
+} from "../runtime/brainLoopWatchdog";
+import { expectedErrorKind } from "../../../../desktop/src/shared/expectedError";
 
 const createAdeRuntimeMock = vi.fn();
 
@@ -1586,5 +1592,113 @@ describe("ProjectScopeRegistry removal during a close", () => {
     // A close of a project that is not loaded stops nothing.
     await scopeRegistry.dispose(first.projectId, "close");
     expect(stopHandedOff).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("ProjectScopeRegistry refuses a project whose open keeps freezing the brain", () => {
+  beforeEach(() => {
+    createAdeRuntimeMock.mockReset();
+    createAdeRuntimeMock.mockImplementation(async () => ({ dispose: vi.fn() }));
+  });
+
+  type Step =
+    | { kill: "first" | "second" | "none" }
+    | { stop: true }
+    | { open: "first" | "second"; expect: "opened" | "refused" }
+    | { advance: number }
+    | { corrupt: true }
+    | { retry: "first" };
+
+  /**
+   * Each row is a run of brain lives on one machine. A `kill` is the freeze
+   * guard's: its worker writes the breadcrumb with the projects that were
+   * opening ("none" = nothing was), and the next brain start recovers it and
+   * counts the strike, as `cli.ts` wires it. A `stop` is any other end of a
+   * brain (a user stop, an update, an OOM): no breadcrumb.
+   */
+  it.each<[string, Step[]]>([
+    ["one freeze kill still opens", [
+      { kill: "first" }, { open: "first", expect: "opened" },
+    ]],
+    ["a second freeze kill refuses the project at once", [
+      { kill: "first" }, { kill: "first" }, { open: "first", expect: "refused" },
+    ]],
+    ["another project keeps opening", [
+      { kill: "first" }, { kill: "first" }, { open: "second", expect: "opened" },
+    ]],
+    ["an open that finishes clears the strikes", [
+      { kill: "first" }, { open: "first", expect: "opened" }, { kill: "first" }, { open: "first", expect: "opened" },
+    ]],
+    ["strikes older than the window do not count", [
+      { kill: "first" }, { kill: "first" }, { advance: PROJECT_OPEN_STRIKE_WINDOW_MS + 1 }, { open: "first", expect: "opened" },
+    ]],
+    ["a corrupt strikes file reads as no strikes", [
+      { kill: "first" }, { kill: "first" }, { corrupt: true }, { open: "first", expect: "opened" },
+    ]],
+    ["a freeze kill while nothing was opening is no strike", [
+      { kill: "none" }, { kill: "none" }, { open: "first", expect: "opened" },
+    ]],
+    ["a brain that ends any other way is no strike", [
+      { kill: "first" }, { stop: true }, { stop: true }, { open: "first", expect: "opened" },
+    ]],
+    ["an explicit retry clears the refusal", [
+      { kill: "first" }, { kill: "first" }, { open: "first", expect: "refused" }, { retry: "first" },
+      { open: "first", expect: "opened" },
+    ]],
+  ])("%s", async (_name, steps) => {
+    const { registry, first, second } = createRegistry();
+    const projects = { first, second };
+    const runtimeDir = path.join(path.dirname(registry.path), "runtime");
+    const clock = fakeClock(Date.parse("2026-11-11T12:00:00.000Z"));
+
+    const startBrain = () => {
+      const strikes = new ProjectOpenStrikes({ runtimeDir, now: clock.now });
+      const breadcrumb = recoverBrainLoopWatchdogBreadcrumb({ runtimeDir, warn: () => {} });
+      if (breadcrumb) strikes.recordFreezeKill(breadcrumb);
+      return new ProjectScopeRegistry(registry, { openStrikes: strikes, now: clock.now });
+    };
+    let brain = startBrain();
+    for (const step of steps) {
+      if ("kill" in step) {
+        fs.mkdirSync(runtimeDir, { recursive: true });
+        fs.writeFileSync(path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE), JSON.stringify({
+          lastCommand: "idle",
+          blockedMs: 30_400,
+          ts: new Date(clock.now()).toISOString(),
+          ...(step.kill === "none"
+            ? {}
+            : { openingProjects: [{ projectId: projects[step.kill].projectId, phase: "db_open", elapsedMs: 30_000 }] }),
+        }));
+        clock.advance(60_000);
+        // Writes the clear-on-open and retry leave pending land before the next start reads.
+        await new Promise((resolve) => setImmediate(resolve));
+        brain = startBrain();
+      } else if ("stop" in step) {
+        await new Promise((resolve) => setImmediate(resolve));
+        brain = startBrain();
+      } else if ("advance" in step) {
+        clock.advance(step.advance);
+      } else if ("corrupt" in step) {
+        fs.writeFileSync(path.join(runtimeDir, PROJECT_OPEN_STRIKES_FILE), "{\"version\":1,\"projects\":{\"pro");
+        brain = startBrain();
+      } else if ("retry" in step) {
+        brain.retryOpen(projects[step.retry].projectId);
+      } else {
+        const bootsBefore = createAdeRuntimeMock.mock.calls.length;
+        const outcome = await brain.get(projects[step.open].projectId).then(
+          () => "opened" as const,
+          (error: unknown) => {
+            // The refusal is typed and expected, and never reaches the database.
+            expect((error as { code?: unknown }).code).toBe("project_folder_too_slow");
+            expect(expectedErrorKind(error)).toBe("environment");
+            expect((error as Error).message).toContain(path.basename(projects[step.open].rootPath));
+            expect(createAdeRuntimeMock.mock.calls.length).toBe(bootsBefore);
+            return "refused" as const;
+          },
+        );
+        expect(outcome).toBe(step.expect);
+        if (outcome === "opened") await brain.dispose(projects[step.open].projectId);
+      }
+    }
   });
 });

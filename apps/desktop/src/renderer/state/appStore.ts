@@ -1521,6 +1521,12 @@ export type ProjectTransitionError = {
    * the full-screen recovery flow.
    */
   retryRootPath?: string;
+  /**
+   * The brain refused the project because opening it froze ADE twice
+   * (`project_folder_too_slow`). Its Try again first asks that brain to
+   * forget the refusal; otherwise it would only be refused again.
+   */
+  retryClearsOpenRefusal?: true;
 };
 
 /**
@@ -2062,6 +2068,9 @@ const RECOVERY_MESSAGE_BY_CODE: Partial<Record<AdeRecoveryErrorCode, string>> = 
 
 const GENERIC_RECOVERY_MESSAGE = "ADE ran into a problem with this project.";
 
+/** The brain's code for a project refused because opening it froze ADE (`projectOpenStrikes.ts`). */
+const PROJECT_FOLDER_TOO_SLOW_CODE = "project_folder_too_slow";
+
 function formatProjectTransitionError(
   kind: "opening" | "switching" | "closing",
   error: unknown,
@@ -2089,6 +2098,9 @@ function formatProjectTransitionError(
         "Closing the current project took longer than 30 seconds. ADE is still finishing in the background.",
     };
   }
+  // Not a recovery-screen code: the brain's message says what to do, and the
+  // banner's Try again clears the refusal first.
+  const clearsOpenRefusal = parsed.code === PROJECT_FOLDER_TOO_SLOW_CODE;
   const code = toAdeRecoveryErrorCode(parsed.code);
   const recoveryMessage = code
     ? RECOVERY_MESSAGE_BY_CODE[code] ?? (raw ? null : GENERIC_RECOVERY_MESSAGE)
@@ -2102,6 +2114,7 @@ function formatProjectTransitionError(
     // the path in the main process, so the renderer never saw it) lets the
     // recovery screen offer Repair instead of the generic banner.
     ...(parsed.rootPath ? { rootPath: parsed.rootPath } : {}),
+    ...(clearsOpenRefusal ? { retryClearsOpenRefusal: true as const } : {}),
   };
 }
 

@@ -10,6 +10,18 @@ import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistr
 import { captureProblem, sendSentryLog } from "../../../../desktop/src/shared/sentry/capture";
 import { DIAGNOSTIC_ATTACH_TAG } from "../../../../desktop/src/shared/sentry/diagnostics";
 import { createReportOnce, PROJECT_REGISTRY_ATTACH, wasRemovedFromRegistry } from "./projectRegistryJournal";
+import { createPhaseClock } from "../../../../desktop/src/shared/phaseClock";
+import { trackBrainLoopWatchdogProjectOpen } from "../runtime/brainLoopWatchdog";
+import { projectFilesystemKind, type ProjectFilesystemKind } from "./projectFilesystemKind";
+import { projectFolderTooSlowError, type ProjectOpenBlock, type ProjectOpenStrikes } from "./projectOpenStrikes";
+
+/** A project open slower than this logs which of its steps took the time. */
+const PROJECT_OPEN_SLOW_MS = 5_000;
+
+type ScopeLogger = {
+  warn: (event: string, meta?: Record<string, unknown>) => void;
+  info?: (event: string, meta?: Record<string, unknown>) => void;
+};
 
 type SwitchSyncHostOptions = {
   deactivatePreviousHost?: boolean;
@@ -249,10 +261,91 @@ export class ProjectScopeRegistry {
        * Injected so this module does not depend on device code.
        */
       onUnregisterAfterHandOff?: (projectRoot: string) => Promise<void>;
+      /**
+       * Freeze kills counted against projects (see `projectOpenStrikes.ts`).
+       * A project with enough of them is refused here, for every caller: a
+       * window, a phone, an automation, a timer, a restart's recovery.
+       */
+      openStrikes?: ProjectOpenStrikes | null;
+      /** The brain's log, for the open diagnostics (`project.open_slow`, `project.open_blocked`). */
+      logger?: ScopeLogger | null;
       /** Injectable clock for the failed-boot backoff. Tests only. */
       now?: () => number;
     } = {},
-  ) {}
+  ) {
+    // The refusal's wording says "network drive" when it is one. The lookup
+    // is asynchronous and slow mounts are what it is for, so it starts now
+    // for each project already refused, well before anyone asks for one.
+    const strikes = this.options.openStrikes;
+    if (strikes) {
+      for (const projectId of strikes.blockedProjectIds()) {
+        const record = this.projectRegistry.get(projectId);
+        if (record) this.lookupFilesystemKind(projectId, record.rootPath);
+      }
+    }
+  }
+
+  /** Project file-system kinds looked up for a refusal, settled or not. */
+  private readonly filesystemKinds = new Map<ProjectId, ProjectFilesystemKind | "pending">();
+  /** `projectId` + refusal end already logged, so a room of pollers logs one line. */
+  private readonly loggedOpenBlocks = new Set<string>();
+
+  private lookupFilesystemKind(projectId: ProjectId, rootPath: string): void {
+    if (this.filesystemKinds.has(projectId)) return;
+    this.filesystemKinds.set(projectId, "pending");
+    void projectFilesystemKind(rootPath).then((kind) => {
+      this.filesystemKinds.set(projectId, kind);
+    });
+  }
+
+  /** The refusal for a project too slow to open, logged once per refusal. */
+  private refuseSlowProject(projectId: ProjectId, block: ProjectOpenBlock): Error {
+    const record = this.projectRegistry.get(projectId);
+    if (record) this.lookupFilesystemKind(projectId, record.rootPath);
+    const kind = this.filesystemKinds.get(projectId);
+    const filesystem = kind && kind !== "pending" ? kind : null;
+    const logKey = `${projectId}\u0000${block.blockedUntilMs}`;
+    if (!this.loggedOpenBlocks.has(logKey)) {
+      this.loggedOpenBlocks.add(logKey);
+      try {
+        // No name or path: the id is enough to find the project on the machine.
+        this.options.logger?.warn("project.open_blocked", {
+          projectId,
+          strikes: block.strikes,
+          blockedUntil: new Date(block.blockedUntilMs).toISOString(),
+          filesystemKind: filesystem?.kind ?? "unknown",
+          filesystemType: filesystem?.fsType ?? null,
+        });
+      } catch {
+        // Logging must never change the answer.
+      }
+    }
+    return projectFolderTooSlowError({
+      displayName: record?.displayName?.trim() || "this project",
+      networkDrive: filesystem?.kind === "network",
+    });
+  }
+
+  /**
+   * A person asked to open a refused project again: forget its strikes and the
+   * failed-boot backoff, so the next `get` really opens it. Opening it is the
+   * caller's next step. Returns whether it was refused.
+   */
+  retryOpen(projectId: ProjectId): { wasBlocked: boolean; strikesCleared: boolean } {
+    const strikes = this.options.openStrikes;
+    const wasBlocked = Boolean(strikes?.blocked(projectId));
+    const strikesCleared = strikes?.clear(projectId) ?? false;
+    this.failedScopes.delete(projectId);
+    if (strikesCleared) {
+      this.options.logger?.info?.("project.open_retry", { projectId, wasBlocked });
+    }
+    return { wasBlocked, strikesCleared };
+  }
+
+  /** Whether this project is refused right now, for callers that would read its folder anyway. */
+  isOpenBlocked(projectId: ProjectId): boolean {
+    return Boolean(this.options.openStrikes?.blocked(projectId));
+  }
 
   private nowMs(): number {
     return (this.options.now ?? Date.now)();
@@ -424,6 +517,12 @@ export class ProjectScopeRegistry {
     const cached = this.scopes.get(projectId);
     if (cached) return await cached;
 
+    // A project whose open froze the brain into the freeze guard twice is not
+    // opened again: that is the restart loop that took every other project on
+    // the machine down with it. One in-memory lookup on the healthy path.
+    const block = this.options.openStrikes?.blocked(projectId) ?? null;
+    if (block) throw this.refuseSlowProject(projectId, block);
+
     // A project whose boot just failed is very likely to fail the same way
     // again, and a full boot is expensive: it opens the project database and
     // constructs every runtime service. Serve the recorded failure until the
@@ -444,6 +543,14 @@ export class ProjectScopeRegistry {
     }
 
     this.projectRegistry.assertProjectDataAvailable(record);
+    // The open as a whole, for the freeze guard (which project, which step) and
+    // for the slow-open line, which the brain logs on its own disk.
+    const openTracker = trackBrainLoopWatchdogProjectOpen(projectId, "prepare");
+    const openClock = createPhaseClock<string>("prepare");
+    const enterOpenPhase = (phase: string): void => {
+      openClock.enter(phase);
+      openTracker.phase(phase);
+    };
     const pending = (async () => {
       // A teardown of this project's previous scope may still be waiting on
       // its disposers (up to the drain's cap); its database closes last, so
@@ -473,7 +580,9 @@ export class ProjectScopeRegistry {
         ...(this.options.keepAwakeService
           ? { keepAwakeService: this.options.keepAwakeService }
           : {}),
+        onOpenPhase: enterOpenPhase,
       });
+      enterOpenPhase("identity");
       try {
         this.projectRegistry.recordDatabaseIdentity(projectId);
       } catch (error) {
@@ -487,6 +596,10 @@ export class ProjectScopeRegistry {
       });
     })();
     this.scopes.set(projectId, pending);
+    void pending.then(
+      () => this.settleOpen(projectId, record.rootPath, openTracker, openClock, "opened"),
+      () => this.settleOpen(projectId, record.rootPath, openTracker, openClock, "failed"),
+    );
 
     try {
       const scope = await pending;
@@ -496,6 +609,8 @@ export class ProjectScopeRegistry {
       if (this.scopes.get(projectId) === pending) {
         this.readyScopes.set(projectId, scope);
         this.failedScopes.delete(projectId);
+        // It opened, so whatever froze it before is not freezing it now.
+        this.options.openStrikes?.clear(projectId);
       }
       return scope;
     } catch (error) {
@@ -514,6 +629,38 @@ export class ProjectScopeRegistry {
       }
       throw error;
     }
+  }
+
+  /**
+   * An open settled: the freeze guard stops naming it, and a slow one says
+   * which step took the time. This line used to come from inside the runtime,
+   * written to the project's own log (on the slow drive) and only after a
+   * successful open, so a freeze that ended in a kill, or an open that failed,
+   * never logged it. The steps the brain reached before a kill are in the
+   * guard's breadcrumb and its `brain.project_open_stalled` line instead.
+   */
+  private settleOpen(
+    projectId: ProjectId,
+    rootPath: string,
+    tracker: { done(): void },
+    clock: { totalMs(): number; summary(): string },
+    outcome: "opened" | "failed",
+  ): void {
+    tracker.done();
+    const totalMs = clock.totalMs();
+    if (totalMs < PROJECT_OPEN_SLOW_MS || !this.options.logger) return;
+    const slowOpen = { projectId, totalMs, phases: clock.summary(), outcome };
+    void projectFilesystemKind(rootPath).then((filesystem) => {
+      try {
+        this.options.logger?.warn("project.open_slow", {
+          ...slowOpen,
+          filesystemKind: filesystem.kind,
+          filesystemType: filesystem.fsType,
+        });
+      } catch {
+        // A log line must not fail an open.
+      }
+    });
   }
 
   /**

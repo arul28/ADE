@@ -1058,6 +1058,12 @@ export async function createAdeRuntime(args: {
   crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
   /** Machine-scoped power service shared by every project runtime in a brain. */
   keepAwakeService?: BrainKeepAwakeService | null;
+  /**
+   * Told each step of the open as it starts. A caller that passes it owns the
+   * slow-open report (the brain's scope registry logs it on the brain's own
+   * disk, for failed opens too), so this runtime does not log it as well.
+   */
+  onOpenPhase?: (phase: "root_check" | "base_ref" | "db_open" | "services") => void;
 } | string): Promise<AdeRuntime> {
   const resolvedArgs = typeof args === "string"
     ? { projectRoot: args, workspaceRoot: args }
@@ -1075,6 +1081,16 @@ export async function createAdeRuntime(args: {
   // waits for this open, so a slow one (a folder on a network mount) shows up
   // as many calls timing out together; the log line below names the step.
   const bootClock = createPhaseClock<"root_check" | "base_ref" | "db_open" | "services">("root_check");
+  const onOpenPhase = typeof args === "string" ? undefined : args.onOpenPhase;
+  const enterBootPhase = (phase: "root_check" | "base_ref" | "db_open" | "services"): void => {
+    bootClock.enter(phase);
+    try {
+      onOpenPhase?.(phase);
+    } catch {
+      // A progress listener must not fail the open.
+    }
+  };
+  enterBootPhase("root_check");
   if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {
     throw new Error(`Project root does not exist: ${projectRoot}`);
   }
@@ -1098,7 +1114,7 @@ export async function createAdeRuntime(args: {
     }
     throw error;
   }
-  bootClock.enter("base_ref");
+  enterBootPhase("base_ref");
   assertLocalProjectDataAvailable(projectRoot);
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
   // On Windows each project's credential store is sealed with its own DPAPI
@@ -1113,7 +1129,7 @@ export async function createAdeRuntime(args: {
       ? readExistingOsBoundKeyMaterialAsync(path.join(projectRoot, ".ade", "secrets")).catch(() => null)
       : null,
   ]);
-  bootClock.enter("db_open");
+  enterBootPhase("db_open");
   const paths = ensureAdePaths(projectRoot);
   const runtimeSocketPath = typeof resolvedArgs.runtimeSocketPath === "string"
     ? resolvedArgs.runtimeSocketPath.trim() || paths.socketPath
@@ -1156,7 +1172,7 @@ export async function createAdeRuntime(args: {
     // The app and the brain's project scope record it too, so a project used
     // only from the CLI is protected the same way as one opened in the app.
     recordLocalProjectDatabaseIdentity(projectRoot, logger);
-    bootClock.enter("services");
+    enterBootPhase("services");
   } catch (error) {
     // The path corroborates a bare errno: SQLite failures often carry no
     // `syscall`, and without a path the classifier refuses to call them
@@ -4455,7 +4471,7 @@ export async function createAdeRuntime(args: {
 
     usageTrackingService.start();
     const bootTotalMs = bootClock.totalMs();
-    if (bootTotalMs >= PROJECT_OPEN_SLOW_MS) {
+    if (bootTotalMs >= PROJECT_OPEN_SLOW_MS && !onOpenPhase) {
       // A warn line: on disk, and a Sentry Log plus breadcrumb where Sentry
       // runs. No folder path. The open does not wait for the file system
       // lookup; the line follows it.

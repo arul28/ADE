@@ -571,6 +571,25 @@ once per distinct `ts` in `BrainRecoveryNotice` ("ADE recovered from a
 background issue … a stuck task was restarted"). `ade doctor` reports the same
 `last-wedge.json` as its Wedge-history row.
 
+#### A project whose folder is too slow to open
+
+A project on a drive too slow for its database (a network mount) can freeze the
+event loop while it opens, for longer than the freeze guard allows; the guard
+kills the brain, the supervisor restarts it, a client asks for the same project
+and it freezes again, with every other project on the machine down too. The
+scope registry tells the watchdog which projects are opening and in which step
+(`trackBrainLoopWatchdogProjectOpen`), so the kill's breadcrumb names them
+(`openingProjects`). The next start counts a strike against each in
+`$ADE_HOME/runtime/project-open-strikes.json` (`projectOpenStrikes.ts`; read
+once, atomic writes, a torn or missing file is no strikes). With two strikes in
+15 minutes `ProjectScopeRegistry.get` refuses that project at once with the
+expected `project_folder_too_slow` error, for every caller (windows, phones,
+automations, timers, restart recovery) and the catalog skips its lane count, so
+nothing reopens it in the background. A successful open clears its strikes, the
+refusal lifts after the window, and `ade projects retry <id|path>`
+(`projects.retryOpen`) or the desktop banner's Try again (local projects) clears
+it at once. The database stays in the project folder.
+
 #### A folder waiting on a permission prompt
 
 macOS gates folders on an external drive, and Desktop, Documents and

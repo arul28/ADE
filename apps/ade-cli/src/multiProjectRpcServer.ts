@@ -646,6 +646,7 @@ const RUNTIME_METHODS = new Set([
   "projects.removeCopy",
   "projects.pruneMissing",
   "projects.touch",
+  "projects.retryOpen",
   "projects.setIcon",
   "projects.removeIcon",
   "projects.browseDirectories",
@@ -3834,6 +3835,34 @@ export function createMultiProjectRpcRequestHandler(
         );
       }
       return projectRegistry.touch(projectId);
+    }
+
+    if (method === "projects.retryOpen") {
+      // A person asking to open a project again that was refused for freezing
+      // this machine's ADE while it opened (`project_folder_too_slow`). Only
+      // forgets the refusal; opening it is the caller's next call.
+      const projectId = readProjectId(params);
+      const rootPath = typeof params.rootPath === "string" && params.rootPath.trim() ? params.rootPath.trim() : null;
+      if (!projectId && !rootPath) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "projects.retryOpen requires projectId or rootPath.");
+      }
+      const movedTo = projectId ? projectRegistry.resolveMovedProjectId(projectId) : null;
+      const record = projectId
+        ? projectRegistry.get(projectId) ?? (movedTo ? projectRegistry.get(movedTo) : null)
+        : projectRegistry.findAtRootPath(rootPath!);
+      if (!record) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          `No project ${projectId ?? rootPath} is registered on this machine.`,
+        );
+      }
+      const outcome = scopeRegistry.retryOpen(record.projectId);
+      return {
+        projectId: record.projectId,
+        displayName: record.displayName,
+        rootPath: record.rootPath,
+        ...outcome,
+      };
     }
 
     if (method === "projects.setIcon") {

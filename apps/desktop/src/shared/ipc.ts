@@ -208,6 +208,7 @@ export const IPC = {
    */
   diagnosticsAckAutoSent: "ade.diagnostics.ackAutoSent",
   projectForgetRecent: "ade.project.forgetRecent",
+  projectRetryOpen: "ade.project.retryOpen",
   projectInspectRemoval: "ade.project.inspectRemoval",
   projectRemoveCopy: "ade.project.removeCopy",
   projectReorderRecent: "ade.project.reorderRecent",

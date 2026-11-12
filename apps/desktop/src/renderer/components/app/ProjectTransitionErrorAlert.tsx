@@ -37,6 +37,7 @@ export function ProjectTransitionErrorAlert(): null {
       && !brainDownShowing,
   );
   const retryRootPath = projectTransitionError?.retryRootPath ?? null;
+  const retryClearsOpenRefusal = projectTransitionError?.retryClearsOpenRefusal === true;
 
   useAppBanner(
     visible && projectTransitionError
@@ -57,7 +58,13 @@ export function ProjectTransitionErrorAlert(): null {
                 variant: "primary",
                 onClick: () => {
                   clearProjectTransitionError();
-                  void switchProjectToPath(retryRootPath).catch(() => {});
+                  // A project refused as too slow is refused again unless the
+                  // brain that refused it forgets that first. The open is
+                  // local (only local opens offer Try again), so is the retry.
+                  const cleared = retryClearsOpenRefusal
+                    ? Promise.resolve(window.ade.project.retryOpen?.(retryRootPath)).catch(() => null)
+                    : Promise.resolve(null);
+                  void cleared.then(() => switchProjectToPath(retryRootPath)).catch(() => {});
                 },
               }]
             : undefined,

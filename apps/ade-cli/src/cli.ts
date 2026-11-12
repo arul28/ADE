@@ -2416,6 +2416,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade projects prune [--dry-run]                Remove projects whose folder is gone from ADE (never deletes a folder)
     $ ade projects remove <project-id>              Remove the project from ADE on this machine (the folder stays)
     $ ade projects touch <project-id>
+    $ ade projects retry <project-id|path>          Open a project again that ADE refused because its folder is too slow
     $ ade projects inspect /path/to/checkout --json Classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 `,
   new: `${ADE_BANNER}
@@ -26349,6 +26350,37 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
       ],
     };
   }
+  if (sub === "retry") {
+    // A project refused because opening it froze ADE twice (its folder is on
+    // a drive too slow for ADE): forget that, so the next open really tries.
+    // The refusal also lifts on its own after 15 minutes.
+    const projectRef = requireValue(
+      readValue(args, ["--project-id", "--id", "--path"]) ?? firstPositional(args),
+      "project id or path",
+    );
+    const byId = /^project_[A-Za-z0-9]+$/.test(projectRef);
+    return {
+      ...base,
+      label: "projects retry",
+      steps: [{
+        key: "result",
+        method: "projects.retryOpen",
+        params: byId
+          ? { projectId: projectRef }
+          // Another computer's path is sent as typed, as `clone --path` is.
+          : { rootPath: target.remote ? projectRef : resolveCliPathArg(projectRef) },
+      }],
+      formatText: (result) => {
+        if (!isRecord(result)) return "Done.";
+        const name = String(result.displayName ?? result.projectId ?? "The project");
+        return result.wasBlocked === true
+          ? `${name} can be opened again. Open it to try.`
+          : result.strikesCleared === true
+            ? `${name} was not refused yet; its earlier freezes are forgotten.`
+            : `${name} was not refused. Nothing to clear.`;
+      },
+    };
+  }
   if (sub === "inspect") {
     const targetPath = requireValue(
       readValue(args, ["--path"]) ?? firstPositional(args),
@@ -29163,6 +29195,17 @@ async function runServe(
   projectRootAccessMonitor.configureProjectRootAccessMonitor({ logger: headlessProjectLogger });
   // Started below for the machine brain only; the watchdog's five-minute sample drives it.
   let resourcePressureMonitor: { tick: () => Promise<void> } | null = null;
+  // Freeze kills counted against the projects that were opening when they hit,
+  // read once here from this machine's runtime folder. The scope registry
+  // refuses a project with two in the window, which is what breaks a restart
+  // loop on a project whose folder is too slow to open.
+  const { ProjectOpenStrikes } = await import("./services/projects/projectOpenStrikes");
+  const projectOpenStrikes = new ProjectOpenStrikes({
+    runtimeDir: layout.runtimeDir,
+    onWriteFailed: (error) => headlessProjectLogger.warn("project.open_strikes_write_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    }),
+  });
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     socketPath,
@@ -29173,6 +29216,20 @@ async function runServe(
     info: (event, meta) => headlessProjectLogger.info(event, meta),
     onStall: ({ observedLagMs }) => recordHostStall({ durationMs: observedLagMs }),
     onRecovered: (breadcrumb) => {
+      // The kill landed while projects were opening: count it against them.
+      const struck = projectOpenStrikes.recordFreezeKill(breadcrumb);
+      if (struck.length > 0) {
+        headlessProjectLogger.warn("project.open_freeze_killed", {
+          projects: struck.map((projectId) => ({
+            projectId,
+            strikes: projectOpenStrikes.strikeCount(projectId),
+            blocked: projectOpenStrikes.blocked(projectId) !== null,
+            phase: breadcrumb.openingProjects?.find((open) => open.projectId === projectId)?.phase ?? null,
+          })),
+          blockedMs: breadcrumb.blockedMs,
+          killedAt: breadcrumb.ts,
+        });
+      }
       // A wedge the watchdog ended by restarting: devices that reconnect in
       // the next few minutes learn this machine froze, not that their network did.
       recordHostStall({
@@ -29744,7 +29801,11 @@ async function runServe(
             // catalog does not advertise "0 lanes" for every project. A root
             // that isn't on this machine has nothing to read — skip the disk
             // work and leave the summary's default count.
-            ...(isAvailable ? { laneCount: headlessProjectLaneCount(record.rootPath) } : {}),
+            // Nor for a project refused for being too slow to open: the count
+            // opens its database, on the drive that froze the brain.
+            ...(isAvailable && !scopeRegistry.isOpenBlocked(record.projectId)
+              ? { laneCount: headlessProjectLaneCount(record.rootPath) }
+              : {}),
           });
         });
       return {
@@ -30235,6 +30296,8 @@ async function runServe(
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
+    openStrikes: projectOpenStrikes,
+    logger: headlessProjectLogger,
     terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),
     // A project removed during a repair's teardown: that teardown already
