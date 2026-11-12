@@ -75,6 +75,10 @@ export function fireAndForgetVaultWrite(
     }
     void Promise.resolve(pending).then((result) => {
       if (result && typeof result === "object" && "ok" in result && result.ok === true) return;
+      // A write that named a revision the item no longer has is an answer, not
+      // a failure: the same write again would be refused again. The caller
+      // reads again on its next sync and decides again.
+      if (result && typeof result === "object" && "stale" in result && result.stale === true) return;
       fail(result);
     }).catch((error: unknown) => {
       fail(error);

@@ -60,7 +60,7 @@ its own (single D1 database, no Durable Objects, no queues).
 | DELETE | `/attention/account/settings/:scope/:key[?writtenAt=&sentAt=]` | Remove one setting. Idempotent, so a retry after a dropped response is not an error. With `writtenAt`, `409 stale` when a newer row exists. |
 | GET | `/attention/account/vault?since=<iso>&scope=<key>` | Read vault items changed after a cursor. Values are opened with the Worker's key; an item the key cannot open returns `value: null`. |
 | PUT | `/attention/account/vault` | Upsert a batch of credentials. Values arrive as plaintext over TLS and are sealed before storage. Same `itemResults` option as settings. |
-| DELETE | `/attention/account/vault/:scope/:kind/:key[?writtenAt=&sentAt=]` | Revoke one credential. Idempotent. A key with `/` is sent encoded (`%2F`); one a proxy decoded arrives as several segments and is joined back. With `writtenAt`, `409 stale` when a newer row exists. |
+| DELETE | `/attention/account/vault/:scope/:kind/:key[?writtenAt=&sentAt=&ifRevision=&deviceId=]` | Revoke one credential. Idempotent. A key with `/` is sent encoded (`%2F`); one a proxy decoded arrives as several segments and is joined back. With `writtenAt`, `409 stale` when a newer row exists; with `ifRevision`, `409 stale` when the row moved past that revision (see "Vault revisions"). |
 | DELETE | `/directory/accounts/:userId` | Hard-delete a deleted account's vault items and settings in one batch. `:userId` is the raw Clerk id; the relay deletes the rows of its account key (SHA-256 of issuer and id) for each configured issuer, and answers `503` when no issuer is configured. No account token: only the `x-ade-directory-auth` header (see "Directory provenance"). Idempotent. Called by the account directory on Clerk `user.deleted`. |
 
 ### Account Activity semantics
@@ -237,6 +237,30 @@ and a client that does not send `itemResults` sees the old protocol unchanged
 (it reads a `200` as "every item landed"). `DELETE` takes the same
 `writtenAt`/`sentAt` as query parameters and answers `409 {code: "stale",
 current}` instead of deleting a newer row.
+
+### Vault revisions
+
+A vault row's `updated_at` is its revision. Every write and delete moves it
+forward, by one millisecond past the stored stamp when the Worker clock is not
+later, so a revision never repeats. A vault item may carry `ifRevision` (and a
+`DELETE` the query parameter): the `updatedAt` the client read, or `absent`
+when it read no row. The Worker then applies it only while the row still has
+that revision, in the statement's own `where`, and answers `stale` with the
+stored row otherwise. Naming a revision turns on per-item answers.
+
+- A row this same device (`deviceId`) wrote last also passes: the newer
+  revision is this device's own earlier write, still in flight when this one
+  was made. Another machine's write in between leaves another last writer.
+- `absent` passes only when there is no row, a tombstone included, with no
+  same-device pass: a machine with an empty cache (just signed in) must not
+  replace its own older row, a removal included.
+- A named revision with no row at all is refused: it is not the row the
+  client decided on.
+- An item with no `ifRevision` follows the `writtenAt` rule above, as before.
+
+The brain sends `ifRevision` only for a write whose caller named the revision
+it read (a background sync deciding from what it read). A write a person asks
+for names none and replaces what is there.
 
 The brain's caches (`accountCacheStore`) send all of this. Against an older
 Worker that ignores it, the brain splits a refused batch until the refused
