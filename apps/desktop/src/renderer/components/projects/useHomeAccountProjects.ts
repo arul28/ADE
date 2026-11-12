@@ -51,6 +51,8 @@ export function useHomeAccountProjects(args: {
   webMode: boolean;
   recentProjects: readonly RecentProjectSummary[];
   webRecents: readonly RecentProjectSummary[];
+  /** On the web: each recent row's machine key to its account machine key. */
+  webAccountMachineKeys: ReadonlyMap<string, string>;
   remoteSnapshot: RemoteRuntimeConnectionSnapshot | null;
   pendingForgetKeys: ReadonlySet<string>;
 }): {
@@ -59,7 +61,7 @@ export function useHomeAccountProjects(args: {
   /** How many live projects the account has; 0 until the list is read. */
   accountProjectCount: number;
 } {
-  const { webMode, recentProjects, webRecents, remoteSnapshot, pendingForgetKeys } = args;
+  const { webMode, recentProjects, webRecents, webAccountMachineKeys, remoteSnapshot, pendingForgetKeys } = args;
   const accountList = useAccountProjectList();
   const accountProjects = accountList.state === "ready" ? accountList.projects : null;
   // Only the F6 rule needs it, and only with the account's list.
@@ -78,17 +80,18 @@ export function useHomeAccountProjects(args: {
     // On the web too (S14): the account's projects come from the account
     // directory there, so a project on a computer this browser never
     // connected to, or on no computer, still has a row.
-    const fromAccount = accountProjects
+    const withAccount = accountProjects
       ? accountProjectGroups({
           projects: accountProjects,
           shownGroups: groups,
           remoteSnapshot: webMode ? null : remoteSnapshot,
           thisMachineKey: webMode ? null : thisMachineKey,
           machineNames: accountList.machineNames,
+          accountMachineKeys: webMode ? webAccountMachineKeys : undefined,
         })
-      : [];
-    return [...groups, ...fromAccount].filter((group) => !pendingForgetKeys.has(group.id));
-  }, [accountList.machineNames, accountProjects, pendingForgetKeys, recentProjects, remoteSnapshot, thisMachineKey, webMode, webRecents]);
+      : groups;
+    return withAccount.filter((group) => !pendingForgetKeys.has(group.id));
+  }, [accountList.machineNames, accountProjects, pendingForgetKeys, recentProjects, remoteSnapshot, thisMachineKey, webAccountMachineKeys, webMode, webRecents]);
 
   // A project with no computer online opens as its repository tab, with no
   // machine (0M): the tab waits for a computer instead of failing.

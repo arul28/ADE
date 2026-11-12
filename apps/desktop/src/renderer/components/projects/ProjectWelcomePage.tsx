@@ -263,6 +263,14 @@ export function ProjectWelcomePage() {
     [webMachines],
   );
   const webRecents = useMemo(() => webRecentProjects(webMachines), [webMachines]);
+  // A web recent row names its computer by the browser's machine key; the
+  // account list names it by the account machine key.
+  const webAccountMachineKeys = useMemo(
+    () => new Map(webMachines.flatMap((machine) => (
+      machine.accountMachine?.machineKey ? [[machine.key, machine.accountMachine.machineKey] as const] : []
+    ))),
+    [webMachines],
+  );
   const activeWebMachine = useMemo(() => (
     webMachines.find((machine) => machine.status === "live")
     ?? webMachines.find((machine) => machine.key === workspace?.snapshot.lastActiveMachineKey)
@@ -284,6 +292,7 @@ export function ProjectWelcomePage() {
     webMode,
     recentProjects,
     webRecents,
+    webAccountMachineKeys,
     remoteSnapshot,
     pendingForgetKeys,
   });
@@ -380,7 +389,8 @@ export function ProjectWelcomePage() {
           if (!openNoMachineTab(rp)) setRowError("No computer with this project is online.");
           return;
         }
-        openWebProject(targetId, rp.remote.projectId, recentKey(rp));
+        // A computer that no longer answers opens the repository with no machine, as above.
+        openWebProject(targetId, rp.remote.projectId, recentKey(rp), () => openNoMachineTab(rp));
         return;
       }
       if (rp.kind === "remote" && rp.remote) {
