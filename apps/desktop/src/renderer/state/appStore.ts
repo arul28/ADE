@@ -30,7 +30,7 @@ import {
   normalizeAndroidDevicePreferences,
   type AndroidDevicePreferences,
 } from "../../shared/androidDevicePresentation";
-import { GIT_UNTRUSTED_FOLDER_CODE, parseCodedErrorMessage } from "../lib/codedError";
+import { GIT_UNTRUSTED_FOLDER_CODE, parseCodedErrorMessage, PROJECT_FOLDER_TOO_SLOW_CODE } from "../lib/codedError";
 import { RECOVERY_COPY, toAdeRecoveryErrorCode, type AdeRecoveryErrorCode, type ProjectDataProblem } from "../../shared/types/recovery";
 import { defaultLaneId, pickRestoredLaneId } from "../lib/laneSelection";
 import { isWebClientMode } from "../lib/webClientMode";
@@ -1521,6 +1521,18 @@ export type ProjectTransitionError = {
    * the full-screen recovery flow.
    */
   retryRootPath?: string;
+  /**
+   * The brain refused the project because opening it froze ADE twice
+   * (`project_folder_too_slow`). Its Try again first asks that brain to
+   * forget the refusal; otherwise it would only be refused again.
+   */
+  retryClearsOpenRefusal?: true;
+  /**
+   * Set when the refusal came from the project already open in this window
+   * (its lane read failed), not from an open: the project's state key, so its
+   * next successful read takes the banner down.
+   */
+  refusedProjectKey?: string;
 };
 
 /**
@@ -1793,6 +1805,12 @@ export type AppState = {
   setProjectHydrated: (hydrated: boolean) => void;
   setShowWelcome: (show: boolean) => void;
   clearProjectTransitionError: () => void;
+  /**
+   * The banner's Try again: reopen the project the failed transition was
+   * heading to, first asking the brain to forget a too-slow refusal when that
+   * is what failed.
+   */
+  retryProjectTransition: () => Promise<void>;
   /** Shows the full-screen recovery flow for a project whose ADE data went missing or was replaced. No-op while another transition error is up. */
   reportProjectDataProblem: (rootPath: string, status: ProjectDataProblem) => void;
   setLanes: (lanes: LaneSummary[]) => void;
@@ -2089,6 +2107,9 @@ function formatProjectTransitionError(
         "Closing the current project took longer than 30 seconds. ADE is still finishing in the background.",
     };
   }
+  // Not a recovery-screen code: the brain's message says what to do, and the
+  // banner's Try again clears the refusal first.
+  const clearsOpenRefusal = parsed.code === PROJECT_FOLDER_TOO_SLOW_CODE;
   const code = toAdeRecoveryErrorCode(parsed.code);
   const recoveryMessage = code
     ? RECOVERY_MESSAGE_BY_CODE[code] ?? (raw ? null : GENERIC_RECOVERY_MESSAGE)
@@ -2102,6 +2123,7 @@ function formatProjectTransitionError(
     // the path in the main process, so the renderer never saw it) lets the
     // recovery screen offer Repair instead of the generic banner.
     ...(parsed.rootPath ? { rootPath: parsed.rootPath } : {}),
+    ...(clearsOpenRefusal ? { retryClearsOpenRefusal: true as const } : {}),
   };
 }
 
@@ -2130,7 +2152,13 @@ function transitionFailureState(
       gitFolderTrustPrompt: { rootPath, message: parsed.message },
     };
   }
-  return { projectTransitionError: formatProjectTransitionError(kind, error) };
+  const projectTransitionError = formatProjectTransitionError(kind, error);
+  // A refused project offers Try again wherever it was opened from.
+  return {
+    projectTransitionError: projectTransitionError.retryClearsOpenRefusal && rootPath
+      ? { ...projectTransitionError, retryRootPath: rootPath }
+      : projectTransitionError,
+  };
 }
 
 /** How stale a cross-machine slice's sync stamps may get before a read with no other news republishes it. */
@@ -2599,6 +2627,30 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),
+
+  retryProjectTransition: async () => {
+    const failed = get().projectTransitionError;
+    const rootPath = failed?.retryRootPath;
+    if (!failed || !rootPath) return;
+    if (failed.retryClearsOpenRefusal) {
+      // Reopening a refusal the brain did not forget is refused again, so the
+      // banner stays until the clear succeeds.
+      const cleared = await window.ade.project.retryOpen(rootPath).catch(() => false);
+      if (!cleared) return;
+      // Every project transition clears this error when it starts, and so
+      // does a dismiss: a different value means the person moved on while the
+      // clear ran, and this reopen must not take the window back.
+      if (get().projectTransitionError !== failed) return;
+    }
+    set({ projectTransitionError: null });
+    // The project already open in this window is not opened again; reading
+    // its lanes opens it in the brain, and a refusal brings the banner back.
+    if (failed.refusedProjectKey) {
+      await get().refreshLanes().catch(() => {});
+      return;
+    }
+    await get().switchProjectToPath(rootPath).catch(() => {});
+  },
   reportProjectDataProblem: (rootPath, status) => {
     // A recovery screen already up wins. A plain error with no recovery code
     // (a slow switch, say) gives way, so missing data always gets its screen.
@@ -3243,6 +3295,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       if (projectKey !== requestedProjectKey) {
         return;
       }
+      // The project opens again: its refusal banner, if it had one, goes.
+      if (get().projectTransitionError?.refusedProjectKey === projectKey) {
+        set({ projectTransitionError: null });
+      }
       const selected = get().selectedLaneId;
       const nextSelected = selected && lanes.some((l) => l.id === selected) ? selected : lanes[0]?.id ?? null;
       set((prev) => {
@@ -3371,7 +3427,28 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           // Shown where the empty list would read "No lanes yet". Only this
           // project's newest read may say so: the same rule as a success.
           const projectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
-          if (activeLaneRefreshToken === laneRefreshVersion && projectKey === activeLaneRefreshProjectKey && get().lanes.length === 0) {
+          const newestForThisProject = activeLaneRefreshToken === laneRefreshVersion && projectKey === activeLaneRefreshProjectKey;
+          // The project open in this window was refused after it opened (the
+          // brain froze on its folder and restarted): the lane read is the one
+          // project call every reconnect makes, so it raises the same banner an
+          // open would, once, without replacing another notice.
+          if (newestForThisProject && projectKey && parseCodedErrorMessage(error).code === PROJECT_FOLDER_TOO_SLOW_CODE) {
+            const state = get();
+            if (!state.projectTransition && !state.projectTransitionError) {
+              const localRoot = state.projectBinding?.kind === "remote" ? null : state.project?.rootPath ?? null;
+              set({
+                projectTransitionError: {
+                  ...formatProjectTransitionError("opening", error),
+                  refusedProjectKey: projectKey,
+                  // Try again clears the refusal through this computer's
+                  // brain, so it is offered only for a project on this
+                  // computer; a project on another machine shows the message.
+                  ...(localRoot ? { retryRootPath: localRoot } : {}),
+                },
+              });
+            }
+          }
+          if (newestForThisProject && get().lanes.length === 0) {
             set({
               lanesLoadError: {
                 projectKey,

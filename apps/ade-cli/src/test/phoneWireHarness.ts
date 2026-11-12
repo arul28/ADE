@@ -99,7 +99,7 @@ export async function startMeasurementSyncHost(args: {
     rosterProvider: {
       buildSnapshot: () => buildRosterSnapshot({
         projectRegistry: { list: () => [registryRecord] },
-        scopeRegistry: { getIfBooted: () => null },
+        scopeRegistry: { getIfBooted: () => null, isOpenBlocked: () => false },
         hostProjectId: null,
       }),
     },

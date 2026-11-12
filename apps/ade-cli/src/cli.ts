@@ -661,7 +661,7 @@ import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
-import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl } from "./services/account/sharedAccountAuthService";
+import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
 import {
   deviceSignInInstructions,
   readDeviceSignInPoll,
@@ -695,6 +695,7 @@ import { markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/br
 import {
   currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
+  resolveBrainLoopWatchdogThresholdMs,
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
 import { recordHostStall } from "./services/runtime/hostStallRecord";
@@ -2416,6 +2417,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade projects prune [--dry-run]                Remove projects whose folder is gone from ADE (never deletes a folder)
     $ ade projects remove <project-id>              Remove the project from ADE on this machine (the folder stays)
     $ ade projects touch <project-id>
+    $ ade projects retry <project-id|path>          Open a project again that ADE refused because its folder is too slow
     $ ade projects inspect /path/to/checkout --json Classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 `,
   new: `${ADE_BANNER}
@@ -26349,6 +26351,35 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
       ],
     };
   }
+  if (sub === "retry") {
+    // Forget a `project_folder_too_slow` refusal and its strikes, so the
+    // next open really tries (see `projectOpenStrikes.ts`).
+    // Flags first: `firstPositional` takes the first bare word, which may be a flag's value.
+    const explicitPath = readValue(args, ["--path"]);
+    const explicitId = readValue(args, ["--project-id", "--id"]);
+    const positional = explicitPath || explicitId ? null : firstPositional(args);
+    const projectId = explicitId ?? (positional && /^project_[A-Za-z0-9]+$/.test(positional) ? positional : null);
+    let params: Record<string, unknown>;
+    if (projectId) {
+      params = { projectId };
+    } else {
+      const rootPath = requireValue(explicitPath ?? positional, "project id or path");
+      // Another computer's path is sent as typed, as `clone --path` is.
+      params = { rootPath: target.remote ? rootPath : resolveCliPathArg(rootPath) };
+    }
+    return {
+      ...base,
+      label: "projects retry",
+      steps: [{ key: "result", method: "projects.retryOpen", params }],
+      formatText: (result) => {
+        if (!isRecord(result)) return "Done.";
+        const name = String(result.displayName ?? result.projectId ?? "The project");
+        if (result.wasBlocked === true) return `${name} can be opened again. Open it to try.`;
+        if (result.strikesCleared === true) return `${name} was not refused yet; its earlier freezes are forgotten.`;
+        return `${name} was not refused. Nothing to clear.`;
+      },
+    };
+  }
   if (sub === "inspect") {
     const targetPath = requireValue(
       readValue(args, ["--path"]) ?? firstPositional(args),
@@ -29163,8 +29194,19 @@ async function runServe(
   projectRootAccessMonitor.configureProjectRootAccessMonitor({ logger: headlessProjectLogger });
   // Started below for the machine brain only; the watchdog's five-minute sample drives it.
   let resourcePressureMonitor: { tick: () => Promise<void> } | null = null;
+  // Freeze kills counted against the project that was opening, read once from
+  // this machine's runtime folder; the scope registry refuses a project with
+  // enough of them (`projectOpenStrikes.ts`).
+  const { ProjectOpenStrikes } = await import("./services/projects/projectOpenStrikes");
+  const projectOpenStrikes = new ProjectOpenStrikes({
+    runtimeDir: layout.runtimeDir,
+    logger: headlessProjectLogger,
+  });
+  // Read once: the watchdog kills at it, and the scope registry's open queue waits no longer.
+  const freezeThresholdMs = resolveBrainLoopWatchdogThresholdMs(process.env.ADE_LOOP_WATCHDOG_MS);
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
+    thresholdMs: freezeThresholdMs,
     socketPath,
     onSampleTick: () => {
       void resourcePressureMonitor?.tick();
@@ -29173,6 +29215,21 @@ async function runServe(
     info: (event, meta) => headlessProjectLogger.info(event, meta),
     onStall: ({ observedLagMs }) => recordHostStall({ durationMs: observedLagMs }),
     onRecovered: (breadcrumb) => {
+      // The kill landed while projects were opening: count it against them.
+      const struck = projectOpenStrikes.recordFreezeKill(breadcrumb);
+      if (struck.length > 0) {
+        headlessProjectLogger.warn("project.open_freeze_killed", {
+          projects: struck.map(({ projectId, phase, strikes, blocked }) => ({
+            projectId,
+            phase,
+            strikes,
+            blockedUntil: blocked ? new Date(blocked.blockedUntilMs).toISOString() : null,
+            level: blocked?.level ?? null,
+          })),
+          blockedMs: breadcrumb.blockedMs,
+          killedAt: breadcrumb.ts,
+        });
+      }
       // A wedge the watchdog ended by restarting: devices that reconnect in
       // the next few minutes learn this machine froze, not that their network did.
       recordHostStall({
@@ -29284,10 +29341,20 @@ async function runServe(
     accountStore: () => (syncEnabled ? machineAccountStoresForRecords().settings : null),
     isSignedIn: () => machineAccountStoresForRecords().accountUserId() !== null,
     logger: headlessProjectLogger,
+    folderRefused: (project) => Boolean(project.projectId && projectOpenStrikes.blocked(project.projectId)),
   });
   const localDeviceIdPath = path.join(layout.secretsDir, "sync-device-id");
   // `--profile` was read at the top of the function, before the identity notes.
   const projectRegistry = new ProjectRegistry(layout);
+  projectRegistry.setFolderReadSkip((projectId) => projectOpenStrikes.blocked(projectId) !== null);
+  // A refused project's folder is not read for account settings, nor counted
+  // for this cloud computer's disk report.
+  const refusedRoot = (rootPath: string): boolean => {
+    const resolved = path.resolve(rootPath);
+    const record = projectRegistry.list().find((entry) => entry.rootPath === resolved);
+    return Boolean(record && projectOpenStrikes.blocked(record.projectId));
+  };
+  setAccountConfigRootSkip(refusedRoot, layout.secretsDir);
   const brainAccountAuthService = getSharedAccountAuthService({
     secretsDir: layout.secretsDir,
     projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
@@ -29350,8 +29417,11 @@ async function runServe(
   }
   // The phone's icon follows the shared record like the desktop's tab does.
   const mobileProjectIconDataUrl = (record: ProjectRecord): string | null => {
+    // For a refused project the records answer from the account only
+    // (`folderRefused` above), and detecting an icon in its folder is skipped.
     const decision = projectRecords.iconDecision(record);
     if (decision.use === "record") return decision.icon.dataUrl;
+    if (scopeRegistry.isOpenBlocked(record.projectId)) return null;
     if (decision.use === "detected") {
       const detected = resolveProjectIconPath(record.rootPath, { iconPathOverride: undefined });
       return detected ? resolveMobileProjectIconDataUrl(record.rootPath, { resolvedSourcePath: detected }) : null;
@@ -29442,7 +29512,7 @@ async function runServe(
     ? (await import("../../desktop/src/main/services/adeCloud/cloudDiskUsage")).createCloudDiskUsageReporter({
         instanceId: cloudInstanceId,
         stateFile: path.join(layout.adeDir, "cloud", "disk-usage.json"),
-        projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
+        projectRoots: () => projectRegistry.list().map((project) => project.rootPath).filter((root) => !refusedRoot(root)),
         readWork: cloudComputerReports.readWork,
         send: cloudComputerReports.send,
         logger: headlessProjectLogger,
@@ -29694,6 +29764,11 @@ async function runServe(
         rootPath: requestedRootPath || null,
       };
     }
+    // A refused project's folder is not touched to set its icon.
+    const refusal = scopeRegistry.openRefusal(record.projectId);
+    if (refusal) {
+      return { ok: false, message: refusal.message, projectId: record.projectId, rootPath: record.rootPath };
+    }
     if (!fs.existsSync(record.rootPath)) {
       return {
         ok: false,
@@ -29737,14 +29812,20 @@ async function runServe(
           : null,
       )
         .map((record) => {
-          const isAvailable = fs.existsSync(record.rootPath);
+          // A refused project is there (it froze while opening): not stat'd again.
+          const refused = scopeRegistry.isOpenBlocked(record.projectId);
+          const isAvailable = refused || fs.existsSync(record.rootPath);
           return toMobileProjectSummary(record, {
             isAvailable,
             // Registry rows carry no lane data; read the count off disk so the
             // catalog does not advertise "0 lanes" for every project. A root
             // that isn't on this machine has nothing to read — skip the disk
             // work and leave the summary's default count.
-            ...(isAvailable ? { laneCount: headlessProjectLaneCount(record.rootPath) } : {}),
+            // Nor for a project refused for being too slow to open: the count
+            // opens its database, on the drive that froze the brain.
+            ...(isAvailable && !refused
+              ? { laneCount: headlessProjectLaneCount(record.rootPath) }
+              : {}),
           });
         });
       return {
@@ -30162,7 +30243,10 @@ async function runServe(
       rosterProvider: {
         buildSnapshot: () => activityRosterProvider.buildSnapshot(),
       },
-      foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      foreignChatProvider: createForeignChatTranscriptResolver({
+        projectRegistry,
+        isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
+      }),
       terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
       // Terminals of open projects only: a terminal never boots a project.
       terminalProjects: async ({ projectId, projectRootPath }) => {
@@ -30235,6 +30319,9 @@ async function runServe(
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
+    openStrikes: projectOpenStrikes,
+    freezeThresholdMs,
+    logger: headlessProjectLogger,
     terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),
     // A project removed during a repair's teardown: that teardown already
@@ -30273,7 +30360,10 @@ async function runServe(
       // project's chat transcript read-only without a project switch. Reads
       // straight off that project's `.ade` transcripts dir (registry-validated,
       // no runtime boot) — the counterpart to the roster feed above.
-      foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      foreignChatProvider: createForeignChatTranscriptResolver({
+        projectRegistry,
+        isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
+      }),
       personalChatScope,
       // A save from the web or the phone is work, and keeps a cloud machine awake.
       onRemoteFileWrite: () => { void cloudKeepAwake?.noteUse(); },
@@ -30515,6 +30605,7 @@ async function runServe(
       scopeRegistry: {
         get: (projectId) => scopeRegistry.get(projectId),
         getIfBooted: (projectId) => scopeRegistry.getIfBooted(projectId),
+        isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
       },
       personalChatScope,
       deliverRemote: async (machineKey, payload) => (await getAgentMachineBridge()).deliverWake(machineKey, payload),

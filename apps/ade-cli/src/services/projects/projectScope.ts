@@ -10,6 +10,36 @@ import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistr
 import { captureProblem, sendSentryLog } from "../../../../desktop/src/shared/sentry/capture";
 import { DIAGNOSTIC_ATTACH_TAG } from "../../../../desktop/src/shared/sentry/diagnostics";
 import { createReportOnce, PROJECT_REGISTRY_ATTACH, wasRemovedFromRegistry } from "./projectRegistryJournal";
+import { createPhaseClock, type PhaseClock } from "../../../../desktop/src/shared/phaseClock";
+import { resolveBrainLoopWatchdogThresholdMs, trackBrainLoopWatchdogProjectOpen } from "../runtime/brainLoopWatchdog";
+import { logSlowProjectOpen } from "./projectFilesystemKind";
+import { QUEUED_OPEN_PHASE, type ProjectOpenStrikes } from "./projectOpenStrikes";
+
+type ScopeLogger = { warn: (event: string, meta?: Record<string, unknown>) => void };
+
+/**
+ * How long a cold open waits its turn behind a project opening alone: the
+ * freeze guard's threshold on this platform, plus a margin. A freeze longer
+ * than that has already been killed; an open still running is not freezing
+ * the loop, so the queued open goes ahead (a later kill finds the stuck open
+ * in an old step, which the strike rules skip).
+ */
+const OPEN_TURN_MARGIN_MS = 15_000;
+
+async function waitForOpenTurn(waitFor: Promise<unknown>[], turnMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    await Promise.race([
+      Promise.allSettled(waitFor),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, turnMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 type SwitchSyncHostOptions = {
   deactivatePreviousHost?: boolean;
@@ -249,10 +279,56 @@ export class ProjectScopeRegistry {
        * Injected so this module does not depend on device code.
        */
       onUnregisterAfterHandOff?: (projectRoot: string) => Promise<void>;
+      /**
+       * Freeze kills counted against projects (see `projectOpenStrikes.ts`).
+       * A project with enough of them is refused here, for every caller: a
+       * window, a phone, an automation, a timer, a restart's recovery.
+       */
+      openStrikes?: ProjectOpenStrikes | null;
+      /**
+       * The freeze guard's threshold, resolved once by the brain, which bounds
+       * how long a cold open waits behind a project opening alone. Defaults to
+       * this platform's default threshold.
+       */
+      freezeThresholdMs?: number;
+      /** The brain's log, for `project.open_slow`. */
+      logger?: ScopeLogger | null;
       /** Injectable clock for the failed-boot backoff. Tests only. */
       now?: () => number;
     } = {},
-  ) {}
+  ) {
+    this.options.openStrikes?.prewarm((projectId) => this.projectRegistry.get(projectId));
+  }
+
+  /** Cold opens in flight, so a project with strikes can open alone. */
+  private readonly openingNow = new Set<Promise<unknown>>();
+  /** The open running alone, which later cold opens wait for. */
+  private soloOpen: Promise<unknown> | null = null;
+
+  /**
+   * A person asked to open a refused project again: forget its strikes and the
+   * failed-boot backoff, so the next `get` really opens it. Opening it is the
+   * caller's next step. Returns whether it was refused.
+   */
+  retryOpen(projectId: ProjectId): { wasBlocked: boolean; strikesCleared: boolean } {
+    const outcome = this.options.openStrikes?.clear(projectId, "retry") ?? { wasBlocked: false, cleared: false };
+    this.failedScopes.delete(projectId);
+    return { wasBlocked: outcome.wasBlocked, strikesCleared: outcome.cleared };
+  }
+
+  /** The `project_folder_too_slow` error opening this project would throw now, or null. */
+  openRefusal(projectId: ProjectId): Error | null {
+    return this.options.openStrikes?.refusal(projectId, () => this.projectRegistry.get(projectId)) ?? null;
+  }
+
+  /**
+   * Whether this project is refused right now, for the brain's readers that
+   * would otherwise read its folder without opening it (roster, catalog, chat
+   * owner lookup, search).
+   */
+  isOpenBlocked(projectId: ProjectId): boolean {
+    return Boolean(this.options.openStrikes?.blocked(projectId));
+  }
 
   private nowMs(): number {
     return (this.options.now ?? Date.now)();
@@ -424,6 +500,11 @@ export class ProjectScopeRegistry {
     const cached = this.scopes.get(projectId);
     if (cached) return await cached;
 
+    // A refused project never reaches `createAdeRuntime`. One in-memory
+    // lookup on the healthy path.
+    const refusal = this.openRefusal(projectId);
+    if (refusal) throw refusal;
+
     // A project whose boot just failed is very likely to fail the same way
     // again, and a full boot is expensive: it opens the project database and
     // constructs every runtime service. Serve the recorded failure until the
@@ -443,8 +524,52 @@ export class ProjectScopeRegistry {
       throw new Error(`Unknown projectId: ${projectId}`);
     }
 
-    this.projectRegistry.assertProjectDataAvailable(record);
+    // One clock for the whole open, which also tells the freeze guard each
+    // step, so a kill names the project and the step. Started before the first
+    // read of the folder: on a hung mount that read is the freeze.
+    const openTracker = trackBrainLoopWatchdogProjectOpen(projectId);
+    const timing = createPhaseClock<string>("prepare");
+    const openClock: PhaseClock<string> = {
+      enter: (phase) => {
+        timing.enter(phase);
+        openTracker.phase(phase);
+      },
+      current: () => timing.current(),
+      timings: () => timing.timings(),
+      totalMs: () => timing.totalMs(),
+      summary: () => timing.summary(),
+    };
+    try {
+      this.projectRegistry.assertProjectDataAvailable(record);
+    } catch (error) {
+      openTracker.done();
+      // A check that was itself slow (a drive that barely answers) is a slow open too.
+      logSlowProjectOpen({
+        logger: this.options.logger,
+        clock: openClock,
+        projectRoot: record.rootPath,
+        fields: { projectId, outcome: "failed" },
+      });
+      throw error;
+    }
+    // A project with strikes opens alone: other cold opens wait for it, and it
+    // waits for those already running, so a freeze during it is its own.
+    const solo = this.options.openStrikes?.opensAlone(projectId) ?? false;
+    let waitFor: Promise<unknown>[] = [];
+    if (solo) {
+      waitFor = [...this.openingNow];
+    } else if (this.soloOpen) {
+      waitFor = [this.soloOpen];
+    }
     const pending = (async () => {
+      if (waitFor.length > 0) {
+        openClock.enter(QUEUED_OPEN_PHASE);
+        await waitForOpenTurn(
+          waitFor,
+          (this.options.freezeThresholdMs ?? resolveBrainLoopWatchdogThresholdMs(undefined)) + OPEN_TURN_MARGIN_MS,
+        );
+        openClock.enter("prepare");
+      }
       // A teardown of this project's previous scope may still be waiting on
       // its disposers (up to the drain's cap); its database closes last, so
       // the new runtime opens the project only after the old one let go.
@@ -473,7 +598,9 @@ export class ProjectScopeRegistry {
         ...(this.options.keepAwakeService
           ? { keepAwakeService: this.options.keepAwakeService }
           : {}),
+        openClock,
       });
+      openClock.enter("identity");
       try {
         this.projectRegistry.recordDatabaseIdentity(projectId);
       } catch (error) {
@@ -487,6 +614,21 @@ export class ProjectScopeRegistry {
       });
     })();
     this.scopes.set(projectId, pending);
+    this.openingNow.add(pending);
+    if (solo) this.soloOpen = pending;
+    const settle = (outcome: "opened" | "failed"): void => {
+      this.openingNow.delete(pending);
+      if (this.soloOpen === pending) this.soloOpen = null;
+      openTracker.done();
+      // Logged here, on the brain's own disk, so failed and killed opens are covered.
+      logSlowProjectOpen({
+        logger: this.options.logger,
+        clock: openClock,
+        projectRoot: record.rootPath,
+        fields: { projectId, outcome },
+      });
+    };
+    void pending.then(() => settle("opened"), () => settle("failed"));
 
     try {
       const scope = await pending;
@@ -496,6 +638,8 @@ export class ProjectScopeRegistry {
       if (this.scopes.get(projectId) === pending) {
         this.readyScopes.set(projectId, scope);
         this.failedScopes.delete(projectId);
+        // It opened, so whatever froze it before is not freezing it now.
+        this.options.openStrikes?.clear(projectId, "opened");
       }
       return scope;
     } catch (error) {
@@ -729,7 +873,8 @@ export class ProjectScopeRegistry {
   ): Promise<ProjectScope | null> {
     if (!this.options.syncRuntime?.enabled) return null;
     const existingHostId = this.syncHostProjectId;
-    if (existingHostId) {
+    // A refused project cannot host; asking for it would only be refused again.
+    if (existingHostId && !this.isOpenBlocked(existingHostId)) {
       try {
         return await this.get(existingHostId);
       } catch {
@@ -749,6 +894,7 @@ export class ProjectScopeRegistry {
         return openedDelta !== 0 ? openedDelta : right.addedAt - left.addedAt;
       })
       .find((candidate) => {
+        if (this.isOpenBlocked(candidate.projectId)) return false;
         if (!this.projectRegistry.isProjectDataMissing(candidate)) return true;
         onSkippedMissingProject?.(candidate);
         return false;

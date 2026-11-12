@@ -121,6 +121,8 @@ export type RosterBootedScope = {
 export type RosterScopeRegistry = {
   /** Non-booting lookup; null when the project is not currently booted. */
   getIfBooted(projectId: string): Promise<RosterBootedScope> | null;
+  /** A project refused as too slow to open: its folder is not read here. */
+  isOpenBlocked(projectId: string): boolean;
 };
 
 export type BuildRosterSnapshotArgs = {
@@ -738,10 +740,13 @@ async function buildRosterProject(
   scopeRegistry: RosterScopeRegistry,
   logger?: Pick<Logger, "warn"> | null,
 ): Promise<SyncRosterProject> {
-  const disk = readProjectFromDisk(record.rootPath, logger);
+  // A refused project is listed without rows: reading its database and chat
+  // folder here, on the brain's thread, is the freeze it was refused for.
+  const refused = scopeRegistry.isOpenBlocked(record.projectId);
+  const disk = refused ? emptyDiskProject() : readProjectFromDisk(record.rootPath, logger);
   const chatSessionsDir = resolveAdeLayout(record.rootPath).chatSessionsDir;
   const recordKey = rosterRecordKey(record);
-  const sidecarFolderIdentity = fileIdentity(chatSessionsDir);
+  const sidecarFolderIdentity = refused ? null : fileIdentity(chatSessionsDir);
   const memo = unbootedProjectMemo.get(record.projectId);
   if (
     memo
@@ -1011,6 +1016,8 @@ const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
  */
 export function createForeignChatTranscriptResolver(args: {
   projectRegistry: ForeignChatProjectRegistry;
+  /** A project refused as too slow to open: its transcripts are not stat'd here. */
+  isOpenBlocked?: (projectId: string) => boolean;
 }): SyncForeignChatTranscriptResolver {
   return {
     resolveTranscriptPath: ({ projectId, projectRootPath, sessionId }) => {
@@ -1033,7 +1040,7 @@ export function createForeignChatTranscriptResolver(args: {
       // transcripts.
       if (byId && requestedRootPath && !pathsEqual(byId.rootPath, requestedRootPath)) return null;
       const record = byId ?? byRoot;
-      if (!record) return null;
+      if (!record || args.isOpenBlocked?.(record.projectId)) return null;
 
       const layout = resolveAdeLayout(record.rootPath);
       const chatTranscriptsDir = path.resolve(layout.chatTranscriptsDir);

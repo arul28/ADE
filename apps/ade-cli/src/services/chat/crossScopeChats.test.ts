@@ -61,6 +61,7 @@ function setup(options: {
     scopeRegistry: {
       get: scopeGet,
       getIfBooted: () => (options.project ? Promise.resolve({ runtime: options.project.runtime }) : null),
+      isOpenBlocked: () => false,
     },
     personalChatScope: options.personal
       ? {

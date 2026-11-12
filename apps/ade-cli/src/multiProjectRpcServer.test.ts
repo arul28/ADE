@@ -2665,6 +2665,7 @@ describe("multi-project RPC server", () => {
         return loaded;
       }),
       getIfBooted: vi.fn((projectId: string) => (projectId === current.projectId ? Promise.resolve(loaded) : null)),
+      isOpenBlocked: vi.fn(() => false),
       dispose: vi.fn(),
       disposeAll: vi.fn(),
     } as unknown as ProjectScopeRegistry;
@@ -4588,7 +4589,7 @@ describe("calls from another machine's agents", () => {
       initialize: { identity: { role: "agent", chatSessionId: "caller-chat" } },
       crossScopeChats: createCrossScopeChats({
         projectRegistry: { list: () => [] },
-        scopeRegistry: { get: vi.fn(), getIfBooted: () => null },
+        scopeRegistry: { get: vi.fn(), getIfBooted: () => null, isOpenBlocked: () => false },
         personalChatScope: { runtimeForDelivery: async () => callerRuntime, peekRuntime: () => Promise.resolve(callerRuntime) },
         deliverRemote: null,
         stateDir,

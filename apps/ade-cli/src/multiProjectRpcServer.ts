@@ -646,6 +646,8 @@ const RUNTIME_METHODS = new Set([
   "projects.removeCopy",
   "projects.pruneMissing",
   "projects.touch",
+  "projects.retryOpen",
+  "projects.checkOpen",
   "projects.setIcon",
   "projects.removeIcon",
   "projects.browseDirectories",
@@ -736,10 +738,10 @@ function assertProjectFolderPresent(rootPath: string): void {
 }
 
 function requireRegisteredProjectForIcon(
-  projectRegistry: Pick<ProjectRegistry, "findByRootPath">,
+  projectRegistry: Pick<ProjectRegistry, "findByRootPath" | "list">,
   params: Record<string, unknown>,
   method: string,
-): { rootPath: string } {
+): { rootPath: string; projectId: string } {
   const rootPath = readOptionalString(params.rootPath);
   if (!rootPath) {
     throw new JsonRpcError(
@@ -747,7 +749,11 @@ function requireRegisteredProjectForIcon(
       `${method} requires rootPath.`,
     );
   }
-  const project = projectRegistry.findByRootPath(rootPath);
+  // The registered root as given first: normalizing reads the folder, which
+  // for a refused project is the drive that froze the brain.
+  const given = path.resolve(rootPath);
+  const project = projectRegistry.list().find((record) => record.rootPath === given)
+    ?? projectRegistry.findByRootPath(rootPath);
   if (!project) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
@@ -820,12 +826,8 @@ async function readCloneProjectInput(
       JsonRpcErrorCode.invalidParams,
       "projects.clone requires parentDir.",
     );
-  // A folder named from another computer (`--machine`) arrives as typed there:
-  // `~` means this computer's home, and a relative path would land wherever
-  // this brain happens to run, so it is refused.
-  const resolvedParentDir = /^~(?=$|[\\/])/.test(parentDir)
-    ? path.join(os.homedir(), parentDir.slice(1))
-    : parentDir;
+  // A relative path would land wherever this brain happens to run, so it is refused.
+  const resolvedParentDir = expandRemoteHome(parentDir);
   if (!path.isAbsolute(resolvedParentDir))
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
@@ -1201,13 +1203,14 @@ async function decorateProjectWithIcon<T extends { rootPath: string; gitOriginUr
 
 /** The worker mode for a project whose record did not settle its icon. */
 function projectIconRecordRequest(
-  project: { rootPath: string; gitOriginUrl?: string | null },
+  project: { rootPath: string; gitOriginUrl?: string | null; projectId?: string },
   decision: ProjectRecordIconDecision | null,
   projectRecords: MachineProjectRecords | null,
 ): ProjectIconRecordRequest | undefined {
   if (!decision || !projectRecords) return undefined;
   if (decision.use === "detected") return { mode: "detected" };
-  if (decision.use === "local" && decision.migrate) {
+  // A refused project's icon is not migrated: that reads its `.ade` folder here.
+  if (decision.use === "local" && decision.migrate && projectRecords.readsFolder(project)) {
     return { mode: "migrate", onRecordValue: (value) => projectRecords.completeMigration(project, value) };
   }
   return undefined;
@@ -1413,6 +1416,50 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
     blockingErrors,
     warnings,
   };
+}
+
+/**
+ * A folder named from another computer (`--machine`) arrives as typed there:
+ * a leading `~` means this computer's home. `~user` is left as typed.
+ */
+function expandRemoteHome(typed: string): string {
+  return /^~(?=$|[\\/])/.test(typed) ? path.join(os.homedir(), typed.slice(1)) : typed;
+}
+
+/**
+ * The registered project a `projectId` (or the id it moved to) or `rootPath`
+ * names, or null. `rootPath` matches the registered root before any `realpath`.
+ */
+function findRegisteredProjectRef(
+  projectRegistry: ProjectRegistry,
+  params: Record<string, unknown>,
+): ProjectRecord | null {
+  const projectId = readProjectId(params);
+  const typedRoot = readOptionalString(params.rootPath);
+  const rootPath = typedRoot ? expandRemoteHome(typedRoot) : typedRoot;
+  if (projectId) {
+    return projectRegistry.get(projectId) ?? projectRegistry.get(projectRegistry.resolveMovedProjectId(projectId) ?? "");
+  }
+  return rootPath ? projectRegistry.findAtRootPath(rootPath) : null;
+}
+
+/** {@link findRegisteredProjectRef}, or an invalid-params error when it names nothing registered. */
+function readRegisteredProjectRef(
+  projectRegistry: ProjectRegistry,
+  params: Record<string, unknown>,
+  method: string,
+): ProjectRecord {
+  if (!readProjectId(params) && !readOptionalString(params.rootPath)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${method} requires projectId or rootPath.`);
+  }
+  const record = findRegisteredProjectRef(projectRegistry, params);
+  if (!record) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `No project ${readProjectId(params) ?? readOptionalString(params.rootPath)} is registered on this machine.`,
+    );
+  }
+  return record;
 }
 
 function readProjectId(params: Record<string, unknown>): ProjectId | null {
@@ -1949,6 +1996,8 @@ export function createMultiProjectRpcRequestHandler(
           }
           continue;
         }
+        // A refused project's database is not read here, on the brain's thread.
+        if (scopeRegistry.isOpenBlocked(record.projectId)) continue;
         if (isProjectBackedChatToolType(readSessionToolTypeFromDisk(record.rootPath, sessionId))) {
           return record.projectId;
         }
@@ -1983,6 +2032,13 @@ export function createMultiProjectRpcRequestHandler(
     record: ProjectRecordForSearch,
     query: { query: string; laneId: string | null },
   ): UnloadedProjectSearch => {
+    // A refused project's folder is not read here, on the brain's thread.
+    if (scopeRegistry.isOpenBlocked(record.projectId)) {
+      return {
+        status: "unavailable",
+        entry: `${record.displayName} (its folder is too slow for ADE to open; \`ade projects retry\` opens it again)`,
+      };
+    }
     if (!fs.existsSync(record.rootPath)) {
       return { status: "unavailable", entry: record.displayName };
     }
@@ -3662,6 +3718,8 @@ export function createMultiProjectRpcRequestHandler(
         // One project at a time, yielding between them, so a long registry never holds the brain's loop.
         await new Promise<void>((resolve) => setImmediate(resolve));
         const running = await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
+        // A refused project's database is not read here, on the brain's thread.
+        if (!running && scopeRegistry.isOpenBlocked(record.projectId)) continue;
         const deleted = running
           ? await running.runtime?.agentChatService?.findDeletedChat?.(sessionId).catch(() => null)
           : readDeletedChatOnDisk(record.rootPath, sessionId, (error) => {
@@ -3836,8 +3894,36 @@ export function createMultiProjectRpcRequestHandler(
       return projectRegistry.touch(projectId);
     }
 
+    if (method === "projects.checkOpen") {
+      // Whether a project may be opened, asked by a client before it reads
+      // the project's folder itself (the desktop opens the database in its own
+      // process too). Throws the `project_folder_too_slow` refusal; answers
+      // `{ ok: true }` otherwise, including for a folder not registered yet.
+      const record = findRegisteredProjectRef(projectRegistry, params);
+      const refusal = record ? scopeRegistry.openRefusal(record.projectId) : null;
+      if (refusal) throw refusal;
+      return { ok: true };
+    }
+
+    if (method === "projects.retryOpen") {
+      // A person asking to open a project again that was refused for freezing
+      // this machine's ADE while it opened (`project_folder_too_slow`). Only
+      // forgets the refusal; opening it is the caller's next call.
+      const record = readRegisteredProjectRef(projectRegistry, params, "projects.retryOpen");
+      const outcome = scopeRegistry.retryOpen(record.projectId);
+      return {
+        projectId: record.projectId,
+        displayName: record.displayName,
+        rootPath: record.rootPath,
+        ...outcome,
+      };
+    }
+
     if (method === "projects.setIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.setIcon");
+      // A refused project's folder is not touched for its icon.
+      const iconRefusal = scopeRegistry.openRefusal(project.projectId);
+      if (iconRefusal) throw iconRefusal;
       assertProjectFolderPresent(project.rootPath);
       const upload = readProjectIconUpload(params);
       try {
@@ -3873,6 +3959,9 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "projects.removeIcon") {
       const project = requireRegisteredProjectForIcon(projectRegistry, params, "projects.removeIcon");
+      // A refused project's folder is not touched for its icon.
+      const iconRefusal = scopeRegistry.openRefusal(project.projectId);
+      if (iconRefusal) throw iconRefusal;
       assertProjectFolderPresent(project.rootPath);
       if (projectRecords?.isShared(project)) {
         // Every machine goes back to the icon it detects and drops its own

@@ -1485,6 +1485,14 @@ declare global {
         /** Removes this computer's entry for a project and, when asked, moves its folder to the Trash. */
         removeCopy?: (rootPath: string, request: ProjectRemovalRequest) => Promise<ProjectRemovalOutcome>;
         forgetRecent: (keyOrRootPath: string) => Promise<RecentProjectSummary[]>;
+        /**
+         * Forget the refusal of a project this computer's ADE stopped opening
+         * because its folder is too slow (`project_folder_too_slow`), so the
+         * next open really tries. Resolves false when the refusal could not be
+         * cleared (no brain, a root ADE does not know). Local projects only: a project on another
+         * machine is retried there (`ade projects retry --machine`).
+         */
+        retryOpen: (rootPath: string) => Promise<boolean>;
         reorderRecent: (
           orderedKeys: string[],
         ) => Promise<RecentProjectSummary[]>;
