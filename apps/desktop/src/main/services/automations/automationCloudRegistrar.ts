@@ -1,4 +1,4 @@
-import type { CloudAutomationSpec, CloudAutomationSummary } from "../../../../../account-directory/src/cloud/contract";
+import type { CloudAutomationRun, CloudAutomationSpec, CloudAutomationSummary } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudApiClient } from "../../../shared/cloudApiClient";
 import { CloudApiError } from "../../../shared/cloudApiClient";
 import { ADE_CLOUD_HOME_DEVICE_ID, AUTOMATION_HOME_HANDOVER_MS, isAdeCloudHome } from "../../../shared/automationHome";
@@ -219,6 +219,16 @@ export function createAutomationCloudRegistrar(deps: AutomationCloudRegistrarDep
     stateFor(ruleId: string): AutomationCloudHomeState | null {
       if (now() - statesReadAt >= RUNS_READ_EVERY_MS) void readStates();
       return states?.get(automationRuleAccountId(ruleId)) ?? null;
+    },
+
+    /** Run now for a cloud-homed rule: ADE's server starts it on its own cloud computer. */
+    async runNow(ruleId: string): Promise<CloudAutomationRun> {
+      const api = deps.api();
+      if (!api) throw new Error("Sign in to your ADE account to run this on ADE Cloud.");
+      const run = await api.runAutomation(automationRuleAccountId(ruleId));
+      statesReadAt = 0;
+      deps.onStateChanged();
+      return run;
     },
 
     /** A rule deleted here: its server copy goes now, whatever this process sent before. */

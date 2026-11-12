@@ -3450,6 +3450,7 @@ export async function createAdeRuntime(args: {
       });
       cloudAutomationRegistrarRef = registrar;
       automationService.setCloudHomeStateSource((ruleId) => registrar.stateFor(ruleId));
+      automationService.setCloudRunNow((ruleId) => registrar.runNow(ruleId));
       teardown.push(automationService.onRuleDeleted((rule) => void registrar.forget(rule)));
       void registrar.reconcile();
     }

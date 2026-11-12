@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { automationCloudHomeProblem, automationCloudProblem, automationCloudTarget, localTimeZone, parseAutomationCloudTarget } from "../../../shared/automationCloud";
-import type { CloudAutomationSpec, CloudAutomationTrigger } from "../../../../../account-directory/src/cloud/contract";
+import type { CloudAutomationRun, CloudAutomationSpec, CloudAutomationTrigger } from "../../../../../account-directory/src/cloud/contract";
 import { isAdeCloudHome } from "../../../shared/automationHome";
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -4346,6 +4346,7 @@ export function createAutomationService({
   /** Told after a rule is deleted, e.g. so its webhook URL stops answering. */
   const ruleDeletedListeners = new Set<(rule: AutomationRule) => void>();
   let cloudHomeStateSource: ((ruleId: string) => AutomationCloudHomeState | null) | null = null;
+  let cloudRunNow: ((ruleId: string) => Promise<CloudAutomationRun>) | null = null;
   const boundChatQueues = new Map<string, Promise<unknown>>();
   const BOUND_CHAT_BUSY_RETRY_MS = 5_000;
   const BOUND_CHAT_BUSY_GIVE_UP_MS = 30 * 60_000;
@@ -5981,6 +5982,29 @@ export function createAutomationService({
       if (!id) throw new Error("Automation id is required");
       const rule = findRule(id);
       if (!rule) throw new Error(`Automation not found: ${id}`);
+      if (isAdeCloudHome(rule.home) && !args.dryRun && cloudRunNow) {
+        // Run now for a rule homed on ADE Cloud: the server starts it on its own computer.
+        const started = await cloudRunNow(rule.id);
+        const at = new Date(started.startedAt ?? started.createdAt).toISOString();
+        return {
+          id: started.runId,
+          automationId: rule.id,
+          chatSessionId: null,
+          triggerType: "manual",
+          startedAt: at,
+          endedAt: started.endedAt != null ? new Date(started.endedAt).toISOString() : null,
+          status: started.state === "failed" ? "failed" : started.state === "skipped" ? "cancelled" : started.state === "queued" ? "queued" : started.state === "done" ? "succeeded" : "running",
+          executionKind: rule.execution?.kind ?? "agent-session",
+          actionsCompleted: 0,
+          actionsTotal: 0,
+          errorMessage: started.reason,
+          spendUsd: 0,
+          confidence: null,
+          triggerMetadata: { runsOn: "ade-cloud" },
+          summary: "Started on ADE Cloud.",
+          billingCode: null,
+        };
+      }
       if (!ruleRunsHere(rule) && !args.dryRun) throw new Error(notHomeMessage(rule));
       const laneId = typeof args.laneId === "string" && args.laneId.trim().length ? args.laneId.trim() : undefined;
       if (automationRunNeedsLane(rule) && !laneId) {
@@ -6181,6 +6205,11 @@ export function createAutomationService({
     },
 
     /** Tells the editor a cloud-homed rule's server state changed. */
+    /** How Run now reaches ADE Cloud's server for a cloud-homed rule (the brain's registrar). */
+    setCloudRunNow(next: ((ruleId: string) => Promise<CloudAutomationRun>) | null): void {
+      cloudRunNow = next;
+    },
+
     noteCloudHomeStateChanged(): void {
       emit({ type: "runs-updated" });
     },
