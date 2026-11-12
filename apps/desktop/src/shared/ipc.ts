@@ -1095,6 +1095,7 @@ export const IPC = {
   githubGetRemoteStatus: "ade.github.getRemoteStatus",
   githubSetToken: "ade.github.setToken",
   githubClearToken: "ade.github.clearToken",
+  githubSetGhAccountSharing: "ade.github.setGhAccountSharing",
   githubStatusChanged: "ade.github.statusChanged",
   githubGetRequestBudget: "ade.github.getRequestBudget",
   githubIsRepoStarred: "ade.github.isRepoStarred",

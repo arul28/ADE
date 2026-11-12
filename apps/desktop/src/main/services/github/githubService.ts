@@ -127,6 +127,7 @@ import { githubAutolinksAccessError } from "../../../shared/githubAutolinks";
 import { redactGitOutput } from "../../utils/redaction";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import { createGithubPatAccountSync } from "./githubPatAccountSync";
+import { createGithubGhAccountSync } from "./githubGhAccountSync";
 
 export { fetchAdeLatestRelease } from "./adeReleaseFeed";
 
@@ -1049,6 +1050,10 @@ export function createGithubService({
     ]);
     const appToken = appResult.token;
     const appTokenStored = appToken != null || appUserAuth.getAuthStatus().tokenStored;
+    // A different gh token than last time (a sign-in, sign-out or switch) is
+    // reconciled with the account now; the same token costs nothing.
+    ghAccountSync.noteLocalGhToken(gh.token);
+    const accountGhToken = ghAccountSync.readAccountToken();
     const candidates: GitHubTokenCandidate[] = [];
     if (environment?.token) {
       candidates.push({
@@ -1084,6 +1089,16 @@ export function createGithubService({
         ...patLookup,
         token: patLookup.token,
         source: "pat",
+        capabilities: ["read", "write", "issue-write"],
+      });
+    }
+    if (accountGhToken) {
+      candidates.push({
+        token: accountGhToken,
+        source: "account_gh",
+        patTokenStored,
+        ghCliPath: null,
+        ghAuthError: null,
         capabilities: ["read", "write", "issue-write"],
       });
     }
@@ -1185,6 +1200,12 @@ export function createGithubService({
         return gh.token ? { ...gh, source: "gh", patTokenStored } : null;
       },
       pat: () => patLookup,
+      account_gh: () => {
+        const token = ghAccountSync.readAccountToken();
+        return token
+          ? { token, source: "account_gh", patTokenStored, ghCliPath: null, ghAuthError: null }
+          : null;
+      },
     }, "write") ?? ghFallback;
   };
 
@@ -1195,6 +1216,40 @@ export function createGithubService({
     logger,
     onTokenChanged: () => credentialsChanged({ tokensToClear: [], clearGhCaches: true }),
   });
+
+  // The account's copy of a gh login made on another machine. Adopting or
+  // dropping it changes the inventory only: this machine's own gh lookup stays
+  // cached, so a vault change starts no gh process.
+  let lastAccountGhToken: string | null = null;
+  const ghAccountSync = createGithubGhAccountSync({
+    credentialStore,
+    getAccountVault,
+    getAccountUserId,
+    logger,
+    readLocalGhToken: async ({ fresh }) => {
+      if (fresh) {
+        // hosts.yml changed (gh signed in or out): a cached answer is stale.
+        sharedGhAuth.authCache = null;
+        processGhHostsTokenCache.clear();
+      }
+      return (await readGhAuthToken()).token;
+    },
+    onTokenChanged: () => {
+      const previous = lastAccountGhToken;
+      lastAccountGhToken = ghAccountSync.readAccountToken();
+      credentialsChanged({ tokensToClear: [previous, lastAccountGhToken] });
+    },
+  });
+  lastAccountGhToken = ghAccountSync.readAccountToken();
+
+  /** Which stored credentials came from the account, for the status. */
+  const accountCredentialState = (): GitHubStatus["accountCredentials"] => {
+    try {
+      return { patFromAccount: patAccountSync.isFromAccount(), ...ghAccountSync.state() };
+    } catch {
+      return null;
+    }
+  };
 
   const persistToken = (token: string | null): void => {
     const clean = (token ?? "").trim();
@@ -2185,7 +2240,11 @@ export function createGithubService({
           });
           return null;
         }),
-    ]).then(([status, gitTransport]): GitHubStatus => ({ ...status, gitTransport }));
+    ]).then(([status, gitTransport]): GitHubStatus => ({
+      ...status,
+      gitTransport,
+      accountCredentials: accountCredentialState(),
+    }));
     statusInFlight = work;
     try {
       return await work;
@@ -2825,11 +2884,37 @@ export function createGithubService({
       }
     },
 
-    /** Take (or drop) the account's pasted token; runs at sign-in and on vault sync, never on a request. */
-    hydratePatFromVault: () => patAccountSync.hydrate(),
-    /** At sign-out: drop a token copied from the account, keep one pasted here. */
-    purgeAccountPat: () => patAccountSync.purgeAccountCredentials(),
+    /**
+     * Reconcile the GitHub credentials that follow the account: the pasted
+     * token and the `gh` login. Runs at sign-in and on vault sync, never on a
+     * request. (The name predates the `gh` login; callers outside this file
+     * still use it.)
+     */
+    hydratePatFromVault: async (): Promise<void> => {
+      await patAccountSync.hydrate();
+      await ghAccountSync.hydrate();
+    },
+    /** At sign-out: drop every GitHub credential copied from the account, keep this machine's own. */
+    purgeAccountPat: (): void => {
+      try {
+        patAccountSync.purgeAccountCredentials();
+      } finally {
+        ghAccountSync.purgeAccountCredentials();
+      }
+    },
     getPatCredentialStorage: () => patAccountSync.storage(),
+
+    /**
+     * Take the `gh` login off the ADE account (`enabled: false`): every
+     * machine drops its copy, and none shares its own until this machine
+     * shares again (`enabled: true`). This machine's own `gh` login is never
+     * touched either way.
+     */
+    async setGhAccountSharing(args: { enabled: boolean }): Promise<void> {
+      if (args?.enabled === true) await ghAccountSync.shareWithAccount();
+      else await ghAccountSync.removeFromAccount();
+      invalidateStatusCache();
+    },
 
     clearToken(): void {
       const previousToken = readStoredPatToken();

@@ -475,7 +475,12 @@ export type GitHubRequestBudget = {
  */
 export type GitHubRepoStarState = "starred" | "not_starred" | "unknown";
 
-export type GitHubCredentialSource = "environment" | "app" | "gh" | "pat";
+/**
+ * Where a GitHub credential comes from. `account_gh` is the account's copy of a
+ * `gh` CLI login made on another machine (see `githubGhAccountSync.ts`); a
+ * pasted token, own or adopted from the account, is `pat`.
+ */
+export type GitHubCredentialSource = "environment" | "app" | "gh" | "pat" | "account_gh";
 
 export type GitHubCredentialCapability = "read" | "write";
 
@@ -505,6 +510,17 @@ export type GitHubCredentialFallback = {
   retryAt: string | null;
 };
 
+export type GitHubAccountCredentialState = {
+  /** The pasted-token slot holds the account's token, not one pasted on this machine. */
+  patFromAccount: boolean;
+  /** The account's copy of a `gh` login (made on another machine) is kept here. */
+  ghFromAccount: boolean;
+  /** This machine's own `gh` login is the account's copy. */
+  ghSharedFromHere: boolean;
+  /** The person took the `gh` login off the account; machines share none until asked. */
+  ghRemovedFromAccount: boolean;
+};
+
 export type GitHubTokenType = "classic" | "fine-grained" | "oauth" | "unknown";
 
 export type GitHubStatus = {
@@ -524,7 +540,7 @@ export type GitHubStatus = {
    */
   credentialStoreUnreadable?: boolean;
   storageScope: "app";
-  authSource: "app" | "pat" | "environment" | "gh" | "none";
+  authSource: GitHubCredentialSource | "none";
   tokenType?: GitHubTokenType;
   repo: GitHubRepoRef | null;
   // True when the project has any `origin` remote, even non-GitHub. Distinct
@@ -558,6 +574,11 @@ export type GitHubStatus = {
   // grant the active repo, which then 403s every PR-tab call.
   repoAccessOk: boolean | null;
   repoAccessError: string | null;
+  /**
+   * Which stored credentials came from the ADE account. Absent from older
+   * runtimes, and null when ADE could not say.
+   */
+  accountCredentials?: GitHubAccountCredentialState | null;
   // Single source of truth for "GitHub reads are usable here". Write surfaces
   // additionally require writeAuthSource !== "none".
   connected: boolean;

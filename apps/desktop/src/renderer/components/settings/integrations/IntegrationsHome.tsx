@@ -65,8 +65,12 @@ async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): P
       return {
         tone: "ok",
         label: status.userLogin ? `Connected as ${status.userLogin}` : "Connected",
-        // Only a pasted token follows the account; gh, an env token and the app sign-in are this computer's.
-        savedIn: status.authSource === "pat" ? "Your account" : "This computer",
+        // A pasted token and a gh login follow the account; an env token and the app sign-in are this computer's.
+        savedIn: status.authSource === "pat"
+          || status.authSource === "account_gh"
+          || (status.authSource === "gh" && status.accountCredentials?.ghSharedFromHere)
+          ? "Your account"
+          : "This computer",
       };
     }
     if (status.authFailure || status.credentialStoreUnreadable) return { tone: "warn", label: "Needs attention" };

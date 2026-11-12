@@ -8,8 +8,9 @@
  * account-origin so sign-out (or a removal on another machine) drops that copy
  * and never one pasted here.
  *
- * The GitHub App sign-in and `gh` / environment tokens are not touched: they
- * belong to the machine they were made on.
+ * The GitHub App sign-in and environment tokens are not touched: they belong
+ * to the machine they were made on. A `gh` login follows the account through
+ * its own vault item (`githubGhAccountSync.ts`).
  */
 
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
@@ -133,6 +134,15 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
 
     publish,
     unpublish,
+
+    /** Whether the machine's stored token is the account's copy, not one pasted here. */
+    isFromAccount(): boolean {
+      try {
+        return Boolean(readLocal()) && localIsFromAccount();
+      } catch {
+        return false;
+      }
+    },
 
     /**
      * Reconcile at account sign-in and on vault sync ticks. The vault's token

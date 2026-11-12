@@ -12201,6 +12201,14 @@ export function registerIpc({
     return status;
   });
 
+  handle(IPC.githubSetGhAccountSharing, async (_event, arg: { enabled?: boolean }): Promise<GitHubStatus> => {
+    const ctx = getCtx();
+    await ctx.githubService.setGhAccountSharing({ enabled: arg?.enabled === true });
+    const status = await ctx.githubService.getStatus();
+    broadcastGithubStatus(status);
+    return status;
+  });
+
   handle(IPC.githubGetAppUserAuthStatus, async (): Promise<GitHubAppUserAuthStatus> => {
     const ctx = getCtx();
     return ctx.githubService.getAppUserAuthStatus();

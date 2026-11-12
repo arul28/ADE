@@ -163,7 +163,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Installing or removing the ADE agent, or changing who runs unrouted
   // delegations, changes a Linear workspace for everyone in it.
   linear_agent: { only: ["startInstall", "uninstall", "updateSettings"] },
-  github: { only: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"] },
+  github: { only: ["setToken", "clearToken", "setGhAccountSharing", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"] },
   // Jira credentials are machine-wide and never belong in an agent's hands.
   jira: { only: ["connect", "disconnect"] },
   update: { only: ["quitAndInstall"] },
@@ -1294,6 +1294,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listRepoLabels",
     "pollAppUserDeviceAuth",
     "publishCurrentProject",
+    "setGhAccountSharing",
     "setToken",
     "startAppUserDeviceAuth",
   ],
