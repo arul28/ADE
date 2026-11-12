@@ -4,6 +4,8 @@ import type {
   SyncApplicationCompressionCodec,
   SyncChatSubscribePayload,
   SyncEnvelope,
+  SyncHelloAuth,
+  SyncHelloPayload,
   SyncPeerMetadata,
   SyncProjectCatalogPayload,
   SyncRelayAuthorizationLease,
@@ -16,7 +18,7 @@ import type { createAgentChatService } from "../../../../desktop/src/main/servic
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import type { LaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
 import type { LaneShareGuestRole } from "./laneShareGuestPolicy";
-import type { LaneShareGrantSource } from "./laneShareGrantService";
+import type { LaneShareGrantSnapshot, LaneShareGrantSource, LaneShareTicketRedemption } from "./laneShareGrantService";
 import type { LaneShareMoveService } from "./laneShareMoveService";
 import type { AdoptChallengeState } from "./adoptChannelHandshake";
 import type { RelayAuthorizationLifecycle } from "./relayAuthorization";
@@ -37,6 +39,7 @@ export type LaneShareGuestPeer = {
   authenticated: boolean;
   transportOrigin: SyncTransportOrigin;
   remoteAddress: string | null;
+  remotePort?: number | null;
   metadata: SyncPeerMetadata | null;
   negotiatedCompression: SyncApplicationCompressionCodec | null;
   authKind: "bootstrap" | "paired" | "account" | "guest" | null;
@@ -90,6 +93,36 @@ export type LaneShareGuestSyncHostDeps = {
   normalizeTerminalInputId(value: unknown): string | null;
 };
 
+/**
+ * A guest's socket on its way to the project its lane is in. A brain serves
+ * one project on its shared sync listener at a time, so a guest may land on
+ * the wrong project's host, or on the brain's own ingress when no project is
+ * served. That side lets go of the socket (no close, no listener left) and
+ * the brain's router (`laneShareGuestRouter.ts`) gives it to the right
+ * project's host, which takes it from where the first side stopped.
+ *
+ * Everything here was read by this brain from the socket and from the
+ * account directory; nothing is a claim the guest made that the next host
+ * trusts without checking. `redeemed` is set when the first host already
+ * checked the DPoP proof and redeemed the one-use ticket: the next host then
+ * runs the checks after the redeem (project, owner, grant, lane, rights).
+ */
+export type LaneShareGuestHandoff = {
+  ws: WebSocket;
+  remoteAddress: string | null;
+  remotePort: number | null;
+  transportOrigin: SyncTransportOrigin;
+  /** The hello's request id: the answer (hello_ok or hello_error) carries it. */
+  requestId: string | null;
+  hello: SyncHelloPayload;
+  auth: Extract<SyncHelloAuth, { kind: "guest" }>;
+  redeemed: {
+    dpopPublicKey: string;
+    redemption: LaneShareTicketRedemption;
+    snapshot: LaneShareGrantSnapshot;
+  } | null;
+};
+
 /** What `closeLaneShareGrant` did: the owner's revoke reports it. */
 export type LaneShareCloseResult = {
   closedConnections: number;
@@ -115,6 +148,14 @@ export type LaneShareGuestHostDeps = LaneShareGuestSyncHostDeps & {
   peers: ReadonlySet<LaneShareGuestPeer>;
   send(target: WebSocket | LaneShareGuestPeer, type: SyncEnvelope["type"], payload: unknown, requestId?: string | null): boolean;
   captureAccountAuthorization(): Promise<{ userId: string; generation: number } | null>;
+  /**
+   * Gives a guest's socket to the host of its lane's project, through the
+   * brain's router. Resolves false when no project of this brain can take it.
+   * Absent: this host refuses a guest of another project, as before.
+   */
+  routeLaneShareGuest?: (handoff: LaneShareGuestHandoff) => Promise<boolean>;
+  /** Lets go of a peer whose socket moves to another host: no close, no listener of this host left on it. */
+  releasePeerForHandoff(peer: LaneShareGuestPeer): void;
   isPeerLifecycleCurrent(peer: LaneShareGuestPeer, generation: number): boolean;
   clearPeerAuthTimeout(peer: LaneShareGuestPeer): void;
   discardChatEventCoalescer(peer: LaneShareGuestPeer, sessionId: string): void;

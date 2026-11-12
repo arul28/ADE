@@ -253,6 +253,32 @@ messages (removed on revoke) and the chats it sent turns into.
    later) or `lane_share_paused` (the lane is archived, or this computer has
    no rights set for the share).
 
+### Any project of the machine
+
+A brain serves one project on its shared sync listener at a time (the one
+opened last), but a lane may be shared from any of its projects. So a guest
+reaches its lane whatever project is served:
+
+- A guest that lands on another project's host is redeemed there. When the
+  grant's repository is not that project's, the host lets go of the socket
+  (no close, no listener left: `releasePeerForHandoff`) and gives it, with
+  the redeemed grant, to the brain's router (`laneShareGuestRouter.ts`, set
+  on the shared listener). The router picks the project with that repository
+  key (two checkouts of one repository: the one that has the lane), and that
+  project's host runs the checks after the redeem
+  (`acceptHandedOffLaneShareGuest`).
+- With no project served, the brain's own ingress hands the guest, not
+  redeemed, to any open project, which redeems it and routes it on.
+- A project that is not the served one serves its guests from a guests-only
+  host (`laneShareGuestsOnly` in `syncHostService.ts`): no listener of its
+  own, no discovery, no Tailscale route, no changeset pump, no brain status.
+  It starts with the first guest and stops after two idle minute checks. When
+  the project becomes the served one, it closes and its guests reconnect to
+  the served host. A share's revoke, pause, rights edit and move reach
+  whichever of the two serves the project (`laneShareServingHost`).
+- `lane_share_unavailable` now means no project of the machine could take the
+  guest (a project the brain refuses to open, a missing checkout).
+
 While a guest is connected, the host reads its grant list again on a timer
 (`LANE_SHARE_GRANT_REFRESH_MS`). A grant that is not in the list gives no
 access, so a revoke counts at the next read. With no guest connected, no

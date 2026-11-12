@@ -15,6 +15,7 @@ import {
   type ParsedSyncEnvelope,
 } from "./syncProtocol";
 import type { RelayAuthorizationSnapshot } from "./relayAuthorization";
+import type { LaneShareGuestHandoff } from "./laneShareGuestTypes";
 import {
   assertAdeLoopbackListener,
   generateLoopbackNonce,
@@ -188,6 +189,9 @@ export type SyncPeerHandoffSnapshot = {
   bufferedMessages?: Array<{ data: RawData; isBinary: boolean }>;
 };
 
+/** Gives a lane share guest's socket to the host of its lane's project. */
+export type LaneShareGuestRouter = (handoff: LaneShareGuestHandoff) => Promise<boolean>;
+
 export type SharedSyncListener = {
   /**
    * Bind the websocket server once. Subsequent calls return the existing
@@ -235,6 +239,14 @@ export type SharedSyncListener = {
    * fallback can send the project sockets it holds on to that host.
    */
   onConnectionHandlerAttached(listener: () => void): () => void;
+  /**
+   * Lane sharing: the brain's router that gives a guest's socket to the host
+   * of its lane's project (`laneShareGuestRouter.ts`). One per brain; a
+   * project host and the machine-wide ingress both reach it through here.
+   */
+  setLaneShareGuestRouter(router: LaneShareGuestRouter | null): () => void;
+  /** Gives a guest socket to its project's host. False when no router is set or no project here can take it. */
+  routeLaneShareGuest(handoff: LaneShareGuestHandoff): Promise<boolean>;
   /** Park live peer sockets for adoption by the next host service. */
   depositPeers(snapshots: SyncPeerHandoffSnapshot[]): void;
   /** Claim every parked socket (deposited peers + connections that arrived handler-less). */
@@ -437,6 +449,7 @@ export function createSharedSyncListener(options: {
   let migratePromise: Promise<number | null> | null = null;
   let handler: SharedSyncListenerConnectionHandler | null = null;
   let fallbackHandler: SharedSyncListenerConnectionHandler | null = null;
+  let laneShareGuestRouter: LaneShareGuestRouter | null = null;
   const handlerAttachedListeners = new Set<() => void>();
   let fallbackSuppressedUntilMs = 0;
   let closed = false;
@@ -982,6 +995,18 @@ export function createSharedSyncListener(options: {
       return () => {
         handlerAttachedListeners.delete(listener);
       };
+    },
+
+    setLaneShareGuestRouter(nextRouter: LaneShareGuestRouter | null): () => void {
+      laneShareGuestRouter = nextRouter;
+      return () => {
+        if (laneShareGuestRouter === nextRouter) laneShareGuestRouter = null;
+      };
+    },
+
+    async routeLaneShareGuest(handoff: LaneShareGuestHandoff): Promise<boolean> {
+      if (closed || !laneShareGuestRouter) return false;
+      return await laneShareGuestRouter(handoff);
     },
 
     depositPeers(snapshots: SyncPeerHandoffSnapshot[]): void {

@@ -89,3 +89,16 @@ opened one, `projectScope.resolveActiveSyncHost`). With no project open, the
 brain-level ingress answers every guest "has no project open"
 (`brainProjectActionsSyncHandler.ts`). Seen on the branch host before its
 project became the hosted one.
+
+## D12 fixed: guests reach any project of the host
+
+Owner's go on 2026-11-12. Checked on the branch's test machine with two
+projects, the scratch one served: the guest's ticket was redeemed by the
+served project, handed to the lane's project (`lane_share.router_routed`,
+redeemed), and served by a guests-only host. Live chat events arrived, the
+same 13 forbidden commands were refused, a revoke closed the guest in about
+0.6 s, and the guests-only host stopped by itself after two idle checks.
+
+Not run: the brain's own ingress path (no project served at all), and a
+served-project switch while a guest is connected (the guest reconnects; the
+client retries in a second).

@@ -33,12 +33,12 @@ import { createSyncDpopNonceCache, evaluatePairedHelloDpop, syncDpopFailureMessa
 import { SYNC_ACCOUNT_SESSION_CHANGED_MESSAGE } from "./syncAccountHelloAuth";
 import { SYNC_PEER_ROLE_ROSTER } from "./syncHelloProtocol";
 import { reportHelloRejected, reportPeerAccepted } from "./syncHelloTelemetry";
-import { SYNC_CHUNKED_ENVELOPES_CAPABILITY, type ParsedSyncEnvelope } from "./syncProtocol";
+import { SYNC_CHUNKED_ENVELOPES_CAPABILITY } from "./syncProtocol";
 import { createLaneShareGuestGates } from "./laneShareGuestGates";
 import { createLaneShareGuestQueue } from "./laneShareGuestQueue";
-import type { LaneShareCloseResult, LaneShareGuestHostDeps, LaneShareGuestPeer, LaneShareTurnOwner } from "./laneShareGuestTypes";
+import type { LaneShareCloseResult, LaneShareGuestHandoff, LaneShareGuestHostDeps, LaneShareGuestPeer, LaneShareTurnOwner } from "./laneShareGuestTypes";
 
-export type { LaneShareCloseResult, LaneShareGuestHostDeps, LaneShareGuestPeer } from "./laneShareGuestTypes";
+export type { LaneShareCloseResult, LaneShareGuestHandoff, LaneShareGuestHostDeps, LaneShareGuestPeer } from "./laneShareGuestTypes";
 
 /** What the owner's machine list calls a guest. Host-made: never the name the guest sent. */
 function laneShareGuestLabel(userId: string): string {
@@ -667,9 +667,38 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
    * unchanged across all of it. Nothing the client sends decides an account,
    * a role or a lane.
    */
+  /** A refused guest hello: logged, answered with its code and reason, and the socket closed. */
+  function refuseLaneShareGuest(
+    peer: LaneShareGuestPeer,
+    requestId: string | null,
+    hello: SyncHelloPayload,
+    code: Exclude<SyncHelloErrorPayload["code"], "protocol_version_mismatch">,
+    message: string,
+    logReason: string,
+  ): void {
+    args.logger.warn("sync_host.lane_share_guest_refused", {
+      reason: logReason,
+      transportOrigin: peer.transportOrigin,
+      remoteAddress: peer.remoteAddress,
+    });
+    reportHelloRejected(
+      { logger: args.logger, hello, transportOrigin: peer.transportOrigin, hostDeviceId: () => readBrainMetadata().deviceId },
+      code,
+    );
+    send(peer.ws, "hello_error", { code, message } satisfies SyncHelloErrorPayload, requestId);
+    try {
+      peer.ws.close(4003, "Authentication failed");
+    } catch {
+      // ignore close failures
+    }
+  }
+
+  const LANE_SHARE_UNAVAILABLE = "This computer could not check its shared lanes right now. Try again in a moment.";
+  const LANE_SHARE_NO_GRANT = "This lane is not shared with your ADE account, or the share has ended. Open it again from ADE.";
+
   async function handleLaneShareGuestHello(
     peer: LaneShareGuestPeer,
-    envelope: ParsedSyncEnvelope,
+    requestId: string | null,
     hello: SyncHelloPayload,
     auth: Extract<SyncHelloAuth, { kind: "guest" }>,
     lifecycleGeneration: number,
@@ -679,25 +708,9 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
       code: Exclude<SyncHelloErrorPayload["code"], "protocol_version_mismatch">,
       message: string,
       logReason: string,
-    ): void => {
-      args.logger.warn("sync_host.lane_share_guest_refused", {
-        reason: logReason,
-        transportOrigin: peer.transportOrigin,
-        remoteAddress: peer.remoteAddress,
-      });
-      reportHelloRejected(
-        { logger: args.logger, hello, transportOrigin: peer.transportOrigin, hostDeviceId: () => readBrainMetadata().deviceId },
-        code,
-      );
-      send(peer.ws, "hello_error", { code, message } satisfies SyncHelloErrorPayload, envelope.requestId);
-      try {
-        peer.ws.close(4003, "Authentication failed");
-      } catch {
-        // ignore close failures
-      }
-    };
-    const unavailable = "This computer could not check its shared lanes right now. Try again in a moment.";
-    const noGrant = "This lane is not shared with your ADE account, or the share has ended. Open it again from ADE.";
+    ): void => refuseLaneShareGuest(peer, requestId, hello, code, message, logReason);
+    const unavailable = LANE_SHARE_UNAVAILABLE;
+    const noGrant = LANE_SHARE_NO_GRANT;
     if (peer.transportOrigin !== "relay-bridge") {
       refuse("lane_share_refused", "A shared lane is reachable only through ADE Relay.", "not_relay");
       return;
@@ -766,13 +779,128 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
       refuse("lane_share_refused", noGrant, "ticket_dpop_mismatch");
       return;
     }
-    // One project is hosted at a time on the shared listener: a lane of
-    // another project is not in this host's database, so it is refused as
-    // not hosted (the guest tries again), never looked up here.
+    // A brain serves one project on its shared listener at a time. A lane of
+    // another project is not in this host's database: the socket goes to that
+    // project's host (`routeLaneShareGuest`), redeemed, never looked up here.
     if (redemption.repoKey && redemption.repoKey !== (args.getLaneShareRepoKey?.() ?? null)) {
-      refuse("lane_share_unavailable", "The owner's computer has another project open. This lane opens again when the owner opens its project.", "project_not_hosted");
+      await handOffLaneShareGuest(peer, requestId, hello, auth, {
+        dpopPublicKey,
+        redemption,
+        snapshot,
+      });
       return;
     }
+    await admitRedeemedLaneShareGuest(peer, requestId, hello, auth, lifecycleGeneration, negotiatedCompression, {
+      dpopPublicKey,
+      redemption,
+      snapshot,
+      before,
+    });
+  }
+
+  /**
+   * A guest whose lane is in another project: this host lets go of the socket
+   * and the brain's router gives it to that project's host. When no project
+   * here can take it, the guest is told so and tries again later.
+   */
+  async function handOffLaneShareGuest(
+    peer: LaneShareGuestPeer,
+    requestId: string | null,
+    hello: SyncHelloPayload,
+    auth: Extract<SyncHelloAuth, { kind: "guest" }>,
+    redeemed: NonNullable<LaneShareGuestHandoff["redeemed"]> | null,
+  ): Promise<void> {
+    const notHere = "The owner's computer can't open this lane's project right now. ADE tries again in a minute.";
+    if (!deps.routeLaneShareGuest) {
+      refuseLaneShareGuest(peer, requestId, hello, "lane_share_unavailable", notHere, "project_not_hosted");
+      return;
+    }
+    const handoff: LaneShareGuestHandoff = {
+      ws: peer.ws,
+      remoteAddress: peer.remoteAddress ?? null,
+      remotePort: peer.remotePort ?? null,
+      transportOrigin: peer.transportOrigin,
+      requestId,
+      hello,
+      auth,
+      redeemed,
+    };
+    deps.releasePeerForHandoff(peer);
+    let routed = false;
+    try {
+      routed = await deps.routeLaneShareGuest(handoff);
+    } catch (error) {
+      args.logger.warn("sync_host.lane_share_guest_route_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+    if (routed) {
+      args.logger.info("sync_host.lane_share_guest_routed", { redeemed: redeemed != null });
+      return;
+    }
+    // Released, so answered on the bare socket.
+    refuseLaneShareGuest(peer, requestId, hello, "lane_share_unavailable", notHere, "project_not_hosted");
+  }
+
+  /**
+   * A guest socket another host or the brain's ingress gave to this host.
+   * Redeemed: the checks after the redeem run here. Not redeemed: the whole
+   * hello runs here, as if the socket had landed on this host.
+   */
+  async function acceptHandedOffLaneShareGuest(
+    peer: LaneShareGuestPeer,
+    handoff: LaneShareGuestHandoff,
+    lifecycleGeneration: number,
+    negotiatedCompression: SyncApplicationCompressionCodec | null,
+  ): Promise<void> {
+    if (!handoff.redeemed) {
+      await handleLaneShareGuestHello(peer, handoff.requestId, handoff.hello, handoff.auth, lifecycleGeneration, negotiatedCompression);
+      return;
+    }
+    // A redeemed guest is not routed again: a project that does not match now
+    // (its origin changed during the hop) refuses it.
+    if (handoff.redeemed.redemption.repoKey && handoff.redeemed.redemption.repoKey !== (args.getLaneShareRepoKey?.() ?? null)) {
+      refuseLaneShareGuest(
+        peer,
+        handoff.requestId,
+        handoff.hello,
+        "lane_share_unavailable",
+        "The owner's computer can't open this lane's project right now. ADE tries again in a minute.",
+        "project_not_hosted",
+      );
+      return;
+    }
+    const before = await captureAccountAuthorization();
+    if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
+    if (!before) {
+      refuseLaneShareGuest(peer, handoff.requestId, handoff.hello, "lane_share_unavailable", LANE_SHARE_UNAVAILABLE, "host_signed_out");
+      return;
+    }
+    await admitRedeemedLaneShareGuest(peer, handoff.requestId, handoff.hello, handoff.auth, lifecycleGeneration, negotiatedCompression, {
+      ...handoff.redeemed,
+      before,
+    });
+  }
+
+  /**
+   * The hello after the ticket was redeemed and its key checked: owner, grant,
+   * lane, device count, account unchanged, rights; then the guest's role and
+   * `hello_ok`.
+   */
+  async function admitRedeemedLaneShareGuest(
+    peer: LaneShareGuestPeer,
+    requestId: string | null,
+    hello: SyncHelloPayload,
+    auth: Extract<SyncHelloAuth, { kind: "guest" }>,
+    lifecycleGeneration: number,
+    negotiatedCompression: SyncApplicationCompressionCodec | null,
+    checked: NonNullable<LaneShareGuestHandoff["redeemed"]> & { before: { userId: string; generation: number } },
+  ): Promise<void> {
+    const refuse = (
+      code: Exclude<SyncHelloErrorPayload["code"], "protocol_version_mismatch">,
+      message: string,
+      logReason: string,
+    ): void => refuseLaneShareGuest(peer, requestId, hello, code, message, logReason);
+    const noGrant = LANE_SHARE_NO_GRANT;
+    const { dpopPublicKey, redemption, snapshot, before } = checked;
     // The account comes from the directory's answer, never from the hello.
     const guestUserId = redemption.receiverUserId;
     if (guestUserId === before.userId) {
@@ -931,7 +1059,7 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     const helloOkSent = send(peer.ws, "hello_ok", {
       ...helloOk,
       laneShareGuest: { userId: role.userId, grants: role.grants.map((grant) => ({ grantId: grant.grantId, laneId: grant.laneId })) },
-    }, envelope.requestId);
+    }, requestId);
     if (helloOkSent) {
       reportPeerAccepted({
         logger: args.logger,
@@ -987,6 +1115,7 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     ...gates,
     trackLaneShareTurns,
     handleLaneShareGuestHello,
+    acceptHandedOffLaneShareGuest,
     notifyLaneShareGuests,
     laneShareGuestSocketClosed,
     refreshLaneShareGrants,

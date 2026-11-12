@@ -29246,6 +29246,7 @@ async function runServe(
       readMachineNextScheduledWakeAt,
     },
     { createSharedSyncListener },
+    { createLaneShareGuestRouter },
     { resolveMobileProjectIconDataUrl },
     { createBrainProjectActionsSyncHandler, BOOTSTRAP_TOKEN_KEY },
     { buildRosterSnapshot, createForeignChatTranscriptResolver },
@@ -29261,6 +29262,7 @@ async function runServe(
     import("./services/projects/projectScope"),
     import("./multiProjectRpcServer"),
     import("./services/sync/sharedSyncListener"),
+    import("./services/sync/laneShareGuestRouter"),
     import("../../desktop/src/main/services/projects/projectIconThumbnail"),
     import("./services/sync/brainProjectActionsSyncHandler"),
     import("./services/sync/rosterBuilder"),
@@ -30409,6 +30411,8 @@ async function runServe(
   sharedSyncListener?.setFallbackConnectionHandler(
     createBrainProjectActionsSyncHandler({
       logger: headlessProjectLogger,
+      // A lane share guest goes to its project's host (the router set below).
+      routeLaneShareGuest: async (handoff) => (await sharedSyncListener?.routeLaneShareGuest(handoff)) ?? false,
       projectCatalogProvider: machineProjectCatalogProvider,
       bootstrapCredentialStore: machineCredentialStore,
       legacyBootstrapTokenPath: path.join(layout.secretsDir, "sync-bootstrap-token"),
@@ -30559,6 +30563,18 @@ async function runServe(
       onRemoteFileWrite: () => { void cloudKeepAwake?.noteUse(); },
     },
   });
+  // Lane sharing: a guest of any project of this machine reaches its lane,
+  // whatever project the shared listener serves now (`laneShareGuestRouter.ts`).
+  sharedSyncListener?.setLaneShareGuestRouter(createLaneShareGuestRouter({
+    listProjects: () => projectRegistry.list(),
+    isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
+    bootedSync: (projectId) => {
+      const booted = scopeRegistry.getIfBooted(projectId);
+      return booted ? booted.then((scope) => scope.runtime.syncService ?? null) : null;
+    },
+    openSync: async (projectId) => (await scopeRegistry.get(projectId)).runtime.syncService ?? null,
+    logger: headlessProjectLogger,
+  }));
   keepAwakeService?.start();
   cloudKeepAwake?.start();
   // What a brain report needs to explain a missing project or a lost scope

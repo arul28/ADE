@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import type { LaneShareGuestHandoff } from "./laneShareGuestTypes";
 import type { RawData, WebSocket } from "ws";
 import type {
   CloneProjectInput,
@@ -171,6 +172,11 @@ import {
 
 type BrainProjectActionsSyncHandlerArgs = {
   logger: Logger;
+  /**
+   * Lane sharing: gives a guest's socket to an open project's host (the
+   * shared listener's router). Absent: a guest is refused here, as before.
+   */
+  routeLaneShareGuest?: (handoff: LaneShareGuestHandoff) => Promise<boolean>;
   projectCatalogProvider: SyncProjectCatalogProvider;
   bootstrapCredentialStore: SyncCredentialStore;
   bootstrapTokenKey?: string;
@@ -1361,7 +1367,7 @@ export function createBrainProjectActionsSyncHandler(
     }
   };
 
-  return ({ ws, remoteAddress, transportOrigin, upgradeHello: upgradeHelloHeader }) => {
+  return ({ ws, remoteAddress, remotePort, transportOrigin, upgradeHello: upgradeHelloHeader }) => {
     const peer: BrainPeerState = {
       ws,
       lifecycleGeneration: 0,
@@ -1685,6 +1691,51 @@ export function createBrainProjectActionsSyncHandler(
               peerDeviceId: hello.peer.deviceId,
               remoteAddress: remoteAddress ?? null,
             });
+            return;
+          }
+          // Lane sharing: this ingress serves no project, so a guest's socket
+          // goes to an open project's host, which redeems its ticket and, when
+          // the lane is in another project, routes it on. This side lets go of
+          // the socket first: no listener of it stays.
+          if (hello.auth?.kind === "guest" && args.routeLaneShareGuest) {
+            const guestAuth = hello.auth;
+            peer.lifecycleGeneration += 1;
+            clearAuthTimeout();
+            peer.relayAuthorization?.dispose();
+            peer.relayAuthorization = null;
+            peer.envelopeChunks.reset();
+            ws.removeAllListeners("message");
+            ws.removeAllListeners("close");
+            ws.removeAllListeners("error");
+            ws.on("error", () => {});
+            clearInterval(chatSubscriptionPump);
+            brainPeerCompressionBySocket.delete(ws);
+            brainPeerChunkedSockets.delete(ws);
+            peers.delete(peer);
+            const routed = await args.routeLaneShareGuest({
+              ws,
+              remoteAddress: remoteAddress ?? null,
+              remotePort: remotePort ?? null,
+              transportOrigin: transportOrigin ?? "direct",
+              requestId: envelope.requestId,
+              hello,
+              auth: guestAuth,
+              redeemed: null,
+            }).catch((error: unknown) => {
+              args.logger.warn("sync_ingress.lane_share_guest_route_failed", { error: error instanceof Error ? error.message : String(error) });
+              return false;
+            });
+            if (!routed) {
+              send(ws, "hello_error", {
+                code: "lane_share_unavailable",
+                message: "The owner's computer can't open this lane's project right now. ADE tries again in a minute.",
+              }, envelope.requestId);
+              try {
+                ws.close(4003, "Authentication failed");
+              } catch {
+                // ignore close failures
+              }
+            }
             return;
           }
           // A sealed hello carries the account credentials encrypted to the
