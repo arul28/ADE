@@ -386,7 +386,7 @@ struct HubInlineComposer: View {
         HubProjectIcon(iconDataUrl: pickedProject?.iconDataUrl, isActive: false, size: 18)
 
         Text(hubComposerDestinationTitle(
-          projectName: pickedProject?.displayName,
+          projectName: pickedAccountProject?.name ?? pickedProject?.displayName,
           machineName: pickedRemoteMachine?.name
         ))
           .font(.system(size: 13.5, weight: .semibold))
@@ -478,6 +478,15 @@ struct HubInlineComposer: View {
       sectionLabel("Project")
       ScrollView {
         LazyVStack(spacing: 2) {
+          if let entries = composerEntries {
+            // Signed in: each account project once, then its computers.
+            if entries.isEmpty {
+              emptyPickerRow("No projects on a connected computer")
+            }
+            ForEach(entries) { entry in
+              entryRow(entry)
+            }
+          } else {
           if !machineFleet.composerDestinationMachines.isEmpty {
             HubComposerMachineHeader(name: syncService.focusedMachineDisplayName)
           }
@@ -493,6 +502,7 @@ struct HubInlineComposer: View {
             ForEach(machine.projects, id: \.projectId) { project in
               projectRow(project.asRemoteMachineProjectSummary, machineKey: machine.machineKey)
             }
+          }
           }
         }
         .padding(4)
@@ -533,6 +543,97 @@ struct HubInlineComposer: View {
       .foregroundStyle(ADEColor.textMuted)
       .frame(maxWidth: .infinity)
       .padding(.vertical, 12)
+  }
+
+  /// The composer's projects when the account lists them: each account
+  /// project once with its live copies (the primary's and every live
+  /// computer's), then the folders that are not on the account. Nil when the
+  /// account does not decide the projects (signed out, an older server).
+  private var composerEntries: [HubComposerProjectEntry]? {
+    guard let resolver = syncService.accountProjectResolver() else { return nil }
+    let account = AccountService.shared
+    var copies: [(copy: HubComposerCopy, accountProject: AccountProject?)] = []
+    let primaryName = syncService.focusedMachineDisplayName
+    let primaryAccountKey = account.machine(forFleetKey: syncService.focusedMachineKey)?.machineKey
+    for project in syncService.projects {
+      copies.append((
+        HubComposerCopy(machineKey: nil, machineName: primaryName, accountMachineKey: primaryAccountKey, project: project),
+        syncService.accountProject(forCheckout: project, onMachine: nil, resolver: resolver)
+      ))
+    }
+    for machine in machineFleet.composerDestinationMachines {
+      let accountKey = account.machine(forFleetKey: machine.machineKey)?.machineKey
+      for rosterProject in machine.projects {
+        let summary = rosterProject.asRemoteMachineProjectSummary
+        copies.append((
+          HubComposerCopy(machineKey: machine.machineKey, machineName: machine.name, accountMachineKey: accountKey, project: summary),
+          syncService.accountProject(forCheckout: summary, onMachine: machine.machineKey, resolver: resolver)
+        ))
+      }
+    }
+    return hubComposerProjectEntries(copies)
+  }
+
+  private func isPicked(_ copy: HubComposerCopy) -> Bool {
+    copy.project.id == pickedProjectId && copy.machineKey == pickedMachineKey
+  }
+
+  /// The account project of the current pick (one lookup, not the list).
+  private var pickedAccountProject: AccountProject? {
+    pickedProject.flatMap { syncService.accountProject(forCheckout: $0, onMachine: pickedMachineKey) }
+  }
+
+  private func pick(_ copy: HubComposerCopy) {
+    guard !isPicked(copy) else { return }
+    pickedMachineKey = copy.machineKey
+    pickedProjectId = copy.project.id
+    // Switching projects resets only that project's lane selection.
+    selectedLaneId = defaultLaneId(forProjectId: copy.project.id)
+  }
+
+  /// One project, named by the account; when chosen and on more than one
+  /// computer, its computers follow as chips (project first, then Start on).
+  @ViewBuilder
+  private func entryRow(_ entry: HubComposerProjectEntry) -> some View {
+    let isSelected = entry.copies.contains(where: isPicked)
+    Button {
+      guard !isSelected else { return }
+      let last = entry.accountProjectId.flatMap { StartOnMemory.lastMachine(for: $0) }
+      if let copy = hubComposerDefaultCopy(entry, lastAccountMachineKey: last) { pick(copy) }
+    } label: {
+      HStack(spacing: 9) {
+        HubProjectIcon(iconDataUrl: entry.iconDataUrl, isActive: isSelected)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(entry.name)
+            .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          if entry.copies.count == 1, let only = entry.copies.first, only.machineKey != nil {
+            Text(only.machineName)
+              .font(.system(size: 11.5))
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        if isSelected {
+          Image(systemName: "checkmark")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(ADEColor.accent)
+        }
+      }
+      .padding(.horizontal, 8)
+      .padding(.vertical, 6)
+      .background(
+        isSelected ? ADEKit.pressed : Color.clear,
+        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+      )
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    if isSelected, entry.copies.count > 1 {
+      HubComposerStartOnChips(copies: entry.copies, isSelected: isPicked, onPick: pick)
+    }
   }
 
   /// `machineKey`: the project's machine when it is not the primary one.
@@ -798,6 +899,11 @@ struct HubInlineComposer: View {
       // hold; the re-entry after a switch that cannot send does release it.
       if !busy { holdsDestination = false }
       return
+    }
+    // The computer this send starts on is the project's next default.
+    if let accountProjectId = pickedAccountProject?.id,
+       let accountMachineKey = AccountService.shared.machine(forFleetKey: pickedMachineKey ?? syncService.focusedMachineKey)?.machineKey {
+      StartOnMemory.remember(accountMachineKey, for: accountProjectId)
     }
     // Another machine's project: make that machine primary first, before the
     // draft is cleared, then send as usual.

@@ -172,9 +172,11 @@ extension LanesTabView {
   }
 
   /// The other machines the filter shows, each with its rows filtered and
-  /// ordered the same way as the focused list.
+  /// ordered the same way as the focused list. Live computers come first,
+  /// then the ones the phone has no live link to (Start on's order).
   var visibleRemoteMachineLanes: [(machine: LaneRemoteMachinesModel.MachineLanes, snapshots: [LaneListSnapshot])] {
-    remoteLanes.machines.compactMap { machine in
+    let liveFirst = remoteLanes.machines.filter(\.isLive) + remoteLanes.machines.filter { !$0.isLive }
+    return liveFirst.compactMap { machine in
       switch machineFilter {
       case .focused: return nil
       case .machine(let key) where key != machine.machineKey: return nil
@@ -441,7 +443,7 @@ extension LanesTabView {
           }
         } header: {
           ADEFlatSectionHeader(
-            entry.machine.isLive ? entry.machine.name : "\(entry.machine.name) · not live",
+            entry.machine.isLive ? entry.machine.name : "\(entry.machine.name), not connected",
             detail: "\(entry.snapshots.count)"
           )
         }

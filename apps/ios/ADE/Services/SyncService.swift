@@ -6139,13 +6139,32 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// A machine project request (`project_*_request`). `machineKey` names the
+  /// computer it is for: nil or the primary goes over the primary link; any
+  /// other key goes over that computer's own fleet link, so the primary is
+  /// never asked to act for another computer.
   private func requestMachineProjectPayload<T: Decodable>(
     type: String,
     payload: [String: Any],
     responseType: T.Type,
     timeoutMessage: String,
-    timeoutNanoseconds: UInt64 = SyncRequestTimeout.defaultTimeoutNanoseconds
+    timeoutNanoseconds: UInt64 = SyncRequestTimeout.defaultTimeoutNanoseconds,
+    onMachine machineKey: String? = nil
   ) async throws -> T {
+    if let machineKey, machineKey != focusedMachineKey {
+      guard let connection = machineFleet?.connection(for: machineKey), machineFleet?.isLive(machineKey) == true else {
+        throw NSError(domain: "ADE", code: 14, userInfo: [
+          NSLocalizedDescriptionKey: "That computer is not connected. Connect it, then try again."
+        ])
+      }
+      let raw = try await connection.request(
+        type: type,
+        payload: payload,
+        timeoutNanoseconds: timeoutNanoseconds,
+        timeoutMessage: timeoutMessage
+      )
+      return try decode(raw, as: responseType)
+    }
     try requireRemoteProjectActionsAvailable()
     let requestId = makeRequestId()
     let raw = try await awaitResponse(
@@ -6162,7 +6181,8 @@ final class SyncService: ObservableObject {
   func browseMachineProjectDirectories(
     partialPath: String,
     cwd: String? = nil,
-    limit: Int = 80
+    limit: Int = 80,
+    onMachine machineKey: String? = nil
   ) async throws -> MobileProjectBrowseResult {
     let boundedLimit = max(1, min(limit, 500))
     var payload: [String: Any] = [
@@ -6176,7 +6196,8 @@ final class SyncService: ObservableObject {
       type: "project_browse_request",
       payload: payload,
       responseType: MobileProjectBrowseResultPayload.self,
-      timeoutMessage: "Timed out browsing project folders."
+      timeoutMessage: "Timed out browsing project folders.",
+      onMachine: machineKey
     )
     guard response.ok, let result = response.result else {
       throw NSError(domain: "ADE", code: 32, userInfo: [
@@ -6186,12 +6207,13 @@ final class SyncService: ObservableObject {
     return result
   }
 
-  func machineProjectDefaultParentDir() async throws -> String {
+  func machineProjectDefaultParentDir(onMachine machineKey: String? = nil) async throws -> String {
     let response = try await requestMachineProjectPayload(
       type: "project_default_parent_dir_request",
       payload: [:],
       responseType: MobileProjectDefaultParentDirPayload.self,
-      timeoutMessage: "Timed out reading the default project folder."
+      timeoutMessage: "Timed out reading the default project folder.",
+      onMachine: machineKey
     )
     guard response.ok, let parentDir = response.parentDir, !parentDir.isEmpty else {
       throw NSError(domain: "ADE", code: 33, userInfo: [
@@ -6203,12 +6225,19 @@ final class SyncService: ObservableObject {
 
   private func applyMachineProjectActionResponse(
     _ response: MobileProjectActionResultPayload,
-    fallbackMessage: String
+    fallbackMessage: String,
+    onMachine machineKey: String? = nil
   ) throws -> MobileProjectSummary {
     guard response.ok, let project = response.project else {
       throw NSError(domain: "ADE", code: 34, userInfo: [
         NSLocalizedDescriptionKey: response.message ?? fallbackMessage
       ])
+    }
+    if let machineKey, machineKey != focusedMachineKey {
+      // Another computer's catalog is its roster: ask it again so the new
+      // folder shows on the Hub and in the Lanes tab.
+      machineFleet?.connection(for: machineKey)?.requestRosterSnapshot()
+      return project
     }
     unhideProject(project)
     remoteProjectCatalog.removeAll { existing in
@@ -6221,29 +6250,31 @@ final class SyncService: ObservableObject {
     return project
   }
 
-  func openMachineProject(rootPath: String) async throws -> MobileProjectSummary {
+  func openMachineProject(rootPath: String, onMachine machineKey: String? = nil) async throws -> MobileProjectSummary {
     let response = try await requestMachineProjectPayload(
       type: "project_open_request",
       payload: ["rootPath": rootPath],
       responseType: MobileProjectActionResultPayload.self,
       timeoutMessage: "Timed out opening that project.",
-      timeoutNanoseconds: 120_000_000_000
+      timeoutNanoseconds: 120_000_000_000,
+      onMachine: machineKey
     )
-    return try applyMachineProjectActionResponse(response, fallbackMessage: "The machine could not open that project.")
+    return try applyMachineProjectActionResponse(response, fallbackMessage: "The machine could not open that project.", onMachine: machineKey)
   }
 
-  func createMachineProject(name: String, parentDir: String) async throws -> MobileProjectSummary {
+  func createMachineProject(name: String, parentDir: String, onMachine machineKey: String? = nil) async throws -> MobileProjectSummary {
     let response = try await requestMachineProjectPayload(
       type: "project_create_request",
       payload: ["name": name, "parentDir": parentDir],
       responseType: MobileProjectActionResultPayload.self,
       timeoutMessage: "Timed out creating that project.",
-      timeoutNanoseconds: 120_000_000_000
+      timeoutNanoseconds: 120_000_000_000,
+      onMachine: machineKey
     )
-    return try applyMachineProjectActionResponse(response, fallbackMessage: "The machine could not create that project.")
+    return try applyMachineProjectActionResponse(response, fallbackMessage: "The machine could not create that project.", onMachine: machineKey)
   }
 
-  func cloneMachineProject(url: String, name: String, parentDir: String) async throws -> MobileProjectSummary {
+  func cloneMachineProject(url: String, name: String, parentDir: String, onMachine machineKey: String? = nil) async throws -> MobileProjectSummary {
     var payload: [String: Any] = [
       "url": url,
       "parentDir": parentDir,
@@ -6257,12 +6288,13 @@ final class SyncService: ObservableObject {
       payload: payload,
       responseType: MobileProjectActionResultPayload.self,
       timeoutMessage: "The machine is still cloning that project. Try again in a moment.",
-      timeoutNanoseconds: 300_000_000_000
+      timeoutNanoseconds: 300_000_000_000,
+      onMachine: machineKey
     )
-    return try applyMachineProjectActionResponse(response, fallbackMessage: "The machine could not clone that project.")
+    return try applyMachineProjectActionResponse(response, fallbackMessage: "The machine could not clone that project.", onMachine: machineKey)
   }
 
-  func listMachineGitHubRepos(search: String = "") async throws -> [MobileGitHubRepoSummary] {
+  func listMachineGitHubRepos(search: String = "", onMachine machineKey: String? = nil) async throws -> [MobileGitHubRepoSummary] {
     var payload: [String: Any] = [:]
     let trimmedSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
     if !trimmedSearch.isEmpty {
@@ -6272,7 +6304,8 @@ final class SyncService: ObservableObject {
       type: "project_list_my_github_repos_request",
       payload: payload,
       responseType: MobileProjectListMyGitHubReposResultPayload.self,
-      timeoutMessage: "Timed out loading GitHub repositories."
+      timeoutMessage: "Timed out loading GitHub repositories.",
+      onMachine: machineKey
     )
     guard response.ok, let result = response.result else {
       throw NSError(domain: "ADE", code: 35, userInfo: [

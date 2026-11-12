@@ -90,6 +90,10 @@ struct LanesTabView: View, Equatable {
   /// not a push: changing it replaces the detail instead of stacking.
   @State var duoSelectedLaneId: String?
   @State var addLaneSheetPresented = false
+  /// The copy chip's result ("Copied … to …").
+  @State var copyChipToast: ADEToastMessage?
+  /// Bumped when the user hides the chip's "+1" hint, so the row redraws.
+  @State var copyChipHintRevision = 0
   @State var openLaneIds: [String] = []
   @AppStorage("ade.lanes.pinnedIds") private var pinnedLaneIdsStorage: String = ""
   @State var primaryBranches: [GitBranchSummary] = []
@@ -257,21 +261,25 @@ struct LanesTabView: View, Equatable {
         ADEHaptics.warning()
       }
     }
+    .adeToast($copyChipToast)
     .sheet(isPresented: $addLaneSheetPresented) {
-      AddLaneSheet(
-        machines: laneCreateMachines,
-        onLaneCreated: { createdLaneId in
-          addLaneSheetPresented = false
-          if !openLaneIds.contains(createdLaneId) {
-            openLaneIds.insert(createdLaneId, at: 0)
+      StartOnAccountHost {
+        AddLaneSheet(
+          machines: laneCreateMachines,
+          startOn: laneStartOnContext,
+          onLaneCreated: { createdLaneId in
+            addLaneSheetPresented = false
+            if !openLaneIds.contains(createdLaneId) {
+              openLaneIds.insert(createdLaneId, at: 0)
+            }
+            if isWorkRemoteLaneId(createdLaneId) {
+              await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+            } else {
+              await reload(refreshRemote: true)
+            }
           }
-          if isWorkRemoteLaneId(createdLaneId) {
-            await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
-          } else {
-            await reload(refreshRemote: true)
-          }
-        }
-      )
+        )
+      }
     }
     .sheet(item: $detailSheetTarget) { target in
       NavigationStack {
@@ -326,6 +334,140 @@ struct LanesTabView: View, Equatable {
       ))
     }
     return machineChoicesLeastBusyFirst(machines, runningCount: \.runningCount)
+  }
+
+  /// The Start-on list for an account project. Nil for a folder that is not
+  /// on the account: the sheet keeps its list of live machines.
+  var laneStartOnContext: LaneStartOnContext? {
+    guard let project = syncService.accountProjectForActiveProject() else { return nil }
+    let focusedKey = syncService.focusedMachineKey
+    var candidates = syncService.startOnCandidates(for: project)
+    // A computer whose lanes this tab reads is a live copy, also when the
+    // account does not list its copy yet (it publishes on its next beat, as
+    // right after "Copy to").
+    for machine in laneCreateMachines {
+      guard let key = machine.id.isEmpty ? focusedKey : machine.id else { continue }
+      if let index = candidates.firstIndex(where: { $0.fleetKey == key }) {
+        // A clone-first row that now has lanes holds its computer's only copy.
+        if candidates[index].kind == .cloneFirst { candidates[index].isMain = true }
+        candidates[index].kind = .copy
+        candidates[index].isLive = true
+        continue
+      }
+      candidates.append(StartOnCandidate(
+        accountMachineKey: AccountService.shared.machine(forFleetKey: key)?.machineKey ?? "fleet:\(key)",
+        fleetKey: key,
+        name: machine.name,
+        symbol: machineSymbol(machineKey: key, name: machine.name),
+        kind: .copy,
+        isMain: true,
+        lastSeenAt: 0,
+        isLive: true
+      ))
+    }
+    return LaneStartOnContext(
+      accountProjectId: project.id,
+      projectName: project.name,
+      candidates: resolveStartOn(candidates, lastMachineKey: StartOnMemory.lastMachine(for: project.id)),
+      focusedKey: focusedKey,
+      connect: { candidate in
+        switch await syncService.connectForStartOn(accountMachineKey: candidate.accountMachineKey) {
+        case .failure(let failure):
+          return failure.message
+        case .success(let key):
+          return await awaitStartOnLanes(machineKey: key, name: candidate.name)
+        }
+      },
+      copy: { candidate in
+        switch await syncService.connectForStartOn(accountMachineKey: candidate.accountMachineKey) {
+        case .failure(let failure):
+          return failure.message
+        case .success(let key):
+          do {
+            _ = try await syncService.copyAccountProject(project, ontoMachine: key)
+          } catch {
+            return SyncUserFacingError.message(for: error)
+          }
+          return await awaitStartOnLanes(machineKey: key, name: candidate.name)
+        }
+      }
+    )
+  }
+
+  /// The copy chip under the title, for an account project on more than one
+  /// computer, or with a connected computer that has no copy.
+  @ViewBuilder
+  var laneCopyChipRow: some View {
+    let _ = copyChipHintRevision
+    if let context = laneStartOnContext {
+      let candidates = context.candidates
+      let copies = candidates.filter { $0.kind != .cloneFirst }
+      let spare = candidates.contains { $0.kind == .cloneFirst && $0.isLive }
+      let showsHint = spare && !HubCopyChipHints.isHidden(context.accountProjectId)
+      if copies.count > 1 || candidates.contains(where: { $0.kind == .cloneFirst }) {
+        let focusedKey = syncService.focusedMachineKey
+        let focusedAccountKey = candidates.first { $0.fleetKey != nil && $0.fleetKey == focusedKey }?.accountMachineKey
+        HubCopyChip(
+          focusedName: focusedMachineName,
+          focusedSymbol: machineSymbol(machineKey: focusedKey, name: focusedMachineName),
+          candidates: candidates,
+          focusedAccountKey: focusedAccountKey,
+          showsSpareHint: showsHint,
+          onOpenCopy: { openCopy($0) },
+          onPutCopy: { candidate in putCopy(on: candidate, context: context) },
+          onHideSpareHint: {
+            HubCopyChipHints.hide(context.accountProjectId)
+            copyChipHintRevision &+= 1
+          }
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .adeFlatRow(insets: EdgeInsets(top: 2, leading: 16, bottom: 6, trailing: 16), separator: .hidden)
+      }
+    }
+  }
+
+  /// Opens the project's copy on another computer (today's switch): over the
+  /// fleet link when that computer is live, else through the account route,
+  /// which connects it first.
+  private func openCopy(_ candidate: StartOnCandidate) {
+    if candidate.isLive, let key = candidate.fleetKey,
+       let repo = syncService.remoteLaneRepo(machineKey: key),
+       let summary = machineFleet.machine(for: key)?.projects.first(where: { $0.projectId == repo.projectId })?.asRemoteMachineProjectSummary {
+      Task { await syncService.openProject(summary, onMachine: key) }
+      return
+    }
+    guard let project = syncService.accountProjectForActiveProject(),
+          let copy = accountProjectCopyMachines(project, machines: AccountService.shared.machines)
+            .first(where: { $0.copy.machineKey == candidate.accountMachineKey })?.copy
+    else { return }
+    DeepLinkRouter.shared.openAccountProjectCopy(accountMachineKey: copy.machineKey, checkoutId: copy.checkoutId)
+  }
+
+  /// Copies the project onto a computer that has none, from the chip.
+  private func putCopy(on candidate: StartOnCandidate, context: LaneStartOnContext) {
+    copyChipToast = ADEToastMessage(text: "Copying \(context.projectName) to \(candidate.name)…", kind: .info)
+    Task { @MainActor in
+      let failure = await context.copy(candidate)
+      copyChipToast = failure.map { ADEToastMessage(text: $0, kind: .failure) }
+        ?? ADEToastMessage(text: "Copied \(context.projectName) to \(candidate.name).", kind: .success)
+    }
+  }
+
+  /// Waits (bounded) until a computer's roster lists the open repository,
+  /// then reads its lanes once, so Start on can open the lane form there.
+  /// Nil when its lanes are in; otherwise what to tell the user.
+  @MainActor
+  private func awaitStartOnLanes(machineKey: String, name: String) async -> String? {
+    if machineKey == syncService.focusedMachineKey { return nil }
+    let deadline = Date().addingTimeInterval(20)
+    while !syncService.remoteReposForActiveProject().contains(where: { $0.machineKey == machineKey }) {
+      guard Date() < deadline, !Task.isCancelled else {
+        return "\(name) is connected, but it does not list this project yet. Try again in a moment."
+      }
+      try? await Task.sleep(nanoseconds: 400_000_000)
+    }
+    await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+    return nil
   }
 
   // MARK: - Top bar

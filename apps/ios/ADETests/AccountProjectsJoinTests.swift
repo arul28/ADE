@@ -245,6 +245,42 @@ final class AccountProjectsJoinTests: XCTestCase {
 
   // MARK: - Fixtures
 
+  // MARK: - Start on
+
+  /// Start on decides which computer a new lane or chat runs on. The computer
+  /// used last goes first only while it can start; then the copies (main,
+  /// live, newest); then computers that need a copy; offline copies come last
+  /// and are never the default.
+  func testStartOnOrderAndDefault() {
+    func row(_ key: String, _ kind: StartOnCandidate.Kind, main: Bool = true, live: Bool = false, seen: Double = 0) -> StartOnCandidate {
+      StartOnCandidate(accountMachineKey: key, fleetKey: nil, name: key, kind: kind,
+                       isMain: main, lastSeenAt: seen, isLive: live)
+    }
+    let rows = [
+      row("offline-new", .offline, seen: 9),
+      row("clone-b", .cloneFirst),
+      row("copy-old", .copy, seen: 1),
+      row("copy-live", .copy, live: true, seen: 2),
+      row("clone-a", .cloneFirst),
+      row("copy-side", .copy, main: false, live: true, seen: 8),
+      row("copy-new", .copy, seen: 5),
+      row("offline-old", .offline, seen: 3),
+    ]
+    let cases: [(last: String?, order: [String])] = [
+      (nil, ["copy-live", "copy-new", "copy-old", "copy-side", "clone-a", "clone-b", "offline-new", "offline-old"]),
+      ("copy-old", ["copy-old", "copy-live", "copy-new", "copy-side", "clone-a", "clone-b", "offline-new", "offline-old"]),
+      // An offline computer used last does not jump the queue.
+      ("offline-old", ["copy-live", "copy-new", "copy-old", "copy-side", "clone-a", "clone-b", "offline-new", "offline-old"]),
+    ]
+    for (last, order) in cases {
+      let ordered = resolveStartOn(rows, lastMachineKey: last)
+      XCTAssertEqual(ordered.map(\.accountMachineKey), order, "last: \(last ?? "none")")
+      XCTAssertEqual(startOnDefault(ordered)?.accountMachineKey, order.first)
+    }
+    let onlyOffline = resolveStartOn([row("a", .offline), row("b", .offline, seen: 4)], lastMachineKey: "a")
+    XCTAssertNil(startOnDefault(onlyOffline))
+  }
+
   private func projectId(_ seed: String) -> String {
     "ap_" + String(repeating: seed, count: 32)
   }
