@@ -94,6 +94,8 @@ struct LanesTabView: View, Equatable {
   @State var copyChipToast: ADEToastMessage?
   /// Bumped when the user hides the chip's "+1" hint, so the row redraws.
   @State var copyChipHintRevision = 0
+  /// The account project whose Location page is open, from the copy chip.
+  @State var locationTarget: HubAccountHomeTarget?
   @State var openLaneIds: [String] = []
   @AppStorage("ade.lanes.pinnedIds") private var pinnedLaneIdsStorage: String = ""
   @State var primaryBranches: [GitBranchSummary] = []
@@ -262,6 +264,9 @@ struct LanesTabView: View, Equatable {
       }
     }
     .adeToast($copyChipToast)
+    .sheet(item: $locationTarget) { target in
+      ProjectLocationScreen(projectId: target.id)
+    }
     .sheet(isPresented: $addLaneSheetPresented) {
       StartOnAccountHost {
         AddLaneSheet(
@@ -418,7 +423,8 @@ struct LanesTabView: View, Equatable {
           onHideSpareHint: {
             HubCopyChipHints.hide(context.accountProjectId)
             copyChipHintRevision &+= 1
-          }
+          },
+          onLocation: { locationTarget = HubAccountHomeTarget(id: context.accountProjectId) }
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .adeFlatRow(insets: EdgeInsets(top: 2, leading: 16, bottom: 6, trailing: 16), separator: .hidden)

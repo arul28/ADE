@@ -33,6 +33,7 @@ struct HubScreen: View {
   @State private var projectOpenFailureToast: ADEToastMessage?
   /// The account project the Delete sheet is open for.
   @State private var deleteProjectTarget: AccountProject?
+  @State private var locationTarget: HubAccountHomeTarget?
   /// The Hub notice waiting for a covering pane to close.
   @State private var heldHubNoticeId: UUID?
   // Set when a hub chat row is tapped — drives the chat cover (wired in
@@ -113,6 +114,9 @@ struct HubScreen: View {
         onRemoved: { text in projectOpenFailureToast = ADEToastMessage(text: text) }
       )
       .presentationDetents([.medium, .large])
+    }
+    .sheet(item: $locationTarget) { target in
+      ProjectLocationScreen(projectId: target.id)
     }
     .sheet(item: $deleteProjectTarget) { project in
       DeleteProjectSheet(project: project) { text in
@@ -521,6 +525,10 @@ struct HubScreen: View {
           onRemoveFromADE: {
             guard let id = accountJoin.accountIdByCardId[project.id] ?? accountOnly?.id else { return }
             deleteProjectTarget = accountProjects.liveProjects.first { $0.id == id }
+          },
+          onLocation: {
+            guard let id = accountJoin.accountIdByCardId[project.id] ?? accountOnly?.id else { return }
+            locationTarget = HubAccountHomeTarget(id: id)
           }
         )
         .equatable()

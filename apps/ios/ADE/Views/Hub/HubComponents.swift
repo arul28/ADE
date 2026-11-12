@@ -1129,6 +1129,9 @@ struct HubProjectTile: View, Equatable {
   let onMoveToTop: () -> Void
   let onForget: () -> Void
   var onRemoveFromADE: () -> Void = {}
+  /// An account project (`canRemoveFromADE`): "Location" opens where its
+  /// folders are.
+  var onLocation: () -> Void = {}
 
   @State private var iconPickerShown = false
   @State private var pickedIcon: PhotosPickerItem?
@@ -1244,6 +1247,11 @@ struct HubProjectTile: View, Equatable {
           UIPasteboard.general.string = rootPath
         } label: {
           Label("Copy path", systemImage: "doc.on.doc")
+        }
+      }
+      if canRemoveFromADE {
+        Button(action: onLocation) {
+          Label("Location", systemImage: "folder")
         }
       }
       if canForget {

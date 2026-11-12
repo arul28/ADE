@@ -499,6 +499,7 @@
 		E2000000000000000000DE08 /* HubAccountProjects.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE08 /* HubAccountProjects.swift */; };
 		E2000000000000000000DE0A /* StartOnPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0A /* StartOnPicker.swift */; };
 		E2000000000000000000DE0B /* DeleteProjectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0B /* DeleteProjectSheet.swift */; };
+		E2000000000000000000DE0C /* ProjectLocationScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE0C /* ProjectLocationScreen.swift */; };
 		E20000000000000000000F04 /* WorkRemoteMachineRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F04 /* WorkRemoteMachineRows.swift */; };
 		5E0000000000000000000B01 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 5E0000000000000000000A02 /* Sentry */; };
 		5E0000000000000000000B02 /* CrashReporting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E0000000000000000000C01 /* CrashReporting.swift */; };
@@ -1027,6 +1028,7 @@
 		D2000000000000000000DE08 /* HubAccountProjects.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubAccountProjects.swift; path = ADE/Views/Hub/HubAccountProjects.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE0A /* StartOnPicker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = StartOnPicker.swift; path = ADE/Views/Components/StartOnPicker.swift; sourceTree = "<group>"; };
 		D2000000000000000000DE0B /* DeleteProjectSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeleteProjectSheet.swift; path = ADE/Views/Hub/DeleteProjectSheet.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE0C /* ProjectLocationScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProjectLocationScreen.swift; path = ADE/Views/Hub/ProjectLocationScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000F04 /* WorkRemoteMachineRows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRemoteMachineRows.swift; path = ADE/Views/Work/WorkRemoteMachineRows.swift; sourceTree = "<group>"; };
 		5E0000000000000000000C01 /* CrashReporting.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CrashReporting.swift; path = ADE/Services/CrashReporting.swift; sourceTree = "<group>"; };
 		5F0000000000000000000C01 /* SessionReplay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SessionReplay.swift; path = ADE/Services/SessionReplay.swift; sourceTree = "<group>"; };
@@ -1249,6 +1251,7 @@
 				D2000000000000000000DE08 /* HubAccountProjects.swift */,
 				D2000000000000000000DE0A /* StartOnPicker.swift */,
 				D2000000000000000000DE0B /* DeleteProjectSheet.swift */,
+				D2000000000000000000DE0C /* ProjectLocationScreen.swift */,
 				AC8000000000000000000001 /* ProjectHostRecoveryScreen.swift */,
 				D20000000000000000000051 /* HubComponents.swift */,
 				5E77000000000000000A0009 /* HubHeaderRow.swift */,
@@ -2278,6 +2281,7 @@
 				E2000000000000000000DE08 /* HubAccountProjects.swift in Sources */,
 				E2000000000000000000DE0A /* StartOnPicker.swift in Sources */,
 				E2000000000000000000DE0B /* DeleteProjectSheet.swift in Sources */,
+				E2000000000000000000DE0C /* ProjectLocationScreen.swift in Sources */,
 				AC8100000000000000000001 /* ProjectHostRecoveryScreen.swift in Sources */,
 				E20000000000000000000051 /* HubComponents.swift in Sources */,
 				5E77000000000000000B0009 /* HubHeaderRow.swift in Sources */,

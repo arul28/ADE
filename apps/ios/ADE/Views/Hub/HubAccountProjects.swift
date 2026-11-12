@@ -811,6 +811,7 @@ struct AccountProjectHomeScreen: View {
   @ObservedObject private var account = AccountService.shared
   @Environment(\.dismiss) private var dismiss
   @State private var deletePresented = false
+  @State private var locationPresented = false
 
   private var project: AccountProject? {
     store.liveProjects.first { $0.id == projectId }
@@ -839,6 +840,9 @@ struct AccountProjectHomeScreen: View {
         ToolbarItem(placement: .confirmationAction) {
           Button("Done") { dismiss() }
         }
+      }
+      .sheet(isPresented: $locationPresented) {
+        ProjectLocationScreen(projectId: projectId)
       }
       .sheet(isPresented: $deletePresented) {
         if let project {
@@ -898,6 +902,15 @@ struct AccountProjectHomeScreen: View {
             }
           }
         }
+        Button {
+          locationPresented = true
+        } label: {
+          Label("Location", systemImage: "folder")
+            .font(.system(size: 14, weight: .medium))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(ADEColor.accent)
+        .padding(.top, 4)
       }
 
       Button(role: .destructive) {
