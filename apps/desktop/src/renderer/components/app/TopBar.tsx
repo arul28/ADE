@@ -61,6 +61,7 @@ import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
+import { captureError } from "../../../shared/sentry/capture";
 import { rememberProjectOriginSummaries } from "../lanes/laneMachines";
 import { resetAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
 import { consumeAppMenuCommand, installFindKeyBridge } from "../../lib/appMenuCommands";
@@ -2209,8 +2210,9 @@ export function TopBar({
           if (fallback.kind === "local") await state.switchProjectToPath(fallback.rootPath);
           else await state.switchRemoteProject(fallback.binding.targetId, fallback.binding.projectId);
         }
-      } catch {
+      } catch (error) {
         // The switch failed: the tab closes rather than pointing at a removed copy.
+        captureError(error, { fingerprint: ["repository-tabs", "remove-fallback-open"], level: "warning", handled: true });
         await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
         return;
       }

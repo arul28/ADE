@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppStore } from "../../state/appStore";
-import { readClientLayout, writeClientLayout } from "./clientLayoutStore";
+import { clientLayoutScope, readClientLayout, writeClientLayout } from "./clientLayoutStore";
 
 export type DockLayout = Record<string, number>;
 type DockLayoutUpdater = DockLayout | ((prev: DockLayout) => DockLayout);
@@ -18,7 +18,9 @@ export function useDockLayout(layoutId: string, fallbackLayout: DockLayout) {
   const binding = useAppStore((state) => state.projectBinding);
   const bindingRef = useRef(binding);
   bindingRef.current = binding;
-  const bindingKey = binding?.key ?? null;
+  // The read follows the layout's repository scope, which can change for the
+  // same binding key once a local folder's origin is known.
+  const layoutScope = clientLayoutScope(binding);
   /* Buffer resize updates in a ref so we don't re-render on every drag frame.
      State + persistence commit after the resize gesture settles. */
   const pendingRef = useRef<DockLayout | null>(null);
@@ -51,7 +53,7 @@ export function useDockLayout(layoutId: string, fallbackLayout: DockLayout) {
         persistTimerRef.current = null;
       }
     };
-  }, [bindingKey, layoutId]);
+  }, [layoutScope, layoutId]);
 
   const saveLayout = useCallback(
     (update: DockLayoutUpdater) => {

@@ -18,7 +18,7 @@ import {
   type PaneSplit,
   type DropEdge
 } from "./paneTreeOps";
-import { readClientLayout, writeClientLayout } from "./clientLayoutStore";
+import { clientLayoutScope, readClientLayout, writeClientLayout } from "./clientLayoutStore";
 
 /* Re-export types for backward compat */
 export type { PaneLeaf, PaneSplit, PaneLayoutEntry } from "./paneTreeOps";
@@ -213,7 +213,9 @@ export function PaneTilingLayout({
   const layoutBinding = useAppStore((state) => state.projectBinding);
   const layoutBindingRef = useRef(layoutBinding);
   layoutBindingRef.current = layoutBinding;
-  const layoutBindingKey = layoutBinding?.key ?? null;
+  // The read follows the layout's repository scope, which can change for the
+  // same binding key once a local folder's origin is known.
+  const layoutScope = clientLayoutScope(layoutBinding);
   const { layout, loaded, saveLayout } = useDockLayout(layoutId, {});
 
   /* ---- Mutable tree state (Phase D) ---- */
@@ -263,7 +265,7 @@ export function PaneTilingLayout({
         }
       });
     return () => { cancelled = true; };
-  }, [layoutBindingKey, layoutId, expectedPaneIds, tree]);
+  }, [layoutScope, layoutId, expectedPaneIds, tree]);
 
   // Re-sync if prop tree changes shape (e.g., panes added/removed)
   useEffect(() => {

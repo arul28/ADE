@@ -32,9 +32,6 @@ import { Banner } from "../ui/notice";
 import { dismissToast, showToast } from "../app/toast/toastStore";
 import {
   ACCOUNT_MACHINE_TARGET_PREFIX,
-  accountProjectGroups,
-  foreignCopyPaths,
-  groupRecentProjects,
   recentProjectLocationKey,
   localBindingFromRecent,
   remoteBindingFromRecent,
@@ -64,38 +61,7 @@ import type {
 } from "../../../shared/types";
 import "./ProjectWelcomePage.css";
 import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
-import { useAccountProjectList } from "../../state/useRepositoryCopies";
-import { cachedGitRemoteIdentity } from "../lanes/laneMachines";
-import type { AccountProjectView } from "../../../shared/accountProject";
-
-/** This computer's account machine key, read once (desktop only). */
-/** This computer's account machine key: read once per app session, so Home does not render twice on each open. */
-let thisMachineKeyCache: string | null | undefined;
-function useThisMachineKey(enabled: boolean): string | null {
-  const [machineKey, setMachineKey] = useState<string | null>(() => thisMachineKeyCache ?? null);
-  useEffect(() => {
-    if (!enabled || thisMachineKeyCache !== undefined) return undefined;
-    let cancelled = false;
-    void Promise.resolve(window.ade?.account?.getLocalMachineIdentity?.())
-      .then((identity) => {
-        thisMachineKeyCache = identity?.machineKey?.trim() || null;
-        if (!cancelled) setMachineKey(thisMachineKeyCache);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled]);
-  return machineKey;
-}
-
-/** The account project of a recent row's origin, by any of the project's addresses. */
-function accountProjectForOrigin(projects: readonly AccountProjectView[], gitOriginUrl: string | null | undefined): AccountProjectView | null {
-  const origin = cachedGitRemoteIdentity(gitOriginUrl ?? null);
-  if (!origin) return null;
-  return projects.find((project) => [project.repoKey, ...project.aliases].some((key) =>
-    cachedGitRemoteIdentity(key.startsWith("repo:") ? key.slice("repo:".length) : key) === origin)) ?? null;
-}
+import { useHomeAccountProjects } from "./useHomeAccountProjects";
 
 // Edit mode's toolbar, gallery and appearance sliders: loaded the first time
 // someone customizes the page, never on the boot path.
@@ -302,50 +268,15 @@ export function ProjectWelcomePage() {
     if (!workspace.adapter.getActiveBinding()) workspace.adapter.activateHub();
   }, [webMode, workspace]);
 
-  // The account's projects (S4): Home lists every project of the account, also
-  // one added or cloned on another machine, and a row of another machine's
-  // copy opens that machine's copy (F6).
-  const accountList = useAccountProjectList();
-  const accountProjects = accountList.state === "ready" ? accountList.projects : null;
-  // Only the F6 rule needs it, and only with the account's list.
-  const thisMachineKey = useThisMachineKey(!webMode && accountProjects != null);
-  const visibleProjectGroups = useMemo(() => {
-    const foreign = webMode ? new Set<string>() : foreignCopyPaths({ projects: accountProjects, thisMachineKey });
-    const kept = (webMode ? webRecents : recentProjects).filter((rp) => {
-      if (rp.kind === "remote") return true;
-      if (foreign.has(rp.rootPath)) return false;
-      return rp.exists && !rp.rootPath.includes("ade-project");
-    });
-    const groups = groupRecentProjects({
-      recentProjects: kept,
-      remoteSnapshot: webMode ? null : remoteSnapshot,
-    });
-    const fromAccount = !webMode && accountProjects
-      ? accountProjectGroups({
-          projects: accountProjects,
-          shownGroups: groups,
-          remoteSnapshot,
-          thisMachineKey,
-          machineNames: accountList.machineNames,
-        })
-      : [];
-    return [...groups, ...fromAccount].filter((group) => !pendingForgetKeys.has(group.id));
-  }, [accountList.machineNames, accountProjects, pendingForgetKeys, recentProjects, remoteSnapshot, thisMachineKey, webMode, webRecents]);
-
-  // A project with no computer online opens as its repository tab, with no
-  // machine (0M): the tab waits for a computer instead of failing.
-  const showNoMachineTab = useAppStore((s) => s.showNoMachineTab);
-  const openNoMachineTab = useCallback((rp: RecentProjectSummary): boolean => {
-    const origin = cachedGitRemoteIdentity(rp.gitOriginUrl ?? rp.remote?.gitOriginUrl ?? null);
-    if (!origin) return false;
-    const project = accountProjects ? accountProjectForOrigin(accountProjects, rp.gitOriginUrl ?? rp.remote?.gitOriginUrl) : null;
-    showNoMachineTab({
-      id: project?.id ?? `repo:${origin}`,
-      displayName: project?.name ?? rp.displayName,
-      iconDataUrl: rp.remote?.iconDataUrl ?? null,
-    });
-    return true;
-  }, [accountProjects, showNoMachineTab]);
+  // The account's projects (S4) join the recents; a project with no computer
+  // online opens as its repository tab with no machine (0M).
+  const { visibleProjectGroups, openNoMachineTab } = useHomeAccountProjects({
+    webMode,
+    recentProjects,
+    webRecents,
+    remoteSnapshot,
+    pendingForgetKeys,
+  });
 
   const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
 
@@ -434,9 +365,7 @@ export function ProjectWelcomePage() {
         const state = connectionByTarget.get(targetId) ?? null;
         if (state === "connected") {
           void switchRemoteProject(targetId, projectId).catch((error) => {
-            setRowError(
-              error instanceof Error ? error.message : String(error),
-            );
+            setRowError(error instanceof Error ? error.message : String(error));
           });
           return;
         }
@@ -449,11 +378,7 @@ export function ProjectWelcomePage() {
           } catch (error) {
             // The machine did not come online: the repository still opens, as
             // a tab with no machine that opens a copy when one is online.
-            if (!openNoMachineTab(rp)) {
-              setRowError(
-                error instanceof Error ? error.message : String(error),
-              );
-            }
+            if (!openNoMachineTab(rp)) setRowError(error instanceof Error ? error.message : String(error));
           } finally {
             setConnectingKeys((prev) => {
               const next = new Set(prev);

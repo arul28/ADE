@@ -18,6 +18,7 @@
  */
 import { useEffect } from "react";
 import { coerceAccountProjectView, type AccountProjectView } from "../../shared/accountProject";
+import { captureError } from "../../shared/sentry/capture";
 import { isWebClientMode } from "../lib/webClientMode";
 import { publishAccountProjectList, type AccountProjectListState } from "./useRepositoryCopies";
 
@@ -155,7 +156,11 @@ async function readList(): Promise<void> {
   lastReadAt = Date.now();
   const status = await window.ade?.account?.status?.().catch(() => null);
   const userId = status?.userId ?? null;
-  const answer = await accountList().catch(() => null);
+  const answer = await accountList().catch((error: unknown) => {
+    // The cached list stays on screen; the next focus reads again.
+    captureError(error, { fingerprint: ["account-projects", "list-read"], level: "warning", handled: true });
+    return null;
+  });
   if (!answer) return;
   if (answer.state === "signed_out") {
     currentUserId = null;
