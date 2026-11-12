@@ -1069,6 +1069,39 @@ describe("ptyService", () => {
       expect(opts?.env?.CLAUDE_CONFIG_DIR).toBe(WORK_HOME);
     });
 
+    it("takes a Claude turn hook's report only with its own launch's token", async () => {
+      const cliPath = path.resolve("/opt/ade/bin/ade");
+      const { service, loadPty } = createHarness({
+        runtimeSocketPath: "/tmp/ade-test-runtime.sock",
+        getAdeCliAgentEnv: (env) => ({ ...env, ADE_CLI_PATH: cliPath }),
+      });
+      await service.create({
+        sessionId: "session-hooked",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        runtimeCliLaunch: { provider: "claude", permissionMode: "default" },
+      });
+      const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
+      const opts = spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      const token = opts?.env?.ADE_CLI_TURN_HOOK_TOKEN ?? "";
+      expect(token.length, "the hooked launch carries a token").toBeGreaterThan(0);
+      const started = { hook_event_name: "UserPromptSubmit", prompt_id: "p-1" };
+
+      // Another CLI under the same chat knows the session id but not the token.
+      expect(service.reportCliTurnHookEvent({ sessionId: "session-hooked", provider: "claude", payload: started })).toBe(false);
+      expect(service.reportCliTurnHookEvent({
+        sessionId: "session-hooked", provider: "claude", payload: started, token: "forged",
+      })).toBe(false);
+      expect(service.getTrackedCliTurn("session-hooked")?.phase).toBe("idle");
+
+      expect(service.reportCliTurnHookEvent({ sessionId: "session-hooked", provider: "claude", payload: started, token })).toBe(true);
+      expect(service.getTrackedCliTurn("session-hooked")).toMatchObject({ phase: "working", source: "claude-hooks" });
+    });
+
     it("resumes into the provider default when the stored account is gone", async () => {
       const { service, sessionService, loadPty } = createHarness();
       sessionService.create({

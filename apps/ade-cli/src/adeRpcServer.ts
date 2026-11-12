@@ -2170,6 +2170,43 @@ function parseCliSessionPermissionMode(value: unknown): AgentChatPermissionMode 
   );
 }
 
+/**
+ * The permission a tracked agent CLI starts with when its launch names none:
+ * the same default a chat launched without controls gets
+ * (`agentChatService.resolveChatConfig`). The project's per-provider setting
+ * wins, then the shared CLI mode, and with nothing configured it is full
+ * access, the mode the desktop composer starts on. Null for a plain shell, or
+ * when the provider cannot take the resolved mode (the launch then keeps the
+ * provider's own default). The agent ceiling is applied after this.
+ */
+function configuredCliLaunchPermissionMode(
+  runtime: AdeRuntime,
+  provider: string,
+): AgentChatPermissionMode | null {
+  if (provider === "shell" || !isLaunchProfile(provider)) return null;
+  let permissions: { cli?: { mode?: string }; providers?: Record<string, unknown> } = {};
+  try {
+    permissions = (runtime.projectConfigService?.get()?.effective?.ai?.permissions ?? {}) as typeof permissions;
+  } catch {
+    permissions = {};
+  }
+  const configuredProvider = permissions.providers?.[provider];
+  const cliMode = permissions.cli?.mode;
+  const mode: AgentChatPermissionMode = typeof configuredProvider === "string" && isTrackedCliPermissionMode(configuredProvider)
+    ? configuredProvider
+    : cliMode === "read-only"
+      ? "plan"
+      : cliMode === "edit"
+        ? "edit"
+        : "full-auto";
+  try {
+    validateLaunchProfilePermissionMode(provider, mode);
+    return mode;
+  } catch {
+    return null;
+  }
+}
+
 function parseCliSessionDroidPermissionMode(value: unknown): AgentChatDroidPermissionMode | undefined {
   const mode = asTrimmedString(value).toLowerCase();
   if (!mode) return undefined;
@@ -4000,6 +4037,8 @@ const CHAT_ACTION_SCOPE = new Map<string, "mesh" | "self">([
   ["requestSessionAttention", "self"],
   ["clearAsk", "self"],
   ["setSessionActivity", "self"],
+  // A CLI's hook reports its own turn; another session's would be a forged status.
+  ["reportCliTurnSignal", "self"],
   ["setSessionStatusNote", "self"],
   ["setSpawnKind", "self"],
   ["dismissSubagentTakeoverPrompt", "self"],
@@ -4127,7 +4166,7 @@ function scopeChatAdeActionArgs(
     // A direct, unbound `ade` CLI keeps project-wide access for read actions,
     // but agent-reported activity is a write and must stay attached to the
     // caller's own chat or tracked terminal. The CTO/user path is unaffected.
-    if (action === "setSessionActivity") {
+    if (action === "setSessionActivity" || action === "reportCliTurnSignal") {
       chatAccessDenied(method, {
         callerChatSessionId: null,
         requestedSessionId: asOptionalTrimmedString(chatArgs.sessionId),
@@ -4152,7 +4191,7 @@ function scopeChatAdeActionArgs(
     return scopedArgs;
   }
 
-  const requestedOwnedTerminal = action === "setSessionActivity"
+  const requestedOwnedTerminal = (action === "setSessionActivity" || action === "reportCliTurnSignal")
     && requestedSessionId != null
     && callerChatSessionId != null
     && runtime.sessionService.get(requestedSessionId)?.chatSessionId === callerChatSessionId;
@@ -7471,13 +7510,17 @@ async function runTool(args: {
     const parentLevel = orchestrationParentSessionId
       ? runtime.agentChatService?.getPermissionCeiling?.({ parentSessionId: orchestrationParentSessionId })
       : null;
-    const defaultPermissionMode = spawnKind === "subagent"
-      && parentLevel === "full-auto"
-      && !asOptionalTrimmedString(toolArgs.permissionMode)
-      && !requestedDroidPermissionMode
-      && !requestedMusePermissionMode
-      ? "full-auto"
-      : requestedPermissionMode;
+    const permissionNamed = Boolean(asOptionalTrimmedString(toolArgs.permissionMode))
+      || Boolean(requestedDroidPermissionMode)
+      || Boolean(requestedMusePermissionMode);
+    // Nothing named: the CLI starts where a chat launched the same way would
+    // (a full-auto parent's subagent follows it; otherwise the project's
+    // default, full access when unconfigured). The ceiling below still caps it.
+    const defaultPermissionMode = permissionNamed
+      ? requestedPermissionMode
+      : spawnKind === "subagent" && parentLevel === "full-auto"
+        ? "full-auto"
+        : configuredCliLaunchPermissionMode(runtime, provider) ?? requestedPermissionMode;
     const permissionMode = cliCeiling
       ? clampGenericPermissionMode(defaultPermissionMode, cliCeiling) as AgentChatPermissionMode
       : defaultPermissionMode;

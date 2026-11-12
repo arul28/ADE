@@ -273,6 +273,8 @@ import type {
   PendingInputRequest,
 } from "../../desktop/src/shared/types/chat";
 import { buildChatInboxPlan } from "./cliChatInbox";
+import { runCliTurnHook } from "./cliTurnHook";
+import { CLI_TURN_HOOK_COMMAND } from "../../desktop/src/main/services/pty/cliTurnSignals";
 import {
   describePendingInputForAgent,
   resolvePendingInputResponse,
@@ -2503,6 +2505,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   From an agent, the new session is a subagent of that agent's chat and
   reports back to it. --type peer: no report. --no-parent: a separate chat,
   only when the user asks. --parent <sessionId> names a different parent.
+  Without --permissions, both modes start where a chat would: a full-auto
+  parent's subagent runs full-auto, otherwise the project's default (full
+  access unless configured), never above the agent that started it.
 `,
   lanes: `${ADE_BANNER}
   Lanes
@@ -2947,8 +2952,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     row stops saying "Needs you" about a question nobody is on.
     $ ade chat deleted list --text                  Recently deleted chats this machine can still reopen (--query <text>)
     $ ade chat deleted reopen <id> [--lane <lane>]  Reopen one with its history; a chat whose lane is gone needs --lane
-    $ ade chat inbox --text                         Every chat in the project that waits on you, each with its question
-                                                    or approval inline and the exact 'chat respond' that answers it
+                                                    A deleted CLI session (AGENT "claude CLI") relaunches in its lane,
+                                                    resuming its own conversation when ADE knows it, else fresh
+    $ ade chat inbox --text                         Every chat and CLI session in the project that waits on you, each
+                                                    with its question or approval inline and the exact command that
+                                                    answers it
                                                     (--all-machines: every machine on your account)
     $ ade chat pending <session> --text             The questions/approvals a chat is blocked on: item id, options,
                                                     and the exact 'chat respond' command for each
@@ -3043,10 +3051,18 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     A person's batch needs no approval. Chats that already
                                                     continue on another machine are skipped (named: refused).
                                                     Also: --no-descendants, --no-changes, --interrupt, --note "…"
+                                                    A CLI session (Claude Code, Codex, …) moves as a CLI: it stops
+                                                    here and resumes its own conversation there (Claude Code,
+                                                    Codex), else starts fresh there with a brief (other agents, or
+                                                    --brief). --all includes CLIs.
     $ ade chat move --status <batch-id>              Show batch progress and per-item state
     $ ade chat move --retry <batch-id>               Resume remaining batch items
     $ ade chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
+    $ ade chat fork <cli-session> [--model <model>]  A CLI session (Claude Code, Codex, …) forks into a new chat from its
+                                                    own conversation file; without --model it keeps the CLI's model.
+                                                    handoff <cli-session> sends a brief instead (its terminal output when
+                                                    ADE can't read the conversation).
     $ ade chat fork <session> --model <model> --through-turn <turn-id>
                                                     Fork from an earlier finished turn; later turns are left out
     $ ade chat side <session> "Why did we pick Redis?"
@@ -3086,7 +3102,10 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade chat restart [<session>] [--stop | --after-turn]
                                                     Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP).
                                                     With no session, restarts your own chat once this turn ends (--stop is ignored for your own chat)
+    $ ade chat update <session> --pin | --unpin      Pin or unpin a chat or CLI session in the Work list
     $ ade chat archive <session>                    Archive a chat (hidden from lists; ade chat unarchive <session> brings it back)
+                                                    Also a CLI session: one at its prompt stops (Resume picks it up); mid-turn it finishes first.
+                                                    ade chat delete <cli-session> stops it and keeps it in Recently deleted.
                                                     --dry-run prints the call without running it
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
     $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
@@ -3228,7 +3247,24 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   CLI sessions:
     Use ade new chat --mode cli ... when you want a tracked provider CLI terminal
-    instead of a persistent Work chat.
+    instead of a persistent Work chat. These chat commands also take a tracked
+    CLI session id (they run on the machine that owns the terminal):
+      send / message   Typed at the CLI's prompt. Busy: queued as a durable wait
+                       that types it at the next free prompt (its id cancels it:
+                       ade chat wait --cancel <id>); --interrupt presses the
+                       CLI's cancel key first. Text only: no images.
+      steer            Typed now, even mid-turn; the CLI decides what to do with it.
+      interrupt        Presses the provider's cancel key (Esc; Esc twice for
+                       OpenCode; Ctrl-C for Cursor). The process keeps running.
+      restart          Relaunches the CLI in its row, resuming its conversation.
+      update           --title, --pin/--unpin; --model, --effort, --fast and
+                       --permission-mode relaunch it with resume (refused mid-turn,
+                       or when that CLI's resume cannot carry the setting).
+      switch-account   Claude and Codex: relaunch under the other account, resumed.
+      generate-names   The title, from its first prompt and output.
+      pending/respond  While the CLI waits at its own permission prompt: --approve,
+                       --approve-session or --deny press Claude Code's, Codex's or
+                       Cursor's own key; other CLIs are answered in the terminal.
 `,
   "chat recover": `${ADE_BANNER}
   Chat recovery
@@ -11583,6 +11619,15 @@ async function runChatLaunchCommand(
         const session = phase === "completed"
           ? await callChat("getSessionSummary", { sessionId: asString(launch.sessionId) ?? launchId }).catch(() => null)
           : null;
+        const create = isRecord(launchArgs.chat) && isRecord(launchArgs.chat.create) ? launchArgs.chat.create : null;
+        const lowered = isRecord(session) && create
+          ? permissionLoweredNotice(
+            asString(create.permissionMode) ?? null,
+            create.droidPermissionMode != null || create.copilotPermissionMode != null,
+            session,
+          )
+          : null;
+        if (lowered) process.stderr.write(`${lowered}\n`);
         const result = { ok: phase === "completed", launchId, phase, elapsedMs, launch, ...notifyResult, ...(isRecord(session) ? { session: pickChatSettings(session) } : {}) };
         return { output: formatOutput(result, options, "chat-launch"), exitCode: phase === "completed" ? 0 : 1 };
       }
@@ -11970,8 +12015,9 @@ function buildChatPlan(args: string[]): CliPlan {
     : null;
   // `ask` / `note` take free text, not a session positional — they default to
   // the caller's own $ADE_CHAT_SESSION_ID and accept --session <id>.
-  const selfLifecycleSub = sub === "ask" || sub === "unask" || sub === "note" || sub === "activity"
-    || sub === "generate-names" || sub === "generate_names" || sub === "names";
+  // `generate-names` takes no text, so a bare id names the session to rename
+  // (otherwise it renamed the caller's own chat and lane by surprise).
+  const selfLifecycleSub = sub === "ask" || sub === "unask" || sub === "note" || sub === "activity";
   // New-lane launches take a prompt (`launch`) or a launch id (`launch-status`,
   // `launch-cancel`), never a session positional; they read their own.
   const launchSub = sub === "launch" || sub === "launches"
@@ -13159,7 +13205,9 @@ function buildChatPlan(args: string[]): CliPlan {
   if (sub === "handoff" || sub === "fork") {
     // Free text first: a note of "--fork" is text, not a flag.
     const handoffNote = readValue(args, ["--note"]);
-    const { mode, targetModelId, settings } = readHandoffTarget(args, sub);
+    // A model is optional here only for a CLI session, which continues on the
+    // model it ran; a chat without one is refused by the runtime.
+    const { mode, targetModelId, settings } = readHandoffTarget(args, sub, { modelOptional: true });
     const targetLaneId = readValue(args, ["--target-lane", "--target-lane-id"]);
     if (targetLaneId !== null && mode === "fork") {
       throw new CliUsageError("chat fork stays in the source lane; --target-lane is only valid for brief handoffs.");
@@ -13178,7 +13226,7 @@ function buildChatPlan(args: string[]): CliPlan {
           "handoffSession",
           collectGenericObjectArgs(args, {
             sourceSessionId: requireSession(),
-            targetModelId,
+            targetModelId: targetModelId ?? "",
             mode,
             ...(targetLaneId !== null ? { targetLaneId } : {}),
             ...settings,
@@ -13511,6 +13559,11 @@ function buildChatPlan(args: string[]): CliPlan {
     // and `chat updateSession` with no session sent the runtime no arguments.
     // The session can come from the positional, --session, --input-json, or
     // the caller's own chat, so it is required only after they are merged.
+    // Pinning is the row's own setting, for a chat and a CLI session alike
+    // (`session.updateMeta`, as the Work list pins it).
+    const pinFlag = readFlag(args, ["--pin"]);
+    const unpinFlag = readFlag(args, ["--unpin"]);
+    if (pinFlag && unpinFlag) throw new CliUsageError("Use only one of --pin or --unpin.");
     const update = withSession(readChatUpdateFields(args));
     // Only an omitted session falls back to the caller's own chat; an empty
     // one given on purpose is refused rather than updating the wrong chat.
@@ -13518,10 +13571,19 @@ function buildChatPlan(args: string[]): CliPlan {
       update.sessionId === undefined ? asString(process.env.ADE_CHAT_SESSION_ID) : asString(update.sessionId),
       "sessionId",
     );
+    const pinned = pinFlag ? true : unpinFlag ? false : undefined;
+    const steps: InvocationStep[] = [];
+    if (pinned !== undefined) {
+      steps.push(actionStep("pin", "session", "updateMeta", { sessionId: update.sessionId, pinned }));
+    }
+    if (pinned === undefined || Object.keys(update).some((key) => key !== "sessionId")) {
+      steps.push(actionStep("result", "chat", "updateSession", update));
+    }
     return {
       kind: "execute",
       label: "chat update",
-      steps: [actionStep("result", "chat", "updateSession", update)],
+      ...(steps.some((step) => step.key === "result") ? {} : { shapeResult: () => ({ ok: true, sessionId: update.sessionId, pinned }) }),
+      steps,
     };
   }
   return refuseUnknownSubcommand("chat", "chat", sub);
@@ -34234,7 +34296,8 @@ function formatDeletedChats(value: unknown): string {
     chats.map((chat) => [
       asString(chat.id) ?? "?",
       cell(chat.title ?? "Untitled chat", 40),
-      cell(chat.provider, 10),
+      // A deleted agent CLI says so: Reopen relaunches it in its lane.
+      chat.kind === "cli" ? cell(`${asString(chat.provider) ?? "agent"} CLI`, 14) : cell(chat.provider, 10),
       chat.laneExists === true ? cell(chat.laneName, 20) : `${cell(chat.laneName ?? "lane", 14)} (deleted)`,
       cell(chat.deletedAt, 24),
     ]),
@@ -34278,7 +34341,7 @@ function formatArchiveList(value: unknown): string {
       typeof item.sizeBytes === "number" ? formatBytes(item.sizeBytes) : "-",
       item.kind === "lane"
         ? `${item.worktreePresent === true ? "worktree on disk" : "no worktree"}${item.branchRef ? `, branch ${String(item.branchRef)}` : ""}`
-        : cell(item.toolType, 20),
+        : cell(item.toolLabel ?? item.toolType, 20),
     ]),
     "Nothing is archived.",
     // A ref is pasted back into `ade archive restore`; a shortened one matches nothing.
@@ -35207,12 +35270,30 @@ export function formatChatStatus(value: unknown, nowMs = Date.now()): string {
     nowMs,
     asString(record.timeZone),
   );
+  // A tracked CLI session whose process is gone reads `idle` like a quiet one,
+  // so say how it ended: a crash and a clean finish are not the same answer.
+  const processRow = formatCliProcessEndRow(record.cliSession);
+  const extraRows = [resumeRow, processRow].filter((row): row is string => Boolean(row));
   // The resume row belongs in the key/value header block: `formatChatTurnStatus`
   // separates that block from the subagent tree with a blank line, and a row
   // hanging off the end of the tree reads as a subagent.
   return formatChatTurnStatus(record as ChatTurnStatusSnapshot, {
-    ...(resumeRow ? { extraRows: [resumeRow] } : {}),
+    ...(extraRows.length ? { extraRows } : {}),
   });
+}
+
+function formatCliProcessEndRow(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const status = asString(value.status);
+  if (!status || status === "running") return null;
+  const exitCode = typeof value.exitCode === "number" ? value.exitCode : null;
+  // Stopped first: a CLI someone stopped often ends non-zero (Ctrl-C is 130).
+  const label = status === "disposed"
+    ? "stopped"
+    : status === "failed" || (exitCode != null && exitCode !== 0)
+      ? "exited with an error"
+      : status === "detached" ? "detached from this ADE" : "exited";
+  return chatTurnStatusRow("process", `${label}${exitCode != null ? ` (exit ${exitCode})` : ""}`);
 }
 
 export function formatChatContinueOnAccount(value: unknown): string {
@@ -40168,6 +40249,26 @@ const GENERIC_PERMISSION_WORD_BY_LEVEL: Readonly<Record<PermissionLevel, string>
 };
 
 /**
+ * The note for a chat the host started below the asked-for mode (see
+ * `chatCreateNotices`). Shared by `chat create` and `chat launch --wait`.
+ */
+function permissionLoweredNotice(
+  requestedMode: string | null,
+  nativePermissionFlag: boolean,
+  session: JsonObject,
+): string | null {
+  const requestedLevel = requestedMode && !nativePermissionFlag
+    ? UNIFORM_GENERIC_PERMISSION_LEVELS[requestedMode] ?? null
+    : null;
+  if (!requestedLevel) return null;
+  // An unreadable posture counts as the top rung, so it never reads as lowered.
+  const applied = sessionPermissionLevel(session as SessionPermissionFields, "full-auto");
+  if (permissionLevelRank(applied) >= permissionLevelRank(requestedLevel)) return null;
+  return `note: ADE started this chat at '${GENERIC_PERMISSION_WORD_BY_LEVEL[applied]}', not '${requestedMode}': `
+    + "an agent cannot start a chat with more access than its own chat or parent has.";
+}
+
+/**
  * What `chat create` says on stderr once the chat exists (stdout may be JSON).
  * Notes only: the chat is already made.
  *
@@ -40187,19 +40288,8 @@ function chatCreateNotices(plan: CliPlan & { kind: "execute" }, values: JsonObje
   const session = isRecord(created) && isRecord(created.session) ? created.session : created;
   if (!isRecord(session)) return [];
   const notices: string[] = [];
-  const requestedLevel = check.permissionMode && !check.nativePermissionFlag
-    ? UNIFORM_GENERIC_PERMISSION_LEVELS[check.permissionMode] ?? null
-    : null;
-  if (requestedLevel) {
-    // An unreadable posture counts as the top rung, so it never reads as lowered.
-    const applied = sessionPermissionLevel(session as SessionPermissionFields, "full-auto");
-    if (permissionLevelRank(applied) < permissionLevelRank(requestedLevel)) {
-      notices.push(
-        `note: ADE started this chat at '${GENERIC_PERMISSION_WORD_BY_LEVEL[applied]}', not '${check.permissionMode}': `
-        + "an agent cannot start a chat with more access than its own chat or parent has.",
-      );
-    }
-  }
+  const lowered = permissionLoweredNotice(check.permissionMode ?? null, check.nativePermissionFlag, session);
+  if (lowered) notices.push(lowered);
   const laneChats = check.laneId ? unwrapActionEnvelope(values.laneChats) : null;
   if (Array.isArray(laneChats)) {
     const newId = asString(session.id) ?? asString(session.sessionId);
@@ -41621,6 +41711,14 @@ async function main(): Promise<void> {
         },
       });
       return;
+    }
+    // A tracked Claude CLI's turn hook (cliTurnHook.ts): silent, always exit 0.
+    if (process.argv[2] === CLI_TURN_HOOK_COMMAND) {
+      await runCliTurnHook(process.argv.slice(3), (argv) => runCli(argv));
+      // The hook gives up after its deadline, but a report still in flight
+      // (a hung socket) or an unclosed stdin would keep the process alive.
+      // Claude waits on nothing from it, so end it here.
+      process.exit(0);
     }
     // The proxy supervisor's synchronous health probe on the standalone runtime.
     if (process.argv[2] === PROXY_HEALTH_PROBE_COMMAND) {

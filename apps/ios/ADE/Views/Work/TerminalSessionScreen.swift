@@ -33,6 +33,13 @@ struct TerminalSessionScreen: View {
   @State private var pasteboardHasStrings = false
   @State private var showReconnectingCaption = false
   @State private var statusDotFlash = false
+  /// The message bar for an agent CLI: write a whole message and send it,
+  /// instead of typing key by key. One choice for every CLI; off by default.
+  @AppStorage("ade.work.cliMessageBar") private var messageBarOn = false
+  @State private var messageDraft = ""
+  @State private var messageSending = false
+  @State private var messageNotice: String?
+  @FocusState private var messageFocused: Bool
 
   private var bottomIgnoredEdges: Edge.Set {
     // The resume bar renders without the keyboard; it needs the bottom safe
@@ -82,6 +89,8 @@ struct TerminalSessionScreen: View {
       .safeAreaInset(edge: .bottom, spacing: 0) {
         if controller.hasExited {
           resumeBar
+        } else if messageBarOn && isAgentCli {
+          messageBar
         } else if keyboardVisible {
           keyBarStack
         }
@@ -291,6 +300,22 @@ struct TerminalSessionScreen: View {
         .truncationMode(.middle)
 
       Spacer(minLength: 0)
+
+      if isAgentCli && !controller.hasExited {
+        Button {
+          messageBarOn.toggle()
+          messageFocused = messageBarOn
+        } label: {
+          Image(systemName: messageBarOn ? "text.bubble.fill" : "text.bubble")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(messageBarOn ? ADEColor.accent : ADEColor.textPrimary)
+            .frame(width: 36, height: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(messageBarOn ? "Type in the terminal" : "Write a message")
+        .accessibilityIdentifier("Work.Terminal.MessageBarToggle")
+      }
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 4)
@@ -412,6 +437,114 @@ struct TerminalSessionScreen: View {
     .background(ADEColor.recessedBackground.opacity(0.92))
     .overlay(alignment: .top) {
       Rectangle().fill(ADEColor.glassBorder).frame(height: 0.5)
+    }
+  }
+
+  // MARK: - Message bar
+
+  /// A tracked agent CLI (Claude Code, Codex, ...): its computer can tell when
+  /// its prompt is free, so a whole message can be typed there for you.
+  private var isAgentCli: Bool {
+    let raw = session.toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    return session.tracked && !raw.isEmpty && raw != "shell" && !raw.hasSuffix("-chat") && !raw.hasSuffix("-orchestrated")
+  }
+
+  private var canSendMessage: Bool {
+    !messageSending && !messageDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  private var messageBar: some View {
+    VStack(spacing: 6) {
+      if let messageNotice {
+        Text(messageNotice)
+          .font(.caption2.weight(.medium))
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(2)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 14)
+      }
+      HStack(alignment: .bottom, spacing: 8) {
+        TextField("Message \(runtimeLabel)…", text: $messageDraft, axis: .vertical)
+          .lineLimit(1...5)
+          .font(.system(size: 15))
+          .foregroundStyle(ADEColor.textPrimary)
+          .focused($messageFocused)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 8)
+          .background(ADEColor.textPrimary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+          .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+              .stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6)
+          )
+          .accessibilityIdentifier("Work.Terminal.MessageField")
+        Button {
+          Task { await sendMessage() }
+        } label: {
+          Group {
+            if messageSending {
+              ProgressView().controlSize(.small).tint(.white)
+            } else {
+              Image(systemName: "arrow.up").font(.system(size: 14, weight: .bold))
+            }
+          }
+          .foregroundStyle(.white)
+          .frame(width: 34, height: 34)
+          .background(canSendMessage ? ADEColor.accent : ADEColor.textMuted.opacity(0.35), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSendMessage)
+        .accessibilityLabel("Send")
+        .accessibilityIdentifier("Work.Terminal.MessageSend")
+      }
+      .padding(.horizontal, 10)
+    }
+    .padding(.top, 8)
+    .padding(.bottom, 8)
+    .background(ADEColor.recessedBackground.opacity(0.92))
+    .overlay(alignment: .top) {
+      Rectangle().fill(ADEColor.glassBorder).frame(height: 0.5)
+    }
+  }
+
+  /// Sends the message to the session's own computer, which types it at the
+  /// CLI's prompt only once that prompt is free.
+  private func sendMessage() async {
+    let text = messageDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty, !messageSending else { return }
+    messageSending = true
+    defer { messageSending = false }
+    do {
+      let outcome: WorkCliTypeOutcome
+      if remoteTerminal != nil {
+        guard let connection = remoteConnection, connection.isLive else {
+          messageNotice = "That computer isn't connected. Your message stays here; send it once it reconnects."
+          return
+        }
+        outcome = try await connection.typeIntoCli(sessionId: session.id, text: text)
+      } else {
+        // Connected to a different computer than this session's: a send would
+        // reach the wrong one.
+        if sessionMachineKey != nil, syncService.connectionState == .connected, !linkLive {
+          messageNotice = "This session's computer isn't the one connected now. Switch back to it to send."
+          return
+        }
+        outcome = try await syncService.typeIntoCli(sessionId: session.id, text: text)
+      }
+      switch outcome {
+      case .delivered:
+        messageDraft = ""
+        messageNotice = nil
+      case .heldUntilFree:
+        messageDraft = ""
+        messageNotice = "Queued. It's typed when \(runtimeLabel) finishes its turn."
+      case .queuedOffline:
+        messageDraft = ""
+        messageNotice = "You're offline. It's sent when the computer reconnects."
+      case .ended:
+        messageNotice = "This CLI has ended. Resume it to continue."
+      }
+    } catch {
+      messageNotice = error.localizedDescription
     }
   }
 

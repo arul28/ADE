@@ -481,6 +481,8 @@ import type {
   CodexThreadGoal,
   AgentChatSteerArgs,
   AgentChatSteerResult,
+  AgentCliTypeArgs,
+  AgentCliTypeResult,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
   AgentChatMoveSteerArgs,
@@ -2571,8 +2573,8 @@ declare global {
           sessionId: string,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
-         settleMany: (sessionIds: string[]) => Promise<string[]>;
-         unsettleMany: (sessionIds: string[]) => Promise<void>;
+         settleMany: (sessionIds: string[], pin?: OpenProjectBinding | null) => Promise<string[]>;
+         unsettleMany: (sessionIds: string[], pin?: OpenProjectBinding | null) => Promise<void>;
         snoozeSession: (
           sessionId: string,
           untilIso: string,
@@ -2753,6 +2755,11 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCrossMachineHandoffRecord | null>;
         send: (args: AgentChatSendArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        /** Text for a running agent CLI, typed only at a free prompt (`AgentCliTypeArgs`). */
+        typeIntoCli: (
+          args: AgentCliTypeArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentCliTypeResult>;
         steer: (
           args: AgentChatSteerArgs,
           pin?: OpenProjectBinding | null,
@@ -3008,6 +3015,11 @@ declare global {
           args: AgentChatSubagentListArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSubagentSnapshot[]>;
+        /** The open cards of a chat, or of a tracked agent CLI (ADE's cards and the CLI's own prompt). */
+        listPendingInputs: (
+          args: { sessionId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ requests: import("../shared/types").PendingInputRequest[] }>;
         killDroidWorker: (
           args: AgentChatKillDroidWorkerArgs,
           pin?: OpenProjectBinding | null,

@@ -238,6 +238,11 @@ export type PushCliRuntimeSignal = {
   laneId: string;
   sessionId: string;
   runtimeState: string;
+  /**
+   * The CLI reported this state itself (Claude hooks, Codex OSC 7501), so
+   * `idle` is a finished turn, not a guess from quiet output.
+   */
+  exactTurnState?: boolean;
 };
 
 export type PushSessionAttentionRequest = {
@@ -463,15 +468,15 @@ export function shouldDeliverAlertForPrefs(
 
 /**
  * Waiting runs are what the app icon badge counts — agents blocked on the
- * user. CLI runs are excluded: a CLI at its prompt reports waiting_for_input
- * as its normal resting state (mirroring the no-alert rule for CLI prompts),
- * so counting it would pin the badge non-zero forever.
+ * user, CLI sessions included. A CLI at its prompt does not count: its PTY
+ * signal publishes that as `stale` (onCliRuntimeSignal). A CLI run is waiting
+ * only when its hand is raised (handleSessionAttentionRequested): its own
+ * report (a Claude permission hook, Codex's blocked state), an agent's `ade
+ * chat ask`, or the screen check — the same asks a chat badges for.
  */
 export function countAwaitingAttentionRuns(runs: AgentRunState[]): number {
   return runs.filter(
-    (run) =>
-      run.kind !== "cli"
-      && (run.phase === "waiting_for_approval" || run.phase === "waiting_for_input"),
+    (run) => run.phase === "waiting_for_approval" || run.phase === "waiting_for_input",
   ).length;
 }
 
@@ -2338,6 +2343,17 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     // lifecycle event that resolves it. PTY heartbeats are observational and
     // must not erase a real request.
     if (existing?.phase === "waiting_for_input" || existing?.phase === "waiting_for_approval") return;
+    // A CLI that reports its own turn ended it: Done, as a chat's turn end is.
+    if (signal.exactTurnState && signal.runtimeState === "idle") {
+      if (existing?.kind === "chat") return;
+      if (existing?.phase === "completed") return;
+      if (!existing) return; // a turn nobody saw start leaves nothing to finish
+      markRunUpdated(existing);
+      settleRun(existing, "completed");
+      if (isTerminalPhase(existing.phase)) recentRuns.set(signal.sessionId, snapshotRun(existing));
+      scheduleFlush(false);
+      return;
+    }
     // `idle` = no output for 12s with no OSC prompt marker — we can't prove
     // the CLI is working OR at a prompt, so publish it as `stale` (dimmed,
     // not counted active) instead of overstating it as a live running row.

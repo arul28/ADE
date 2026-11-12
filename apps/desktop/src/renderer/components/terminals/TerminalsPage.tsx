@@ -63,6 +63,7 @@ import type {
   TerminalSessionSummary,
   WorkBoardWaitingReason,
 } from "../../../shared/types";
+import { isTrackedAgentCliToolType } from "../../../shared/types/sessions";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
@@ -133,6 +134,32 @@ import {
 } from "../../state/crossMachineLanes";
 
 const BULK_SESSION_DELETE_CONCURRENCY = 4;
+
+/** A tracked agent CLI (Claude Code, Codex, …): it deletes like a chat, into Recently deleted. */
+function isTrackedAgentCliSession(session: TerminalSessionSummary): boolean {
+  return Boolean(session.tracked && isTrackedAgentCliToolType(session.toolType ?? null));
+}
+
+/**
+ * Deletes an agent CLI on the machine that owns it through the chat delete,
+ * which stops it and keeps it in Recently deleted. A machine on an older ADE
+ * only has the terminal delete, which removes it outright.
+ */
+async function deleteAgentCliSession(sessionId: string, pin: OpenProjectBinding | null): Promise<{ recoverable: boolean }> {
+  try {
+    const result = pin
+      ? await window.ade.agentChat.delete({ sessionId }, pin)
+      : await window.ade.agentChat.delete({ sessionId });
+    return { recoverable: result?.recoverable === true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/is not an agent chat session/i.test(message)) throw error;
+    await (pin
+      ? window.ade.sessions.delete({ sessionId }, pin)
+      : window.ade.sessions.delete({ sessionId }));
+    return { recoverable: false };
+  }
+}
 const EMPTY_HANDOFF_LAUNCH_JOBS: HandoffLaunchJob[] = [];
 
 type SessionMutationOptions<T> = {
@@ -706,8 +733,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const showDeletedChatToast = useLatestCallback(
     (session: TerminalSessionSummary, label: string, pin: OpenProjectBinding | null, recoverable: boolean) => {
       const toastId = `chat-deleted:${session.id}`;
+      const noun = isTrackedAgentCliSession(session) ? "CLI session" : "Chat";
       if (!recoverable) {
-        showToast({ id: toastId, tone: "info", title: "Chat deleted", message: label });
+        showToast({ id: toastId, tone: "info", title: `${noun} deleted`, message: label });
         return;
       }
       const undo = () => {
@@ -718,13 +746,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             window.dispatchEvent(new CustomEvent("ade:work:select-session", {
               detail: { sessionId: result.chatSessionId, laneId: result.laneId, ...(pin ? { binding: pin } : {}) },
             }));
-            showToast({ id: toastId, tone: "success", title: "Chat reopened", message: label });
+            // A CLI that could not resume its conversation started fresh, and says why.
+            showToast({ id: toastId, tone: "success", title: `${noun} reopened`, message: result.notice ? `${label}. ${result.notice}` : label });
           })
           .catch((error: unknown) => {
             showToast({
               id: toastId,
               tone: "error",
-              title: "Couldn't reopen that chat",
+              title: `Couldn't reopen that ${noun === "Chat" ? "chat" : "CLI session"}`,
               message: formatSessionActionError(error, "Reopen"),
               actions: [{ label: "Recently deleted", onClick: openRecentlyDeleted }],
             });
@@ -738,7 +767,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       showToast({
         id: toastId,
         tone: "info",
-        title: "Chat deleted",
+        title: `${noun} deleted`,
         message: label,
         // Long enough to notice the mistake and press Undo.
         durationMs: READABLE_TOAST_DURATION_MS,
@@ -820,9 +849,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       runtimePin?: OpenProjectBinding | null,
     ) => {
       const label = (session.goal ?? session.title).trim() || "this session";
+      const agentCli = isTrackedAgentCliSession(session);
       const confirmed = await confirmDialog({
         title: `Delete "${label}"?`,
-        message: "This permanently removes the saved terminal session from ADE.",
+        message: agentCli
+          ? "A CLI session can come back from Recently deleted, resuming its conversation when ADE knows it."
+          : "This permanently removes the saved terminal session from ADE.",
         confirmLabel: "Delete",
         destructive: true,
       });
@@ -832,16 +864,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       setDeletingSessionId(session.id);
       // Same ownership resolution as `handleDeleteChat` — see the note there.
       const pin = runtimePin ?? resolveSessionRuntimePin(session);
-      const deletion = pin
-        ? window.ade.sessions.delete({ sessionId: session.id }, pin)
-        : window.ade.sessions.delete({ sessionId: session.id });
+      const deletion: Promise<{ recoverable: boolean } | void> = agentCli
+        ? deleteAgentCliSession(session.id, pin ?? null)
+        : pin
+          ? window.ade.sessions.delete({ sessionId: session.id }, pin)
+          : window.ade.sessions.delete({ sessionId: session.id });
       void deletion
-        .then(async () => {
+        .then(async (result) => {
           invalidateSessionListCache();
           work.removeSessionFromList(session.id);
           work.closeTab(session.id);
           setContextMenu((current) => (current?.session.id === session.id ? null : current));
           setInfoPopover((current) => (current?.session.id === session.id ? null : current));
+          if (agentCli) showDeletedChatToast(session, label, pin ?? null, result?.recoverable === true);
           await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
             console.error("[TerminalsPage] refresh after session delete failed", { sessionId: session.id, refreshErr });
           });
@@ -854,7 +889,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           setDeletingSessionId((current) => (current === session.id ? null : current));
         });
     },
-    [resolveSessionRuntimePin, setSessionActionError, work],
+    [resolveSessionRuntimePin, setSessionActionError, showDeletedChatToast, work],
   );
 
   const handleStopAndDeleteSession = useCallback(
@@ -864,9 +899,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     ) => {
       void (async () => {
         const label = (session.goal ?? session.title).trim() || "this session";
+        const agentCli = isTrackedAgentCliSession(session);
         const confirmed = await confirmDialog({
           title: "Stop and delete session",
-          message: `Stop the runtime for "${label}" and permanently delete it?\n\nThis terminates the running process and removes the saved session from ADE.`,
+          message: agentCli
+            ? `Stop "${label}" and delete it?\n\nIt can come back from Recently deleted, resuming its conversation when ADE knows it.`
+            : `Stop the runtime for "${label}" and permanently delete it?\n\nThis terminates the running process and removes the saved session from ADE.`,
           confirmLabel: "Stop & delete",
           destructive: true,
         });
@@ -878,14 +916,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         // record, so a single call covers both steps for CLI and shell sessions.
         try {
           const pin = runtimePin ?? resolveSessionRuntimePin(session);
-          await (pin
-            ? window.ade.sessions.delete({ sessionId: session.id }, pin)
-            : window.ade.sessions.delete({ sessionId: session.id }));
+          const cliResult = agentCli ? await deleteAgentCliSession(session.id, pin ?? null) : null;
+          if (!agentCli) {
+            await (pin
+              ? window.ade.sessions.delete({ sessionId: session.id }, pin)
+              : window.ade.sessions.delete({ sessionId: session.id }));
+          }
           invalidateSessionListCache();
           work.removeSessionFromList(session.id);
           work.closeTab(session.id);
           setContextMenu((current) => (current?.session.id === session.id ? null : current));
           setInfoPopover((current) => (current?.session.id === session.id ? null : current));
+          if (cliResult) showDeletedChatToast(session, label, pin ?? null, cliResult.recoverable);
           await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
             console.error("[TerminalsPage] refresh after stop-and-delete failed", { sessionId: session.id, refreshErr });
           });
@@ -897,7 +939,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         }
       })();
     },
-    [resolveSessionRuntimePin, setSessionActionError, work],
+    [resolveSessionRuntimePin, setSessionActionError, showDeletedChatToast, work],
   );
 
   const selectedSessions = useMemo(
@@ -930,6 +972,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           ? window.ade.agentChat.delete({ sessionId: session.id }, pin)
           : window.ade.agentChat.delete({ sessionId: session.id }));
         if (pin) cancelCrossMachineOptimisticChatSession(pin, session.id);
+        return;
+      }
+      if (isTrackedAgentCliSession(session)) {
+        // Kept in Recently deleted, like a chat in the same selection.
+        await deleteAgentCliSession(session.id, pin ?? null);
         return;
       }
       await (pin
@@ -986,7 +1033,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     }
     const confirmed = await confirmDialog({
       title: `Delete ${deletable.length} selected session${deletable.length === 1 ? "" : "s"}?`,
-      message: "This permanently removes the selected saved session history from ADE.",
+      message: "Chats and CLI sessions can come back from Recently deleted; shells are removed for good.",
       confirmLabel: "Delete",
       destructive: true,
     });

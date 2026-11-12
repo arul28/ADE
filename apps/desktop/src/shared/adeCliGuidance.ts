@@ -263,9 +263,11 @@ export const ADE_PARENT_REPORT_COMMAND_GUIDANCE = [
 ].join(" ");
 
 /**
- * What a provider CLI started by another chat is told about that chat. A
- * terminal has no reliable turn end ADE can read, so unlike a chat subagent
- * nothing reports for it: the CLI reports itself, by message, when it is done.
+ * What a provider CLI started by another chat is told about that chat. ADE
+ * also sends the parent the CLI's closing message when a turn ends (where it
+ * can read the turn end) and when the CLI exits, but a terminal's turn end is
+ * not always readable, so the CLI still reports itself, by message; a turn it
+ * reported on wakes the parent once, not twice.
  */
 export function buildCliSpawnReportGuidance(
   lineage: AgentSpawnLineage | null | undefined,
