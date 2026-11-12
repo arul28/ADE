@@ -551,7 +551,14 @@ async function handleRegister(request: Request, env: RelayEnv, userId: string, r
         starts_at, hook_id, hook_salt, limits_json, git_ok, repo_visibility, max_runs_per_hour, keep_computer, paused_reason, paused_at, created_at, updated_at)
       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)
       on conflict (user_id, rule_id) do update set project_origin = excluded.project_origin, name = excluded.name,
-        spec_json = excluded.spec_json, rule_version = excluded.rule_version, spec_digest = excluded.spec_digest, cron = excluded.cron,
+        -- Within one version the track only moves up: a Stable brain's write racing a Beta brain's keeps Beta (same rule above, in the read).
+        spec_json = case
+          when excluded.rule_version = cloud_automations.rule_version
+            and json_extract(cloud_automations.spec_json, '$.channel') = 'beta'
+            and coalesce(json_extract(excluded.spec_json, '$.channel'), '') <> 'beta'
+          then json_set(excluded.spec_json, '$.channel', 'beta')
+          else excluded.spec_json end,
+        rule_version = excluded.rule_version, spec_digest = excluded.spec_digest, cron = excluded.cron,
         timezone = excluded.timezone, next_fire_at = excluded.next_fire_at, starts_at = excluded.starts_at, hook_id = excluded.hook_id,
         hook_salt = excluded.hook_salt, limits_json = excluded.limits_json, git_ok = excluded.git_ok, repo_visibility = excluded.repo_visibility,
         max_runs_per_hour = excluded.max_runs_per_hour, keep_computer = excluded.keep_computer,
