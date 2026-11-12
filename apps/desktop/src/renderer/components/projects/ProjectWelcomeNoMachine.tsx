@@ -14,7 +14,8 @@ import { copyMachines, repoKeyForOriginIdentity } from "./projectCopies";
 import { startCopyJob, useCopyJobs } from "./projectCopyJobs";
 import { requestRemoveProject } from "./removeProjectRequest";
 import { ACCOUNT_PROJECT_ID_PATTERN } from "../../../shared/accountProject";
-import { captureError } from "../../../shared/sentry/capture";
+import { extractError } from "../../lib/format";
+import { Banner } from "../ui/notice";
 
 /** The repository tab of a no-machine tab: the account project when the account knows it. */
 function repositoryTabOf(tab: NoMachineRepositoryTab, list: ReturnType<typeof useAccountProjectList>): RepositoryTab {
@@ -59,13 +60,11 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   // A copy came online: open it. Once per copy, so a copy that fails to open
   // does not loop; the list still offers it.
   const tried = useRef(new Set<string>());
-  const [openFailure, setOpenFailure] = useState<string | null>(null);
+  // A failed open shows as an error banner, which also reports it.
+  const [openFailure, setOpenFailure] = useState<{ copy: RepositoryCopy; detail: string } | null>(null);
   const openCopyAndReport = useCallback((copy: RepositoryCopy) => {
     setOpenFailure(null);
-    void openCopy(copy).catch((error: unknown) => {
-      captureError(error, { fingerprint: ["repository-tabs", "no-machine-open-copy"], level: "warning", handled: true });
-      setOpenFailure(`The copy on ${copy.machineName} did not open. Try again.`);
-    });
+    void openCopy(copy).catch((error: unknown) => setOpenFailure({ copy, detail: extractError(error) }));
   }, []);
   const defaultAddress = resolveDefaultCopy({ copies });
   useEffect(() => {
@@ -148,12 +147,29 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
             </div>
           ) : null}
           {openFailure ? (
-            <span className="text-[12px]" role="alert" style={{ color: "var(--kit-crit)" }}>{openFailure}</span>
+            <Banner
+              layout="inline"
+              model={{
+                id: "no-machine-open-copy",
+                tone: "error",
+                title: `Couldn't open the copy on ${openFailure.copy.machineName}`,
+                actions: [{ label: "Try again", onClick: () => openCopyAndReport(openFailure.copy) }],
+                report: { surface: "repository_tab_no_machine", code: "open_copy_failed", technicalDetail: openFailure.detail },
+              }}
+            />
           ) : null}
-          {failed ? (
-            <span className="text-[12px]" style={{ color: "var(--kit-crit)" }}>
-              The copy on this computer could not be added. {failed.failure?.reason ?? ""}
-            </span>
+          {/* The add button below is the retry. */}
+          {failed && !adding ? (
+            <Banner
+              layout="inline"
+              model={{
+                id: "no-machine-add-copy",
+                tone: "error",
+                title: "Couldn't add a copy on this computer",
+                detail: failed.failure?.reason ?? undefined,
+                report: { surface: "repository_tab_no_machine", code: "add_local_copy_failed" },
+              }}
+            />
           ) : null}
           <div className="flex flex-wrap items-center gap-2">
             {canAddLocal ? (
