@@ -52,6 +52,9 @@ function laneShareGuestLabel(userId: string): string {
  * refresh. `laneShareGuestGates.ts` holds the inbound, outbound and command
  * gates. The sync host keeps only the hook calls.
  */
+/** Session updates of a shared lane reach its guests at most this often (`notifyLaneShareLaneChanged`). */
+const LANE_SHARE_LANE_CHANGE_DEBOUNCE_MS = 5_000;
+
 export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
   const {
     args,
@@ -441,6 +444,35 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
       dropLaneShareQueuedSteersSoon(grantId);
     }
     return applied;
+  }
+
+  /**
+   * The lane's sessions or name changed: its connected guests read their
+   * state and session list again (`lane_share_guest_changed`). A new or
+   * removed session, a rename or a branch change tells them at once; other
+   * session updates (status notes, activity) at most once per
+   * `LANE_SHARE_LANE_CHANGE_DEBOUNCE_MS`. With no guest connected it does
+   * nothing. A null lane reaches every guest (a removed session whose lane
+   * is no longer known).
+   */
+  const pendingLaneChangeNotices = new Map<string, ReturnType<typeof setTimeout>>();
+  function notifyLaneShareLaneChanged(laneId: string | null, urgent: boolean): void {
+    if (laneShareGuestPeersBySocket.size === 0) return;
+    const key = laneId ?? "";
+    const fire = () => {
+      pendingLaneChangeNotices.delete(key);
+      notifyLaneShareGuests((role) => laneId == null || role.grants.some((grant) => grant.laneId === laneId));
+    };
+    const pending = pendingLaneChangeNotices.get(key);
+    if (urgent) {
+      if (pending) clearTimeout(pending);
+      fire();
+      return;
+    }
+    if (pending) return;
+    const timer = setTimeout(fire, LANE_SHARE_LANE_CHANGE_DEBOUNCE_MS);
+    timer.unref?.();
+    pendingLaneChangeNotices.set(key, timer);
   }
 
   /** Closes every guest connection of a lane (archived: the share pauses). */
@@ -947,6 +979,8 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     removeQueuedGuestSteerGate?.();
     if (laneShareRefreshTimer) clearInterval(laneShareRefreshTimer);
     laneShareRefreshTimer = null;
+    for (const timer of pendingLaneChangeNotices.values()) clearTimeout(timer);
+    pendingLaneChangeNotices.clear();
   }
 
   return {
@@ -959,6 +993,7 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     applyLaneShareRights,
     closeLaneShareGrant,
     closeLaneShareLane,
+    notifyLaneShareLaneChanged,
     laneShareConnectedDevices,
     dispose,
   };

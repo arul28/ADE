@@ -1,5 +1,6 @@
 import { useMemo } from "react";
-import type { OpenProjectBinding } from "../../../shared/types";
+import type { LaneType, OpenProjectBinding } from "../../../shared/types";
+import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import { stopSharingLaneWithAll } from "./laneShareActions";
 import { isLiveLaneShare } from "./laneShareModel";
 import { openLaneShareSheet, useLaneShareList } from "./laneShareStore";
@@ -8,6 +9,8 @@ import { openLaneShareSheet, useLaneShareList } from "./laneShareStore";
 export type LaneMenuShareArgs = {
   /** Live shares (pending and active) of the lane. */
   liveCount: number;
+  /** Set when this lane cannot be shared: "Share lane…" shows disabled with this reason. */
+  disabledReason: string | null;
   onShare: () => void;
   onManage: () => void;
   onStopAll: () => void;
@@ -25,8 +28,18 @@ export function useLaneShareMenu(args: {
   machineName?: string | null;
   /** A lane of the primary checkout or one being made cannot be shared yet. */
   disabled?: boolean;
+  /** The lane's type: the main checkout (`primary`) cannot be shared. */
+  laneType?: LaneType | null;
 }): LaneMenuShareArgs | null {
   const { key, entry } = useLaneShareList(args.pin, { enabled: !args.disabled && Boolean(args.laneId) });
+  // Sharing is for lanes on the person's own computers for now: a lane's ADE
+  // Cloud computer would wake and spend the owner's hours for a guest.
+  const onCloud = useAdeCloudLaneForBinding(args.pin ?? null) != null;
+  const disabledReason = onCloud
+    ? "Lanes on ADE Cloud can't be shared yet."
+    : args.laneType === "primary"
+      ? "The main checkout can't be shared. Share a lane instead."
+      : null;
   const pin = args.pin ?? null;
   const pinKey = pin?.key ?? null;
   const shares = entry?.shares;
@@ -45,11 +58,12 @@ export function useLaneShareMenu(args: {
     });
     return {
       liveCount: live.length,
+      disabledReason,
       onShare: () => open(null),
       onManage: () => open(live[0]?.grantId ?? null),
       onStopAll: () => { void stopSharingLaneWithAll({ laneName, shares: live, pin, listKey: key }); },
     };
     // `pin` is read through its key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [args.disabled, args.laneId, args.laneName, args.machineName, key, pinKey, shares]);
+  }, [args.disabled, args.laneId, args.laneName, args.machineName, disabledReason, key, pinKey, shares]);
 }

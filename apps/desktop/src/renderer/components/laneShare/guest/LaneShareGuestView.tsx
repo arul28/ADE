@@ -13,7 +13,7 @@ import { showToast } from "../../app/toast/toastStore";
 import { CloneLocallyDialog, type CloneLocallyTarget } from "../../projects/CloneLocallyDialog";
 import { openProjectCopy } from "../../projects/AddProjectForm";
 import { formatLaneShareEnd } from "../laneShareModel";
-import type { LaneShareGuestConnection, LaneShareGuestConnectionState, LaneShareGuestSession } from "./laneShareGuestConnection";
+import { laneShareGuestStatusLabel, type LaneShareGuestConnection, type LaneShareGuestConnectionState, type LaneShareGuestSession } from "./laneShareGuestConnection";
 import {
   clearLaneShareGuestNotice,
   laneShareGuestConnection,
@@ -22,6 +22,7 @@ import {
   refreshLaneShareGuestState,
   retainLaneShareGuestConnection,
   useLaneShareGuestStore,
+  useLaneShareGuestLaneName,
 } from "./laneShareGuestStore";
 import { LaneShareGuestChat, laneShareGuestModelLabel } from "./LaneShareGuestChat";
 import { plainTerminalText } from "./laneShareGuestTranscript";
@@ -323,6 +324,7 @@ export function LaneShareGuestView({
   const connectionState = useLaneShareGuestStore((state) => state.connections[grantId]);
   const sessions = useLaneShareGuestStore((state) => state.sessions[grantId] ?? EMPTY_SESSIONS);
   const guestState = useLaneShareGuestStore((state) => state.guestStates[grantId] ?? null);
+  const laneName = useLaneShareGuestLaneName(entry);
   const notice = useLaneShareGuestStore((state) => state.notices[grantId] ?? null);
   const [cloneTarget, setCloneTarget] = React.useState<CloneLocallyTarget | null>(null);
   const [starting, setStarting] = React.useState<GuestStartKind | null>(null);
@@ -393,8 +395,8 @@ export function LaneShareGuestView({
     <div className="flex h-full min-h-0 min-w-0 flex-col" data-testid="lane-share-guest-view">
       <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-fg/[0.06] px-4 py-2">
         <div className="flex min-w-0 flex-1 flex-col">
-          <span className="min-w-0 truncate text-[13px] font-medium text-fg/90" title={entry.laneLabel ?? undefined}>
-            {entry.laneLabel ?? "Shared lane"}
+          <span className="min-w-0 truncate text-[13px] font-medium text-fg/90" title={laneName ?? undefined}>
+            {laneName ?? "Shared lane"}
             {selected ? <span className="text-fg/50"> / {selected.title}</span> : null}
           </span>
           <span className="min-w-0 truncate text-[11px] text-fg/50">
@@ -539,7 +541,7 @@ export function LaneShareGuestView({
                   <span className="shrink-0 text-fg/55">{laneShareGuestSessionIcon(session.kind)}</span>
                   <span className="min-w-0 flex-1 truncate" title={session.title}>{session.title}</span>
                   <span className="shrink-0 text-[11px] text-fg/45">
-                    {session.kind === "shell" || (session.kind === "cli" && !canTypeCli) ? "Read only" : session.status}
+                    {session.kind === "shell" || (session.kind === "cli" && !canTypeCli) ? "Read only" : laneShareGuestStatusLabel(session)}
                   </span>
                 </button>
               ))}

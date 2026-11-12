@@ -2981,6 +2981,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     applyLaneShareRights,
     closeLaneShareGrant,
     closeLaneShareLane,
+    notifyLaneShareLaneChanged,
     laneShareConnectedDevices,
   } = laneShareGuestHost;
 
@@ -9601,6 +9602,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     applyLaneShareRights,
     closeLaneShareGrant,
     closeLaneShareLane,
+    notifyLaneShareLaneChanged,
     laneShareConnectedDevices,
     /** A move of this grant changed: its guests read their state again. */
     notifyLaneShareGuestState(grantId: string): void {

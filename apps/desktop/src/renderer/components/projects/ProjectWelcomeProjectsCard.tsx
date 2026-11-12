@@ -5,6 +5,7 @@ import { rememberExplicitRemotePick } from "../app/usePreferLocalCheckout";
 import type { AppState } from "../../state/appStore";
 import type { useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import { FitList } from "../home/HomeFitList";
+import { LaneShareHomeFoot } from "../laneShare/guest/LaneShareHomeFoot";
 import { WelcomeCardHead } from "./ProjectWelcomeSidePanels";
 import { RecentProjectRow, type WebRowChrome } from "./ProjectWelcomeWebRows";
 import type { RecentProjectSummary, RemoteRuntimeConnectionState } from "../../../shared/types";
@@ -138,6 +139,7 @@ export function ProjectsCard({
             : "Add a folder or clone a repository to get started. You can also drop a folder anywhere on this page."}
         </div>
       )}
+      {preview ? null : <LaneShareHomeFoot />}
     </section>
   );
 }

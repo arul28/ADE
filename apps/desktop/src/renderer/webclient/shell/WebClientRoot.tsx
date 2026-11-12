@@ -601,7 +601,7 @@ export function WebClientRoot({
       } else {
         const restoredTarget = pendingTargetRef.current ?? readPendingTarget();
         // A lane shared with this account needs no machine of its own.
-        const machineFreeTarget = restoredTarget?.kind === "lane-share";
+        const machineFreeTarget = restoredTarget?.kind === "lane-share" || (!restoredTarget && path === "/shared");
         initialPath = restored || machineFreeTarget
           ? restoredTarget
             ? targetToWebPath(restoredTarget)

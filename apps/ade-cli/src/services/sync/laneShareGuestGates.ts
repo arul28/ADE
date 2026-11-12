@@ -406,6 +406,11 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     laneShareGuestTypingRefusal,
   } = laneShareGuestCommandPrep;
 
+  /** The lane's name and branch as a guest sees them (nothing else of the host's row). */
+  function guestLaneView(info: { name: string; branch: string } | null): { name: string; branch: string } | null {
+    return info ? { name: info.name, branch: info.branch } : null;
+  }
+
   /** What the guest may know of its own share: rights, limits, locks, presence, pause. */
   function laneShareGuestState(role: LaneShareGuestRole): LaneShareGuestState {
     const grant = role.grants[0];
@@ -424,6 +429,7 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
       grantId: role.grantId,
       laneId,
       state: laneShareLaneState(laneId) === "archived" ? "paused" : "active",
+      lane: guestLaneView(laneId ? laneShareRights?.laneInfo(laneId) ?? null : null),
       endsAt: earliestLaneShareEnd(grant?.endsAtMs ?? null, role.rights.limits.endsAt),
       // As this host enforces them: CLI typing off where it is not available.
       rights: laneShareRightsForHost(role.rights, cliTyping),

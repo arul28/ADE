@@ -428,7 +428,13 @@ export function LaneShareGuestChat({
         <div className="mx-auto flex max-w-[760px] flex-col gap-3">
           {!connected ? <div className="text-[12px] text-fg/50">Waiting for the owner's computer…</div> : null}
           {connected && !loaded ? <div className="text-[12px] text-fg/50">Loading the chat…</div> : null}
-          {loaded && transcript.rows.length === 0 ? <div className="text-[12px] text-fg/50">No messages yet.</div> : null}
+          {loaded && transcript.rows.length === 0 ? (
+            <div className="text-[12px] text-fg/50">
+              {rights && !rights.see.historyBeforeShare
+                ? "No messages since you got access. Earlier messages in this chat are not shared."
+                : "No messages yet."}
+            </div>
+          ) : null}
           {transcript.rows.map((row) => (
             <GuestRow
               key={row.key}

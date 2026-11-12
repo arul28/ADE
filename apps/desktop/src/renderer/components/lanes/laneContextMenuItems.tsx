@@ -41,6 +41,27 @@ import { branchNameProblem } from "../../../shared/laneBranchName";
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import type { LaneMenuShareArgs } from "../laneShare/useLaneShareMenu";
 
+/** A menu row that cannot be used here, with the reason under its label. */
+function LaneMenuDisabledRow({ icon, label, reason }: { icon: Icon; label: string; reason: string }) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled
+      aria-disabled="true"
+      title={reason}
+      className="flex w-full items-start gap-2 px-3 py-1.5 text-left text-[12px] text-fg opacity-60"
+      style={{ fontFamily: SANS_FONT }}
+    >
+      <LaneMenuGlyph icon={icon} />
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span>{label}</span>
+        <span className="text-[11px] text-muted-fg">{reason}</span>
+      </span>
+    </button>
+  );
+}
+
 export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
   return (
     <span
@@ -492,7 +513,9 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
   const share = args.share;
   if (share && lane) {
     const shareEntries: LaneMenuEntry[] = [
-      { kind: "action", key: "share-lane", label: "Share lane…", icon: ShareNetwork, onSelect: () => { onClose(); share.onShare(); } },
+      share.disabledReason
+        ? { kind: "custom", key: "share-lane", node: <LaneMenuDisabledRow icon={ShareNetwork} label="Share lane…" reason={share.disabledReason} /> }
+        : { kind: "action", key: "share-lane", label: "Share lane…", icon: ShareNetwork, onSelect: () => { onClose(); share.onShare(); } },
     ];
     if (share.liveCount > 0) {
       shareEntries.push(

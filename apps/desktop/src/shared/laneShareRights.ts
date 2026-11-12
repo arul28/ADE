@@ -611,6 +611,8 @@ export type LaneShareGuestState = {
   laneId: string;
   /** `paused`: the lane is archived on the host. */
   state: "active" | "paused";
+  /** The lane's name and branch on the host now (renames follow). Absent from an older host: use the share's label. */
+  lane?: { name: string; branch: string } | null;
   endsAt: number | null;
   /** The rights, as the host enforces them. */
   rights: LaneShareRights;

@@ -110,6 +110,16 @@ export function LaneShareGuestPage() {
   const received = useLaneShareGuestStore((state) => state.received);
   const receivedStatus = useLaneShareGuestStore((state) => state.receivedStatus);
   const receivedProblem = useLaneShareGuestStore((state) => state.receivedProblem);
+  const guestStates = useLaneShareGuestStore((state) => state.guestStates);
+  // The host's current lane name once a connection read it: a rename follows.
+  const liveLaneNames = React.useMemo(() => {
+    const names: Record<string, string> = {};
+    for (const [grantId, guestState] of Object.entries(guestStates)) {
+      const name = guestState?.lane?.name;
+      if (name) names[grantId] = name;
+    }
+    return names;
+  }, [guestStates]);
   const [link, setLink] = React.useState<LinkState | null>(null);
   const [retries, setRetries] = React.useState(0);
 
@@ -269,7 +279,9 @@ export function LaneShareGuestPage() {
               )}
               onClick={() => select(entry.grantId)}
             >
-              <span className="min-w-0 truncate text-[12.5px] text-fg/85" title={entry.laneLabel ?? undefined}>{entry.laneLabel ?? "Shared lane"}</span>
+              <span className="min-w-0 truncate text-[12.5px] text-fg/85" title={liveLaneNames[entry.grantId] ?? entry.laneLabel ?? undefined}>
+                {liveLaneNames[entry.grantId] ?? entry.laneLabel ?? "Shared lane"}
+              </span>
               <span className="min-w-0 truncate text-[11px] text-fg/50">
                 {entry.giverLabel ?? "Another account"} · {laneShareGrantStateLabel(entry).label}
               </span>

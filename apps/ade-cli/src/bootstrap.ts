@@ -1375,8 +1375,12 @@ export async function createAdeRuntime(args: {
         // them in every browser, and close none.
         if (event.type === "lane-deleted" && event.laneId) cloudChatUploaderRef.current?.noteLaneDeleted(event.laneId);
         // Lane sharing: an archived lane pauses its shares (guests are closed
-        // and refused until it is unarchived); a deleted lane ends them. A
-        // rename or a branch change needs nothing: shares key on the lane id.
+        // and refused until it is unarchived); a deleted lane ends them. Shares
+        // key on the lane id, so a rename or a branch change only tells the
+        // connected guests to read the lane's name again.
+        if ((event.type === "lane-renamed" || event.type === "lane-branch-updated") && event.laneId) {
+          syncService?.getLaneShareService().noteLaneChanged(event.laneId, true);
+        }
         if ((event.type === "lane-archived" || event.type === "lane-reclaimed") && event.laneId) {
           syncService?.getLaneShareService().pauseLane(event.laneId);
         }
@@ -1461,6 +1465,9 @@ export async function createAdeRuntime(args: {
     sessionService.onChanged((event) => {
       pushEvent("runtime", { type: "terminal_session_changed", event });
       const session = sessionService.get(event.sessionId);
+      // Lane sharing: guests of the lane see a new or removed session at once,
+      // other updates at most every few seconds; nothing runs with no guest.
+      syncService?.getLaneShareService().noteLaneChanged(session?.laneId ?? null, event.reason !== "meta-updated");
       const runtimeState = session
         ? ptyServiceForSessionChanges?.getRuntimeState(event.sessionId, session.status)
         ?? session.runtimeState

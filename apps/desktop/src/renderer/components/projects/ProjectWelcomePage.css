@@ -1004,3 +1004,7 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 }
 .ade-home-free:hover > span, .ade-home-free:focus-visible > span, .ade-home-free[data-editing] > span { opacity: 1; }
 .ade-home-free:not([data-editing]):not([data-first]) { pointer-events: none; }
+
+/* Projects card: the way back to lanes other accounts share (LaneShareHomeFoot). */
+.ade-home-shared-foot { flex: none; margin: 0 14px 12px; }
+.ade-home-shared-foot-text { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }

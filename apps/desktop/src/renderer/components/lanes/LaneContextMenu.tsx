@@ -218,7 +218,7 @@ export function LaneContextMenu({
 
   const openIn = resolveOpenInTarget({ worktreePath: ctxLane?.worktreePath, binding: projectBinding });
   // This menu acts on the tab's own machine (no pin), as its other writes do.
-  const share = useLaneShareMenu({ laneId: ctxLane?.id ?? null, laneName: ctxLane?.name ?? null, pin: null });
+  const share = useLaneShareMenu({ laneId: ctxLane?.id ?? null, laneName: ctxLane?.name ?? null, laneType: ctxLane?.laneType ?? null, pin: null });
   const args: LaneMenuArgs = {
     laneId: laneContextMenu.laneId,
     lane: ctxLane,

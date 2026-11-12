@@ -63,6 +63,15 @@ const EMPTY_GUEST_STORE: GuestStore = {
 
 export const useLaneShareGuestStore = create<GuestStore>(() => ({ ...EMPTY_GUEST_STORE }));
 
+/**
+ * The lane's name as the guest should see it: the host's current name once a
+ * connection read it (a rename follows), else the label from share time.
+ */
+export function useLaneShareGuestLaneName(entry: Pick<LaneShareReceivedEntry, "grantId" | "laneLabel">): string | null {
+  const live = useLaneShareGuestStore((state) => state.guestStates[entry.grantId]?.lane?.name ?? null);
+  return live || entry.laneLabel || null;
+}
+
 const RECEIVED_TTL_MS = 5 * 60_000;
 /** After a failed read, mounts wait this long (doubling to the TTL) before they ask again. */
 const RECEIVED_RETRY_MS = 15_000;
@@ -134,6 +143,25 @@ function bridge() {
  * skips the 5 minute cache. When the directory has no lane sharing, only
  * `retry` (a Try again) asks it again.
  */
+/**
+ * Grants a host closed as ended. The host closes a guest before it tells the
+ * directory, so a list read in that gap still says active; the host's word
+ * wins until the directory agrees.
+ */
+const hostEndedGrants = new Set<string>();
+
+function withHostEnded(shares: LaneShareReceivedEntry[]): LaneShareReceivedEntry[] {
+  if (hostEndedGrants.size === 0) return shares;
+  return shares.map((row) => {
+    if (!hostEndedGrants.has(row.grantId)) return row;
+    if (row.state !== "active") {
+      hostEndedGrants.delete(row.grantId);
+      return row;
+    }
+    return { ...row, state: "ended" };
+  });
+}
+
 export async function loadLaneShareReceived(options: { force?: boolean; retry?: boolean } = {}): Promise<void> {
   watchAccount();
   const account = boundAccount;
@@ -165,7 +193,7 @@ export async function loadLaneShareReceived(options: { force?: boolean; retry?: 
       receivedFailures = 0;
       useLaneShareGuestStore.setState({
         receivedFor: readFor(),
-        received: result.shares,
+        received: withHostEnded(result.shares),
         pendingInvitesUnavailable: result.pendingInvitesUnavailable,
         receivedStatus: "ready",
         receivedProblem: null,
@@ -242,8 +270,13 @@ export function retainLaneShareGuestConnection(entry: Pick<LaneShareReceivedEntr
     const offState = connection.on("state", (connectionState) => {
       useLaneShareGuestStore.setState((state) => ({ connections: { ...state.connections, [entry.grantId]: connectionState } }));
       if (connectionState.kind === "connected") void refreshLaneShareGuestState(entry.grantId);
-      if (connectionState.kind === "stopped") {
+      if (connectionState.kind === "stopped" && connectionState.reason === "ended") {
+        hostEndedGrants.add(entry.grantId);
+        useLaneShareGuestStore.setState((state) => ({ received: state.received ? withHostEnded(state.received) : state.received }));
+      }
+      if (connectionState.kind === "stopped" && connectionState.reason !== "paused") {
         // Ended, left or refused: the received list changed on the directory.
+        // A paused lane is checked again by the connection itself.
         void loadLaneShareReceived({ force: true });
       }
     });
