@@ -606,3 +606,8 @@ button.ade-mx-hero-chip {
   color: var(--color-fg);
   font-weight: 600;
 }
+
+/* The copy line above a project page sits close to the page it names. */
+.ade-copy-scope-column {
+  padding-bottom: 0;
+}

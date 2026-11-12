@@ -219,13 +219,25 @@ export function openIntegrationFromUrl(searchParams: URLSearchParams, hash: stri
  * tab, `?integration=<github|linear|jira|mcp>`; a `#hash` naming one of its
  * settings opens it too. With none open, the tab is the Integrations home.
  */
-function IntegrationsTabContent({ machine, standalone }: { machine: SettingsMachinePage | null; standalone: boolean }) {
+function IntegrationsTabContent({
+  machine,
+  standalone,
+  noCopy = false,
+}: {
+  machine: SettingsMachinePage | null;
+  standalone: boolean;
+  /** No computer with a copy of the open project is online: the integrations wait and make no call. */
+  noCopy?: boolean;
+}) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { pin } = useSettingsMachineScope();
   const requested = openIntegrationFromUrl(searchParams, location.hash);
-  const sections = (TAB_SECTIONS.integrations ?? []).filter((section) => standalone
+  const sections = (TAB_SECTIONS.integrations ?? []).filter((section) => noCopy
+    // No copy online: only the account's own pages, which call no computer.
+    ? section.machine === undefined
+    : standalone
     // No project: only the account's pages (the provider, MCP servers) can load.
     ? standaloneSection(section)
     : !machine || !section.machine || machineSectionAvailable(section.machine, machine));
@@ -245,7 +257,7 @@ function IntegrationsTabContent({ machine, standalone }: { machine: SettingsMach
       <SettingsColumn wide>
         <IntegrationsHome
           pin={pin}
-          machineOnline={!machine || machine.online}
+          machineOnline={!noCopy && (!machine || machine.online)}
           integrations={standalone ? sections.flatMap((entry) => (isIntegrationId(entry.group) ? [entry.group] : [])) : undefined}
           onOpen={open}
         />
@@ -628,13 +640,16 @@ function ProjectCopyTabContent({ tab }: { tab: SettingsTabId }) {
     return (
       <>
         <SettingsColumn wide><NoProjectCopyNotice /></SettingsColumn>
-        {tab === "integrations" ? <IntegrationsTabContent machine={null} standalone /> : null}
+        {tab === "integrations" ? <IntegrationsTabContent machine={null} standalone noCopy /> : null}
       </>
     );
   }
   return (
     <ProjectCopyScopeProvider page={copy.page}>
-      <SettingsColumn wide><ProjectCopyBar copy={copy} /></SettingsColumn>
+      {/* Not a SettingsColumn: its bottom padding would push the page down. */}
+      <div className="ade-settings-column ade-settings-column--wide ade-copy-scope-column">
+        <ProjectCopyBar copy={copy} />
+      </div>
       <MachineTabContent tab={tab} machine={copy.page} standalone={false} />
     </ProjectCopyScopeProvider>
   );

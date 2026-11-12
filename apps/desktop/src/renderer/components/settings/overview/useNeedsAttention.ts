@@ -638,7 +638,11 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
       // Only for the providers you switched off; without it they show, and the list says it couldn't check.
       reportPin ? quiet(ade.projectConfig?.get ? () => ade.projectConfig.get(reportPin) : null, failed, "provider settings") : Promise.resolve(null),
       // Same machine as `ai.getStatus`, so the two describe one provider set.
-      quiet(ade.providerInstances?.list ? () => ade.providerInstances.list(undefined, aiPin) : null, failed, "provider accounts"),
+      // With a project open but no copy on this computer, a call with no pin
+      // would go to the tab's computer, so the accounts are not read.
+      hasProject && !aiPin
+        ? Promise.resolve(null)
+        : quiet(ade.providerInstances?.list ? () => ade.providerInstances.list(undefined, aiPin) : null, failed, "provider accounts"),
     ]);
     if (current !== request.current) return;
     const providers = connectedProviders(ai);

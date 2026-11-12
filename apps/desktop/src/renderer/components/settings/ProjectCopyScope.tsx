@@ -5,7 +5,7 @@ import type { ProjectMachine } from "../../state/projectMachines";
 import { useActiveRepositoryCopies, useCopyPick, useOnlineCopyPins, useTabCopyPin, type CopyPick } from "../../state/repositoryScope";
 import { Banner } from "../ui/notice";
 import { MachinePicker } from "./ProvidersMachinePicker";
-import { settingsMachineScope, SettingsMachineScopeProvider } from "./SettingsMachineScope";
+import { settingsMachineScope, SettingsMachineScopeProvider, useSettingsMachineScope } from "./SettingsMachineScope";
 import { settingsMachinePageFor, type SettingsMachinePage } from "./SettingsMachinesNav";
 import { useSettingsMachines } from "./machines/settingsMachinesContext";
 import "./machines/machinesPage.css";
@@ -28,6 +28,20 @@ import "./machines/machinesPage.css";
  */
 export function useThisComputerCopyPin(active = true): OpenProjectBinding | null {
   return useOnlineCopyPins(active).find((pin) => pin.kind === "local") ?? null;
+}
+
+/**
+ * The pin for a read on the machine a Settings page is about. A pinned page
+ * gives its pin. A page about This computer while the tab is on this computer
+ * has no pin (its calls take the tab's route); this gives the tab's own copy,
+ * which is the same computer and shares the same caches, so the read names its
+ * machine. Null otherwise, which keeps the old route.
+ */
+export function useSettingsReadPin(): OpenProjectBinding | null {
+  const scope = useSettingsMachineScope();
+  const tabPin = useTabCopyPin();
+  if (scope.pin) return scope.pin;
+  return scope.isThisMachine && tabPin?.kind === "local" ? tabPin : null;
 }
 
 /** The `useCopyPick` scope of a Settings page. */

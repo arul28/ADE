@@ -53,6 +53,7 @@ import type { CursorSignInOutcome } from "./providers/ProviderSignInSheet";
 import { CliSignInSheet, agentCliSignInSupported } from "./providers/CliSignInSheet";
 import { TerminalSignInSheet } from "./providers/TerminalSignInSheet";
 import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
+import { useSettingsReadPin } from "./ProjectCopyScope";
 import { AdeCloudProvidersView } from "./providers/cloud/AdeCloudProvidersView";
 import { acpLoginCommand } from "./providers/acpProviders";
 import { isAgentCliLoginProvider, type AgentCliLoginProvider } from "../../../shared/types";
@@ -363,6 +364,8 @@ function MachineProvidersSection({
   // carries `pin` (null = the tab's binding); the page is
   // remounted per machine, so a pin never changes under a live closure.
   const { pin, isThisMachine, machineName } = useSettingsMachineScope();
+  // The project settings read names this page's machine, This computer included.
+  const readPin = useSettingsReadPin();
   // Claude and Codex can hold several local logins; the row says how many so
   // the count is visible without opening the page.
   const accountCounts = useProviderAccountCounts();
@@ -462,7 +465,7 @@ function MachineProvidersSection({
     ).finally(() => {
       if (!options?.silent) setLoading(false);
     });
-    const configRead = window.ade.projectConfig.get(pin).then(
+    const configRead = window.ade.projectConfig.get(readPin).then(
       (next) => {
         setProjectConfigSnapshot(next);
         return next;
@@ -492,7 +495,7 @@ function MachineProvidersSection({
       setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus));
     }
     return nextStatus;
-  }, [editingLocalProvider, pin, savingLocalProvider]);
+  }, [editingLocalProvider, pin, readPin, savingLocalProvider]);
 
   const loadAuthMethods = useCallback(async () => {
     try {
