@@ -527,8 +527,9 @@ async function handleRegister(request: Request, env: RelayEnv, userId: string, r
   if (existing && existing.spec_digest === digest && !unpausing) {
     // A Beta brain sending a rule a Stable brain registered moves it to the Beta image; never back.
     if (spec.channel === "beta" && specOf(existing)?.channel !== "beta") {
-      await env.DB.prepare("update cloud_automations set spec_json = json_set(spec_json, '$.channel', 'beta'), updated_at = ? where user_id = ? and rule_id = ?")
-        .bind(now, userId, ruleId).run();
+      // Only the version this registration read: a newer save made meanwhile chose its own track.
+      await env.DB.prepare("update cloud_automations set spec_json = json_set(spec_json, '$.channel', 'beta'), updated_at = ? where user_id = ? and rule_id = ? and rule_version = ?")
+        .bind(now, userId, ruleId, existing.rule_version).run();
       logCloud("cloud.automation_track_beta", { userId, ruleId });
     }
     // Nothing of the rule changed. A newer version is still recorded, so the same version sent again
