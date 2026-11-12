@@ -172,10 +172,16 @@ export function githubClone(originUrl: string | null): { identity: string; clone
 /**
  * The lane recipe the computer's brain gets: always from the pushed copy of
  * its branch. A lane on an existing branch keeps that branch.
+ *
+ * Never renamed from the prompt afterwards (`autoName` is dropped): the new
+ * computer is named after the lane before the brain could rename it, so a
+ * later AI name gave one lane two names (the lane, its computer, the ADE
+ * Cloud page). The name the launch starts with (the one the person chose, or
+ * the title from the prompt) is the lane's one name.
  */
 export function cloudLaneConfig(config: ChatLaunchLaneConfig | null | undefined): ChatLaunchLaneConfig {
   if (config?.mode === "existing") return config;
-  const base: ChatLaunchLaneConfig = config ?? { mode: "new", autoName: true };
+  const { autoName: _autoName, ...base }: ChatLaunchLaneConfig = config ?? { mode: "new" };
   return { ...base, mode: "new", start: { ...(base.start ?? DEFAULT_LANE_START), on: "remote" } };
 }
 

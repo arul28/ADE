@@ -818,6 +818,8 @@ export type CloudLaneLaunchDraft = {
   launchId: string | null;
   /** `--from-linear-issue`: bound to the new lane on the computer, when it is the whole issue. */
   linearIssue: JsonObject | null;
+  /** `--lane-name`: the new lane's name (and its computer's); null names it from the prompt. */
+  laneName: string | null;
   /** A choice a new ADE Cloud lane can't take yet; refused with its own line. */
   notify: boolean;
 };
@@ -1704,7 +1706,9 @@ const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --p
                                                     A new lane on its own new ADE Cloud computer: ADE makes the
                                                     computer, gets the repository there (the pushed branch) and
                                                     starts the chat there. --size small, medium, large, xlarge
-                                                    (default: the size you saved for new lanes). Asks you first. Ctrl-C stops only the waiting; the
+                                                    (default: the size you saved for new lanes). --lane-name <name>
+                                                    names the lane and its computer (default: from the prompt).
+                                                    Asks you first. Ctrl-C stops only the waiting; the
                                                     same --launch-id <id> again follows it or goes on from a
                                                     failed step. ade chat launch-status|launch-cancel <id>
                                                     --machine cloud checks it or stops it.
@@ -12415,8 +12419,10 @@ function buildChatPlan(args: string[]): CliPlan {
     const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, { provider, model: modelArg });
     const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
     const explicitLane = readLaneId(args);
-    // Only `--machine cloud` takes it: the same id again follows that launch.
+    // Only `--machine cloud` takes these: the same id again follows that
+    // launch, and the new lane (and its computer) gets the name.
     const cloudLaunchIdFlag = readValue(args, ["--launch-id"]);
+    const cloudLaneName = readValue(args, ["--lane-name"])?.trim() || null;
     const actionArgs = collectLaunchArgs(args, {
       laneId: explicitLane,
       ...lineageArgs,
@@ -12499,6 +12505,7 @@ function buildChatPlan(args: string[]): CliPlan {
       prompt: kickoffText,
       launchId: cloudLaunchIdFlag ? requireCliUuid(cloudLaunchIdFlag, "--launch-id") : null,
       linearIssue,
+      laneName: cloudLaneName,
       notify: notify != null,
     };
     if (printConfig) {

@@ -1182,6 +1182,9 @@ function cloudLaunchArgsFromChatCreate(draft: CloudLaneLaunchDraft): JsonObject 
     process.stderr.write("note: a chat on ADE Cloud starts as its own chat, so it doesn't report back to you. Read it with ade chat read --machine <its computer>.\n");
   }
   const modelId = asString(create.modelId) ?? asString(create.model);
+  // A name given here is the lane's one name: the lane, its computer and the
+  // ADE Cloud page all use it, and nothing renames it from the prompt.
+  const laneName = draft.laneName?.trim() || null;
   return {
     kind: "chat",
     mode: "background",
@@ -1190,7 +1193,8 @@ function cloudLaunchArgsFromChatCreate(draft: CloudLaneLaunchDraft): JsonObject 
     provider,
     ...(modelId ? { modelId } : {}),
     ...(asString(create.title) ? { title: asString(create.title) } : {}),
-    ...(linearIssue ? { laneConfig: { mode: "new", linearIssue } } : {}),
+    ...(laneName ? { laneName } : {}),
+    ...(linearIssue || laneName ? { laneConfig: { mode: "new", ...(linearIssue ? { linearIssue } : {}) } } : {}),
     chat: {
       create: { ...create, provider, model: asString(create.model) ?? "" },
       message: { text: prompt },
