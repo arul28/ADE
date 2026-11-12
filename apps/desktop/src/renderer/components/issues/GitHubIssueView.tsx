@@ -11,6 +11,7 @@ import { IssueMarkdown } from "./issueMarkdown";
 import { formatIssueDate } from "./LinearIssueView";
 import {
   loadGitHubIssueComments,
+  useGitHubIssuePin,
   type GitHubIssueComment,
   type GitHubIssueDetail,
   type GitHubRepoCatalog,
@@ -129,6 +130,8 @@ function Activity({
   const [comments, setComments] = useState<GitHubIssueComment[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // The machine that reads GitHub for the repository.
+  const pin = useGitHubIssuePin();
   const identity = `${issue.owner}/${issue.repo}#${issue.number}`;
   const previous = useRef(identity);
   if (previous.current !== identity) {
@@ -151,7 +154,8 @@ function Activity({
     if (comments && loadedVersion === version) return;
     let cancelled = false;
     setLoading(true);
-    void loadGitHubIssueComments(issue.owner, issue.repo, issue.number)
+    if (!pin) return;
+    void loadGitHubIssueComments(issue.owner, issue.repo, issue.number, pin)
       .then((rows) => {
         if (cancelled) return;
         setComments(rows);
@@ -160,7 +164,9 @@ function Activity({
       .catch(() => { if (!cancelled) setError("Couldn't load comments."); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [comments, error, expanded, issue.number, issue.owner, issue.repo, loadedVersion, nothingToRead, version]);
+    // `pin` is compared by key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comments, error, expanded, issue.number, issue.owner, issue.repo, loadedVersion, nothingToRead, pin?.key, version]);
 
   return (
     <section className="ade-issue-section">

@@ -296,9 +296,11 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
     };
     const args = { laneId, provider };
     const currentPin = pinRef.current;
-    void (currentPin
-      ? window.ade.agentChat.slashCommands(args, currentPin)
-      : window.ade.agentChat.slashCommands(args))
+    if (!currentPin) {
+      setSlashCommands([]);
+      return undefined;
+    }
+    void window.ade.agentChat.slashCommands(args, currentPin)
       .then((commands) => {
         if (!cancelled) setSlashCommands(commands.filter((command) => command.source !== "local"));
       })
@@ -315,7 +317,8 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
     if (!laneId || !trimmed) return [];
     const args = { workspaceId: laneId, query: trimmed, limit: 40, allowComposerPrefixFallback: true, includeDirectories: true };
     const currentPin = pinRef.current;
-    const hits = await (currentPin ? window.ade.files.quickOpen(args, currentPin) : window.ade.files.quickOpen(args));
+    if (!currentPin) return [];
+    const hits = await window.ade.files.quickOpen(args, currentPin);
     return hits.map((hit) => ({ path: hit.path, ...(hit.isDirectory ? { isDirectory: true as const } : {}) }));
   }, [laneId]);
 

@@ -69,7 +69,7 @@ export function useAppleDuoPosture({
   deviceUdid: string | null;
   laneId: string | null;
   chatSessionId: string | null;
-  runtimePinRef: MutableRefObject<OpenProjectBinding | null>;
+  runtimePinRef: MutableRefObject<OpenProjectBinding>;
   /** `pin?.key`: re-read when the target machine changes, not when the pin object is rebuilt. */
   pinKey: string | null;
   onAngle?: (angle: number) => void;

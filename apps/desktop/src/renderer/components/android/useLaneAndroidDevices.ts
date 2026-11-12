@@ -1,6 +1,8 @@
 import type { AndroidDeviceInventory, AndroidEmulatorEvent } from "../../../shared/types/androidEmulator";
+import { useRef } from "react";
+import type { OpenProjectBinding } from "../../../shared/types/core";
 import { logRendererDebugEvent } from "../../lib/debugLog";
-import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { androidAvdDisplayName } from "../../../shared/androidDevicePresentation";
 import { useLaneDeviceMarks } from "../device/useLaneDeviceMarks";
 
@@ -18,9 +20,10 @@ import { useLaneDeviceMarks } from "../device/useLaneDeviceMarks";
  * - after an Android event (`android.device.state`, `android.inventory.changed`),
  *   once per burst. A state event moves the running tint at once, before the read.
  *
- * No pin: the rows this feeds are the bound machine's lanes, and an unpinned
- * call goes to the bound runtime. Lanes on other machines are not covered,
- * the same as Apple's marks.
+ * The pin names the machine of the lanes on screen. The Work list shows the
+ * tab copy's lanes today, so a caller that passes no pin gets the tab's copy,
+ * named explicitly. Lanes on other machines are not covered, the same as
+ * Apple's marks. With no copy (no computer online) it reads nothing.
  */
 
 export type LaneAndroidDevice = {
@@ -63,25 +66,31 @@ function sameDevices(a: LaneAndroidDevices, b: LaneAndroidDevices): boolean {
 export function useLaneAndroidDevices(args: {
   /** The lane ids on screen; only a change in the SET reads again. */
   laneIds: readonly string[];
+  /** The machine of those lanes. Omitted: the tab's copy (the lanes the Work list shows). */
+  pin?: OpenProjectBinding | null;
 }): LaneAndroidDevices {
-  const projectRoot = useAppStore(selectActiveProjectRoot);
-  const bindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
+  const tabCopyPin = useTabCopyPin();
+  const pin = args.pin === undefined ? tabCopyPin : args.pin;
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
   const api = typeof window !== "undefined" ? window.ade?.androidEmulator : undefined;
-  const scope = api?.listDevices ? `${bindingKey ?? ""}\u0000${projectRoot ?? ""}` : null;
+  const scope = api?.listDevices && pin ? pin.key : null;
   return useLaneDeviceMarks<LaneAndroidDevice, AndroidEmulatorEvent>({
     scope,
     refreshKey: [...args.laneIds].sort().join("|"),
     read: async () => {
       if (!api?.listDevices) return null;
       try {
-        return buildLaneAndroidDevices(await api.listDevices({}));
+        const readPin = pinRef.current;
+        if (!readPin) return null;
+        return buildLaneAndroidDevices(await api.listDevices({}, readPin));
       } catch (cause: unknown) {
         // A failed read keeps the marks on screen; a blip should not blink them.
         logRendererDebugEvent("android.lane_marks_read_failed", { error: cause instanceof Error ? cause.message : String(cause) });
         return null;
       }
     },
-    subscribe: api?.onEvent ? (listener) => api.onEvent(listener) : null,
+    subscribe: api?.onEvent ? (listener) => api.onEvent(listener, pinRef.current) : null,
     onEvent: (event, current) => {
       if (event.type === "android.inventory.changed") return null;
       if (event.type !== "android.device.state") return false;

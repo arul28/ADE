@@ -95,6 +95,10 @@ export function GlobalCaptureGestureHost() {
       return;
     }
     const ctoPin = home.pin;
+    if (!ctoPin) {
+      setNotice("The CTO's computer is not online. Try the capture again when it connects.");
+      return;
+    }
     const session = await ade?.cto?.ensureSession({}, ctoPin).catch(() => null);
     if (!session?.id) {
       setNotice("The CTO chat is still waking up. Try the capture again in a moment.");

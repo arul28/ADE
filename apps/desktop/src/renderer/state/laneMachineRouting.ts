@@ -144,9 +144,8 @@ export type AdeCloudLaneGroup = {
 };
 
 /**
- * The machine-chip rule shared by every tab: when the project spans more than
- * one known machine, EVERY row shows a machine chip (this machine's included)
- * and the machine filter chips appear. With one machine, no chips.
+ * When the project spans more than one known machine, the machine filter
+ * chips appear. A row's own chip follows `rowMachineChip`.
  */
 export function shouldShowMachineChips(machineCount: number): boolean {
   return machineCount > 1;
@@ -155,7 +154,7 @@ export function shouldShowMachineChips(machineCount: number): boolean {
 /** What a machine chip renders. */
 export type MachineChipModel = Pick<LaneMachine, "machineId" | "machineName" | "online" | "isThisMachine">;
 
-/** The chip for a machine. Callers gate it with `shouldShowMachineChips`. */
+/** The chip for a machine (a filter chip names every machine). */
 export function machineChipFor(machine: MachineChipModel): MachineChipModel {
   return {
     machineId: machine.machineId,
@@ -163,6 +162,15 @@ export function machineChipFor(machine: MachineChipModel): MachineChipModel {
     online: machine.online,
     isThisMachine: machine.isThisMachine,
   };
+}
+
+/**
+ * The chip of a row (a lane, a PR's lane, a rule, an event): a row names its
+ * computer only when that computer is not this one. The rule is the same in
+ * every tab, and it never depends on the machine the tab reads from.
+ */
+export function rowMachineChip(machine: MachineChipModel | null | undefined): MachineChipModel | null {
+  return machine && !machine.isThisMachine ? machineChipFor(machine) : null;
 }
 
 /**
@@ -178,14 +186,6 @@ export function machineBlockedReason(
   return null;
 }
 
-/**
- * The trailing pin argument for a preload call: `[pin]`, or nothing when there
- * is no address. A pin that names the tab's own copy costs what no pin cost
- * (preload `isBoundCopyPin`).
- */
-export function pinArg(pin: OpenProjectBinding | null | undefined): [] | [OpenProjectBinding] {
-  return pin ? [pin] : [];
-}
 
 /**
  * `binding`, held by its key: the same object back until the key changes. The
@@ -338,6 +338,9 @@ export function buildAllMachineLanes(input: {
     // The active machine is represented by the tab's own lane list above; the
     // union may still hold a (stale) slice for it.
     if (entry.machineId === active.machineId) continue;
+    // A computer that is gone from the account holds no copy of the repository.
+    // The union keeps it only for its saved chats, so no lane surface lists it.
+    if (entry.computerGone === true) continue;
     const binding = entry.binding ?? null;
     const connection = connectionById.get(entry.targetId ?? entry.machineId);
     const isThisMachine = entry.machineId === THIS_MACHINE_ID;

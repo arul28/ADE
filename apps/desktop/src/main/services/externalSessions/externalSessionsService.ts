@@ -452,6 +452,7 @@ const COPY_REFUSAL_LABELS: Partial<Record<ExternalSessionProvider, string>> = {
   kimi: "Kimi",
   copilot: "Copilot",
   muse: "Muse",
+  antigravity: "Antigravity",
 };
 
 async function forkCommandFor(args: {

@@ -78,7 +78,7 @@ function CatchUpAction({
 }: {
   lane: LaneSummary;
   line: LaneRebaseLine;
-  pin: OpenProjectBinding | null;
+  pin: OpenProjectBinding;
   machineId: string | null;
   hasPr: boolean;
 }) {
@@ -108,7 +108,7 @@ export function LaneIdentity({
   upstream,
   createdBy,
   active,
-  pin = null,
+  pin,
   machineId = null,
   canReveal,
   revealUnavailableReason = null,
@@ -131,8 +131,8 @@ export function LaneIdentity({
   /** The chat that started with the lane, when known. */
   createdBy: { provider: string | null; title: string | null } | null;
   active: boolean;
-  /** The lane's machine when it is not the tab's; the branch picker acts there. */
-  pin?: OpenProjectBinding | null;
+  /** The lane's machine; the branch picker and Catch up act there. */
+  pin: OpenProjectBinding;
   /** That machine's id, for refreshing its lane list. */
   machineId?: string | null;
   canReveal: boolean;

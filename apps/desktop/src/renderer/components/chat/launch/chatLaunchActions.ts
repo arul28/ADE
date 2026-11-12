@@ -21,6 +21,7 @@ import {
   type ChatLaunchClosedNotice,
   type ChatLaunchDraftRestoreRequest,
 } from "./chatLaunchDraftRestore";
+import { requireChatPin } from "../chatMachinePin";
 
 /**
  * Every button a launch surface offers (thread card, slide-out, sidebar) goes
@@ -89,7 +90,7 @@ export function startChatLaunch(
   if (!api) return Promise.resolve(fail(new Error("New-lane launches are not available in this window.")));
   let request: Promise<ChatLaunchSnapshot>;
   try {
-    request = record.pin ? api.start(record.args, record.pin) : api.start(record.args);
+    request = api.start(record.args, requireChatPin(record.pin));
   } catch (error) {
     return Promise.resolve(fail(error));
   }
@@ -110,12 +111,12 @@ export async function retryChatLaunch(launchId: string): Promise<void> {
     await startChatLaunch(launchId);
     return;
   }
-  applyResult(launchId, await window.ade.chatLaunch.retry({ launchId }, pinFor(launchId)));
+  applyResult(launchId, await window.ade.chatLaunch.retry({ launchId }, requireChatPin(pinFor(launchId))));
 }
 
 /** Start the agent now; also "Start anyway" after an environment failure. */
 export async function startChatLaunchNow(launchId: string): Promise<void> {
-  applyResult(launchId, await window.ade.chatLaunch.startNow({ launchId }, pinFor(launchId)));
+  applyResult(launchId, await window.ade.chatLaunch.startNow({ launchId }, requireChatPin(pinFor(launchId))));
 }
 
 function closedNoticeFor(snapshot: ChatLaunchSnapshot): ChatLaunchClosedNotice {
@@ -160,12 +161,12 @@ export async function cancelChatLaunch(launchId: string, options: { restorePromp
     if (!entry.hostSeen && entry.startError != null) {
       // The host never accepted it. Cancel anyway in case a timed-out start did
       // land, but never let that block removing the card.
-      void window.ade?.chatLaunch?.cancel({ launchId }, entry.binding).catch(() => undefined);
+      if (entry.binding) void window.ade?.chatLaunch?.cancel({ launchId }, entry.binding).catch(() => undefined);
       removeChatLaunch(launchId);
       closeTab();
       return;
     }
-    applyResult(launchId, await window.ade.chatLaunch.cancel({ launchId }, entry.binding));
+    applyResult(launchId, await window.ade.chatLaunch.cancel({ launchId }, requireChatPin(entry.binding)));
     closeTab();
   } catch (error) {
     if (cancelWasRefused(error)) consumeChatLaunchDraftRestore(launchId);
@@ -231,7 +232,7 @@ export function queueChatLaunchMessage(
   const send = async () => {
     await whenHostAccepted(launchId);
     const { id: _id, createdAt: _createdAt, ...fields } = queued;
-    const snapshot = await window.ade.chatLaunch.queueMessage({ launchId, ...fields }, pinFor(launchId));
+    const snapshot = await window.ade.chatLaunch.queueMessage({ launchId, ...fields }, requireChatPin(pinFor(launchId)));
     // An older host answers an unknown launch with null instead of throwing.
     if (!snapshot) throw new Error(LAUNCH_NOT_FOUND_MESSAGE);
     // The host's copy (its own id) replaces the stand-in.

@@ -399,7 +399,18 @@ function makeLane(laneId: string, overrides: Partial<ProjectLaneHealth> = {}): P
 
 type ScopeInput = Parameters<typeof settingsMachineScope>[0];
 
-function renderPage(node: React.ReactNode, entry = "/settings?tab=lanes-git", scope?: ScopeInput) {
+/** This computer's copy of the project: Settings always pins the copy it shows. */
+const THIS_COPY = { kind: "local", key: `local:${PROJECT}`, rootPath: PROJECT, displayName: "proj" } as OpenProjectBinding;
+const THIS_COPY_SCOPE: ScopeInput = {
+  machineId: "this",
+  machineName: "This computer",
+  target: { kind: "pinned", binding: THIS_COPY },
+  isThisMachine: true,
+  isActiveBinding: true,
+  online: true,
+};
+
+function renderPage(node: React.ReactNode, entry = "/settings?tab=lanes-git", scope: ScopeInput = THIS_COPY_SCOPE) {
   const page = (
     <MemoryRouter initialEntries={[entry]}>
       {node}
@@ -407,7 +418,7 @@ function renderPage(node: React.ReactNode, entry = "/settings?tab=lanes-git", sc
       <DialogHost />
     </MemoryRouter>
   );
-  return render(scope ? <SettingsMachineScopeProvider scope={settingsMachineScope(scope)}>{page}</SettingsMachineScopeProvider> : page);
+  return render(<SettingsMachineScopeProvider scope={settingsMachineScope(scope)}>{page}</SettingsMachineScopeProvider>);
 }
 
 /** Project → Lanes: the lane list and the rules for new lanes, one view each. */
@@ -550,7 +561,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
       laneId: "lane-old",
       confirmation: "RECLAIM",
       forceDirty: true,
-    }, null));
+    }, THIS_COPY));
   });
 
   it("keeps reclaim focus inside the dialog and closes it on Escape", async () => {
@@ -690,7 +701,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     await waitFor(() => expect(runMaintenanceNow).toHaveBeenCalledTimes(1));
     expect(cleanupFn).toHaveBeenCalledWith(previewTargets, {
       preview: await cleanupPreview.mock.results[0]!.value,
-    }, null);
+    }, THIS_COPY);
     expect(cleanupFn.mock.invocationCallOrder[0]).toBeLessThan(runMaintenanceNow.mock.invocationCallOrder[0]!);
     // Files removed plus what maintenance returned, with the parts.
     expect(await within(dialog).findByText(/Freed 2\.0 GB/)).toBeTruthy();
@@ -794,12 +805,12 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     expect(within(confirm).getByText("Points every saved path at the new folder.")).toBeTruthy();
     fireEvent.click(within(confirm).getByRole("button", { name: "Update paths" }));
 
-    await waitFor(() => expect(fix).toHaveBeenCalledWith({ fixId: "update-paths" }, null));
+    await waitFor(() => expect(fix).toHaveBeenCalledWith({ fixId: "update-paths" }, THIS_COPY));
     expect(await screen.findByText("1 thing needs attention")).toBeTruthy();
     expect(await screen.findByText("Updated 14 saved paths.")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /check again/i }));
-    await waitFor(() => expect(getReport).toHaveBeenLastCalledWith({ forceRefresh: true }, null));
+    await waitFor(() => expect(getReport).toHaveBeenLastCalledWith({ forceRefresh: true }, THIS_COPY));
   });
 
   it("shows the view that holds the card a link names", async () => {
@@ -878,6 +889,6 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     expect(await screen.findByText(/Skipped idle-picked-up-work: A chat is running/)).toBeTruthy();
     expect(screen.getByText(/Skipped merged-then-committed: It has commits that aren't pushed/)).toBeTruthy();
     expect(archiveAndReclaim).toHaveBeenCalledTimes(1);
-    expect(archiveAndReclaim).toHaveBeenCalledWith({ laneId: "merged-clean", confirmation: "RECLAIM" }, null);
+    expect(archiveAndReclaim).toHaveBeenCalledWith({ laneId: "merged-clean", confirmation: "RECLAIM" }, THIS_COPY);
   });
 });

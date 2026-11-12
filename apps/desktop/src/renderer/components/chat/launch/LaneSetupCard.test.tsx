@@ -15,11 +15,21 @@ import {
 import { dismissToast, getToasts } from "../../app/toast/toastStore";
 import { __resetDialogRequestsForTests } from "../../ui/dialog/confirm";
 import { LaneSetupCard, LaneSetupTranscriptCard, laneSetupActions } from "./LaneSetupCard";
+import { ChatRuntimeScopeProvider } from "../ChatRuntimeScope";
 import { buildLaneSetupCardPayload } from "./chatLaunchSynthetic";
 import { resetChatLaunchDraftRestoreForTests, subscribeChatLaunchClosed } from "./chatLaunchDraftRestore";
 import { launchClockSubscriberCountForTests } from "./launchClock";
 
 const BINDING: OpenProjectBinding = { kind: "local", key: "local:/p", rootPath: "/p", displayName: "p" };
+
+/** A transcript card inside a chat that runs on BINDING's machine. */
+function inChatScope(node: React.ReactElement) {
+  return (
+    <ChatRuntimeScopeProvider pin={BINDING} binding={BINDING} laneId={null} sessionId={null}>
+      {node}
+    </ChatRuntimeScopeProvider>
+  );
+}
 
 function stage(id: ChatLaunchStage["id"], status: ChatLaunchStage["status"], extra: Partial<ChatLaunchStage> = {}): ChatLaunchStage {
   return { id, status, startedAt: null, endedAt: null, percent: null, detail: null, error: null, ...extra };
@@ -269,10 +279,9 @@ describe("LaneSetupTranscriptCard", () => {
     const get = vi.fn(async () => null);
     chatLaunchApi.get = get;
     const failedLaunch = snapshot({ phase: "failed", stages: [stage("fetch", "done"), stage("checkout", "failed", { error: "disk full" })] });
-    render(<LaneSetupTranscriptCard card={buildLaneSetupCardPayload(failedLaunch)} />);
-    // Without a provider the scope is the bound machine (no pin), so the
-    // request carries no binding — it still must go out.
-    await waitFor(() => expect(get).toHaveBeenCalledWith({ launchId: "launch-1" }, undefined));
+    render(inChatScope(<LaneSetupTranscriptCard card={buildLaneSetupCardPayload(failedLaunch)} />));
+    // The chat's own machine holds the launch.
+    await waitFor(() => expect(get).toHaveBeenCalledWith({ launchId: "launch-1" }, BINDING));
   });
 
   it("does not ask for a completed launch that only carries a warning", async () => {
@@ -310,7 +319,7 @@ describe("LaneSetupTranscriptCard", () => {
       const get = vi.fn(async () => null);
       chatLaunchApi.get = get;
       const failedLaunch = snapshot({ phase: "failed", stages: [stage("fetch", "done"), stage("checkout", "failed", { error: "disk full" })] });
-      render(<LaneSetupTranscriptCard card={buildLaneSetupCardPayload(failedLaunch)} />);
+      render(inChatScope(<LaneSetupTranscriptCard card={buildLaneSetupCardPayload(failedLaunch)} />));
       expect(get).toHaveBeenCalledTimes(1);
       // Let the first ask settle so its in-flight guard clears before the retry.
       await act(async () => {

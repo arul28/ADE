@@ -29,6 +29,7 @@ import { LinearAgentSection } from "./LinearAgentSection";
 import { announceLinearConnectionChanged } from "../../lib/linearConnectionEvents";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { isImeComposing } from "../../lib/imeComposition";
+import { requirePin } from "../../state/repositoryScope";
 
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
 
@@ -188,7 +189,7 @@ export function LinearSection() {
     if (!window.ade?.cto) return;
     const requestId = requestIdArg ?? invalidateLoadRequests();
     try {
-      const nextProjects = await window.ade.cto.getLinearProjects(pin);
+      const nextProjects = await window.ade.cto.getLinearProjects(requirePin(pin));
       if (!isCurrentLoadRequest(requestId)) return;
       setProjects(nextProjects);
     } catch {
@@ -208,7 +209,7 @@ export function LinearSection() {
     setAutolinksLoading(true);
     setAutolinkError(null);
     try {
-      const repo = await github.detectRepo(pin);
+      const repo = await github.detectRepo(requirePin(pin));
       if (autolinksRequestIdRef.current !== requestId) return;
       setGithubRepo(repo);
       if (!repo) {
@@ -216,7 +217,7 @@ export function LinearSection() {
         setAutolinkError(null);
         return;
       }
-      const autolinks = await github.listRepoAutolinks(repo, pin);
+      const autolinks = await github.listRepoAutolinks(repo, requirePin(pin));
       if (autolinksRequestIdRef.current !== requestId) return;
       setGithubAutolinks(autolinks);
     } catch (err) {
@@ -237,7 +238,7 @@ export function LinearSection() {
     }
     const requestId = invalidateLoadRequests();
     try {
-      const status = await window.ade.cto.getLinearConnectionStatus(pin);
+      const status = await window.ade.cto.getLinearConnectionStatus(requirePin(pin));
       if (!isCurrentLoadRequest(requestId)) return;
       setStatusReadFailed(false);
       setConnection(status);
@@ -288,7 +289,7 @@ export function LinearSection() {
 
     const poll = async () => {
       try {
-        const session = await cto.getLinearOAuthSession({ sessionId: activeSessionId }, pin);
+        const session = await cto.getLinearOAuthSession({ sessionId: activeSessionId }, requirePin(pin));
         if (!active || oauthSessionIdRef.current !== activeSessionId) return;
         if (session.status === "completed") {
           setOauthSessionIdState(null);
@@ -343,7 +344,7 @@ export function LinearSection() {
     setValidatingState(true);
     setError(null);
     try {
-      const status = await window.ade.cto.setLinearToken({ token: submittedToken }, pin);
+      const status = await window.ade.cto.setLinearToken({ token: submittedToken }, requirePin(pin));
       if (
         !validatingRef.current
         || oauthStartingRef.current
@@ -400,7 +401,7 @@ export function LinearSection() {
     setOauthStartingState(true);
     setError(null);
     try {
-      const session = await cto.startLinearOAuth(pin);
+      const session = await cto.startLinearOAuth(requirePin(pin));
       if (!oauthStartingRef.current || validatingRef.current) return;
       await openExternal(session.authUrl);
       if (!oauthStartingRef.current || validatingRef.current) return;
@@ -416,7 +417,7 @@ export function LinearSection() {
     if (!window.ade?.cto) return;
     invalidateLoadRequests();
     try {
-      const status = await window.ade.cto.clearLinearToken(pin);
+      const status = await window.ade.cto.clearLinearToken(requirePin(pin));
       setConnection(status);
       announceLinearConnectionChanged();
       setProjects([]);
@@ -443,7 +444,7 @@ export function LinearSection() {
         keyPrefix: candidate.keyPrefix,
         urlTemplate: candidate.urlTemplate,
         isAlphanumeric: candidate.isAlphanumeric,
-      }, pin);
+      }, requirePin(pin));
       await loadGithubAutolinks();
     } catch (err) {
       setAutolinkError(err instanceof Error ? err.message : "Unable to create GitHub autolink.");

@@ -9,6 +9,7 @@ import {
 } from "../../state/chatLaunchStore";
 import { extractError } from "../../lib/format";
 import type { WorkPtyLaunchArgs, WorkPtyLaunchResult } from "./cliLaunch";
+import { NO_CHAT_MACHINE_MESSAGE } from "../chat/chatMachinePin";
 
 /**
  * Starts the PTY for this window's new-lane CLI launches.
@@ -67,6 +68,7 @@ export function useChatLaunchCliDriver(
       const pin = entry.binding;
       const record = getChatLaunchLocalRecord(launchId);
       const report = (args: { sessionId?: string; error?: string }) => {
+        if (!pin) return Promise.reject(new Error(NO_CHAT_MACHINE_MESSAGE));
         const request = window.ade.chatLaunch.completeClient({ launchId, ...args }, pin);
         return Promise.resolve(request).then((snapshot: ChatLaunchSnapshot | null) => {
           if (snapshot) applyChatLaunchSnapshot(pin, snapshot);
@@ -91,7 +93,7 @@ export function useChatLaunchCliDriver(
           // The launch was cancelled (or otherwise left `awaiting-client`)
           // while the PTY started, so the host did not take this session:
           // close it rather than leave a terminal in a lane that is gone.
-          if (!snapshot || snapshot.sessionId !== result.sessionId || snapshot.phase === "cancelled") {
+          if ((!snapshot || snapshot.sessionId !== result.sessionId || snapshot.phase === "cancelled") && ptyPin) {
             await window.ade.pty.dispose({ ptyId: result.ptyId, sessionId: result.sessionId }, ptyPin)
               .catch((disposeError: unknown) => console.warn("chat launch orphan pty cleanup failed", disposeError));
           }

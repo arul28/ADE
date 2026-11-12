@@ -6,6 +6,7 @@ import type { LaneShareGivenEntry } from "../../../shared/types/laneShare";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { laneShareProblem, type LaneShareProblem } from "./laneShareModel";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { requirePin } from "../../lib/requirePin";
 
 /**
  * The owner's share list, read once per machine runtime and kept fresh from
@@ -94,7 +95,7 @@ export function loadLaneShares(key: string, pin: OpenProjectBinding | null): Pro
   if (!previous) setEntry(key, { status: "loading", shares: EMPTY, problem: null, cliTyping: null });
   const request = (async () => {
     try {
-      const result = await window.ade.laneShare.list({}, pin);
+      const result = await window.ade.laneShare.list({}, requirePin(pin, "No computer with this lane is online."));
       const shares = Array.isArray(result?.shares) ? result.shares : EMPTY;
       setEntry(key, {
         status: "ready",
@@ -144,10 +145,10 @@ function retainLaneShares(key: string, pin: OpenProjectBinding | null): () => vo
   if (existing) {
     existing.count += 1;
   } else {
-    // An unpinned subscription follows the active tab's runtime, like the call.
+    // No machine online: no feed; the list says so on its next read.
     let unsubscribe: (() => void) | null = null;
     try {
-      unsubscribe = window.ade?.laneShare?.onEvent((event) => {
+      unsubscribe = !pin ? null : window.ade?.laneShare?.onEvent((event) => {
         if (event.type === "lane_share_changed") scheduleReload(key, pin, CHANGE_RELOAD_MS);
         else if (event.type === "lane_share_presence_changed") scheduleReload(key, pin, PRESENCE_RELOAD_MS);
       }, pin) ?? null;

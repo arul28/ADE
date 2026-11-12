@@ -6,6 +6,7 @@ import { usageLimitChip } from "../../../shared/usageLimitResumePresentation";
 import { showToast } from "../app/toast/toastStore";
 import { StatusChip, type StatusChipAction } from "../ui/notice/StatusChip";
 import { useAgentChatApi } from "./agentChatApi";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * The usage-limit chip in the composer's status row. It sits beside the other
@@ -75,7 +76,7 @@ export function UsageLimitChip({
       onClick: () => run(async () => {
         const send = agentChatApi.continueUsageLimitOnAlternate;
         if (typeof send !== "function") return "This ADE runtime can't switch accounts yet. Update the app and try again.";
-        const result = await send({ sessionId }, runtimePin);
+        const result = await withChatPin(runtimePin, (chatPin) => send({ sessionId }, chatPin));
         return result.ok ? null : result.message;
       }),
     });
@@ -88,7 +89,7 @@ export function UsageLimitChip({
       disabled: busy,
       testId: "usage-limit-auto-resume-toggle",
       onClick: () => run(async () => {
-        await agentChatApi.updateSession({ sessionId, autoContinueAtUsageLimit: enable }, runtimePin);
+        await withChatPin(runtimePin, (chatPin) => agentChatApi.updateSession({ sessionId, autoContinueAtUsageLimit: enable }, chatPin));
         return null;
       }),
     });

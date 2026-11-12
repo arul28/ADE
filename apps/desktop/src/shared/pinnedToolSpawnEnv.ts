@@ -7,9 +7,9 @@
  * the pin, so every place that starts one (chat runtimes, auth probes, model
  * discovery, one-shot tasks, terminals) applies the same switches from here.
  *
- * Keyed by tools-cache name (`claude-code`, `codex`, ...). Devin, Antigravity
- * and Muse have no switch: none was found, and their updaters do not touch
- * ADE's layout. Codex has no environment switch; its config flag is
+ * Keyed by tools-cache name (`claude-code`, `codex`, ...). Devin and Muse
+ * have no switch: none was found, and their updaters do not touch ADE's
+ * layout. Codex has no environment switch; its config flag is
  * {@link CODEX_NO_UPDATE_CHECK_ARGS}. Grok also takes {@link GROK_NO_AUTO_UPDATE_ARG}.
  *
  * Pure data, no Node imports: the renderer-side launch builders read it too.
@@ -29,6 +29,9 @@ const SELF_UPDATE_ENV: Readonly<Record<string, Readonly<Record<string, string>>>
   // sets `general.enableAutoUpdate: false` (qwenSkillDefaults.ts).
   qwen: { QWEN_CODE_SKIP_UPDATE_CHECK_ONCE: "true" },
   pi: { PI_SKIP_VERSION_CHECK: "1" },
+  // The agy CLI's background updater reads this before it asks the release
+  // server; it covers `agy acp` chats and the terminal TUI.
+  antigravity: { AGY_CLI_DISABLE_AUTO_UPDATE: "1" },
 };
 
 export type PinnedProviderToolSpec = {
@@ -58,7 +61,7 @@ export const PINNED_PROVIDER_TOOLS: Readonly<Record<string, PinnedProviderToolSp
   grok: { tool: "grok", label: "Grok", terminal: { label: "Grok", binaries: ["grok"], tools: [{ tool: "grok", label: "Grok" }], selfUpdateTool: "grok", selfUpdateArgs: ["--no-auto-update"] } },
   devin: { tool: "devin", label: "Devin", terminal: { label: "Devin", binaries: ["devin"], tools: [{ tool: "devin", label: "Devin" }], selfUpdateTool: "devin" } },
   muse: { tool: "muse", label: "Muse", terminal: { label: "Muse Code", binaries: ["muse"], tools: [{ tool: "muse", label: "Muse Code" }], selfUpdateTool: "muse" } },
-  antigravity: { tool: "antigravity", label: "Antigravity" },
+  antigravity: { tool: "antigravity", label: "Antigravity", terminal: { label: "Antigravity", binaries: ["agy"], tools: [{ tool: "antigravity", label: "Antigravity" }], selfUpdateTool: "antigravity" } },
 };
 
 /** `codex` global flags that turn its startup update check off. */

@@ -57,7 +57,7 @@ Sentry is part of ADE on every surface, with no setting and no notice. The organ
 
 | Project | Surface | Started in |
 |---|---|---|
-| `ade-desktop` | Electron main, renderer (over IPC to main), preload, native crashes of every Electron process | `apps/desktop/src/main/sentry/initMain.ts` (called right after `configureDesktopUserDataPath()` in `main.ts`); renderer `src/renderer/sentry/initRenderer.ts` |
+| `ade-desktop` | Electron main, renderer (over IPC to main), preload, native crashes of every Electron process (the notice layer window shares the renderer's process and runs none of its own code, so its errors are the renderer's) | `apps/desktop/src/main/sentry/initMain.ts` (called right after `configureDesktopUserDataPath()` in `main.ts`); renderer `src/renderer/sentry/initRenderer.ts` |
 | `ade-brain` | the brain (`ade serve`: desktop-started, background service, remote machine) | `apps/ade-cli/src/sentry/initBrain.ts` (serve path in `cli.ts`) |
 | `ade-web` | hosted web client (Cloudflare Pages) | `apps/desktop/src/renderer/webclient/sentry.ts`, loaded after first paint |
 | `ade-workers` | push-relay, tunnel-relay, webhook-relay, account-directory (tag `worker`) | each Worker's `src/sentry.ts` |
@@ -458,7 +458,11 @@ desktop (an `ade browser status` tab list, a lane's release) add
 and `built_in_browser.owner_names_failed` (warnings), and the debug lines
 `built_in_browser.list_tabs_local_skipped`,
 `built_in_browser.release_lane_local_skipped` and
-`built_in_browser.machine_name_unavailable`. The desktop adds
+`built_in_browser.machine_name_unavailable`. The desktop's tab lifecycle writes
+`built_in_browser.tab_kept` (tab id, `input` or `keep`),
+`built_in_browser.tab_auto_closed` (tab id, `idle`, `ended`, `lane` or `stale`),
+`built_in_browser.tab_auto_close_failed` and `built_in_browser.tab_sleep_failed`
+(warnings), `built_in_browser.tab_slept` and `built_in_browser.tab_woke`. The desktop adds
 `built_in_browser.action_observation_failed` (warning) when an agent's action
 ran but the observation after it failed, and `built_in_browser.tabs_restore_skipped`
 (collection, agent tabs dropped) at start. The event-loop watchdog
@@ -840,6 +844,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `connections` | `github_cli_shared`, `github_cli_removed` (the person shares this computer's gh sign-in with the account, or takes it off, from Settings › GitHub; the background sync records nothing) | `completed` (the vault accepted it) | omitted; never the login, the account, or an error. Per action, at most one an hour |
 | `connections` | `github_app_connected` (how a connect of the account's ADE GitHub App sign-in ended, read in Settings once the server settles it), `github_app_disconnected` | `completed` (connected, or disconnected), `cancelled` (declined on GitHub or on ADE's confirm page, or the link ran out), `failed` | omitted; never the login, the account, the sign-in id, or an error. Per action and outcome, at most one an hour |
 | `find` | `find_opened` | `chat_shortcut`, `chat_palette`, `chat_palette_hit`, `diff_shortcut` | omitted; never the query, the chat, the diff, a file, or a match count |
+| `browser` | `tab_kept` (a person pressed Keep on an agent's tab, or Keep tabs on a chat group), `remote_tab_watched` (picked a tab on another machine to watch; the automatic show of the chat's own tab is not counted), `remote_tab_controlled` (took control of one) | `completed` | omitted; never the URL, title, tab, chat, lane or machine. Per action, at most one a day (`browser:<action>`) |
 | `lanes` | `template_setup_started` | `from_banner`, `from_settings` | omitted; never the lane, template, or machine |
 | `lanes` | `template_suggestion_hidden` | `completed` | omitted; never the lane, template, or machine |
 | `lanes` | `deps_update_started` | `completed`, `failed` | omitted; never the lane, package details, machine, or error |
@@ -2064,8 +2069,10 @@ reason: one row per press.
 
 Chat goals, stop-mode choices, waits, and restart resume add no analytics.
 Setting a goal is an ordinary `chat.send` (`/goal …`); a goal ending, a waiter
-firing, and a chat continuing after a restart are things the app does with no
-person behind them; and a Stop press is high-frequency enough that which of
+firing, a chat continuing after a restart, and an agent CLI reopened after a
+planned or unclean stop are things the app does with no person behind them
+(the CLI reopen writes one local line per start with counts only,
+`agent_chat.cli_reopened_after_restart` or `agent_chat.cli_reopen_skipped`); and a Stop press is high-frequency enough that which of
 six modes it used would be a typing signal, not a product decision.
 
 Whether a merge also deleted the head branch is deliberately **not** a property.
@@ -2258,6 +2265,8 @@ Every native event carries `client: "ios"`, `interactive` (`false` only for `ade
 iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in, its consent prompt, and its Settings opt-out have been removed. A stored `ade.analytics.enabled` false from an earlier build is ignored; only `DO_NOT_TRACK=1` in the launch environment turns it off. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
 
 Taking Control of a Mac's simulator from the phone records `ade_mobile_feature_used` with `feature: "simulator_control"`, `outcome: "started"` and nothing else: no device, lane, machine, stream or gesture detail. It answers the same question as the desktop's `ios_live_view` (does anyone drive a simulator that is not on this Mac), and the existing per-foreground deduplication and the 7-feature-events-per-day limit bound it; no ceiling was raised. Gestures, frames and the speed readout are never events.
+
+A GitHub connect of the ADE account that the phone started records `ade_mobile_feature_used` with `feature: "github_connect"` and `outcome` `completed` (the server says the sign-in is done), `cancelled` (declined on GitHub) or `failure`. It is the phone's half of the desktop's `connections` / `github_app_connected`: never the GitHub login, the account, the sign-in id or an error. A person connects once, so the per-foreground deduplication and the 7-feature-events-per-day limit bound it; no ceiling was raised. Direct GitHub reads (PR lists, repositories) are never events.
 
 Host-recorded mobile mutations may still appear in the canonical `ade_*` namespace with `surface: mobile`; those events use the machine installation identity and the same shared 200-event budget. Native `ade_mobile_*` events describe only interaction with the phone app itself.
 

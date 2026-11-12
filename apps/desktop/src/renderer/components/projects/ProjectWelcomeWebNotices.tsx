@@ -43,16 +43,23 @@ export function webZeroMachinesNotice(args: {
   retryError: string | null;
   onRetry: () => void;
   onSignIn: () => void;
+  /** Opens the ADE download page: the next step for an account with no computer. */
+  onGetAde: () => void;
+  /** How many projects the account lists (they show below, each opens with no computer). */
+  accountProjectCount: number;
 }): WebZeroMachinesNotice {
   const { account, directoryLoading } = args;
   switch (account.state) {
     case "signed_in":
+      // Not a dead end (S14): the account's projects still list below, and
+      // the next step is a computer to run them on.
       return {
         kind: "no_machines",
-        headline:
-          "No machines on this account yet. Open ADE on a computer and sign in with the same account — it shows up here the moment it does.",
-        detail: null,
-        action: null,
+        headline: "No computer is on your account yet.",
+        detail: args.accountProjectCount > 0
+          ? "Your projects are below. Install ADE on a computer and sign in with this account to work on them."
+          : "Install ADE on a computer and sign in with this account. Its projects show here.",
+        action: { label: "Get ADE", onSelect: args.onGetAde, busy: false },
       };
     case "signed_out":
       return {

@@ -45,6 +45,8 @@ export type ProcessRegistryServiceOptions = {
 
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
 export const DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS = DEFAULT_HEARTBEAT_INTERVAL_MS * 3;
+/** How long a dead owner of `detached` session rows stays in the registry (`pruneStale`). */
+const DETACHED_OWNER_KEEP_MS = 6 * 60 * 60_000;
 
 function defaultPidLivenessCheck(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
@@ -273,19 +275,25 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
 
     /** Sweeps rows whose last_seen is older than 10x the liveness window. */
     pruneStale(): number {
-      const cutoffIso = new Date(Date.now() - livenessWindowMs * 10).toISOString();
+      const nowMs = Date.now();
+      const cutoffIso = new Date(nowMs - livenessWindowMs * 10).toISOString();
+      // A dead owner whose rows a recent start marked `detached` stays known
+      // as this computer's: the CLI reopen after a crash only takes rows whose
+      // owner the registry knows, and a start that failed before its reopen
+      // must not lose them (`cliReopenAfterRestart.ts`). Same 6 h as that reopen.
+      const detachedKeepIso = new Date(nowMs - DETACHED_OWNER_KEEP_MS).toISOString();
       const ownGuardSql = ownStartedAt
         ? "not (pid = ? and started_at = ?) and last_seen < ?"
         : "pid != ? and last_seen < ?";
       const ownGuardParams = ownStartedAt
-        ? [pid, ownStartedAt, cutoffIso]
-        : [pid, cutoffIso];
+        ? [pid, ownStartedAt, cutoffIso, detachedKeepIso]
+        : [pid, cutoffIso, detachedKeepIso];
       const staleUnownedSql = `
         ${ownGuardSql}
         and not exists (
           select 1
             from terminal_sessions s
-           where s.status = 'running'
+           where (s.status = 'running' or (s.status = 'detached' and s.ended_at >= ?))
              and s.owner_pid = runtime_processes.pid
              and s.owner_process_started_at = runtime_processes.started_at
         )

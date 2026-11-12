@@ -6,6 +6,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { TerminalView } from "../../terminals/TerminalView";
 import { openExternalUrl } from "../../../lib/openExternal";
+import { requirePin } from "../../../state/repositoryScope";
+import { useThisComputerCopyPin } from "../ProjectCopyScope";
 import type { TerminalToolType } from "../../../../shared/types";
 import type { SignInStage } from "./signInSheetParts";
 import { SignInSheetFrame, useSuccessHold, type SignInMachine, type SignInSheetView } from "./signInSheetFrame";
@@ -66,11 +68,15 @@ export function TerminalSignInSheet({
   isThisMachine,
   machineName,
 }: TerminalSignInSheetProps) {
+  // The shell runs in a lane of this project on the sheet's machine. This
+  // computer with no pin (its page takes the tab's route) uses its own copy.
+  const thisComputerPin = useThisComputerCopyPin(isThisMachine && !pin);
+  const shellPin = pin ?? (isThisMachine ? thisComputerPin : null);
   // Effects key on the pin's identity, not the object: a rebuilt pin with the
   // same key must not restart the login shell.
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
-  const pinIdentity = pin?.key ?? null;
+  const pinRef = useRef(shellPin);
+  pinRef.current = shellPin;
+  const pinIdentity = shellPin?.key ?? null;
   const [terminal, setTerminal] = useState<{ ptyId: string; sessionId: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [signedIn, setSignedIn] = useState(false);
@@ -91,7 +97,8 @@ export function TerminalSignInSheet({
     void (async () => {
       try {
         if (!window.ade?.pty?.create) throw new Error("Terminals are not available in this window.");
-        const lanes = await window.ade.lanes.list({ includeArchived: false, includeStatus: false }, target);
+        const shellTarget = requirePin(target, `${machineName} has no copy of this project online.`);
+        const lanes = await window.ade.lanes.list({ includeArchived: false, includeStatus: false }, shellTarget);
         const resolvedLaneId = laneId ?? lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? null;
         if (!resolvedLaneId) throw new Error("No lane is available to run the login in.");
         const created = await window.ade.pty.create({
@@ -104,9 +111,9 @@ export function TerminalSignInSheet({
           tracked: false,
           toolType,
           startupCommand: command,
-        }, target);
+        }, shellTarget);
         if (cancelled) {
-          void window.ade.pty.dispose({ ptyId: created.ptyId, sessionId: created.sessionId }, target);
+          void window.ade.pty.dispose({ ptyId: created.ptyId, sessionId: created.sessionId }, shellTarget);
           return;
         }
         terminalRef.current = { ptyId: created.ptyId, sessionId: created.sessionId };
@@ -118,7 +125,7 @@ export function TerminalSignInSheet({
     return () => {
       cancelled = true;
     };
-  }, [command, laneId, pinIdentity, title, toolType]);
+  }, [command, laneId, machineName, pinIdentity, title, toolType]);
 
   // Dispose on unmount, always.
   useEffect(() => {
@@ -126,14 +133,14 @@ export function TerminalSignInSheet({
     return () => {
       const open = terminalRef.current;
       terminalRef.current = null;
-      if (open) void window.ade?.pty?.dispose({ ptyId: open.ptyId, sessionId: open.sessionId }, target);
+      if (open && target) void window.ade?.pty?.dispose({ ptyId: open.ptyId, sessionId: open.sessionId }, target);
     };
   }, [pinIdentity]);
 
   // Open the first sign-in URL it prints, once.
   useEffect(() => {
-    if (!terminal || !window.ade?.pty?.onData) return;
     const target = pinRef.current;
+    if (!terminal || !target || !window.ade?.pty?.onData) return;
     const unsubscribe = window.ade.pty.onData((event) => {
       if (event.ptyId !== terminal.ptyId) return;
       if (openedUrlRef.current) return;
@@ -203,7 +210,7 @@ export function TerminalSignInSheet({
             key={`${providerId}:${terminal.sessionId}`}
             ptyId={terminal.ptyId}
             sessionId={terminal.sessionId}
-            runtimePin={pin}
+            runtimePin={shellPin}
             isActive
             className="h-full w-full"
           />

@@ -66,6 +66,7 @@ import {
 } from "./crossMachineHandoffPresentation";
 import { Banner } from "../ui/notice/Banner";
 import { Dialog } from "../ui/dialog";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * Setup for moving a chat to another machine. A thin client of the source
@@ -277,7 +278,7 @@ export function CrossMachineHandoffModal({
     const pin = runtimePinRef.current;
     setLoading(true);
     try {
-      const next = await window.ade.agentChat.getCrossMachineHandoffOptions({ sourceSessionId }, pin);
+      const next = await withChatPin(pin, (chatPin) => window.ade.agentChat.getCrossMachineHandoffOptions({ sourceSessionId }, chatPin));
       if (request !== loadRequestRef.current) return;
       setOptions(next);
       setSelectedMachineKey((current) => {
@@ -339,13 +340,13 @@ export function CrossMachineHandoffModal({
     setError(null);
     setForkFallbackReason(null);
     try {
-      const next = await window.ade.agentChat.previewCrossMachineHandoff({
+      const next = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.agentChat.previewCrossMachineHandoff({
         sourceSessionId,
         machine: selectedMachine.machineKey,
         targetModelId: modelId,
         mode: requestedMode,
         ...(includeChanges ? { includeChanges: true } : {}),
-      }, runtimePinRef.current);
+      }, chatPin));
       setPreview(next);
       const fork = requestedMode === "fork" ? next.preflight?.forkHandoffSupport : undefined;
       if (requestedMode === "fork" && next.preflight && !fork?.supported) {
@@ -389,7 +390,7 @@ export function CrossMachineHandoffModal({
     setBusyLabel(turnActive ? "Queuing the move…" : "Starting the move…");
     setError(null);
     try {
-      const record = await window.ade.agentChat.startCrossMachineHandoff({
+      const record = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.agentChat.startCrossMachineHandoff({
         ...target,
         sourceSessionId,
         machine: selectedMachine.machineKey,
@@ -398,7 +399,7 @@ export function CrossMachineHandoffModal({
         ...(includeChanges ? { includeChanges: true } : {}),
         ...(cloneApproved || queuedCloneApproved ? { clone: true } : {}),
         ...(turnActive ? { whenTurnEnds: true } : {}),
-      }, runtimePinRef.current);
+      }, chatPin));
       onStarted(record);
       onClose();
     } catch (startError) {
@@ -451,7 +452,7 @@ export function CrossMachineHandoffModal({
   }, [loadOptions]);
   const publishBranch = useCallback(() => runBranchFix(
     "Publishing the branch…",
-    (pin) => window.ade.git.push({ laneId: sourceLaneId }, pin),
+    (pin) => withChatPin(pin, (chatPin) => window.ade.git.push({ laneId: sourceLaneId }, chatPin)),
   ), [runBranchFix, sourceLaneId]);
   /**
    * Only offered when the branch is strictly behind. A diverged branch keeps
@@ -459,7 +460,7 @@ export function CrossMachineHandoffModal({
    */
   const updateBranch = useCallback(() => runBranchFix(
     "Updating the branch…",
-    (pin) => window.ade.git.pull({ laneId: sourceLaneId }, pin),
+    (pin) => withChatPin(pin, (chatPin) => window.ade.git.pull({ laneId: sourceLaneId }, chatPin)),
   ), [runBranchFix, sourceLaneId]);
   /**
    * A move whose answer was lost blocks new ones; the same Retry and Dismiss
@@ -467,11 +468,11 @@ export function CrossMachineHandoffModal({
    */
   const retryUnknownMove = useCallback(() => runBranchFix(
     "Retrying the move…",
-    (pin) => window.ade.agentChat.retryCrossMachineHandoff({ sourceSessionId }, pin),
+    (pin) => withChatPin(pin, (chatPin) => window.ade.agentChat.retryCrossMachineHandoff({ sourceSessionId }, chatPin)),
   ), [runBranchFix, sourceSessionId]);
   const dismissUnknownMove = useCallback(() => runBranchFix(
     "Dismissing the move…",
-    (pin) => window.ade.agentChat.cancelCrossMachineHandoff({ sourceSessionId }, pin),
+    (pin) => withChatPin(pin, (chatPin) => window.ade.agentChat.cancelCrossMachineHandoff({ sourceSessionId }, chatPin)),
   ), [runBranchFix, sourceSessionId]);
 
   if (!open) return null;

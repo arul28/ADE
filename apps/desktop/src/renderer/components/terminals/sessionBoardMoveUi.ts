@@ -1,6 +1,7 @@
 import { showToast } from "../app/toast/toastStore";
 import { WORK_BOARD_COLUMN_LABEL, type WorkBoardMoveTarget } from "../../../shared/types/chat";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
+import { withChatPin } from "../chat/chatMachinePin";
 
 /**
  * Apply a board move and own its whole user-visible result: the toast, the
@@ -34,7 +35,7 @@ export function moveSessionOnBoard(args: {
     });
     return;
   }
-  void move(session.id, to, binding)
+  void withChatPin(binding, (chatPin) => move(session.id, to, chatPin))
     .then((result) => {
       if (!result?.changed || !result.moveId) {
         // A no-op is ALWAYS a disagreement here: every caller only offers a
@@ -80,7 +81,7 @@ export function moveSessionOnBoard(args: {
           onClick: () => {
             const undo = window.ade.sessions?.undoBoardMove;
             if (typeof undo !== "function") return;
-            void undo(session.id, moveId, binding)
+            void withChatPin(binding, (chatPin) => undo(session.id, moveId, chatPin))
               .then((undone) => {
                 args.onUndoSettled?.();
                 if (undone?.ok === false) {

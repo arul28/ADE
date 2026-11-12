@@ -42,7 +42,9 @@ import { closeWorkToolForReal } from "../terminals/closeWorkToolForReal";
 
 const LANE = "lane-1";
 const UDID = "UDID-1";
-const KEY = appleStreamLeaseKey({ pin: null, bound: null, laneId: LANE, deviceUdid: UDID });
+/** The tab's copy: a viewer with no pin of its own is on it. */
+const TAB = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+const KEY = appleStreamLeaseKey({ pin: TAB, bound: TAB, laneId: LANE, deviceUdid: UDID });
 
 let calls: string[] = [];
 
@@ -75,8 +77,8 @@ function installApi() {
 let latestUrl: string | null = null;
 
 /** One viewer of the lane's stream — the pane's column, or the floating player. */
-function Viewer({ pin = null }: { pin?: OpenProjectBinding | null } = {}) {
-  const pinRef = useRef<OpenProjectBinding | null>(pin);
+function Viewer({ pin = TAB }: { pin?: OpenProjectBinding } = {}) {
+  const pinRef = useRef<OpenProjectBinding>(pin);
   const stream = useAppleDeviceStream({
     deviceUdid: UDID, laneId: LANE, chatSessionId: "chat-1",
     enabled: true, hidden: false, machineName: null, bitrateKbpsCap: null,
@@ -99,6 +101,7 @@ beforeEach(() => {
   latestUrl = null;
   resetAppleStreamLeases();
   resetAppleMiniPlayerForTests();
+  useAppStore.setState({ projectBinding: TAB });
   installApi();
   noteAppleMiniPlayerLaneDevice({ laneId: LANE, runtimePin: null }, { udid: UDID, name: "ADE Repro", runtime: null, family: "iphone" });
 });
@@ -155,7 +158,7 @@ describe("open → close → open again", () => {
 
     // Closing the TAB: the tool stops for real and the device powers off.
     act(() => {
-      closeWorkToolForReal("ios", { laneId: LANE, chatSessionId: "chat-1", runtimePin: null });
+      closeWorkToolForReal("ios", { laneId: LANE, chatSessionId: "chat-1", runtimePin: TAB });
     });
     // The device is going away, so the bookkeeping that described its stream
     // goes with it — before the pane has even unmounted.
@@ -171,12 +174,12 @@ describe("open → close → open again", () => {
 
 describe("a release from a stream that has already ended", () => {
   it("cannot stop the one running now", () => {
-    const stale = acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
+    const stale = acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: TAB.key });
     expect(stale.first).toBe(true);
     // That run ends…
     expect(releaseAppleStreamLease(KEY, stale.epoch).last).toBe(true);
     // …and a new one starts.
-    const fresh = acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
+    const fresh = acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: TAB.key });
     expect(fresh.first).toBe(true);
     expect(fresh.epoch).not.toBe(stale.epoch);
 
@@ -195,10 +198,10 @@ describe("a release from a stream that has already ended", () => {
 
 describe("forgetting a lane's leases", () => {
   it("drops viewers and parked holds for that lane only, and stops nothing", () => {
-    const other = appleStreamLeaseKey({ pin: null, bound: null, laneId: "lane-2", deviceUdid: "UDID-2" });
-    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: "bound" });
+    const other = appleStreamLeaseKey({ pin: null, bound: TAB, laneId: "lane-2", deviceUdid: "UDID-2" });
+    acquireAppleStreamLease(KEY, { laneId: LANE, deviceUdid: UDID, pinKey: TAB.key });
     acquireAppleStreamLease(KEY); // a parked hold: a count with no viewer
-    acquireAppleStreamLease(other, { laneId: "lane-2", deviceUdid: "UDID-2", pinKey: "bound" });
+    acquireAppleStreamLease(other, { laneId: "lane-2", deviceUdid: "UDID-2", pinKey: TAB.key });
 
     forgetAppleStreamLeasesForLane(LANE);
     expect(appleStreamLeaseCount(KEY)).toBe(0);
@@ -243,7 +246,7 @@ describe("the pane and the floating player name the same machine two ways", () =
     const player = render(<Viewer pin={playerPin} />);
     await waitFor(() => expect(calls).toContain("start"));
 
-    // Open the pane: WorkIosTool retakes the device, the pane (null pin)
+    // Open the pane: WorkIosTool retakes the device, the pane (the tab's pin)
     // mounts, the handover hold is given back, and the player unmounts.
     act(() => { retakeAppleMiniPlayer(); });
     render(<Viewer />);

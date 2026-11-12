@@ -52,6 +52,8 @@ let workProviderImportRules: [String: WorkProviderImportRules] = [
   "kimi": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
   "grok": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
   "copilot": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .none),
+  // `agy --conversation <id>` reopens a conversation in its folder; agy has no fork.
+  "antigravity": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
 ]
 
 private let workNoImportRules = WorkProviderImportRules(chatContinue: .none, chatCopy: .none, cliContinue: .none, cliCopy: .none)
@@ -316,13 +318,14 @@ func workSetImportSurfacePreference(_ provider: String, surface: String, default
 /// Every provider the importer scans, in display order. Mirrors
 /// `EXTERNAL_SESSION_PROVIDERS`.
 let workImportSessionProviders = [
-  "claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot",
+  "claude", "codex", "cursor", "droid", "opencode", "pi", "muse", "qwen", "kimi", "grok", "copilot", "antigravity",
 ]
 
 /// The providers a host learned together with `work.getExternalSessionDetail`.
 /// Copilot is here for its CLI history import, which the SDK provider change
-/// leaves alone; its chat provider is no longer ACP.
-let workImportAcpProviders: Set<String> = ["qwen", "kimi", "grok", "copilot"]
+/// leaves alone; its chat provider is no longer ACP. Antigravity came later, so
+/// a host without that call cannot know it either.
+let workImportAcpProviders: Set<String> = ["qwen", "kimi", "grok", "copilot", "antigravity"]
 
 /// Providers worth asking this host about. An older host (no
 /// `work.getExternalSessionDetail`) refuses these providers by name, so the
@@ -368,6 +371,7 @@ func workExternalSessionProviderName(_ provider: String) -> String {
   case "kimi": return "Kimi"
   case "grok": return "Grok"
   case "copilot": return "Copilot"
+  case "antigravity": return "Antigravity"
   default:
     let trimmed = provider.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? "Unknown" : trimmed

@@ -55,6 +55,8 @@ export type ContextMenuEntry =
       key: string;
       rootPath: string;
       remote?: OpenPathInEditorRemote | null;
+      /** The machine the folder is on (see `OpenInSubmenu`). */
+      pin?: OpenProjectBinding | null;
     }
   | {
       /**
@@ -119,6 +121,7 @@ function EntryRows({
                 key={entry.key}
                 rootPath={entry.rootPath}
                 remote={entry.remote ?? null}
+                pin={entry.pin ?? null}
                 onClose={onClose}
               />
             );

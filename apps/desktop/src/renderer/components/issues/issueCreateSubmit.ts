@@ -1,4 +1,4 @@
-import type { GitHubIssueAttachmentInput, NormalizedLinearIssue } from "../../../shared/types";
+import type { GitHubIssueAttachmentInput, NormalizedLinearIssue, OpenProjectBinding } from "../../../shared/types";
 import type { JiraCreateMeta, JiraCreateIssueResult } from "../../../shared/types/jira";
 import {
   missingRequiredGitHubFormField,
@@ -14,22 +14,29 @@ import type { GitHubFields, JiraFields, LinearFields } from "./issueCreateDraft"
  * cannot know until submit (a team, a parent that exists, a required template
  * field), creates the issue, and returns it; the dialog owns the toast and
  * where the issue opens.
+ *
+ * `pin` is the repository reader. Null means no machine is online: the
+ * create stops with a clear message and sends nothing.
  */
+
+const NO_MACHINE_MESSAGE = "No computer that has this project is online.";
 
 export async function submitLinearIssue(input: {
   teamKey: string | null;
   title: string;
   description: string;
   fields: LinearFields;
+  pin: OpenProjectBinding | null;
 }): Promise<NormalizedLinearIssue> {
-  const { fields } = input;
+  const { fields, pin } = input;
   if (!input.teamKey) throw new Error("Pick a team.");
   const create = window.ade?.cto?.createLinearIssue;
   if (!create) throw new Error("Creating Linear issues is not available here.");
+  if (!pin) throw new Error(NO_MACHINE_MESSAGE);
   let parentId: string | null = null;
   const parent = fields.parent.trim();
   if (parent) {
-    const parentIssue = await window.ade?.cto?.getLinearIssue?.({ issueId: parent });
+    const parentIssue = await window.ade?.cto?.getLinearIssue?.({ issueId: parent }, pin);
     if (!parentIssue) throw new Error(`Linear didn't return the parent ${parent}.`);
     parentId = parentIssue.id;
   }
@@ -48,7 +55,7 @@ export async function submitLinearIssue(input: {
     dueDate: fields.dueDate || null,
     parentId,
     templateId: fields.templateId,
-  });
+  }, pin);
 }
 
 export async function submitGitHubIssue(input: {
@@ -61,8 +68,9 @@ export async function submitGitHubIssue(input: {
   templateRequired: boolean;
   formAnswers: GitHubIssueFormAnswers;
   attachments: GitHubIssueAttachmentInput[];
+  pin: OpenProjectBinding | null;
 }): Promise<{ issue: GitHubIssueDetail; warnings: string[] }> {
-  const { repo, fields, template } = input;
+  const { repo, fields, template, pin } = input;
   if (!repo) throw new Error("This project has no GitHub repository.");
   if (input.templateRequired && !template) throw new Error("This repository asks for a template. Pick one.");
   const formTemplate = template?.kind === "form" ? template : null;
@@ -72,6 +80,7 @@ export async function submitGitHubIssue(input: {
   }
   const create = window.ade?.github?.createIssue;
   if (!create) throw new Error("Creating GitHub issues is not available here.");
+  if (!pin) throw new Error(NO_MACHINE_MESSAGE);
   const description = formTemplate ? serializeGitHubIssueForm(formTemplate, input.formAnswers) : input.body;
   const parentNumber = Number(fields.parent.replace(/^#/, ""));
   const result = await create({
@@ -87,7 +96,7 @@ export async function submitGitHubIssue(input: {
       parentNumber: Number.isInteger(parentNumber) && parentNumber > 0 ? parentNumber : null,
       attachments: input.attachments,
     },
-  });
+  }, pin);
   const issue = normalizeGitHubIssue(repo.owner, repo.name, result.issue);
   if (!issue) throw new Error("GitHub created the issue but did not return it.");
   return { issue, warnings: result.warnings };
@@ -98,8 +107,9 @@ export async function submitJiraIssue(input: {
   description: string;
   fields: JiraFields;
   meta: JiraCreateMeta | null;
+  pin: OpenProjectBinding | null;
 }): Promise<JiraCreateIssueResult> {
-  const { fields } = input;
+  const { fields, pin } = input;
   if (!fields.projectKey) throw new Error("Pick a Jira project.");
   if (!fields.issueTypeId) throw new Error("Pick a Jira issue type.");
   const issueType = input.meta?.issueTypes.find((entry) => entry.id === fields.issueTypeId);
@@ -110,6 +120,7 @@ export async function submitJiraIssue(input: {
   }
   const create = window.ade?.jira?.createIssue;
   if (!create) throw new Error("Creating Jira issues is not available here.");
+  if (!pin) throw new Error(NO_MACHINE_MESSAGE);
   return create({
     projectKey: fields.projectKey,
     issueTypeId: fields.issueTypeId,
@@ -120,5 +131,5 @@ export async function submitJiraIssue(input: {
     priorityId: fields.priorityId,
     parentKey: fields.parentKey.trim().toUpperCase() || null,
     dueDate: fields.dueDate || null,
-  });
+  }, pin);
 }

@@ -1,11 +1,12 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isInaccessible } from "@testing-library/dom";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { SettingsPage } from "./SettingsPage";
+import { useAppStore } from "../../state/appStore";
 
 /**
  * The settings shell resolves tabs, legacy deep links, and search through
@@ -95,7 +96,14 @@ const visibleAnchors = (container: HTMLElement) =>
     .filter((node) => !isInaccessible(node))
     .map((node) => node.dataset.settingsAnchor);
 
-afterEach(() => cleanup());
+// A project is open on this computer: the project pages show its copy.
+beforeEach(() => {
+  useAppStore.setState({ projectBinding: { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } });
+});
+afterEach(() => {
+  cleanup();
+  useAppStore.setState({ projectBinding: null });
+});
 
 describe("SettingsPage", () => {
   it("opens the tab named in the URL", async () => {

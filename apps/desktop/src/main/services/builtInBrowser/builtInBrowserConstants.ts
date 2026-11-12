@@ -1,6 +1,8 @@
 import type { BuiltInBrowserStatus } from "../../../shared/types";
 
 export const BUILT_IN_BROWSER_PARTITION: BuiltInBrowserStatus["partition"] = "persist:ade-browser";
+/** The HTTP disk cache cap per profile (`--disk-cache-size`), 320 MB. */
+export const BUILT_IN_BROWSER_DISK_CACHE_BYTES = 320 * 1024 * 1024;
 export const BUILT_IN_BROWSER_WEBAUTHN_KEYCHAIN_ACCESS_GROUP = "VQ372F39G6.com.ade.desktop.webauthn";
 
 /**

@@ -47,8 +47,9 @@ function useStillWatching(tool: string, pin: OpenProjectBinding | null | undefin
           console.warn("[cloud] still-watching check failed", error);
           return false;
         });
-        if (here) {
-          await window.ade.workTools?.noteWatching?.(pinRef.current).catch((error: unknown) => {
+        const pin = pinRef.current;
+        if (here && pin) {
+          await window.ade.workTools?.noteWatching?.(pin).catch((error: unknown) => {
             console.warn("[cloud] still-watching signal failed", error);
           });
         }

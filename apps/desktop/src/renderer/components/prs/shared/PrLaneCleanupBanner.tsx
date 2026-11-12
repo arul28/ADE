@@ -1,12 +1,12 @@
 import React from "react";
 import { usePrRuntimePin } from "../state/prMachines";
-import { pinArg } from "../../../state/laneMachineRouting";
 import { Archive, Trash, Warning } from "@phosphor-icons/react";
 import { LaneIcon } from "../../ui/vcsIcons";
 import { Banner, NoticeBadge } from "../../ui/notice";
 import type { LaneSummary, PrSummary } from "../../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton, dangerButton, fgTint } from "../../lanes/laneDesignTokens";
 import { branchNameFromRef } from "./laneBranchTargets";
+import { requirePin } from "../../../state/repositoryScope";
 
 type PrLaneCleanupBannerProps = {
   pr: { id?: string | null; state: PrSummary["state"]; headBranch?: string | null; baseBranch?: string | null } | null;
@@ -23,7 +23,7 @@ export function PrLaneCleanupBanner({
   compact = false,
   onNavigate,
 }: PrLaneCleanupBannerProps) {
-  const onPin = pinArg(usePrRuntimePin());
+  const runtimePin = usePrRuntimePin();
   const [busy, setBusy] = React.useState(false);
   const [done, setDone] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -47,7 +47,7 @@ export function PrLaneCleanupBanner({
     setBusy(true);
     setError(null);
     try {
-      await window.ade.lanes.archive({ laneId: lane.id }, ...onPin);
+      await window.ade.lanes.archive({ laneId: lane.id }, requirePin(runtimePin));
       setDone("Lane archived successfully");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -66,7 +66,7 @@ export function PrLaneCleanupBanner({
         deleteLocalBranch: deleteMode !== "remote_branch",
         deleteRemoteBranch: deleteMode !== "worktree",
         remoteName: remoteName.trim() || "origin",
-      }, ...onPin);
+      }, requirePin(runtimePin));
       const parts = [
         result.localDeleted ? "local branch deleted" : null,
         result.remoteDeleted ? "remote branch deleted" : null,

@@ -912,7 +912,7 @@ func providerFamilyKey(_ provider: String) -> String {
   if raw == "moonshot" || raw == "moonshotai" || raw.hasPrefix("kimi") { return "kimi" }
   if raw == "xai" || raw.hasPrefix("grok") { return "grok" }
   if raw == "github-copilot" || raw == "githubcopilot" || raw.hasPrefix("copilot") { return "copilot" }
-  // `antigravity-chat` (ACP-only) resolves to its provider id.
+  // `antigravity` (its terminal) and `antigravity-chat` resolve to its provider id.
   if raw.hasPrefix("antigravity") { return "antigravity" }
   return raw
 }

@@ -79,11 +79,13 @@ export function recoverImportedContinuationLaunch(
   provider: TerminalResumeProvider | null,
   importedProvider: TerminalResumeProvider | null,
   targetId: string,
+  pin: OpenProjectBinding,
 ): Promise<TerminalResumeLaunchConfig | null> | null {
   // Codex rollouts persist a turn_context record with the launch state. Other
   // providers currently do not expose an equivalent bounded exact lookup.
   if (provider !== "codex" || importedProvider !== provider || !targetId) return null;
-  const key = `${provider}:${targetId}`;
+  // The rollout lives on the session's machine, so each machine has its own entry.
+  const key = `${pin.key}:${provider}:${targetId}`;
   const now = Date.now();
   const existing = continuationLaunchLookups.get(key);
   if (existing && existing.expiresAt > now) {
@@ -98,7 +100,7 @@ export function recoverImportedContinuationLaunch(
     scope: "all",
     sessionId: targetId,
     limit: 1,
-  }).then((sessions) => sessions.find((candidate) => candidate.id === targetId)?.launch ?? null)
+  }, pin).then((sessions) => sessions.find((candidate) => candidate.id === targetId)?.launch ?? null)
     .catch((error) => {
       if (continuationLaunchLookups.get(key)?.promise === request) {
         continuationLaunchLookups.delete(key);

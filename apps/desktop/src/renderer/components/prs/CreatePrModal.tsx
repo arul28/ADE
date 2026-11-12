@@ -4,6 +4,7 @@ import * as RadixDialog from "@radix-ui/react-dialog";
 import { CheckCircle, Warning, CircleNotch, X, ArrowRight, ArrowLeft, Check } from "@phosphor-icons/react";
 import { BranchIcon } from "../ui/vcsIcons";
 import { useAppStore } from "../../state/appStore";
+import { usePrRuntimePin } from "./state/prMachines";
 import type {
   MergeMethod,
   PrSummary,
@@ -279,6 +280,11 @@ export function CreatePrModal({
 }) {
   const lanes = useAppStore((s) => s.lanes);
   const primaryLane = React.useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
+  // The machine of the PR list and of `lanes` (the repository reader).
+  const pin = usePrRuntimePin();
+  const pinRef = React.useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
 
   // Internal numeric step for stepper (1=BRANCH, 2=DETAILS, 3=REVIEW)
   const [numericStep, setNumericStep] = React.useState(1);
@@ -308,10 +314,11 @@ export function CreatePrModal({
   const [branchLoadError, setBranchLoadError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (!open || !primaryLane) return;
+    const branchPin = pinRef.current;
+    if (!open || !primaryLane || !branchPin) return;
     let cancelled = false;
     setBranchLoadError(null);
-    window.ade.git.listBranches({ laneId: primaryLane.id })
+    window.ade.git.listBranches({ laneId: primaryLane.id }, branchPin)
       .then((branches) => {
         if (!cancelled) setAvailableBranches(branches);
       })
@@ -322,7 +329,7 @@ export function CreatePrModal({
         }
       });
     return () => { cancelled = true; };
-  }, [open, primaryLane]);
+  }, [open, pinKey, primaryLane]);
 
   /** Deduplicated list of branch names suitable for a target-branch dropdown. */
   const targetBranchOptions = React.useMemo(() => {
@@ -377,9 +384,10 @@ export function CreatePrModal({
   }, [open]);
 
   React.useEffect(() => {
-    if (!open) return;
+    const listPin = pinRef.current;
+    if (!open || !listPin) return;
     let cancelled = false;
-    window.ade.prs.listAll()
+    window.ade.prs.listAll(listPin)
       .then((prs) => {
         if (!cancelled) setKnownPrs(prs);
       })
@@ -390,10 +398,11 @@ export function CreatePrModal({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, pinKey]);
 
   React.useEffect(() => {
-    if (!open) return;
+    const syncPin = pinRef.current;
+    if (!open || !syncPin) return;
     const laneIds = lanes.filter((lane) => lane.laneType !== "primary").map((lane) => lane.id);
     if (laneIds.length === 0) {
       setLaneSyncStatusById({});
@@ -402,7 +411,7 @@ export function CreatePrModal({
     }
     let cancelled = false;
     setLaneSyncLoadingById(Object.fromEntries(laneIds.map((laneId) => [laneId, true])));
-    window.ade.git.getSyncStatuses({ laneIds, skipRecommendation: true })
+    window.ade.git.getSyncStatuses({ laneIds, skipRecommendation: true }, syncPin)
       .then((statuses) => {
         if (!cancelled) setLaneSyncStatusById(statuses);
       })
@@ -417,7 +426,7 @@ export function CreatePrModal({
     return () => {
       cancelled = true;
     };
-  }, [open, lanes]);
+  }, [open, lanes, pinKey]);
 
   const selectedNormalLane = React.useMemo(
     () => lanes.find((lane) => lane.id === normalLaneId) ?? null,
@@ -540,6 +549,8 @@ export function CreatePrModal({
       const body = linearIssue
         ? ensureLinearPrReference(normalBody, linearIssue, normalCloseLinearIssueOnMerge, { preserveExisting: false })
         : normalBody;
+      const createPin = pinRef.current;
+      if (!createPin) throw new Error("No computer that has this project is online.");
       const pr = await runWithDirtyWorktreeConfirmation({
         confirmMessage: "Continue and create the PR anyway?",
         run: async (allowDirtyWorktree) => await window.ade.prs.createFromLane({
@@ -550,7 +561,7 @@ export function CreatePrModal({
           ...(linearIssue ? { closeLinearIssueOnMerge: normalCloseLinearIssueOnMerge } : {}),
           ...(normalBaseBranch.trim() ? { baseBranch: normalBaseBranch.trim() } : {}),
           ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {})
-        })
+        }, createPin)
       });
       setResults([pr]);
       await onCreated?.([pr]);

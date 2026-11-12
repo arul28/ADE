@@ -51,6 +51,7 @@ import {
 import { WORK_TOOL_COMPONENTS, type WorkToolPanelProps } from "./workToolPanels";
 import { CloudToolGate, type WorkToolOpen } from "./cloudToolGate";
 import { useSideChatView } from "../chat/sideChatState";
+import { withChatPin } from "../chat/chatMachinePin";
 
 /** Escape returns to the picker, but only from inside the pane — see `work.tools.picker`. */
 const TOOLS_PICKER_BINDING_ID = "work.tools.picker";
@@ -374,9 +375,7 @@ export function WorkSidebar({
     if (!session || resumingSession) return;
     setResumingSession(true);
     const args = { sessionId: session.id, cols: 100, rows: 30 };
-    const request = runtimePin
-      ? window.ade.pty.resumeSession(args, runtimePin)
-      : window.ade.pty.resumeSession(args);
+    const request = withChatPin(runtimePin, (chatPin) => window.ade.pty.resumeSession(args, chatPin));
     void request
       .catch((error: unknown) => {
         showToast({

@@ -10,6 +10,12 @@ import type {
   RemoteMcpScope,
 } from "../../../../desktop/src/shared/types/remoteMcp";
 import { readProjectFolderStates, type ProjectFolderState } from "../projects/projectFolderPresence";
+import {
+  parseAccountProjectSelector,
+  recordMatchesAccountProject,
+  resolveAccountProject,
+} from "../projects/accountProjectSelector";
+import type { AccountProjectView } from "../../../../desktop/src/shared/accountProject";
 import { listAgentSkills, readAgentSkill } from "../skills/agentSkillCatalogService";
 import { adeWithheldAgentSkills } from "../../../../desktop/src/shared/agentSkillRoots";
 import { remoteMcpAdeVersion } from "./remoteMcpAccount";
@@ -58,7 +64,15 @@ import { redactOutgoingChatText } from "../../../../desktop/src/main/utils/redac
  * one message for a connection that already passed them.
  */
 
-export type RemoteMcpProject = { projectId: string; rootPath: string; displayName: string; lastOpenedAt: number };
+export type RemoteMcpProject = {
+  projectId: string;
+  rootPath: string;
+  displayName: string;
+  lastOpenedAt: number;
+  /** The account project this folder is a copy of, when known. */
+  accountProjectId?: string | null;
+  gitOriginUrl?: string | null;
+};
 
 export type JsonRpcMessage = { jsonrpc?: unknown; id?: unknown; method?: unknown; params?: unknown };
 
@@ -125,6 +139,8 @@ function onlyMachineRefusal(only: NonNullable<RemoteMcpConnectionSummary["onlyMa
 export function createRemoteMcpProtocol(deps: {
   machineName: () => string;
   listProjects: () => RemoteMcpProject[];
+  /** The account's projects as this computer last read them, or null when signed out or never read. */
+  accountProjects?: () => Readonly<Record<string, AccountProjectView>> | null;
   record: (entry: Omit<RemoteMcpActivityEntry, "at">) => void;
   /** The provider and model this computer last launched a chat with, for chat_start. */
   launchDefaults?: () => { provider: string; model: string; reasoningEffort?: string | null } | null;
@@ -238,6 +254,25 @@ export function createRemoteMcpProtocol(deps: {
       };
     }
     if (named.length > 0) return refusal(named.find((project) => stateOf.get(project) === "driveMissing") ?? named[0]!);
+    // An account project id (`ap_…`) or a GitHub `owner/name` (L30).
+    const selector = parseAccountProjectSelector(wanted);
+    if (selector) {
+      const resolvedAccount = resolveAccountProject(selector, deps.accountProjects?.() ?? {});
+      if (resolvedAccount.kind === "removed") {
+        return { error: `${resolvedAccount.name} was removed from the ADE account. Add it again from ADE to use it.` };
+      }
+      if (resolvedAccount.kind === "found") {
+        const copies = usable.filter((project) => recordMatchesAccountProject(project, resolvedAccount));
+        if (copies.length > 0) return found(copies[0]!);
+        return {
+          error: `${resolvedAccount.name} has no copy on ${deps.machineName()}. `
+            + "Run on a computer that has one, or add one here with projects_clone.",
+        };
+      }
+      if (selector.kind === "id") {
+        return { error: `The ADE account has no project ${wanted}, or ${deps.machineName()} has not read the account's projects yet.` };
+      }
+    }
     const known = usable.map((project) => project.displayName).join(", ") || "none";
     return { error: `No project "${wanted}" on this computer. Projects: ${known}. A new repository can be added with projects_clone.` };
   };
@@ -245,6 +280,8 @@ export function createRemoteMcpProtocol(deps: {
   // ── MCP ───────────────────────────────────────────────────────────────────
 
   // The default rule is stated once, in the instructions.
+  // An account id (`ap_…`) is an id and `owner/name` is a name: the old text
+  // covers both, and every tool repeats it (remoteMcpContextBudget.json).
   const PROJECT_INPUT = { type: "string", description: "Project id, name or path." };
 
   const toolDefinition = (scope: RemoteMcpScope) => ({
@@ -323,7 +360,13 @@ export function createRemoteMcpProtocol(deps: {
   ].join(" ");
 
   const projectSummary = (resolved: ResolvedProject) => resolved.project
-    ? { id: resolved.project.projectId, name: resolved.project.displayName, path: resolved.project.rootPath }
+    ? {
+      id: resolved.project.projectId,
+      name: resolved.project.displayName,
+      path: resolved.project.rootPath,
+      // The id the account knows this repository by, the same on every computer.
+      ...(resolved.project.accountProjectId ? { accountProjectId: resolved.project.accountProjectId } : {}),
+    }
     : null;
 
   /** The first line of every result: which repo the command touched. */

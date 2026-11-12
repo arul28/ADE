@@ -5,6 +5,7 @@ import { ModernSection } from "./primitives";
 import "./machineSettings.css";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { Banner } from "../ui/notice";
+import { requirePin } from "../../state/repositoryScope";
 
 function basename(filePath: string): string {
   const parts = filePath.split(/[/\\]/);
@@ -70,8 +71,8 @@ function IssueCard({ issue }: { issue: AdeHealthIssue }) {
 }
 
 export function ProjectSection() {
-  // This machine's checkout of the repo, read on the machine the Settings page
-  // is showing. A null pin is the tab's binding.
+  // The copy of the repo the Settings page shows (Settings › Project always
+  // hands one).
   const { pin } = useSettingsMachineScope();
   const [snapshot, setSnapshot] = useState<AdeProjectSnapshot | null>(null);
   const [busy, setBusy] = useState<"repair" | "integrity" | null>(null);
@@ -82,23 +83,22 @@ export function ProjectSection() {
   const [configOpen, setConfigOpen] = useState(false);
 
   const refresh = useCallback(async () => {
-    const next = await window.ade.project.getSnapshot(pin);
+    const next = await window.ade.project.getSnapshot(requirePin(pin));
     setSnapshot(next);
     return next;
   }, [pin]);
 
   useEffect(() => {
+    if (!pin) return undefined;
     void refresh().catch((err) => {
       setError(err instanceof Error ? err.message : String(err));
     });
-    // The change feed describes the tab's own project. Another machine has no
-    // feed here, so its card refreshes after each action instead.
-    if (pin) return undefined;
+    // The change feed of the copy this card shows, on its own machine.
     const unsubscribe = window.ade.project.onStateEvent((event) => {
       setSnapshot(event.snapshot);
       setNotice("Project config reloaded.");
       setError(null);
-    });
+    }, pin);
     return unsubscribe;
   }, [pin, refresh]);
 
@@ -169,7 +169,7 @@ export function ProjectSection() {
             className="ade-modern-btn"
             data-variant="ghost"
             disabled={busy != null}
-            onClick={() => void runAction("integrity", () => window.ade.project.runIntegrityCheck(pin))}
+            onClick={() => void runAction("integrity", async () => window.ade.project.runIntegrityCheck(requirePin(pin)))}
           >
             {busy === "integrity" ? "Repairing..." : "Repair session logs"}
           </button>
@@ -178,7 +178,7 @@ export function ProjectSection() {
             className="ade-modern-btn"
             data-tone={actionableIssues > 0 ? "primary" : undefined}
             disabled={busy != null}
-            onClick={() => void runAction("repair", () => window.ade.project.initializeOrRepair(pin))}
+            onClick={() => void runAction("repair", async () => window.ade.project.initializeOrRepair(requirePin(pin)))}
           >
             {busy === "repair" ? "Repairing..." : "Fix .ade folder"}
           </button>

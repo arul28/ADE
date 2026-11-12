@@ -21,6 +21,9 @@ function installAdeStub() {
   } as any;
 }
 
+/** The chat's machine: the login shell starts there. */
+const CHAT_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 describe("ClaudeLoginPromptButton", () => {
   beforeEach(() => {
     installAdeStub();
@@ -46,6 +49,7 @@ describe("ClaudeLoginPromptButton", () => {
         storageKey="chat:chat-1"
         laneId="lane-1"
         chatSessionId="chat-1"
+        runtimePin={CHAT_PIN}
         onRevealTerminal={onRevealTerminal}
       />,
     );
@@ -62,7 +66,7 @@ describe("ClaudeLoginPromptButton", () => {
         tracked: true,
         toolType: "shell",
         startupCommand: "claude auth login",
-      }, null);
+      }, CHAT_PIN);
     });
     expect(onRevealTerminal).toHaveBeenCalledWith({
       laneId: "lane-1",

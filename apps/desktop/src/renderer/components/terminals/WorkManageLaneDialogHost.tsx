@@ -26,6 +26,7 @@ import {
 import { extractError } from "../../lib/format";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
 import { useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
+import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 
 /**
  * How long a deleted lane on another machine keeps its deleting state while that
@@ -137,11 +138,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
   const handleArchive = useCallback(async (): Promise<boolean> => {
     if (!lane || lane.laneType === "primary") return false;
     return await runLaneAction(async () => {
-      if (runtimePin) {
-        await window.ade.lanes.archive({ laneId: lane.id }, runtimePin);
-      } else {
-        await window.ade.lanes.archive({ laneId: lane.id });
-      }
+      await window.ade.lanes.archive({ laneId: lane.id }, requireChatPin(runtimePin));
     }, "Archiving lane…");
   }, [lane, runLaneAction, runtimePin]);
 
@@ -188,9 +185,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
         return next;
       });
     };
-    const deletion = runtimePin
-      ? window.ade.lanes.delete(args, runtimePin)
-      : window.ade.lanes.delete(args);
+    const deletion = withChatPin(runtimePin, (chatPin) => window.ade.lanes.delete(args, chatPin));
     void deletion.then(
       () => {
         // A local delete ends on `lanes.delete.event`, which useWorkLaneDeleteProgress

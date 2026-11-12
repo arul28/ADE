@@ -67,8 +67,12 @@ export type BuiltInBrowserPreviewStreamDeps = {
   emit: (frame: BuiltInBrowserPreviewFrame) => void;
   /** False once the tab's webContents is gone — the loop stops for good. */
   isTabAlive: (tabId: string) => boolean;
-  /** False while the hosting window is hidden or minimised — captures pause. */
-  isVisible: () => boolean;
+  /**
+   * False while nobody can see this tab's frames — captures pause. Per tab:
+   * a tab watched from another machine streams while this window is hidden,
+   * and that must not keep every other tab's stream capturing too.
+   */
+  isVisible: (tabId: string) => boolean;
   onError?: (tabId: string, error: unknown) => void;
   now?: () => number;
   setLoopTimer?: (fn: () => void, ms: number) => TimerHandle;
@@ -193,7 +197,7 @@ export function createBuiltInBrowserPreviewStreams(
       stopTab(state.tabId);
       return;
     }
-    if (!deps.isVisible()) return;
+    if (!deps.isVisible(state.tabId)) return;
     // The skip rule. `capturing` is cleared in the promise's tail, so a capture
     // that takes longer than the interval simply thins the frame rate out. One
     // that never answers is given up on, and its late answer is dropped.

@@ -108,6 +108,9 @@ describe("attachmentPlanRejection", () => {
 });
 
 describe("readAttachmentStagingMode", () => {
+  /** The chat's machine: the staging mode is its answer. */
+  const CHAT_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
   afterEach(() => {
     delete (globalThis as { window?: unknown }).window;
   });
@@ -118,14 +121,15 @@ describe("readAttachmentStagingMode", () => {
     };
   }
 
-  it("returns the machine's answer", async () => {
+  it("returns the machine's answer, and the safe default when no machine has the chat", async () => {
     stubWindow(vi.fn(async () => UPLOAD_MODE));
-    await expect(readAttachmentStagingMode(null)).resolves.toEqual(UPLOAD_MODE);
+    await expect(readAttachmentStagingMode(CHAT_PIN)).resolves.toEqual(UPLOAD_MODE);
+    await expect(readAttachmentStagingMode(null)).resolves.toEqual(CONSERVATIVE_ATTACHMENT_STAGING_MODE);
   });
 
   it("degrades to the legacy contract when the bridge lacks the method", async () => {
     stubWindow(undefined);
-    await expect(readAttachmentStagingMode(null))
+    await expect(readAttachmentStagingMode(CHAT_PIN))
       .resolves.toEqual(CONSERVATIVE_ATTACHMENT_STAGING_MODE);
   });
 
@@ -133,13 +137,13 @@ describe("readAttachmentStagingMode", () => {
     stubWindow(vi.fn(async () => {
       throw new Error("machine is not connected");
     }));
-    await expect(readAttachmentStagingMode(null))
+    await expect(readAttachmentStagingMode(CHAT_PIN))
       .resolves.toEqual(CONSERVATIVE_ATTACHMENT_STAGING_MODE);
   });
 
   it("degrades to the legacy contract on a malformed answer", async () => {
     stubWindow(vi.fn(async () => ({ mode: "upload" })));
-    await expect(readAttachmentStagingMode(null))
+    await expect(readAttachmentStagingMode(CHAT_PIN))
       .resolves.toEqual(CONSERVATIVE_ATTACHMENT_STAGING_MODE);
   });
 });

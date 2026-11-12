@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { CircleNotch, Copy, GitBranch, Hash, LinkSimple, MarkdownLogo, TreeStructure } from "@phosphor-icons/react";
-import type { LaneSummary, LinearIssueRef, NormalizedLinearIssue } from "../../../shared/types";
+import type { LaneSummary, LinearIssueRef, NormalizedLinearIssue, OpenProjectBinding } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import { linearIssueRef, issueRefLabel } from "../../../shared/issueRefs";
@@ -17,6 +17,7 @@ import { Banner } from "../ui/notice";
 import {
   copyIssueText,
   IssueActionDock,
+  IssueNoMachineNotice,
   IssueStaleBanner,
   IssueViewerFrame,
   IssueViewerHeader,
@@ -43,14 +44,14 @@ export function LinearIssueViewer({
 
   const handleEdit = useCallback((edit: Parameters<typeof editLinearIssue>[2]) => {
     if (!issue || !catalog) return;
-    void editLinearIssue(entry.projectRoot, issue, edit, catalog).catch((error: unknown) => {
+    void editLinearIssue(entry.projectRoot, issue, edit, catalog, entry.pin).catch((error: unknown) => {
       showToast({
         tone: "error",
         title: `Couldn't update ${issue.identifier}`,
         message: error instanceof Error ? error.message : "Linear rejected the change.",
       });
     });
-  }, [catalog, entry.projectRoot, issue]);
+  }, [catalog, entry.pin, entry.projectRoot, issue]);
 
   const canComment = typeof window !== "undefined" && typeof window.ade?.cto?.createLinearIssueComment === "function";
 
@@ -95,7 +96,9 @@ export function LinearIssueViewer({
   );
 
   let body: React.ReactNode;
-  if (!issue) {
+  if (!issue && !entry.pin) {
+    body = <IssueNoMachineNotice url={url} openLabel="Open in Linear" onLeave={onClose} />;
+  } else if (!issue) {
     body = (
       <IssueLoadState
         status={entry.status}
@@ -103,6 +106,7 @@ export function LinearIssueViewer({
         label={issueRefLabel(issueRef)}
         url={url}
         projectRoot={entry.projectRoot}
+        pin={entry.pin}
         onRetry={entry.refresh}
         onLeave={onClose}
       />
@@ -120,10 +124,11 @@ export function LinearIssueViewer({
           branchName={resolveLinearIssueBranchName(issue)}
           activityDefaultOpen
           sideExtra={<LinkedInAde issue={issue} />}
-          onSaveTitle={catalog ? (title) => editLinearIssue(entry.projectRoot, issue, { title }, catalog) : undefined}
-          onSaveDescription={catalog ? (description) => editLinearIssue(entry.projectRoot, issue, { description }, catalog) : undefined}
-          onComment={canComment ? async (body) => {
-            await window.ade.cto?.createLinearIssueComment({ issueId: issue.id, body });
+          onSaveTitle={catalog ? (title) => editLinearIssue(entry.projectRoot, issue, { title }, catalog, entry.pin) : undefined}
+          onSaveDescription={catalog ? (description) => editLinearIssue(entry.projectRoot, issue, { description }, catalog, entry.pin) : undefined}
+          onComment={canComment && entry.pin ? async (body) => {
+            if (!entry.pin) throw new Error("No computer that has this project is online.");
+            await window.ade.cto?.createLinearIssueComment({ issueId: issue.id, body }, entry.pin);
           } : undefined}
         />
       </>
@@ -165,6 +170,7 @@ function IssueLoadState({
   label,
   url,
   projectRoot,
+  pin,
   onRetry,
   onLeave,
 }: {
@@ -173,6 +179,8 @@ function IssueLoadState({
   label: string;
   url: string | null;
   projectRoot: string | null;
+  /** The machine that asks Linear. Null: none is online. */
+  pin: OpenProjectBinding | null;
   onRetry: () => void;
   /** Called before an action takes the user to another page (closes the sheet). */
   onLeave?: () => void;
@@ -180,6 +188,7 @@ function IssueLoadState({
   const setShowWelcome = useAppStore((state) => state.setShowWelcome);
   const failed = status === "missing" || status === "error";
   const [reachability, setReachability] = useState<LinearReachability>("unknown");
+  const pinKey = pin?.key ?? null;
   useEffect(() => {
     if (!failed) return undefined;
     if (!projectRoot) {
@@ -188,8 +197,8 @@ function IssueLoadState({
     }
     let cancelled = false;
     const read = window.ade?.cto?.getLinearConnectionStatus;
-    if (!read) return undefined;
-    void read()
+    if (!read || !pin) return undefined;
+    void read(pin)
       .then((connection) => {
         if (!cancelled) setReachability(connection.connected ? "connected" : "disconnected");
       })
@@ -197,7 +206,9 @@ function IssueLoadState({
     return () => {
       cancelled = true;
     };
-  }, [failed, projectRoot]);
+    // `pinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [failed, pinKey, projectRoot]);
 
   if (!failed) {
     return (

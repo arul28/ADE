@@ -2495,6 +2495,9 @@ describe("product analytics producers", () => {
   });
 
   it.each([
+    ["browser", "tab_kept", "completed"],
+    ["browser", "remote_tab_watched", "completed"],
+    ["browser", "remote_tab_controlled", "completed"],
     ["lanes", "template_setup_started", "from_banner"],
     ["lanes", "template_setup_started", "from_settings"],
     ["lanes", "template_suggestion_hidden", "completed"],

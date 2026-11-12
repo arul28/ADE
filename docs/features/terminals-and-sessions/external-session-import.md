@@ -5,11 +5,12 @@ tools keep their own sessions on disk, or expose a provider-native session
 list. ADE's external-session import feature lets the user browse those sessions
 from the Work surface and continue one inside ADE.
 
-ADE imports sessions from 11 providers:
+ADE imports sessions from 12 providers:
 
 - Claude Code, Codex, Cursor `cursor-agent`, Factory Droid, OpenCode, Pi, and
   Muse Code.
-- The CLI stores of Qwen Code, Kimi Code, Grok, and GitHub Copilot CLI.
+- The CLI stores of Qwen Code, Kimi Code, Grok, GitHub Copilot CLI, and
+  Antigravity's `agy`.
   Copilot's chat runtime is an SDK provider; its CLI history is imported the
   same way ([Copilot SDK provider](../chat/copilot-sdk-provider.md)).
 
@@ -51,7 +52,7 @@ ADE first learns it.
 | `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `<factoryConfigHome>/sessions/<escaped-cwd>/` (default `~/.factory`), one record per session id, using the `session_start` row for id/cwd/title. |
 | `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts`, `openCodeStore.ts` | Discovers OpenCode sessions by reading the user's own OpenCode SQLite store directly, read-only (v1 `session`/`message`/`part` or v2 `session_v2`/`session_message`), and drops ADE's own background-task titles. Never shells out to the CLI and never starts a 2.0 server on that store. |
 | `apps/desktop/src/main/services/externalSessions/discoverPi.ts` | Discovers Pi's native JSONL sessions in the one Pi session store that ADE chat and tracked Pi terminals also use. |
-| `apps/desktop/src/main/services/externalSessions/discoverQwen.ts`, `discoverKimi.ts`, `discoverGrok.ts`, `discoverCopilot.ts` | The ACP-provider discoverers. Each reads its CLI's own on-disk store, drops ADE-launched and subagent sessions, and drops sessions with no prompt. See [ACP providers](#acp-providers-qwen-kimi-grok-copilot). |
+| `apps/desktop/src/main/services/externalSessions/discoverQwen.ts`, `discoverKimi.ts`, `discoverGrok.ts`, `discoverCopilot.ts`, `discoverAntigravity.ts` | The ACP-provider discoverers. Each reads its CLI's own on-disk store, drops ADE-launched and subagent sessions, and drops sessions with no prompt. See [ACP providers](#acp-providers-qwen-kimi-grok-copilot). |
 | `apps/desktop/src/main/services/externalSessions/discoverAcpShared.ts` | Shared plumbing for the four ACP discoverers. Each discoverer maps its records to one neutral `{ type, timestamp, message: { role, content } }` form, and the shared helpers compute the preview, the sampled `messages`, and the prompt count from that form. Also: bounded head + tail reads, the `## ADE` guidance test, `~` expansion for env overrides, and a newest-first read loop that stops when enough sessions survive. |
 | `apps/desktop/src/main/services/externalSessions/events/` | The per-provider converters from a provider store to ADE chat events (`AgentChatEventEnvelope[]`), plus byte-window paging. `loadExternalSessionEvents` (`index.ts`) serves both the preview (`purpose: "preview"`) and the chat import (`purpose: "import"`). `jsonlSourceFor` names the conversation file a converter reads; `records.ts` is the exact-id record lookup (it returns null for an ill-formed id). A store-only Cursor chat pages through `loadCursorStorePage` (`cursor.ts`). See [Conversation events](#conversation-events). |
 | `apps/desktop/src/main/services/externalSessions/externalSessionDetail.ts` | `loadExternalSessionDetail`: one session's detail for a preview. Returns the text tail in `messages` and a page of `events` with `hasOlder`/`olderCursor`. Also owns the local file watch (`startExternalSessionDetailWatch`), which pushes a fresh newest page when the source file changes and loads through the `loadDetail` callback it is given (the service's `getDetail`). Callers go through `externalSessionsService.getDetail`, not this function directly. |
@@ -403,6 +404,7 @@ The policy has four actions per provider. Each action has a lane rule:
 | Kimi | `none` | `any` | `home` | `none` |
 | Grok | `none` | `any` | `home` | `home` |
 | Copilot | `root` | `any` | `home` | `none` |
+| Antigravity | `none` | `any` | `home` | `none` |
 
 What each cell does:
 
@@ -511,8 +513,8 @@ Resume commands come from `buildTrackedCliResumeCommand` in
 `apps/desktop/src/shared/cliLaunch.ts`. Codex resumes in the lane folder. Every
 other provider resumes in the session's own folder, because its session is
 keyed to that folder. The resume selector per ACP provider is:
-`qwen --resume <id>`, `kimi -S <id>`, `grok -r <id>`, and
-`copilot --resume=<id>`.
+`qwen --resume <id>`, `kimi -S <id>`, `grok -r <id>`,
+`copilot --resume=<id>`, and `agy --conversation <id>`.
 
 When an import does not explicitly override model or permission mode, the
 resume command preserves provider state. ADE does not inject Claude plan mode,
@@ -537,7 +539,7 @@ Fork commands mostly reuse the same builder and provider-specific flags:
 - Grok fork appends `--fork-session` to `grok -r <id>`. The resume launch
   carries Grok's supervision environment, so the copy command puts those
   `NAME=value` pairs in front of the line.
-- Cursor, Kimi, and Copilot have no tracked-CLI fork (`cliCopy` is `none`). The
+- Cursor, Kimi, Copilot, and Antigravity have no tracked-CLI fork (`cliCopy` is `none`). The
   service refuses a fork import for them.
 
 OpenCode, Pi, Qwen, and Grok copies run in the source folder, because these
@@ -705,6 +707,7 @@ Converters and their fidelity:
 | Qwen | `chats/<id>.jsonl` | Text, `thought` parts as reasoning, `functionCall` / `functionResponse`. User rows that Qwen injected (a `provenance` other than `real_user`) are dropped, the same test discovery uses (`isQwenPromptRecord`). Verified only for text turns; tool shapes follow the Gemini CLI format. |
 | Grok | `chat_history.jsonl` | Text, `tool_calls`, tool results, and reasoning summaries. Injected (`synthetic_reason`) user rows are dropped. Rows have no timestamps. |
 | Copilot | `events.jsonl` | Text, `reasoningText`, tool requests, and tool results (failed status kept). Subagent rows (`parentToolCallId`) are dropped; the parent call stands for the run. Autopilot "keep going" user rows are dropped, the same test discovery uses (`isCopilotPrompt`). |
+| Antigravity | `conversations/<id>.db` (SQLite), read-only through `antigravitySessionLog.ts` (`loadAntigravityStorePage`) | User messages, reply text, thinking, tool calls, and their results (agy's "Created At / Completed At" header dropped), each at its step's own time (a user message takes the time of the reply after it). The cursor's `end` is a step index; a page reads back 200 steps at a time until it holds the page's events or bytes. A subagent's report to the conversation shows as text. |
 | Kimi | `agents/main/wire.jsonl` (legacy `context.jsonl`) | Unverified. Accepts persisted `context.append_message` and `turn_begin` rows, the streamed wire protocol (`TurnBegin`, `ContentPart`, `ToolCall`, `ToolResult`), and OpenAI-style role rows (with think/reasoning parts and failed tool results). When `context.append_message` user rows exist, `turn_begin`/`TurnBegin` input is not shown again, and user rows whose origin is not the person (`isKimiUserOrigin`) are dropped. |
 
 **Turn boundaries.** ADE's transcript does not show finished tool calls as rows
@@ -1062,7 +1065,7 @@ Pi sessions live in the one native Pi session store that ADE chat and tracked
 Pi terminals also use. CLI continue and CLI copy (`pi --fork <id>`) run in the
 session's own folder. A chat continue seeds `piSessionId`.
 
-### CLI stores (Qwen, Kimi, Grok, Copilot)
+### CLI stores (Qwen, Kimi, Grok, Copilot, Antigravity)
 
 Each of these CLIs keeps sessions in its own store, and each discoverer reads
 that store directly. Copilot's chat runtime is the SDK, but its CLI store is read
@@ -1083,6 +1086,7 @@ folders in about 0.1 s.
 | Kimi (0.39.1, unverified) | `KIMI_CODE_HOME` (default `~/.kimi-code`): `sessions/wd_<slug>_<hash12>/<id>/` with `state.json` and `agents/main/wire.jsonl` (legacy `context.jsonl`), plus `workspaces.json` and `session_index.jsonl`. | Archived sessions, deleted sessions (index tombstones), and child sessions (`custom.child_session_kind: "child"` or `parent_session_id`). No file marker tells ADE's chats apart, so a first prompt that opens with `## ADE` is the test. |
 | Grok (verified 1.0.40) | `$GROK_HOME/sessions/<percent-encoded cwd>/<id>/` (default `~/.grok`) with `summary.json` and `chat_history.jsonl`. The folder name is the cwd, so it is reversible. | `session_kind: "subagent"`, and any session with `updates.jsonl` (only an ACP client, that is ADE, writes it). The opening `<user_info>` workspace-context row is not a prompt. |
 | Copilot (verified CLI 1.0.88, SDK runtime 1.0.98) | `$COPILOT_HOME/session-state/<uuid>/` (default `~/.copilot`, `%USERPROFILE%\.copilot` on Windows) with `workspace.yaml` and `events.jsonl`. | `client_name` that starts with `ade` (`ade`, `ade-probe`, `ade-telemetry-probe`, …). ADE's SDK chats create their session with `clientName: "ade"`; a resume keeps the name the session was created with, so a CLI session continued in ADE keeps its own. SDK chats from before that recorded the SDK default `client_name: sdk`; those are left out when their first `system.message` carries ADE's coding-agent prompt ("You are ADE's software engineering agent working in"). Sub-agents run inside the parent session, so there are no child folders. Autopilot turns (`source: "autopilot"`) are not prompts. |
+| Antigravity (verified agy 1.5.6, Windows) | `~/.gemini/antigravity-cli/conversations/<id>.db`, one SQLite file per conversation from the TUI or ACP, with a WAL beside it while agy runs it (its time and size count). The cwd is the workspace in `trajectory_metadata_blob`; a conversation with none lists only in an unscoped import. | Subagent conversations (the first step is a message from the parent), and conversations whose ACP system prompt (`acp_system_prompt` in the metadata) opens with `## ADE`, which is every ADE chat. See [Antigravity provider](../chat/antigravity-provider.md#session-log). |
 
 Kimi is unverified: no Kimi session existed on the machine where the code was
 written. The discoverer, the converter, and the PTY watcher follow the shipped

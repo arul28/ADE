@@ -208,14 +208,16 @@ export function CommitHistoryView({
   /* ── Loading ── */
 
   const readPage = useCallback(
-    (skip: number, limit: number) =>
-      window.ade.git.listRecentCommits({ laneId: laneId!, limit, skip, scope }, pin),
+    (skip: number, limit: number) => {
+      if (!pin) return Promise.resolve([] as GitCommitSummary[]);
+      return window.ade.git.listRecentCommits({ laneId: laneId!, limit, skip, scope }, pin);
+    },
     [laneId, pin, scope],
   );
 
   /** (Re)read from the top, keeping as many commits as were loaded. */
   const reload = useCallback(async (opts: { keepAnchor: boolean }) => {
-    if (!laneId) return;
+    if (!laneId || !pin) return;
     const seq = ++loadSeq.current;
     const target = Math.max(PAGE_SIZE, commitsRef.current.length);
     setLoading(true);
@@ -309,7 +311,7 @@ export function CommitHistoryView({
   }, [active, laneId, scope, refreshToken]);
 
   useEffect(() => {
-    if (!laneId) return;
+    if (!laneId || !pin) return;
     let cancelled = false;
     void window.ade.git.getOriginRemote({ laneId }, pin)
       .then((remote) => {
@@ -733,11 +735,12 @@ export function CommitHistoryView({
   }, [notify, reload]);
   const onRowError = useCallback((message: string) => notify(message, true), [notify]);
   const rowMenu: RowMenuContext = useMemo(() => ({
+    pin,
     remoteMachineName,
     onNotice: onRowNotice,
     onError: onRowError,
     navigate: (path: string) => navigate(path),
-  }), [navigate, onRowError, onRowNotice, remoteMachineName]);
+  }), [navigate, onRowError, onRowNotice, pin, remoteMachineName]);
 
   /* ── Render ── */
 

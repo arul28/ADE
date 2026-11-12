@@ -26,6 +26,7 @@ import { useChatMachineSessions, useCliParentChildRows } from "../chat/chatSubag
 import type { ChatSubagentSnapshot } from "../chat/chatExecutionSummary";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { cn } from "../ui/cn";
+import { NO_CHAT_MACHINE_MESSAGE, requireChatPin } from "../chat/chatMachinePin";
 import { Banner } from "../ui/notice/Banner";
 
 /**
@@ -207,7 +208,7 @@ function CliActionsStateProvider({
         itemId,
         decision,
         ...(answers ? { answers } : {}),
-      }, pinRef.current);
+      }, requireChatPin(pinRef.current));
       setCards((current) => current.filter((card) => cardId(card) !== itemId));
     } catch (answerError) {
       setProblem({
@@ -231,7 +232,9 @@ function CliActionsStateProvider({
   const stopChild = useCallback((childSessionId: string) => {
     const child = machineSessions?.find((entry) => entry.id === childSessionId);
     const pin = pinRef.current;
-    const stop = child && isChatToolType(child.toolType)
+    const stop = !pin
+      ? Promise.reject(new Error(NO_CHAT_MACHINE_MESSAGE))
+      : child && isChatToolType(child.toolType)
       ? window.ade.agentChat.interrupt({ sessionId: childSessionId }, pin)
       : child?.ptyId
         ? window.ade.pty.dispose({ ptyId: child.ptyId, sessionId: childSessionId }, pin)
@@ -254,7 +257,10 @@ function CliActionsStateProvider({
   const proofReadSeq = useRef(0);
   const readProof = useCallback(() => {
     const seq = ++proofReadSeq.current;
-    void window.ade.computerUse.getOwnerSnapshot({ owner: { kind: "chat_session", id: sessionId } }, pinRef.current)
+    const pin = pinRef.current;
+    // No machine known: there is nothing to read the proof from.
+    if (!pin) return;
+    void window.ade.computerUse.getOwnerSnapshot({ owner: { kind: "chat_session", id: sessionId } }, pin)
       .then((snapshot) => {
         if (seq !== proofReadSeq.current) return;
         setProof(snapshot ?? null);
@@ -275,10 +281,12 @@ function CliActionsStateProvider({
   useEffect(() => {
     setProof(null);
     readProof();
+    const feedPin = pinRef.current;
+    if (!feedPin) return undefined;
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
       const ours = event.owner?.kind === "chat_session" && event.owner.id === sessionId;
       if (ours || (event.type === "artifact-deleted" && event.owner == null)) readProof();
-    }, pinRef.current);
+    }, feedPin);
     return unsubscribe;
   }, [readProof, sessionId, pinKey]);
   const proofCount = proof?.artifacts?.length ?? 0;

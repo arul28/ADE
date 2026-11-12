@@ -9,6 +9,7 @@ import { playableMediaDataUrl } from "../../lib/playableMedia";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { chatMachineMediaSentence, chatMachineReach, useChatMachineWake, type ChatMachineReach } from "./useChatMachineWake";
+import { withChatPin } from "./chatMachinePin";
 
 export function isImageArtifact(artifact: ComputerUseArtifactView): boolean {
   return artifact.kind === "screenshot" || (artifact.mimeType?.startsWith("image/") ?? false);
@@ -230,7 +231,7 @@ export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
     let cancelled = false;
     const readDataUrl = () => {
       setState((s) => ({ ...s, loading: true }));
-      void window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, scope.pin)
+      void withChatPin(scope.pin, (pin) => window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, pin))
         .then((dataUrl) => {
           if (cancelled) return;
           setState((s) => ({

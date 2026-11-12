@@ -439,7 +439,13 @@ import {
 } from "./services/projects/projectRoots";
 import { gitOwnershipMessage, parseGitOwnershipError } from "./services/projects/gitOwnership";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
-import { createAccountProjectSync, type AccountProjectSync } from "./services/projects/accountProjectSync";
+import { createAccountProjectSync, readAccountProjectState, type AccountProjectSync } from "./services/projects/accountProjectSync";
+import { provideAccountProjectMainHandler } from "./services/projects/accountProjectMain";
+import {
+  parseAccountProjectSelector,
+  recordMatchesAccountProject,
+  resolveAccountProject,
+} from "./services/projects/accountProjectSelector";
 import { createGithubRepoLookup, type GithubApiRequest } from "./services/projects/githubRepoLookup";
 import { createSavedGithubHeaderSweep } from "./services/github/savedGithubHeaderCleanup";
 import { readProjectFolderStates } from "./services/projects/projectFolderPresence";
@@ -712,6 +718,7 @@ import {
 } from "./services/runtime/brainLoopWatchdog";
 import { recordHostStall } from "./services/runtime/hostStallRecord";
 import { installSyncFsCallTracker, isStallCapablePath } from "./services/runtime/syncFsCallTracker";
+import { expectedErrorKind } from "../../desktop/src/shared/expectedError";
 import { StorageNotAnsweringError } from "../../desktop/src/main/services/state/unansweringRoots";
 import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import {
@@ -784,8 +791,14 @@ export type GlobalOptions = {
   machine?: string | null;
   /** `--all-machines`: run a list command on every machine and merge the rows. */
   allMachines?: boolean;
-  /** The project on the other machine, by id, display name, or root path. */
+  /** The project on the other machine, by id, display name, root path, account project id or GitHub `owner/name`. */
   machineProject?: string | null;
+  /**
+   * `--project-root ap_<id>` or `--project-root owner/name` (no such folder):
+   * the account project. Resolved after machine targeting: to this
+   * computer's copy, or to the project on the `--machine` machine.
+   */
+  projectSelector?: string | null;
   /** `--clone`: set the repository up on that machine when it is missing. */
   machineClone?: boolean;
   /** `--size` with `--machine cloud`: the new ADE Cloud computer's size (the person's saved size for new lanes when unset). */
@@ -886,6 +899,7 @@ export type FormatterId =
   | "account-machine-remove"
   | "account-machine-reconnect"
   | "projects-list"
+  | "account-projects"
   | "linear-quick-view"
   | "lanes"
   | "lane-detail"
@@ -2427,6 +2441,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Manage the machine-scoped ADE project registry used by the ADE runtime.
 
     $ ade projects list --text                      Projects whose folder is gone are hidden; --include-missing lists them
+    $ ade projects list --account --text            Your ADE account's projects, with each copy and its computer
+                                                    Any command takes --project-root <ap_id|owner/name> for this computer's copy,
+                                                    or --machine <name> --machine-project <ap_id|owner/name> for another computer's
     $ ade projects add /path/to/project
     $ ade projects clone owner/repo [--path <folder>] [--name <dir>]
                                                     Clone a GitHub repository with this computer's GitHub sign-in and open it as a project
@@ -2458,7 +2475,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --type <subagent|peer>  From an agent the new session is a subagent that
                            reports back (the default). peer: no report.
     --provider <name>      Chat: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
-                           CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin; CLI mode also accepts shell.
+                           CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity; CLI mode also accepts shell.
     --model <id>           Runtime model id.
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
@@ -4187,9 +4204,12 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   prefer this chat's tabs and free ones, close a held tab only when the task
   needs it, and never close a tab the user opened or kept without asking them.
   "close" prints whose tab it closed. When the browser is full, the error lists
-  only your tabs and free agent tabs; ask the user about the rest. A deleted or
-  archived lane frees its tabs (they stay open). An agent's tab is not brought
-  back after ADE restarts; a tab the user opened or kept keeps its id.
+  only your tabs and free agent tabs; ask the user about the rest. Agent tabs
+  clean themselves up: a chat's tabs close 15 minutes after it goes idle, and
+  at once when it ends or its lane is archived or deleted; a tab the user
+  clicked, typed in, navigated or kept is never closed by ADE. An agent's tab
+  is not brought back after ADE restarts; a tab the user opened or kept keeps
+  its id.
 
   Which machine. "status" prints the route: the browser "open" uses (the
   computer the user sends this chat's messages from, else this machine) and
@@ -6839,7 +6859,17 @@ function resolveCliPathArg(value: string): string {
 
 const GLOBAL_VALUE_FLAG_HANDLERS: Record<CliGlobalValueFlag, (options: GlobalOptions, value: string) => void> = {
   "--project-root": (options, value) => {
-    options.projectRoot = resolveCliPathArg(value);
+    const resolved = resolveCliPathArg(value);
+    // A folder always wins, so `--project-root src/app` keeps working; an
+    // account project id or `owner/name` with no such folder names the
+    // account's project (resolved in `applyAccountProjectSelector`).
+    if (!fs.existsSync(resolved) && parseAccountProjectSelector(value)) {
+      options.projectSelector = value.trim();
+      options.projectRoot = null;
+      return;
+    }
+    options.projectSelector = null;
+    options.projectRoot = resolved;
   },
   "--workspace-root": (options, value) => {
     options.workspaceRoot = resolveCliPathArg(value);
@@ -25691,6 +25721,19 @@ function describeDiagnosticError(error: unknown): string {
     : `[thrown ${label}]`;
 }
 
+/**
+ * A fast failure that stands in for a wait on a drive that is not answering,
+ * as itself or carried by a wrapper (`carryExpected` keeps its mark, and ADE's
+ * own code travels with it).
+ */
+function isStorageWaitError(error: unknown): boolean {
+  if (error instanceof StorageNotAnsweringError) return true;
+  return (
+    (error as { code?: unknown } | null)?.code === "storage_read_failed" &&
+    expectedErrorKind(error) === "environment"
+  );
+}
+
 function installRuntimeProcessErrorBoundary(label: string): () => void {
   const rejectionWindowMs = 60_000;
   const rejectionLogLimit = 5;
@@ -25735,7 +25778,9 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
     // restarted brain would walk back into the wait, and the loop is what the
     // fast failure exists to stop. The throw happened before the call did
     // anything, so carrying on is as safe as a caught error.
-    if (error instanceof StorageNotAnsweringError) {
+    // A wrapper that adds context (the SQL of a statement, say) keeps the
+    // code and the expected mark but not the class, so both are read here.
+    if (isStorageWaitError(error)) {
       write("storage wait", error);
       return;
     }
@@ -26393,6 +26438,22 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
     machineOnly: true,
     machineAutoStart: true,
   };
+  if ((sub === "list" || sub === "ls") && readFlag(args, ["--account"])) {
+    // The account's projects (L30), each with its copies on every computer.
+    // The list is the one this machine's brain last read from the account
+    // directory; the roster names each computer.
+    if (target.remote) throw new CliUsageError("projects list --account is the same on every machine; drop --machine.");
+    return {
+      ...base,
+      label: "account projects list",
+      formatter: "account-projects",
+      steps: [
+        { key: "list", method: "projects.accountList" },
+        { key: "roster", method: "machines.list", params: { includeProjects: false }, optional: true },
+      ],
+      shapeResult: (values) => shapeAccountProjects(values.list, values.roster),
+    };
+  }
   if (sub === "list" || sub === "ls") {
     // Projects whose folder is gone (a deleted temp project, a drive that is
     // not plugged in) are hidden unless asked for; the text says how many.
@@ -31851,7 +31912,32 @@ async function runServe(
     stopAccountProjectSync = () => {
       accountProjectSync?.stop();
       accountProjectSync = null;
+      provideAccountProjectMainHandler(null);
     };
+    // "Use for new lanes" from the phone or another computer
+    // (`accountProjectMain.ts`). Only while this brain publishes: the choice
+    // goes out with the next publish, which the handler asks for at once.
+    provideAccountProjectMainHandler(async (checkoutId) => {
+      const publisher = accountMachinePublisher;
+      if (!syncEnabled || !publisher) {
+        return { ok: false, code: "not_publishing", message: "This computer is not sending its projects to your ADE account right now." };
+      }
+      const sync = getAccountProjectSync();
+      const result = await sync.setMainCheckout(checkoutId);
+      if (!result.ok) return result;
+      // One heartbeat sends it. A heartbeat already in flight may have run the
+      // sync before the change; then one more heartbeat runs it after.
+      const before = sync.runCount();
+      await publisher.publishNow();
+      await sync.idle();
+      if (sync.runCount() === before && accountMachinePublisher === publisher) {
+        await publisher.publishNow();
+        await sync.idle();
+      }
+      // Saved here either way; say when the account does not have it yet.
+      const published = sync.runCount() !== before && !sync.publishPending();
+      return { ...result, published };
+    });
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;
       accountMachinePublisher = createBrainAccountMachinePublisherService({
@@ -37935,6 +38021,76 @@ function formatProviderAccounts(value: unknown): string {
   );
 }
 
+const ACCOUNT_SIGN_IN_NEXT_STEP =
+  "Sign in with `ade login` (`ade login --headless` on a computer with no browser), "
+  + "or set ADE_ACCOUNT_TOKEN from `ade account token create` for CI and agents.";
+
+/**
+ * `ade projects list --account`: the account's projects with a computer name
+ * on each copy. Signed out or not read yet throws with the next step, so a
+ * script never reads an empty list as "no projects".
+ */
+function shapeAccountProjects(list: unknown, roster: unknown): JsonObject {
+  const state = isRecord(list) ? asString(list.state) : null;
+  if (state === "signed_out") {
+    throw new CliUsageError(`ADE projects belong to your ADE account. ${ACCOUNT_SIGN_IN_NEXT_STEP}`);
+  }
+  if (state !== "ready") {
+    throw new CliExecutionError("ADE has not read your account's projects on this computer yet.", {
+      nextAction: "Keep the ADE brain running for a minute (`ade brain start`), then run this again. `ade doctor` shows the account state.",
+    });
+  }
+  const machines = isRecord(roster) && Array.isArray(roster.machines) ? roster.machines.filter(isRecord) : [];
+  const byKey = new Map(machines.map((machine) => [asString(machine.machineKey) ?? "", machine]));
+  const projects = (Array.isArray((list as JsonObject).projects) ? (list as JsonObject).projects as unknown[] : [])
+    .filter(isRecord)
+    .map((project) => ({
+      accountProjectId: project.id,
+      repository: `${String(project.owner)}/${String(project.name)}`,
+      host: project.host,
+      copies: (Array.isArray(project.copies) ? project.copies : []).filter(isRecord).map((copy) => {
+        const machine = byKey.get(asString(copy.machineKey) ?? "") ?? null;
+        return {
+          machineKey: copy.machineKey,
+          machine: asString(machine?.name) ?? asString(copy.machineKey),
+          thisMachine: machine?.isThisMachine === true,
+          online: machine ? machine.online === true : null,
+          projectId: copy.checkoutId,
+          rootPath: copy.rootPath,
+          main: copy.isMain === true,
+        };
+      }),
+    }));
+  return { state: "ready", projects };
+}
+
+function formatAccountProjects(value: unknown): string {
+  const projects = isRecord(value) && Array.isArray(value.projects) ? value.projects.filter(isRecord) : [];
+  const rows: unknown[][] = [];
+  for (const project of projects) {
+    const copies = Array.isArray(project.copies) ? project.copies.filter(isRecord) : [];
+    if (copies.length === 0) {
+      rows.push([project.repository, project.accountProjectId, "(no copy on any computer)", ""]);
+      continue;
+    }
+    copies.forEach((copy, index) => {
+      const where = `${String(copy.machine)}${copy.thisMachine ? " (this computer)" : copy.online === false ? " (offline)" : ""}`;
+      rows.push([
+        index === 0 ? project.repository : "",
+        index === 0 ? project.accountProjectId : "",
+        where,
+        `${String(copy.rootPath)}${copy.main ? "" : " (other copy)"}`,
+      ]);
+    });
+  }
+  return renderTable(
+    ["repository", "account project", "computer", "folder"],
+    rows,
+    "ADE account projects\n(no projects on your account yet: `ade projects clone <owner/name>` adds one)",
+    { fullColumns: ["account project"] },
+  );
+}
+
 function formatProjectsList(value: unknown): string {
   const projects = Array.isArray(value)
     ? value.filter(isRecord)
@@ -38467,6 +38623,8 @@ function formatTextOutput(
     }
     case "projects-list":
       return formatProjectsList(value);
+    case "account-projects":
+      return formatAccountProjects(value);
     case "linear-quick-view":
       return formatLinearQuickView(value);
     case "lanes":
@@ -41104,6 +41262,7 @@ async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
   const parsed = extractMachineTargeting(parseCliArgs(argv));
+  await applyAccountProjectSelector(parsed.options);
   const restoreShellScope = dropShellScopeForOtherProject(parsed.options);
   try {
     if (isChatLocateCommand(parsed.command)) return await runChatLocate(parsed);
@@ -41115,6 +41274,69 @@ async function runCli(
   } finally {
     restoreShellScope();
   }
+}
+
+/**
+ * The account project a command names (`--project-root ap_<id>|owner/name`,
+ * or `--machine-project` with either form), as a project this command can
+ * use. With `--machine`, the selector goes to that machine (an id after its
+ * merges); without, it becomes this computer's copy. The account's list is
+ * the one this machine's brain last read (`account-projects.json`), so a
+ * signed-out computer gets a message that says so.
+ */
+async function applyAccountProjectSelector(options: GlobalOptions): Promise<void> {
+  const remote = Boolean(options.machine?.trim()) || Boolean(options.allMachines);
+  const typed = options.projectSelector?.trim() || (remote ? options.machineProject?.trim() : null) || null;
+  if (!typed) return;
+  const selector = parseAccountProjectSelector(typed);
+  if (!selector) return;
+  const layout = resolveMachineAdeLayout();
+  const state = readAccountProjectState(layout.adeDir);
+  const listed = state.userId !== null && state.cursor !== null;
+  if (remote && !listed) {
+    // This shell's own home has no list (another home, or `--socket` to
+    // another brain): the other machine matches the value against its own
+    // folders, by account link or by origin.
+    options.projectSelector = null;
+    return;
+  }
+  if (selector.kind === "id" && !listed) {
+    throw new CliUsageError(
+      `ADE has not read your account's projects on this computer, so it cannot find ${selector.id}. `
+      + `${ACCOUNT_SIGN_IN_NEXT_STEP} \`ade doctor\` shows the account state.`,
+    );
+  }
+  const resolved = resolveAccountProject(selector, listed ? state.projects : {});
+  if (resolved.kind === "unknown") {
+    throw new CliUsageError(`Your ADE account has no project ${typed}. \`ade projects list --account\` lists them.`);
+  }
+  if (resolved.kind === "removed") {
+    throw new CliUsageError(`${resolved.name} was removed from your ADE account. Add it again from ADE to use it.`);
+  }
+  if (remote) {
+    // The other machine matches the final id or the repository address.
+    options.machineProject = resolved.project ? resolved.project.id : typed;
+    options.projectSelector = null;
+    return;
+  }
+  const { ProjectRegistry } = await import("./services/projects/projectRegistry");
+  const records = new ProjectRegistry(layout).list().filter((record) => recordMatchesAccountProject(record, resolved));
+  const mainIds = new Set((resolved.project?.copies ?? []).filter((copy) => copy.isMain).map((copy) => copy.checkoutId));
+  const ordered = [...records].sort((left, right) =>
+    Number(mainIds.has(right.projectId)) - Number(mainIds.has(left.projectId))
+    || (right.lastOpenedAt ?? 0) - (left.lastOpenedAt ?? 0));
+  const copy = ordered.find((record) => fs.existsSync(record.rootPath)) ?? null;
+  if (!copy) {
+    const elsewhere = resolved.project?.copies.length ?? 0;
+    throw new CliUsageError(
+      `${resolved.name} has no copy on this computer. `
+      + (elsewhere > 0
+        ? `It has ${elsewhere} ${elsewhere === 1 ? "copy" : "copies"} on other computers: \`ade projects list --account\` shows where; add --machine <name> to run there.`
+        : "No computer has a copy yet: `ade projects clone <owner/name>` adds one here."),
+    );
+  }
+  options.projectRoot = copy.rootPath;
+  options.projectSelector = null;
 }
 
 /**

@@ -239,6 +239,33 @@ progress. At most 5 toasts show at once. When a sixth arrives, the oldest
 timed toast is dropped. A sticky toast (`durationMs: 0`) is dropped only when
 every toast on screen is sticky.
 
+## Bottom-right notices and the browser
+
+A browser page is a native view drawn above the whole window, so a card the
+renderer draws in the notice corner either hides behind it or freezes it (the
+page is swapped for a still frame while anything overlaps it). So while a
+visible browser page covers the corner, `ToastViewport` draws its whole stack
+(toasts, the suggestion, the live panels) in the **notice layer** instead: a
+see-through, borderless child window of the ADE window, placed exactly over the
+same corner, above the page. The cards stay where they always are, and the
+page around them stays live and clickable.
+
+- The renderer opens the layer itself (`window.open` under
+  `NOTICE_LAYER_FRAME_NAME`, `shared/noticeLayer.ts`), so it shares the
+  renderer's process and DOM: React portals the very same card components into
+  it, with their state, handlers and animations. `app/toast/noticeLayer.ts`
+  mirrors the app's stylesheets and theme attributes into it.
+- The main process (`services/noticeLayer/noticeLayerWindow.ts`) lets exactly
+  that one `about:blank` window through the app's deny-all `window.open` gate,
+  never lets it take focus (a click on a card leaves typing where it was), and
+  places it over the box the renderer reports, again when the window moves or
+  resizes. It hides while there are no cards.
+- The registry of live page rects is `app/toast/cornerNoticeDock.ts`; a page
+  counts while it is meant to be on screen, not while a menu briefly hides it,
+  so the decision does not flap.
+- Linux (where see-through windows depend on the compositor) and the web build
+  have no layer: the cards stay in the corner and the page pauses behind them.
+
 ## Stacking: `Z_LAYERS`
 
 Pick a named layer and never type a z-index:

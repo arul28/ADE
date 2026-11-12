@@ -12,6 +12,7 @@ import { confirmHighRiskShare } from "./laneShareDefaults";
 import { useLaneShareList } from "./laneShareStore";
 import { laneShareProblem } from "./laneShareModel";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { requirePin } from "../../state/repositoryScope";
 
 /**
  * The owner's side of moving a chat between the two people of a share. All
@@ -51,7 +52,7 @@ export async function startLaneShareMove(args: { pin: OpenProjectBinding | null;
   });
   if (!ok) return;
   try {
-    await window.ade.laneShare.move("moveStart", { grantId: args.share.grantId, sessionId: args.sessionId }, args.pin);
+    await window.ade.laneShare.move("moveStart", { grantId: args.share.grantId, sessionId: args.sessionId }, requirePin(args.pin, "No computer with this lane is online."));
   } catch (error) {
     showToast({ tone: "error", title: "Couldn't start the move", message: moveErrorText(error) });
   }
@@ -94,7 +95,7 @@ export const LaneShareOwnerMoveCard = React.memo(function LaneShareOwnerMoveCard
 
   const reload = React.useCallback(async () => {
     try {
-      const result = await window.ade.laneShare.move<{ moves?: LaneShareMoveView[] }>("moveList", {}, pinRef.current);
+      const result = await window.ade.laneShare.move<{ moves?: LaneShareMoveView[] }>("moveList", {}, requirePin(pinRef.current, "No computer with this lane is online."));
       setMoves(Array.isArray(result?.moves) ? result.moves : []);
       setLoadError(null);
     } catch (error) {
@@ -112,9 +113,11 @@ export const LaneShareOwnerMoveCard = React.memo(function LaneShareOwnerMoveCard
       return;
     }
     void reload();
+    const feedPin = pinRef.current;
+    if (!feedPin) return undefined;
     return window.ade.laneShare.onEvent((event) => {
       if (event.type === "lane_share_move_changed" && (!laneId || event.laneId === laneId)) void reload();
-    }, pinRef.current);
+    }, feedPin);
   }, [enabled, laneId, pinKey, reload]);
 
   const live = moves.some((move) => !LANE_SHARE_MOVE_FINAL_STAGES.has(move.stage));
@@ -187,7 +190,7 @@ function OwnerMoveStatus({
       : `${who}'s move to this computer: ${move.stage === "landing" ? "making the new lane…" : "copying the work…"}`;
   const cancel = async () => {
     try {
-      await window.ade.laneShare.move("moveCancel", { moveId: move.moveId }, pin);
+      await window.ade.laneShare.move("moveCancel", { moveId: move.moveId }, requirePin(pin, "No computer with this lane is online."));
     } catch (error) {
       showToast({ tone: "error", title: "Couldn't cancel the move", message: moveErrorText(error) });
     }
@@ -236,7 +239,7 @@ function OwnerConsent({
         moveId: move.moveId,
         accept,
         ...(accept && rights ? { rights, endsAt, confirmHighRisk: high } : {}),
-      }, pin);
+      }, requirePin(pin, "No computer with this lane is online."));
     } catch (error) {
       showToast({ tone: "error", title: accept ? "Couldn't accept the move" : "Couldn't decline the move", message: moveErrorText(error) });
     } finally {

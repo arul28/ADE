@@ -20,7 +20,7 @@ import type {
   PersonalChatCallArgs,
 } from "../../../shared/types";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import type { AgentChatApi } from "../chat/agentChatApi";
+import type { MachineBoundAgentChatApi } from "../chat/agentChatApi";
 import { useAppStore } from "../../state/appStore";
 import { machineScopedId } from "../../state/foreignMachineReads";
 import { connectionOnline } from "../../state/laneMachineRouting";
@@ -65,8 +65,8 @@ export async function callPersonalOn<T, A extends PersonalChatAction = PersonalC
  * One chat API per machine, shared by the rail and the pane so each machine
  * has one event poller. The poller runs only while something listens.
  */
-const apiByMachine = new Map<string, AgentChatApi>();
-export function personalAgentChatApiFor(machineId: string): AgentChatApi {
+const apiByMachine = new Map<string, MachineBoundAgentChatApi>();
+export function personalAgentChatApiFor(machineId: string): MachineBoundAgentChatApi {
   let api = apiByMachine.get(machineId);
   if (!api) {
     api = createPersonalAgentChatApi(personalChatsBridgeFor(machineId));

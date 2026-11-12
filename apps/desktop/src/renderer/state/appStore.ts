@@ -418,6 +418,48 @@ const EMPTY_CTO_ATTENTION: CtoAttentionState = {
 };
 
 const WORK_VIEW_STORAGE_KEY = "ade.workViewState.v1";
+
+/** A repository tab with no copy open (see `AppState.noMachineTabs`). */
+export type NoMachineRepositoryTab = {
+  /** The repository tab id: the account project id, or the repository's address before the account knows it. */
+  id: string;
+  displayName: string;
+  iconDataUrl: string | null;
+};
+
+/**
+ * The window's no-machine tabs survive a reload of the window. They live in
+ * session storage, which is per window: the window restore in main (S5)
+ * brings them back after a restart. Old versions never read this key.
+ */
+const NO_MACHINE_TABS_STORAGE_KEY = "ade.repositoryTabs.noMachine.v1";
+
+function readNoMachineTabs(): NoMachineRepositoryTab[] {
+  try {
+    const parsed: unknown = JSON.parse(window.sessionStorage.getItem(NO_MACHINE_TABS_STORAGE_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry): NoMachineRepositoryTab[] => {
+      if (!entry || typeof entry !== "object") return [];
+      const row = entry as Record<string, unknown>;
+      if (typeof row.id !== "string" || !row.id || typeof row.displayName !== "string") return [];
+      return [{ id: row.id, displayName: row.displayName, iconDataUrl: typeof row.iconDataUrl === "string" ? row.iconDataUrl : null }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function writeNoMachineTabs(tabs: readonly NoMachineRepositoryTab[]): void {
+  try {
+    // No icons: a data URL can be large, and the tab reads the icon again from the account.
+    window.sessionStorage.setItem(
+      NO_MACHINE_TABS_STORAGE_KEY,
+      JSON.stringify(tabs.map((tab) => ({ id: tab.id, displayName: tab.displayName }))),
+    );
+  } catch {
+    // Storage unavailable: the tabs still hold until the window reloads.
+  }
+}
 const TERMINAL_PREFERENCES_STORAGE_KEY = "ade.terminalPreferences.v1";
 const LANE_CACHE_STORAGE_PREFIX = "ade.laneCache.v1:";
 const LANE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -1617,6 +1659,15 @@ export type AppState = {
   projectHydrated: boolean;
   openRemoteProjectTabs: Extract<OpenProjectBinding, { kind: "remote" }>[];
   openProjectTabRoots: string[];
+  /**
+   * Repository tabs with no copy open in this window: no computer that holds
+   * the repository is online, or the window has not opened a copy yet. A
+   * repository tab with a copy open is the copy's binding in the two lists
+   * above (one copy per repository).
+   */
+  noMachineTabs: NoMachineRepositoryTab[];
+  /** The no-machine tab in front, or null. While it is set, no project surface shows. */
+  activeNoMachineTabId: string | null;
   projectInfoByRoot: Record<string, ProjectInfo>;
   /** True when the user removed all projects — forces welcome screen even though backend still has a project loaded. */
   showWelcome: boolean;
@@ -1953,6 +2004,10 @@ export type AppState = {
 
   openNewTab: () => void;
   cancelNewTab: () => void;
+  /** Adds the no-machine tab (or updates it) and, unless `activate` is false, brings it to the front. */
+  showNoMachineTab: (tab: NoMachineRepositoryTab, options?: { activate?: boolean }) => void;
+  /** Closes a no-machine tab. Its tab order and saved route stay for the next open. */
+  closeNoMachineTab: (id: string) => void;
   setStandaloneSettingsOpen: (open: boolean) => void;
   setPersonalChatsTabOpen: (open: boolean) => void;
   closePersonalChatsTab: () => void;
@@ -2326,6 +2381,8 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   projectBinding: null,
   projectHydrated: false,
   openProjectTabRoots: [],
+  noMachineTabs: readNoMachineTabs(),
+  activeNoMachineTabId: null,
   projectInfoByRoot: {},
   showWelcome: true,
   projectTransition: null,
@@ -3135,10 +3192,31 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         : prev,
     ),
   // A new tab is the new-project screen, so it also ends Settings-without-a-project.
-  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true, standaloneSettingsOpen: false }),
+  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true, standaloneSettingsOpen: false, activeNoMachineTabId: null }),
   cancelNewTab: () => {
     const hasProject = get().project != null;
-    set({ isNewTabOpen: false, showWelcome: !hasProject });
+    set({ isNewTabOpen: false, showWelcome: !hasProject, activeNoMachineTabId: null });
+  },
+  showNoMachineTab: (tab, options) => {
+    const activate = options?.activate !== false;
+    set((prev) => {
+      const index = prev.noMachineTabs.findIndex((entry) => entry.id === tab.id);
+      const noMachineTabs = index === -1
+        ? [...prev.noMachineTabs, tab]
+        : prev.noMachineTabs.map((entry, at) => (at === index ? { ...entry, ...tab } : entry));
+      return activate
+        ? { noMachineTabs, activeNoMachineTabId: tab.id, isNewTabOpen: false, standaloneSettingsOpen: false }
+        : { noMachineTabs };
+    });
+    writeNoMachineTabs(get().noMachineTabs);
+  },
+  closeNoMachineTab: (id) => {
+    set((prev) => ({
+      noMachineTabs: prev.noMachineTabs.filter((entry) => entry.id !== id),
+      activeNoMachineTabId: prev.activeNoMachineTabId === id ? null : prev.activeNoMachineTabId,
+      showWelcome: prev.activeNoMachineTabId === id && prev.project == null ? true : prev.showWelcome,
+    }));
+    writeNoMachineTabs(get().noMachineTabs);
   },
   setStandaloneSettingsOpen: (standaloneSettingsOpen) => set({ standaloneSettingsOpen }),
   setPersonalChatsTabOpen: (personalChatsTabOpen) =>
@@ -3257,6 +3335,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     const request = normalizeLaneRefreshRequest(options);
     const runRefresh = async (currentRequest: LaneRefreshRequest) => {
       const requestedProjectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
+      // The tab's lane list is the list of the copy the tab shows: the read
+      // names that copy, the one the refresh was requested for.
+      const requestedPin = get().projectBinding ?? null;
       activeLaneRefreshProjectKey = requestedProjectKey;
       const token = ++laneRefreshVersion;
       activeLaneRefreshToken = token;
@@ -3268,7 +3349,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         includeConflictStatus: currentRequest.includeConflictStatus,
       };
       const rawLaneSnapshots = currentRequest.includeSnapshots
-        ? await listLaneSnapshotsCoalesced(snapshotArgs, { projectRoot: requestedProjectKey })
+        ? await listLaneSnapshotsCoalesced(snapshotArgs, { projectRoot: requestedProjectKey, pin: requestedPin })
         : null;
       const laneSnapshots = rawLaneSnapshots?.map((snapshot) => {
         if (currentRequest.includeStatus) return snapshot;
@@ -3280,7 +3361,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         : await listLanesCoalesced({
             includeArchived: false,
             includeStatus: currentRequest.includeStatus,
-          }, { projectRoot: requestedProjectKey });
+          }, { projectRoot: requestedProjectKey, pin: requestedPin });
       const lanes = laneSnapshots != null || currentRequest.includeStatus
         ? rawLanes
         : rawLanes.map((lane) => withPreservedLaneStatus(lane, previousLanesById, previousSnapshotsById));
@@ -3478,10 +3559,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   refreshProviderMode: async () => {
     const projectRoot = selectActiveProjectRoot(get());
+    // The provider mode of the copy the tab shows.
+    const pin = get().projectBinding ?? null;
     const [snapshot, aiStatus] = await Promise.all([
       // With no project open there is no project config to read: the mode
       // then follows the configured providers alone.
-      projectRoot ? getProjectConfigCached({ projectRoot }) : Promise.resolve(null),
+      projectRoot && pin ? getProjectConfigCached({ projectRoot, pin }) : Promise.resolve(null),
       getAiStatusCached({ projectRoot }).catch(() => null),
     ]);
     const configMode = snapshot?.effective.providerMode ?? "guest";
@@ -3496,7 +3579,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // saved in a project's database before shortcuts moved here.
     set({ keybindings: readKeybindingsSnapshot() });
     const projectRoot = selectActiveProjectRoot(get());
-    await migrateProjectKeybindingsOnce(() => getKeybindingsCoalesced({ projectRoot }));
+    // The old overrides live in the database of the copy the tab shows.
+    const pin = get().projectBinding ?? null;
+    if (pin) await migrateProjectKeybindingsOnce(() => getKeybindingsCoalesced({ projectRoot, pin }));
     set({ keybindings: readKeybindingsSnapshot() });
   },
 
@@ -3589,6 +3674,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // Warm-tab switches (rootPath already in openProjectTabRoots) bypass the gate
     // entirely. inspectPath failures fall through to the normal open — the gate
     // must never break project opening.
+    if (get().activeNoMachineTabId) set({ activeNoMachineTabId: null });
     if (!opts?.skipWorktreeGate && !get().openProjectTabRoots.includes(rootPath)) {
       try {
         const inspection = await window.ade.project.inspectPath(rootPath);
@@ -3812,6 +3898,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   switchRemoteProject: async (targetId: string, projectId: string) => {
     const switchGeneration = ++remoteProjectSwitchGeneration;
+    if (get().activeNoMachineTabId) set({ activeNoMachineTabId: null });
     ++laneRefreshVersion;
     const outgoingProjectKey = selectActiveProjectStateKey(get());
     const outgoingSelection = {

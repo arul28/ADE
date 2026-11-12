@@ -64,7 +64,7 @@ import { detectDevServersInChunk, devServerRegistry } from "../devServers/devSer
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import { isPtyOutputHeld, onPtyOutputHoldChange } from "./ptyOutputFlowControl";
-import { recordCliSessionsToReopen, type CliReopenEntry } from "./cliReopenAfterRestart";
+import { createCliTurnRecorder, recordCliSessionsToReopen, resetCliCrashReopenCount, type CliReopenEntry } from "./cliReopenAfterRestart";
 import { ensureNodePtySpawnHelperExecutable } from "./nodePtySpawnHelper";
 import { remoteWorkLaneIdFor } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
@@ -222,6 +222,7 @@ import {
   type PinnedCliProvider,
   type PinnedProviderCli,
 } from "./pinnedProviderCli";
+import { antigravityCredentialEnv, readAntigravitySettings } from "../ai/antigravityAuth";
 import { holdToolInstalls } from "../../../../../ade-cli/src/services/tools/inUse";
 import { museCredentialEnv } from "../ai/museAuth";
 import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
@@ -1649,6 +1650,7 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
     "grok",
     "copilot",
     "devin",
+    "antigravity",
     "qwen-chat",
     "kimi-chat",
     "grok-chat",
@@ -2851,6 +2853,28 @@ export function createPtyService({
   const terminalSnapshotDir = path.join(projectRoot, ".ade", "cache", "terminal-snapshots");
   const ownerPid = processRegistry?.pid ?? null;
   const ownerProcessStartedAt = processRegistry?.startedAt ?? null;
+  /**
+   * Which tracked CLIs have a turn running, by their own exact signal, kept on
+   * disk so the next runtime can tell them to continue after a crash
+   * (`cliReopenAfterRestart.ts`). Keyed by the same owner the session rows get.
+   */
+  let cliTurnRecordFailureLogged = false;
+  const cliTurnRecorder = ownerPid != null
+    ? createCliTurnRecorder(projectRoot, { pid: ownerPid, ownerStartedAt: ownerProcessStartedAt }, (error) => {
+        if (cliTurnRecordFailureLogged) return;
+        cliTurnRecordFailureLogged = true;
+        logger.warn("pty.cli_turn_record_failed", { error: error instanceof Error ? error.message : String(error) });
+      })
+    : null;
+  /** Only an exact signal counts: a turn guessed from output is not evidence enough to continue it. */
+  const recordCliTurnRunning = (entry: PtyEntry): void => {
+    if (!cliTurnRecorder || !entry.tracked) return;
+    const turn = entry.cliTurn;
+    cliTurnRecorder.setRunning(
+      entry.sessionId,
+      !entry.disposed && turn != null && isExactCliTurnSource(turn.source) && turn.phase === "working",
+    );
+  };
   const piLeaseIdentity = processRegistry
     ? {
         processStartedAt: ownerProcessStartedAt,
@@ -3125,10 +3149,12 @@ export function createPtyService({
     const mirror = entry.terminalSnapshot;
     if (!mirror) return;
     if (mirror.writeDisabled) return;
-    const snapshot = buildTerminalSnapshot(entry);
-    if (!snapshot) return;
     let tmpPath: string | null = null;
     try {
+      // Inside the try: it reads the session row, and a drive that is not
+      // answering makes that read throw.
+      const snapshot = buildTerminalSnapshot(entry);
+      if (!snapshot) return;
       fs.mkdirSync(terminalSnapshotDir, { recursive: true });
       const finalPath = safeTerminalSnapshotPathFor(entry.sessionId);
       tmpPath = `${finalPath}.${process.pid}.${randomUUID()}.tmp`;
@@ -5140,6 +5166,7 @@ export function createPtyService({
     entry.openCodeLease?.release();
     entry.openCodeLease = null;
     entry.disposed = true;
+    recordCliTurnRunning(entry);
     entry.attentionRequested = false;
     // The process that was serving those ports is gone, so the launchpad chips
     // must go with it rather than pointing at a dead port.
@@ -5641,6 +5668,9 @@ export function createPtyService({
     if (exact && !wasExact) {
       logger.info("pty.cli_turn_exact_source", { sessionId: entry.sessionId, source: turn.source });
     }
+    // Before the transition check: the first exact signal can confirm a turn
+    // the output already marked as working, with no phase change.
+    recordCliTurnRunning(entry);
     if (!transition) return;
     if (exact) {
       const runtimeState = exactCliRuntimeState(entry, turn);
@@ -7349,6 +7379,15 @@ export function createPtyService({
           ?? undefined;
         Object.assign(launchEnv, museCredentialEnv(launchEnv, museCredentialId));
       }
+      // An Antigravity API key saved in ADE reaches the terminal as it does a
+      // chat (env only): the method agy is set to picks the key. A Google
+      // login needs nothing, so the shell keeps its own environment.
+      if (toolTypeHint === "antigravity") {
+        const method = readAntigravitySettings(launchEnv).method;
+        if (method === "gemini-api-key" || method === "agent-platform") {
+          launchEnv = antigravityCredentialEnv(launchEnv, method);
+        }
+      }
       // The account's own prompt cache choice, on the one path every fresh
       // launch and resume takes. A preset or stored credential bills another
       // endpoint, so it gets none.
@@ -8121,6 +8160,7 @@ export function createPtyService({
           // Its hooks stopped arriving: guess again until one does.
           entry.cliTurn.source = "heuristic";
           entry.cliTurn.awaitingHookSince = null;
+          recordCliTurnRunning(entry);
           logger.warn("pty.cli_turn_hooks_overdue", { sessionId });
         }
         const exactTurn = entry.cliTurn && isExactCliTurnSource(entry.cliTurn.source) ? entry.cliTurn : null;
@@ -8824,9 +8864,31 @@ export function createPtyService({
       return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
     },
 
-    async resumeSession(args: PtyResumeSessionArgs): Promise<PtyResumeSessionResult> {
+    async resumeSession(
+      args: PtyResumeSessionArgs,
+      options?: {
+        /**
+         * Set only by the reopen after a restart. Any other resume (a person, a
+         * failed move) breaks the row of reopens after crashes, so it starts
+         * that count again (`cliReopenAfterRestart.ts`).
+         */
+        reopenAfterRestart?: boolean;
+      },
+    ): Promise<PtyResumeSessionResult> {
       const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
       if (!sessionId) throw new Error("Session id is required.");
+      if (!options?.reopenAfterRestart) {
+        try {
+          resetCliCrashReopenCount(projectRoot, [sessionId]);
+        } catch (error) {
+          // The count left behind only keeps this session from reopening after
+          // more crashes until it expires; the resume goes on.
+          logger.warn("pty.cli_reopen_count_reset_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
 
       const session = sessionService.get(sessionId);
       assertAgentCliSessionAction(sessionId, session, "resumed");
@@ -8859,6 +8921,21 @@ export function createPtyService({
       const { flight } = getOrCreateResumeFlight(resumableSession, resumeLaunch, args);
       const created = await flight;
       return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
+    },
+
+    /**
+     * Write one line of ADE's own into a live session's terminal, as the line
+     * for a CLI download does: every viewer of the session (this desktop,
+     * another computer, a phone) sees it, and the transcript keeps it. False
+     * when the session has no live terminal here.
+     */
+    showSessionNotice(sessionId: string, text: string): boolean {
+      const live = liveEntryBySessionId(sessionId.trim());
+      const line = text.replace(/[\r\n]+/g, " ").trim();
+      if (!live || live[1].disposed || !line || !live[1].processOutputData) return false;
+      // On a line of its own: the output before it may not end in a newline.
+      live[1].processOutputData(`\r\n${line}\r\n`);
+      return true;
     },
 
     /**
@@ -9248,7 +9325,7 @@ export function createPtyService({
 
       const flight = (async (): Promise<ChatTerminalReattachResult> => {
         // For chat-CLI sessions the chat session id and terminal session id are the same.
-        const session = sessionService.get(chatSessionId);
+        let session = sessionService.get(chatSessionId);
         if (!session) {
           throw new Error(`Chat CLI session '${chatSessionId}' was not found.`);
         }
@@ -9257,6 +9334,22 @@ export function createPtyService({
         }
         if (!isPersistedChatToolType(session.toolType)) {
           throw new Error(`Session '${chatSessionId}' is not a chat CLI session.`);
+        }
+        // agy's `--continue` opens the newest conversation in the folder, which
+        // may be another chat's: Antigravity reattaches only by its own id.
+        if (providerFromTool(session.toolType) === "antigravity" && !resumeTargetIdForProvider(session, "antigravity")) {
+          const backfilled = await tryBackfillResumeTarget(
+            chatSessionId,
+            session.toolType,
+            "resume-launch",
+            resolveSessionRunCwd(session),
+          );
+          session = (backfilled ? sessionService.get(chatSessionId) : null) ?? session;
+          if (!resumeTargetIdForProvider(session, "antigravity")) {
+            throw markExpected(new Error(
+              "Antigravity exited before ADE could capture its conversation. Start a new Antigravity chat.",
+            ), "user");
+          }
         }
 
         const parsedResumeCommand = parseTrackedCliResumeCommand(
@@ -10154,6 +10247,7 @@ export function createPtyService({
       entry.openCodeLease?.release();
       entry.openCodeLease = null;
       entry.disposed = true;
+      recordCliTurnRunning(entry);
       entry.attentionRequested = false;
       // Same rule as closeEntry: the process serving those ports is going away.
       devServerRegistry.forgetSession(entry.sessionId);
@@ -10223,6 +10317,8 @@ export function createPtyService({
      * (`cliReopenAfterRestart.ts`). A failed save never blocks the stop.
      */
     disposeAll(options?: { reopenAfterRestart?: boolean }): void {
+      // An orderly stop: no turn of this runtime is cut off by a crash.
+      cliTurnRecorder?.close();
       if (options?.reopenAfterRestart) {
         try {
           const entries: CliReopenEntry[] = [];

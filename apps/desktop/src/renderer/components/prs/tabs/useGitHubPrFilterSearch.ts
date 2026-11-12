@@ -1,3 +1,4 @@
+import type { OpenProjectBinding } from "../../../../shared/types";
 import React from "react";
 import type {
   GitHubPrListFilters,
@@ -61,8 +62,8 @@ function isMissingActionError(error: unknown): boolean {
  * "Load more". Nothing runs while `enabled` is false, so clearing the filters
  * returns to the snapshot list without a request.
  *
- * Reads go to the tab's own machine (no pin), the same machine the snapshot
- * list comes from.
+ * Reads go to `pin`, the machine the snapshot list comes from (the
+ * repository reader). With no pin nothing is asked.
  */
 export function useGitHubPrFilterSearch({
   enabled,
@@ -70,10 +71,13 @@ export function useGitHubPrFilterSearch({
   state,
   filters,
   text,
+  pin,
 }: {
   enabled: boolean;
   /** The project; results never cross projects. */
   scopeKey: string | null;
+  /** The machine that searches GitHub for the repository. */
+  pin: OpenProjectBinding | null;
   state: GitHubPrSearchState;
   filters: GitHubPrListFilters;
   text: string;
@@ -91,7 +95,10 @@ export function useGitHubPrFilterSearch({
 } {
   const supported = typeof window.ade?.prs?.searchGitHubPrs === "function";
   const trimmedText = text.trim();
-  const baseKey = `${scopeKey ?? ""}|${state}|${githubPrListFiltersKey(filters)}`;
+  const pinKey = pin?.key ?? null;
+  const pinRef = React.useRef(pin);
+  pinRef.current = pin;
+  const baseKey = `${scopeKey ?? ""}|${pinKey ?? ""}|${state}|${githubPrListFiltersKey(filters)}`;
   const key = `${baseKey}|${trimmedText}`;
   const [page, setPage] = React.useState<GitHubPrSearchPage | null>(null);
   const [loading, setLoading] = React.useState(false);
@@ -106,7 +113,7 @@ export function useGitHubPrFilterSearch({
   const forceNextRef = React.useRef(false);
 
   React.useEffect(() => {
-    if (!enabled || unavailable) {
+    if (!enabled || unavailable || !pinRef.current) {
       seqRef.current += 1;
       setLoading(false);
       return undefined;
@@ -124,12 +131,14 @@ export function useGitHubPrFilterSearch({
     setLoading(true);
     const timer = window.setTimeout(() => {
       const search = window.ade.prs.searchGitHubPrs;
+      const searchPin = pinRef.current;
       if (!search) {
         setUnavailable(true);
         return;
       }
+      if (!searchPin) return;
       const current = argsRef.current;
-      search({ state: current.state, filters: current.filters, text: current.text || null, ...(force ? { force: true } : {}) })
+      search({ state: current.state, filters: current.filters, text: current.text || null, ...(force ? { force: true } : {}) }, searchPin)
         .then((result: SearchGitHubPrsResult) => {
           if (seq !== seqRef.current) return;
           const next: GitHubPrSearchPage = {
@@ -176,11 +185,12 @@ export function useGitHubPrFilterSearch({
   const loadMore = React.useCallback(() => {
     const current = pageRef.current;
     const search = window.ade.prs.searchGitHubPrs;
-    if (!current || current.key !== key || !current.nextCursor || loadingMore || !search) return;
+    const searchPin = pinRef.current;
+    if (!current || current.key !== key || !current.nextCursor || loadingMore || !search || !searchPin) return;
     const seq = seqRef.current;
     setLoadingMore(true);
     const args = argsRef.current;
-    search({ state: args.state, filters: args.filters, text: args.text || null, cursor: current.nextCursor })
+    search({ state: args.state, filters: args.filters, text: args.text || null, cursor: current.nextCursor }, searchPin)
       .then((result) => {
         if (seq !== seqRef.current || pageRef.current?.key !== current.key) return;
         if (result.error) {

@@ -38,6 +38,7 @@ import { knownSceneHeight, rememberSceneHeight } from "./sceneDocumentCache";
 import { useSceneTheme } from "./sceneTheme";
 import { useSceneOnScreen } from "./useSceneOnScreen";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * Host for an MCP App: the page an MCP server ships with one of its tools.
@@ -133,7 +134,7 @@ function useMcpAppDocument(
         let app = cached?.app ?? null;
         let url = cached?.url ?? null;
         if (!app) {
-          const result: McpAppGetResult = await window.ade.agentChat.getMcpApp({ sessionId, itemId }, pin);
+          const result: McpAppGetResult = await withChatPin(pin, (chatPin) => window.ade.agentChat.getMcpApp({ sessionId, itemId }, chatPin));
           if (cancelled) return;
           if (!result || result.status !== "ready") {
             setLoad({ status: "unavailable", reason: result?.reason ?? "This app could not be loaded." });
@@ -172,7 +173,7 @@ function useMcpAppGrants(
     const current = appRef.current;
     const list = window.ade?.agentChat?.listMcpAppGrants;
     if (!current || !isAdeAvailable(list)) return;
-    void list({ sessionId: current.sessionId, itemId: current.itemId }, pin)
+    void withChatPin(pin, (chatPin) => list({ sessionId: current.sessionId, itemId: current.itemId }, chatPin))
       .then((result) => setAlwaysAllowed(Array.isArray(result?.tools) ? result.tools : []))
       .catch(() => { /* the row keeps what it last knew */ });
   }, [appRef, pin]);
@@ -180,8 +181,8 @@ function useMcpAppGrants(
   const stopAllowing = useCallback((tool: string) => {
     const current = appRef.current;
     if (!current) return;
-    void window.ade.agentChat
-      .revokeMcpAppGrant({ sessionId: current.sessionId, itemId: current.itemId, tool }, pin)
+    void withChatPin(pin, (chatPin) => window.ade.agentChat
+      .revokeMcpAppGrant({ sessionId: current.sessionId, itemId: current.itemId, tool }, chatPin))
       .then((result) => setAlwaysAllowed(Array.isArray(result?.tools) ? result.tools : []))
       .catch(() => { /* still allowed; the row still says so */ });
   }, [appRef, pin]);
@@ -372,8 +373,8 @@ export function McpAppCard({ card }: { card: AdeCardPayload }) {
     // Read NOW, as the request arrives: the brain runs a tool that may change
     // data only when this is true, and an approval card takes focus later.
     const userActivated = method === "tools/call" && frameJustPressed(frameRef.current);
-    void window.ade.agentChat
-      .mcpAppRequest({ sessionId: current.sessionId, itemId: current.itemId, method, params, userActivated }, pin)
+    void withChatPin(pin, (chatPin) => window.ade.agentChat
+      .mcpAppRequest({ sessionId: current.sessionId, itemId: current.itemId, method, params, userActivated }, chatPin))
       .catch((error): McpAppRequestResult => ({
         ok: false,
         error: { code: MCP_APP_ERROR_REFUSED, message: error instanceof Error ? error.message : "The request failed." },

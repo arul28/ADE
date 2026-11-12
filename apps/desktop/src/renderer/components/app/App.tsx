@@ -48,6 +48,7 @@ import { ProjectSidebarHold, ProjectSidebarSlotProvider } from "./projectSidebar
 // Home loads when a window has no project, not with every launch (its tool
 // logos alone are a few hundred KB).
 const ProjectWelcomePage = React.lazy(() => import("../projects/ProjectWelcomePage").then((module) => ({ default: module.ProjectWelcomePage })));
+const ProjectWelcomeNoMachine = React.lazy(() => import("../projects/ProjectWelcomeNoMachine").then((module) => ({ default: module.ProjectWelcomeNoMachine })));
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
 import { OnboardingHintHost } from "../onboarding/hints/OnboardingHintHost";
@@ -66,6 +67,11 @@ import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurfa
 import { AppearanceRoot } from "./AppearanceRoot";
 import { AppearanceScheduleHost } from "./AppearanceScheduleHost";
 import { fgTint } from "../lanes/laneDesignTokens";
+import {
+  originUrlForBinding,
+  rememberedLocalOrigin,
+  subscribeProjectOriginMemory,
+} from "../lanes/laneMachines";
 
 function createPreloadableRoute<TProps extends object>(
   loadModule: () => Promise<{ default: React.ComponentType<TProps> }>,
@@ -173,13 +179,16 @@ import {
   type GithubRepoSlug,
 } from "../../../shared/githubRemote";
 import {
+  accountProjectIdOfTarget,
   deeplinkToNavigationTarget,
   isValidRepoRelativePath,
   ownershipOfTarget,
   parseDeeplink,
 } from "../../../shared/deeplinks";
+import { showToast } from "./toast/toastStore";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { useCrossMachineLaneSync } from "../../state/crossMachineLanes";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { runFirstLoadWithRetry } from "../../lib/firstLoadRetry";
 import { useHomeAppEffects } from "../home/useHomeAppEffects";
 import { BootSplashReveal, useBootSplashHold } from "./BootSplashReveal";
@@ -326,23 +335,21 @@ const WARM_PROJECT_SURFACE_LIMIT = 8;
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
 const EMPTY_PROJECT_INFO_BY_ROOT: Record<string, ProjectInfo> = {};
 
+/**
+ * The binding of a project folder on this computer. `ProjectInfo` has no git
+ * origin, so the binding takes the one the recents remember for the folder.
+ * Without it, a local GitHub repository reads as "this computer only" and its
+ * copies on other computers do not show.
+ */
 function localProjectBindingForProject(project: ProjectInfo): OpenProjectBinding {
-  return {
+  const binding: OpenProjectBinding = {
     kind: "local",
     key: `local:${project.rootPath}`,
     rootPath: project.rootPath,
     displayName: project.displayName,
   };
-}
-
-function bindingForProject(
-  project: ProjectInfo,
-  activeProjectBinding: OpenProjectBinding | null,
-): OpenProjectBinding {
-  if (activeProjectBinding?.rootPath === project.rootPath) {
-    return activeProjectBinding;
-  }
-  return localProjectBindingForProject(project);
+  const gitOriginUrl = originUrlForBinding(binding);
+  return gitOriginUrl ? { ...binding, gitOriginUrl } : binding;
 }
 
 function serializeProjectRoute(location: ReturnType<typeof useLocation>): string | null {
@@ -485,7 +492,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   // `ade ui show` for this project's runtime. Answered here, whatever tab is
   // showing, so the agent hears "held" instead of "no desktop" while the user
   // is somewhere else; the pane showing the chat takes it when it mounts.
-  useWorkToolShowRequestListener(Boolean(active && projectRoot));
+  // `ade ui show` requests come from the tab's copy, and the answer goes back there.
+  const showRequestPin = useTabCopyPin();
+  useWorkToolShowRequestListener(Boolean(active && projectRoot && showRequestPin), showRequestPin);
 
   // The account's Fast-mode permission, once per window and again whenever the
   // window regains focus (another machine may have turned it on or off). The
@@ -822,6 +831,8 @@ function ProjectTabHost() {
   }), []);
   const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots ?? EMPTY_PROJECT_TAB_ROOTS);
+  // A repository tab with no computer online (S4) takes the page while it is in front.
+  const noMachineTab = useAppStore((s) => (s.activeNoMachineTabId ? s.noMachineTabs.find((tab) => tab.id === s.activeNoMachineTabId) ?? null : null));
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot ?? EMPTY_PROJECT_INFO_BY_ROOT);
   const rootPrefs = useAppStore(useShallow((s) => ({
     theme: s.theme,
@@ -871,9 +882,38 @@ function ProjectTabHost() {
   // project welcome page. Old links and restored tabs still arrive here.
   const isLegacyHubRoute = location.pathname === "/hub";
   const isExternalFilesRoute = location.pathname === "/files" && new URLSearchParams(location.search).has("externalPath");
-  const activeBinding = !showWelcome && activeProject?.rootPath
-    ? bindingForProject(activeProject, activeProjectBinding)
-    : null;
+  // The origin memory fills from the recents after a tab opens, so a local
+  // binding is built again when its folder's origin changes (same key, origin
+  // added). Other changes to the memory do not render the app again.
+  const activeRootPath = activeProject?.rootPath ?? null;
+  const readActiveLocalOrigin = React.useCallback(() => rememberedLocalOrigin(activeRootPath), [activeRootPath]);
+  const activeLocalOrigin = React.useSyncExternalStore(
+    subscribeProjectOriginMemory,
+    readActiveLocalOrigin,
+    readActiveLocalOrigin,
+  );
+  const localBindingsRef = React.useRef(new Map<string, OpenProjectBinding>());
+  // Same fields, same object: a new binding object for a project that did not
+  // change re-renders everything in it that reads the binding.
+  const stableLocalBinding = React.useCallback((project: ProjectInfo): OpenProjectBinding => {
+    const built = localProjectBindingForProject(project);
+    const known = localBindingsRef.current.get(built.key);
+    const binding = known && shallow(known, built) ? known : built;
+    localBindingsRef.current.set(binding.key, binding);
+    return binding;
+  }, []);
+  const activeBinding = React.useMemo(
+    () => {
+      if (showWelcome || !activeProject?.rootPath) return null;
+      if (activeProjectBinding?.kind === "remote" && activeProjectBinding.rootPath === activeProject.rootPath) {
+        return activeProjectBinding;
+      }
+      return stableLocalBinding(activeProject);
+    },
+    // activeLocalOrigin: the folder's origin changed, so build the binding again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeProject, activeProjectBinding, activeLocalOrigin, showWelcome, stableLocalBinding],
+  );
   const activeSurfaceKey = activeBinding?.key ?? null;
   const previousActiveSurfaceKeyRef = React.useRef<string | null>(null);
   const pendingNavigationRef = React.useRef<{ surfaceKey: string; route: string } | null>(null);
@@ -957,7 +997,17 @@ function ProjectTabHost() {
     setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === route ? prev : { ...prev, [activeSurfaceKey]: route }));
   }, [activeSurfaceKey, location]);
 
-  const localBindingsRef = React.useRef(new Map<string, OpenProjectBinding>());
+  // The origins of the open local tabs, as one string: a change to another
+  // folder's origin in the memory does not render the app again.
+  const readOpenLocalOrigins = React.useCallback(
+    () => openProjectTabRoots.map((root) => rememberedLocalOrigin(root) ?? "").join("\n"),
+    [openProjectTabRoots],
+  );
+  const openLocalOrigins = React.useSyncExternalStore(
+    subscribeProjectOriginMemory,
+    readOpenLocalOrigins,
+    readOpenLocalOrigins,
+  );
   const projectEntries = React.useMemo<ProjectSurfaceEntry[]>(() => {
     const entries: ProjectSurfaceEntry[] = [];
     const activeRemoteRoot =
@@ -972,13 +1022,7 @@ function ProjectTabHost() {
         activeProject?.rootPath === root && !activeRemoteRoot ? activeProject : null
       );
       if (!project) continue;
-      // Same fields, same object: this list is rebuilt on every project
-      // switch, and a new binding object for a project that did not change
-      // re-rendered everything in it that reads the binding.
-      const built = localProjectBindingForProject(project);
-      const known = localBindingsRef.current.get(built.key);
-      const binding = known && shallow(known, built) ? known : built;
-      localBindingsRef.current.set(binding.key, binding);
+      const binding = stableLocalBinding(project);
       entries.push({ surfaceKey: binding.key, project, binding });
     }
     for (const binding of openRemoteProjectTabs) {
@@ -1000,13 +1044,17 @@ function ProjectTabHost() {
       });
     }
     return entries;
+    // openLocalOrigins: a folder's origin changed, so build the local bindings again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeBinding,
     activeProject,
     activeProjectBinding,
+    openLocalOrigins,
     openProjectTabRoots,
     openRemoteProjectTabs,
     projectInfoByRoot,
+    stableLocalBinding,
   ]);
 
   React.useEffect(() => {
@@ -1121,6 +1169,16 @@ function ProjectTabHost() {
   }
 
   const standaloneSettingsRoute = isSettingsRoute && !activeProject?.rootPath && standaloneSettingsOpen;
+  const noMachinePage = noMachineTab && !isMachineRoute && !isAccountRoute && !standaloneSettingsRoute ? (
+    <PageErrorBoundary>
+      <React.Suspense fallback={GuardLoadingFallback}>
+        <ProjectWelcomeNoMachine tab={noMachineTab} />
+      </React.Suspense>
+    </PageErrorBoundary>
+  ) : null;
+  if (noMachinePage && (!activeProject || showWelcome || mountedProjects.length === 0)) {
+    return <div className="relative h-full min-h-0 w-full">{noMachinePage}</div>;
+  }
   if (!isMachineRoute && !isAccountRoute && !standaloneSettingsRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     // A host conflict during first hydration lands here, not on a project
     // surface, so the starting banner and the recovery takeover have to ride
@@ -1172,7 +1230,7 @@ function ProjectTabHost() {
         return (
           <ProjectSurface
             key={surfaceKey}
-            active={!isMachineRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
+            active={!noMachinePage && !isMachineRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
             project={project}
             projectBinding={projectBinding}
             route={route}
@@ -1180,6 +1238,7 @@ function ProjectTabHost() {
           />
         );
       })}
+      {noMachinePage ? <div className="absolute inset-0">{noMachinePage}</div> : null}
       {isPersonalChatsRoute ? (
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
@@ -1271,6 +1330,10 @@ function AppNavigationBridge() {
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectBindingRef = React.useRef(projectBinding ?? null);
   projectBindingRef.current = projectBinding ?? null;
+  // The tab's copy: the store's lanes and the "local" chat lookup are its machine's.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = React.useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
   const [otherMachineLookups, setOtherMachineLookups] = React.useState(0);
 
   const readOtherMachinesNow = React.useCallback(
@@ -1283,9 +1346,10 @@ function AppNavigationBridge() {
 
   const resolveActiveProjectRepo = React.useCallback(async (): Promise<GithubRepoSlug | null> => {
     const lane = lanesRef.current[0];
-    if (!lane) return null;
+    const pin = tabCopyPinRef.current;
+    if (!lane || !pin) return null;
     try {
-      const remote = await window.ade?.git?.getOriginRemote?.({ laneId: lane.id });
+      const remote = await window.ade?.git?.getOriginRemote?.({ laneId: lane.id }, pin);
       return parseGithubRemoteUrl(remote?.remoteUrl ?? null);
     } catch {
       return null;
@@ -1368,7 +1432,10 @@ function AppNavigationBridge() {
 
     if (target.kind === "chat" || target.kind === "work") {
       if (target.sessionId && !options.forceLocal) {
-        const localSession = await window.ade?.sessions?.get?.(target.sessionId).catch(() => null);
+        const tabPin = tabCopyPinRef.current;
+        const localSession = tabPin
+          ? await window.ade?.sessions?.get?.(target.sessionId, tabPin).catch(() => null)
+          : null;
         // Work lists the chats of every connected machine, so a chat that one
         // of them holds opens there like a local one.
         const sessionId = target.sessionId;
@@ -1492,6 +1559,24 @@ function AppNavigationBridge() {
       return true;
     }
 
+    if (target.kind === "account-project") {
+      // Main resolved the link's account project id first (L33). No computer
+      // that can be reached has a copy: the repository opens with no
+      // machine, as a Home row does.
+      if (target.reason === "no-copy") {
+        useAppStore.getState().showNoMachineTab({
+          id: target.accountProjectId,
+          displayName: target.name?.trim() || "Project",
+          iconDataUrl: null,
+        });
+        return true;
+      }
+      showToast(target.reason === "removed"
+        ? { tone: "info", title: `${target.name?.trim() || "This project"} was removed from ADE.` }
+        : { tone: "info", title: "This project isn't in your ADE account." });
+      return true;
+    }
+
     if (target.kind === "lane-share") {
       // An invite link: the shared lanes page opens it (sign in, accept or open).
       navigate(laneShareGuestPath(target.grantId));
@@ -1606,7 +1691,9 @@ function AppNavigationBridge() {
       const parsed = parseDeeplink(url);
       if (!parsed.ok) return;
       const target = deeplinkToNavigationTarget(parsed.target);
-      if (!ownershipOfTarget(parsed.target)) {
+      // A link that names an account project goes through main too: main
+      // reads the account list and picks the copy (L33).
+      if (!ownershipOfTarget(parsed.target) && !accountProjectIdOfTarget(parsed.target)) {
         void dispatchLatest(target);
         return;
       }

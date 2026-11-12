@@ -30,6 +30,9 @@ function comment(id: string, sessionId: string): ChatThreadComment {
   };
 }
 
+/** The chat's machine: its comments are listed there. */
+const CHAT_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 function installList(list: (args: { sessionId: string }, pin: unknown) => Promise<ChatThreadComment[]>) {
   (window as unknown as { ade: unknown }).ade = {
     agentChat: { threadComments: { list } },
@@ -42,7 +45,7 @@ describe("threadCommentsStore.refreshThreadComments", () => {
     const fromHost = comment("host-1", sessionId);
     installList(vi.fn(async () => [fromHost]));
 
-    const { result } = renderHook(() => useThreadComments(sessionId, null));
+    const { result } = renderHook(() => useThreadComments(sessionId, CHAT_PIN));
 
     await waitFor(() => expect(result.current.map((entry) => entry.id)).toEqual(["host-1"]));
   });
@@ -53,7 +56,7 @@ describe("threadCommentsStore.refreshThreadComments", () => {
     const list = vi.fn(() => new Promise<ChatThreadComment[]>((resolve) => { resolveList = resolve; }));
     installList(list);
 
-    const { result } = renderHook(() => useThreadComments(sessionId, null));
+    const { result } = renderHook(() => useThreadComments(sessionId, CHAT_PIN));
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
 
     // A live update reaches the store while the list call is still out.
@@ -84,7 +87,7 @@ describe("threadCommentsStore.addLocalThreadComment", () => {
   it("shows a comment at once, keeps it through host lists, and confirms it once", async () => {
     const sessionId = "store-local-success";
     installList(vi.fn(async () => []));
-    const { result } = renderHook(() => useThreadComments(sessionId, null));
+    const { result } = renderHook(() => useThreadComments(sessionId, CHAT_PIN));
     await waitFor(() => expect(result.current).toEqual([]));
 
     let settle!: ReturnType<typeof addLocalThreadComment>;
@@ -107,7 +110,7 @@ describe("threadCommentsStore.addLocalThreadComment", () => {
   it("joins the saved comment when its answer beats the host event, and drops a failed one", async () => {
     const sessionId = "store-local-settle";
     installList(vi.fn(async () => []));
-    const { result } = renderHook(() => useThreadComments(sessionId, null));
+    const { result } = renderHook(() => useThreadComments(sessionId, CHAT_PIN));
     await waitFor(() => expect(result.current).toEqual([]));
 
     let settleSaved!: ReturnType<typeof addLocalThreadComment>;

@@ -24,7 +24,7 @@ import { adeCloudSettingsSearch } from "../SettingsMachineScope";
  */
 export function CloudSignIns() {
   const signIns = useAdeCloudSignIns();
-  const { account, cloud, saved, signInStatus, keychainIsThisMac, accountPin } = signIns;
+  const { account, cloud, saved, signInStatus, keyringIsThisComputer, accountPin } = signIns;
   const navigate = useNavigate();
   const location = useLocation();
   const passUse = useMemo(() => accountPassUse(signInStatus?.passes), [signInStatus?.passes]);
@@ -36,9 +36,9 @@ export function CloudSignIns() {
     const now = Date.now();
     return descriptors.map((descriptor) => ({
       descriptor,
-      tile: adeCloudTile({ provider: descriptor.id, account, cloud, saved, keychainIsThisMac, passUse, now }),
+      tile: adeCloudTile({ provider: descriptor.id, account, cloud, saved, keyringIsThisComputer, passUse, now }),
     }));
-  }, [account, cloud, descriptors, keychainIsThisMac, passUse, saved]);
+  }, [account, cloud, descriptors, keyringIsThisComputer, passUse, saved]);
   const ready = rows.filter((row) => row.tile.state === "connected");
   const rest = rows.filter((row) => row.tile.state !== "connected");
   const on = cloudSignInsOn(account);

@@ -187,6 +187,19 @@ export function resetGitRemoteIdentityCache(): void {
 
 const originByLocalRoot = new Map<string, string>();
 const originByRemoteKey = new Map<string, string>();
+let originMemoryVersion = 0;
+const originMemoryListeners = new Set<() => void>();
+
+/** Calls `listener` after the origin memory changes. Returns the unsubscribe. */
+export function subscribeProjectOriginMemory(listener: () => void): () => void {
+  originMemoryListeners.add(listener);
+  return () => originMemoryListeners.delete(listener);
+}
+
+/** A number that moves each time the origin memory changes (a `useSyncExternalStore` snapshot). */
+export function projectOriginMemoryVersion(): number {
+  return originMemoryVersion;
+}
 
 /**
  * Recents and connection snapshots are the union's origin source. Local tab
@@ -202,10 +215,29 @@ export function rememberProjectOriginSummaries(
   projects: readonly Pick<RecentProjectSummary, "rootPath" | "kind" | "remote" | "gitOriginUrl">[],
   options?: { replace?: boolean },
 ): void {
+  const before = originMemorySignature();
   if (options?.replace) {
     originByLocalRoot.clear();
     originByRemoteKey.clear();
   }
+  try {
+    rememberOrigins(projects, options);
+  } finally {
+    if (originMemorySignature() !== before) {
+      originMemoryVersion += 1;
+      for (const listener of originMemoryListeners) listener();
+    }
+  }
+}
+
+function originMemorySignature(): string {
+  return JSON.stringify([[...originByLocalRoot], [...originByRemoteKey]]);
+}
+
+function rememberOrigins(
+  projects: readonly Pick<RecentProjectSummary, "rootPath" | "kind" | "remote" | "gitOriginUrl">[],
+  options?: { replace?: boolean },
+): void {
   for (const project of projects) {
     const origin = (project.gitOriginUrl ?? project.remote?.gitOriginUrl ?? "").trim();
     const remote = project.kind === "remote" ? project.remote : undefined;
@@ -218,6 +250,11 @@ export function rememberProjectOriginSummaries(
     if (origin) originByLocalRoot.set(project.rootPath, origin);
     else if (options?.replace) originByLocalRoot.delete(project.rootPath);
   }
+}
+
+/** The origin the memory holds for a folder on this computer, or null. */
+export function rememberedLocalOrigin(rootPath: string | null | undefined): string | null {
+  return rootPath ? originByLocalRoot.get(rootPath) ?? null : null;
 }
 
 /** Origin stamped on the binding, else the recents/snapshot identity for that checkout. */
@@ -600,4 +637,17 @@ export function canCreateLaneOnMachine(option: LaneMachineOption): boolean {
 /** True when the machine's free-disk headroom should read as a warning. */
 export function isLowLaneMachineDisk(freeBytes: number | null): boolean {
   return typeof freeBytes === "number" && freeBytes <= LANE_MACHINE_LOW_DISK_BYTES;
+}
+
+/** What a lane action says when its lane has no machine to send to. */
+export const LANE_MACHINE_NOT_CONNECTED = "This lane's computer is not connected.";
+
+/**
+ * The pin of a lane write, or a clear error when the lane has no machine to
+ * send to. A write is never sent without a pin: that would reach whatever
+ * machine the tab happens to be on.
+ */
+export function requireLanePin(pin: OpenProjectBinding | null | undefined): OpenProjectBinding {
+  if (!pin) throw new Error(LANE_MACHINE_NOT_CONNECTED);
+  return pin;
 }

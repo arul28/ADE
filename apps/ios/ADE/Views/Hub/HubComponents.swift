@@ -1199,10 +1199,14 @@ struct HubProjectTile: View, Equatable {
             } else {
               HubStateSummary(counts: stateCounts, fitsWidth: true)
             }
+            // An account note ("Not on a computer yet") takes the "No
+            // agents" line's room, so it wraps instead of ending in "…" in a
+            // narrow tile.
             Text(presentation.metaLine)
               .font(.system(size: 11))
               .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
+              .lineLimit(presentation.metaLineIsNote ? 2 : 1)
+              .fixedSize(horizontal: false, vertical: presentation.metaLineIsNote)
           }
           Spacer(minLength: 4)
           if presentation.isSwitching {

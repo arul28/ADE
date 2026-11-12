@@ -359,6 +359,19 @@ function installAdeMock(options: {
  * The feeds come from the page's provider in production; the pane opens no
  * subscriptions of its own, so every render site here has to supply the owner.
  */
+/** The machine the lane lives on: the pane's tools read and act there. */
+const LANE_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+/** Another computer: the remote sessions below run there. */
+const STUDIO_PIN: OpenProjectBinding = {
+  kind: "remote",
+  key: "remote:target-1:project-1",
+  targetId: "target-1",
+  runtimeName: "Mac Studio",
+  projectId: "project-1",
+  rootPath: "/repo",
+  displayName: "Repo",
+};
+
 function withFeeds(runtimePin: OpenProjectBinding | null, children: ReactNode) {
   return (
     <MemoryRouter>
@@ -379,7 +392,7 @@ function renderSidebar(args: {
   onTabChange?: (tab: WorkSidebarTab | null) => void;
   runtimePin?: OpenProjectBinding | null;
 }) {
-  const runtimePin = args.runtimePin ?? null;
+  const runtimePin = args.runtimePin === undefined ? LANE_PIN : args.runtimePin;
   return render(withFeeds(runtimePin, (
     <WorkSidebar
       active
@@ -486,6 +499,7 @@ describe("WorkSidebar context targets", () => {
     fireEvent.click(screen.getByRole("button", { name: /Resume/ }));
     await waitFor(() => expect(resumeSession).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: activeSession.id }),
+      LANE_PIN,
     ));
   });
 
@@ -519,7 +533,7 @@ describe("WorkSidebar context targets", () => {
       terminalId: "term-1",
       ptyId: "pty-1",
       data: expect.stringContaining("\x1b[200~"),
-    }, null);
+    }, LANE_PIN);
     expect(terminalWrite.mock.calls[0]?.[0].data).toContain("iOS visual inspect context attached by the user.");
     expect(terminalWrite.mock.calls[0]?.[0].data).toContain("Continue");
     expect(dispatchSpy).not.toHaveBeenCalledWith(expect.objectContaining({ type: "ade:agent-chat:add-ios-context" }));
@@ -744,45 +758,27 @@ describe("WorkSidebar context targets", () => {
 
   it("stays on the Apple panel for a remote session instead of falling back to the picker", async () => {
     const onTabChange = vi.fn();
-    useAppStore.setState({
-      projectBinding: {
-        kind: "remote",
-        key: "remote:target-1:project-1",
-        targetId: "target-1",
-        runtimeName: "Mac Studio",
-        projectId: "project-1",
-        rootPath: "/repo",
-        displayName: "Repo",
-      },
-    } as any);
+    useAppStore.setState({ projectBinding: STUDIO_PIN } as any);
 
     renderSidebar({
       tab: "ios",
       contextTarget: { kind: "chat", sessionId: "chat-1" },
+      runtimePin: STUDIO_PIN,
       onTabChange,
     });
 
     expect(onTabChange).not.toHaveBeenCalled();
     expect(screen.getByTestId("ios-panel")).toBeTruthy();
-    await waitFor(() => expect(window.ade.iosSimulator.getStatus).toHaveBeenCalled());
+    await waitFor(() => expect(window.ade.iosSimulator.getStatus).toHaveBeenCalledWith(STUDIO_PIN));
   });
 
   it("offers Apple and App Control on a remote session's tool picker", () => {
-    useAppStore.setState({
-      projectBinding: {
-        kind: "remote",
-        key: "remote:target-1:project-1",
-        targetId: "target-1",
-        runtimeName: "Mac Studio",
-        projectId: "project-1",
-        rootPath: "/repo",
-        displayName: "Repo",
-      },
-    } as any);
+    useAppStore.setState({ projectBinding: STUDIO_PIN } as any);
 
     renderSidebar({
       tab: null,
       contextTarget: { kind: "chat", sessionId: "chat-1" },
+      runtimePin: STUDIO_PIN,
     });
 
     // Work tools follow the session's machine, so nothing here is gated on the
@@ -799,26 +795,17 @@ describe("WorkSidebar context targets", () => {
 
   it("opens the browser on a remote project rather than falling back to the picker", async () => {
     const onTabChange = vi.fn();
-    useAppStore.setState({
-      projectBinding: {
-        kind: "remote",
-        key: "remote:target-1:project-1",
-        targetId: "target-1",
-        runtimeName: "Mac Studio",
-        projectId: "project-1",
-        rootPath: "/repo",
-        displayName: "Repo",
-      },
-    } as any);
+    useAppStore.setState({ projectBinding: STUDIO_PIN } as any);
 
     renderSidebar({
       tab: "browser",
       contextTarget: { kind: "chat", sessionId: "chat-1" },
+      runtimePin: STUDIO_PIN,
       onTabChange,
     });
 
     expect(screen.getByTestId("browser-panel")).toBeTruthy();
-    await waitFor(() => expect(window.ade.builtInBrowser.getStatus).toHaveBeenCalled());
+    await waitFor(() => expect(window.ade.builtInBrowser.getStatus).toHaveBeenCalledWith(expect.anything(), STUDIO_PIN));
     expect(onTabChange).not.toHaveBeenCalledWith(null);
   });
 
@@ -900,7 +887,7 @@ describe("WorkSidebar live tool status", () => {
 
   it("re-reads attached shells when a session appears, without remounting the pane", async () => {
     const live = installLiveTerminalMock();
-    const { container } = render(withFeeds(null, (
+    const { container } = render(withFeeds(LANE_PIN, (
       <WorkSidebar
         active
         laneId="lane-1"
@@ -911,6 +898,7 @@ describe("WorkSidebar live tool status", () => {
         onClose={vi.fn()}
         contextTarget={{ kind: "chat", sessionId: "chat-1" }}
         contextDisabledReason={null}
+        runtimePin={LANE_PIN}
       />
     )));
 
@@ -970,7 +958,7 @@ describe("WorkSidebar pane chrome", () => {
     // pane, so the pane's capture handler never saw it. Escape did nothing at
     // all, which is the one keystroke a pane you just opened has to honour.
     const onToolChange = vi.fn();
-    const tree = (tool: WorkSidebarTab | null) => withFeeds(null, (
+    const tree = (tool: WorkSidebarTab | null) => withFeeds(LANE_PIN, (
       <WorkSidebar
         active
         laneId="lane-1"
@@ -981,6 +969,7 @@ describe("WorkSidebar pane chrome", () => {
         onClose={vi.fn()}
         contextTarget={{ kind: "chat", sessionId: "chat-1" }}
         contextDisabledReason={null}
+        runtimePin={LANE_PIN}
       />
     ));
     const { container, rerender } = render(tree(null));
@@ -1092,7 +1081,7 @@ describe("WorkSidebar pane chrome", () => {
   });
 
   it("shows the picker with an empty strip, and keeps the strip up behind it", () => {
-    const { rerender } = render(withFeeds(null, (
+    const { rerender } = render(withFeeds(LANE_PIN, (
       <WorkSidebar
         active
         laneId="lane-1"
@@ -1105,6 +1094,7 @@ describe("WorkSidebar pane chrome", () => {
         onClose={vi.fn()}
         contextTarget={{ kind: "chat", sessionId: "chat-1" }}
         contextDisabledReason={null}
+        runtimePin={LANE_PIN}
       />
     )));
     // Nothing open: the bar is the grid button and the ✕, and the page is the
@@ -1113,7 +1103,7 @@ describe("WorkSidebar pane chrome", () => {
     expect(cardFor("Terminal")).toBeTruthy();
 
     // Tabs stay drawn while the picker is showing — they are still open.
-    rerender(withFeeds(null, (
+    rerender(withFeeds(LANE_PIN, (
       <WorkSidebar
         active
         laneId="lane-1"
@@ -1126,6 +1116,7 @@ describe("WorkSidebar pane chrome", () => {
         onClose={vi.fn()}
         contextTarget={{ kind: "chat", sessionId: "chat-1" }}
         contextDisabledReason={null}
+        runtimePin={LANE_PIN}
       />
     )));
     expect(screen.getAllByRole("tab")).toHaveLength(2);
@@ -1134,7 +1125,7 @@ describe("WorkSidebar pane chrome", () => {
 
   it("closes a tab through the pane's own ×", () => {
     const onToolClose = vi.fn();
-    render(withFeeds(null, (
+    render(withFeeds(LANE_PIN, (
       <WorkSidebar
         active
         laneId="lane-1"
@@ -1147,6 +1138,7 @@ describe("WorkSidebar pane chrome", () => {
         onClose={vi.fn()}
         contextTarget={{ kind: "chat", sessionId: "chat-1" }}
         contextDisabledReason={null}
+        runtimePin={LANE_PIN}
       />
     )));
 
@@ -1155,7 +1147,7 @@ describe("WorkSidebar pane chrome", () => {
   });
 
   it("puts the tool on screen in the strip even when the caller forgot to", () => {
-    render(withFeeds(null, (
+    render(withFeeds(LANE_PIN, (
       <WorkSidebar
         active
         laneId="lane-1"
@@ -1167,6 +1159,7 @@ describe("WorkSidebar pane chrome", () => {
         onClose={vi.fn()}
         contextTarget={{ kind: "chat", sessionId: "chat-1" }}
         contextDisabledReason={null}
+        runtimePin={LANE_PIN}
       />
     )));
     // A pane showing a tool with no tab would have no mark anywhere saying what
@@ -1176,7 +1169,7 @@ describe("WorkSidebar pane chrome", () => {
 
   it("closes the pane on Escape at the picker, where there is nothing to go back to", () => {
     const onClose = vi.fn();
-    const { container } = render(withFeeds(null, (
+    const { container } = render(withFeeds(LANE_PIN, (
       <WorkSidebar
         active
         laneId="lane-1"
@@ -1187,6 +1180,7 @@ describe("WorkSidebar pane chrome", () => {
         onClose={onClose}
         contextTarget={{ kind: "chat", sessionId: "chat-1" }}
         contextDisabledReason={null}
+        runtimePin={LANE_PIN}
       />
     )));
 
@@ -1201,7 +1195,7 @@ describe("WorkSidebar pane chrome", () => {
     // tool behind the user's back and moved focus into an `opacity: 0`,
     // `pointer-events: none` subtree on a route they were not on.
     const onToolChange = vi.fn();
-    const tree = (active: boolean) => withFeeds(null, (
+    const tree = (active: boolean) => withFeeds(LANE_PIN, (
       <WorkSidebar
         active={active}
         laneId="lane-1"
@@ -1212,6 +1206,7 @@ describe("WorkSidebar pane chrome", () => {
         onClose={vi.fn()}
         contextTarget={{ kind: "chat", sessionId: "chat-1" }}
         contextDisabledReason={null}
+        runtimePin={LANE_PIN}
       />
     ));
     const { container, rerender } = render(tree(true));

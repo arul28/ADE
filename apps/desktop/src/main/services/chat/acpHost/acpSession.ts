@@ -63,6 +63,7 @@ import {
   type AcpDialect,
   type AcpLocalUsageReader,
   type AcpSlashCommand,
+  type AcpTurnFailure,
   type AcpUsageSample,
 } from "./acpHostTypes";
 import { createAcpEventTranslator, usageSampleToEvents, type AcpEventTranslator } from "./acpEventTranslator";
@@ -168,6 +169,11 @@ export type AcpTurnOutcome = {
    */
   interrupted: boolean;
   usage: AcpUsageSample | null;
+  /**
+   * Set when the agent answered the turn as finished but it failed upstream
+   * (`dialect.turnOutcome`). Never set on an interrupted turn.
+   */
+  failure?: AcpTurnFailure | null;
   /** Events derived from the prompt result. Publish them after the stream. */
   events: AgentChatEvent[];
   /**
@@ -204,6 +210,11 @@ export type AcpSession = {
   /** Session modes and config options the entry call reported. */
   readonly initialConfigOptions: AcpSessionConfigOption[];
   readonly initialModeId: string | null;
+  /**
+   * The system-prompt text the entry call carried (`systemPromptAppend`), or
+   * null when the dialect has no such channel or there was none to send.
+   */
+  readonly systemPromptAppended: string | null;
   /**
    * True once ADE has published the "this agent gates itself" notice. The
    * caller persists it so a runtime restart does not repeat the line.
@@ -297,6 +308,11 @@ export type OpenAcpSessionArgs = {
   requestedModelId?: string | null;
   /** MCP servers to offer. The caller already removed anything unsafe. */
   mcpServers?: AcpMcpServer[];
+  /**
+   * Text for the agent's system prompt, sent with the entry call when the
+   * dialect has `systemPromptMeta`; ignored otherwise.
+   */
+  systemPromptAppend?: string | null;
   callbacks: AcpSessionCallbacks;
   logger?: Logger;
   pool?: AcpSessionPool;
@@ -338,13 +354,15 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
    * until its result or failure arrives. `answered`: from the result until
    * `prompt()` exits. `idle` otherwise, including after a failed prompt.
    */
-  let turnPhase: "idle" | "prompting" | "answered" = "idle";
+  let turnPhase: "idle" | "preparing" | "prompting" | "answered" = "idle";
   const unsubscribers: Array<() => void> = [];
 
   const publish = (events: AgentChatEvent[]): void => {
     if (events.length) callbacks.onEvents(events);
   };
 
+  /** What the agent said about the session when it opened it (an account tier). */
+  let entryResponseMeta: Readonly<Record<string, unknown>> | null = null;
   const requestedModelToken = args.requestedModelId?.trim() || null;
   const plainModelId = (raw: string): string => dialect.modelIdFromAgent ? dialect.modelIdFromAgent(raw) : raw;
   const telemetry = createAcpTurnTelemetry({
@@ -355,7 +373,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     providerLabel: dialect.displayName,
     ...(dialect.servedModelMismatchNote ? { servedModelMismatchNote: dialect.servedModelMismatchNote } : {}),
     hasLocalUsage: dialect.localUsage.declared,
-    readAccount: () => dialect.readAccount({ env: args.spawnPlan.env }),
+    readAccount: () => dialect.readAccount({ env: args.spawnPlan.env, sessionMeta: entryResponseMeta }),
     ...(args.logger ? { logger: args.logger } : {}),
   });
 
@@ -427,7 +445,9 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     connection.onSessionUpdate((notification) => {
       if (suppressUpdates) return;
       if (sessionId && notification.sessionId && notification.sessionId !== sessionId) return;
-      const update = notification.update;
+      const update = dialect.normalizeSessionUpdate
+        ? dialect.normalizeSessionUpdate(notification.update)
+        : notification.update;
       if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
         supervision.noteToolCall(update.kind);
       }
@@ -483,13 +503,17 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
 
   let initialConfigOptions: AcpSessionConfigOption[] = [];
   let initialModeId: string | null = null;
+  const systemPromptAppend = args.systemPromptAppend?.trim() || null;
+  const entryMeta = systemPromptAppend && dialect.systemPromptMeta ? dialect.systemPromptMeta(systemPromptAppend) : null;
+  const withEntryMeta = <T extends object>(params: T): T => (entryMeta ? { ...params, _meta: entryMeta } : params);
 
   const openNewSession = async (): Promise<void> => {
-    const response = await connection.request<AcpNewSessionResponse>(ACP_METHOD.sessionNew, {
+    const response = await connection.request<AcpNewSessionResponse>(ACP_METHOD.sessionNew, withEntryMeta({
       cwd: args.cwd,
       mcpServers: effectiveMcpServers,
-    });
+    }));
     sessionId = response.sessionId;
+    entryResponseMeta = metaRecord(response._meta);
     initialConfigOptions = normalizeAcpConfigOptions(response.configOptions ?? []);
     initialModeId = response.modes?.currentModeId ?? null;
     for (const notification of dialect.postSessionNewNotifications({ sessionId })) {
@@ -511,8 +535,9 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
       const call = behavior({ sessionId: storedId, cwd: args.cwd, mcpServers: effectiveMcpServers });
       suppressUpdates = entryPlan.suppressReplay;
       try {
-        const response = await connection.request<AcpNewSessionResponse>(call.method, call.params);
+        const response = await connection.request<AcpNewSessionResponse>(call.method, withEntryMeta(call.params));
         sessionId = response.sessionId ?? storedId;
+        entryResponseMeta = metaRecord(response._meta);
         initialConfigOptions = normalizeAcpConfigOptions(response.configOptions ?? []);
         initialModeId = response.modes?.currentModeId ?? null;
       } catch (error) {
@@ -582,6 +607,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
     connection,
     initialConfigOptions,
     initialModeId,
+    systemPromptAppended: entryMeta ? systemPromptAppend : null,
     get unsupervised() {
       return supervision.unsupervised;
     },
@@ -608,19 +634,29 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
         publishSupervision(supervision.drainQueued(turnId));
         let response: AcpPromptResponse | null = null;
         let interrupted = false;
-        turnPhase = "prompting";
+        // A Stop while the dialect prepares its outcome check is kept, and
+        // the prompt is then never sent.
+        turnPhase = "preparing";
+        const outcomeCheck = dialect.turnOutcome
+          ? await dialect.turnOutcome({ sessionId }).catch(() => null)
+          : null;
+        turnPhase = cancelRequested ? "idle" : "prompting";
         try {
-          response = await connection.request<AcpPromptResponse>(
-            ACP_METHOD.sessionPrompt,
-            { sessionId, prompt: blocks },
-            { timeoutMs: ACP_PROMPT_NO_TIMEOUT },
-          );
-          turnPhase = "answered";
-          // The verdict, taken once, the moment the agent answered. Client-side
-          // accounting: an agent can report `end_turn` for a turn ADE cancelled,
-          // so the agent's word is not the deciding one. A Stop pressed during
-          // the telemetry reads below found a finished turn and changes nothing.
-          interrupted = cancelRequested || response?.stopReason === "cancelled" || isInterrupted?.() === true;
+          if (cancelRequested) {
+            interrupted = true;
+          } else {
+            response = await connection.request<AcpPromptResponse>(
+              ACP_METHOD.sessionPrompt,
+              { sessionId, prompt: blocks },
+              { timeoutMs: ACP_PROMPT_NO_TIMEOUT },
+            );
+            turnPhase = "answered";
+            // The verdict, taken once, the moment the agent answered. Client-side
+            // accounting: an agent can report `end_turn` for a turn ADE cancelled,
+            // so the agent's word is not the deciding one. A Stop pressed during
+            // the telemetry reads below found a finished turn and changes nothing.
+            interrupted = cancelRequested || response?.stopReason === "cancelled" || isInterrupted?.() === true;
+          }
         } finally {
           if (turnPhase === "prompting") turnPhase = "idle";
           // Every open permission request belongs to the turn that just ended.
@@ -631,6 +667,9 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
           publishSupervision(supervision.endTurn(turnId));
         }
 
+        const failure = outcomeCheck && !interrupted
+          ? await outcomeCheck(response).catch(() => null)
+          : null;
         await waitForSettledUsage();
         const usage = readPromptUsage(dialect, response);
         const local = localUsage
@@ -653,13 +692,14 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
           stopReason: response?.stopReason ?? null,
           interrupted,
           usage,
+          failure,
           events,
           done: turnTelemetry.done,
         };
       } finally {
         // On every exit, a failed prompt included: nothing that arrives
         // between turns may carry this turn's id.
-        if (turnPhase === "answered") turnPhase = "idle";
+        if (turnPhase === "answered" || turnPhase === "preparing") turnPhase = "idle";
         translator.endTurn();
         telemetry.endTurn();
       }
@@ -671,6 +711,10 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
       permissionBridge.cancelAll(reason);
       // An agent that already answered the prompt is idle. The turn's verdict
       // is taken, and a cancel would reach an agent with nothing to stop.
+      if (turnPhase === "preparing") {
+        cancelRequested = true;
+        return;
+      }
       if (turnPhase !== "prompting") return;
       cancelRequested = true;
       if (dialect.cancelStyle === "notification") {
@@ -747,6 +791,10 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
   };
 
   return session;
+}
+
+function metaRecord(meta: unknown): Readonly<Record<string, unknown>> | null {
+  return meta && typeof meta === "object" && !Array.isArray(meta) ? (meta as Record<string, unknown>) : null;
 }
 
 function filterMcpServers(

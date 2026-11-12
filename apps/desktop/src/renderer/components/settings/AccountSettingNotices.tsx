@@ -15,7 +15,7 @@ export function AccountSettingNotices({
   keys,
   onResolved,
 }: {
-  /** The computer whose settings these are; null for this tab's own machine. */
+  /** The computer whose settings these are; null when no copy is online (no notices). */
   pin: OpenProjectBinding | null;
   /** The account rows this surface edits: exact keys, or `ai.` for every row under it. */
   keys: readonly string[];
@@ -40,8 +40,9 @@ export function AccountSettingNotices({
     setBusyKey(null);
     setError(null);
     // A host without project settings (or an older bridge) has no notices.
+    // With no computer known there is nothing to ask.
     const projectConfig = window.ade?.projectConfig;
-    if (!projectConfig?.get) return;
+    if (!projectConfig?.get || !pin) return;
     projectConfig
       .get(pin)
       .then((snapshot) => {
@@ -57,7 +58,11 @@ export function AccountSettingNotices({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pinKey, keyList]);
 
+  // A notice names its computer when that computer is not this one.
+  const computer = pin?.kind === "remote" ? pin.runtimeName || "that computer" : "this computer";
+
   const answer = async (key: string, choice: "use_local" | "keep") => {
+    if (!pin) return;
     const generation = scopeGeneration.current;
     const current = () => generation === scopeGeneration.current;
     setBusyKey(key);
@@ -90,10 +95,10 @@ export function AccountSettingNotices({
           model={{
             id: `account-setting-${notice.key}`,
             tone: "info",
-            title: keptHereTitle(notice),
+            title: keptHereTitle(notice, computer),
             detail: notice.reason === "secret"
-              ? "Until then it stays on this computer, and your other computers do not get it."
-              : "It stays on this computer, and your other computers do not get it.",
+              ? `Until then it stays on ${computer}, and your other computers do not get it.`
+              : `It stays on ${computer}, and your other computers do not get it.`,
           }}
         />
       ) : (
@@ -103,13 +108,13 @@ export function AccountSettingNotices({
           model={{
             id: `account-setting-${notice.key}`,
             tone: "info",
-            title: `${notice.label}: this computer had a different value.`,
+            title: `${notice.label}: ${computer} had a different value.`,
             detail: "ADE now uses the value saved in your account for this repository.",
             busy: busyKey === notice.key,
             error: busyKey === null && error ? error : undefined,
             actions: [
               {
-                label: "Use this computer's value",
+                label: `Use ${computer}'s value`,
                 onClick: () => { void answer(notice.key, "use_local"); },
                 disabled: busyKey !== null,
               },
@@ -127,13 +132,13 @@ export function AccountSettingNotices({
   );
 }
 
-function keptHereTitle(notice: Extract<ProjectConfigAccountNotice, { kind: "kept_here" }>): string {
+function keptHereTitle(notice: Extract<ProjectConfigAccountNotice, { kind: "kept_here" }>, computer: string): string {
   if (notice.reason === "secret") {
     const names = (notice.names ?? []).join(", ") || "its secret values";
     return `Move ${names} to Project secrets so ${notice.label} follows your account.`;
   }
   if (notice.reason === "machine_path") {
-    return `${notice.label} names a folder on this computer, so it can't follow your account.`;
+    return `${notice.label} names a folder on ${computer}, so it can't follow your account.`;
   }
   return `${notice.label} is too large to follow your ADE account.`;
 }

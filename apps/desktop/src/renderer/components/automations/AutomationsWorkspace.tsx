@@ -42,11 +42,14 @@ import { parseMachineScopedId } from "../../state/foreignMachineReads";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { isAdeCloudLaneComputer } from "../lanes/laneMachines";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { clearStoredAutomationDraft, loadStoredAutomationDraft, storeAutomationDraft } from "./automationDraftStore";
 import { automationFeaturesNeedingNewerAde, explainAutomationActionError } from "../../../shared/automationFeatureVersions";
 import { automationRunLaneNeed } from "../../../shared/automationRunLane";
 
 const CHOOSE_MACHINE_HINT = "Choose the machine this automation runs on.";
+/** Zero machines: no computer with this project is online, so nothing is read or sent. */
+const NO_COMPUTER_ONLINE = "No computer with this project is online.";
 
 /** Read on use: the app-wide default can move with model-manifest.json. */
 const defaultModelId = (): string =>
@@ -227,6 +230,20 @@ export function AutomationsWorkspace({
     refreshMachine,
   } = useAutomationMachines({ active, rules, setRules, lanes });
   /**
+   * The tab machine's copy: where the rules, lanes and suites shown as "this
+   * tab's" are read, and where a call for a null machine goes. Null when no
+   * computer with this project is online; nothing is read then.
+   */
+  const tabPin = useTabCopyPin();
+  const tabPinRef = useRef(tabPin);
+  tabPinRef.current = tabPin;
+  /** The pin of a machine, or of the tab's machine for null. Throws when there is none. */
+  const machinePin = useCallback((machine: LaneMachine | null): OpenProjectBinding => {
+    const pin = machine ? machine.pin : tabPinRef.current;
+    if (!pin) throw new Error(NO_COMPUTER_ONLINE);
+    return pin;
+  }, []);
+  /**
    * The machine the open draft belongs to; null = the tab's machine. Captured
    * as the full machine (with its pin) so a save always goes to the machine the
    * draft was opened on, even if the union momentarily drops it.
@@ -319,17 +336,30 @@ export function AutomationsWorkspace({
   }, [draftOrigin, isDirty]);
 
   const refresh = useCallback(async () => {
+    const pin = tabPinRef.current;
+    if (!pin) {
+      // No computer with this project is online: show the empty state, call nothing.
+      setRules([]);
+      setSuites([]);
+      setLanes([]);
+      setIngressStatus(null);
+      setCursorCloudConnected(false);
+      setError(null);
+      setLoading(false);
+      setRulesLoadedOnce(true);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const [nextRules, nextSuites, nextLanes, nextIngress, _projectConfig, aiStatus] = await Promise.all([
-        window.ade.automations.list(),
-        window.ade.tests.listSuites(),
-        window.ade.lanes.list({ includeArchived: false, includeStatus: false }),
-        window.ade.automations.getIngressStatus(),
-        window.ade.projectConfig.get(),
+        window.ade.automations.list(pin),
+        window.ade.tests.listSuites(pin),
+        window.ade.lanes.list({ includeArchived: false, includeStatus: false }, pin),
+        window.ade.automations.getIngressStatus(pin),
+        window.ade.projectConfig.get(pin),
         Promise.resolve()
-          .then(() => readCursorCloudConnectionForAutomation(() => window.ade.ai.getStatus())),
+          .then(() => readCursorCloudConnectionForAutomation(() => window.ade.ai.getStatus(undefined, pin))),
       ]);
       setRules(nextRules);
       setSuites(nextSuites);
@@ -355,6 +385,24 @@ export function AutomationsWorkspace({
   }, []);
   loadRef.current = refresh;
 
+  // The relay and the webhook gateway report their state on every poll, so
+  // "ingress-updated" comes several times a minute. It changes only the
+  // ingress status: read that alone, and keep the old object when nothing in
+  // it changed, so the page does not reload its rules on each poll.
+  const refreshIngress = useCallback(async () => {
+    const pin = tabPinRef.current;
+    if (!pin) return;
+    try {
+      const next = await window.ade.automations.getIngressStatus(pin);
+      if (tabPinRef.current?.key !== pin.key) return;
+      setIngressStatus((current) => (current && JSON.stringify(current) === JSON.stringify(next) ? current : next));
+    } catch {
+      // The next full refresh reads it again.
+    }
+  }, []);
+  const refreshIngressRef = useRef(refreshIngress);
+  refreshIngressRef.current = refreshIngress;
+
   // A selected rule on another machine falls back only once that machine has
   // answered without it, or has left.
   useEffect(() => {
@@ -363,10 +411,17 @@ export function AutomationsWorkspace({
     setSelectedRuleId(rules[0]?.id ?? null);
   }, [foreignRuleKeyState, rules, selectedRuleId]);
 
+  // The tab machine's events refresh its rules. Other machines' rules come
+  // from the shared foreign-read loop, so they add no event pump here.
   useEffect(() => {
     if (!active) return;
     void refresh();
-    const unsubscribe = window.ade.automations.onEvent(() => void loadRef.current?.());
+    const pin = tabPinRef.current;
+    if (!pin) return;
+    const unsubscribe = window.ade.automations.onEvent((event) => {
+      if (event.type === "ingress-updated") void refreshIngressRef.current();
+      else void loadRef.current?.();
+    }, pin);
     return () => {
       try {
         unsubscribe();
@@ -374,7 +429,7 @@ export function AutomationsWorkspace({
         // ignore
       }
     };
-  }, [active, refresh]);
+  }, [active, refresh, tabPin?.key]);
 
   /**
    * A new draft names its machine in the recipe ("Runs on"), not in a popup.
@@ -526,20 +581,21 @@ export function AutomationsWorkspace({
 
   // The draft's machine supplies its own suites and ingress status; the tab
   // machine's would describe the wrong checkout.
-  const draftPin: OpenProjectBinding | null = draftTarget?.pin ?? null;
+  const draftPin: OpenProjectBinding | null = draftTarget ? draftTarget.pin : tabPin;
   // The tab's own copy has a pin too; its suites and ingress are the ones this
   // page already reads.
   const draftForeignTarget = draftTarget && !draftTarget.isActiveBinding ? draftTarget : null;
   useEffect(() => {
     setDraftMachineSuites(null);
     setDraftMachineIngress(null);
-    if (!active || !draftForeignTarget?.pin || !draftForeignTarget.online) return;
+    const targetPin = draftForeignTarget?.pin ?? null;
+    if (!active || !draftForeignTarget || !targetPin || !draftForeignTarget.online) return;
     let cancelled = false;
     const target = draftForeignTarget;
-    void onMachine(window.ade.tests.listSuites(target.pin), target)
+    void onMachine(window.ade.tests.listSuites(targetPin), target)
       .then((next) => { if (!cancelled) setDraftMachineSuites(next); })
       .catch(() => { if (!cancelled) setDraftMachineSuites([]); });
-    void onMachine(window.ade.automations.getIngressStatus(target.pin), target)
+    void onMachine(window.ade.automations.getIngressStatus(targetPin), target)
       .then((next) => { if (!cancelled) setDraftMachineIngress(next); })
       .catch(() => {});
     return () => {
@@ -555,6 +611,7 @@ export function AutomationsWorkspace({
 
   const validateDraft = useCallback(
     async (nextDraft: AutomationRuleDraft) => {
+      if (!draftPin) throw new Error(NO_COMPUTER_ONLINE);
       const result = await onMachine(window.ade.automations.validateDraft({
         draft: nextDraft,
         confirmations: [...acceptedConfirmations],
@@ -609,7 +666,7 @@ export function AutomationsWorkspace({
         const saved = await onMachine(
           window.ade.automations.saveDraft(
             { draft: { ...draftToSave, home: "this-computer" }, confirmations: [...acceptedConfirmations] },
-            to?.pin ?? null,
+            machinePin(to),
           ),
           to,
         );
@@ -650,7 +707,7 @@ export function AutomationsWorkspace({
       const created = await onMachine(
         window.ade.automations.saveDraft(
           { draft: { ...rest, enabled: false }, confirmations: [...acceptedConfirmations] },
-          to?.pin ?? null,
+          machinePin(to),
         ),
         to,
       );
@@ -659,7 +716,7 @@ export function AutomationsWorkspace({
       //    copy stays paused, so nothing runs twice.
       try {
         const remaining = await onMachine(
-          window.ade.automations.deleteRule({ id: oldId }, from?.pin ?? null),
+          window.ade.automations.deleteRule({ id: oldId }, machinePin(from)),
           from,
         );
         commitMachineRules(from, remaining);
@@ -672,7 +729,7 @@ export function AutomationsWorkspace({
       if (ruleDraft.enabled) {
         try {
           finalRules = await onMachine(
-            window.ade.automations.toggle({ id: created.rule.id, enabled: true }, to?.pin ?? null),
+            window.ade.automations.toggle({ id: created.rule.id, enabled: true }, machinePin(to)),
             to,
           );
           commitMachineRules(to, finalRules);
@@ -697,7 +754,7 @@ export function AutomationsWorkspace({
     } finally {
       setSaving(false);
     }
-  }, [acceptedConfirmations, blockedReason, boundMachine, commitMachineRules, entryByKey, machineAccountRule, machineListsAccountRule, refreshForeign, selectedRuleId, validateDraft]);
+  }, [acceptedConfirmations, blockedReason, boundMachine, commitMachineRules, entryByKey, machineAccountRule, machineListsAccountRule, machinePin, refreshForeign, selectedRuleId, validateDraft]);
 
   const saveDraft = useCallback(async () => {
     if (!draft) return;
@@ -709,8 +766,9 @@ export function AutomationsWorkspace({
         const validation = await validateDraft(draft);
         if (!validation.ok) return;
         const target = draftTarget;
+        if (!draftPin) throw new Error(NO_COMPUTER_ONLINE);
         const saved = await onMachine(
-          window.ade.automations.saveDraft({ draft: { ...draft, home: "ade-cloud" }, confirmations: [...acceptedConfirmations] }, target?.pin ?? null),
+          window.ade.automations.saveDraft({ draft: { ...draft, home: "ade-cloud" }, confirmations: [...acceptedConfirmations] }, draftPin),
           target,
         );
         commitMachineRules(target, saved.rules);
@@ -751,7 +809,7 @@ export function AutomationsWorkspace({
       if (!validation.ok) return;
       const target = draftTarget;
       const saved = await onMachine(
-        window.ade.automations.saveDraft({ draft, confirmations: [...acceptedConfirmations] }, target?.pin ?? null),
+        window.ade.automations.saveDraft({ draft, confirmations: [...acceptedConfirmations] }, machinePin(target)),
         target,
       );
       commitMachineRules(target, saved.rules);
@@ -770,7 +828,7 @@ export function AutomationsWorkspace({
     } finally {
       setSaving(false);
     }
-  }, [acceptedConfirmations, blockedReason, commitMachineRules, draft, draftCloudChosen, draftMachineChosen, draftMoving, draftOrigin, draftTarget, moveRule, refreshForeign, validateDraft]);
+  }, [acceptedConfirmations, blockedReason, commitMachineRules, draft, draftCloudChosen, draftMachineChosen, draftMoving, draftOrigin, draftPin, draftTarget, machinePin, moveRule, refreshForeign, validateDraft]);
 
   const createRule = useCallback(async () => {
     if (!(await confirmDiscardIfDirty())) return;
@@ -801,7 +859,7 @@ export function AutomationsWorkspace({
         const run = await onMachine(
           window.ade.automations.triggerManually(
             { id: entry.rule.id, ...(laneId ? { laneId } : {}) },
-            entry.machine.pin,
+            machinePin(entry.machine),
           ),
           entry.machine,
         );
@@ -826,7 +884,7 @@ export function AutomationsWorkspace({
         setRunning(false);
       }
     },
-    [blockedReason, refresh, refreshMachine],
+    [blockedReason, machinePin, refresh, refreshMachine],
   );
 
   const beginRunRule = useCallback(
@@ -861,7 +919,7 @@ export function AutomationsWorkspace({
     setError(null);
     try {
       const next = await onMachine(
-        window.ade.automations.deleteRule({ id: entry.rule.id }, entry.machine.pin),
+        window.ade.automations.deleteRule({ id: entry.rule.id }, machinePin(entry.machine)),
         entry.machine,
       );
       commitMachineRules(entry.machine, next);
@@ -872,7 +930,7 @@ export function AutomationsWorkspace({
     } catch (err) {
       setError(explainError(err));
     }
-  }, [blockedReason, commitMachineRules, entryByKey, refreshForeign]);
+  }, [blockedReason, commitMachineRules, entryByKey, machinePin, refreshForeign]);
 
   const toggleRule = useCallback((key: string, enabled: boolean) => {
     const entry = entryByKey.get(key);
@@ -882,10 +940,11 @@ export function AutomationsWorkspace({
       setError(blocked);
       return;
     }
-    onMachine(window.ade.automations.toggle({ id: entry.rule.id, enabled }, entry.machine.pin), entry.machine)
+    Promise.resolve()
+      .then(() => onMachine(window.ade.automations.toggle({ id: entry.rule.id, enabled }, machinePin(entry.machine)), entry.machine))
       .then((next) => commitMachineRules(entry.machine, next))
       .catch((err) => setError(explainError(err)));
-  }, [blockedReason, commitMachineRules, entryByKey]);
+  }, [blockedReason, commitMachineRules, entryByKey, machinePin]);
 
   const hasProjectSidebar = useHasProjectSidebar();
   const selectedEntry = selectedRuleId ? entryByKey.get(selectedRuleId) ?? null : null;
@@ -904,11 +963,13 @@ export function AutomationsWorkspace({
     () => automationFeaturesNeedingNewerAde(draft, ruleMachineVersion),
     [draft, ruleMachineVersion],
   );
-  const machineNotes = Object.keys(foreignLoads).length > 0 ? (
+  const noComputerOnline = !tabPin && !machines.some((machine) => machine.online && machine.pin);
+  const machineNotes = Object.keys(foreignLoads).length > 0 || noComputerOnline ? (
     <div
       className="flex shrink-0 flex-wrap gap-x-3 gap-y-0.5 border-b border-fg/[0.04] px-3 py-1 text-[10.5px] text-muted-fg/50"
       data-testid="automations-machine-notes"
     >
+      {noComputerOnline ? <span>{NO_COMPUTER_ONLINE}</span> : null}
       {Object.entries(foreignLoads).map(([key, load]) => (
         <span key={key} title={load.message ?? undefined}>
           {load.status === "loading"

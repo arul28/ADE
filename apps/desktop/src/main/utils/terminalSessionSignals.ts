@@ -40,7 +40,7 @@ const MUSE_EXIT_RESUME_HINT_REGEX = /\brun\s+(muse\s+resume\s+[0-9a-f]{8}-[0-9a-
 // Drawn with cursor positioning, not on its own line, so it is not anchored.
 const MUSE_RESUMED_SESSION_REGEX = /\bresumed session ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
 
-const RESUME_NATIVE_ACP_COMMAND_LINE_REGEX = /^((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*(?:qwen|kimi|grok|copilot)\s.+)$/i;
+const RESUME_NATIVE_ACP_COMMAND_LINE_REGEX = /^((?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)*(?:qwen|kimi|grok|copilot|agy)\s.+)$/i;
 
 function normalizeCommand(raw: string): string {
   return raw
@@ -174,6 +174,7 @@ function toolFromCommand(raw: string): TerminalToolType | null {
   if (/^grok(?:\s|$)/.test(normalized)) return "grok";
   if (/^copilot(?:\s|$)/.test(normalized)) return "copilot";
   if (/^pi(?:\s|$)/.test(normalized)) return "pi";
+  if (/^agy(?:\s|$)/.test(normalized)) return "antigravity";
   // Muse usually runs as ADE's pinned binary, so its first word is a path.
   const firstWord = normalized.match(/^(?:"[^"]*"|'[^']*'|\S+)/)?.[0] ?? "";
   if (isProviderBinaryCommand(firstWord, "muse")) return "muse";
@@ -192,6 +193,7 @@ export function providerFromTool(toolType: TerminalToolType | null | undefined):
   if (toolType === "kimi" || toolType === "kimi-chat") return "kimi";
   if (toolType === "grok" || toolType === "grok-chat") return "grok";
   if (toolType === "copilot" || toolType === "copilot-chat") return "copilot";
+  if (toolType === "antigravity" || toolType === "antigravity-chat") return "antigravity";
   return null;
 }
 
@@ -274,6 +276,15 @@ function extractTrackedCliPermissionMode(command: string, provider: TerminalResu
     if (permission === "acceptedits") return "edit";
     if (permission === "plan") return "plan";
     if (permission === "default") return "default";
+    return "default";
+  }
+
+  if (provider === "antigravity") {
+    if (normalized.includes("--dangerously-skip-permissions")) return "full-auto";
+    const mode = extractCliFlagValue(normalized, "--mode")?.toLowerCase();
+    if (mode === "plan") return "plan";
+    if (mode === "accept-edits") return "edit";
+    if (mode === "auto") return "auto";
     return "default";
   }
 
@@ -550,6 +561,29 @@ function parseProviderResumeTarget(provider: TerminalResumeProvider, command: st
     return sanitizeResumeTargetId(raw) ?? undefined;
   }
 
+  if (provider === "antigravity") {
+    let parts: string[];
+    try {
+      parts = parseCommandLine(command);
+    } catch {
+      return undefined;
+    }
+    if (parts[0]?.toLowerCase() !== "agy") return undefined;
+    // `--conversation <id>` (or `=<id>`) names one conversation, which the
+    // TUI prints on exit; `-c`/`--continue` is the latest one, not an id.
+    for (let index = 1; index < parts.length; index += 1) {
+      const part = parts[index]!;
+      if (part.toLowerCase().startsWith("--conversation=")) {
+        return sanitizeResumeTargetId(part.slice("--conversation=".length)) ?? undefined;
+      }
+      if (part === "--conversation") {
+        const next = parts[index + 1];
+        return next && !next.startsWith("-") ? sanitizeResumeTargetId(next) ?? undefined : undefined;
+      }
+    }
+    return parts.some((part, index) => index > 0 && (part === "-c" || part === "--continue")) ? null : undefined;
+  }
+
   if (provider === "kimi") {
     let parts: string[];
     try {
@@ -669,6 +703,9 @@ export function defaultResumeCommandForTool(toolType: TerminalToolType | null | 
   // Null for Muse for the same reason: `muse resume --last` is "the most
   // recent session in this workspace", which can be an ADE chat's.
   if (toolType === "muse") return null;
+  // Null for Antigravity too: `agy -c` is the latest conversation on the
+  // machine, which can be a chat's. The TUI prints its own id on exit.
+  if (toolType === "antigravity") return null;
   return null;
 }
 

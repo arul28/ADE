@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { CheckCircle, CircleDashed, CircleNotch, Desktop, Question, Trash, Warning, XCircle } from "@phosphor-icons/react";
+import { CheckCircle, CircleDashed, CircleNotch, CloudSlash, Desktop, Question, Trash, UserCircle, Warning, XCircle } from "@phosphor-icons/react";
 import {
   liveSessionCount,
   summarizeCopyWork,
@@ -11,6 +11,7 @@ import {
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { extractError } from "../../lib/format";
 import { Dialog } from "../ui/dialog/Dialog";
+import { noteAccountProjectChange } from "../../state/accountProjectListClient";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import type { CopyMachine } from "./projectCopies";
 import { useCopyJobs, watchCopyJobs } from "./projectCopyJobs";
@@ -28,14 +29,18 @@ export type RemoveProjectTarget = {
   projectName: string;
   /** Null for a project with no git origin: it lives on one machine, so "all my machines" is hidden. */
   repoKey: string | null;
-  /** The copy the tab is on. */
-  current: RemovalCopy;
+  /** The copy the tab is on; null for a tab with no computer online, which can only leave the account. */
+  current: RemovalCopy | null;
   /** Every machine's copy, the current one included. */
   copies: readonly RemovalCopy[];
+  /** The account project (`ap_…`) when the account lists it: then "From my account" shows. */
+  accountProjectId: string | null;
 };
 
 export type RemoveProjectResult = {
-  scope: "this" | "all";
+  scope: Scope;
+  /** The account no longer lists the project. */
+  accountRemoved: boolean;
   /** Binding keys whose entry is gone. */
   removedBindingKeys: string[];
   /**
@@ -62,7 +67,13 @@ type RowResult =
   /** The request went out and the answer never came back. */
   | { kind: "unknown" };
 
-type Scope = "this" | "all";
+type Scope = "this" | "all" | "account";
+
+type AccountStep =
+  | { kind: "idle" }
+  | { kind: "running" }
+  | { kind: "done" }
+  | { kind: "error"; message: string };
 
 async function inspectCopy(copy: RemovalCopy): Promise<ReportState> {
   if (copy.machine.isLocal) {
@@ -125,8 +136,10 @@ export function RemoveProjectDialog({
   onClose: () => void;
   onRemoved: (result: RemoveProjectResult) => void;
 }) {
-  const { projectName, repoKey, current, copies } = target;
-  const [scope, setScope] = useState<Scope>("this");
+  const { projectName, repoKey, current, copies, accountProjectId } = target;
+  const canLeaveAccount = accountProjectId != null && typeof window.ade?.project?.accountRemove === "function";
+  const [scope, setScope] = useState<Scope>(current ? "this" : "account");
+  const [accountStep, setAccountStep] = useState<AccountStep>({ kind: "idle" });
   const [deleteFolders, setDeleteFolders] = useState(false);
   const [reports, setReports] = useState<Record<string, ReportState>>({});
   const [ticked, setTicked] = useState<Record<string, boolean>>({});
@@ -138,11 +151,11 @@ export function RemoveProjectDialog({
   useEffect(() => (repoKey ? watchCopyJobs(repoKey) : undefined), [repoKey]);
 
   const rows = useMemo<readonly RemovalCopy[]>(
-    () => (scope === "this" || !repoKey ? [current] : copies),
+    () => (scope === "this" || !repoKey ? (current ? [current] : []) : copies),
     [copies, current, repoKey, scope],
   );
   const cloningMachines = useMemo(
-    () => (scope === "all"
+    () => (scope !== "this"
       ? jobs.filter((job) => job.status === "cloning" && !copies.some((copy) => copy.machine.machineId === job.machine.machineId))
       : []),
     [copies, jobs, scope],
@@ -183,8 +196,13 @@ export function RemoveProjectDialog({
 
   const confirmLabel = (() => {
     if (deleting.length > 0) return `Remove and delete ${plural(deleting.length, "folder", "folders")}`;
-    if (scope === "this" || actionable.length <= 1) return `Remove from ${actionable[0]?.machine.name ?? current.machine.name}`;
-    return `Remove from ${plural(actionable.length, "machine", "machines")}`;
+    if (scope === "account") return "Remove from my account";
+    if (scope === "this" || actionable.length <= 1) {
+      const machine = actionable[0]?.machine ?? current?.machine ?? null;
+      return `Remove from ${!machine || machine.isLocal ? "this computer" : machine.name}`;
+    }
+    const machines = new Set(actionable.map((copy) => copy.machine.machineId)).size;
+    return `Remove from ${plural(machines, "computer", "computers")}`;
   })();
 
   // Runs once, from the confirm button; a plain function reads this render's choices.
@@ -219,9 +237,30 @@ export function RemoveProjectDialog({
     }));
     const keysWith = (result: "removed" | "unknown") =>
       outcomes.filter((entry) => entry.result === result).map((entry) => entry.copy.bindingKey);
+    // The account step runs after the computers: a copy that stays (offline,
+    // refused) keeps its folder either way, and the account forgets the
+    // project for every device.
+    let accountRemoved = false;
+    const accountRemove = window.ade?.project?.accountRemove;
+    if (scope === "account" && accountProjectId && typeof accountRemove === "function") {
+      setAccountStep({ kind: "running" });
+      const answer = await accountRemove(accountProjectId).catch((error: unknown) => ({
+        ok: false as const,
+        code: "unavailable",
+        message: extractError(error),
+      }));
+      if (answer.ok) {
+        accountRemoved = true;
+        noteAccountProjectChange({ removedId: accountProjectId });
+        setAccountStep({ kind: "done" });
+      } else {
+        setAccountStep({ kind: "error", message: answer.message });
+      }
+    }
     setPhase("done");
     onRemoved({
       scope,
+      accountRemoved,
       removedBindingKeys: keysWith("removed"),
       unknownBindingKeys: keysWith("unknown"),
       cloneRunning: jobs.some((job) => job.status === "cloning"),
@@ -229,10 +268,11 @@ export function RemoveProjectDialog({
   };
 
   const busy = phase === "running";
-  const machineName = current.machine.name;
+  const machineName = current?.machine.name ?? null;
   const keptLine = deleteFolders && deleting.length > 0
     ? "Folders that are not ticked stay on disk."
     : "ADE keeps the folders. Each copy stays on disk where it is.";
+  const accountOnly = scope === "account" && actionable.length === 0;
 
   return (
     <Dialog
@@ -255,7 +295,7 @@ export function RemoveProjectDialog({
             variant: "solid",
             onClick: () => void run(),
             busy,
-            disabled: busy || actionable.length === 0 || stillLoading,
+            disabled: busy || (actionable.length === 0 && !(scope === "account" && canLeaveAccount)) || stillLoading,
           },
           { label: "Cancel", variant: "secondary", onClick: onClose, disabled: busy },
         ]}
@@ -266,36 +306,66 @@ export function RemoveProjectDialog({
             <legend style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
               Where to remove it from
             </legend>
-            <ChoiceRow
-              type="radio"
-              checked={scope === "this"}
-              onChange={() => setScope("this")}
-              label={`Remove from this machine (${machineName})`}
-            />
-            {repoKey ? (
+            {current ? (
+              <ChoiceRow
+                type="radio"
+                checked={scope === "this"}
+                onChange={() => setScope("this")}
+                label={current.machine.isLocal ? "From this computer" : `From ${machineName}`}
+              />
+            ) : null}
+            {repoKey && copies.length > 0 ? (
               <ChoiceRow
                 type="radio"
                 checked={scope === "all"}
                 onChange={() => setScope("all")}
-                label="Remove from all my machines"
+                label="From all my computers"
               />
             ) : null}
-            <div style={{ height: 4 }} />
-            <ChoiceRow
-              type="checkbox"
-              checked={deleteFolders}
-              onChange={(next) => setDeleteFolders(next)}
-              label="Also delete the folders"
-            />
+            {canLeaveAccount ? (
+              <ChoiceRow
+                type="radio"
+                checked={scope === "account"}
+                onChange={() => setScope("account")}
+                label="From my account"
+                hint="Every computer and device stops listing it."
+              />
+            ) : null}
+            {actionable.length > 0 ? (
+              <>
+                <div style={{ height: 4 }} />
+                <ChoiceRow
+                  type="checkbox"
+                  checked={deleteFolders}
+                  onChange={(next) => setDeleteFolders(next)}
+                  label="Also delete the folders"
+                />
+              </>
+            ) : null}
           </fieldset>
         ) : null}
 
         <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, overflow: "hidden" }}>
+          {rows.length === 0 && !accountOnly ? (
+            <div style={rowStyle(true, true)}>
+              <span style={glyphStyle}><CloudSlash size={13} aria-hidden /></span>
+              <span style={detailStyle}>No computer with this project is online.</span>
+            </div>
+          ) : null}
+          {scope === "account" ? (
+            <AccountRow
+              first
+              step={accountStep}
+              offlineCount={rows.filter((copy) => !copy.machine.online).length}
+              noComputers={rows.length === 0}
+            />
+          ) : null}
           {rows.map((copy, index) => (
             <CopyRow
               key={copy.bindingKey}
               copy={copy}
-              first={index === 0}
+              scope={scope}
+              first={index === 0 && scope !== "account"}
               deleteFolders={deleteFolders && phase === "choose"}
               report={reports[copy.bindingKey] ?? { kind: "idle" }}
               ticked={Boolean(ticked[copy.bindingKey])}
@@ -331,11 +401,13 @@ function ChoiceRow({
   checked,
   onChange,
   label,
+  hint,
 }: {
   type: "radio" | "checkbox";
   checked: boolean;
   onChange: (next: boolean) => void;
   label: string;
+  hint?: string;
 }) {
   return (
     <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", color: COLORS.textPrimary }}>
@@ -347,7 +419,53 @@ function ChoiceRow({
         style={{ width: 14, height: 14, margin: 0, accentColor: "var(--color-accent)" }}
       />
       {label}
+      {hint ? <span style={{ color: COLORS.textMuted }}>{hint}</span> : null}
     </label>
+  );
+}
+
+/** The account's part of "From my account": its own row, above the computers. */
+function AccountRow({
+  first,
+  step,
+  offlineCount,
+  noComputers,
+}: {
+  first: boolean;
+  step: AccountStep;
+  offlineCount: number;
+  noComputers: boolean;
+}) {
+  let glyph: React.ReactNode = <UserCircle size={14} weight="regular" aria-hidden />;
+  let line: { text: string; tone?: "danger" } = {
+    text: "Your project list forgets it. Lanes and chats come back if you add it again.",
+  };
+  if (step.kind === "running") {
+    glyph = <CircleNotch size={13} weight="bold" className="animate-spin" aria-hidden />;
+    line = { text: "Removing…" };
+  } else if (step.kind === "done") {
+    glyph = <CheckCircle size={14} weight="fill" color={COLORS.success} aria-hidden />;
+    line = { text: "Removed from your account." };
+  } else if (step.kind === "error") {
+    glyph = <XCircle size={14} weight="fill" color={COLORS.danger} aria-hidden />;
+    line = { text: `Still on your account. ${step.message}`, tone: "danger" };
+  }
+  const extra = step.kind === "idle" && offlineCount > 0
+    ? offlineCount === 1
+      ? "1 computer is offline and keeps its folder."
+      : `${offlineCount} computers are offline and keep their folders.`
+    : step.kind === "idle" && noComputers
+      ? "No folder changes on any computer."
+      : null;
+  return (
+    <div style={rowStyle(first, false)} aria-live={step.kind === "idle" ? undefined : "polite"}>
+      <span style={glyphStyle}>{glyph}</span>
+      <MachineName name="Your account" icon="account" />
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
+        <span style={{ color: line.tone === "danger" ? COLORS.danger : COLORS.textMuted, overflowWrap: "anywhere" }}>{line.text}</span>
+        {extra ? <span style={{ color: COLORS.textMuted }}>{extra}</span> : null}
+      </div>
+    </div>
   );
 }
 
@@ -374,10 +492,11 @@ function rowStyle(first: boolean, muted: boolean): CSSProperties {
   };
 }
 
-function MachineName({ name }: { name: string }) {
+function MachineName({ name, icon = "computer" }: { name: string; icon?: "computer" | "account" }) {
   return (
-    <span style={{ width: 132, flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 500 }}>
-      <Desktop size={12} weight="regular" aria-hidden style={{ flexShrink: 0, opacity: 0.7 }} />
+    // The machine keeps up to 45% of the row; the path gives way first.
+    <span title={name} style={{ minWidth: 132, maxWidth: "45%", flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 6, fontWeight: 500 }}>
+      {icon === "account" ? null : <Desktop size={12} weight="regular" aria-hidden style={{ flexShrink: 0, opacity: 0.7 }} />}
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
     </span>
   );
@@ -403,6 +522,7 @@ function outcomeLine(outcome: ProjectRemovalOutcome): { tone: "ok" | "kept" | "w
 
 function CopyRow({
   copy,
+  scope,
   first,
   deleteFolders,
   report,
@@ -412,6 +532,7 @@ function CopyRow({
   locked,
 }: {
   copy: RemovalCopy;
+  scope: Scope;
   first: boolean;
   deleteFolders: boolean;
   report: ReportState;
@@ -428,7 +549,11 @@ function CopyRow({
   const ready = report.kind === "ready" ? report.report : null;
 
   if (!machine.online) {
-    lines.push({ text: `${machine.name} is offline. It keeps its copy and its entry.` });
+    lines.push({
+      text: scope === "account"
+        ? `${machine.name} is offline. It keeps its folder.`
+        : `${machine.name} is offline. Nothing changes there.`,
+    });
   } else if (result) {
     if (result.kind === "running") {
       glyph = <CircleNotch size={13} weight="bold" className="animate-spin" aria-hidden />;
@@ -455,18 +580,18 @@ function CopyRow({
     glyph = <CircleNotch size={13} weight="bold" className="animate-spin" aria-hidden />;
     if (deleteFolders) lines.push({ text: "Checking the copy…" });
   } else if (report.kind === "unsupported") {
-    lines.push({ text: `Update ADE on ${machine.name} to delete its folder from here. Its entry can still be removed.`, tone: "muted" });
+    lines.push({ text: `Update ADE on ${machine.name} to delete its folder from here. ADE can still take it off the list.`, tone: "muted" });
   } else if (report.kind === "failed") {
     lines.push({ text: `Couldn't check the copy: ${report.message}`, tone: "warning" });
   } else if (ready) {
     const running = summarizeLiveSessions(ready.state);
     const work = summarizeCopyWork(ready.state);
     if (ready.state.folder === "missing") {
-      lines.push({ text: "The folder isn't there (moved, deleted, or on a disk that isn't connected). Only the entry is removed." });
+      lines.push({ text: "The folder isn't there (moved, deleted, or on a disk that isn't connected). ADE only takes it off the list." });
     } else if (running) {
       glyph = <Warning size={14} weight="fill" color={COLORS.warning} aria-hidden />;
       lines.push({
-        text: deleteFolders ? running : `${running.replace(/ Stop (it|them) first\.$/, "")} Removing the entry stops ${liveSessionCount(ready.state) === 1 ? "it" : "them"}.`,
+        text: deleteFolders ? running : `${running.replace(/ Stop (it|them) first\.$/, "")} Removing it stops ${liveSessionCount(ready.state) === 1 ? "it" : "them"}.`,
         tone: "warning",
       });
     } else if (deleteFolders) {

@@ -4,6 +4,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatToolActivityDetails, ChatWorkLogBlock, webResultCount } from "./ChatWorkLogBlock";
 import type { ChatWorkLogEntry } from "./chatTranscriptRows";
+import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
+import type { OpenProjectBinding } from "../../../shared/types";
+
+/** The chat's machine: `localhost` in its output is probed there. */
+const CHAT_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
 
 const base = { id: "e", createdAt: "2026-09-23T00:00:00.000Z", label: "Web search", tone: "info", status: "completed" } as const;
 
@@ -46,10 +51,14 @@ describe("localhost terminal drafts", () => {
   ])("offers only runnable unmasked commands: %s", async (command, includeCommand) => {
     const draft = vi.fn();
     vi.stubGlobal("ade", { localhost: { probePort: async () => true } });
-    render(<ChatWorkLogBlock entries={[{
-      ...base, entryKind: "command", command,
-      localUrls: [{ url: "http://localhost:4321", href: "http://localhost:4321", host: "localhost", port: 4321 }],
-    }]} onInsertDraft={draft} />);
+    render(
+      <ChatRuntimeScopeProvider pin={CHAT_PIN} binding={CHAT_PIN} laneId={null} sessionId={null}>
+        <ChatWorkLogBlock entries={[{
+          ...base, entryKind: "command", command,
+          localUrls: [{ url: "http://localhost:4321", href: "http://localhost:4321", host: "localhost", port: 4321 }],
+        }]} onInsertDraft={draft} />
+      </ChatRuntimeScopeProvider>,
+    );
     const logs = await screen.findByRole("button", { name: /Open terminal logs/ });
     fireEvent.click(logs);
     await waitFor(() => expect(draft).toHaveBeenCalledOnce());

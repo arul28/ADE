@@ -150,6 +150,12 @@ export type RemoteBrowserForwarder = {
    * and in every desktop's that holds a pin here. Closes nothing.
    */
   releaseLaneTabs: (laneId: string) => Promise<void>;
+  /**
+   * A chat started a turn, went idle, or ended: tell this machine's browser and
+   * every desktop that holds a pin here, so the chat's agent tabs keep running,
+   * start their countdown, or close. Fire and forget.
+   */
+  chatBrowserLifecycle: (chatSessionId: string, state: "running" | "idle" | "ended") => void;
   dispose: () => void;
 };
 
@@ -157,6 +163,7 @@ export type RemoteBrowserForwarder = {
 export type LocalBrowserBridge = {
   listTabsForAgent: (input: Record<string, unknown>) => Promise<unknown>;
   releaseLaneTabs: (input: { laneId: string }) => Promise<unknown>;
+  chatBrowserLifecycle?: (input: { chatSessionId: string; state: "running" | "idle" | "ended" }) => Promise<unknown>;
 };
 
 function stringOrNull(value: unknown): string | null {
@@ -858,9 +865,23 @@ export function createRemoteBrowserForwarder(args: {
     return finish(ctx, primaryHost, merged);
   }
 
+  /** Chats that sent a browser command through this brain, newest last, capped. */
+  const browsingChats = new Set<string>();
+  const rememberBrowsingChat = (chatSessionId: string): void => {
+    browsingChats.delete(chatSessionId);
+    browsingChats.add(chatSessionId);
+    while (browsingChats.size > 500) {
+      const oldest = browsingChats.values().next().value;
+      if (oldest === undefined) break;
+      browsingChats.delete(oldest);
+    }
+  };
+
   return {
     route: async (input, call, method) => {
       const ctx = routeContext(input);
+      const browsingChat = stringOrNull((input as { chatSessionId?: unknown } | null)?.chatSessionId);
+      if (browsingChat) rememberBrowsingChat(browsingChat);
       if (!isBuiltInBrowserDesktopBridgeMethod(method)) return await call(ctx.localBase);
       if (method === "getStatus") return await routeStatus(ctx, call);
       const route = BUILT_IN_BROWSER_METHOD_ROUTES[method];
@@ -969,6 +990,25 @@ export function createRemoteBrowserForwarder(args: {
         args.logger.info("built_in_browser.release_lane", { laneId: id, desktops: replies.size });
       });
     },
+    chatBrowserLifecycle: (chatSessionId, state) => {
+      const id = chatSessionId.trim();
+      // Only chats that used the browser through this brain have tabs to look
+      // after; every other chat's turns cost no message at all.
+      if (!id || !browsingChats.has(id)) return;
+      if (state === "ended") browsingChats.delete(id);
+      void localBridge?.chatBrowserLifecycle?.({ chatSessionId: id, state }).catch((error: unknown) => {
+        // No desktop here, or one too old to know the method: nothing to do.
+        args.logger.debug("built_in_browser.chat_lifecycle_local_skipped", {
+          chatSessionId: id,
+          state,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      });
+      void broadcaster.send("chatBrowserLifecycle", { chatSessionId: id, state }, {
+        chatSessionId: id,
+        waitMs: RELEASE_BROADCAST_WAIT_MS,
+      }).catch(() => {});
+    },
     dispose: () => {
       for (const requestId of [...pending.keys()]) settle(requestId, null);
       for (const requestId of [...pendingCalls.keys()]) settleCall(requestId, { taken: false });
@@ -992,6 +1032,7 @@ export function withRemoteBrowserForwarding(
   forwarder.attachLocalBridge({
     listTabsForAgent: (input) => bridge.listTabsForAgent(input),
     releaseLaneTabs: (input) => bridge.releaseLaneTabs(input),
+    chatBrowserLifecycle: (input) => bridge.chatBrowserLifecycle(input),
   });
   return new Proxy(bridge, {
     get(target, property, receiver) {

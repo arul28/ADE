@@ -25,15 +25,30 @@ extension View {
   ) -> some View {
     sheet(item: home) { target in
       AccountProjectHomeScreen(projectId: target.id, onConnectComputer: onConnectComputer, onRemoved: onNotice)
-        .presentationDetents([.medium, .large])
+        .hubAccountPageDetents()
     }
     .sheet(item: location) { target in
       ProjectLocationScreen(projectId: target.id)
     }
     .sheet(item: remove) { project in
       DeleteProjectSheet(project: project, onRemoved: onNotice)
-        .presentationDetents([.medium, .large])
+        .hubAccountPageDetents()
     }
+  }
+
+  /// Half height first, then full. The Duo's inner display held landscape is
+  /// too short for a half sheet: it hid the page's last actions (Pull
+  /// requests, Remove from ADE), so there the page opens full.
+  func hubAccountPageDetents() -> some View {
+    modifier(HubAccountPageDetents())
+  }
+}
+
+private struct HubAccountPageDetents: ViewModifier {
+  @Environment(\.duoLayout) private var duo
+
+  func body(content: Content) -> some View {
+    content.presentationDetents(duo.isWide && duo.isLandscape ? [.large] : [.medium, .large])
   }
 }
 

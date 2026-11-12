@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import type { ProjectMoveRecord, ProjectMoveVolume } from "../../../shared/types/projectMove";
-import { useAppStore } from "../../state/appStore";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { isMacPlatform } from "../../lib/platform";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
@@ -15,17 +15,16 @@ import {
 } from "../projectMove/projectMoveModel";
 
 /**
- * Where the open project lives, and the Move… action. `machine: "local"`: the
- * move runs in this computer's main process on a project this computer has, so
- * a project open from another machine says so instead of offering it.
+ * Where the page's copy of the project lives, and the Move… action. The move
+ * runs in this computer's main process on a folder this computer has, so a
+ * copy on another computer says so instead of offering it.
  */
 export function ProjectLocationSection() {
-  const project = useAppStore((s) => s.project);
-  const binding = useAppStore((s) => s.projectBinding);
+  const { pin, machineName } = useSettingsMachineScope();
   const moveApi = window.ade?.projectMove;
   const api = isAdeAvailable(moveApi) ? moveApi : undefined;
-  const root = project?.rootPath ?? null;
-  const remote = binding?.kind === "remote";
+  const root = pin?.rootPath ?? null;
+  const remote = pin?.kind === "remote";
   const [volumes, setVolumes] = useState<ProjectMoveVolume[]>([]);
   const [lastMove, setLastMove] = useState<ProjectMoveRecord | null>(null);
 
@@ -49,13 +48,13 @@ export function ProjectLocationSection() {
 
   // Moving needs macOS's copy and drive tools; elsewhere the card is absent.
   if (!root || !api || !isMacPlatform()) return null;
-  const projectName = project?.displayName || root.split("/").pop() || "this project";
+  const projectName = pin?.displayName || root.split("/").pop() || "this project";
 
   if (remote) {
     return (
       <ModernSection group="Project" anchor="project-location" title="Project location">
         <ModernRows>
-          <ModernRow title="This project lives on another computer" hint="Move it from ADE on that computer." />
+          <ModernRow title={`This copy is on ${machineName}`} hint={`Move it from ADE on ${machineName}.`} />
         </ModernRows>
       </ModernSection>
     );

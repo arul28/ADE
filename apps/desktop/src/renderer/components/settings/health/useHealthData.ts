@@ -103,7 +103,8 @@ export function useHealthData(
   const reportRequest = React.useRef(0);
 
   const loadStorage = React.useCallback(async (opts: { force?: boolean; silent?: boolean; measureLanes?: boolean } = {}) => {
-    if (!wantStorage) return;
+    // No copy: nothing to read (a machine page asks for diagnostics only).
+    if (!wantStorage || !pin) return;
     const request = ++storageRequest.current;
     setStorage((current) => ({
       ...current,
@@ -158,7 +159,7 @@ export function useHealthData(
   const laneSizingRunning = Boolean(storage.snapshot?.laneSizing?.running);
   const [laneSizingRetry, setLaneSizingRetry] = React.useState(0);
   React.useEffect(() => {
-    if (!wantStorage || !laneSizingRunning) return;
+    if (!wantStorage || !laneSizingRunning || !pin) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       const request = storageRequest.current;
@@ -196,7 +197,7 @@ export function useHealthData(
   }, [isThisMachine, wantDiagnostics]);
 
   const loadReport = React.useCallback(async (opts: { force?: boolean } = {}) => {
-    if (!reportAvailable || !wantReport) return;
+    if (!reportAvailable || !wantReport || !pin) return;
     const request = ++reportRequest.current;
     setReportState((current) => ({
       ...current,

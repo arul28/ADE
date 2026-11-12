@@ -64,9 +64,11 @@ import { WebSettingsSection } from "./WebScopePill";
 import { IntegrationsHome, type IntegrationsPageId } from "./integrations/IntegrationsHome";
 import { isIntegrationId } from "./integrations/integrationBrand";
 import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
+import { NoProjectCopyNotice, ProjectCopyBar, ProjectCopyScopeProvider, settingsCopyScope, useProjectCopyPage } from "./ProjectCopyScope";
 import {
   SETTINGS_ENTRIES,
   SETTINGS_TAB_IDS,
+  isProjectSettingsTab,
   mcpCatalogueIdFromAnchor,
   sectionHasAvailableEntries,
   type SettingsTabId,
@@ -217,13 +219,25 @@ export function openIntegrationFromUrl(searchParams: URLSearchParams, hash: stri
  * tab, `?integration=<github|linear|jira|mcp>`; a `#hash` naming one of its
  * settings opens it too. With none open, the tab is the Integrations home.
  */
-function IntegrationsTabContent({ machine, standalone }: { machine: SettingsMachinePage | null; standalone: boolean }) {
+function IntegrationsTabContent({
+  machine,
+  standalone,
+  noCopy = false,
+}: {
+  machine: SettingsMachinePage | null;
+  standalone: boolean;
+  /** No computer with a copy of the open project is online: the integrations wait and make no call. */
+  noCopy?: boolean;
+}) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { pin } = useSettingsMachineScope();
   const requested = openIntegrationFromUrl(searchParams, location.hash);
-  const sections = (TAB_SECTIONS.integrations ?? []).filter((section) => standalone
+  const sections = (TAB_SECTIONS.integrations ?? []).filter((section) => noCopy
+    // No copy online: only the account's own pages, which call no computer.
+    ? section.machine === undefined
+    : standalone
     // No project: only the account's pages (the provider, MCP servers) can load.
     ? standaloneSection(section)
     : !machine || !section.machine || machineSectionAvailable(section.machine, machine));
@@ -243,7 +257,7 @@ function IntegrationsTabContent({ machine, standalone }: { machine: SettingsMach
       <SettingsColumn wide>
         <IntegrationsHome
           pin={pin}
-          machineOnline={!machine || machine.online}
+          machineOnline={!noCopy && (!machine || machine.online)}
           integrations={standalone ? sections.flatMap((entry) => (isIntegrationId(entry.group) ? [entry.group] : [])) : undefined}
           onOpen={open}
         />
@@ -516,8 +530,8 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       machine: "local",
     },
   ],
-  // Project → Lanes, Storage & cleanup and Agents act on the machine that owns
-  // the project (its pin); every section in them reads that pin.
+  // Project → Lanes, Storage & cleanup and Agents act on the copy picked on
+  // the page (its pin); every section in them reads that pin.
   "lanes-git": [
     { entryIds: "tab", render: () => <SettingsColumn wide><LanesSettingsPage /></SettingsColumn>, machine: "routed", title: "Lanes" },
   ],
@@ -527,14 +541,14 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   "project-agents": [
     { entryIds: ["lanes-git.pr-chat-transcripts"], render: () => <PrChatTranscriptsSection />, machine: "routed", title: "PR chat transcripts" },
   ],
-  // Project → Location: where the project lives (the move runs in this
-  // computer's main process, and says so for a project on another one) and
-  // the project's checks, read through the project machine's pin.
+  // Project → Location: where the picked copy lives (the move runs in this
+  // computer's main process, and says so for a copy on another one) and
+  // the project's checks, read through the copy's pin.
   location: [
-    { entryIds: "tab", render: () => <SettingsColumn wide><LocationPage /></SettingsColumn>, machine: "bound", title: "Location" },
+    { entryIds: "tab", render: () => <SettingsColumn wide><LocationPage /></SettingsColumn>, machine: "routed", title: "Location" },
   ],
-  // Connections live in the credential store of the machine that owns the
-  // project and are read by its runtime. Every call takes that machine's pin.
+  // Connections live in the credential store of the machine of the picked
+  // copy and are read by its runtime. Every call takes that copy's pin.
   // Browser steps (device codes, OAuth pages) still open on This computer.
   //
   // The MCP servers page is the account's (settings store and vault), read
@@ -608,6 +622,47 @@ export function TabContent({
   machine: SettingsMachinePage | null;
   /** Standalone Settings (no project) also drops sections with nothing to show. */
   standalone?: boolean;
+}) {
+  // A project page reads one copy of the project, picked on the page.
+  if (!standalone && isProjectSettingsTab(tab)) return <ProjectCopyTabContent tab={tab} />;
+  return <MachineTabContent tab={tab} machine={machine} standalone={standalone} />;
+}
+
+/**
+ * Settings › Project: the page names the computer whose copy it reads and
+ * offers the other online copies. Every section reads the copy's pin. With no
+ * copy online the page says so and calls nothing; Integrations still shows the
+ * account's own pages.
+ */
+function ProjectCopyTabContent({ tab }: { tab: SettingsTabId }) {
+  const copy = useProjectCopyPage(settingsCopyScope(tab));
+  if (!copy.page) {
+    return (
+      <>
+        <SettingsColumn wide><NoProjectCopyNotice /></SettingsColumn>
+        {tab === "integrations" ? <IntegrationsTabContent machine={null} standalone noCopy /> : null}
+      </>
+    );
+  }
+  return (
+    <ProjectCopyScopeProvider page={copy.page}>
+      {/* Not a SettingsColumn: its bottom padding would push the page down. */}
+      <div className="ade-settings-column ade-settings-column--wide ade-copy-scope-column">
+        <ProjectCopyBar copy={copy} />
+      </div>
+      <MachineTabContent tab={tab} machine={copy.page} standalone={false} />
+    </ProjectCopyScopeProvider>
+  );
+}
+
+function MachineTabContent({
+  tab,
+  machine,
+  standalone,
+}: {
+  tab: SettingsTabId;
+  machine: SettingsMachinePage | null;
+  standalone: boolean;
 }) {
   // A machine's own page lists every machine, offline ones included, and says
   // so itself.

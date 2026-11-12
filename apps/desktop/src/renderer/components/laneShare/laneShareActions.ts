@@ -4,6 +4,7 @@ import { showToast } from "../app/toast/toastStore";
 import { confirmDialog } from "../ui/dialog";
 import { laneShareProblem } from "./laneShareModel";
 import { markLaneShareRevokePending, reloadLaneShares } from "./laneShareStore";
+import { requirePin } from "../../lib/requirePin";
 
 /**
  * Stops shares on the lane's machine (`pin`), one revoke each. The host
@@ -22,7 +23,7 @@ export async function revokeLaneShares(
   const failed: string[] = [];
   for (const entry of entries) {
     try {
-      const result = await window.ade.laneShare.revoke({ grantId: entry.grantId }, pin);
+      const result = await window.ade.laneShare.revoke({ grantId: entry.grantId }, requirePin(pin, "No computer with this lane is online."));
       runningTurns += result.runningTurnSessionIds?.length ?? 0;
       if (result.directoryRevoked) {
         revoked += 1;

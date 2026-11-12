@@ -1,12 +1,47 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
+import type { OpenProjectBinding } from "../../../../shared/types";
+import { useAppStore } from "../../../state/appStore";
+import { captureError } from "../../../../shared/sentry/capture";
 
-// Authoritative storage lives in the ade-cli main process so favorites sync
-// across desktop and iOS surfaces. We keep a localStorage cache so the
-// initial render is instant while the RPC roundtrip completes in the
-// background, and so the picker still works when the runtime isn't bound.
+// Favorites belong to this client (`localStorage`), not to a machine: the
+// same list on every project tab. Older versions kept the list on the tab's
+// machine, so this client reads it once from there and merges it into its
+// own list. Nothing writes back to a machine.
 const STORAGE_KEY = "ade.modelPicker.favorites.v1";
+/** Set once the machine's list was merged in; until then each start tries again. */
+const IMPORTED_KEY = "ade.modelPicker.favorites.imported.v1";
+
+function importDone(): boolean {
+  try {
+    return window.localStorage.getItem(IMPORTED_KEY) != null;
+  } catch {
+    return false;
+  }
+}
+
+function markImportDone(): void {
+  try {
+    window.localStorage.setItem(IMPORTED_KEY, "1");
+  } catch {
+    // Not saved: the next start merges the same list again, which changes nothing.
+  }
+}
+
+/**
+ * The machine's list with this client's own picks added after it. A model
+ * removed here while the import ran stays removed.
+ */
+function mergeFavorites(imported: readonly string[], local: readonly string[], removed: ReadonlySet<string>): string[] {
+  const merged = imported.filter((value) => typeof value === "string" && value.length > 0 && !removed.has(value));
+  for (const value of local) if (!merged.includes(value)) merged.push(value);
+  return merged;
+}
+
+let importInFlight: Promise<void> | null = null;
+/** Models removed while the import runs; the merge must not add them back. */
+const removedDuringImport = new Set<string>();
 
 function readPersisted(): string[] {
   try {
@@ -28,25 +63,10 @@ function persist(values: string[]): void {
   }
 }
 
-function getRpcApi():
-  | {
-      getFavorites: () => Promise<{ favorites: string[] }>;
-      toggleFavorite: (id: string) => Promise<{ favorites: string[]; isFavorite: boolean }>;
-    }
-  | null {
+function getImportApi(): ((pin: OpenProjectBinding) => Promise<{ favorites: string[] }>) | null {
   if (typeof window === "undefined") return null;
-  const ade = (window as unknown as { ade?: { modelPicker?: unknown } }).ade;
-  const picker = ade?.modelPicker as
-    | {
-        getFavorites?: () => Promise<{ favorites: string[] }>;
-        toggleFavorite?: (id: string) => Promise<{ favorites: string[]; isFavorite: boolean }>;
-      }
-    | undefined;
-  if (!picker?.getFavorites || !picker.toggleFavorite) return null;
-  return picker as {
-    getFavorites: () => Promise<{ favorites: string[] }>;
-    toggleFavorite: (id: string) => Promise<{ favorites: string[]; isFavorite: boolean }>;
-  };
+  const getFavorites = window.ade?.modelPicker?.getFavorites;
+  return typeof getFavorites === "function" ? getFavorites : null;
 }
 
 type FavoritesState = {
@@ -64,39 +84,46 @@ const useFavoritesStore = create<FavoritesState>((set, get) => ({
     const id = modelId.trim();
     if (!id) return;
     const current = get().favorites;
-    const next = current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id];
+    const removing = current.includes(id);
+    const next = removing ? current.filter((entry) => entry !== id) : [...current, id];
+    if (importInFlight) {
+      if (removing) removedDuringImport.add(id);
+      else removedDuringImport.delete(id);
+    }
     set({ favorites: next });
     persist(next);
-    const api = getRpcApi();
-    if (!api) return;
-    void api
-      .toggleFavorite(id)
-      .then((result) => {
-        const authoritative = Array.isArray(result?.favorites) ? result.favorites : null;
-        if (!authoritative) return;
-        set({ favorites: authoritative });
-        persist(authoritative);
-      })
-      .catch(() => {
-        // Keep the optimistic update on RPC failure — we'll reconcile on next hydrate.
-      });
   },
   isFavorite: (modelId: string) => get().favorites.includes(modelId),
   hydrateFromRemote: async () => {
-    const api = getRpcApi();
-    if (!api) {
-      // RPC surface not yet bound — leave hydrated:false so we retry once it
-      // becomes available, instead of permanently locking on stale local cache.
+    if (importDone()) {
+      set({ hydrated: true });
       return;
     }
-    try {
-      const result = await api.getFavorites();
-      const authoritative = Array.isArray(result?.favorites) ? result.favorites : [];
-      set({ favorites: authoritative, hydrated: true });
-      persist(authoritative);
-    } catch {
-      set({ hydrated: true });
-    }
+    if (importInFlight) return importInFlight;
+    // The one-time import reads the old list from the tab's copy.
+    const pin = useAppStore.getState().projectBinding;
+    const getFavorites = getImportApi();
+    // No tab open or no bridge yet: stay unhydrated so a later mount imports.
+    if (!pin || !getFavorites) return;
+    importInFlight = (async () => {
+      try {
+        const result = await getFavorites(pin);
+        const imported = Array.isArray(result?.favorites) ? result.favorites : [];
+        // A toggle made while the import ran is kept: the lists merge, and a removal stays.
+        const next = mergeFavorites(imported, get().favorites, removedDuringImport);
+        set({ favorites: next, hydrated: true });
+        persist(next);
+        markImportDone();
+      } catch (error) {
+        // The list here stays as it is; the next start tries the import again.
+        captureError(error, { fingerprint: ["model-picker", "favorites-import"], level: "warning", handled: true });
+        set({ hydrated: true });
+      } finally {
+        importInFlight = null;
+        removedDuringImport.clear();
+      }
+    })();
+    return importInFlight;
   },
 }));
 

@@ -638,6 +638,13 @@ function studioMachine(laneId: string, sessions: TerminalSessionSummary[]) {
   };
 }
 
+/** The tab's copy, on this computer: its own rows act there. */
+const TAB_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+function bindTabCopy() {
+  workMocks.projectRoot = "/repo";
+  workMocks.projectBinding = TAB_PIN;
+}
+
 describe("TerminalsPage chat session activation", () => {
   afterEach(() => {
     cleanup();
@@ -2042,6 +2049,7 @@ describe("TerminalsPage chat session activation", () => {
   });
 
   it("bulk deletes selected running chat sessions from the session list", async () => {
+    bindTabCopy();
     const runningCodexChat = workMocks.makeTerminalSession("chat-running-codex", "lane-primary", "codex-chat");
     const runningClaudeChat = workMocks.makeTerminalSession("chat-running-claude", "lane-primary", "claude-chat", {
       ptyId: null,
@@ -2079,8 +2087,8 @@ describe("TerminalsPage chat session activation", () => {
 
     await waitFor(() => {
       expect(agentChatDelete).toHaveBeenCalledTimes(2);
-      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-codex" });
-      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-claude" });
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-codex" }, TAB_PIN);
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running-claude" }, TAB_PIN);
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running-codex");
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running-claude");
     });
@@ -2133,6 +2141,7 @@ describe("TerminalsPage chat session activation", () => {
   });
 
   it("stops and deletes a single running CLI session via the context menu", async () => {
+    bindTabCopy();
     const runningCli = workMocks.makeTerminalSession("cli-single", "lane-primary", "codex");
     const sessionDelete = vi.fn().mockResolvedValue(undefined);
     const agentChatDelete = vi.fn().mockResolvedValue(undefined);
@@ -2173,7 +2182,7 @@ describe("TerminalsPage chat session activation", () => {
     await waitFor(() => {
       // An agent CLI is deleted through the chat delete, which stops it and
       // keeps it in Recently deleted; the raw terminal delete would lose it.
-      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "cli-single" });
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "cli-single" }, TAB_PIN);
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("cli-single");
       expect(workMocks.currentWork.closeTab).toHaveBeenCalledWith("cli-single");
     });
@@ -2340,6 +2349,7 @@ describe("TerminalsPage chat session activation", () => {
   });
 
   it("stops and deletes a mixed selection of running CLI and chat sessions", async () => {
+    bindTabCopy();
     const runningCli = workMocks.makeTerminalSession("cli-running", "lane-primary", "codex");
     const runningChat = workMocks.makeTerminalSession("chat-running", "lane-primary", "codex-chat", {
       ptyId: null,
@@ -2382,14 +2392,15 @@ describe("TerminalsPage chat session activation", () => {
     await waitFor(() => {
       // The running CLI session is stopped+deleted via the session-delete service,
       // and the chat is removed via the chat delete flow — both in one action.
-      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "cli-running" });
-      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running" });
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "cli-running" }, TAB_PIN);
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running" }, TAB_PIN);
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("cli-running");
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running");
     });
   });
 
   it("scopes right-click to the multi-selection: bulk menu inside it, the row's own menu outside it", async () => {
+    bindTabCopy();
     const atRest = workMocks.makeTerminalSession("chat-at-rest", "lane-primary", "codex-chat", {
       status: "completed", runtimeState: "exited", endedAt: "2026-05-14T18:05:00.000Z", exitCode: 0,
     });
@@ -2435,7 +2446,7 @@ describe("TerminalsPage chat session activation", () => {
     expect(settleRow.textContent).toContain("1 of 2");
     fireEvent.click(settleRow);
     await waitFor(() => expect(settle).toHaveBeenCalledTimes(1));
-    expect(settle.mock.calls[0]).toEqual(["chat-at-rest"]);
+    expect(settle.mock.calls[0]).toEqual(["chat-at-rest", undefined, TAB_PIN]);
 
     // A refused clipboard write says so instead of closing silently.
     fireEvent.click(screen.getByRole("button", { name: "context menu chat-at-rest" }));
@@ -2675,6 +2686,7 @@ describe("TerminalsPage chat session activation", () => {
   });
 
   it("finishes a bulk delete past a row that fails, and never shows the IPC channel", async () => {
+    bindTabCopy();
     const failing = workMocks.makeTerminalSession("chat-stale", "lane-primary", "codex-chat", { ptyId: null });
     const healthy = workMocks.makeTerminalSession("chat-live", "lane-primary", "codex-chat", { ptyId: null });
     const agentChatDelete = vi.fn(async ({ sessionId }: { sessionId: string }) => {

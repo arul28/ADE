@@ -28,7 +28,7 @@ import {
 } from "./acpSession";
 import type { AcpPendingPermission } from "./acpPermissionBridge";
 import type { AcpSessionConfigOption } from "./acpProtocolTypes";
-import { behaviorOf, type AcpDialect, type AcpSlashCommand, type AcpSpawnPlan } from "./acpHostTypes";
+import { behaviorOf, type AcpBackgroundWork, type AcpDialect, type AcpSlashCommand, type AcpSpawnPlan } from "./acpHostTypes";
 
 export type AcpRuntimeState<TSteer = unknown> = {
   kind: "acp";
@@ -64,6 +64,10 @@ export type AcpRuntimeState<TSteer = unknown> = {
   currentModeId: string | null;
   /** Permission request ids ADE raised as cards for the running turn. */
   openPermissionIds: Set<string>;
+  /** The reset the agent named for the usage limit that failed its last turn. */
+  usageLimitResetAt?: string | null;
+  /** The dialect's background-work watcher, when it has one. */
+  backgroundWork?: AcpBackgroundWork | null;
 };
 
 export type AcpRuntimeOwner = {
@@ -114,6 +118,7 @@ export type CreateAcpRuntimeArgs<TSteer> = {
   supervisionPreflight: { ok: boolean; detail?: string } | null;
   supervisionAlreadyNotified: boolean;
   mcpServers?: OpenAcpSessionArgs["mcpServers"];
+  systemPromptAppend?: OpenAcpSessionArgs["systemPromptAppend"];
   logger: Logger;
   runtimeBudget: Pick<ChatRuntimeBudget, "enforce">;
   existingRuntime: AcpRuntimeState<TSteer> | null;
@@ -484,6 +489,7 @@ export async function createAcpRuntime<TSteer>(
       supervisionPreflight: args.supervisionPreflight,
       supervisionAlreadyNotified: args.supervisionAlreadyNotified,
       mcpServers: args.mcpServers ?? [],
+      ...(args.systemPromptAppend ? { systemPromptAppend: args.systemPromptAppend } : {}),
       logger: args.logger,
       ...(args.spawnOverride ? { spawnOverride: args.spawnOverride } : {}),
       ...(args.pool ? { pool: args.pool } : {}),
@@ -562,7 +568,10 @@ export async function createAcpRuntime<TSteer>(
       const error = fallback && !fallback.applied
         ? fallback.unsupported ? new AcpModeUnsupportedError(args.dialect.displayName, caught) : fallback.error
         : caught;
-      if (!applied && args.dialect.modeSetupRequired) {
+      const required = typeof args.dialect.modeSetupRequired === "function"
+        ? args.dialect.modeSetupRequired(nativeModeValue)
+        : args.dialect.modeSetupRequired === true;
+      if (!applied && required) {
         // A failed mode setup must never fall through to onReady: the agent may
         // now be running with a broader posture than the user selected.
         try {

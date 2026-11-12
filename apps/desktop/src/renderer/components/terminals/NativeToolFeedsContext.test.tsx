@@ -78,11 +78,14 @@ function Consumer({ name, seen }: { name: string; seen: Map<string, unknown[]> }
   return <div data-testid={name}>{feeds.browserStatus ? "browser" : "empty"}</div>;
 }
 
+/** The lane's machine: a lane-scoped feed reads there. */
+const LANE_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 describe("NativeToolFeedsProvider", () => {
   it("opens one subscription set for two consumers", async () => {
     const seen = new Map<string, unknown[]>();
     render(
-      <NativeToolFeedsProvider active runtimePin={null} laneId="lane-1">
+      <NativeToolFeedsProvider active runtimePin={LANE_PIN} laneId="lane-1">
         <Consumer name="pane" seen={seen} />
         <Consumer name="card" seen={seen} />
       </NativeToolFeedsProvider>,

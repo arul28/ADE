@@ -73,6 +73,11 @@ function makeAiStatus(hasProvider: boolean): AiSettingsStatus {
   };
 }
 
+/** This computer's copy of a project: the shell reads its chats and status there. */
+function localBinding(rootPath: string) {
+  return { kind: "local" as const, key: `local:${rootPath}`, rootPath, displayName: rootPath.split("/").pop() ?? rootPath };
+}
+
 function resetStore() {
   useAppStore.setState({
     project: null,
@@ -150,7 +155,7 @@ describe("AppShell AI provider status", () => {
           setEnabled: vi.fn(),
         },
         app: {
-          getWindowSession: vi.fn(async () => ({ project, binding: null })),
+          getWindowSession: vi.fn(async () => ({ project, binding: localBinding(project.rootPath) })),
           onProjectChanged: vi.fn(() => () => {}),
           onProjectBindingChanged: vi.fn(() => () => {}),
           setDockBadgeCount: vi.fn(async () => undefined),
@@ -454,7 +459,7 @@ describe("AppShell AI provider status", () => {
     expect(invalidateSessionListCache).toHaveBeenCalledWith({
       projectRoot: project.rootPath,
     });
-    expect(listSessionsCached).toHaveBeenCalledWith({ limit: 150 });
+    expect(listSessionsCached).toHaveBeenCalledWith({ limit: 150 }, undefined, localBinding(project.rootPath));
     expect(useAppStore.getState().terminalAttention.needsAttentionCount).toBe(1);
     expect(window.ade.app.setDockBadgeCount).toHaveBeenCalledWith(1);
   });
@@ -495,7 +500,7 @@ describe("AppShell AI provider status", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    expect(listSessionsCached).toHaveBeenCalledWith({ limit: 150 });
+    expect(listSessionsCached).toHaveBeenCalledWith({ limit: 150 }, undefined, localBinding(project.rootPath));
     expect(useAppStore.getState().terminalAttention.needsAttentionCount).toBe(1);
     expect(window.ade.app.setDockBadgeCount).toHaveBeenCalledWith(1);
   });
@@ -523,6 +528,7 @@ describe("AppShell AI provider status", () => {
       } as any]);
     useAppStore.setState({
       project,
+      projectBinding: localBinding(project.rootPath),
       projectHydrated: true,
       showWelcome: false,
     } as any);
@@ -549,6 +555,7 @@ describe("AppShell AI provider status", () => {
           rootPath: "/tmp/other-project",
           displayName: "Other project",
         },
+        projectBinding: localBinding("/tmp/other-project"),
       } as any);
     });
     await act(async () => {
@@ -613,6 +620,7 @@ describe("AppShell AI provider status", () => {
     } as any]);
     useAppStore.setState({
       project,
+      projectBinding: localBinding(project.rootPath),
       projectHydrated: true,
       showWelcome: false,
     } as any);
@@ -634,6 +642,7 @@ describe("AppShell AI provider status", () => {
     act(() => {
       useAppStore.setState({
         project: null,
+        projectBinding: null,
         projectHydrated: true,
         showWelcome: true,
       } as any);
@@ -820,7 +829,7 @@ describe("AppShell AI provider status", () => {
     });
 
     expect(githubGetStatusMock).toHaveBeenCalledTimes(1);
-    expect(githubGetStatusMock).toHaveBeenLastCalledWith({ forceRefresh: true });
+    expect(githubGetStatusMock).toHaveBeenLastCalledWith({ forceRefresh: true }, remoteBinding);
 
     fireEvent.click(screen.getByRole("button", { name: "Open stack" }));
     await act(async () => {
@@ -834,14 +843,14 @@ describe("AppShell AI provider status", () => {
       await Promise.resolve();
     });
     expect(githubGetStatusMock).toHaveBeenCalledTimes(2);
-    expect(githubGetStatusMock).toHaveBeenLastCalledWith({ forceRefresh: false });
+    expect(githubGetStatusMock).toHaveBeenLastCalledWith({ forceRefresh: false }, remoteBinding);
   });
 
   it("does not let a failed reconnect refresh clear a newer route status", async () => {
     getStatusMock.mockResolvedValue(makeAiStatus(true));
     useAppStore.setState({
       project,
-      projectBinding: null,
+      projectBinding: localBinding(project.rootPath),
       projectHydrated: true,
       showWelcome: false,
     } as any);
@@ -930,7 +939,7 @@ describe("AppShell AI provider status", () => {
     });
 
     expect(getStatusMock).not.toHaveBeenCalled();
-    expect(listSessionsCached).toHaveBeenCalledWith({ limit: 150 });
+    expect(listSessionsCached).toHaveBeenCalledWith({ limit: 150 }, undefined, remoteBinding);
     expect(vi.mocked(listSessionsCached).mock.calls.some(
       ([args]) => (args as { status?: string } | undefined)?.status === "running",
     )).toBe(false);

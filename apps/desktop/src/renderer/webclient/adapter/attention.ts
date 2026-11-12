@@ -26,7 +26,7 @@ import {
   parseDeeplink,
   type DeeplinkTarget,
 } from "../../../shared/deeplinks";
-import { targetToWebUrl } from "../shell/webRoutes";
+import { targetToWebUrl } from "../shell/webTargetPaths";
 import {
   browserAccountIsSignedIn,
   type BrowserAccountClient,

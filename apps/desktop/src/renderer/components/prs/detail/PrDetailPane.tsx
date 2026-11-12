@@ -67,8 +67,8 @@ import {
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
 import { navigateToAppTarget, openLinkFromUi } from "../../../lib/openExternal";
 import { isWebClientMode } from "../../../lib/webClientMode";
-import { PrRuntimePinProvider } from "../state/prMachines";
-import { pinArg, type MachineChipModel } from "../../../state/laneMachineRouting";
+import { PrRuntimePinProvider, usePrRuntimePin } from "../state/prMachines";
+import { type MachineChipModel } from "../../../state/laneMachineRouting";
 import { forgetGitHubPrSearchResults } from "../tabs/useGitHubPrFilterSearch";
 
 // ---- Sub-tab type ----
@@ -430,7 +430,30 @@ export type PrDetailRuntime = {
 
 export type { UnmappedAffordance };
 
-export function PrDetailPane({
+/**
+ * The PR's detail. Every call goes to `runtime.pin` (the lane owner's machine,
+ * for a PR that lives on another machine), else the machine of the PR list
+ * around it. With neither online it says so and calls nothing.
+ */
+export function PrDetailPane(props: PrDetailPaneProps) {
+  const contextPin = usePrRuntimePin();
+  const runtimePin = props.runtime?.pin ?? contextPin;
+  if (!runtimePin) {
+    return (
+      <div
+        data-testid="pr-detail-no-computer"
+        className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center text-sm text-muted-fg"
+      >
+        <span>No computer with this project is online.</span>
+        <span className="text-xs">The pull request shows again when one connects.</span>
+      </div>
+    );
+  }
+  return <PrDetailPaneOnMachine {...props} runtimePin={runtimePin} />;
+}
+
+function PrDetailPaneOnMachine({
+  runtimePin,
   pr,
   status: liveStatus,
   checks: liveChecks,
@@ -455,11 +478,12 @@ export function PrDetailPane({
   mergeBlockedReason = null,
   prSwitcher = null,
   autoOpenMergeCard = true,
-}: PrDetailPaneProps) {
-  // The machine every call below targets: `[]` is the tab machine's unpinned
-  // call; `[pin]` sends it to the lane's owner.
-  const runtimePin = runtime?.pin ?? null;
-  const onPin = React.useMemo(() => pinArg(runtimePin), [runtimePin]);
+}: PrDetailPaneProps & { runtimePin: OpenProjectBinding }) {
+  // The machine every call below targets: the lane owner's when the PR lives on
+  // another machine (`runtime`), else the machine of the surrounding PR list
+  // (the repository reader, from `PrsProvider`).
+  const foreignRuntimePin = runtime?.pin ?? null;
+  const onPin = React.useMemo((): [OpenProjectBinding] => [runtimePin], [runtimePin]);
   // Chat hand-offs keep the lane's machine: a foreign chat is focused with its
   // binding and a new chat starts as a draft on the owner machine.
   const chatHandoff = usePrChatHandoff(runtimePin);
@@ -783,36 +807,36 @@ export function PrDetailPane({
   // call for unmapped PRs. Identity is stable (deps: pr.id, isUnmapped).
   const fetchDetail = React.useCallback((): Promise<PrDetail> =>
     isUnmapped && coordsRef.current
-      ? window.ade.prs.getDetailByGithub(coordsRef.current)
+      ? window.ade.prs.getDetailByGithub(coordsRef.current, ...onPin)
       : window.ade.prs.getDetail(pr.id, ...onPin),
   [isUnmapped, onPin, pr.id]);
   const fetchFiles = React.useCallback((): Promise<PrFile[]> =>
     isUnmapped && coordsRef.current
-      ? window.ade.prs.getFilesByGithub(coordsRef.current)
+      ? window.ade.prs.getFilesByGithub(coordsRef.current, ...onPin)
       : window.ade.prs.getFiles(pr.id, ...onPin),
   [isUnmapped, onPin, pr.id]);
   const fetchCommits = React.useCallback((): Promise<PrCommit[]> => {
-    if (isUnmapped && coordsRef.current) return window.ade.prs.getCommitsByGithub(coordsRef.current);
+    if (isUnmapped && coordsRef.current) return window.ade.prs.getCommitsByGithub(coordsRef.current, ...onPin);
     return typeof window.ade.prs.getCommits === "function" ? window.ade.prs.getCommits(pr.id, ...onPin) : Promise.resolve([]);
   }, [isUnmapped, onPin, pr.id]);
   const fetchActionRuns = React.useCallback((): Promise<PrActionRun[]> =>
     isUnmapped && coordsRef.current
-      ? window.ade.prs.getActionRunsByGithub(coordsRef.current)
+      ? window.ade.prs.getActionRunsByGithub(coordsRef.current, ...onPin)
       : window.ade.prs.getActionRuns(pr.id, ...onPin),
   [isUnmapped, onPin, pr.id]);
   const fetchActivity = React.useCallback((): Promise<PrActivityEvent[]> =>
     isUnmapped && coordsRef.current
-      ? window.ade.prs.getActivityByGithub(coordsRef.current)
+      ? window.ade.prs.getActivityByGithub(coordsRef.current, ...onPin)
       : window.ade.prs.getActivity(pr.id, ...onPin),
   [isUnmapped, onPin, pr.id]);
   const fetchReviewThreadsApi = React.useCallback((): Promise<PrReviewThread[]> =>
     isUnmapped && coordsRef.current
-      ? window.ade.prs.getReviewThreadsByGithub(coordsRef.current)
+      ? window.ade.prs.getReviewThreadsByGithub(coordsRef.current, ...onPin)
       : window.ade.prs.getReviewThreads(pr.id, ...onPin),
   [isUnmapped, onPin, pr.id]);
   const fetchChecks = React.useCallback((): Promise<PrCheck[]> =>
     isUnmapped && coordsRef.current
-      ? window.ade.prs.getChecksByGithub(coordsRef.current)
+      ? window.ade.prs.getChecksByGithub(coordsRef.current, ...onPin)
       : window.ade.prs.getChecks(pr.id, ...onPin),
   [isUnmapped, onPin, pr.id]);
 
@@ -872,7 +896,7 @@ export function PrDetailPane({
       // fetch the live merge box by coords and feed it into snapshotStatus (which
       // `status` falls back to). Mapped PRs get their live status from PrsContext.
       const statusPromise = (isUnmapped && coordsRef.current && typeof window.ade.prs.getStatusByGithub === "function")
-        ? window.ade.prs.getStatusByGithub(coordsRef.current)
+        ? window.ade.prs.getStatusByGithub(coordsRef.current, ...onPin)
             .then(applyIfCurrent((value) => {
               if (value) {
                 setSnapshotStatus(value);
@@ -880,7 +904,7 @@ export function PrDetailPane({
               }
             }))
             .catch(() => null)
-        : runtimePin
+        : foreignRuntimePin && runtimePin
           // Another machine's PR has no PrsContext live data here: its owner
           // answers status, checks, reviews and comments directly.
           ? Promise.allSettled([
@@ -913,7 +937,7 @@ export function PrDetailPane({
         setDetailLoading(false);
       }
     }
-  }, [applySnapshotHydration, changeSplitKey, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, isUnmapped, onPin, pr.id, runtimePin, updateDetailPaneWarmCache]);
+  }, [applySnapshotHydration, changeSplitKey, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, foreignRuntimePin, isUnmapped, onPin, pr.id, runtimePin, updateDetailPaneWarmCache]);
 
   const refreshReviewThreads = React.useCallback(async () => {
     const requestId = detailLoadSeqRef.current;
@@ -1146,7 +1170,7 @@ export function PrDetailPane({
       // the surface — a GitHub brake tripped by something GitHub never saw.
       if (isUnmapped) {
         const coords = coordsRef.current;
-        return readByCoords && coords ? readByCoords(coords) : null;
+        return readByCoords && coords ? readByCoords(coords, ...onPin) : null;
       }
       return readById ? readById(pr.id, ...onPin) : null;
     };

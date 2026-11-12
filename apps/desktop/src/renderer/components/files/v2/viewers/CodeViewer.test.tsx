@@ -12,6 +12,11 @@ import type { PinnedFilesApi } from "../pinnedFilesApi";
 import type { EditorTab } from "../editorGroupsStore";
 import { CodeViewer } from "./CodeViewer";
 
+import type { OpenProjectBinding } from "../../../../../shared/types";
+/** The machine whose files the editor shows. */
+const FILES_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
+
 /**
  * ⌘F in the Files editor.
  *
@@ -81,6 +86,7 @@ function renderViewer() {
       workspaceId="ws-1"
       files={{} as PinnedFilesApi}
       rootPath="/repo"
+      pathPin={FILES_PIN}
       tab={tab}
       content={{
         content: "hello",

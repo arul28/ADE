@@ -1,3 +1,4 @@
+import type { OpenProjectBinding } from "../../../../shared/types";
 import React from "react";
 import type {
   GitHubPrFilterKind,
@@ -42,11 +43,14 @@ type FilterChrome = Pick<
  */
 export function useGitHubTabListFilters({
   projectRoot,
+  pin,
   filter,
   snapshot,
   initial,
 }: {
   projectRoot: string | null;
+  /** The machine that reads GitHub for the repository. */
+  pin: OpenProjectBinding | null;
   filter: GitHubFilter;
   snapshot: GitHubPrSnapshot | null;
   initial: { searchQuery?: string; listFilters?: GitHubPrListFilters } | null;
@@ -90,6 +94,7 @@ export function useGitHubTabListFilters({
   const filterSearch = useGitHubPrFilterSearch({
     enabled: listFiltersActive,
     scopeKey: projectRoot,
+    pin,
     state: filter,
     filters: listFilters,
     text: searchQuery,
@@ -113,9 +118,11 @@ export function useGitHubTabListFilters({
 
   const filterLoadOptions = React.useMemo((): GitHubFilterOptionsLoader | null => {
     const list = window.ade.prs.listGitHubFilterOptions;
-    if (typeof list !== "function") return null;
-    return async (kind: GitHubPrFilterKind, query: string) => (await list({ kind, query })).options;
-  }, []);
+    if (typeof list !== "function" || !pin) return null;
+    return async (kind: GitHubPrFilterKind, query: string) => (await list({ kind, query }, pin)).options;
+    // `pin` is compared by key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pin?.key]);
   const filterFacets = React.useMemo((): GitHubPrFilterFacets => {
     const labels = new Map<string, GitHubPrFilterFacets["labels"][number]>();
     const authors = new Map<string, GitHubPrFilterFacets["authors"][number]>();

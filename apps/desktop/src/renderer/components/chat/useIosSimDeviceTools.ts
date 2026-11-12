@@ -11,6 +11,7 @@ import type {
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { IosSimToolsColumnProps } from "./IosSimToolsColumn";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { withChatPin } from "./chatMachinePin";
 
 /** How often the tools column re-reads whether the app is running. */
 const APP_STATE_POLL_MS = 4_000;
@@ -181,10 +182,10 @@ export function useIosSimDeviceTools({
 
   const refreshDeviceSettings = useCallback(async () => {
     try {
-      const settings = await window.ade.iosSimulator.getDeviceSettings(
+      const settings = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.getDeviceSettings(
         { deviceUdid: activeDeviceUdid ?? null },
-        runtimePinRef.current,
-      );
+        chatPin,
+      ));
       setDeviceSettings(settings);
     } catch {
       // A device that is not booted has no settings to read. The column shows
@@ -194,38 +195,38 @@ export function useIosSimDeviceTools({
   }, [activeDeviceUdid, runtimePinRef]);
 
   const handleSetAppearance = useCallback((appearance: IosSimulatorAppearance) => {
-    void runSettingsTool("Setting the appearance", () => window.ade.iosSimulator.setAppearance(
+    void runSettingsTool("Setting the appearance", () => withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.setAppearance(
       { deviceUdid: activeDeviceUdid ?? null, appearance },
-      runtimePinRef.current,
-    ));
+      chatPin,
+    )));
   }, [activeDeviceUdid, runSettingsTool, runtimePinRef]);
 
   const handleSetContentSize = useCallback((contentSize: IosSimulatorContentSize) => {
-    void runSettingsTool("Setting the text size", () => window.ade.iosSimulator.setContentSize(
+    void runSettingsTool("Setting the text size", () => withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.setContentSize(
       { deviceUdid: activeDeviceUdid ?? null, contentSize },
-      runtimePinRef.current,
-    ));
+      chatPin,
+    )));
   }, [activeDeviceUdid, runSettingsTool, runtimePinRef]);
 
   const handleSetAccessibility = useCallback((option: IosSimulatorAccessibilityOption, enabled: boolean) => {
-    void runSettingsTool("Setting the accessibility option", () => window.ade.iosSimulator.setAccessibilityOption(
+    void runSettingsTool("Setting the accessibility option", () => withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.setAccessibilityOption(
       { deviceUdid: activeDeviceUdid ?? null, option, enabled },
-      runtimePinRef.current,
-    ));
+      chatPin,
+    )));
   }, [activeDeviceUdid, runSettingsTool, runtimePinRef]);
 
   const handleSetLocation = useCallback((latitude: number, longitude: number) => {
-    void runSettingsTool("Setting the location", () => window.ade.iosSimulator.setLocation(
+    void runSettingsTool("Setting the location", () => withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.setLocation(
       { deviceUdid: activeDeviceUdid ?? null, latitude, longitude },
-      runtimePinRef.current,
-    ));
+      chatPin,
+    )));
   }, [activeDeviceUdid, runSettingsTool, runtimePinRef]);
 
   const handleClearLocation = useCallback(() => {
-    void runSettingsTool("Clearing the location", () => window.ade.iosSimulator.clearLocation(
+    void runSettingsTool("Clearing the location", () => withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.clearLocation(
       { deviceUdid: activeDeviceUdid ?? null },
-      runtimePinRef.current,
-    ));
+      chatPin,
+    )));
   }, [activeDeviceUdid, runSettingsTool, runtimePinRef]);
 
   const handleSetPermission = useCallback((
@@ -236,25 +237,25 @@ export function useIosSimDeviceTools({
       onError("Granting or revoking a permission needs an app session.");
       return;
     }
-    void runDeviceCommand("Changing the permission", () => window.ade.iosSimulator.setPermission(
+    void runDeviceCommand("Changing the permission", () => withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.setPermission(
       { deviceUdid: activeDeviceUdid ?? null, bundleId, service, action },
-      runtimePinRef.current,
-    ));
+      chatPin,
+    )));
   }, [activeDeviceUdid, bundleId, onError, runDeviceCommand, runtimePinRef]);
 
   const handleSendPush = useCallback((title: string, body: string) => {
     if (!bundleId) return;
-    void runDeviceCommand("Sending the push notification", () => window.ade.iosSimulator.sendPushNotification(
+    void runDeviceCommand("Sending the push notification", () => withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.sendPushNotification(
       { deviceUdid: activeDeviceUdid ?? null, bundleId, title, body },
-      runtimePinRef.current,
-    ));
+      chatPin,
+    )));
   }, [activeDeviceUdid, bundleId, runDeviceCommand, runtimePinRef]);
 
   const handleOpenSimulatorUrl = useCallback((url: string) => {
-    void runDeviceCommand("Opening the URL", () => window.ade.iosSimulator.openUrl(
+    void runDeviceCommand("Opening the URL", () => withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.openUrl(
       { deviceUdid: activeDeviceUdid ?? null, url },
-      runtimePinRef.current,
-    ));
+      chatPin,
+    )));
   }, [activeDeviceUdid, runDeviceCommand, runtimePinRef]);
 
   /**
@@ -267,20 +268,20 @@ export function useIosSimDeviceTools({
     if (!bundleId) return;
     void runTool(
       "Relaunching the app",
-      () => window.ade.iosSimulator.relaunchApp(
+      () => withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.relaunchApp(
         { deviceUdid: activeDeviceUdid ?? null, bundleId },
-        runtimePinRef.current,
-      ),
+        chatPin,
+      )),
       (state) => setAppRunning(state.running),
     );
   }, [activeDeviceUdid, bundleId, runTool, runtimePinRef]);
 
   const handleTerminateApp = useCallback(() => {
     if (!bundleId) return;
-    void runDeviceCommand("Terminating the app", () => window.ade.iosSimulator.terminateApp(
+    void runDeviceCommand("Terminating the app", () => withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.terminateApp(
       { deviceUdid: activeDeviceUdid ?? null, bundleId },
-      runtimePinRef.current,
-    ));
+      chatPin,
+    )));
   }, [activeDeviceUdid, bundleId, runDeviceCommand, runtimePinRef]);
 
   const handleToggleEventLog = useCallback(() => {
@@ -289,10 +290,10 @@ export function useIosSimDeviceTools({
         if (logRunning) {
           // The final page can name why the stream ended, so keep that even
           // though the rows already on screen are the last there will be.
-          const page = await window.ade.iosSimulator.stopEventLog(
+          const page = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.stopEventLog(
             logOwnerArgs,
-            runtimePinRef.current,
-          );
+            chatPin,
+          ));
           logDeviceRef.current = null;
           setLogError(page.lastError);
           setLogRunning(false);
@@ -305,11 +306,11 @@ export function useIosSimDeviceTools({
           onError("Open an app in this drawer before you start the event log.");
           return;
         }
-        const page = await window.ade.iosSimulator.startEventLog({
+        const page = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.startEventLog({
           deviceUdid: activeDeviceUdid ?? null,
           bundleId,
           ...logOwnerArgs,
-        }, runtimePinRef.current);
+        }, chatPin));
         logDeviceRef.current = activeDeviceUdid ?? null;
         // The start page already carries rows, so the cursor has to move with
         // them. Left at zero, the first poll asked for everything since the
@@ -350,10 +351,10 @@ export function useIosSimDeviceTools({
     let cancelled = false;
     const read = async () => {
       try {
-        const state = await window.ade.iosSimulator.getAppState(
+        const state = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.getAppState(
           { deviceUdid: activeDeviceUdid ?? null, bundleId },
-          runtimePinRef.current,
-        );
+          chatPin,
+        ));
         if (!cancelled) setAppRunning(state.running);
       } catch {
         if (!cancelled) setAppRunning(null);
@@ -375,10 +376,10 @@ export function useIosSimDeviceTools({
     let cancelled = false;
     const read = async () => {
       try {
-        const page = await window.ade.iosSimulator.getEventLog(
+        const page = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.getEventLog(
           { deviceUdid: activeDeviceUdid ?? null, sinceId: logCursorRef.current, limit: 200 },
-          runtimePinRef.current,
-        );
+          chatPin,
+        ));
         if (cancelled) return;
         if (page.rows.length) {
           setLogRows((current) => [...current, ...page.rows].slice(-EVENT_LOG_VIEW_ROWS));
@@ -427,10 +428,10 @@ export function useIosSimDeviceTools({
     let cancelled = false;
     void (async () => {
       try {
-        const page = await window.ade.iosSimulator.startEventLog(
+        const page = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator.startEventLog(
           { deviceUdid, bundleId, ...logOwnerArgs },
-          runtimePinRef.current,
-        );
+          chatPin,
+        ));
         if (cancelled) return;
         logCursorRef.current = page.cursor;
         setLogRows(page.rows);
@@ -461,8 +462,8 @@ export function useIosSimDeviceTools({
     // it can still be in flight. Its completion must not turn that new log off,
     // and its failure must not put the old device back over the new one.
     let superseded = false;
-    void window.ade.iosSimulator
-      .stopEventLog(logOwnerArgsRef.current, runtimePinRef.current)
+    void withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator
+      .stopEventLog(logOwnerArgsRef.current, chatPin))
       .then(() => {
         if (superseded) return;
         setLogRunning(false);
@@ -493,8 +494,8 @@ export function useIosSimDeviceTools({
     // Nothing is left to report to, so a refusal is swallowed here on purpose.
     // The host still releases the log when the chat's session ends, and a log
     // this chat is not allowed to stop is one it must leave running anyway.
-    void window.ade.iosSimulator
-      .stopEventLog(logOwnerArgsRef.current, runtimePinRef.current)
+    void withChatPin(runtimePinRef.current, (chatPin) => window.ade.iosSimulator
+      .stopEventLog(logOwnerArgsRef.current, chatPin))
       .catch(() => {});
   }, [runtimePinRef]);
 

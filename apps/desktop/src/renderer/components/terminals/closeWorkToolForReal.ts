@@ -7,6 +7,7 @@ import {
 import { forgetAppleStreamLeasesForLane } from "../apple/appleStreamLease";
 import { retakeAndroidMiniPlayer, suppressAndroidMiniPlayerHandoff } from "../android/androidMiniPlayerStore";
 import { stopMacDesktopLane } from "../chat/macDesktopStatusStore";
+import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 
 /**
  * Closing a tool's TAB closes the tool, not just its tab.
@@ -76,7 +77,7 @@ export function closeWorkToolForReal(
     }
     case "app-control": {
       const appControl = window.ade?.appControl;
-      if (!appControl?.stop) return;
+      if (!appControl?.stop || !pin) return;
       // The lane's session: App Control keeps one per lane, and a stop that
       // names no lane is refused.
       void appControl.stop({ laneId, chatSessionId }, pin)
@@ -148,7 +149,7 @@ export function closeWorkToolForReal(
        * uses.
        */
       const stopStream = ios.stopStream
-        ? ios.stopStream(pin, { laneId, chatSessionId })
+        ? withChatPin(pin, (chatPin) => ios.stopStream(chatPin, { laneId, chatSessionId }))
           .then(() => undefined)
           .catch((error) => logCloseFailure(tool, error))
         : Promise.resolve();
@@ -171,7 +172,7 @@ export function closeWorkToolForReal(
         // the LANE's registered device first, so a close that arrives after the
         // session has already been released still powers off the right
         // simulator rather than finding nothing to stop.
-        .then(() => ios.deviceStop!({ laneId, chatSessionId, ignoreOwnership: true }, pin))
+        .then(() => ios.deviceStop!({ laneId, chatSessionId, ignoreOwnership: true }, requireChatPin(pin)))
         .catch((error) => logCloseFailure(tool, error));
       return;
     }

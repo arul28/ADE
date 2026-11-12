@@ -419,6 +419,7 @@ import type { createSessionService } from "../../../../desktop/src/main/services
 import { readMachineInventoryDetail } from "../account/accountMachinePublisherService";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 import { getMachineProviderInstanceStore } from "../providerInstances/providerInstanceStore";
+import { setAccountProjectMainCheckout } from "../projects/accountProjectMain";
 import { getSharedModelPickerStore, type ModelPickerStore } from "../modelPickerStore";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { getErrorMessage, resolvePathWithinRoot } from "../../../../desktop/src/main/services/shared/utils";
@@ -6089,6 +6090,22 @@ function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegist
     workToolsStateService.readObservationPreview({
       path: requireString(payload.path, "workTools.readObservationPreview requires path."),
     }));
+  // A browser tab's live picture on the phone: each read renews a short watch
+  // on the desktop, so frames flow only while the sheet is open.
+  register("workTools.readBrowserTabFrame", { viewerAllowed: true, queueable: false }, async (payload) =>
+    workToolsStateService.readBrowserTabFrame({
+      tabId: requireString(payload.tabId, "workTools.readBrowserTabFrame requires tabId."),
+      maxWidth: payload.maxWidth,
+    }));
+  // Take control of a browser tab from the phone: a tap, a scroll, typing.
+  register(
+    "workTools.sendBrowserTabInput",
+    { viewerAllowed: false, controllerAllowed: true, queueable: false },
+    async (payload) => workToolsStateService.sendBrowserTabInput({
+      tabId: requireString(payload.tabId, "workTools.sendBrowserTabInput requires tabId."),
+      event: payload.event,
+    }),
+  );
   register(
     "workTools.closeBrowserTab",
     { viewerAllowed: false, controllerAllowed: true, queueable: false },
@@ -8549,6 +8566,13 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
 
   register("account.setRelayEnabled", { viewerAllowed: true, runtimeHostOnly: true }, async (payload) =>
     await setMachineRelayEnabled(readRelayEnabledArg(payload.enabled)), "runtime");
+
+  // "Use for new lanes": which folder of a project new lanes on this computer
+  // use. Machine-level (the account project state of the publishing brain),
+  // so it answers the same from any project scope. A person's choice: the
+  // account's own phone may make it, an agent's viewer may not.
+  register("projects.setMainCheckout", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    await setAccountProjectMainCheckout(payload.checkoutId), "runtime");
 
   register("usage.getQuotaSnapshot", { viewerAllowed: true }, async () => {
     if (!args.usageTrackingService) throw new Error("Usage quota is not available in this runtime.");

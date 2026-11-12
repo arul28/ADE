@@ -4,6 +4,7 @@ import { showToast } from "../../app/toast/toastStore";
 import { ReclaimConfirmDialog } from "../storage/ReclaimConfirmDialog";
 import { useStorageBytes } from "../storage/useStorageBytes";
 import { captureLaneSetupAnalytics } from "../../../lib/laneSetupAnalytics";
+import { requirePin } from "../../../state/repositoryScope";
 
 const RECLAIM_TOAST_ID = "settings-lane-reclaim";
 
@@ -31,7 +32,7 @@ export function useLaneReclaim(
 
   const open = React.useCallback(async (laneId: string) => {
     try {
-      const next = await window.ade.lanes.getReclaimRisk({ laneId }, pin);
+      const next = await window.ade.lanes.getReclaimRisk({ laneId }, requirePin(pin));
       setConfirm("");
       setDiscardDirty(false);
       setRisk(next);
@@ -48,7 +49,7 @@ export function useLaneReclaim(
         laneId: risk.laneId,
         confirmation: "RECLAIM",
         ...(risk.dirty && discardDirty ? { forceDirty: true } : {}),
-      }, pin);
+      }, requirePin(pin));
       showToast(result.keptForRetry
         ? {
             id: RECLAIM_TOAST_ID,

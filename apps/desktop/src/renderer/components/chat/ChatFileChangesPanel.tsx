@@ -27,6 +27,7 @@ import {
   ChatCardRow,
   ChatCardTitle,
 } from "./chatCardPrimitives";
+import { withChatPin } from "./chatMachinePin";
 
 /* ── Helpers ── */
 
@@ -257,7 +258,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
       setActiveDiffLoadState("loading");
 
       try {
-        const diff = await getTurnFileDiff(args, scope.pin);
+        const diff = await withChatPin(scope.pin, (chatPin) => getTurnFileDiff(args, chatPin));
         if (latestDiffRequestKey.current !== cacheKey) return;
         if (!diff) {
           setActiveDiff(null);

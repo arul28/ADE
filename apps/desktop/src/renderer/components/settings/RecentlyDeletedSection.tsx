@@ -23,6 +23,7 @@ import "../terminals/importSessions/importSessions.css";
 import "./primitives/settingsModern.css";
 import "./machineSettings.css";
 import "./recentlyDeleted.css";
+import { requirePin } from "../../state/repositoryScope";
 
 /**
  * Settings › Recently deleted: chats you deleted that can still be opened
@@ -293,7 +294,7 @@ export function RecentlyDeletedSection() {
     const seq = ++requestSeq.current;
     setLoadError(null);
     try {
-      const result = await window.ade.agentChat.listDeleted({}, pinRef.current);
+      const result = await window.ade.agentChat.listDeleted({}, requirePin(pinRef.current));
       if (seq === requestSeq.current) setChats(result.chats);
     } catch (error) {
       if (seq !== requestSeq.current) return;
@@ -351,9 +352,10 @@ export function RecentlyDeletedSection() {
   // Lanes are needed only to reopen a chat whose lane was deleted.
   const needsLanes = Boolean(openChat && !openChat.laneExists);
   React.useEffect(() => {
-    if (!needsLanes || lanes) return;
+    const listPin = pinRef.current;
+    if (!needsLanes || lanes || !listPin) return;
     let cancelled = false;
-    void window.ade.lanes.list({ includeArchived: false, includeStatus: false }, pinRef.current)
+    void window.ade.lanes.list({ includeArchived: false, includeStatus: false }, listPin)
       .then((list) => {
         if (!cancelled) setLanes(list.filter((lane) => !lane.archivedAt));
       })
@@ -382,7 +384,7 @@ export function RecentlyDeletedSection() {
     // page moved to another machine since (the toast's Open chat runs later).
     const reopenPin = pinRef.current;
     try {
-      const result = await window.ade.agentChat.reopenDeleted({ id: chat.id, ...(laneId ? { laneId } : {}) }, reopenPin);
+      const result = await window.ade.agentChat.reopenDeleted({ id: chat.id, ...(laneId ? { laneId } : {}) }, requirePin(reopenPin));
       setChats((prev) => prev?.filter((entry) => entry.id !== chat.id) ?? prev);
       setOpenId(null);
       const cli = result.kind === "cli";
@@ -418,7 +420,7 @@ export function RecentlyDeletedSection() {
     if (!ok) return;
     setRunning({ id: chat.id, kind: "remove" });
     try {
-      await window.ade.agentChat.removeDeleted({ ids: [chat.id] }, pinRef.current);
+      await window.ade.agentChat.removeDeleted({ ids: [chat.id] }, requirePin(pinRef.current));
       setChats((prev) => prev?.filter((entry) => entry.id !== chat.id) ?? prev);
       setOpenId((current) => (current === chat.id ? null : current));
     } catch (error) {

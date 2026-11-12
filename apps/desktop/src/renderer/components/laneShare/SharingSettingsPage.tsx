@@ -7,8 +7,10 @@ import {
   type LaneSharePresetName,
 } from "../../../shared/laneShareRights";
 import type { LaneShareGivenEntry, LaneShareReceivedEntry } from "../../../shared/types/laneShare";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { LANE_SHARING_UNAVAILABLE } from "../../../shared/laneShareDirectory";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { ModernPage, ModernRow, ModernRows, ModernSection } from "../settings/primitives";
 import { ContextMenu, type ContextMenuEntry, type ContextMenuState } from "../ui/ContextMenu";
 import { Banner } from "../ui/notice";
@@ -50,8 +52,9 @@ import { laneShareGuestPath } from "./guest/laneShareGuestRoute";
  * grant read). "Shared with me": the shares given to this account (an
  * account call, no project needed), with Accept, Open and Leave.
  *
- * Every call goes to the tab's bound runtime (no pin): these lists are the
- * account's, and that runtime asks the account directory.
+ * Every call goes to the open repository's reader copy (the tab's copy while
+ * it has one): these lists are the account's, and that runtime asks the
+ * account directory. With no copy online, nothing is sent.
  */
 
 type ListState<T> = { status: "loading" | "ready" | "error"; data: T | null; problem: LaneShareProblem | null };
@@ -73,31 +76,40 @@ function groupBy<T extends { repoKey: string | null; projectLabel: string | null
   return [...groups.values()].sort((a, b) => a.title.localeCompare(b.title));
 }
 
-function useBoundRuntimeReady(): { boundKey: string | null; active: boolean } {
+function useBoundRuntimeReady(): { boundKey: string | null; active: boolean; pin: OpenProjectBinding | null } {
   const boundKey = useAppStore((s) => s.projectBinding?.key ?? null);
   const activeKey = useRootAppStore((s) => s.projectBinding?.key ?? null);
-  return { boundKey, active: Boolean(boundKey) && boundKey === activeKey };
+  const tabActive = Boolean(boundKey) && boundKey === activeKey;
+  const pin = useActiveRepositoryReader(tabActive);
+  return { boundKey, active: tabActive && pin != null, pin };
 }
 
 function SharedByMe() {
-  const { boundKey, active } = useBoundRuntimeReady();
+  const { boundKey, active, pin } = useBoundRuntimeReady();
+  const pinKey = pin?.key ?? null;
+  const pinRef = React.useRef(pin);
+  pinRef.current = pin;
   const revokePending = useLaneShareStore((s) => s.revokePending);
   const [state, setState] = React.useState<ListState<LaneShareGivenEntry[]>>({ status: "loading", data: null, problem: null });
   const [menu, setMenu] = React.useState<{ point: ContextMenuState; entry: LaneShareGivenEntry } | null>(null);
   const [busyGroup, setBusyGroup] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
-    if (!active) return;
+    const listPin = pinRef.current;
+    if (!active || !listPin) return;
     try {
-      const result = await window.ade.laneShare.list({ scope: "account" }, null);
+      const result = await window.ade.laneShare.list({ scope: "account" }, listPin);
       setState({ status: "ready", data: result.shares ?? [], problem: null });
     } catch (error) {
       setState((current) => ({ status: "error", data: current.data, problem: laneShareProblem(error) }));
     }
-  }, [active]);
+    // `pinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, pinKey]);
 
   React.useEffect(() => {
-    if (!active) return;
+    const subscribedPin = pinRef.current;
+    if (!active || !subscribedPin) return;
     void load();
     let timer: ReturnType<typeof setTimeout> | null = null;
     const off = window.ade.laneShare.onEvent((event) => {
@@ -107,7 +119,7 @@ function SharedByMe() {
         timer = null;
         void load();
       }, 400);
-    }, null);
+    }, subscribedPin);
     return () => {
       off();
       if (timer) clearTimeout(timer);
@@ -116,22 +128,23 @@ function SharedByMe() {
 
   const rows = (state.data ?? []).filter((entry) => isLiveLaneShare(entry) || entry.state === "expired");
   const groups = groupBy(rows);
-  const listKey = laneShareListKey(null, boundKey);
+  const listKey = laneShareListKey(pin, boundKey);
 
   const edit = (entry: LaneShareGivenEntry) => {
     openLaneShareSheet({
       listKey,
       laneId: entry.laneId,
       laneName: entry.laneLabel ?? "Lane",
-      pin: null,
+      pin,
       machineName: null,
       grantId: entry.grantId,
     });
   };
 
   const resend = async (entry: LaneShareGivenEntry) => {
+    if (!pin) return;
     try {
-      await window.ade.laneShare.resendInvite({ grantId: entry.grantId }, null);
+      await window.ade.laneShare.resendInvite({ grantId: entry.grantId }, pin);
       showToast({ tone: "success", title: "Invite sent again", message: "It works for 24 hours." });
       await load();
     } catch (error) {
@@ -140,11 +153,12 @@ function SharedByMe() {
   };
 
   const revoke = async (entries: LaneShareGivenEntry[], title: string, message: string, groupKey: string | null) => {
+    if (!pin) return;
     const ok = await confirmDialog({ title, message, confirmLabel: "Stop sharing", destructive: true, size: "md" });
     if (!ok) return;
     setBusyGroup(groupKey);
     try {
-      await revokeLaneShares(entries, null, listKey);
+      await revokeLaneShares(entries, pin, listKey);
       await load();
     } finally {
       setBusyGroup(null);

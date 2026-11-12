@@ -2149,7 +2149,7 @@ vendor:
 | Droid | the chat's own model | pinned `droid exec -o text`, read-only (no `--auto`) |
 | Devin | the chat's own model | pinned `devin -p --prompt-file`, stdin closed |
 | Pi | the chat's own model | pinned `pi -p --mode text --no-session --no-tools` |
-| Antigravity | the chat's own model | one ACP prompt on the pinned `agy_acp_server`; signed out fails before any spawn |
+| Antigravity | the chat's own model | one ACP prompt on the pinned `agy acp`; signed out fails before any spawn |
 | OpenCode, API-key, OpenRouter, local | the chat's own model | `runOpenCodeTextPrompt` on the pinned OpenCode |
 
 When that one call fails, the deterministic slug stays; the agent can

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { GitHubPrListItem } from "../../shared/types";
 import { getGitHubSnapshotCoalesced } from "./prReadCache";
 import { selectActiveProjectRoot, useAppStore } from "../state/appStore";
+import { useActiveRepositoryReader } from "../state/repositoryScope";
 
 /**
  * This window's own view of the repo's pull requests, for a chat whose machine
@@ -20,10 +21,15 @@ export function useWindowMachineGithubPrs(chatHasOwnPin: boolean): {
   const [pullRequests, setPullRequests] = useState<GitHubPrListItem[] | null>(null);
   const [readFailed, setReadFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // GitHub is asked through the repository's reader copy (any online copy).
+  const readerPin = useActiveRepositoryReader(!windowIsAsleepToo);
+  const readerPinRef = useRef(readerPin);
+  readerPinRef.current = readerPin;
+  const readerPinKey = readerPin?.key ?? null;
   useEffect(() => {
-    if (windowIsAsleepToo) return;
+    if (windowIsAsleepToo || !readerPinRef.current) return;
     let cancelled = false;
-    void getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey })
+    void getGitHubSnapshotCoalesced({}, { projectRoot, bindingKey, pin: readerPinRef.current })
       .then((snapshot) => {
         if (cancelled) return;
         setPullRequests(snapshot?.repoPullRequests ?? []);
@@ -34,7 +40,7 @@ export function useWindowMachineGithubPrs(chatHasOwnPin: boolean): {
         if (!cancelled) setReadFailed(true);
       });
     return () => { cancelled = true; };
-  }, [attempt, bindingKey, projectRoot, windowIsAsleepToo]);
+  }, [attempt, bindingKey, projectRoot, readerPinKey, windowIsAsleepToo]);
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
   return { pullRequests, readFailed, retry };
 }

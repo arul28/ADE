@@ -399,6 +399,17 @@ struct MobileGitHubRepoSummary: Codable, Equatable, Identifiable {
   var sshUrl: String
 }
 
+/// `github.publishCurrentProject`'s answer (desktop `PublishProjectResult`).
+struct MobilePublishProjectResult: Codable, Equatable {
+  /// `pushed` or `remote_added`.
+  var state: String
+  var owner: String
+  var name: String
+  var fullName: String
+  var htmlUrl: String
+  var isPrivate: Bool? = nil
+}
+
 struct MobileListMyGitHubReposResult: Codable, Equatable {
   var repos: [MobileGitHubRepoSummary]
 }
@@ -8044,6 +8055,50 @@ struct WorkToolsAgentBrowserPresence: Codable, Equatable {
   var chatSessionId: String
   /// The tab the last command addressed, when it named one.
   var tabId: String?
+}
+
+/// One live picture of a desktop browser tab, from
+/// `workTools.readBrowserTabFrame`. `dataUrl` is a `data:image/jpeg;base64,…`
+/// URL; `width`/`height` are the picture's pixels.
+struct WorkToolsBrowserTabFramePicture: Codable, Equatable {
+  var dataUrl: String
+  var width: Double
+  var height: Double
+  var capturedAt: String?
+}
+
+/// The answer to `workTools.readBrowserTabFrame`. `frame` is nil while the
+/// desktop is still starting its capture loop for the tab.
+struct WorkToolsBrowserTabFrame: Codable, Equatable {
+  var tabId: String
+  var url: String?
+  var title: String?
+  var isLoading: Bool?
+  var frame: WorkToolsBrowserTabFramePicture?
+}
+
+/// A person's input for `workTools.sendBrowserTabInput`. `x` and `y` are
+/// fractions (0–1) of the frame the person saw, so the picture's size on the
+/// phone never matters. `deltaY` is positive to scroll the page down.
+enum WorkToolsBrowserTabInputEvent: Equatable {
+  case click(x: Double, y: Double)
+  case scroll(x: Double, y: Double, deltaY: Double)
+  /// One of Enter, Backspace, Tab, Delete, Up, Down, Left, Right.
+  case key(String)
+  case text(String)
+
+  var payload: [String: Any] {
+    switch self {
+    case .click(let x, let y):
+      return ["type": "click", "x": x, "y": y]
+    case .scroll(let x, let y, let deltaY):
+      return ["type": "scroll", "x": x, "y": y, "deltaY": deltaY]
+    case .key(let key):
+      return ["type": "key", "key": key]
+    case .text(let text):
+      return ["type": "text", "text": text]
+    }
+  }
 }
 
 /// The host also sends `activeToolUpdatedAt` and `capturedAt`; the phone shows

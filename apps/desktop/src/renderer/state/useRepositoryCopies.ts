@@ -33,6 +33,7 @@ import {
   type StartOnChoice,
 } from "../../shared/repositoryTab";
 import type { RecentProjectSummary } from "../../shared/types";
+import { rememberProjectOriginSummaries } from "../components/lanes/laneMachines";
 import { isWebClientMode } from "../lib/webClientMode";
 import { adeCloudLaneComputerForMachine, useAdeCloudLaneComputers } from "./adeCloudLaneIndex";
 import { useAdeCloudEnabled } from "./cloudAccess";
@@ -120,8 +121,12 @@ function useThisComputer(active: boolean): ThisComputer | null {
       if (typeof listRecent !== "function") return;
       const readId = ++latestRead;
       void listRecent().then(
-        // An older read that finishes last must not replace a newer list.
-        (rows) => { if (!cancelled && readId === latestRead) setLocalProjects(rows); },
+        (rows) => {
+          // A local tab binding takes its git origin from this memory.
+          rememberProjectOriginSummaries(rows, { replace: true });
+          // An older read that finishes last must not replace a newer list.
+          if (!cancelled && readId === latestRead) setLocalProjects(rows);
+        },
         // The last list stays; the next focus reads again.
         (error: unknown) => {
           captureError(error, { fingerprint: ["repository-copies", "recent-projects-read"], level: "warning", handled: true });

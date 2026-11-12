@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readAccountProjectState } from "../projects/accountProjectSync";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { ProjectRegistry } from "../projects/projectRegistry";
 import { resolveDeviceDisplayName } from "../sync/deviceRegistryService";
@@ -64,7 +65,15 @@ export function getSharedRemoteMcpService(logger?: RemoteMcpLogger): RemoteMcpSe
       rootPath: record.rootPath,
       displayName: record.displayName,
       lastOpenedAt: record.lastOpenedAt,
+      accountProjectId: record.accountProjectId ?? null,
+      gitOriginUrl: record.gitOriginUrl ?? null,
     })),
+    // `project` may name an account project; it resolves against the list
+    // this computer last read (merges followed, removals told).
+    accountProjects: () => {
+      const state = readAccountProjectState(layout.adeDir);
+      return state.userId === null ? null : state.projects;
+    },
     // chat_start opens on the model a new chat in ADE would.
     launchDefaults: () => {
       const defaults = readChatLaunchDefaults(layout.adeDir);

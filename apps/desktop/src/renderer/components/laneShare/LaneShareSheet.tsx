@@ -30,6 +30,7 @@ import {
   sameLaneShareRights,
 } from "./laneShareModel";
 import { reloadLaneShares, useLaneShareList, useLaneShareStore, type LaneShareSheetRequest } from "./laneShareStore";
+import { requirePin } from "../../state/repositoryScope";
 
 /**
  * The share sheet: people on the left (invite form, one row per guest with
@@ -232,7 +233,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
         rights,
         endsAt: newDraft.endsAt,
         ...(high ? { confirmHighRisk: true } : {}),
-      }, pin);
+      }, requirePin(pin, "No computer with this lane is online."));
       const link = result.directory?.link ?? null;
       let copied = false;
       if (copyLink && link) copied = await copyTextToClipboard(link);
@@ -269,7 +270,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
         rights: next.rights,
         ...(next.endsAt !== selectedEntry.endsAt ? { endsAt: next.endsAt } : {}),
         ...(nextRisk === "high" ? { confirmHighRisk: true } : {}),
-      }, pin);
+      }, requirePin(pin, "No computer with this lane is online."));
       setEdits((current) => {
         const { [selectedEntry.grantId]: _saved, ...rest } = current;
         return rest;
@@ -292,7 +293,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
     setFormError(null);
     setNotice(null);
     try {
-      const result = await window.ade.laneShare.resendInvite({ grantId: target.grantId }, pin);
+      const result = await window.ade.laneShare.resendInvite({ grantId: target.grantId }, requirePin(pin, "No computer with this lane is online."));
       setNotice(laneShareEmailNote(result.directory) ?? `The invite to ${target.receiverEmail ?? "the guest"} was sent again. It works for 24 hours.`);
       await refresh();
       setSelected(result.grantId);

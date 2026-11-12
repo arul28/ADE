@@ -273,7 +273,7 @@ export function GitHubAppInstallPanel({
       // reconcile so this project's PR badges light up without a manual refresh.
       // Swallow rejections (e.g. a project transition tearing down the runtime)
       // so this fire-and-forget can never surface as an unhandled rejection.
-      void window.ade?.prs?.reconcileNow?.(pin).catch(() => {});
+      if (pin) void window.ade?.prs?.reconcileNow?.(pin).catch(() => {});
     }, Math.max(1, deviceSession.intervalSec) * 1000);
     return () => {
       cancelled = true;
@@ -326,7 +326,7 @@ export function GitHubAppInstallPanel({
     setDeviceMessage("GitHub is connected to your ADE account. Checking repository access...");
     onAccountAppChanged?.();
     void loadStatus(true, { retryAfterAuthorization: true });
-    void window.ade?.prs?.reconcileNow?.(pin).catch(() => {});
+    if (pin) void window.ade?.prs?.reconcileNow?.(pin).catch(() => {});
   }, [loadStatus, onAccountAppChanged, pin]);
 
   const startAccountSignIn = useCallback(() => {

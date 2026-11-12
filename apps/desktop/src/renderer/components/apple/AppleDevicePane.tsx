@@ -88,6 +88,8 @@ import { isInParkedSurface } from "../../lib/parkedSurface";
 import { useTicker } from "../../lib/ticker";
 import { confirmAppleDeviceRelease } from "./appleReleaseConfirm";
 import { DEVICE_DRAWER_DOCK_CLASS } from "../device/DeviceToolsDrawerShell";
+import { useDeviceMachinePin } from "./useDeviceMachinePin";
+import { WorkToolEmptyLine } from "../terminals/workToolChrome";
 
 /**
  * The Apple device, as the body of the Work tools pane's Apple tab.
@@ -177,7 +179,18 @@ function showRuntimeRemoval(result: AppleRuntimeDeleteResult) {
   });
 }
 
-export function AppleDevicePane({
+/**
+ * The pane for one lane's simulator. Every simulator call names the lane's
+ * machine (`useDeviceMachinePin`). With no machine at all (no computer online
+ * for this project) it shows one line and makes no call.
+ */
+export function AppleDevicePane(props: AppleDevicePaneProps) {
+  const pin = useDeviceMachinePin(props.runtimePin);
+  if (!pin) return <WorkToolEmptyLine title="No computer with this project is online" testId="apple-pane-no-computer" />;
+  return <AppleDevicePaneOnMachine {...props} runtimePin={pin} />;
+}
+
+function AppleDevicePaneOnMachine({
   sessionId,
   laneId,
   projectRoot,
@@ -186,8 +199,8 @@ export function AppleDevicePane({
   onAddContext,
   onInsertDraft,
   className,
-}: AppleDevicePaneProps) {
-  const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
+}: AppleDevicePaneProps & { runtimePin: OpenProjectBinding }) {
+  const runtimePinRef = useRef<OpenProjectBinding>(runtimePin);
   runtimePinRef.current = runtimePin;
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -605,7 +618,7 @@ export function AppleDevicePane({
   const [runtimesNonce, setRuntimesNonce] = useState(0);
   const runtimes$ = useAppleRuntimes({
     runtimePinRef,
-    pinKey: runtimePin?.key ?? null,
+    pinKey: runtimePin.key,
     laneId,
     enabled: !hidden,
     refreshNonce: runtimesNonce,
@@ -785,7 +798,7 @@ export function AppleDevicePane({
     laneId,
     chatSessionId: sessionId,
     runtimePinRef,
-    pinKey: runtimePin?.key ?? null,
+    pinKey: runtimePin.key,
     // Only a real fold moves the drawn hinge and the slider: a turn of the
     // phone, or a report a degree off, leaves both where the slider put them.
     onAngle: (angle) => setDuoState((current) => (appleDuoSameHinge(current.pose.angle, angle)
@@ -907,7 +920,7 @@ export function AppleDevicePane({
   const effectiveMode: AppleViewMode = canUse3d ? mode : "flat";
 
   const deviceName = laneDevice?.name ?? "Simulator";
-  const duoModel = useAppleDuoModel({ enabled: duoCapable && canUse3d, pinKey: runtimePin?.key ?? null, runtimePinRef });
+  const duoModel = useAppleDuoModel({ enabled: duoCapable && canUse3d, pinKey: runtimePin.key, runtimePinRef });
   /** How the Duo is held, in the rotate control's terms; null until it says. */
   const duoHeld = duoCapable ? appleDuoHeldOrientation(duoPosture) : null;
   const duoTent = appleDuoInTent(duoPosture);
@@ -952,7 +965,7 @@ export function AppleDevicePane({
     deviceName,
     duoCapable,
     runtimePinRef,
-    pinKey: runtimePin?.key ?? null,
+    pinKey: runtimePin.key,
     effectiveMode,
     setMode,
     live: (state === "live" || state === "video-lost") && canUse3d,

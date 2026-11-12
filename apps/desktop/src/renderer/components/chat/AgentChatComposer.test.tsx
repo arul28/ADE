@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within, type RenderResult } from "@testing-library/react";
-import { useState, type ComponentProps } from "react";
+import { useState, type ComponentProps, type ReactNode } from "react";
 import type {
   IosElementContextItem,
   NormalizedLinearIssue,
@@ -28,6 +28,7 @@ import {
 import { useAppStore } from "../../state/appStore";
 import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import { AgentChatApiProvider } from "./agentChatApi";
+import { PERSONAL_CHAT_ADAPTER_PIN } from "./chatMachinePin";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 
 vi.mock("@tanstack/react-virtual", () => ({
@@ -113,16 +114,31 @@ vi.mock("@lobehub/icons", () => {
 
 beforeEach(() => {
   installMatchMediaMock();
+  // The tab's copy: project-wide reads (Linear, secrets) go to its machine.
+  useAppStore.setState({ projectBinding: CHAT_BINDING });
 });
 
 afterEach(() => {
   cleanup();
-  useAppStore.setState({ draftsButtonEnabled: true });
+  useAppStore.setState({ draftsButtonEnabled: true, projectBinding: null });
   delete (window as any).ade;
 });
 
+/** The chat's machine: the composer's drafts and attachments go there. */
+const CHAT_BINDING: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
+/** The chat subtree's scope, as `AgentChatPane` provides it. */
+function ChatScope({ children }: { children: ReactNode }) {
+  return (
+    <ChatRuntimeScopeProvider pin={CHAT_BINDING} binding={CHAT_BINDING} laneId={null} sessionId={null}>
+      {children}
+    </ChatRuntimeScopeProvider>
+  );
+}
+
 function buildComposerProps(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
   const props: ComponentProps<typeof AgentChatComposer> = {
+    composerMachineBinding: CHAT_BINDING,
     modelId: "openai/gpt-5.4",
     availableModelIds: ["openai/gpt-5.4"],
     reasoningEffort: null,
@@ -168,7 +184,7 @@ function buildComposerProps(overrides: Partial<ComponentProps<typeof AgentChatCo
 function renderComposer(overrides: Partial<ComponentProps<typeof AgentChatComposer>> = {}) {
   const props = buildComposerProps(overrides);
 
-  const view = render(<AgentChatComposer {...props} />);
+  const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
   return Object.assign(view, props) as RenderResult & ComponentProps<typeof AgentChatComposer>;
 }
 
@@ -196,7 +212,7 @@ function renderControlledComposer(overrides: Partial<ComponentProps<typeof Agent
     );
   }
 
-  const view = render(<Harness />);
+  const view = render(<Harness />, { wrapper: ChatScope });
   return Object.assign(view, props) as RenderResult & ComponentProps<typeof AgentChatComposer>;
 }
 
@@ -367,7 +383,7 @@ describe("AgentChatComposer", () => {
       });
     (window as any).ade = { agentChat: { resolveSmartLinkPreview } };
     const props = buildComposerProps({ draft: url, turnActive: false });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
 
     await waitFor(() => expect(resolveSmartLinkPreview).toHaveBeenCalledTimes(1));
     view.rerender(<AgentChatComposer {...props} draft="" />);
@@ -387,7 +403,7 @@ describe("AgentChatComposer", () => {
     });
     (window as any).ade = { agentChat: { resolveSmartLinkPreview } };
     const props = buildComposerProps({ draft: url, turnActive: false });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
 
     const icon = await waitFor(() => {
       const el = view.container.querySelector<HTMLElement>("[data-smart-link-icon]");
@@ -453,7 +469,7 @@ describe("AgentChatComposer", () => {
       text: "Need a steer message",
       provider: "codex",
       modelId: "openai/gpt-5.4",
-    }, null));
+    }, CHAT_BINDING));
     expect(props.onDraftChange).toHaveBeenCalledWith("");
   });
 
@@ -1069,7 +1085,7 @@ describe("AgentChatComposer", () => {
       sessionId: "session-1",
       onSearchAttachments,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const textbox = screen.getByRole("textbox");
 
     fireEvent.change(textbox, { target: { value: "@cursor", selectionStart: 7 } });
@@ -1096,7 +1112,7 @@ describe("AgentChatComposer", () => {
       sessionId: "session-1",
       onSearchAttachments,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const textbox = screen.getByRole("textbox");
 
     fireEvent.change(textbox, { target: { value: "@src", selectionStart: 4 } });
@@ -1126,7 +1142,7 @@ describe("AgentChatComposer", () => {
       sessionId: "session-1",
       onSearchAttachments,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const draft = "ask @foo.ts about this";
 
     fireEvent.change(screen.getByRole("textbox"), {
@@ -1167,7 +1183,7 @@ describe("AgentChatComposer", () => {
       sessionId: "session-1",
       onSearchAttachments,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const draft = "ask @src/my review this";
 
     fireEvent.change(screen.getByRole("textbox"), {
@@ -1193,7 +1209,7 @@ describe("AgentChatComposer", () => {
       draft: "",
       onSearchMentions,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const textbox = screen.getByRole("textbox");
 
     fireEvent.change(textbox, {
@@ -1226,11 +1242,11 @@ describe("AgentChatComposer", () => {
       draft: "@chat:chat-1 ",
       mentionLabels: { "@chat:chat-1": "a b c" },
     });
-    const first = render(<AgentChatComposer {...props} />);
+    const first = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     expect(first.container.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
 
     first.unmount();
-    const second = render(<AgentChatComposer {...props} />);
+    const second = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     expect(second.container.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
   });
 
@@ -1251,11 +1267,11 @@ describe("AgentChatComposer", () => {
       mentionLabels: { "@chat:chat-1": "a b c" },
       iosElementContextItems: [iosContext],
     });
-    const first = render(<AgentChatComposer {...props} />);
+    const first = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     expect(first.container.querySelector("[data-composer-chip='mention']")?.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
 
     first.unmount();
-    const second = render(<AgentChatComposer {...props} />);
+    const second = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     expect(second.container.querySelector("[data-composer-chip='mention']")?.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
   });
 
@@ -1266,7 +1282,7 @@ describe("AgentChatComposer", () => {
       mentionLabels: { "@chat:chat-1": "a b c" },
       iosElementContextItems: [makeIosContextItem("ios-1")],
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const chip = () => view.container.querySelector<HTMLElement>("[data-composer-chip='mention']");
 
     expect(chip()?.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
@@ -1287,7 +1303,7 @@ describe("AgentChatComposer", () => {
       draft: "",
       onSearchMentions,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const textbox = screen.getByRole("textbox");
     const draft = "ask @a b c about this";
 
@@ -1335,7 +1351,7 @@ describe("AgentChatComposer", () => {
       sessionId: null,
       onSearchAttachments: laneSearch,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
 
     fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "@src", selectionStart: 4 },
@@ -1369,7 +1385,7 @@ describe("AgentChatComposer", () => {
         source: "sdk",
       }],
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
 
     fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "fix bug then run /st", selectionStart: 20 },
@@ -1391,7 +1407,7 @@ describe("AgentChatComposer", () => {
         source: "sdk",
       }],
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
 
     const textbox = screen.getByRole("textbox");
     fireEvent.change(textbox, { target: { value: "check /tmp", selectionStart: 10 } });
@@ -1414,7 +1430,7 @@ describe("AgentChatComposer", () => {
       sessionId: "session-1",
       onSearchAttachments,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
 
     fireEvent.change(screen.getByRole("textbox"), {
       target: { value: "fix the parser in @src", selectionStart: 22 },
@@ -1542,7 +1558,7 @@ describe("AgentChatComposer", () => {
       promptHistory,
       turnActive: false,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
 
     textbox.focus();
@@ -1581,7 +1597,7 @@ describe("AgentChatComposer", () => {
       promptHistory: initialHistory,
       turnActive: false,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
 
     textbox.focus();
@@ -1617,7 +1633,7 @@ describe("AgentChatComposer", () => {
       promptHistory,
       turnActive: false,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
 
     textbox.focus();
@@ -1647,7 +1663,7 @@ describe("AgentChatComposer", () => {
       promptHistory: [{ text: "Latest prompt", eventKey: "prompt-1" }],
       turnActive: false,
     });
-    render(<AgentChatComposer {...props} />);
+    render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
 
     textbox.focus();
@@ -1670,7 +1686,7 @@ describe("AgentChatComposer", () => {
       promptHistory,
       turnActive: false,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
 
     textbox.focus();
@@ -1705,7 +1721,7 @@ describe("AgentChatComposer", () => {
         promptHistory,
         turnActive: false,
       });
-      const view = render(<AgentChatComposer {...props} />);
+      const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
       const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
 
       textbox.focus();
@@ -1742,7 +1758,7 @@ describe("AgentChatComposer", () => {
       promptHistory: [{ text: "Latest prompt", eventKey: "prompt-1" }],
       turnActive: false,
     });
-    render(<AgentChatComposer {...props} />);
+    render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
 
     textbox.focus();
@@ -1753,7 +1769,7 @@ describe("AgentChatComposer", () => {
       text: "unfinished draft",
       provider: "codex",
       modelId: "openai/gpt-5.4",
-    }, null));
+    }, CHAT_BINDING));
     expect(onDraftChange).toHaveBeenCalledWith("Latest prompt");
   });
 
@@ -1779,7 +1795,7 @@ describe("AgentChatComposer", () => {
       promptHistory: [{ text: "Latest prompt", eventKey: "prompt-1" }],
       turnActive: false,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
 
     textbox.focus();
@@ -1798,7 +1814,7 @@ describe("AgentChatComposer", () => {
 
     await waitFor(() => expect(remove).toHaveBeenCalledWith(
       { id: "stash-auto-interrupted-1" },
-      null,
+      CHAT_BINDING,
     ));
   });
 
@@ -1824,7 +1840,7 @@ describe("AgentChatComposer", () => {
       promptHistory: [{ text: "Latest prompt", eventKey: "prompt-1" }],
       turnActive: false,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
 
     textbox.focus();
@@ -1843,7 +1859,7 @@ describe("AgentChatComposer", () => {
 
     await waitFor(() => expect(remove).toHaveBeenCalledWith(
       { id: "stash-auto-unmounted-1" },
-      null,
+      CHAT_BINDING,
     ));
   });
 
@@ -1866,7 +1882,7 @@ describe("AgentChatComposer", () => {
       promptHistory: [{ text: "Latest prompt", eventKey: "prompt-1" }],
       turnActive: false,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
 
     textbox.focus();
@@ -1880,7 +1896,7 @@ describe("AgentChatComposer", () => {
 
     await waitFor(() => expect(remove).toHaveBeenCalledWith(
       { id: "stash-auto-restore-1" },
-      null,
+      CHAT_BINDING,
     ));
   });
 
@@ -2081,7 +2097,7 @@ describe("AgentChatComposer", () => {
     fireEvent.change(screen.getByTestId("project-secret-value"), { target: { value: "sk_live_not_for_chat" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    await waitFor(() => expect(set).toHaveBeenCalledWith({ name: "STRIPE_KEY", value: "sk_live_not_for_chat" }));
+    await waitFor(() => expect(set).toHaveBeenCalledWith({ name: "STRIPE_KEY", value: "sk_live_not_for_chat" }, CHAT_BINDING));
     await waitFor(() => expect(view.onDraftChange).toHaveBeenCalled());
     const draft = (view.onDraftChange as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0] as string;
     expect(draft.startsWith("Wire up billing.")).toBe(true);
@@ -3087,14 +3103,31 @@ describe("AgentChatComposer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     await waitFor(() => expect(screen.getAllByText("ADE-124").length).toBeGreaterThan(0));
-    expect(searchLinearIssues).toHaveBeenLastCalledWith(expect.objectContaining({ after: "cursor-1" }));
+    expect(searchLinearIssues).toHaveBeenLastCalledWith(
+      expect.objectContaining({ after: "cursor-1" }),
+      expect.objectContaining({ key: CHAT_BINDING.key }),
+    );
 
     expect(searchLinearIssues).toHaveBeenCalledTimes(2);
     expect(screen.getAllByText("ADE-123").length).toBeGreaterThan(0);
     expect(screen.getAllByText("ADE-124").length).toBeGreaterThan(0);
   });
 
-  it("attaches a native clipboard image when macOS Cmd+V does not expose paste files", async () => {
+  const STUDIO_BINDING: OpenProjectBinding = {
+    kind: "remote",
+    key: "remote:studio:ade",
+    targetId: "studio",
+    runtimeName: "Mac Studio",
+    projectId: "ade",
+    rootPath: "/Users/admin/Projects/ADE",
+    displayName: "ADE",
+  };
+  it.each([
+    // A project chat stages on its machine.
+    { name: "a project chat, on its machine", personal: false, binding: STUDIO_BINDING, expectedPin: STUDIO_BINDING },
+    // A personal chat's adapter knows its computer, even with no project open.
+    { name: "a personal chat with no project open", personal: true, binding: null, expectedPin: PERSONAL_CHAT_ADAPTER_PIN },
+  ])("attaches a native clipboard image when macOS Cmd+V does not expose paste files: $name", async ({ personal, binding, expectedPin }) => {
     const originalPlatform = navigator.platform;
     Object.defineProperty(navigator, "platform", {
       configurable: true,
@@ -3108,24 +3141,24 @@ describe("AgentChatComposer", () => {
     const saveTempAttachment = vi.fn().mockResolvedValue({ path: "/tmp/ade-clipboard.png" });
     (window as any).ade = {
       app: { readClipboardImage },
-      agentChat: { saveTempAttachment },
+      agentChat: personal ? {} : { saveTempAttachment },
     };
 
-    const composerMachineBinding: OpenProjectBinding = {
-      kind: "remote",
-      key: "remote:studio:ade",
-      targetId: "studio",
-      runtimeName: "Mac Studio",
-      projectId: "ade",
-      rootPath: "/Users/admin/Projects/ADE",
-      displayName: "ADE",
-    };
     try {
-      const props = renderComposer({
+      const props = buildComposerProps({
         turnActive: false,
         draft: "",
-        composerMachineBinding,
+        composerMachineBinding: binding,
       });
+      if (personal) {
+        render(
+          <AgentChatApiProvider scope={{ kind: "personal", agentChat: { saveTempAttachment } as never, modelCatalogScopeKey: "personal" }}>
+            <AgentChatComposer {...props} />
+          </AgentChatApiProvider>,
+        );
+      } else {
+        render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
+      }
 
       fireEvent.keyDown(screen.getByPlaceholderText("Type to vibecode..."), {
         key: "v",
@@ -3133,14 +3166,14 @@ describe("AgentChatComposer", () => {
       });
 
       await waitFor(() => expect(readClipboardImage).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(props.onAddAttachment).toHaveBeenCalledWith({
+        path: "/tmp/ade-clipboard.png",
+        type: "image",
+      }));
       expect(saveTempAttachment).toHaveBeenCalledWith({
         data: "abc123",
         filename: "clipboard.png",
-      }, composerMachineBinding);
-      expect(props.onAddAttachment).toHaveBeenCalledWith({
-        path: "/tmp/ade-clipboard.png",
-        type: "image",
-      });
+      }, expectedPin);
     } finally {
       Object.defineProperty(navigator, "platform", {
         configurable: true,
@@ -3300,7 +3333,7 @@ describe("AgentChatComposer", () => {
     }
     expect(readClipboardImage).toHaveBeenCalledTimes(expectReader ? 1 : 0);
     if (clipboardImage) {
-      expect(saveTempAttachment).toHaveBeenCalledWith({ data: "fitted-jpeg", filename: "clipboard.jpg" }, null);
+      expect(saveTempAttachment).toHaveBeenCalledWith({ data: "fitted-jpeg", filename: "clipboard.jpg" }, CHAT_BINDING);
     }
   });
 
@@ -3407,7 +3440,7 @@ describe("AgentChatComposer", () => {
     expect(saveTempAttachment).toHaveBeenCalledWith(
       // `pasted-<epoch ms>.<ext>`, the name iOS stages too.
       expect.objectContaining({ filename: expect.stringMatching(/^pasted-\d+\.txt$/) }),
-      null,
+      CHAT_BINDING,
     );
     expect(props.onDraftChange).not.toHaveBeenCalledWith(pastedLog);
   });
@@ -3543,7 +3576,7 @@ describe("AgentChatComposer", () => {
     await waitFor(() => expect(saveTempAttachment).toHaveBeenCalledWith({
       data: "/9j/converted",
       filename: "IMG_0001.jpg",
-    }, null));
+    }, CHAT_BINDING));
     expect(props.onAddAttachment).toHaveBeenCalledWith({
       path: "/tmp/ade-IMG_0001.jpg",
       type: "image",
@@ -3606,7 +3639,7 @@ describe("AgentChatComposer", () => {
       availableModelIds: ["opencode/openai/gpt-5.4"],
       sessionProvider: "opencode",
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
     expect(screen.queryByRole("button", { name: "OpenCode permission mode" })).toBeNull();
 
     view.rerender(<AgentChatComposer {...props} modelId="opencode/openai/gpt-5.4" />);
@@ -3725,7 +3758,7 @@ describe("AgentChatComposer", () => {
       composerMaxHeightPx: 128,
       isActive: false,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
 
     const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
     expect(document.activeElement).not.toBe(textarea);
@@ -3742,7 +3775,7 @@ describe("AgentChatComposer", () => {
       isActive: false,
       shouldAutofocus: false,
     });
-    const view = render(<AgentChatComposer {...props} />);
+    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
 
     const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
     expect(document.activeElement).not.toBe(textarea);
@@ -3795,7 +3828,7 @@ describe("AgentChatComposer", () => {
       shouldAutofocus: false,
       iosElementContextItems: [makeIosContextItem("ios-1"), makeIosContextItem("ios-2")],
     });
-    render(<AgentChatComposer {...props} />);
+    render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
 
     const editor = screen.getByRole("textbox");
     const chips = () => Array.from(editor.querySelectorAll<HTMLElement>("[data-composer-chip]"));
@@ -3854,7 +3887,7 @@ describe("AgentChatComposer", () => {
 
     try {
       const props = buildComposerProps({ draft: url, turnActive: false, shouldAutofocus: false });
-      const view = render(<AgentChatComposer {...props} />);
+      const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
       const editor = screen.getByRole("textbox");
       await waitFor(() => expect(editor.querySelectorAll("[data-composer-chip]")).toHaveLength(1));
 

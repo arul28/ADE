@@ -179,13 +179,15 @@ export function isBuiltInBrowserRemoteCallMethod(value: unknown): value is Built
  *   opening the collection, so `ade browser status` lists every tab on every
  *   machine with its owner.
  * - `releaseLaneTabs`: a lane was deleted or archived; free its tabs.
+ * - `chatBrowserLifecycle`: a chat started a turn, went idle, or ended; its
+ *   agent tabs keep running, start their countdown, or close.
  */
-export const BUILT_IN_BROWSER_REMOTE_BROADCAST_METHODS = ["listTabsForAgent", "releaseLaneTabs"] as const;
+export const BUILT_IN_BROWSER_REMOTE_BROADCAST_METHODS = ["listTabsForAgent", "releaseLaneTabs", "chatBrowserLifecycle"] as const;
 
 export type BuiltInBrowserRemoteBroadcastMethod = (typeof BUILT_IN_BROWSER_REMOTE_BROADCAST_METHODS)[number];
 
 export function isBuiltInBrowserRemoteBroadcastMethod(value: unknown): value is BuiltInBrowserRemoteBroadcastMethod {
-  return value === "listTabsForAgent" || value === "releaseLaneTabs";
+  return value === "listTabsForAgent" || value === "releaseLaneTabs" || value === "chatBrowserLifecycle";
 }
 
 /** Emitted by the daemon; taken only by the desktop it names. */

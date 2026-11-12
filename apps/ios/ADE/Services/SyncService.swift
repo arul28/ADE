@@ -21,6 +21,7 @@ enum WidgetReloadBridge {
 
 private let syncConnectLog = Logger(subsystem: "com.ade.sync", category: "connect")
 private let syncChatLog = Logger(subsystem: "com.ade.ios", category: "WorkChatSync")
+private let syncServiceDeviceIdLog = Logger(subsystem: "com.ade.sync", category: "device-id")
 
 private struct SourceFaviconsRemoteResult: Decodable {
   let icons: [String: String?]
@@ -4190,6 +4191,7 @@ final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected {
     didSet {
       guard connectionState != oldValue else { return }
+      if connectionState == .connected { helloSentWithProvisionalDeviceId = deviceIdIsProvisional }
       // Reaching an attached state hands naming back to the real host identity.
       // Clearing here — rather than at each of the several places that flip the
       // state — is what stops a stale attempt name from outliving the attempt.
@@ -4702,7 +4704,7 @@ final class SyncService: ObservableObject {
   private let defaultOutboundChangesetRowLimit = 64
   private let defaultOutboundChangesetByteLimit = 64 * 1_024
   private let minimumOutboundChangesetByteLimit = 4 * 1_024
-  private let keychain = KeychainService()
+  private let keychain: KeychainService
   private let database: DatabaseService
   private let socketSessionDelegate: SyncSocketSessionDelegate
   private let socketSession: URLSession
@@ -4904,6 +4906,19 @@ final class SyncService: ObservableObject {
   private var lastRoamAttemptUptime: TimeInterval?
   private var connectionEstablishedUptime: TimeInterval?
   private(set) var deviceId: String
+  /// True while `deviceId` is a stand-in: the keychain refused the read at
+  /// launch and there was no saved copy. The phone neither pairs nor drops a
+  /// pairing with it (`syncResolveDeviceId`).
+  private var deviceIdIsProvisional = false
+  /// A pairing secret read failed (not "not there"): the computer stays
+  /// paired, and the phone connects again once the keychain answers.
+  private var pairingSecretReadFailed = false
+  /// A hello went out with a provisional device id since the last attached
+  /// connection. Until a hello succeeds, no pairing rejection forgets a
+  /// pairing: the rejection may answer that hello even after the stored id
+  /// came back while the failed attempt was still being handled.
+  private var helloSentWithProvisionalDeviceId = false
+  private var keychainRecheckObservers: [NSObjectProtocol] = []
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
   /// The last hello_ok carried a non-empty project catalog, so the post-hello
   /// catalog request would only repeat it.
@@ -6294,6 +6309,68 @@ final class SyncService: ObservableObject {
     return try applyMachineProjectActionResponse(response, fallbackMessage: "The machine could not clone that project.", onMachine: machineKey)
   }
 
+  /// Whether the computer behind `machineKey` (nil = the primary) has
+  /// `action` and lets the phone call it. An older brain without it answers
+  /// false, so the caller hides or disables its button.
+  func machineAllowsPhoneAction(_ action: String, onMachine machineKey: String? = nil) -> Bool {
+    if let machineKey, machineKey != focusedMachineKey {
+      guard let connection = machineFleet?.connection(for: machineKey) else { return false }
+      return connection.commandDescriptor(for: action)?.policy.allowsPhone == true
+    }
+    return supportsViewerRemoteAction(action)
+  }
+
+  /// A remote command on the computer behind `machineKey` (nil = the
+  /// primary), never sent to another one. `projectId` scopes it to one of
+  /// that computer's projects; nil sends a runtime command.
+  func sendMachineCommand(
+    action: String,
+    args: [String: Any],
+    projectId: String? = nil,
+    projectRootPath: String? = nil,
+    timeoutNanoseconds: UInt64? = nil,
+    onMachine machineKey: String? = nil
+  ) async throws -> Any {
+    if let machineKey, machineKey != focusedMachineKey {
+      guard let connection = machineFleet?.connection(for: machineKey), machineFleet?.isLive(machineKey) == true else {
+        throw NSError(domain: "ADE", code: 14, userInfo: [
+          NSLocalizedDescriptionKey: "That computer is not connected. Connect it, then try again."
+        ])
+      }
+      return try await connection.sendCommand(
+        action: action,
+        args: args,
+        projectId: projectId,
+        projectRootPath: projectRootPath,
+        timeoutNanoseconds: timeoutNanoseconds
+      )
+    }
+    return try await sendCommand(
+      action: action,
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: timeoutNanoseconds,
+      targetProjectId: projectId,
+      targetProjectRootPath: projectRootPath,
+      fallbackToActiveProjectScope: projectId == nil
+    )
+  }
+
+  /// Publishes a folder on a computer to a new GitHub repository with that
+  /// computer's GitHub sign-in (`github.publishCurrentProject`, project
+  /// scope). The repository is private.
+  func publishMachineProject(_ folder: MobileProjectSummary, name: String, onMachine machineKey: String? = nil) async throws -> MobilePublishProjectResult {
+    let raw = try await sendMachineCommand(
+      action: "github.publishCurrentProject",
+      args: ["name": name, "isPrivate": true],
+      projectId: folder.id,
+      projectRootPath: folder.rootPath,
+      timeoutNanoseconds: 120_000_000_000,
+      onMachine: machineKey
+    )
+    return try decode(raw, as: MobilePublishProjectResult.self)
+  }
+
   func listMachineGitHubRepos(search: String = "", onMachine machineKey: String? = nil) async throws -> [MobileGitHubRepoSummary] {
     var payload: [String: Any] = [:]
     let trimmedSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -6764,7 +6841,8 @@ final class SyncService: ObservableObject {
     let fallbackToActiveProjectScope: Bool?
   }
 
-  init(database: DatabaseService = DatabaseService()) {
+  init(database: DatabaseService = DatabaseService(), keychain: KeychainService = KeychainService()) {
+    self.keychain = keychain
     let socketSessionDelegate = SyncSocketSessionDelegate()
     let socketSessionConfiguration = URLSessionConfiguration.default
     socketSessionConfiguration.waitsForConnectivity = false
@@ -6797,16 +6875,26 @@ final class SyncService: ObservableObject {
       UserDefaults.standard.set(true, forKey: pausedFlagMigrationKey)
     }
     self.autoReconnectPausedByUser = UserDefaults.standard.bool(forKey: autoReconnectPausedKey)
-    if let existing = keychain.loadDeviceId() {
-      deviceId = existing
-    } else if let existing = UserDefaults.standard.string(forKey: legacyDeviceIdKey) {
-      deviceId = existing
-      keychain.saveDeviceId(existing)
-    } else {
-      let fresh = UUID().uuidString.lowercased()
-      UserDefaults.standard.set(fresh, forKey: legacyDeviceIdKey)
-      keychain.saveDeviceId(fresh)
-      deviceId = fresh
+    // The keychain can refuse a read at launch (a launch before the first
+    // unlock). Never write a new id over one the keychain may still hold:
+    // every computer binds its pairing to this id. A provisional id is read
+    // again when protected data becomes available (`recheckProvisionalDeviceId`).
+    let storedDeviceId = keychain.readDeviceId()
+    let deviceIdChoice = syncResolveDeviceId(
+      keychain: storedDeviceId,
+      saved: UserDefaults.standard.string(forKey: legacyDeviceIdKey),
+      makeFresh: { UUID().uuidString.lowercased() }
+    )
+    deviceId = deviceIdChoice.id
+    deviceIdIsProvisional = deviceIdChoice.provisional
+    if deviceIdChoice.writeSaved { UserDefaults.standard.set(deviceIdChoice.id, forKey: legacyDeviceIdKey) }
+    if deviceIdChoice.writeKeychain { keychain.saveDeviceId(deviceIdChoice.id) }
+    if case .failed(let status) = storedDeviceId {
+      syncServiceDeviceIdLog.error("device_id.keychain_read_failed status=\(status, privacy: .public) provisional=\(deviceIdChoice.provisional, privacy: .public)")
+      CrashReporting.capture(
+        NSError(domain: NSOSStatusErrorDomain, code: Int(status)),
+        context: ["area": "device_id", "step": "keychain_read", "provisional": String(deviceIdChoice.provisional)]
+      )
     }
     MobileTrustResetPolicy.applyIfNeeded(keychain: keychain)
     // Read the route marker before anything below can rewrite it:
@@ -6946,10 +7034,51 @@ final class SyncService: ObservableObject {
       self?.chatLaunchRevision &+= 1
     }
 
+    // No timer: the keychain answers once the phone is unlocked, and the app
+    // becoming active covers a read that failed for another reason.
+    for name in [UIApplication.protectedDataDidBecomeAvailableNotification, UIApplication.didBecomeActiveNotification] {
+      keychainRecheckObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        MainActor.assumeIsolated { self?.recheckKeychainAfterFailedRead() }
+      })
+    }
+
     refreshActiveSessionsAndSnapshot()
   }
 
+  /// After a keychain read failed: take the stored device id, and connect
+  /// again with the pairing secret that could not be read.
+  private func recheckKeychainAfterFailedRead() {
+    recheckProvisionalDeviceId()
+    guard pairingSecretReadFailed, !deviceIdIsProvisional else { return }
+    pairingSecretReadFailed = false
+    guard connectionState != .connected, tokenForProfile(loadProfile()) != nil else { return }
+    syncConnectLog.notice("pairing_secret.readable_again")
+    Task { await reconnectIfPossible() }
+  }
+
+  /// Reads the device id again after a launch that could not read it, and
+  /// keeps the stored one. Answers whether the id is durable now.
+  @discardableResult
+  func recheckProvisionalDeviceId() -> Bool {
+    guard deviceIdIsProvisional else { return true }
+    let stored = keychain.readDeviceId()
+    let provisionalId = deviceId
+    let choice = syncResolveDeviceId(
+      keychain: stored,
+      saved: UserDefaults.standard.string(forKey: legacyDeviceIdKey),
+      makeFresh: { provisionalId }
+    )
+    guard !choice.provisional else { return false }
+    deviceId = choice.id
+    deviceIdIsProvisional = false
+    if choice.writeSaved { UserDefaults.standard.set(choice.id, forKey: legacyDeviceIdKey) }
+    if choice.writeKeychain { keychain.saveDeviceId(choice.id) }
+    syncServiceDeviceIdLog.notice("device_id.recovered kept_provisional=\(choice.id == provisionalId, privacy: .public)")
+    return true
+  }
+
   deinit {
+    for observer in keychainRecheckObservers { NotificationCenter.default.removeObserver(observer) }
     databaseRevisionDebounceTask?.cancel()
     relayTask?.cancel()
     clientHeartbeatTask?.cancel()
@@ -7415,19 +7544,20 @@ final class SyncService: ObservableObject {
   }
 
   private func migrateTokenIfNeeded(for profile: HostConnectionProfile) {
+    // Only a token that is not there is filled in. A read that failed may
+    // hide this computer's own secret: copying another one over it would
+    // make the computer refuse the phone.
     guard let key = profileStorageKey(profile),
-          keychain.loadToken(hostKey: key) == nil else {
+          case .absent = keychain.readPairedSecret(
+            key: key,
+            legacyKeys: legacyProfileStorageKeys(profile),
+            migrate: true,
+            fallbackToLastPaired: false
+          ) else {
       return
     }
-    for legacyKey in legacyProfileStorageKeys(profile) {
-      if let legacyToken = keychain.loadToken(hostKey: legacyKey) {
-        keychain.saveToken(legacyToken, hostKey: key)
-        keychain.clearToken(hostKey: legacyKey)
-        return
-      }
-    }
-    if let legacyToken = keychain.loadToken() {
-      keychain.saveToken(legacyToken, hostKey: key)
+    if case .value(let lastPaired) = keychain.readToken(hostKey: nil) {
+      keychain.saveToken(lastPaired, hostKey: key)
     }
   }
 
@@ -7443,15 +7573,33 @@ final class SyncService: ObservableObject {
   }
 
   private func storedTokenForSavedProfile(_ profile: HostConnectionProfile) -> String? {
-    if let key = profileStorageKey(profile), let token = keychain.loadToken(hostKey: key) {
-      return token
+    pairedSecret(of: pairedSecretRead(profile, migrate: false, fallbackToLastPaired: false))
+  }
+
+  /// One saved computer's pairing secret (`KeychainService.readPairedSecret`).
+  private func pairedSecretRead(
+    _ profile: HostConnectionProfile,
+    migrate: Bool,
+    fallbackToLastPaired: Bool
+  ) -> KeychainService.StoredRead {
+    keychain.readPairedSecret(
+      key: profileStorageKey(profile),
+      legacyKeys: legacyProfileStorageKeys(profile),
+      migrate: migrate,
+      fallbackToLastPaired: fallbackToLastPaired
+    )
+  }
+
+  /// The secret, or nil. A failed read keeps the pairing and connects again
+  /// when the keychain answers (`recheckKeychainAfterFailedRead`).
+  private func pairedSecret(of read: KeychainService.StoredRead) -> String? {
+    switch read {
+    case .value(let token): return token
+    case .absent: return nil
+    case .failed:
+      pairingSecretReadFailed = true
+      return nil
     }
-    for legacyKey in legacyProfileStorageKeys(profile) {
-      if let token = keychain.loadToken(hostKey: legacyKey) {
-        return token
-      }
-    }
-    return nil
   }
 
   private func mostRecentSavedProfileWithCredentials() -> HostConnectionProfile? {
@@ -7480,22 +7628,7 @@ final class SyncService: ObservableObject {
 
   private func tokenForProfile(_ profile: HostConnectionProfile?) -> String? {
     guard let profile else { return nil }
-    if let key = profileStorageKey(profile), let token = keychain.loadToken(hostKey: key) {
-      return token
-    }
-    for legacyKey in legacyProfileStorageKeys(profile) {
-      if let token = keychain.loadToken(hostKey: legacyKey) {
-        if let key = profileStorageKey(profile) {
-          keychain.saveToken(token, hostKey: key)
-          keychain.clearToken(hostKey: legacyKey)
-        }
-        return token
-      }
-    }
-    if activeHostProfile == profile {
-      return keychain.loadToken()
-    }
-    return nil
+    return pairedSecret(of: pairedSecretRead(profile, migrate: true, fallbackToLastPaired: activeHostProfile == profile))
   }
 
   private func publishMergedDiscoveredHosts() {
@@ -8608,6 +8741,12 @@ final class SyncService: ObservableObject {
     _ machine: AccountMachine,
     authorization: AccountPairingAuthorization
   ) async -> Bool {
+    // A pairing binds to the device id: never make one with a provisional id.
+    guard recheckProvisionalDeviceId() else {
+      lastError = syncProvisionalDeviceIdMessage
+      connectionState = .error
+      return false
+    }
     prepareForUserConnectionChange()
     setConnectAttemptTarget(
       machineName: machine.displayName,
@@ -10043,6 +10182,12 @@ final class SyncService: ObservableObject {
     tailscaleAddress: String? = nil,
     relayCandidates: [String] = []
   ) async {
+    // A pairing binds to the device id: never make one with a provisional id.
+    guard recheckProvisionalDeviceId() else {
+      lastError = syncProvisionalDeviceIdMessage
+      connectionState = .error
+      return
+    }
     prepareForUserConnectionChange()
     setConnectAttemptTarget(machineName: hostName, machineIdentity: hostIdentity)
     lastPairingErrorCode = nil
@@ -17034,6 +17179,73 @@ final class SyncService: ObservableObject {
     )
   }
 
+  // MARK: - Work tools: live browser tab
+
+  /// Whether the lane's machine serves live frames of one desktop browser tab.
+  /// Optional on the host, so an older desktop keeps the last-observation card.
+  func supportsWorkToolsBrowserTabFrame(laneId: String) -> Bool {
+    laneCommandDescriptor("workTools.readBrowserTabFrame", laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  /// One fresh frame of `tabId`, on the lane's own machine. Each call renews the
+  /// desktop's short watch on the tab, so the caller polls while it is looking
+  /// and simply stops when it is not. `frame` is nil for the first poll or two
+  /// while the desktop starts capturing. Never queued: a stale frame is useless.
+  func readWorkToolsBrowserTabFrame(
+    tabId: String,
+    laneId: String,
+    maxWidth: Int? = nil
+  ) async throws -> WorkToolsBrowserTabFrame? {
+    let lane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let tab = tabId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard supportsWorkToolsBrowserTabFrame(laneId: lane) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Live browser frames are not available on this machine version.", "ADEErrorCode": "unsupported_action"])
+    }
+    guard !lane.isEmpty, !tab.isEmpty else { return nil }
+    var args: [String: Any] = ["tabId": tab, "laneId": lane]
+    if let maxWidth, maxWidth > 0 { args["maxWidth"] = maxWidth }
+    let result = try await sendCommand(
+      action: "workTools.readBrowserTabFrame",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+    guard result is [String: Any] else { return nil }
+    return try? decode(result, as: WorkToolsBrowserTabFrame.self)
+  }
+
+  /// Whether this phone may click, scroll and type into a desktop browser tab.
+  /// Controller only on the host, so a read-only viewer never sees the control.
+  func supportsWorkToolsBrowserTabInput(laneId: String) -> Bool {
+    laneCommandDescriptor("workTools.sendBrowserTabInput", laneId: laneId)?.policy.allowsPhone == true
+  }
+
+  /// Sends one person's tap, scroll or keystroke to `tabId` on the lane's
+  /// machine. Never queued: input replayed later would land on a page the
+  /// person is no longer looking at. Returns the host's `ok`.
+  @discardableResult
+  func sendWorkToolsBrowserTabInput(
+    tabId: String,
+    laneId: String,
+    event: WorkToolsBrowserTabInputEvent
+  ) async throws -> Bool {
+    let lane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let tab = tabId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard supportsWorkToolsBrowserTabInput(laneId: lane) else {
+      throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Controlling the browser from the phone needs a newer ADE on this lane's machine.", "ADEErrorCode": "unsupported_action"])
+    }
+    guard !lane.isEmpty, !tab.isEmpty else { return false }
+    let result = try await sendCommand(
+      action: "workTools.sendBrowserTabInput",
+      args: ["tabId": tab, "laneId": lane, "event": event.payload],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+    return (result as? [String: Any])?["ok"] as? Bool ?? false
+  }
+
   // MARK: - Mac Desktop live stream and takeover
 
   /// Whether this host can stream a lane's Mac Desktop to the phone.
@@ -20201,6 +20413,13 @@ final class SyncService: ObservableObject {
   }
 
   private func shouldInvalidateSavedPairing(for error: Error) -> Bool {
+    // A provisional device id is not the id the computer paired with, so its
+    // "unknown device" answer says nothing about the pairing. Read the id
+    // again for the next attempt, and keep the pairing.
+    if deviceIdIsProvisional || helloSentWithProvisionalDeviceId {
+      recheckProvisionalDeviceId()
+      return false
+    }
     let nsError = error as NSError
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
       return false
@@ -20508,7 +20727,15 @@ final class SyncService: ObservableObject {
       guard !matching.isEmpty else { continue }
       let updated = profileByApplyingDiscoveredRoutes(profile, matching: matching)
       guard updated != profile else { continue }
-      let token = storedTokenForSavedProfile(profile)
+      let token: String?
+      switch pairedSecretRead(profile, migrate: false, fallbackToLastPaired: false) {
+      case .value(let stored): token = stored
+      case .absent: token = nil
+      case .failed:
+        // Moving the profile without its secret would lose the secret.
+        pairingSecretReadFailed = true
+        continue
+      }
       profiles.removeValue(forKey: key)
       let updatedKey = profileStorageKey(updated) ?? key
       profiles[updatedKey] = updated
@@ -20553,6 +20780,7 @@ final class SyncService: ObservableObject {
     connectionAttempt: SyncConnectionAttemptMetadata? = nil
   ) -> [String: Any] {
     let info = Bundle.main.infoDictionary ?? [:]
+    if deviceIdIsProvisional { helloSentWithProvisionalDeviceId = true }
     var metadata: [String: Any] = [
       "deviceId": deviceId,
       "deviceName": UIDevice.current.name,
@@ -28085,6 +28313,8 @@ extension SyncService {
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
       return .failure(SyncPairAlongsideFailure(message: message))
     }
+    // A pairing binds to the device id: never make one with a provisional id.
+    guard recheckProvisionalDeviceId() else { return fail(syncProvisionalDeviceIdMessage) }
     let owner = authorization.ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !owner.isEmpty,
           AccountService.shared.isPairingCommitAuthorized(authorization),
