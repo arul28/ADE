@@ -1547,7 +1547,7 @@ describe("projectConfigService - settings that follow the account", () => {
     fs.writeFileSync(localPath, YAML.stringify({ version: 1, ...(typeof local === "function" ? local(root) : local) }), "utf8");
     const service = createProjectConfigService({ projectRoot: root, adeDir, projectId: name, db: makeDb(), logger });
     const origin = { url: ORIGIN };
-    const account = { id: "user_1", store };
+    const account: { id: string | null; store: ReturnType<typeof makeAccountStore> } = { id: "user_1", store };
     service.setAccountSettingsStore({
       backend: () => account.store.backend,
       accountUserId: () => account.id,
@@ -1595,11 +1595,14 @@ describe("projectConfigService - settings that follow the account", () => {
 
     // Signed in as another account, the values the file got from the first
     // account are not this computer's own: nothing is copied to the new one.
+    // A value edited while signed out is this computer's own again, and moves.
+    b.account.id = null;
+    b.edit((local) => { local.github.prPollingIntervalSeconds = 45; });
     const other = makeAccountStore();
     b.account.id = "user_2";
     b.account.store = other;
     b.service.moveSettingsToAccount();
-    expect([...other.rows.keys()]).toEqual([]);
+    expect([...other.rows.entries()]).toEqual([[`${SCOPE}|prs.pollIntervalSeconds`, 45]]);
   });
 
   it("never loses this computer's values: before the first move, to a stale mirror, or its own writable folders", () => {
@@ -1613,8 +1616,8 @@ describe("projectConfigService - settings that follow the account", () => {
     expect(fresh.service.moveSettingsToAccount().conflicts).toContain("prs.pollIntervalSeconds");
 
     // Two computers move at once: both find the rows missing, and the account
-    // keeps the last write. The first writer keeps its value in a notice, and
-    // a list is joined, when the other write reaches it.
+    // keeps the last write. The first writer keeps its value in a notice when
+    // the other write reaches it; nothing is joined or written back for it.
     const racing = makeAccountStore();
     const x = makeComputer("race-x", racing, { github: { prPollingIntervalSeconds: 30 }, issueTrackers: { jira: { projectKeys: ["WEB"] } } });
     const y = makeComputer("race-y", racing, { github: { prPollingIntervalSeconds: 90 }, issueTrackers: { jira: { projectKeys: ["API"] } } });
@@ -1624,8 +1627,8 @@ describe("projectConfigService - settings that follow the account", () => {
     y.account.store = racing;
     expect(racing.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(90);
     x.service.moveSettingsToAccount();
-    expect(x.service.get().accountNotices).toEqual([expect.objectContaining({ kind: "account_setting", key: "prs.pollIntervalSeconds" })]);
-    expect(racing.rows.get(`${SCOPE}|jira.projectKeys`)).toEqual(["API", "WEB"]);
+    expect((x.service.get().accountNotices ?? []).map((notice) => notice.key).sort()).toEqual(["jira.projectKeys", "prs.pollIntervalSeconds"]);
+    expect(racing.rows.get(`${SCOPE}|jira.projectKeys`)).toEqual(["API"]);
     x.service.resolveAccountSettingNotice({ key: "prs.pollIntervalSeconds", choice: "use_local" });
     expect(racing.rows.get(`${SCOPE}|prs.pollIntervalSeconds`)).toBe(30);
 
@@ -1640,6 +1643,17 @@ describe("projectConfigService - settings that follow the account", () => {
     expect(again.joined).toEqual([]);
     expect(store.rows.get(`${SCOPE}|jira.projectKeys`)).toEqual(["WEB"]);
     expect(b.file().issueTrackers.jira.projectKeys).toEqual(["WEB"]);
+    // Within the hour after a first write, another computer's later removal
+    // is not undone when the first writer next reads the account.
+    const later = makeAccountStore();
+    const p = makeComputer("later-p", later, { issueTrackers: { jira: { projectKeys: ["WEB", "API"] } } });
+    const q = makeComputer("later-q", later, { issueTrackers: { jira: { projectKeys: ["WEB", "API"] } } });
+    p.service.moveSettingsToAccount();
+    q.service.moveSettingsToAccount();
+    q.edit((local) => { local.issueTrackers.jira.projectKeys = ["WEB"]; });
+    p.service.moveSettingsToAccount();
+    expect(later.rows.get(`${SCOPE}|jira.projectKeys`)).toEqual(["WEB"]);
+    expect(p.file().issueTrackers.jira.projectKeys).toEqual(["WEB"]);
 
     // Clearing the shared permissions elsewhere keeps this computer's writable folders.
     const perms = makeAccountStore();

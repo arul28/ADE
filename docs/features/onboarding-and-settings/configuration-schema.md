@@ -85,8 +85,9 @@ computer signed in to the account gets them
   That holds after a sign-in to another account too: the first account's
   values in the file are not copied to the new one. When two computers move
   the same setting at once, the account keeps the last write; for an hour
-  after its write, the other computer joins a list or files a notice with
-  its value when that write reaches it.
+  after its write, the other computer files a notice with its value when that
+  write reaches it (nothing is joined back, so a removed item stays removed).
+  A value edited while signed out is this computer's own again and moves.
 - **Save.** A changed value goes to the account. A cleared value removes the
   row, and the other computers remove their copy only when it came from the
   account. This computer's own parts (the `writablePaths` lists) stay. When

@@ -82,6 +82,12 @@ type LayerState = {
   conflicts: PendingConflict[];
   /** Rows whose value in this computer's file came from the account. */
   mirrored: string[];
+  /**
+   * The account value each mirrored row was given (without this computer's
+   * own parts). A file that no longer holds it was edited here (signed out,
+   * say), so that row is this computer's own again.
+   */
+  mirroredValues: Record<string, unknown>;
   firstWrites: FirstWrite[];
 };
 
@@ -187,7 +193,7 @@ export function createProjectConfigAccountLayer(args: {
 
   const readState = ({ account, scope }: Target): LayerState => {
     if (!state) {
-      state = { account: null, scope: null, moved: false, conflicts: [], mirrored: [], firstWrites: [] };
+      state = { account: null, scope: null, moved: false, conflicts: [], mirrored: [], mirroredValues: {}, firstWrites: [] };
       try {
         const parsed = JSON.parse(fs.readFileSync(args.statePath, "utf8")) as unknown;
         if (isRecord(parsed)) {
@@ -199,6 +205,7 @@ export function createProjectConfigAccountLayer(args: {
               ? parsed.conflicts.filter((entry): entry is PendingConflict => isRecord(entry) && typeof entry.row === "string")
               : [],
             mirrored: Array.isArray(parsed.mirrored) ? parsed.mirrored.filter((row): row is string => typeof row === "string") : [],
+            mirroredValues: isRecord(parsed.mirroredValues) ? { ...parsed.mirroredValues } : {},
             firstWrites: Array.isArray(parsed.firstWrites)
               ? parsed.firstWrites.filter((entry): entry is FirstWrite =>
                 isRecord(entry) && typeof entry.row === "string" && typeof entry.at === "number")
@@ -217,13 +224,14 @@ export function createProjectConfigAccountLayer(args: {
     // not copy it there (another person's settings, or a stale repository's).
     const current = state.account === account && state.scope === scope
       ? state
-      : { moved: false, conflicts: [], mirrored: state.mirrored, firstWrites: [] };
+      : { moved: false, conflicts: [], mirrored: state.mirrored, mirroredValues: state.mirroredValues, firstWrites: [] };
     return {
       account,
       scope,
       moved: current.moved,
       conflicts: [...current.conflicts],
       mirrored: [...current.mirrored],
+      mirroredValues: { ...current.mirroredValues },
       firstWrites: [...current.firstWrites],
     };
   };
@@ -236,6 +244,7 @@ export function createProjectConfigAccountLayer(args: {
       moved: next.moved,
       conflicts: [...next.conflicts],
       mirrored: [...next.mirrored],
+      mirroredValues: { ...next.mirroredValues },
       firstWrites: [...next.firstWrites],
     };
     try {
@@ -251,6 +260,21 @@ export function createProjectConfigAccountLayer(args: {
   /** Deleted in the account after this computer's copy came from there: gone here too. */
   const deletedHere = (target: Target, mirrored: readonly string[], key: MovedKey, current: unknown): boolean =>
     current === undefined && target.deleted.has(key.row) && mirrored.includes(key.row);
+
+  /** The file still holds the value an account gave it (`local` is coerced): not this computer's own. */
+  const stillMirrored = (saved: LayerState, key: MovedKey, local: unknown): boolean =>
+    saved.mirrored.includes(key.row)
+    && (!(key.row in saved.mirroredValues) || isDeepStrictEqual(saved.mirroredValues[key.row], local));
+
+  const markMirrored = (saved: LayerState, key: MovedKey, value: unknown): void => {
+    if (!saved.mirrored.includes(key.row)) saved.mirrored.push(key.row);
+    saved.mirroredValues[key.row] = value;
+  };
+
+  const unmarkMirrored = (saved: LayerState, key: MovedKey): void => {
+    saved.mirrored = saved.mirrored.filter((row) => row !== key.row);
+    delete saved.mirroredValues[key.row];
+  };
 
   return {
     /** The file's config with the account's value in place of each moved key. */
@@ -313,7 +337,7 @@ export function createProjectConfigAccountLayer(args: {
         if (wanted !== undefined && !isDeepStrictEqual(wanted, before) && !isDeepStrictEqual(wanted, current)) {
           if (attempt(() => target.backend.set(target.scope, key.row, wanted))) {
             written.push(key.row);
-            if (!saved.mirrored.includes(key.row)) saved.mirrored.push(key.row);
+            markMirrored(saved, key, wanted);
           } else {
             args.logger.warn("projectConfig.account_setting_write_refused", { key: key.row });
             refused.push(key.label);
@@ -322,7 +346,7 @@ export function createProjectConfigAccountLayer(args: {
         }
         if (current !== undefined) {
           toFile = key.write(toFile, key.combine(current, raw));
-          if (!saved.mirrored.includes(key.row)) saved.mirrored.push(key.row);
+          markMirrored(saved, key, current);
         }
       }
       if (written.length > 0) {
@@ -353,7 +377,7 @@ export function createProjectConfigAccountLayer(args: {
             // Deleted elsewhere after it came from the account (`mirror`
             // removes it), or from an earlier account or repository: not
             // this computer's own value, so it is not copied here.
-            if (pending.mirrored.includes(key.row)) continue;
+            if (stillMirrored(pending, key, local)) continue;
             if (attempt(() => target.backend.set(target.scope, key.row, local))) {
               result.moved.push(key.row);
               pending.firstWrites = [...pending.firstWrites.filter((entry) => entry.row !== key.row), { row: key.row, value: local, at: Date.now() }];
@@ -364,7 +388,7 @@ export function createProjectConfigAccountLayer(args: {
           // The file's value came from the account: an older copy, not this
           // computer's own choice. `mirror` brings it up to date; joining or
           // keeping it would bring back what another computer changed.
-          if (pending.mirrored.includes(key.row)) continue;
+          if (stillMirrored(pending, key, local)) continue;
           if (key.union && Array.isArray(current) && Array.isArray(local)) {
             const joined = key.coerce([...new Set([...current, ...local])]);
             if (Array.isArray(joined) && joined.length === current.length) continue;
@@ -415,7 +439,7 @@ export function createProjectConfigAccountLayer(args: {
       for (const key of keysFor(target, [file])) {
         const here = key.read(file);
         if (here !== undefined && key.hold(here)) continue;
-        let value = accountValue(target, key);
+        const value = accountValue(target, key);
         if (value === undefined) {
           const kept = key.localOnly(here);
           if (deletedHere(target, saved.mirrored, key, value) && here !== undefined && !isDeepStrictEqual(kept, here)) {
@@ -425,27 +449,22 @@ export function createProjectConfigAccountLayer(args: {
           }
           // The mark stays while the file still holds a value from an account
           // (an earlier account's, say): the next move must not copy it.
-          if (here === undefined || deletedHere(target, saved.mirrored, key, value)) {
-            saved.mirrored = saved.mirrored.filter((row) => row !== key.row);
-          }
+          if (here === undefined || deletedHere(target, saved.mirrored, key, value)) unmarkMirrored(saved, key);
           continue;
         }
         const first = saved.firstWrites.find((entry) => entry.row === key.row);
         if (first && !isDeepStrictEqual(value, first.value) && isDeepStrictEqual(key.coerce(here), first.value)) {
-          // Another computer's first write landed over this one's. Join a
-          // list; otherwise keep this computer's value in a notice.
+          // Another computer's write landed over this one's first write: a
+          // move at the same time, or a later edit there. Which one is not
+          // known, so nothing is joined or written back (that could bring
+          // back what the other computer removed); the person decides.
           saved.firstWrites = saved.firstWrites.filter((entry) => entry !== first);
-          const joined = key.union && Array.isArray(value) && Array.isArray(first.value)
-            ? key.coerce([...new Set([...value, ...first.value])])
-            : undefined;
-          if (Array.isArray(joined) && attempt(() => target.backend.set(target.scope, key.row, joined))) {
-            value = joined;
-          } else if (!saved.conflicts.some((entry) => entry.row === key.row)) {
+          if (!saved.conflicts.some((entry) => entry.row === key.row)) {
             saved.conflicts.push({ row: key.row, localValue: first.value });
             args.logger.info("projectConfig.account_move_conflict", { key: key.row });
           }
         }
-        if (!saved.mirrored.includes(key.row)) saved.mirrored.push(key.row);
+        markMirrored(saved, key, value);
         const combined = key.combine(value, here);
         if (isDeepStrictEqual(combined, here)) continue;
         next = key.write(next, combined);
