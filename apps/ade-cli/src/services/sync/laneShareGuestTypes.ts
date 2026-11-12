@@ -120,7 +120,11 @@ export type LaneShareGuestHandoff = {
     dpopPublicKey: string;
     redemption: LaneShareTicketRedemption;
     snapshot: LaneShareGrantSnapshot;
+    /** The owner account whose token redeemed the ticket: the next host refuses under another. */
+    redeemerUserId: string;
   } | null;
+  /** The project this socket leaves (never routed back to it), or null from the brain's ingress. */
+  fromProjectId?: string | null;
 };
 
 /** What `closeLaneShareGrant` did: the owner's revoke reports it. */

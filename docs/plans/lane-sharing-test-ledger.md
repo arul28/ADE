@@ -102,3 +102,30 @@ same 13 forbidden commands were refused, a revoke closed the guest in about
 Not run: the brain's own ingress path (no project served at all), and a
 served-project switch while a guest is connected (the guest reconnects; the
 client retries in a second).
+
+### Independent security review of the routing (Opus subagent, read-only)
+
+No blocker. Fixed on this branch:
+
+- **High:** a guest hello at the brain's ingress, unchecked, could make the
+  brain open a project. Now the ingress refuses a non-relay socket or a device
+  id that is not the hello's own, and the router gives an unredeemed socket
+  only to a project that is already open.
+- **Medium:** the account check after a hop: the handoff carries the account
+  that redeemed the ticket, and the next host refuses under another
+  (`account_session_changed`).
+- **Medium:** a second checkout of one repository (or a grant with no
+  repository key): a host without the lane now routes the guest on (never back
+  to itself, `fromProjectId`) before it refuses with "the share has ended".
+- **Medium:** a guests-only host stays while a guest's queued message or a move
+  it runs is pending, not only while a socket is open.
+- **Low:** the router tries the next project when one cannot take the socket,
+  and reads each checkout's live origin when the registry's copy misses.
+- **Low:** the queued-guest gate in `agentChatService` is a stack, so a host
+  that closes never removes the gate of the host that replaced it.
+
+Left as is: frames a guest sends before `hello_ok` during the hop are dropped
+(ADE's guest client sends none).
+
+Rechecked after the fixes on the test machine: routed from the served scratch
+project to the lane's project, guest connected.

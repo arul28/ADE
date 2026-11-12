@@ -2509,7 +2509,7 @@ export function createSyncService(args: SyncServiceArgs) {
         args.logger.info("sync.lane_share_guest_host_started", {});
         let idleChecks = 0;
         laneShareGuestHostIdleTimer = setInterval(() => {
-          if ((laneShareGuestHost?.peerCount() ?? 0) > 0) {
+          if (laneShareGuestHost?.laneShareGuestsBusy()) {
             idleChecks = 0;
             return;
           }

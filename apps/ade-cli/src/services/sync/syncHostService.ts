@@ -2983,6 +2983,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     trackLaneShareTurns,
     handleLaneShareGuestHello,
     acceptHandedOffLaneShareGuest,
+    laneShareHasPendingGuestWork,
     admitLaneShareGuestEnvelope,
     admitLaneShareGuestImmediateEnvelope,
     laneShareGuestTypedLineStillAllowed,
@@ -9666,9 +9667,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     laneShareConnectedDevices,
     /** A guest socket the brain's router hands to this project (`LaneShareGuestHandoff`). */
     adoptLaneShareGuest,
-    /** Open sockets on this host: a guests-only host with none left can go. */
-    peerCount(): number {
-      return peers.size;
+    /**
+     * Whether a guests-only host must stay: an open socket, a guest message
+     * queued behind a turn (its start is checked here), or a move it runs.
+     */
+    laneShareGuestsBusy(): boolean {
+      return peers.size > 0 || laneShareHasPendingGuestWork();
     },
     /** A move of this grant changed: its guests read their state again. */
     notifyLaneShareGuestState(grantId: string): void {

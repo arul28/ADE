@@ -1697,6 +1697,20 @@ export function createBrainProjectActionsSyncHandler(
           // goes to an open project's host, which redeems its ticket and, when
           // the lane is in another project, routes it on. This side lets go of
           // the socket first: no listener of it stays.
+          // Only what can be checked here before anything is routed: a guest
+          // comes over ADE Relay, with the device id of its own hello. The
+          // router then gives it only to a project that is already open.
+          if (hello.auth?.kind === "guest" && (transportOrigin !== "relay-bridge" || hello.auth.deviceId !== hello.peer.deviceId)) {
+            send(ws, "hello_error", transportOrigin !== "relay-bridge"
+              ? { code: "lane_share_refused", message: "A shared lane is reachable only through ADE Relay." }
+              : { code: "invalid_hello", message: "Invalid hello payload." }, envelope.requestId);
+            try {
+              ws.close(4003, "Authentication failed");
+            } catch {
+              // ignore close failures
+            }
+            return;
+          }
           if (hello.auth?.kind === "guest" && args.routeLaneShareGuest) {
             const guestAuth = hello.auth;
             peer.lifecycleGeneration += 1;

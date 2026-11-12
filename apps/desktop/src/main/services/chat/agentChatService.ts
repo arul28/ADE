@@ -48979,7 +48979,13 @@ export function createAgentChatService(args: {
    * The lane share host's check of a queued guest message, run when the
    * message starts (`installQueuedGuestSteerGate`). False drops the message.
    */
-  let queuedGuestSteerGate: ((args: { sessionId: string; steerId: string; author: AdeMessageAuthor; session: AgentChatSession }) => boolean) | null = null;
+  type QueuedGuestSteerGate = (args: { sessionId: string; steerId: string; author: AdeMessageAuthor; session: AgentChatSession }) => boolean;
+  /**
+   * Installed gates, newest last. One project can have two sync hosts in turn
+   * (a guests-only host, then the served one): the newest decides, and a host
+   * that goes removes only its own gate, never the one that replaced it.
+   */
+  const queuedGuestSteerGates: QueuedGuestSteerGate[] = [];
 
   /**
    * Whether a queued message may start now: always, unless a guest sent it
@@ -48991,6 +48997,7 @@ export function createAgentChatService(args: {
     const author = parseMessageAuthor(steer.metadata?.author);
     if (author?.kind !== "guest") return true;
     // A guest's message with no host check to pass does not start.
+    const queuedGuestSteerGate = queuedGuestSteerGates.at(-1);
     if (!queuedGuestSteerGate) return false;
     try {
       // The chat as it is now: the owner may have narrowed the model or mode
@@ -80813,10 +80820,11 @@ export function createAgentChatService(args: {
     },
     setScheduledWorkPaused,
     /** The lane share host installs its check of queued guest messages. Returns its removal. */
-    installQueuedGuestSteerGate: (gate: NonNullable<typeof queuedGuestSteerGate>): (() => void) => {
-      queuedGuestSteerGate = gate;
+    installQueuedGuestSteerGate: (gate: QueuedGuestSteerGate): (() => void) => {
+      queuedGuestSteerGates.push(gate);
       return () => {
-        if (queuedGuestSteerGate === gate) queuedGuestSteerGate = null;
+        const index = queuedGuestSteerGates.lastIndexOf(gate);
+        if (index >= 0) queuedGuestSteerGates.splice(index, 1);
       };
     },
     refreshScheduledWork,

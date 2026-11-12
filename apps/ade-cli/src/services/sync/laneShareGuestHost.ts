@@ -628,13 +628,14 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
    * no timer and no request. Armed for a queue or a move alone, it reads the
    * grants at once.
    */
+  /** Guest work this host still holds with no guest connected: queued guest messages, or a move it runs. */
+  function laneShareHasPendingGuestWork(): boolean {
+    return guestQueue.grantsWithQueued().length > 0 || args.laneShareMoves?.hasRunningHostMoves?.() === true;
+  }
+
   function syncLaneShareRefreshTimer(): void {
     const guests = isDisposed() ? 0 : connectedLaneShareGuests().length;
-    const needed = !isDisposed() && (
-      guests > 0
-      || guestQueue.grantsWithQueued().length > 0
-      || args.laneShareMoves?.hasRunningHostMoves?.() === true
-    );
+    const needed = !isDisposed() && (guests > 0 || laneShareHasPendingGuestWork());
     if (needed && !laneShareRefreshTimer) {
       laneShareRefreshTimer = setInterval(() => {
         void refreshLaneShareGrants();
@@ -782,12 +783,15 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     // A brain serves one project on its shared listener at a time. A lane of
     // another project is not in this host's database: the socket goes to that
     // project's host (`routeLaneShareGuest`), redeemed, never looked up here.
+    const checkedHere = { dpopPublicKey, redemption, snapshot, redeemerUserId: before.userId };
     if (redemption.repoKey && redemption.repoKey !== (args.getLaneShareRepoKey?.() ?? null)) {
-      await handOffLaneShareGuest(peer, requestId, hello, auth, {
-        dpopPublicKey,
-        redemption,
-        snapshot,
-      });
+      await handOffLaneShareGuest(peer, requestId, hello, auth, checkedHere);
+      return;
+    }
+    // The same repository, but not this checkout's lane (a second checkout of
+    // it, or a grant with no repository key): another project may have it.
+    if (laneShareLaneState(redemption.laneId) === "missing" && deps.routeLaneShareGuest) {
+      await handOffLaneShareGuest(peer, requestId, hello, auth, checkedHere, { fallbackRefusal: "lane_missing" });
       return;
     }
     await admitRedeemedLaneShareGuest(peer, requestId, hello, auth, lifecycleGeneration, negotiatedCompression, {
@@ -809,10 +813,14 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     hello: SyncHelloPayload,
     auth: Extract<SyncHelloAuth, { kind: "guest" }>,
     redeemed: NonNullable<LaneShareGuestHandoff["redeemed"]> | null,
+    options: { fallbackRefusal?: "lane_missing" } = {},
   ): Promise<void> {
     const notHere = "The owner's computer can't open this lane's project right now. ADE tries again in a minute.";
+    const refuseUnrouted = () => options.fallbackRefusal === "lane_missing"
+      ? refuseLaneShareGuest(peer, requestId, hello, "lane_share_refused", LANE_SHARE_NO_GRANT, "lane_missing")
+      : refuseLaneShareGuest(peer, requestId, hello, "lane_share_unavailable", notHere, "project_not_hosted");
     if (!deps.routeLaneShareGuest) {
-      refuseLaneShareGuest(peer, requestId, hello, "lane_share_unavailable", notHere, "project_not_hosted");
+      refuseUnrouted();
       return;
     }
     const handoff: LaneShareGuestHandoff = {
@@ -824,6 +832,7 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
       hello,
       auth,
       redeemed,
+      fromProjectId: args.projectId ?? null,
     };
     deps.releasePeerForHandoff(peer);
     let routed = false;
@@ -837,7 +846,7 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
       return;
     }
     // Released, so answered on the bare socket.
-    refuseLaneShareGuest(peer, requestId, hello, "lane_share_unavailable", notHere, "project_not_hosted");
+    refuseUnrouted();
   }
 
   /**
@@ -874,6 +883,12 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
       refuseLaneShareGuest(peer, handoff.requestId, handoff.hello, "lane_share_unavailable", LANE_SHARE_UNAVAILABLE, "host_signed_out");
       return;
     }
+    // The ticket was redeemed with one account's token; a switch of the
+    // owner's account during the hop leaves that grant behind.
+    if (before.userId !== handoff.redeemed.redeemerUserId) {
+      refuseLaneShareGuest(peer, handoff.requestId, handoff.hello, "account_session_changed", SYNC_ACCOUNT_SESSION_CHANGED_MESSAGE, "host_account_changed");
+      return;
+    }
     await admitRedeemedLaneShareGuest(peer, handoff.requestId, handoff.hello, handoff.auth, lifecycleGeneration, negotiatedCompression, {
       ...handoff.redeemed,
       before,
@@ -892,7 +907,7 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     auth: Extract<SyncHelloAuth, { kind: "guest" }>,
     lifecycleGeneration: number,
     negotiatedCompression: SyncApplicationCompressionCodec | null,
-    checked: NonNullable<LaneShareGuestHandoff["redeemed"]> & { before: { userId: string; generation: number } },
+    checked: Omit<NonNullable<LaneShareGuestHandoff["redeemed"]>, "redeemerUserId"> & { before: { userId: string; generation: number } },
   ): Promise<void> {
     const refuse = (
       code: Exclude<SyncHelloErrorPayload["code"], "protocol_version_mismatch">,
@@ -1116,6 +1131,7 @@ export function createLaneShareGuestHost(deps: LaneShareGuestHostDeps) {
     trackLaneShareTurns,
     handleLaneShareGuestHello,
     acceptHandedOffLaneShareGuest,
+    laneShareHasPendingGuestWork,
     notifyLaneShareGuests,
     laneShareGuestSocketClosed,
     refreshLaneShareGrants,
